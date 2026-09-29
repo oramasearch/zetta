@@ -46,6 +46,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-10", "fraud_review_task", "A1", "champion_challenger", "fraud_loss", "currency", "false_declines"},
     DefaultAction{"S-11", "eligible_action", "A1", "uplift_cells", "net_value", "currency", "consent_violations"},
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
+    DefaultAction{"B-2", "people_leader_review", "A2", "holdout", "attrition_reduction", "fraction", "small_group_outputs"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -548,6 +549,56 @@ void next_best_action_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void employee_attrition_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "elevated"}, {"minimum_score", 0.6},
+         {"action", "people_leader_review"},
+         {"allowed_actions", {"people_leader_review",
+                              "organizational_intervention_review",
+                              "no_action"}}},
+        {{"name", "watch"}, {"minimum_score", 0.35},
+         {"action", "aggregate_risk_report"},
+         {"allowed_actions", {"aggregate_risk_report", "no_action"}}},
+        {{"name", "baseline"}, {"minimum_score", 0.0},
+         {"action", "no_action"}}};
+    result.policy["actions"] = {
+        {"people_leader_review",
+         {{"autonomy", "A2"}, {"sla_seconds", 604800},
+          {"frequency_cap", frequency(1, 30)}}},
+        {"aggregate_risk_report",
+         {{"autonomy", "A2"}, {"sla_seconds", 604800},
+          {"frequency_cap", frequency(1, 30)}}},
+        {"organizational_intervention_review",
+         {{"autonomy", "A1"}, {"approval_above", 0.0},
+          {"sla_seconds", 604800},
+          {"frequency_cap", frequency(1, 30)}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 4;
+    result.policy["frequency_cap"] = frequency(1, 30);
+    result.policy["eligibility_rules"] = {
+        numeric_predicate("group_size", "gte", 5.0),
+        predicate("people_leader_authorized", true),
+        predicate("fairness_review_passed", true),
+        predicate("legal_approval_recorded", true),
+        predicate("individual_level_output", false)};
+    result.policy["exclusion_rules"] = {
+        predicate("restricted_cohort", true),
+        predicate("individual_level_output", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"elevated", 0.1}, {"watch", 0.1}, {"baseline", 0.1}};
+    result.experiment.treatment_cells = {"people_leader_review"};
+    result.guardrails = {
+        {"small_group_outputs", 0.0, "maximum"},
+        {"individual_score_outputs", 0.0, "maximum"},
+        {"fairness_review_failures", 0.0, "maximum"},
+        {"approval_gate_failures", 0.0, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {
+        "holdout", "attrition_reduction", "fraction", 90};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -578,6 +629,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 claims_triage_defaults(result);
             } else if (solution_id == "S-10") {
                 fraud_decisioning_defaults(result);
+            } else if (solution_id == "B-2") {
+                employee_attrition_defaults(result);
             }
             return result;
         }

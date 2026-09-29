@@ -64,6 +64,67 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     const bool collections = request.solution == "S-4";
     const bool fraud_decisioning = request.solution == "S-10";
 
+    if (request.solution == "B-2") {
+        const std::string group_column =
+            request.hints.value("group_column", "entity_id");
+        const std::string group_size_column =
+            request.hints.value("group_size_column", "group_size");
+        graph.add_node(
+            ir::StepKind::Connect, "Load aggregate workforce cohorts",
+            nlohmann::json{
+                {"source", request.hints.value("source", "people_analytics")},
+                {"table", request.hints.value("table", "workforce_groups")},
+                {"note", "one aggregate row per team, role, or tenure band"}},
+            "load_workforce_groups");
+        graph.add_node(
+            ir::StepKind::Clean, "Build aggregate attrition features",
+            nlohmann::json{
+                {"group_column", group_column},
+                {"group_size_column", group_size_column},
+                {"aggregate_only", true},
+                {"note", "retain cohort measures only; never publish employee rows"}},
+            "build_group_features");
+        graph.add_node(
+            ir::StepKind::Model, "Train aggregate attrition-risk model",
+            nlohmann::json{
+                {"model_kind", "gbdt"},
+                {"algo", "gradient_boosting"},
+                {"target", request.hints.value("label_column", "attrition_label")},
+                {"group_column", group_column},
+                {"group_size_column", group_size_column},
+                {"aggregate_only", true},
+                {"note", "estimate cohort risk from aggregate workforce measures"}},
+            "train_group_risk_model");
+        graph.add_node(
+            ir::StepKind::Index, "Index aggregate workforce risk",
+            nlohmann::json{{"kind", "feature"}, {"aggregate_only", true}},
+            "index_group_scores");
+        graph.add_node(
+            ir::StepKind::Serve, "Explain aggregate workforce drivers",
+            nlohmann::json{
+                {"aggregate_only", true},
+                {"note", "expose cohort risk and drivers to the people leader"}},
+            "serve_group_drivers");
+        graph.add_node(
+            ir::StepKind::Act, "Publish aggregate workforce risk",
+            nlohmann::json{
+                {"result_database", "workforce_results"},
+                {"result_table_prefix", "aggregate_attrition_risk_"},
+                {"entity_output_column", "group_key"},
+                {"score_output_column", "attrition_risk"},
+                {"group_column", group_column},
+                {"group_size_column", group_size_column},
+                {"aggregate_only", true},
+                {"note", "publish one risk row per protected cohort"}},
+            "publish_group_risk");
+        graph.add_edge("load_workforce_groups", "build_group_features");
+        graph.add_edge("build_group_features", "train_group_risk_model");
+        graph.add_edge("train_group_risk_model", "index_group_scores");
+        graph.add_edge("index_group_scores", "serve_group_drivers");
+        graph.add_edge("serve_group_drivers", "publish_group_risk");
+        return graph;
+    }
+
     if (request.solution == "S-3") {
         const int value_horizon_days =
             request.hints.value("value_horizon_days", 365);
@@ -538,7 +599,8 @@ Methodology make_m1_methodology() {
                                "classifier", "classification",
                                "regression", "score",
                                "tabular"};
-    methodology.solutions = {"S-1", "S-2", "S-3", "S-4", "S-10", "S-12"};
+    methodology.solutions = {
+        "S-1", "S-2", "S-3", "S-4", "S-10", "S-12", "B-2"};
     methodology.keywords = {
         "churn",    "retention",       "retain",     "attrition", "cancel",
         "renew",    "renewal",         "subscriber", "lapse",     "downgrade",

@@ -149,6 +149,17 @@ denial remains an A0 recommendation at every amount. Its three tiers each use
 a deterministic 10% holdout, with path-assignment and referral-task treatment
 cells measured on 45-day `referral_confirmed` outcomes.
 
+B-2 supplies a complete aggregate workforce-risk policy. Elevated/watch/
+baseline floors are 0.60/0.35/0.0 and select an A2 people-leader review, an A2
+aggregate report, or A0 no action. The optional organizational-intervention
+review is A1. Eligibility requires a cohort size of at least five, explicit
+people-leader authorization, passed fairness review, recorded legal approval,
+and no individual-level output. Restricted cohorts and individual-output rows
+are excluded. Every tier has a permanent 10% holdout; the treatment cell is
+`people_leader_review`, and the named 90-day outcome is
+`attrition_reduction`. The promotion condition remains catalogue metadata for
+go-to-market decisions and does not disable the executable module.
+
 The policy regression checks high/medium/low actions, above-cap A1 approval,
 within-cap discounts, missing/true exclusion evidence, and repeated monthly
 contacts. Existing exclusion, kill-switch, budget, versioning, replication and

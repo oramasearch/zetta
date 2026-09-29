@@ -2359,6 +2359,311 @@ CheckResult S11PropensityInterpretationCheck::evaluate(
         name(), "S-11 separates predictive ranking from causal uplift evidence");
 }
 
+namespace {
+
+const json* b2_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-2") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-2 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b2_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-2 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b2_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-2 Pipeline to validate"};
+}
+
+CheckResult b2_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b2_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+bool policy_has_minimum_group_size(const json& policy,
+                                   std::string_view field,
+                                   double minimum) {
+    const auto rules = policy.find("eligibility_rules");
+    if (rules == policy.end() || !rules->is_array()) {
+        return false;
+    }
+    return std::ranges::any_of(*rules, [&](const json& rule) {
+        return rule.is_object() &&
+               rule.value("field", std::string{}) == field &&
+               rule.value("operator", std::string{}) == "gte" &&
+               rule.contains("value") && rule.at("value").is_number() &&
+               rule.at("value").get<double>() >= minimum;
+    });
+}
+
+} // namespace
+
+CheckResult B2MinimumGroupSizeCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* aggregation = object_field(*profile, "aggregation");
+    const json* policy = object_field(*profile, "policy");
+    if (aggregation == nullptr || policy == nullptr) {
+        return b2_failure(
+            name(), "B-2 must bind aggregate output and policy settings");
+    }
+    const std::string group_size_column =
+        aggregation->value("group_size_column", std::string{});
+    const double minimum_group_size =
+        aggregation->value("minimum_group_size", 0.0);
+    if (group_size_column.empty() || minimum_group_size < 5.0 ||
+        !policy_has_minimum_group_size(
+            *policy, group_size_column, minimum_group_size)) {
+        return b2_failure(
+            name(), "B-2 requires k-anonymity of at least five on every output");
+    }
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!node || !node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        if (!node->attributes.value("aggregate_only", false) ||
+            node->attributes.value("minimum_group_size", 0.0) <
+                minimum_group_size ||
+            node->attributes.value("group_size_column", std::string{}) !=
+                group_size_column) {
+            return b2_failure(
+                name(), "B-2 methodology outputs must enforce the same minimum group size");
+        }
+    }
+    return b2_success(
+        name(), "every B-2 output enforces its configured minimum cohort size");
+}
+
+CheckResult B2AggregateOnlyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* aggregation = object_field(*profile, "aggregation");
+    if (aggregation == nullptr ||
+        !aggregation->value("aggregate_only", false) ||
+        aggregation->value("unit", std::string{}) != "group") {
+        return b2_failure(
+            name(), "B-2 may expose aggregate cohort rows only");
+    }
+    const std::string group_column =
+        aggregation->value("group_column", std::string{});
+    const std::string group_dimension =
+        normalize_type(
+            aggregation->value("group_dimension", std::string{}));
+    if (group_column.empty() ||
+        aggregation->value("entity_column", std::string{}) != group_column) {
+        return b2_failure(
+            name(), "B-2 modeling identity must be the protected cohort key");
+    }
+    if (group_dimension != "team" && group_dimension != "role" &&
+        group_dimension != "tenure_band") {
+        return b2_failure(
+            name(), "B-2 group dimension must be team, role, or tenure_band");
+    }
+    std::unordered_set<std::string> prohibited;
+    for (const json& column :
+         aggregation->value("prohibited_output_columns", json::array())) {
+        if (!column.is_string() || column.get_ref<const std::string&>().empty()) {
+            return b2_failure(
+                name(), "B-2 prohibited individual columns must be named");
+        }
+        prohibited.insert(
+            normalize_type(column.get_ref<const std::string&>()));
+    }
+    if (prohibited.empty()) {
+        return b2_failure(
+            name(), "B-2 must name the individual identifiers it refuses to publish");
+    }
+    for (const json& feature :
+         aggregation->value("feature_names", json::array())) {
+        if (!feature.is_string() ||
+            prohibited.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return b2_failure(
+                name(), "B-2 individual identifiers and scores may not become output features");
+        }
+    }
+    if (!has_methodology(graph, "M-1") || !has_methodology(graph, "M-7")) {
+        return b2_failure(
+            name(), "B-2 levels require both M-1 and M-7 callbacks");
+    }
+    bool has_group_risk_output = false;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!node || !node->attributes.contains("solution_stage") ||
+            !node->attributes.value("aggregate_only", false)) {
+            continue;
+        }
+        if (node->attributes.value("entity_output_column", std::string{}) ==
+                "group_key" &&
+            node->attributes.value("score_output_column", std::string{}) ==
+                "attrition_risk") {
+            has_group_risk_output = true;
+        }
+    }
+    if (!has_group_risk_output) {
+        return b2_failure(
+            name(), "B-2 M-1 must publish group_key and attrition_risk outputs");
+    }
+    return b2_success(
+        name(), "B-2 publishes cohort risk and never an individual score");
+}
+
+CheckResult B2FairnessReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* review = object_field(*profile, "fairness_review");
+    if (review == nullptr || !review->value("completed", false) ||
+        review->value("owner", std::string{}).empty() ||
+        review->value("protected_attributes_used_as_features", true)) {
+        return b2_failure(
+            name(), "B-2 requires an owned, completed fairness review before execution");
+    }
+    const auto attributes = review->find("protected_attributes");
+    const auto metrics = review->find("review_metrics");
+    if (attributes == review->end() || !attributes->is_array() ||
+        attributes->empty() || metrics == review->end() ||
+        !metrics->is_array() || metrics->empty()) {
+        return b2_failure(
+            name(), "B-2 fairness review must name protected cohorts and review metrics");
+    }
+    std::unordered_set<std::string> protected_attributes;
+    for (const json& attribute : *attributes) {
+        if (!attribute.is_string() ||
+            attribute.get_ref<const std::string&>().empty()) {
+            return b2_failure(
+                name(), "B-2 fairness review contains an unnamed protected cohort");
+        }
+        protected_attributes.insert(
+            normalize_type(attribute.get_ref<const std::string&>()));
+    }
+    const json* aggregation = object_field(*profile, "aggregation");
+    if (aggregation == nullptr) {
+        return b2_failure(name(), "B-2 fairness review requires aggregate features");
+    }
+    for (const json& feature :
+         aggregation->value("feature_names", json::array())) {
+        if (feature.is_string() &&
+            protected_attributes.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return b2_failure(
+                name(), "B-2 protected attributes may not be model features");
+        }
+    }
+    return b2_success(
+        name(), "B-2 records its aggregate cohort fairness review");
+}
+
+CheckResult B2ApprovalCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* approval = object_field(*profile, "approval");
+    if (approval == nullptr || !approval->value("approved", false) ||
+        approval->value("record_id", std::string{}).empty() ||
+        approval->value("approved_by", std::string{}).empty() ||
+        approval->value("approved_at", std::string{}).empty()) {
+        return b2_failure(
+            name(), "B-2 requires recorded legal or works-council approval before execution");
+    }
+    const std::string kind =
+        normalize_type(approval->value("kind", std::string{}));
+    if (kind != "legal" && kind != "works_council") {
+        return b2_failure(
+            name(), "B-2 approval kind must be legal or works_council");
+    }
+    return b2_success(
+        name(), "B-2 legal or works-council approval is recorded");
+}
+
+CheckResult B2PeopleLeaderOutputCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* output = object_field(*profile, "output");
+    if (output == nullptr ||
+        output->value("recipient_role", std::string{}) != "people_leader" ||
+        output->value("owner", std::string{}).empty() ||
+        output->value("individual_manager_delivery", true)) {
+        return b2_failure(
+            name(), "B-2 output must go only to the named people leader");
+    }
+    return b2_success(
+        name(), "B-2 routes aggregate evidence only to its people leader");
+}
+
 CheckResult S10LabelDelayCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
     bool applies = false;

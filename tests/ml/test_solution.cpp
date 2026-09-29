@@ -400,6 +400,92 @@ zetta::ir::ExecutionGraph bound_s8_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_b2_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("B-2");
+    if (solution == nullptr) {
+        return {};
+    }
+    const nlohmann::json sources = {
+        {"source", "datasets"},
+        {"table", "workforce_groups"},
+        {"M-1",
+         {{"group_column", "entity_id"},
+          {"group_size_column", "group_size"},
+          {"label_column", "attrition_label"}}},
+        {"M-7",
+         {{"mode", "tabular"},
+          {"entity_column", "entity_id"},
+          {"feature_columns", {"engagement", "workload"}},
+          {"contamination", 0.1}}}};
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, sources);
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00Z";
+    }
+    for (const auto& node : composed.graph.nodes()) {
+        if (!node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        if (node->kind == zetta::ir::StepKind::Act) {
+            node->attributes["aggregate_only"] = true;
+            node->attributes["group_column"] = "entity_id";
+            node->attributes["group_size_column"] = "group_size";
+            node->attributes["minimum_group_size"] = 5.0;
+        }
+        if (node->kind == zetta::ir::StepKind::Model) {
+            node->attributes["aggregate_only"] = true;
+            node->attributes["entity_column"] = "entity_id";
+            if (node->attributes.value("methodology", std::string{}) ==
+                "M-1") {
+                node->attributes["group_column"] = "entity_id";
+            }
+        }
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = {
+        {"delivery", {{"owner", "chief-people-officer"}}}};
+    manifest->attributes["b2_correctness"] = {
+        {"aggregation",
+         {{"unit", "group"},
+          {"aggregate_only", true},
+          {"group_dimension", "team"},
+          {"group_column", "entity_id"},
+          {"entity_column", "entity_id"},
+          {"group_size_column", "group_size"},
+          {"minimum_group_size", 5.0},
+          {"prohibited_output_columns",
+           {"employee_id", "person_id", "individual_score"}},
+          {"feature_names", {"engagement", "workload"}}}},
+        {"policy", solution->templates.policy},
+        {"fairness_review",
+         {{"completed", true},
+          {"owner", "workforce-equity-council"},
+          {"protected_attributes", {"race", "gender", "age"}},
+          {"protected_attributes_used_as_features", false},
+          {"review_metrics",
+           {"selection_rate_ratio", "calibration_by_cohort"}}}},
+        {"approval",
+         {{"approved", true},
+          {"kind", "works_council"},
+          {"record_id", "WC-2026-17"},
+          {"approved_by", "works-council-chair"},
+          {"approved_at", "2026-08-15T00:00:00Z"}}},
+        {"output",
+         {{"recipient_role", "people_leader"},
+          {"owner", "chief-people-officer"},
+          {"individual_manager_delivery", false}}}};
+    return composed.graph;
+}
+
 zetta::ir::ExecutionGraph bound_s9_graph(int level = 1) {
     const zetta::ml::Solution* solution = zetta::ml::find_solution("S-9");
     if (solution == nullptr) {
@@ -591,6 +677,15 @@ void expect_s10_failure(const zetta::ir::ExecutionGraph& graph,
         << check->reason;
 }
 
+void expect_b2_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
 TEST(SolutionRegistry, FraudDecisioningEntryCarriesTheCompleteContract) {
     const zetta::ml::Solution* fraud =
         zetta::ml::find_solution("S-10");
@@ -748,7 +843,96 @@ TEST(SolutionRegistry, NextBestActionEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
 }
 
-TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
+TEST(SolutionRegistry, EmployeeAttritionCarriesTheCompleteContract) {
+    const zetta::ml::Solution* attrition =
+        zetta::ml::find_solution("B-2");
+    ASSERT_NE(attrition, nullptr);
+    EXPECT_TRUE(attrition->runnable);
+    EXPECT_EQ(attrition->status, "catalogue");
+    EXPECT_EQ(attrition->issue,
+              "https://github.com/oramasearch/zetta/issues/1176");
+    EXPECT_FALSE(attrition->promotion_condition.empty());
+    EXPECT_FALSE(attrition->templates.minimal);
+    EXPECT_EQ(attrition->composition.size(), 2u);
+    EXPECT_EQ(attrition->templates.measurement.design, "holdout");
+    EXPECT_EQ(attrition->templates.measurement.outcome,
+              "attrition_reduction");
+    EXPECT_EQ(attrition->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"people_leader_review"}));
+    ASSERT_EQ(attrition->templates.guardrails.size(), 5u);
+    EXPECT_EQ(attrition->templates.guardrails.front().metric,
+              "small_group_outputs");
+    EXPECT_EQ(attrition->templates.guardrails.back().direction,
+              "minimum");
+
+    const nlohmann::json policy = attrition->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 3u);
+    EXPECT_EQ(policy.at("contact_cap"), 4);
+    EXPECT_EQ(policy.at("actions")
+                  .at("organizational_intervention_review")
+                  .at("autonomy"),
+              "A1");
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 5u);
+}
+
+TEST(SolutionRegistry, B2CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_b2_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto group_size = bound_b2_graph();
+    group_size.find_node("solution_manifest")
+        ->attributes["b2_correctness"]["aggregation"]
+                   ["minimum_group_size"] = 4.0;
+    expect_b2_failure(group_size, "b2_minimum_group_size");
+
+    auto aggregate = bound_b2_graph();
+    aggregate.find_node("solution_manifest")
+        ->attributes["b2_correctness"]["aggregation"]
+                   ["aggregate_only"] = false;
+    expect_b2_failure(aggregate, "b2_aggregate_only");
+
+    auto individual_feature = bound_b2_graph();
+    individual_feature.find_node("solution_manifest")
+        ->attributes["b2_correctness"]["aggregation"]["feature_names"]
+        .push_back("employee_id");
+    expect_b2_failure(individual_feature, "b2_aggregate_only");
+
+    auto fairness = bound_b2_graph();
+    fairness.find_node("solution_manifest")
+        ->attributes["b2_correctness"]["fairness_review"]["completed"] =
+        false;
+    expect_b2_failure(fairness, "b2_fairness_review");
+
+    auto approval = bound_b2_graph();
+    approval.find_node("solution_manifest")
+        ->attributes["b2_correctness"]["approval"]["approved"] = false;
+    expect_b2_failure(approval, "b2_approval");
+
+    auto recipient = bound_b2_graph();
+    recipient.find_node("solution_manifest")
+        ->attributes["b2_correctness"]["output"]["recipient_role"] =
+        "line_manager";
+    expect_b2_failure(recipient, "b2_people_leader_output");
+}
+
+TEST(SolutionRegistry, B2EveryLevelBuildsThroughRegisteredMethodologies) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_b2_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        EXPECT_EQ(manifest->attributes.at("methodologies"),
+                  (nlohmann::json{"M-1", "M-7"}));
+        EXPECT_FALSE(zetta::ml::solution_stage_graph(graph, 1).empty());
+        EXPECT_FALSE(zetta::ml::solution_stage_graph(graph, 2).empty());
+    }
+}
+
+TEST(SolutionRegistry, ListsThirteenCatalogueModulesAndSevenSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
     std::size_t catalogue = 0;
@@ -782,8 +966,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_EQ(solution.capability_levels.size(), 4u);
         }
     }
-    EXPECT_EQ(catalogue, 12u);
-    EXPECT_EQ(sketches, 8u);
+    EXPECT_EQ(catalogue, 13u);
+    EXPECT_EQ(sketches, 7u);
 }
 
 TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
@@ -800,6 +984,7 @@ TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
         {"S-10", {"M-1", "M-2", "M-12", "M-5"}},
         {"S-11", {"M-8", "M-1", "M-6", "M-2", "M-15"}},
         {"S-12", {"M-1", "M-2", "M-11", "M-3"}},
+        {"B-2", {"M-1", "M-7"}},
     };
     for (const auto& [solution_id, methodology_ids] : expected) {
         const zetta::ml::Solution* solution =

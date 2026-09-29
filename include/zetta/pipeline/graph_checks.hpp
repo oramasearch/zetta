@@ -440,6 +440,44 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-2 employee-attrition adaptations (#1176). Every surfaced row is a
+// protected cohort, review and approval evidence is explicit, and delivery is
+// restricted to the named people leader.
+class B2MinimumGroupSizeCheck final : public Check {
+public:
+    std::string name() const override { return "b2_minimum_group_size"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B2AggregateOnlyCheck final : public Check {
+public:
+    std::string name() const override { return "b2_aggregate_only"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B2FairnessReviewCheck final : public Check {
+public:
+    std::string name() const override { return "b2_fairness_review"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B2ApprovalCheck final : public Check {
+public:
+    std::string name() const override { return "b2_approval"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B2PeopleLeaderOutputCheck final : public Check {
+public:
+    std::string name() const override { return "b2_people_leader_output"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-10 validates label maturity, selection bias, and request-time parity.
 class S10LabelDelayCheck final : public Check {
 public:

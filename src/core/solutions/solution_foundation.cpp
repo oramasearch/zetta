@@ -800,6 +800,95 @@ void bind_s9_correctness(ir::ExecutionGraph& graph,
     }
 }
 
+void bind_b2_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-2") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const std::string group_column =
+        settings.at("dataset").value("entity_column", std::string{});
+    const std::string group_size_column =
+        common.value("group_size_column", "group_size");
+    const double minimum_group_size =
+        common.value("minimum_group_size", 5.0);
+    const Json default_prohibited_columns = {
+        "employee_id", "person_id", "worker_id", "individual_score",
+        "employee_score"};
+    const Json default_protected_attributes = {
+        "race", "ethnicity", "sex", "gender", "disability", "age"};
+    const Json default_review_metrics = {
+        "selection_rate_ratio", "calibration_by_cohort"};
+    Json profile = {
+        {"aggregation",
+         {{"unit", "group"},
+          {"aggregate_only", true},
+          {"group_dimension", common.value("group_dimension", "team")},
+          {"group_column", group_column},
+          {"entity_column", group_column},
+          {"group_size_column", group_size_column},
+          {"minimum_group_size", minimum_group_size},
+          {"prohibited_output_columns",
+           common.value("prohibited_output_columns",
+                        default_prohibited_columns)},
+          {"feature_names",
+           settings.at("dataset").value("feature_columns", Json::array())}}},
+        {"policy", solution.templates.policy},
+        {"fairness_review",
+         {{"completed", common.value("fairness_review_completed", false)},
+          {"owner", common.value("fairness_review_owner", std::string{})},
+          {"protected_attributes",
+           common.value("protected_attributes",
+                        default_protected_attributes)},
+          {"protected_attributes_used_as_features",
+           common.value("protected_attributes_used_as_features", false)},
+          {"review_metrics",
+           common.value("fairness_review_metrics",
+                        default_review_metrics)}}},
+        {"approval",
+         {{"approved", common.value("approval_recorded", false)},
+          {"kind", common.value("approval_kind", std::string{})},
+          {"record_id",
+           common.value("approval_record_id", std::string{})},
+          {"approved_by", common.value("approved_by", std::string{})},
+          {"approved_at", common.value("approved_at", std::string{})}}},
+        {"output",
+         {{"recipient_role",
+           common.value("recipient_role", "people_leader")},
+          {"owner", settings.at("delivery").value("owner", std::string{})},
+          {"individual_manager_delivery",
+           common.value("individual_manager_delivery", false)}}}};
+    manifest->attributes["b2_correctness"] = std::move(profile);
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (!node || !node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        if (node->kind == ir::StepKind::Act) {
+            node->attributes["aggregate_only"] = true;
+            node->attributes["group_column"] = group_column;
+            node->attributes["group_size_column"] = group_size_column;
+            node->attributes["minimum_group_size"] = minimum_group_size;
+        }
+        if (node->kind == ir::StepKind::Model) {
+            node->attributes["aggregate_only"] = true;
+            node->attributes["entity_column"] = group_column;
+            if (node->attributes.value("methodology", std::string{}) ==
+                "M-1") {
+                node->attributes["group_column"] = group_column;
+            }
+        }
+    }
+}
+
 ApiResult configure_readout(Node& node, const pipeline::Project& project,
                             const pipeline::ProjectGraph& graph,
                             const Json& binding, const std::string& actor) {
@@ -886,6 +975,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["s8_correctness"] = {{"type", "object"}};
     schema["properties"]["s9_correctness"] = {{"type", "object"}};
     schema["properties"]["s10_correctness"] = {{"type", "object"}};
+    schema["properties"]["b2_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -939,6 +1029,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_s9_correctness(composed.graph, settings, input.at("sources"));
     bind_s10_correctness(composed.graph, *snapshot, settings,
                          input.at("sources"));
+    bind_b2_correctness(composed.graph, *solution, settings,
+                        input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
     const pipeline::ValidationReport correctness =
@@ -985,6 +1077,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
             {"entity_column", "entity"},
             {"score_column", "policy_score"},
             {"output_name", "recommendation table"}};
+    } else if (!binding.contains("decision_source") && solution->id == "B-2") {
+        binding["decision_source"] = {
+            {"methodology", "M-1"},
+            {"entity_column", "group_key"},
+            {"score_column", "attrition_risk"},
+            {"output_name", "Publish aggregate workforce risk"}};
     } else if (!binding.contains("decision_source")) {
         binding["decision_source"] = {{"methodology", "M-1"},
                                        {"entity_column", "account"}, {"score_column", "risk"}};
@@ -1062,6 +1160,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     } else if (solution->id == "S-10") {
         binding["s10_correctness"] = composed.graph.find_node("solution_manifest")
                                          ->attributes.at("s10_correctness");
+    } else if (solution->id == "B-2") {
+        binding["b2_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b2_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -1118,6 +1220,37 @@ ApiResult prepare_solution_snapshot(Node& node, const Json& binding) {
         const auto row = snapshot.table->store().at(index);
         if (!row || row->at("as_of") != spec->as_of) {
             return ApiResult::failure("invalid_input", "solution snapshot table must contain exactly one cutoff");
+        }
+    }
+    if (binding.value("solution", std::string{}) == "B-2") {
+        const Json& aggregation =
+            binding.at("b2_correctness").at("aggregation");
+        const std::string group_size_column =
+            aggregation.at("group_size_column");
+        const double minimum_group_size =
+            aggregation.at("minimum_group_size");
+        const Json prohibited =
+            aggregation.at("prohibited_output_columns");
+        for (std::size_t index = 0;
+             index < snapshot.table->store().size();
+             ++index) {
+            const auto row = snapshot.table->store().at(index);
+            if (!row || !row->contains(group_size_column) ||
+                !row->at(group_size_column).is_number() ||
+                row->at(group_size_column).get<double>() <
+                    minimum_group_size) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "B-2 refuses snapshots containing a cohort below the minimum group size");
+            }
+            for (const Json& field : prohibited) {
+                if (field.is_string() &&
+                    row->contains(field.get_ref<const std::string&>())) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "B-2 refuses snapshots containing individual identifiers or scores");
+                }
+            }
         }
     }
     if (!snapshot.table->partition_manifest() || snapshot.materialized_rows != 0) {
@@ -1603,6 +1736,30 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
                 spec.payload[field] = entity.at(field);
             }
         }
+    } else if (binding.value("solution", std::string{}) == "B-2") {
+        spec.owner = binding.at("b2_correctness")
+                         .at("output")
+                         .at("owner")
+                         .get<std::string>();
+        spec.payload["recipient_role"] = "people_leader";
+        spec.payload["aggregate_only"] = true;
+        spec.payload["group_key"] = decision.entity_id;
+        spec.payload["group_dimension"] =
+            binding.at("b2_correctness")
+                .at("aggregation")
+                .at("group_dimension");
+        spec.payload["group_size"] =
+            entity.at(binding.at("b2_correctness")
+                          .at("aggregation")
+                          .at("group_size_column")
+                          .get<std::string>());
+        spec.payload["attrition_risk"] = decision.score;
+        spec.payload["dominant_driver"] =
+            entity.value("dominant_driver", std::string{});
+        spec.payload["approval_record_id"] =
+            binding.at("b2_correctness")
+                .at("approval")
+                .at("record_id");
     }
     for (const std::string field : {
              "series", "timestamp", "point_forecast", "lower", "upper",
@@ -1684,6 +1841,77 @@ std::string validate_s12_runtime_policy(const Json& binding,
     if (!s12_required_rule(config, "document_confidence_clear") ||
         !s12_required_rule(config, "fairness_review_passed")) {
         return "S-12 policy must require document confidence and fairness review evidence";
+    }
+    return {};
+}
+
+bool b2_required_rule(const Json& config, const std::string& field,
+                      const std::string& operation, const Json& expected) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == operation &&
+            rule.value("value", Json{}) == expected) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool b2_minimum_rule(const Json& config, const std::string& field,
+                     double minimum) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == "gte" &&
+            rule.contains("value") && rule.at("value").is_number() &&
+            rule.at("value").get<double>() >= minimum) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string validate_b2_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-2") {
+        return {};
+    }
+    const Json& aggregation =
+        binding.at("b2_correctness").at("aggregation");
+    const std::string group_size_column =
+        aggregation.at("group_size_column");
+    const double minimum_group_size =
+        aggregation.at("minimum_group_size");
+    if (!b2_minimum_rule(config, group_size_column, minimum_group_size)) {
+        return "B-2 policy must retain its minimum group-size rule";
+    }
+    for (const std::string field : {
+             "people_leader_authorized", "fairness_review_passed",
+             "legal_approval_recorded"}) {
+        if (!b2_required_rule(config, field, "eq", true)) {
+            return "B-2 policy must retain people-leader, fairness, and approval gates";
+        }
+    }
+    if (!b2_required_rule(config, "individual_level_output", "eq", false)) {
+        return "B-2 policy must prohibit individual-level output";
+    }
+    for (const auto& [action, settings] :
+         config.value("actions", Json::object()).items()) {
+        if (!settings.is_object()) {
+            return "B-2 policy actions must declare their autonomy";
+        }
+        const std::string autonomy =
+            settings.value("autonomy", std::string{});
+        if (action == "no_action") {
+            if (autonomy != "A0") {
+                return "B-2 no-action path must remain A0";
+            }
+        } else if (autonomy != "A1" && autonomy != "A2") {
+            return "B-2 actions must remain review or people-leader workflows";
+        }
     }
     return {};
 }
@@ -1919,6 +2147,11 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         !policy_error.empty()) {
         return ApiResult::failure("invalid_input", policy_error);
     }
+    if (const std::string policy_error =
+            validate_b2_runtime_policy(binding, policy->current()->config);
+        !policy_error.empty()) {
+        return ApiResult::failure("invalid_input", policy_error);
+    }
     double complaints = 0.0;
     double unsubscribes = 0.0;
     double outbound_consent_violations = 0.0;
@@ -2118,6 +2351,15 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                  entity.value("selection_mode", std::string{})},
                 {"selected_action",
                  entity.value("selected_action", std::string{})}};
+        } else if (binding.value("solution", std::string{}) == "B-2") {
+            entity["decision_cell"] = {
+                {"risk", decision->tier},
+                {"group_key", entity.at("entity_id")},
+                {"group_dimension",
+                 binding.at("b2_correctness")
+                     .at("aggregation")
+                     .at("group_dimension")},
+                {"driver", driver}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -2139,6 +2381,19 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 entity.at("estimated_uplift");
             decision_row["uplift_recommended"] =
                 entity.at("uplift_recommended");
+        }
+        if (binding.value("solution", std::string{}) == "B-2") {
+            decision_row["group_key"] = entity.at("entity_id");
+            decision_row["group_dimension"] =
+                binding.at("b2_correctness")
+                    .at("aggregation")
+                    .at("group_dimension");
+            decision_row["group_size"] =
+                entity.at(binding.at("b2_correctness")
+                              .at("aggregation")
+                              .at("group_size_column")
+                              .get<std::string>());
+            decision_row["aggregate_only"] = true;
         }
         decisions->add_row(std::move(decision_row));
         if (decision->actionable) {
@@ -2544,6 +2799,13 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                           static_cast<double>(operational_decisions));
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-2") {
+            monitor->observe_guardrail("small_group_outputs", 0.0);
+            monitor->observe_guardrail("individual_score_outputs", 0.0);
+            monitor->observe_guardrail("fairness_review_failures", 0.0);
+            monitor->observe_guardrail("approval_gate_failures", 0.0);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
         } else {
             monitor->observe_guardrail("complaints",
                                        complaints / entities.size());
@@ -2557,11 +2819,14 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::string publication_id;
     const std::string solution_id =
         binding.value("solution", std::string{});
-    if ((solution_id == "S-1" || solution_id == "S-3" || solution_id == "S-7") &&
+    if ((solution_id == "S-1" || solution_id == "S-3" ||
+         solution_id == "S-7" || solution_id == "B-2") &&
         binding.at("delivery").value("kind", "webhook") == "webhook") {
         Json drivers = Json::array();
         for (const auto& [driver, count] : driver_counts) {
-            drivers.push_back({{"driver", driver}, {"accounts", count}});
+            drivers.push_back(
+                {{"driver", driver},
+                 {solution_id == "B-2" ? "groups" : "accounts", count}});
         }
         ReportPublicationSpec report;
         report.run_id = run_id;
@@ -2569,6 +2834,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                            ? "Customer lifetime value allocation report"
                            : solution_id == "S-7"
                                ? "KPI anomaly and candidate-driver report"
+                           : solution_id == "B-2"
+                               ? "Aggregate workforce attrition risk report"
                                : "Churn and retention driver report";
         report.driver_report = {{"drivers", std::move(drivers)}};
         if (solution_id == "S-3") {
@@ -2586,6 +2853,21 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 binding.at("s7_correctness")
                     .at("driver_attribution")
                     .at("caveat");
+        } else if (solution_id == "B-2") {
+            report.driver_report["aggregate_only"] = true;
+            report.driver_report["group_dimension"] =
+                binding.at("b2_correctness")
+                    .at("aggregation")
+                    .at("group_dimension");
+            report.driver_report["minimum_group_size"] =
+                binding.at("b2_correctness")
+                    .at("aggregation")
+                    .at("minimum_group_size");
+            report.driver_report["recipient_role"] = "people_leader";
+            report.driver_report["approval_record_id"] =
+                binding.at("b2_correctness")
+                    .at("approval")
+                    .at("record_id");
         }
         report.decision_log = std::move(decision_log);
         report.connector.kind = ActionConnectorKind::Webhook;
@@ -2595,6 +2877,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             (solution_id == "S-3" ? "/allocation-report"
                                    : solution_id == "S-7"
                                        ? "/decision-forum-report"
+                                   : solution_id == "B-2"
+                                       ? "/aggregate-workforce-report"
                                        : "/driver-report");
         report.model_version = model_version;
         report.policy_version =
