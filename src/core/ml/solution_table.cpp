@@ -83,6 +83,7 @@ Solution band_a(
                            : solution.id == "S-11" ? 1120
                            : solution.id == "S-12" ? 1121
                            : solution.id == "B-1" ? 1175
+                           : solution.id == "B-2" ? 1176
                                                    : 1102);
     return solution;
 }
@@ -537,14 +538,36 @@ const std::vector<Solution>& solutions() {
                    "add controlled price experiments",
                    "add approved price publication inside authority bands"),
             "Promote when a target account has identifiable price variation or permits controlled price experiments."),
-        sketch("B-2", "Employee Attrition (aggregate-first)",
-               "Explain aggregate workforce risks without flagging individuals to managers.",
-               "Support organizational interventions with small-group and proxy protections.",
-               {{"M-1", "primary", 1}, {"M-7", "foundation", 1}},
-               {{"group", true, "protected organizational cohort"},
-                {"label", true, "aggregate attrition outcome"},
-                {"time", true, "workforce snapshot and outcome window"}},
-               "Promote with a sufficiently large workforce, a named people leader, and legal or works-council approval."),
+        band_a(
+            "B-2", "Employee Attrition (aggregate-first)",
+            "Explain aggregate workforce risks without flagging individuals to managers.",
+            "Support organizational interventions with small-group and proxy protections.",
+            {{"M-1", "primary", 1}, {"M-7", "foundation", 1}},
+            {"M-1", "M-7"},
+            {"people-leader aggregate risk report",
+             "approval-gated organizational intervention review"},
+            {"L1 people-leader report", "batch organizational review"},
+            {{"publish aggregate workforce risk", "A2"},
+             {"organizational intervention", "A1"},
+             {"individual employment decision", "A0"},
+             {"aggregate threshold tuning inside approved bounds", "A3"}},
+            {{"group", true, "team, role, or tenure band with a stable aggregate key"},
+             {"group_size", true, "cohort count proving the configured minimum size"},
+             {"label", true, "aggregate attrition outcome"},
+             {"time", true, "workforce snapshot and outcome window"},
+             {"feature", true, "aggregate workforce measures and drivers"},
+             {"owner", true, "authorized people leader receiving aggregate output"},
+             {"approval", true, "recorded legal or works-council approval"}},
+            "Aggregate risk tiers with minimum group size, people-leader-only delivery, review approvals, report caps, and a kill switch.",
+            "Permanent group holdout measuring aggregate attrition change over a fixed outcome window.",
+            {"small-group outputs", "individual-score outputs",
+             "fairness-review failures", "approval failures",
+             "action-execution rate"},
+            levels("aggregate team risk and drivers",
+                   "add role-band comparison",
+                   "add tenure-band anomaly context",
+                   "add approval-gated intervention review"),
+            "Promote with a sufficiently large workforce, a named people leader, and legal or works-council approval."),
         sketch("B-3", "Ticket Triage & Service Automation",
                "Route service work with explicit abstention and measured resolution quality.",
                "Reduce misroutes and handling effort without mistaking containment for resolution.",

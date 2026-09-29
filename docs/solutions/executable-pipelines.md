@@ -62,6 +62,10 @@ S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
 S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
+B-2 binds M-1's real `Publish aggregate workforce risk` output in
+`workforce_results`, using `group_key` and `attrition_risk`. The input entity is
+already a protected cohort, and the runtime refuses individual identifiers,
+scores, or a cohort below the configured minimum before any methodology runs.
 S-5 defaults to the real M-4 `forecast` output, with `series` as the
 entity and relative interval width in `exception_score` as the policy score.
 S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums
@@ -229,6 +233,15 @@ S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
 tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
+
+`SolutionJourney.EmployeeAttritionPublishesAggregateRiskAndRecoversPlantedEffect`
+builds B-2 from a partitioned synthetic cohort table, runs M-1 and M-7, reads
+the real `group_key`/`attrition_risk` table, delivers only aggregate evidence to
+the named people leader, and verifies every output meets k-anonymity. It proves
+that the future cohort and protected holdouts never reach the connector, no
+individual field reaches a decision or payload, all five guardrails are
+observed, and the readout recovers the planted aggregate effect inside its
+confidence interval.
 
 `SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
 S-5 over partitioned synthetic demand, reads the native M-4 forecast table,

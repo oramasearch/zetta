@@ -102,6 +102,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   fairness review, protected holdouts, and measured referral outcomes are
   covered by [solutions/S-12.md](solutions/S-12.md).
 
+- **B-2 Employee Attrition (aggregate-first) (#1176)** — runnable at levels
+  1–4 with M-1/M-7 aggregate cohort scoring, a minimum group size of five,
+  completed fairness review, recorded legal or works-council approval,
+  people-leader-only output, a protected holdout, and measured aggregate
+  attrition outcomes. See [solutions/B-2.md](solutions/B-2.md).
+
 - **S-6 Replenishment & Inventory Action (#1115)** — runnable at levels 1–4
   with M-4 lead-time forecasting, M-16 constrained planning, optional M-5
   time-to-stockout, complete policy and holdout defaults, bounded ERP release,

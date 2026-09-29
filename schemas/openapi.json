@@ -18910,7 +18910,7 @@
     },
     "/v1/list_solutions": {
       "get": {
-        "description": "Read all twelve catalogue solutions and eight Band-B sketches, including composition, data roles, governance, capability levels, and runnable status. No side effects. Requires api:query.",
+        "description": "Read all thirteen catalogue solutions and seven Band-B sketches, including composition, data roles, governance, capability levels, and runnable status. No side effects. Requires api:query.",
         "operationId": "list_solutions",
         "parameters": [
           {

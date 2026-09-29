@@ -276,6 +276,64 @@ void land_retention_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_employee_attrition_data(Node& node) {
+    const auto database = node.create_database("people_analytics");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("workforce_groups");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 180; ++index) {
+        const double engagement =
+            0.25 + static_cast<double>(index % 13) / 20.0;
+        const double workload =
+            0.3 + static_cast<double>((index * 7) % 17) / 18.0;
+        const double tenure_mix =
+            0.2 + static_cast<double>((index * 3) % 11) / 15.0;
+        const bool attrition =
+            workload + tenure_mix - engagement +
+                static_cast<double>(index % 5) * 0.03 >
+            0.75;
+        table->add_row(
+            {{"group_key", index + 1},
+             {"record_id", index + 1},
+             {"source", "aggregate-fixture"},
+             {"name", "Workforce group " + std::to_string(index + 1)},
+             {"attrition_label", attrition ? 1 : 0},
+             {"engagement", engagement},
+             {"workload", workload},
+             {"tenure_mix", tenure_mix},
+             {"group_size", 12 + index % 19},
+             {"feature_time", static_cast<double>(index)},
+             {"observed_at", "2026-08-01T00:00:00.000Z"},
+             {"people_leader_authorized", true},
+             {"fairness_review_passed", true},
+             {"legal_approval_recorded", true},
+             {"individual_level_output", false},
+             {"restricted_cohort", false}});
+    }
+    table->add_row(
+        {{"group_key", 9999},
+         {"record_id", 9999},
+         {"source", "aggregate-fixture"},
+         {"name", "Future workforce group"},
+         {"attrition_label", 1},
+         {"engagement", 0.1},
+         {"workload", 0.9},
+         {"tenure_mix", 0.8},
+         {"group_size", 20},
+         {"feature_time", 180.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"people_leader_authorized", true},
+         {"fairness_review_passed", true},
+         {"legal_approval_recorded", true},
+         {"individual_level_output", false},
+         {"restricted_cohort", false}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 void land_demand_forecast_data(Node& node) {
     const auto database = node.create_database("demand");
     ASSERT_TRUE(database);
@@ -2305,6 +2363,31 @@ nlohmann::json retention_configuration() {
         {"roi_model", {{"value_per_outcome", 100.0}, {"investment", 200.0}, {"currency", "USD"}}}};
 }
 
+nlohmann::json employee_attrition_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "people_analytics"},
+          {"source_table", "workforce_groups"},
+          {"target_table", "employee_attrition_snapshot"},
+          {"entity_column", "group_key"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "attrition_label"},
+          {"time_column", "feature_time"},
+          {"as_of", 179.0},
+          {"feature_columns", {"engagement", "workload", "tenure_mix"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://people.example.test/workforce-risk"},
+          {"owner", "chief-people-officer"}}},
+        {"roi_model",
+         {{"value_per_outcome", 500.0},
+          {"investment", 1000.0},
+          {"currency", "USD"}}}};
+}
+
 nlohmann::json lead_scoring_configuration() {
     return {
         {"snapshot",
@@ -2485,6 +2568,67 @@ journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
                                    estimate.at("confidence_interval").at("lower").template get<double>() <= 0.2 &&
                                    estimate.at("confidence_interval").at("upper").template get<double>() >= 0.2;
                         })}}});
+    return outcomes;
+}
+
+journey::Journey planted_employee_attrition_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"employee-attrition-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response =
+            0.2 + 0.05 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.15);
+        outcomes.steps.push_back(
+            {"record aggregate attrition outcome",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "attrition_reduction"},
+              {"value", response},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured aggregate attrition effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted aggregate attrition effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.15) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.15 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.15;
+                  })}}});
     return outcomes;
 }
 
@@ -3112,6 +3256,237 @@ journey::Journey planted_pricing_outcomes(
                                      .template get<double>() >= 0.40;
                   })}}});
     return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       EmployeeAttritionPublishesAggregateRiskAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_employee_attrition_data(node);
+    journey::Journey flow{"employee-attrition-solution", {}};
+    flow.steps = {
+        {"read B-2 executable defaults",
+         "get_solution",
+         {{"solution", "B-2"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals(
+                  "/solution/measurement/outcome/name",
+                  "attrition_reduction")}}},
+        {"create employee attrition project",
+         "create_project",
+         {{"name", "employee attrition"}}},
+        {"create aggregate employee attrition Pipeline",
+         "create_solution",
+         {{"project", "employee attrition"},
+          {"solution", "B-2"},
+          {"level", 1},
+          {"sources",
+           {{"source", "people_analytics"},
+            {"table", "workforce_groups"},
+            {"M-1",
+             {{"group_column", "entity_id"},
+              {"group_size_column", "group_size"},
+              {"label_column", "attrition_label"}}},
+            {"M-7",
+             {{"mode", "tabular"},
+              {"entity_column", "entity_id"},
+              {"label_column", "attrition_label"},
+              {"feature_columns",
+               {"engagement", "workload", "tenure_mix"}},
+              {"contamination", 0.1}}},
+            {"correctness",
+             {{"group_dimension", "team"},
+              {"group_size_column", "group_size"},
+              {"minimum_group_size", 5.0},
+              {"fairness_review_completed", true},
+              {"fairness_review_owner", "workforce-equity-council"},
+              {"protected_attributes", {"race", "gender", "age"}},
+              {"fairness_review_metrics",
+               {"selection_rate_ratio", "calibration_by_cohort"}},
+              {"approval_recorded", true},
+              {"approval_kind", "works_council"},
+              {"approval_record_id", "WC-2026-17"},
+              {"approved_by", "works-council-chair"},
+              {"approved_at", "2026-08-15T00:00:00Z"},
+              {"recipient_role", "people_leader"},
+              {"individual_manager_delivery", false}}}}},
+          {"foundation", employee_attrition_configuration()}},
+         {.checks = {
+              journey::equals("/preview", false),
+              journey::size_equals("/methodologies", 2),
+              journey::size_equals("/missing_components", 0)}},
+         {{"attrition_graph", "/graph"},
+          {"attrition_experiment", "/experiment_id"}}},
+        {"run aggregate employee attrition Pipeline",
+         "run_solution",
+         {{"project", "employee attrition"},
+          {"graph", "$attrition_graph"},
+          {"delivery_token", "aggregate-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"attrition_run", "/run_id"}}},
+        {"read completed employee attrition Run",
+         "get_run",
+         {{"run_id", "$attrition_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 8)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected workforce assignments",
+         "get_experiment",
+         {{"experiment", "$attrition_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read workforce action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const journey::JourneyReport report =
+        journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("employee attrition");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-2 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish aggregate workforce risk");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "group_key");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "attrition_risk");
+    EXPECT_EQ(binding.at("b2_correctness")
+                  .at("approval")
+                  .at("record_id"),
+              "WC-2026-17");
+    EXPECT_EQ(graph->record().dump().find("aggregate-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_groups = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_groups;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_groups, 0u);
+
+    std::size_t aggregate_reports = 0;
+    std::size_t aggregate_tasks = 0;
+    for (const auto& request : delivery.requests) {
+        const std::string serialized = request.dump();
+        EXPECT_EQ(serialized.find("employee_id"), std::string::npos);
+        EXPECT_EQ(serialized.find("person_id"), std::string::npos);
+        EXPECT_EQ(serialized.find("worker_id"), std::string::npos);
+        EXPECT_EQ(serialized.find("individual_score"), std::string::npos);
+        if (request.at("action") == "publish_driver_report") {
+            ++aggregate_reports;
+            const auto& driver_report =
+                request.at("payload").at("driver_report");
+            EXPECT_EQ(driver_report.at("aggregate_only"), true);
+            EXPECT_EQ(driver_report.at("recipient_role"), "people_leader");
+            EXPECT_EQ(driver_report.at("minimum_group_size"), 5.0);
+            continue;
+        }
+        ++aggregate_tasks;
+        const auto& payload = request.at("payload");
+        EXPECT_EQ(payload.at("aggregate_only"), true);
+        EXPECT_EQ(payload.at("recipient_role"), "people_leader");
+        EXPECT_GE(payload.at("group_size").get<double>(), 5.0);
+        EXPECT_TRUE(payload.contains("group_key"));
+        EXPECT_TRUE(payload.contains("attrition_risk"));
+        EXPECT_EQ(request.at("owner"), "chief-people-officer");
+        const auto decision =
+            policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+    EXPECT_EQ(aggregate_reports, 1u);
+    EXPECT_GT(aggregate_tasks, 0u);
+
+    const auto workforce_results = node.find_database("workforce_results");
+    ASSERT_TRUE(workforce_results);
+    ASSERT_EQ(workforce_results->tables().size(), 1u);
+    const ApiResult aggregate_scores = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM workforce_results." +
+              workforce_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(aggregate_scores.ok) << aggregate_scores.error.message;
+    ASSERT_EQ(aggregate_scores.value.at("rows").size(), 180u);
+    for (const auto& row : aggregate_scores.value.at("rows")) {
+        EXPECT_TRUE(row.contains("group_key"));
+        EXPECT_TRUE(row.contains("attrition_risk"));
+        EXPECT_FALSE(row.contains("employee_id"));
+        EXPECT_FALSE(row.contains("individual_score"));
+    }
+
+    const auto decision_results = node.find_database("solution_results");
+    ASSERT_TRUE(decision_results);
+    ASSERT_EQ(decision_results->tables().size(), 1u);
+    const ApiResult decisions = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM solution_results." +
+              decision_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(decisions.ok) << decisions.error.message;
+    ASSERT_EQ(decisions.value.at("rows").size(), 180u);
+    for (const auto& row : decisions.value.at("rows")) {
+        EXPECT_EQ(row.at("aggregate_only"), true);
+        EXPECT_GE(row.at("group_size").get<double>(), 5.0);
+        EXPECT_TRUE(row.contains("group_key"));
+        EXPECT_FALSE(row.contains("employee_id"));
+        EXPECT_FALSE(row.contains("individual_score"));
+    }
+
+    const auto snapshot = node.find_database("people_analytics")
+                              ->find_table("employee_attrition_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 180u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name != "action_execution_rate") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("aggregate-fixture-token"),
+              std::string::npos);
+    const journey::Journey outcomes = planted_employee_attrition_outcomes(
+        ledger.value.at("entries"), binding);
+    const journey::JourneyReport measured =
+        journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const ApiResult readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
 }
 
 TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {

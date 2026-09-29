@@ -215,6 +215,11 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S11LoggedPropensityCheck>());
     gate.add_check(std::make_shared<S11ContactConsentCheck>());
     gate.add_check(std::make_shared<S11PropensityInterpretationCheck>());
+    gate.add_check(std::make_shared<B2MinimumGroupSizeCheck>());
+    gate.add_check(std::make_shared<B2AggregateOnlyCheck>());
+    gate.add_check(std::make_shared<B2FairnessReviewCheck>());
+    gate.add_check(std::make_shared<B2ApprovalCheck>());
+    gate.add_check(std::make_shared<B2PeopleLeaderOutputCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());
