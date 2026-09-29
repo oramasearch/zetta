@@ -25,5 +25,5 @@ governance of who may run what is [../governance/](../governance/access-control.
 - [deployment-controller.md](deployment-controller.md) — the control plane: reconcile a local deployment desired→actual and self-heal a killed/failed run (FEAT-4 / TC-3).
 - [solution-catalog.md](solution-catalog.md) — the AI Solution Library (`zetta::pipeline::SolutionCatalog`) + the headed Deploy panel: pick a blueprint, gate, deploy (FEAT-4 / SCR-5).
 - [execution.md](execution.md) — executing a graph on a node (`zetta::pipeline::GraphExecutor`): walk steps in dependency order behind the `StepExecutor` interface, drive a Run to a terminal state.
-- [runs.md](runs.md) — the Run (`zetta::pipeline::Run`) record: status / logs / outputs / lineage plus replicated parameters, step-series metrics, summaries and typed artifacts, with JSON-Schema boundary validation (#1137).
+- [runs.md](runs.md) — the Run (`zetta::pipeline::Run`) record: denormalized Project/Pipeline names, status / logs / outputs / lineage, replicated parameters, step-series metrics, page-ready summaries, and typed artifacts (#1137, #1184).
 - [graph-plan.md](graph-plan.md) — the graph-over-cluster plan view: project how a graph would run over the current cluster (near-data / fan-out / owners) (`project_cluster_plan`, #591).

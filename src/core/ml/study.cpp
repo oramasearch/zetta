@@ -771,6 +771,16 @@ void Study::set_promoted_model(std::string model) {
     capture_and_persist();
 }
 
+void Study::set_project_pipeline(std::string project,
+                                 std::string pipeline) {
+    if (value_.spec.project == project && value_.spec.pipeline == pipeline) {
+        return;
+    }
+    value_.spec.project = std::move(project);
+    value_.spec.pipeline = std::move(pipeline);
+    capture_and_persist();
+}
+
 void Study::apply_value(StudyValue value) {
     value_ = std::move(value);
     persist_meta();

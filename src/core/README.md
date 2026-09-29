@@ -14,6 +14,8 @@ The node memory registry combines cheap ownership probes with platform allocator
 and RSS readings, then feeds SQL, telemetry, API, logs, and status output.
 Study deletion is an owner-thread Node operation that tombstones the Study and
 non-promoted trial Runs while retaining promoted Model lineage (#1158).
+The owner thread also resolves display names at Run/Model creation, propagates
+Project/Pipeline renames, and performs idempotent startup backfill (#1184).
 See [architecture](../../docs/architecture/README.md) and
 [pub/sub dispatch](../../docs/pubsub/dispatch.md), plus the
 [memory operations guide](../../docs/ops/memory.md).

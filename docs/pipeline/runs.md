@@ -23,6 +23,8 @@ exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 | `id` | `std::string` | UUIDv4; also the on-disk folder name. Never changes. |
 | `project` | `std::string` | Owning project uuid. Optional (empty until wired). |
 | `graph` | `std::string` | Executed graph id (free string). Optional. |
+| `project_name` | `std::string` | Project display name captured at creation and refreshed on rename. |
+| `pipeline_name` | `std::string` | Pipeline display name captured at creation and refreshed on rename. |
 | `deployment` | `std::string` | Owning deployment uuid. Optional — set when the run is the execution of a deployed graph. |
 | `status` | `RunStatus` | `Pending` → `Running` → `Succeeded` \| `Failed`. |
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
@@ -41,9 +43,10 @@ lineage) or `Failed` (RunFailed; the failing step + reason live in `logs`).
 values always satisfy the schema. Stamps come from `zetta::util::now_iso8601()`
 (fixed-width, so they order chronologically as plain text).
 
-`project` / `graph` / `deployment` are **id-only references** (kept lightweight,
-like a project's future references to its inputs / graphs / runs) and are fixed at
-creation; the mutable fields change as the run progresses. `deployment` ties a run
+`project` / `graph` / `deployment` are stable references fixed at creation.
+`project_name` and `pipeline_name` are denormalized presentation values, so list
+clients do not need one Project lookup per row. Project and Pipeline renames
+refresh those names on every matching Run. `deployment` ties a run
 to the placement the [deployment controller](deployment-controller.md) is keeping
 alive — the link the reconcile loop follows from *desired* (the deployment) to
 *actual* (this run).
@@ -56,7 +59,7 @@ artifacts), so `find` / `drop` take the id:
 
 | Method | Returns | Behavior |
 |---|---|---|
-| `create_run(project = {}, graph = {}, deployment = {})` | `shared_ptr<Run>` | Stamps `created`/`updated`, starts `Pending`. Optional project + graph + deployment refs. |
+| `create_run(project = {}, graph = {}, deployment = {})` | `shared_ptr<Run>` | Stamps `created`/`updated`, starts `Pending`, and resolves Project/Pipeline display names when their refs exist. |
 | `find_run(id)` | `shared_ptr<Run>` | Empty handle on miss. |
 | `drop_run(id)` | `bool` | `true` if one was removed. |
 | `runs()` | `vector<shared_ptr<Run>>` | Stable order: by `created`, then `id`. |
@@ -93,7 +96,7 @@ CRDT document is the source of truth, and the in-memory list + on-disk folder ar
 a **projection** of it ([replication.md](../cluster/replication.md)).
 
 - **Replicated state.** Each run is one flat key in the document:
-  `run:<uuid> → { project, graph, status, created, updated, logs, outputs,
+  `run:<uuid> → { project, graph, project_name, pipeline_name, status, created, updated, logs, outputs,
   lineage, metrics }` (`src/core/catalog.hpp`). The user-facing mutators capture into the
   document; on each `tick()` the node **reconciles** the projection to match the
   document, so a peer's run (or a status / output update from a peer)
@@ -111,6 +114,19 @@ a **projection** of it ([replication.md](../cluster/replication.md)).
   `Node::start()` rebuilds the in-memory list by scanning the data dir
   (`load_runs()`) and — when replicated — reconciling from the CRDT document, so
   a run **survives restart** in both standalone and replicated nodes.
+
+Records written before `project_name` and `pipeline_name` existed remain valid.
+Startup resolves missing names from the loaded Project and Pipeline registries,
+persists only changed records, and then establishes the replication baseline.
+
+## List API
+
+`list_runs` returns each Run's stable refs, `project_name`, `pipeline_name`,
+status, `metric_summary`, privacy-suppression reason, creation/update stamps,
+and log/output counts. The summary is the stored final/best summary from the Run
+record. REST `GET /v1/list_runs` and the MCP `list_runs` tool use the same
+registry declaration and return the same value. A Runs page can therefore render
+its rows from this one call without joining Projects or fetching metrics per Run.
 
 ## Boundary validation (JSON Schema)
 
@@ -231,4 +247,6 @@ objective/scaling controls — is the [Jobs panel](../gui/jobs-panel.md).
 query, confidence clamping, survival across a restart (both disk-only and
 CRDT-only), replication of a run + a later status change to a connected peer, the
 JSON-Schema boundary rejecting malformed values, and a malformed `run.json` being
-skipped on load.
+skipped on load. `tests/pipeline/test_project_graph.cpp` covers name capture,
+Project/Pipeline rename propagation, and startup backfill. API tests cover list
+summaries and exact REST/MCP parity.

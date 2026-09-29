@@ -18,6 +18,10 @@ selection cannot consume final test data. If a project Pipeline is supplied,
 `create_study` runs the existing correctness gate before accepting it; this
 reuses methodology leakage checks.
 
+Project and Pipeline refs supplied as ids are normalized to their display names
+when the Study is created. Later renames update those stored names, and startup
+normalizes older records against the loaded registries.
+
 Search parameters are ordered and typed:
 
 - `int` and `float` have minimum/maximum bounds, an optional step, and linear
@@ -147,8 +151,29 @@ REST: `GET /v1/list_studies`. MCP tool: `list_studies`. Permission:
 ```
 
 ```json
-{ "studies": [{ "id": "study-uuid", "status": "running" }] }
+{
+  "studies": [{
+    "id": "study-uuid",
+    "name": "churn-tuning",
+    "project_name": "retention",
+    "pipeline_name": "production",
+    "status": "running",
+    "created": "2026-09-29T12:00:00.000Z",
+    "updated": "2026-09-29T12:05:00.000Z",
+    "metric_summary": {
+      "metric": "validation.auc",
+      "direction": "maximize",
+      "completed_trials": 3,
+      "best": 0.91
+    }
+  }]
+}
 ```
+
+Each entry also retains the complete Study record (`spec`, trials, budgets and
+usage), preserving existing callers. The flattened names and objective summary
+let an Experiments page render from this list call without Project lookups or
+per-Run metric reads.
 
 ### `list_trials`
 

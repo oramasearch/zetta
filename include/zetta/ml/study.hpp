@@ -150,6 +150,7 @@ public:
     void stop(std::string reason);
     void set_complete(std::string reason);
     void set_promoted_model(std::string model);
+    void set_project_pipeline(std::string project, std::string pipeline);
     void apply_value(StudyValue value);
     nlohmann::json metadata() const;
     void persist_meta() const;

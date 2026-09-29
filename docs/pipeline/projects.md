@@ -43,7 +43,7 @@ CRUD (`shared_ptr` handles, empty/`false` on miss or clash):
 | `create_project(name, owner = {})` | `shared_ptr<Project>` | Empty handle if `name` is empty or already taken. Stamps `created`/`updated`. |
 | `find_project(name)` | `shared_ptr<Project>` | Empty handle on miss. |
 | `drop_project(name)` | `bool` | `true` if one was removed. Removes the project **with its inputs and graphs** (their `input:`/`graph:` keys and the folder); runs and models are kept (see [Deleting a project](#deleting-a-project--delete_project-1009)). |
-| `rename_project(from, to)` | `bool` | `false` if `to` is empty/taken or `from` is missing. Bumps `updated`. |
+| `rename_project(from, to)` | `bool` | `false` if `to` is empty/taken or `from` is missing. Bumps `updated` and refreshes denormalized names on matching Runs, Models, and Studies. |
 | `project_names()` | `vector<string>` | Sorted by name. |
 | `project_count()` | `size_t` | — |
 
@@ -134,7 +134,7 @@ reverse path used by reconciliation.
 |---|---|---|
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
 | `compile_intent_to_graph(input_id, name = {}, options = {}, error = nullptr)` | `shared_ptr<ProjectGraph>` | Resolve a runnable [methodology](../ml/methodologies.md), compile the stored **intent** with that methodology's shape callback, and store it through `create_graph` (M-1 defaults to `"churn skeleton"`). `options` may select a methodology or primary solution and carry hints. Empty handle on an invalid input, unsupported methodology, missing body, or name collision; `error` explains compilation refusal. |
-| `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection **and** re-captures `graph:<uuid>`, so an edit replicates exactly like a create. **Re-proposes the plan** (resets approval → proposed, #885). Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
+| `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection, refreshes denormalized names on matching Runs, Models, and Studies, and re-captures `graph:<uuid>`. **Re-proposes the plan** (resets approval → proposed, #885). Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
 | `approve_graph(name, approver, at)` | `shared_ptr<ProjectGraph>` | Mark a proposed plan **approved** (#885, review-before-build): stamps the approver + ISO instant, re-captures `graph:<uuid>`, and audits `graph_approved`. Idempotent. Empty handle if no graph by `name`. Reached over the governed `approve_plan` capability. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
 | `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |

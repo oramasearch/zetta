@@ -59,13 +59,30 @@ const nlohmann::json& list_studies_schema() {
 }
 
 const nlohmann::json& list_studies_output_schema() {
-    static const nlohmann::json schema = {
-        {"type", "object"},
-        {"required", {"studies"}},
-        {"additionalProperties", false},
-        {"properties",
-         {{"studies",
-           {{"type", "array"}, {"items", study_output_schema()}}}}}};
+    static const nlohmann::json schema = [] {
+        nlohmann::json item = study_output_schema();
+        item["properties"]["name"] = {{"type", "string"}};
+        item["properties"]["project_name"] = {{"type", "string"}};
+        item["properties"]["pipeline_name"] = {{"type", "string"}};
+        item["properties"]["metric_summary"] = {
+            {"type", "object"},
+            {"required", {"metric", "direction", "completed_trials", "best"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"metric", {{"type", "string"}}},
+              {"direction", {{"type", "string"}}},
+              {"completed_trials", {{"type", "integer"}, {"minimum", 0}}},
+              {"best", {{"type", {"number", "null"}}}}}}};
+        for (const char* field : {"name", "project_name", "pipeline_name",
+                                  "metric_summary"}) {
+            item["required"].push_back(field);
+        }
+        return nlohmann::json{
+            {"type", "object"},
+            {"required", {"studies"}},
+            {"additionalProperties", false},
+            {"properties", {{"studies", {{"type", "array"}, {"items", item}}}}}};
+    }();
     return schema;
 }
 
@@ -396,7 +413,31 @@ ApiResult handle_get_study(const nlohmann::json& input,
 
 ApiResult handle_list_studies(const nlohmann::json&, ApiContext& context) {
     nlohmann::json studies = nlohmann::json::array();
-    for (const auto& study : context.node.studies()) studies.push_back(with_id(study));
+    for (const auto& study : context.node.studies()) {
+        std::optional<double> best;
+        std::size_t completed_trials = 0;
+        for (const zetta::ml::StudyTrial& trial : study->value().trials) {
+            if (trial.state != zetta::ml::TrialState::Complete || !trial.objective) {
+                continue;
+            }
+            ++completed_trials;
+            const bool improves = !best ||
+                (study->spec().objective.direction == zetta::ml::StudyDirection::Maximize
+                     ? *trial.objective > *best
+                     : *trial.objective < *best);
+            if (improves) best = trial.objective;
+        }
+        nlohmann::json item = with_id(study);
+        item["name"] = study->spec().name;
+        item["project_name"] = study->spec().project;
+        item["pipeline_name"] = study->spec().pipeline;
+        item["metric_summary"] = {
+            {"metric", study->spec().objective.metric},
+            {"direction", std::string(to_string(study->spec().objective.direction))},
+            {"completed_trials", completed_trials},
+            {"best", best ? nlohmann::json(*best) : nlohmann::json(nullptr)}};
+        studies.push_back(std::move(item));
+    }
     return ApiResult::success({{"studies", std::move(studies)}});
 }
 
@@ -497,7 +538,8 @@ ApiResult handle_promote_trial(const nlohmann::json& input,
         return ApiResult::failure("not_found", "the trial Run has no registered model", "/run");
     }
     if (!study->spec().project.empty() &&
-        model->project() != study->spec().project) {
+        model->project() != study->spec().project &&
+        model->project_name() != study->spec().project) {
         return ApiResult::failure("invalid_input", "the trial model belongs to another project", "/run");
     }
     study->set_promoted_model(model->id());
@@ -531,7 +573,7 @@ void register_study_capabilities(Registry& registry) {
         handle_get_study});
     registry.add(Capability{
         "list_studies", "List studies",
-        "Read every study and its current budget status. No side effects.",
+        "Read every study with display names, lifecycle stamps, budgets and objective summary. No side effects.",
         list_studies_schema(), list_studies_output_schema(), CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"}, false, false,
         handle_list_studies});

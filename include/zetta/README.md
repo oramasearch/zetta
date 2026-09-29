@@ -11,3 +11,7 @@ The public Study lifecycle includes guarded deletion: running studies are
 refused, non-promoted trial Runs and their embedded metrics are removed, and
 the promoted Model's producing Run is retained (#1158). See
 [AutoML studies](../../docs/ml/studies.md).
+
+Run and Model values also carry denormalized Project/Pipeline names. Node
+startup backfills older records, and rename operations keep those names current
+for list consumers (#1184).

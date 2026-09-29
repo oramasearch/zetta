@@ -155,8 +155,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_policy` | read | api:query | one decision policy's current config and immutable version history |
 | `analyze_dataset` | read | api:query | sample a landed dataset and report semantic types with evidence, column statistics, grain, candidate keys, join candidates, and leakage candidates |
 | `plan_features` | read | api:query | return a methodology-specific feature/exclusion plan, or a named `transform_required` correction that is never applied automatically |
-| `list_runs` | read | api:query | compact run listing (ids feed `get_run`) |
-| `list_models` | read | api:query | compact model listing (ids feed `get_model`) |
+| `list_runs` | read | api:query | run rows with Project/Pipeline display names, status, stored metric summary and timestamps |
+| `list_models` | read | api:query | model-version rows with Project/Pipeline display names, producing Run, metrics, feature schema, serving state and creation time |
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
@@ -168,7 +168,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_trace` | read | api:query | every span of one trace id |
 | `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
 | `get_study` | read | api:query | one study's objective, search space, sampler, pruner, budgets, usage, state, and Run trials |
-| `list_studies` | read | api:query | all studies with their current budget and lifecycle state |
+| `list_studies` | read | api:query | all studies with flattened Project/Pipeline names, lifecycle state, timestamps and objective summary |
 | `list_trials` | read | api:query | one study's Run trials, optionally filtered by running/pruned/failed/complete state |
 | `get_study_analysis` | read | api:query | best trial, optimization history, parameter importances, parallel-coordinate rows, and confidence leaderboard |
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |

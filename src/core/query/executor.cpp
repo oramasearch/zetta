@@ -619,6 +619,9 @@ std::vector<nlohmann::json> model_rows(const Node& node) {
         row["kind"] = model->kind();
         row["project"] = model->project();
         row["run"] = model->run();
+        row["project_name"] = model->project_name();
+        row["pipeline_name"] = model->pipeline_name();
+        row["run_id"] = model->run_id();
         row["feature_schema"] = model->feature_schema();
         row["metrics"] = model->metrics();
         row["created"] = model->created();
@@ -853,6 +856,8 @@ std::vector<nlohmann::json> run_rows(const Node& node) {
         row["run_id"] = run->id();
         row["project"] = run->project();
         row["graph"] = run->graph();
+        row["project_name"] = run->project_name();
+        row["pipeline_name"] = run->pipeline_name();
         row["deployment"] = run->deployment();
         row["status"] = std::string(to_string(run->status()));
         row["created"] = run->created();

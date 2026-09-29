@@ -348,7 +348,8 @@ public:
     // docs/pipeline/runs.md). Runs have no human name: they are keyed by id, so find /
     // drop take the id. create stamps created/updated, starts Pending, and takes
     // optional project + graph + deployment references (the deployment ref ties a
-    // run to the placement the reconcile loop is keeping alive). The "update"
+    // run to the placement the reconcile loop is keeping alive). Resolved refs
+    // are canonicalized to ids and their display names are captured. The "update"
     // half of the slice is the mutators on the returned Run handle (set_status /
     // add_log / set_outputs / set_lineage), which capture into the CRDT and
     // persist. runs() is in a stable order (created, then id).
@@ -392,7 +393,8 @@ public:
     // find / drop take the id; the registry is models() + the
     // system.models SQL table. create stamps `created` and requires a
     // non-empty `kind` (empty handle otherwise); the caller fills the rest of the
-    // ModelValue (name / feature_schema / metrics / project / run). Weights are
+    // ModelValue (name / feature_schema / metrics / project / run). Producing
+    // Run lineage supplies the page-ready names and explicit run_id. Weights are
     // attached separately via the returned Model handle's set_weights (the body
     // is stored on disk + fingerprinted, then transfers peer-to-peer over the
     // large-object body transfer path). models() is in a stable order (created, then id).
@@ -1087,6 +1089,17 @@ private:
 
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
+
+    // Fill display names on records written before #1184 and keep them current
+    // when their owning Project or Pipeline is renamed.
+    void backfill_denormalized_names();
+    void update_project_display_name(const std::string& project_id,
+                                     const std::string& old_name,
+                                     const std::string& new_name);
+    void update_pipeline_display_name(const std::string& project_id,
+                                      const std::string& pipeline_id,
+                                      const std::string& old_name,
+                                      const std::string& new_name);
 
     // Rebuild monitors_ by scanning config_.data_dir. Called from start().
     void load_monitors();

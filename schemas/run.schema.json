@@ -497,7 +497,13 @@
       },
       "type": "array"
     },
+    "pipeline_name": {
+      "type": "string"
+    },
     "project": {
+      "type": "string"
+    },
+    "project_name": {
       "type": "string"
     },
     "status": {

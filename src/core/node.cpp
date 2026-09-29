@@ -652,13 +652,18 @@ bool Node::start() {
         const zetta::cluster::ReplicationChanges changes =
             replication_->changes_since(0);
         reconcile_from_replication(*changes.snapshot);
+        backfill_denormalized_names();
+        const zetta::cluster::ReplicationChanges settled =
+            replication_->changes_since(0);
         // Establish the membership baseline so a later join/leave is a detectable
         // delta — but never rebalance on startup (the partitions just loaded
         // already reflect their recorded placement).
-        last_membership_ = membership_from_snapshot(*changes.snapshot);
-        last_replication_change_token_ = changes.next_token;
+        last_membership_ = membership_from_snapshot(*settled.snapshot);
+        last_replication_change_token_ = settled.next_token;
         persist_replication();
         last_seen_version_ = replication_->version();
+    } else {
+        backfill_denormalized_names();
     }
     zetta::governance::AuditTrail::release_unused_memory();
     // Opening the sidecar and bounded recent/tail frames is sufficient. The
@@ -1183,7 +1188,14 @@ void Node::load_projects() {
             meta.value("created", std::string{}),
             meta.value("updated", std::string{}),
             meta.value("owner", std::string{}), entry.path(), replication_,
-            this, meta.value("description", std::string{}));
+            this, meta.value("description", std::string{}),
+            [this](const std::string& project_id,
+                   const std::string& pipeline_id,
+                   const std::string& old_name,
+                   const std::string& new_name) {
+                update_pipeline_display_name(project_id, pipeline_id,
+                                             old_name, new_name);
+            });
         project->load();  // bring in this project's inputs + graphs from disk
         projects_.push_back(std::move(project));
     }
@@ -1483,7 +1495,16 @@ std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string 
                                              std::move(created),
                                              std::move(updated),
                                              std::move(owner), dir,
-                                             replication_, this, std::move(description));
+                                             replication_, this,
+                                             std::move(description),
+                                             [this](const std::string& project_id,
+                                                    const std::string& pipeline_id,
+                                                    const std::string& old_name,
+                                                    const std::string& new_name) {
+                                                 update_pipeline_display_name(
+                                                     project_id, pipeline_id,
+                                                     old_name, new_name);
+                                             });
     project->persist_meta();
     projects_.push_back(project);
     return project;
@@ -1537,6 +1558,7 @@ bool Node::rename_project(const std::string& from, const std::string& to) {
         replication_->set(catalog::project_key(project->id()),
                           project->metadata());
     }
+    update_project_display_name(project->id(), from, to);
     return true;
 }
 
@@ -1726,8 +1748,26 @@ std::shared_ptr<zetta::pipeline::Run> Node::create_run(std::string project, std:
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
     zetta::pipeline::RunValue value;
-    value.project = std::move(project);
-    value.graph = std::move(graph);
+    value.project = project;
+    value.graph = graph;
+    std::shared_ptr<zetta::pipeline::Project> stored_project =
+        find_project_by_id(project);
+    if (!stored_project) {
+        stored_project = find_project(project);
+    }
+    if (stored_project) {
+        value.project = stored_project->id();
+        value.project_name = stored_project->name();
+        std::shared_ptr<zetta::pipeline::ProjectGraph> stored_graph =
+            stored_project->find_graph_by_id(graph);
+        if (!stored_graph) {
+            stored_graph = stored_project->find_graph(graph);
+        }
+        if (stored_graph) {
+            value.graph = stored_graph->id();
+            value.pipeline_name = stored_graph->name();
+        }
+    }
     value.deployment = std::move(deployment);
     value.status = zetta::pipeline::RunStatus::Pending;
     value.created = now;
@@ -1909,6 +1949,22 @@ void Node::load_studies() {
 
 std::shared_ptr<zetta::ml::Study> Node::create_study(
     zetta::ml::StudySpec spec, std::string* error) {
+    std::shared_ptr<zetta::pipeline::Project> project =
+        find_project_by_id(spec.project);
+    if (!project) {
+        project = find_project(spec.project);
+    }
+    if (project) {
+        spec.project = project->name();
+        std::shared_ptr<zetta::pipeline::ProjectGraph> pipeline =
+            project->find_graph_by_id(spec.pipeline);
+        if (!pipeline) {
+            pipeline = project->find_graph(spec.pipeline);
+        }
+        if (pipeline) {
+            spec.pipeline = pipeline->name();
+        }
+    }
     if (!zetta::ml::validate_study_spec(spec, error)) return nullptr;
     if (find_study(spec.name)) {
         if (error != nullptr) *error = "/name: a study with this name already exists";
@@ -1972,7 +2028,7 @@ std::optional<zetta::ml::StudyDeleteResult> Node::delete_study(
     if (!result.kept_model.empty()) {
         if (const std::shared_ptr<zetta::ml::Model> model =
                 find_model(result.kept_model)) {
-            result.kept_run = model->run();
+            result.kept_run = model->run_id();
         }
         if (result.kept_run.empty()) {
             const auto promoted_trial = std::ranges::find(
@@ -2060,6 +2116,30 @@ void Node::load_models() {
 
 std::shared_ptr<zetta::ml::Model> Node::create_model(zetta::ml::ModelValue value) {
     if (value.kind.empty()) return nullptr;  // basic guard (kind is required)
+    if (value.run_id.empty()) {
+        value.run_id = value.run;
+    } else {
+        value.run = value.run_id;
+    }
+    if (const std::shared_ptr<zetta::pipeline::Run> run =
+            find_run(value.run_id)) {
+        value.project_name = run->project_name();
+        value.pipeline_name = run->pipeline_name();
+        if (!run->project().empty()) {
+            value.project = run->project();
+        }
+    }
+    if (value.project_name.empty()) {
+        std::shared_ptr<zetta::pipeline::Project> project =
+            find_project_by_id(value.project);
+        if (!project) {
+            project = find_project(value.project);
+        }
+        if (project) {
+            value.project = project->id();
+            value.project_name = project->name();
+        }
+    }
     const std::string id = zetta::util::new_uuid();
     value.created = zetta::util::now_iso8601();
     value.weights.reset();  // weights are attached separately via set_weights
@@ -2102,6 +2182,154 @@ bool Node::materialize_drop_model(const std::string& id) {
     fs::remove_all((*it)->dir(), ec);
     models_.erase(it);
     return true;
+}
+
+void Node::backfill_denormalized_names() {
+    for (const std::shared_ptr<zetta::pipeline::Run>& run : runs_) {
+        std::string project_name = run->project_name();
+        std::string pipeline_name = run->pipeline_name();
+        std::shared_ptr<zetta::pipeline::Project> project =
+            find_project_by_id(run->project());
+        if (!project) {
+            project = find_project(run->project());
+        }
+        if (project) {
+            project_name = project->name();
+            std::shared_ptr<zetta::pipeline::ProjectGraph> pipeline =
+                project->find_graph_by_id(run->graph());
+            if (!pipeline) {
+                pipeline = project->find_graph(run->graph());
+            }
+            if (pipeline) {
+                pipeline_name = pipeline->name();
+            }
+        }
+        run->set_display_names(std::move(project_name),
+                               std::move(pipeline_name));
+    }
+
+    for (const std::shared_ptr<zetta::ml::Model>& model : models_) {
+        const std::string run_id = model->run_id().empty()
+                                       ? model->run()
+                                       : model->run_id();
+        std::string project_name = model->project_name();
+        std::string pipeline_name = model->pipeline_name();
+        if (const std::shared_ptr<zetta::pipeline::Run> run =
+                find_run(run_id)) {
+            project_name = run->project_name();
+            pipeline_name = run->pipeline_name();
+        } else {
+            std::shared_ptr<zetta::pipeline::Project> project =
+                find_project_by_id(model->project());
+            if (!project) {
+                project = find_project(model->project());
+            }
+            if (project) {
+                project_name = project->name();
+            }
+        }
+        model->set_display_lineage(std::move(project_name),
+                                   std::move(pipeline_name), run_id);
+    }
+
+    for (const std::shared_ptr<zetta::ml::Study>& study : studies_) {
+        std::string project_name = study->spec().project;
+        std::string pipeline_name = study->spec().pipeline;
+        std::shared_ptr<zetta::pipeline::Project> project =
+            find_project_by_id(project_name);
+        if (!project) {
+            project = find_project(project_name);
+        }
+        if (project) {
+            project_name = project->name();
+            std::shared_ptr<zetta::pipeline::ProjectGraph> pipeline =
+                project->find_graph_by_id(pipeline_name);
+            if (!pipeline) {
+                pipeline = project->find_graph(pipeline_name);
+            }
+            if (pipeline) {
+                pipeline_name = pipeline->name();
+            }
+        }
+        study->set_project_pipeline(std::move(project_name),
+                                    std::move(pipeline_name));
+    }
+}
+
+void Node::update_project_display_name(const std::string& project_id,
+                                       const std::string& old_name,
+                                       const std::string& new_name) {
+    for (const std::shared_ptr<zetta::pipeline::Run>& run : runs_) {
+        if (run->project() == project_id || run->project() == old_name ||
+            run->project_name() == old_name) {
+            run->set_display_names(new_name, run->pipeline_name());
+        }
+    }
+    for (const std::shared_ptr<zetta::ml::Model>& model : models_) {
+        bool matches = model->project() == project_id ||
+                       model->project() == old_name ||
+                       model->project_name() == old_name;
+        if (const std::shared_ptr<zetta::pipeline::Run> run =
+                find_run(model->run_id())) {
+            matches = matches || run->project() == project_id;
+        }
+        if (matches) {
+            model->set_display_lineage(new_name, model->pipeline_name(),
+                                       model->run_id());
+        }
+    }
+    for (const std::shared_ptr<zetta::ml::Study>& study : studies_) {
+        if (study->spec().project == project_id ||
+            study->spec().project == old_name) {
+            study->set_project_pipeline(new_name, study->spec().pipeline);
+        }
+    }
+}
+
+void Node::update_pipeline_display_name(const std::string& project_id,
+                                        const std::string& pipeline_id,
+                                        const std::string& old_name,
+                                        const std::string& new_name) {
+    const std::shared_ptr<zetta::pipeline::Project> project =
+        find_project_by_id(project_id);
+    const std::string project_name = project ? project->name() : std::string{};
+    std::vector<std::string> matching_runs;
+    for (const std::shared_ptr<zetta::pipeline::Run>& run : runs_) {
+        const bool project_matches =
+            run->project() == project_id ||
+            (!project_name.empty() &&
+             (run->project() == project_name ||
+              run->project_name() == project_name));
+        const bool pipeline_matches = run->graph() == pipeline_id ||
+                                      run->graph() == old_name ||
+                                      run->pipeline_name() == old_name;
+        if (project_matches && pipeline_matches) {
+            run->set_display_names(run->project_name(), new_name);
+            matching_runs.push_back(run->id());
+        }
+    }
+    for (const std::shared_ptr<zetta::ml::Model>& model : models_) {
+        const bool run_matches = std::ranges::contains(
+            matching_runs, model->run_id());
+        const bool direct_match = model->pipeline_name() == old_name &&
+                                  (model->project() == project_id ||
+                                   (!project_name.empty() &&
+                                    model->project_name() == project_name));
+        if (run_matches || direct_match) {
+            model->set_display_lineage(model->project_name(), new_name,
+                                       model->run_id());
+        }
+    }
+    for (const std::shared_ptr<zetta::ml::Study>& study : studies_) {
+        const bool project_matches =
+            study->spec().project == project_id ||
+            (project && study->spec().project == project->name());
+        const bool pipeline_matches = study->spec().pipeline == pipeline_id ||
+                                      study->spec().pipeline == old_name;
+        if (project_matches && pipeline_matches) {
+            study->set_project_pipeline(study->spec().project, new_name);
+        }
+    }
 }
 
 // ----- solution monitors (#1106) -------------------------------------------

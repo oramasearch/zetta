@@ -898,12 +898,26 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
 // same live registries the system.* views compute from, with the ids feeding
 // the get_* detail reads.
 TEST_F(RegistryFixture, JourneyListReadsReturnCompactRows) {
-    auto run = node.create_run();
+    const auto project = node.create_project("churn-list");
+    ASSERT_TRUE(project);
+    const auto pipeline = project->create_graph(
+        "training", zetta::ir::ExecutionGraph{});
+    ASSERT_TRUE(pipeline);
+    auto run = node.create_run(project->id(), pipeline->id());
     ASSERT_TRUE(run);
+    std::string error;
+    ASSERT_TRUE(run->log_metrics(1, {{"validation.auc", 0.91}}, {}, &error))
+        << error;
     zetta::ml::ModelValue model_value;
+    model_value.name = "churn-model";
     model_value.kind = "classifier";
+    model_value.project = project->id();
+    model_value.run = run->id();
+    model_value.metrics = {{"auc", 0.91}};
+    model_value.feature_schema = {{"features", {"age", "tenure"}}};
     auto model = node.create_model(std::move(model_value));
     ASSERT_TRUE(model);
+    model->set_exposed(true);
     auto job = node.create_job(zetta::compute::JobKind::Train);
     ASSERT_TRUE(job);
     zetta::index::IndexValue index_value;
@@ -918,6 +932,12 @@ TEST_F(RegistryFixture, JourneyListReadsReturnCompactRows) {
     ASSERT_EQ(runs.value.at("runs").size(), 1u);
     EXPECT_EQ(runs.value.at("runs")[0].at("id"), run->id());
     EXPECT_EQ(runs.value.at("runs")[0].at("status"), "pending");
+    EXPECT_EQ(runs.value.at("runs")[0].at("project_name"), "churn-list");
+    EXPECT_EQ(runs.value.at("runs")[0].at("pipeline_name"), "training");
+    EXPECT_EQ(runs.value.at("runs")[0].at("metric_summary")
+                  .at("validation.auc")
+                  .at("final"),
+              0.91);
 
     // testsuite_list serves the whole in-app test-suite catalog (independent of
     // node state): every case with its id / category / name + tunable options,
@@ -941,6 +961,14 @@ TEST_F(RegistryFixture, JourneyListReadsReturnCompactRows) {
     ASSERT_TRUE(models.ok) << models.error.message;
     ASSERT_EQ(models.value.at("models").size(), 1u);
     EXPECT_EQ(models.value.at("models")[0].at("id"), model->id());
+    EXPECT_EQ(models.value.at("models")[0].at("project_name"), "churn-list");
+    EXPECT_EQ(models.value.at("models")[0].at("pipeline_name"), "training");
+    EXPECT_EQ(models.value.at("models")[0].at("run_id"), run->id());
+    EXPECT_EQ(models.value.at("models")[0].at("metrics").at("auc"), 0.91);
+    EXPECT_EQ(models.value.at("models")[0].at("feature_schema")
+                  .at("features").size(),
+              2u);
+    EXPECT_TRUE(models.value.at("models")[0].at("exposed").get<bool>());
     EXPECT_FALSE(models.value.at("models")[0].at("has_weights").get<bool>());
 
     auto jobs = call("list_jobs", nlohmann::json::object());

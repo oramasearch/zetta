@@ -37,6 +37,9 @@ const nlohmann::json& schema_document() {
         "kind":    { "type": "string", "minLength": 1 },
         "project": { "type": "string" },
         "run":     { "type": "string" },
+        "project_name":  { "type": "string" },
+        "pipeline_name": { "type": "string" },
+        "run_id":        { "type": "string" },
         "feature_schema": { "type": "object" },
         "metrics": {
           "type": "object",
@@ -93,6 +96,9 @@ nlohmann::json to_json(const ModelValue& value) {
         {"kind", value.kind},
         {"project", value.project},
         {"run", value.run},
+        {"project_name", value.project_name},
+        {"pipeline_name", value.pipeline_name},
+        {"run_id", value.run_id},
         {"feature_schema", value.feature_schema},
         {"metrics", value.metrics},
         {"created", value.created},
@@ -130,6 +136,9 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
     parsed.kind = value.value("kind", std::string{});
     parsed.project = value.value("project", std::string{});
     parsed.run = value.value("run", std::string{});
+    parsed.project_name = value.value("project_name", std::string{});
+    parsed.pipeline_name = value.value("pipeline_name", std::string{});
+    parsed.run_id = value.value("run_id", parsed.run);
     if (const auto it = value.find("feature_schema"); it != value.end()) {
         parsed.feature_schema = *it;
     }
@@ -195,6 +204,21 @@ bool Model::set_weights(std::string_view bytes) {
 
 void Model::set_metrics(nlohmann::json metrics) {
     value_.metrics = std::move(metrics);
+    capture_and_persist();
+}
+
+void Model::set_display_lineage(std::string project_name,
+                                std::string pipeline_name,
+                                std::string run_id) {
+    if (value_.project_name == project_name &&
+        value_.pipeline_name == pipeline_name && value_.run_id == run_id &&
+        value_.run == run_id) {
+        return;
+    }
+    value_.project_name = std::move(project_name);
+    value_.pipeline_name = std::move(pipeline_name);
+    value_.run_id = std::move(run_id);
+    value_.run = value_.run_id;
     capture_and_persist();
 }
 

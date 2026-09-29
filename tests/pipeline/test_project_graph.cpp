@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -11,6 +14,8 @@
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ir/step_kind.hpp"
+#include "zetta/ml/model.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -136,6 +141,117 @@ TEST(ProjectGraph, UpdateGraphGuardsNameAndContents) {
     EXPECT_TRUE(project->find_graph("flow"));
 
     node.stop();
+}
+
+TEST(ProjectGraph, RenamesRefreshRunAndModelDisplayNames) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    const auto project = node.create_project("churn");
+    ASSERT_TRUE(project);
+    const auto pipeline = project->create_graph("training", sample_graph());
+    ASSERT_TRUE(pipeline);
+    const auto run = node.create_run(project->id(), pipeline->id());
+    ASSERT_TRUE(run);
+    EXPECT_EQ(run->project_name(), "churn");
+    EXPECT_EQ(run->pipeline_name(), "training");
+
+    zetta::ml::ModelValue model_value;
+    model_value.name = "churn-v1";
+    model_value.kind = "classifier";
+    model_value.project = project->id();
+    model_value.run = run->id();
+    const auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+    EXPECT_EQ(model->project_name(), "churn");
+    EXPECT_EQ(model->pipeline_name(), "training");
+    EXPECT_EQ(model->run_id(), run->id());
+
+    zetta::ml::StudySpec study_spec;
+    study_spec.name = "churn-tuning";
+    study_spec.project = project->id();
+    study_spec.pipeline = pipeline->id();
+    study_spec.methodology = "M-1";
+    study_spec.objective.metric = "validation.auc";
+    study_spec.objective.validation_split = "validation";
+    zetta::ml::StudyParameter parameter;
+    parameter.name = "depth";
+    parameter.kind = zetta::ml::ParameterKind::Integer;
+    parameter.minimum = 1.0;
+    parameter.maximum = 4.0;
+    study_spec.search_space = {parameter};
+    study_spec.budgets.max_trials = 1;
+    study_spec.budgets.max_parallel_trials = 1;
+    std::string error;
+    const auto study = node.create_study(std::move(study_spec), &error);
+    ASSERT_TRUE(study) << error;
+    EXPECT_EQ(study->spec().project, "churn");
+    EXPECT_EQ(study->spec().pipeline, "training");
+
+    ASSERT_TRUE(node.rename_project("churn", "retention"));
+    EXPECT_EQ(run->project_name(), "retention");
+    EXPECT_EQ(model->project_name(), "retention");
+    EXPECT_EQ(study->spec().project, "retention");
+
+    ASSERT_TRUE(project->update_graph("training", sample_graph(), "scoring"));
+    EXPECT_EQ(run->pipeline_name(), "scoring");
+    EXPECT_EQ(model->pipeline_name(), "scoring");
+    EXPECT_EQ(study->spec().pipeline, "scoring");
+    EXPECT_EQ(run->metadata().at("project_name"), "retention");
+    EXPECT_EQ(model->metadata().at("pipeline_name"), "scoring");
+    node.stop();
+}
+
+TEST(ProjectGraph, StartupBackfillsLegacyRunAndModelNames) {
+    TempDir tmp;
+    std::filesystem::path run_path;
+    std::filesystem::path model_path;
+    std::string run_id;
+    std::string model_id;
+    {
+        Node node{config_for(tmp)};
+        ASSERT_TRUE(node.start());
+        const auto project = node.create_project("churn");
+        ASSERT_TRUE(project);
+        const auto pipeline = project->create_graph("training", sample_graph());
+        ASSERT_TRUE(pipeline);
+        const auto run = node.create_run(project->id(), pipeline->id());
+        ASSERT_TRUE(run);
+        zetta::ml::ModelValue model_value;
+        model_value.kind = "classifier";
+        model_value.project = project->id();
+        model_value.run = run->id();
+        const auto model = node.create_model(std::move(model_value));
+        ASSERT_TRUE(model);
+        run_id = run->id();
+        model_id = model->id();
+        run_path = run->dir() / "run.json";
+        model_path = model->dir() / "model.json";
+        node.stop();
+    }
+
+    for (const std::filesystem::path& path : {run_path, model_path}) {
+        std::ifstream input(path);
+        nlohmann::json document = nlohmann::json::parse(input);
+        document.erase("project_name");
+        document.erase("pipeline_name");
+        document.erase("run_id");
+        std::ofstream output(path, std::ios::trunc);
+        output << document.dump(2) << '\n';
+    }
+
+    Node restored{config_for(tmp)};
+    ASSERT_TRUE(restored.start());
+    const auto run = restored.find_run(run_id);
+    const auto model = restored.find_model(model_id);
+    ASSERT_TRUE(run);
+    ASSERT_TRUE(model);
+    EXPECT_EQ(run->project_name(), "churn");
+    EXPECT_EQ(run->pipeline_name(), "training");
+    EXPECT_EQ(model->project_name(), "churn");
+    EXPECT_EQ(model->pipeline_name(), "training");
+    EXPECT_EQ(model->run_id(), run_id);
+    restored.stop();
 }
 
 TEST(ProjectGraph, UpdateGraphReplicatesAndSurvivesRestartViaCRDT) {

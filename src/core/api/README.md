@@ -25,6 +25,10 @@ metrics, and preserves the promoted Model and producing Run. REST, MCP and
 OpenAPI share its registry declaration. See
 [AutoML studies](../../../docs/ml/studies.md).
 
+The `list_runs`, `list_models`, and `list_studies` reads expose page-ready
+display names, metrics and timestamps through one registry definition, keeping
+REST, MCP and OpenAPI output in lockstep (#1184).
+
 `mcp_docs.cpp` also renders `/cli.md`. Its pub/sub and audit sections document
 the dispatch-pool and class-specific retention flags with their environment
 variables; the CLI parity test keeps that page synchronized with `src/main.cpp`.
