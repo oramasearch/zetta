@@ -2228,6 +2228,70 @@ void land_replenishment_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_dynamic_pricing_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("pricing_history");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    int row_id = 1;
+    for (int product = 1; product <= 96; ++product) {
+        const double current_price =
+            80.0 + static_cast<double>(product % 20);
+        const double authority_distance =
+            product % 10 == 2 ? 0.20
+            : product % 10 == 3 ? 0.10
+                                : 0.03;
+        const double direction = product % 3 == 0 ? -1.0 : 1.0;
+        for (int period = 0; period < 36; ++period) {
+            const bool treated = product % 2 == 0;
+            const double baseline_demand =
+                18.0 + static_cast<double>(product % 9);
+            const double demand =
+                baseline_demand + static_cast<double>(period) * 0.15 +
+                static_cast<double>(period % 7) * 0.2;
+            table->add_row(
+                {{"row_id", row_id},
+                 {"series", product},
+                 {"period", static_cast<double>(period)},
+                 {"demand", demand},
+                 {"baseline_demand", baseline_demand},
+                 {"price_treatment", treated ? 1 : 0},
+                 {"demand_response",
+                  treated ? (product % 5 == 0 ? 0 : 1)
+                          : (product % 11 == 0 ? 1 : 0)},
+                 {"pricing_eligible", true},
+                 {"current_price_fresh", true},
+                 {"manual_pricing_only", false},
+                 {"legal_hold", false},
+                 {"gross_margin", product % 10 == 1 ? 0.20 : 0.40},
+                 {"current_price", current_price},
+                 {"recommended_price",
+                  current_price *
+                      (1.0 + direction * authority_distance)},
+                 {"authority_distance", authority_distance},
+                 {"competitor_price", current_price * 1.02},
+                 {"variable", "price-" + std::to_string(product)},
+                 {"objective", demand},
+                 {"lower_bound", 0.0},
+                 {"upper_bound", 1.0},
+                 {"integer", false},
+                 {"current_value", 0.0},
+                 {"scenario", "base"},
+                 {"constraint", "pricing_capacity"},
+                 {"coefficient", 1.0},
+                 {"sense", "<="},
+                 {"rhs", 96.0},
+                 {"owner", "pricing-governance"}});
+            ++row_id;
+        }
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 nlohmann::json retention_configuration() {
     return {
         {"snapshot", {{"database", "datasets"}, {"source_table", "customers"},
@@ -2293,6 +2357,38 @@ nlohmann::json replenishment_configuration() {
         {"roi_model",
          {{"value_per_outcome", 500.0},
           {"investment", 400.0},
+          {"currency", "USD"}}}};
+}
+
+nlohmann::json dynamic_pricing_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "pricing_history"},
+          {"target_table", "pricing_snapshot"},
+          {"entity_column", "series"},
+          {"time_column", "period"},
+          {"as_of", 35.0}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "demand_response"},
+          {"time_column", "period"},
+          {"as_of", 35.0},
+          {"feature_columns", {"baseline_demand", "current_price",
+                               "competitor_price", "gross_margin",
+                               "authority_distance"}}}},
+        {"decision_source",
+         {{"methodology", "M-4"},
+          {"entity_column", "series"},
+          {"score_column", "point_forecast"},
+          {"output_name", "forecast"}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://pricing.example.test/changes"},
+          {"owner", "pricing-governance"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1.0},
+          {"investment", 100.0},
           {"currency", "USD"}}}};
 }
 
@@ -2958,6 +3054,66 @@ journey::Journey planted_service_level_outcomes(
     return outcomes;
 }
 
+journey::Journey planted_pricing_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"dynamic-pricing-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double net_margin =
+            2.0 + 0.2 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.40);
+        outcomes.steps.push_back(
+            {"record observed net margin",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "net_margin"},
+              {"value", net_margin},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured pricing effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted net-margin effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.40) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.40 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.40;
+                  })}}});
+    return outcomes;
+}
+
 TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     SolutionDeliveryBoundary delivery;
     land_retention_data(node);
@@ -3560,6 +3716,200 @@ TEST_F(SolutionJourney,
     EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
               std::string::npos);
     const auto outcomes = planted_service_level_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       DynamicPricingEnforcesBandsAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_dynamic_pricing_data(node);
+    journey::Journey flow{"dynamic-pricing-solution", {}};
+    flow.steps = {
+        {"read B-1 defaults",
+         "get_solution",
+         {{"solution", "B-1"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "net_margin"),
+              journey::predicate(
+                  "promotion condition remains recorded",
+                  [](const auto& value) {
+                      return !value.at("solution")
+                                  .at("promotion_condition")
+                                  .template get<std::string>()
+                                  .empty();
+                  })}}},
+        {"create dynamic pricing project",
+         "create_project",
+         {{"name", "dynamic pricing"}}},
+        {"create B-1 Pipeline",
+         "create_solution",
+         {{"project", "dynamic pricing"},
+          {"solution", "B-1"},
+          {"level", 4},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "pricing_history"},
+            {"M-4",
+             {{"source", "datasets"},
+              {"table", "pricing_history"},
+              {"time_column", "period"},
+              {"target_column", "demand"},
+              {"series_column", "series"},
+              {"horizon", 1},
+              {"seasonal_period", 7},
+              {"lags", {1, 7}},
+              {"rolling_window", 7},
+              {"backtest_folds", 3},
+              {"num_trees", 10},
+              {"max_depth", 2}}},
+            {"M-6",
+             {{"entity", "entity_id"},
+              {"treatment", "price_treatment"},
+              {"outcome", "demand_response"}}},
+            {"correctness",
+             {{"randomized_experiment", true},
+              {"identifiable_variation", false},
+              {"margin_floor", 0.25},
+              {"automatic_authority_limit", 0.05},
+              {"hard_authority_limit", 0.15},
+              {"competitor_price_cutoff", 35.0},
+              {"future_prices_excluded", true}}}}},
+          {"foundation", dynamic_pricing_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"pricing_graph", "/graph"},
+          {"pricing_policy", "/policy_id"},
+          {"pricing_experiment", "/experiment_id"}}},
+        {"read governed pricing policy",
+         "get_policy",
+         {{"policy_id", "$pricing_policy"}},
+         {.checks = {
+              journey::equals(
+                  "/versions/0/config/actions/publish_price_change/approval_field",
+                  "authority_distance"),
+              journey::equals(
+                  "/versions/0/config/actions/publish_price_change/approval_above",
+                  0.05),
+              journey::size_equals(
+                  "/versions/0/config/eligibility_rules", 4)}}},
+        {"run B-1 Pipeline",
+         "run_solution",
+         {{"project", "dynamic pricing"},
+          {"graph", "$pricing_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"pricing_run", "/run_id"}}},
+        {"read completed dynamic pricing Run",
+         "get_run",
+         {{"run_id", "$pricing_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected pricing assignments",
+         "get_experiment",
+         {{"experiment", "$pricing_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 64),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read dynamic pricing ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 64)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("dynamic pricing");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-1 CL-4");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    bool margin_floor_blocked = false;
+    bool hard_band_blocked = false;
+    bool approval_required = false;
+    for (const auto& decision : policies.decisions()) {
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+        const int product = std::stoi(decision.entity_id);
+        if (product % 10 == 1 && decision.status == "blocked") {
+            margin_floor_blocked = true;
+        } else if (product % 10 == 2 &&
+                   decision.status == "blocked") {
+            hard_band_blocked = true;
+        } else if (product % 10 == 3 &&
+                   decision.status == "pending_approval" &&
+                   decision.autonomy == "A1" &&
+                   !decision.actionable) {
+            approval_required = true;
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_TRUE(margin_floor_blocked);
+    EXPECT_TRUE(hard_band_blocked);
+    EXPECT_TRUE(approval_required);
+
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        EXPECT_EQ(request.at("payload").at("action"),
+                  "publish_price_change");
+        EXPECT_LE(request.at("payload")
+                      .at("authority_distance")
+                      .get<double>(),
+                  0.05);
+        EXPECT_GE(request.at("payload").at("gross_margin").get<double>(),
+                  0.25);
+        EXPECT_TRUE(request.at("payload").contains("estimated_price_effect"));
+    }
+
+    const auto snapshot =
+        node.find_database("datasets")->find_table("pricing_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 96u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes = planted_pricing_outcomes(
         ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {

@@ -123,8 +123,8 @@ What's inside, by domain (each links to that domain's docs):
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
   tracked Run trials; analysis, governed model promotion, and lineage-preserving
   deletion of stopped studies have REST/MCP parity.
-  The [solution registry](docs/solutions/README.md) lists the 12 catalogue
-  modules and eight Band-B sketches. Selected levels now execute snapshots,
+  The [solution registry](docs/solutions/README.md) lists 13 catalogue modules
+  and seven Band-B sketches. Selected levels now execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
   S-1 is runnable at all four levels with eight named domain refusals,
@@ -147,6 +147,10 @@ What's inside, by domain (each links to that domain's docs):
   S-6 is runnable at all four levels with lead-time demand aggregation,
   constrained replenishment, bounded ERP release, protected holdout
   measurement, and a service-level ROI readout.
+  B-1 is runnable at all four levels with identifiable price-effect evidence,
+  M-4/M-6/M-16 execution, margin and authority limits, A1 approval above the
+  automatic band, protected experiments, governed price publication, and a
+  net-margin ROI readout.
   S-7 is runnable at all four levels with seasonal anomaly checks, exact alert
   budgets, candidate-driver forum reports, decision logs, permanent holdouts,
   and honest phased readouts. S-8 is runnable at all four levels with

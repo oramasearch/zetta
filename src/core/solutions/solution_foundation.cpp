@@ -153,7 +153,7 @@ void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
             continue;
         }
         const bool reads_forecast_history =
-            solution == "S-6" &&
+            (solution == "S-6" || solution == "B-1") &&
             step->attributes.value("methodology", std::string{}) == "M-4";
         if (reads_forecast_history) {
             continue;
@@ -346,6 +346,65 @@ void bind_s6_correctness(ir::ExecutionGraph& graph, const Json& sources) {
         {"approval_required",
          common.value("approval_required", true)},
         {"level_action", action},
+        {"kill_switch_configured", policy.contains("kill_switch")}};
+}
+
+void bind_b1_correctness(ir::ExecutionGraph& graph,
+                         const SnapshotSpec& snapshot,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-1") {
+        return;
+    }
+    const int level = manifest->attributes.value("level", 0);
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json uplift =
+        sources.contains("M-6") && sources.at("M-6").is_object()
+            ? sources.at("M-6")
+            : Json::object();
+    const Json policy = solution_policy_template("B-1", level);
+    std::string level_action;
+    for (const Json& tier : policy.at("tiers")) {
+        if (tier.at("name") == "high_demand") {
+            level_action = tier.at("action").get<std::string>();
+        }
+    }
+    const Json default_blocklist = {
+        "future_price", "future_competitor_price", "realized_future_price",
+        "future_discount", "post_offer_demand"};
+    manifest->attributes["b1_correctness"] = {
+        {"identification",
+         {{"identifiable_variation",
+           common.value("identifiable_variation", false)},
+          {"randomized_experiment",
+           common.value("randomized_experiment", false)},
+          {"treatment_column",
+           uplift.value("treatment", "price_treatment")},
+          {"outcome_column", uplift.value("outcome", "demand_response")}}},
+        {"policy", policy},
+        {"margin_floor", common.value("margin_floor", 0.25)},
+        {"automatic_authority_limit",
+         common.value("automatic_authority_limit", 0.05)},
+        {"hard_authority_limit",
+         common.value("hard_authority_limit", 0.15)},
+        {"leakage",
+         {{"prediction_time", snapshot.as_of},
+          {"competitor_price_cutoff",
+           common.value("competitor_price_cutoff", snapshot.as_of)},
+          {"future_prices_excluded",
+           common.value("future_prices_excluded", true)},
+          {"forbidden_feature_names",
+           common.value("forbidden_feature_names", default_blocklist)},
+          {"feature_names",
+           settings.at("dataset").value("feature_columns", Json::array())}}},
+        {"level_action", level_action},
         {"kill_switch_configured", policy.contains("kill_switch")}};
 }
 
@@ -886,6 +945,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["s8_correctness"] = {{"type", "object"}};
     schema["properties"]["s9_correctness"] = {{"type", "object"}};
     schema["properties"]["s10_correctness"] = {{"type", "object"}};
+    schema["properties"]["b1_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -926,6 +986,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_s2_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
     bind_s6_correctness(composed.graph, input.at("sources"));
+    bind_b1_correctness(composed.graph, *snapshot, settings,
+                        input.at("sources"));
     bind_s3_correctness(composed.graph, settings, input.at("sources"));
     bind_s4_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"), *solution);
@@ -957,6 +1019,7 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     });
     if (primary != solution->composition.end() && primary->id != "M-1" &&
         solution->id != "S-5" && solution->id != "S-11" &&
+        solution->id != "B-1" &&
         !settings.contains("decision_source")) {
         return ApiResult::failure("invalid_input", "this module requires explicit decision_source output and score bindings");
     }
@@ -985,6 +1048,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
             {"entity_column", "entity"},
             {"score_column", "policy_score"},
             {"output_name", "recommendation table"}};
+    } else if (!binding.contains("decision_source") && solution->id == "B-1") {
+        binding["decision_source"] = {
+            {"methodology", "M-4"},
+            {"entity_column", "series"},
+            {"score_column", "point_forecast"},
+            {"output_name", "forecast"}};
     } else if (!binding.contains("decision_source")) {
         binding["decision_source"] = {{"methodology", "M-1"},
                                        {"entity_column", "account"}, {"score_column", "risk"}};
@@ -1062,6 +1131,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     } else if (solution->id == "S-10") {
         binding["s10_correctness"] = composed.graph.find_node("solution_manifest")
                                          ->attributes.at("s10_correctness");
+    } else if (solution->id == "B-1") {
+        binding["b1_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b1_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -1339,9 +1412,11 @@ std::optional<std::map<std::string, Json>> uplift_rows(
     std::map<std::string, Json> targeting;
     const std::string solution_id =
         binding.value("solution", std::string{});
-    const int minimum_level = solution_id == "S-9" ? 2 : 3;
+    const int minimum_level = solution_id == "B-1" ? 1
+                              : solution_id == "S-9" ? 2
+                                                      : 3;
     if ((solution_id != "S-1" && solution_id != "S-3" && solution_id != "S-4" &&
-         solution_id != "S-9") ||
+         solution_id != "S-9" && solution_id != "B-1") ||
         binding.value("level", 1) < minimum_level) {
         return targeting;
     }
@@ -1603,6 +1678,18 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
                 spec.payload[field] = entity.at(field);
             }
         }
+    } else if (binding.value("solution", std::string{}) == "B-1") {
+        spec.payload["product_market"] = decision.entity_id;
+        spec.payload["current_price"] =
+            entity.value("current_price", 0.0);
+        spec.payload["recommended_price"] =
+            entity.value("recommended_price", 0.0);
+        spec.payload["gross_margin"] =
+            entity.value("gross_margin", 0.0);
+        spec.payload["authority_distance"] =
+            entity.value("authority_distance", 0.0);
+        spec.payload["estimated_price_effect"] =
+            entity.value("estimated_uplift", 0.0);
     }
     for (const std::string field : {
              "series", "timestamp", "point_forecast", "lower", "upper",
@@ -1653,6 +1740,50 @@ bool s12_required_rule(const Json& config, const std::string& field) {
         }
     }
     return false;
+}
+
+bool b1_numeric_rule(const Json& config, const std::string& field,
+                     const std::string& operation, double expected) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == operation &&
+            rule.contains("value") && rule.at("value").is_number() &&
+            std::abs(rule.at("value").get<double>() - expected) < 1e-12) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string validate_b1_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-1") {
+        return {};
+    }
+    const Json& correctness = binding.at("b1_correctness");
+    const double margin_floor = correctness.at("margin_floor");
+    const double automatic = correctness.at("automatic_authority_limit");
+    const double hard = correctness.at("hard_authority_limit");
+    if (!b1_numeric_rule(config, "gross_margin", "gte", margin_floor) ||
+        !b1_numeric_rule(config, "authority_distance", "lte", hard)) {
+        return "B-1 policy must retain its margin floor and hard authority band";
+    }
+    for (const std::string action_name : {
+             "controlled_price_experiment", "publish_price_change"}) {
+        const Json action =
+            config.value("actions", Json::object())
+                .value(action_name, Json::object());
+        if (action.value("approval_field", std::string{}) !=
+                "authority_distance" ||
+            !action.contains("approval_above") ||
+            !action.at("approval_above").is_number() ||
+            action.at("approval_above").get<double>() > automatic) {
+            return "B-1 price changes must retain approval above the automatic authority band";
+        }
+    }
+    return {};
 }
 
 std::string validate_s12_runtime_policy(const Json& binding,
@@ -1855,9 +1986,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     treatment->second.at("estimated_uplift");
                 entity["uplift_recommended"] =
                     treatment->second.at("recommended");
-                if (!treatment->second.at("recommended").get<bool>() ||
-                    treatment->second.at("estimated_uplift").get<double>() <=
-                        0.0) {
+                if (binding.value("solution", std::string{}) != "B-1" &&
+                    (!treatment->second.at("recommended").get<bool>() ||
+                     treatment->second.at("estimated_uplift").get<double>() <=
+                         0.0)) {
                     entity["action"] = "no_contact";
                 }
             }
@@ -1914,10 +2046,12 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     if (!policy) {
         return ApiResult::failure("not_found", "solution policy no longer exists");
     }
-    if (const std::string policy_error =
-            validate_s12_runtime_policy(binding, policy->current()->config);
-        !policy_error.empty()) {
-        return ApiResult::failure("invalid_input", policy_error);
+    for (const std::string policy_error : {
+             validate_b1_runtime_policy(binding, policy->current()->config),
+             validate_s12_runtime_policy(binding, policy->current()->config)}) {
+        if (!policy_error.empty()) {
+            return ApiResult::failure("invalid_input", policy_error);
+        }
     }
     double complaints = 0.0;
     double unsubscribes = 0.0;
@@ -1959,6 +2093,9 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::size_t s11_contact_cap_violations = 0;
     std::size_t s11_missing_propensities = 0;
     std::size_t s11_margin_floor_violations = 0;
+    std::size_t b1_margin_floor_violations = 0;
+    std::size_t b1_authority_band_violations = 0;
+    std::size_t b1_unapproved_price_changes = 0;
     std::map<std::string, std::size_t> driver_counts;
     std::set<std::string> reportable_forecast_series;
     std::size_t protected_forecast_series = 0;
@@ -2118,6 +2255,14 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                  entity.value("selection_mode", std::string{})},
                 {"selected_action",
                  entity.value("selected_action", std::string{})}};
+        } else if (binding.value("solution", std::string{}) == "B-1") {
+            entity["decision_cell"] = {
+                {"demand_band", decision->tier},
+                {"current_price", entity.value("current_price", 0.0)},
+                {"recommended_price",
+                 entity.value("recommended_price", 0.0)},
+                {"authority_distance",
+                 entity.value("authority_distance", 0.0)}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -2315,6 +2460,31 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 decision->action == "release_order" &&
                 decision->autonomy != "A1") {
                 ++unapproved_over_bound_orders;
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-1") {
+            const double margin_floor =
+                binding.at("b1_correctness").at("margin_floor");
+            const double automatic =
+                binding.at("b1_correctness")
+                    .at("automatic_authority_limit");
+            const double hard =
+                binding.at("b1_correctness").at("hard_authority_limit");
+            const double margin = entity.value("gross_margin", 0.0);
+            const double distance =
+                entity.value("authority_distance", 0.0);
+            if (decision->actionable && margin < margin_floor) {
+                ++b1_margin_floor_violations;
+            }
+            if (decision->actionable && distance > hard) {
+                ++b1_authority_band_violations;
+            }
+            const bool changes_price =
+                decision->action == "controlled_price_experiment" ||
+                decision->action == "publish_price_change";
+            if (changes_price && distance > automatic &&
+                decision->autonomy != "A1") {
+                ++b1_unapproved_price_changes;
             }
         }
         if (binding.value("solution", std::string{}) == "S-8") {
@@ -2542,6 +2712,19 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     ? 0.0
                     : static_cast<double>(review_tasks) /
                           static_cast<double>(operational_decisions));
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-1") {
+            monitor->observe_guardrail(
+                "margin_floor_violations",
+                static_cast<double>(b1_margin_floor_violations));
+            monitor->observe_guardrail(
+                "authority_band_violations",
+                static_cast<double>(b1_authority_band_violations));
+            monitor->observe_guardrail(
+                "unapproved_price_changes",
+                static_cast<double>(b1_unapproved_price_changes));
+            monitor->observe_guardrail("price_feature_leakage", 0.0);
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
         } else {

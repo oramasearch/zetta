@@ -106,6 +106,15 @@ experiment keeps 10% as permanent holdout and divides the rest equally between
 M-8 exploit and M-15 explore cells. The explore cell records M-15's actual
 selection probability; exploit records one.
 
+B-1 defines high/standard demand floors of 24.0/0.0. Level 1 emits an A0 price
+recommendation, level 2 creates an A2 pricing-review task, level 3 creates an A2
+controlled experiment, and level 4 publishes an A2 price change. Experiment
+and publication actions become A1 above `authority_distance` 0.05. Eligibility
+requires pricing approval, a fresh current price, gross margin at least 0.25,
+and authority distance at most 0.15; manual-only and legal-hold flags suppress
+action. Its two tiers each keep a deterministic 10% holdout and measure 30-day
+`net_margin`.
+
 These numbers are editable configuration, not calibration claims or customer
 economics. Experiment defaults provide 10% holdout probability per declared
 tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
@@ -138,6 +147,8 @@ action execution over a champion/challenger design.
 S-11 observes consent,
 contact-cap, propensity-log, margin-floor, and action-execution guardrails and
 measures `net_value` through uplift cells.
+B-1 observes margin-floor, hard authority-band, unapproved-change,
+price-feature-leakage, and action-execution guardrails.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

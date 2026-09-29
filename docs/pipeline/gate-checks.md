@@ -20,6 +20,7 @@ The reusable annotation and methodology-specific checks are:
 | `ForecastGraphCheck` | `forecast_correctness` | an M-4 graph with invalid temporal backtests, future features, calibration, or no seasonal-naive baseline |
 | `SurvivalCensoringCheck` | `survival_censoring` | a survival model that does not declare censoring, stop-after-event, duration/event columns, and point-in-time features |
 | `CausalUpliftCheck` | `causal_uplift` | an M-6 step missing treatment/outcome roles, weakening overlap bounds, or using an outcome-like or post-treatment feature |
+| `B1*Check` family | `b1_elasticity_identification`, `b1_margin_authority_policy`, `b1_price_leakage`, `b1_level_composition` | a B-1 graph without identifiable price variation, enforced margin/authority policy, decision-time price evidence, or its complete M-4/M-6/M-16 composition |
 | `AnomalyGraphCheck` | `anomaly_correctness` | an M-7 graph with invalid budget, label use, robust scaling, or causal windows |
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 | `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
@@ -171,6 +172,24 @@ authority selected for that level, and a configured kill switch at level 4.
 hints, and optional `sources.correctness` overrides. `run_solution` checks the
 stored profile again. See [S-6](../solutions/S-6.md) for the data, policy,
 action, and measurement contract.
+
+### B-1 composed solution checks
+
+The B-1 checks engage only for a bound B-1 manifest.
+`b1_elasticity_identification` requires randomized experiments or another
+declared source of identifiable price variation plus named treatment and
+outcome columns. `b1_margin_authority_policy` requires the executable policy to
+enforce the configured gross-margin floor and hard authority band, requires
+approval above the automatic band for experiments and publication, and
+requires M-16 constraint verification. `b1_price_leakage` rejects competitor
+prices observed after the decision and any configured future-price feature.
+`b1_level_composition` requires M-4, M-6, M-16, the registered level action,
+and the level-4 kill switch.
+
+`create_solution` derives the profile from snapshot and dataset roles, M-6
+columns, the complete policy template, and `sources.correctness`. The margin,
+hard-band, and approval limits are checked again immediately before actions.
+See [B-1](../solutions/B-1.md) for the complete contract.
 
 ### S-7 composed solution checks
 

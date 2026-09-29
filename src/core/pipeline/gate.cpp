@@ -195,6 +195,10 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S6LeadTimeCheck>());
     gate.add_check(std::make_shared<S6OrderApprovalCheck>());
     gate.add_check(std::make_shared<S6LevelCompositionCheck>());
+    gate.add_check(std::make_shared<B1ElasticityIdentificationCheck>());
+    gate.add_check(std::make_shared<B1MarginAuthorityPolicyCheck>());
+    gate.add_check(std::make_shared<B1PriceLeakageCheck>());
+    gate.add_check(std::make_shared<B1LevelCompositionCheck>());
     gate.add_check(std::make_shared<S7CausalHumilityCheck>());
     gate.add_check(std::make_shared<S7AlertBudgetCheck>());
     gate.add_check(std::make_shared<S7SeasonalityBaselineCheck>());

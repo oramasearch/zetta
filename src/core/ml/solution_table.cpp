@@ -39,7 +39,8 @@ Solution band_a(
     std::vector<SolutionDataRole> required_data_roles,
     std::string decision_policy_template, std::string measurement_design,
     std::vector<std::string> guardrails,
-    std::vector<SolutionCapabilityLevel> capability_levels) {
+    std::vector<SolutionCapabilityLevel> capability_levels,
+    std::string promotion_condition = {}) {
     Solution solution;
     solution.id = std::move(id);
     solution.name = std::move(name);
@@ -55,6 +56,7 @@ Solution band_a(
     solution.measurement_design = std::move(measurement_design);
     solution.guardrails = std::move(guardrails);
     solution.capability_levels = std::move(capability_levels);
+    solution.promotion_condition = std::move(promotion_condition);
     solution.templates = zetta::solutions::solution_templates(solution.id);
     solution.runnable = true;
     for (const SolutionMethodology& entry : solution.composition) {
@@ -80,6 +82,7 @@ Solution band_a(
                            : solution.id == "S-10" ? 1119
                            : solution.id == "S-11" ? 1120
                            : solution.id == "S-12" ? 1121
+                           : solution.id == "B-1" ? 1175
                                                    : 1102);
     return solution;
 }
@@ -504,14 +507,36 @@ const std::vector<Solution>& solutions() {
             {"no automated denial", "overpayment", "false referral", "complaints", "field extraction accuracy"},
             levels("SIU queue ranking", "add triage with human release",
                    "add instant pay inside allowlists", "add photo and subrogation assistance")),
-        sketch("B-1", "Dynamic Pricing & Discount Governance",
-               "Set prices or discounts inside explicit margin and authority bands.",
-               "Govern price changes despite policy-confounded historical demand.",
-               {{"M-4", "primary", 1}, {"M-6", "foundation", 1}, {"M-16", "foundation", 1}},
-               {{"entity", true, "product, customer, and market"},
-                {"treatment", true, "price or discount offered"},
-                {"label", true, "demand, margin, and customer outcome"}},
-               "Promote when a target account has identifiable price variation or permits controlled price experiments."),
+        band_a(
+            "B-1", "Dynamic Pricing & Discount Governance",
+            "Set prices or discounts inside explicit margin and authority bands.",
+            "Govern price changes despite policy-confounded historical demand.",
+            {{"M-4", "primary", 1}, {"M-6", "foundation", 1},
+             {"M-16", "foundation", 1}},
+            {"M-4", "M-6", "M-16"},
+            {"pricing recommendations", "pricing review tasks",
+             "controlled price experiments", "approved price publication"},
+            {"L1 pricing recommendation", "L1 review and experiment task"},
+            {{"recommendations", "A0"},
+             {"review tasks and experiments inside authority bands", "A2"},
+             {"price changes above the automatic authority band", "A1"}},
+            {{"entity", true, "product, customer, and market"},
+             {"treatment", true, "randomized price or discount offered"},
+             {"label", true, "demand, margin, and customer outcome"},
+             {"time", true, "offer, competitor observation, and outcome chronology"},
+             {"price", true, "current and recommended prices at decision time"},
+             {"margin", true, "gross margin and configured margin floor"},
+             {"authority", true, "automatic and hard price-change bands"}},
+            "Eligibility, margin floor, automatic and hard authority bands, approvals, frequency caps, and kill switch.",
+            "Randomized or otherwise identifiable price variation with per-tier holdouts and net-margin measurement.",
+            {"margin-floor violations", "authority-band violations",
+             "unapproved price changes", "price-feature leakage",
+             "action-execution rate"},
+            levels("forecast and governed recommendation",
+                   "add human pricing review tasks",
+                   "add controlled price experiments",
+                   "add approved price publication inside authority bands"),
+            "Promote when a target account has identifiable price variation or permits controlled price experiments."),
         sketch("B-2", "Employee Attrition (aggregate-first)",
                "Explain aggregate workforce risks without flagging individuals to managers.",
                "Support organizational interventions with small-group and proxy protections.",
