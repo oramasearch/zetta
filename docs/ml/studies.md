@@ -60,6 +60,19 @@ It records that existing Model as the Study's promoted project model version;
 it does not copy weights. The action requires the dedicated
 `studies:promote` permission. `pipelines:manage` alone cannot promote.
 
+## Deletion
+
+`delete_study` refuses a study whose status is `running`; call `stop_study`
+first. Deleting a stopped or complete study removes its replicated record and
+each non-promoted trial Run. Run metrics are part of the Run record, so its
+parameters, series, summaries, and metric artifacts are removed with it.
+
+When a trial has been promoted, the promoted Model and the Run named by that
+Model's lineage remain registered. Deletion does not remove any Model. The
+result lists every removed Run and identifies the retained promoted Model and
+Run. The action has its own `studies:delete` permission; neither
+`pipelines:manage` nor `studies:promote` grants it.
+
 ## REST and MCP
 
 Each operation is registered once. REST uses `/v1/<capability>` and MCP uses a
@@ -191,6 +204,29 @@ REST: `POST /v1/stop_trial`. MCP tool: `stop_trial`. Permission:
 { "study": "study-uuid", "run": "run-uuid", "state": "failed" }
 ```
 
+### `delete_study`
+
+REST: `POST /v1/delete_study`. MCP tool: `delete_study`. Permission:
+`studies:delete` (`orchestration:delete_study`).
+
+```json
+{ "study": "study-uuid" }
+```
+
+```json
+{
+  "study": "study-uuid",
+  "name": "churn-tuning",
+  "removed": { "runs": ["non-promoted-run-uuid"] },
+  "kept": {
+    "model": "promoted-model-uuid",
+    "run": "promoted-run-uuid"
+  }
+}
+```
+
+The `model` and `run` strings are empty when no trial was promoted.
+
 ### `promote_trial`
 
 REST: `POST /v1/promote_trial`. MCP tool: `promote_trial`. Permission:
@@ -252,5 +288,5 @@ per request.
 The replicated catalog key is `study:<uuid>`. Its local projection is
 `<data-dir>/<uuid>/study.json`; restart and reconciliation validate the closed
 Study schema before materializing it. The schema is published as
-`study.schema.json`, and all eight capability schemas appear in
+`study.schema.json`, and all nine capability schemas appear in
 `schemas/openapi.json` and MCP `tools/list`.

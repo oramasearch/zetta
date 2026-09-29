@@ -289,7 +289,7 @@ terms of the **permission vocabulary** (below), not raw capabilities:
 
 | role   | permissions |
 |--------|-------------|
-| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `serving:manage`, `cloud:manage` (#799), **and the pub/sub atoms** `pubsub:*` (#1029) |
+| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `studies:promote`, `studies:delete`, `serving:manage`, `cloud:manage` (#799, #1138, #1158), **and the pub/sub atoms** `pubsub:*` (#1029) |
 | writer | `sql:read`, `sql:write`, `sql:ddl`, `mcp:call`, `serving:read` |
 | reader | `sql:read`, `serving:read`, `mcp:call` |
 
@@ -460,6 +460,8 @@ can never disagree:
 | `pubsub:publish` / `pubsub:subscribe` / `pubsub:send_wildcard` | `data:pubsub_publish` / `data:pubsub_subscribe` / `data:pubsub_send_wildcard` | publish to, read from, and address wildcards in pub/sub (#1029, [../pubsub/governance.md](../pubsub/governance.md)) |
 | `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
 | `pipelines:manage` | all pipeline, dataset/connector, snapshot, graph, agent/profile/plan, solution, decision-policy, experiment, and run-metric write operations in `permission.cpp` | drive the authoring → gate → deploy → run → governed-action control surface over MCP/REST, including run parameters, metric series, and typed artifacts (#1102, #1103, #1104, #1105, #1137) |
+| `studies:promote`  | `orchestration:promote_trial` | register a complete trial's Model as the Study's promoted project version (#1138) |
+| `studies:delete`   | `orchestration:delete_study` | delete a stopped or complete Study and its non-promoted trial Runs while retaining promoted lineage (#1158) |
 | `serving:manage`   | `orchestration:{expose_model, unexpose_model, expose_index, unexpose_index}` | expose / unexpose models + indexes for governed serving |
 | `cloud:manage`     | `orchestration:{cloud_inspect, detect_provisioners, add_nodes, approve_consent, deny_consent}` | inspect targets, detect provisioners, add nodes, decide consent challenges |
 
@@ -470,8 +472,9 @@ needs, masking, RLS) is the scoped-grants / RLS work (#4 / #5). `mcp:call`
 (`api:query`) is what all read capabilities + the `sql` capability check today, so
 every built-in carries it.
 
-The four **orchestration atoms** (`pipelines:manage` / `serving:manage` /
-`cloud:manage` / `audit:purge`, #799, #1169) cover every registry
+The six **orchestration atoms** (`pipelines:manage` / `studies:promote` /
+`studies:delete` / `serving:manage` / `cloud:manage` / `audit:purge`, #799,
+#1138, #1158, #1169) cover every registry
 **Orchestration** op — the pipeline
 authoring/deploy/run flow, model+index exposure, and the cloud control surface.
 The capability model is exact-match (no wildcard), so each op must be named by some
@@ -480,7 +483,8 @@ reach orchestration over HTTP/MCP was the (now-removed) unauthenticated-local
 bypass, which skipped the capability check entirely; with **auth always on** the
 bootstrap owner (`admin` = the whole vocabulary) must actually hold them, so it can
 drive orchestration over HTTP/MCP/REST. **Only `admin` gets them** — `writer` and
-`reader` are unchanged. The dedicated audit atom is likewise admin-only. The
+`reader` are unchanged. The dedicated study and audit atoms are likewise
+admin-only. The
 admin-covers-every-registry-op invariant is guarded by a
 test (`AdminRoleCoversRegistry` in `tests/api/test_mcp_server.cpp`).
 

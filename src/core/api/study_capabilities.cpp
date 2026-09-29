@@ -1,4 +1,4 @@
-// AutoML studies on the control surface (#1138; docs/ml/studies.md).
+// AutoML studies on the control surface (#1138, #1158; docs/ml/studies.md).
 
 #include <algorithm>
 #include <set>
@@ -109,6 +109,39 @@ const nlohmann::json& stop_study_output_schema() {
          {{"study", study_reference()},
           {"status", {{"type", "string"}, {"const", "stopped"}}},
           {"reason", {{"type", "string"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_study_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"study", "name", "removed", "kept"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"study", study_reference()},
+          {"name", {{"type", "string"}}},
+          {"removed",
+           {{"type", "object"},
+            {"required", {"runs"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"runs",
+               {{"type", "array"},
+                {"items", study_reference()},
+                {"description",
+                 "non-promoted trial Runs removed with their embedded metrics"}}}}}}},
+          {"kept",
+           {{"type", "object"},
+            {"required", {"model", "run"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"model",
+               {{"type", "string"},
+                {"description", "the promoted Model retained after deletion"}}},
+              {"run",
+               {{"type", "string"},
+                {"description",
+                 "the retained Run that produced the promoted Model"}}}}}}}}}};
     return schema;
 }
 
@@ -401,6 +434,26 @@ ApiResult handle_stop_study(const nlohmann::json& input,
                                {"reason", study->value().stop_reason}});
 }
 
+ApiResult handle_delete_study(const nlohmann::json& input,
+                              ApiContext& context) {
+    const std::string reference = input.at("study").get<std::string>();
+    if (!context.node.find_study(reference)) {
+        return ApiResult::failure("not_found", "study was not found", "/study");
+    }
+    std::string reason;
+    const std::optional<zetta::ml::StudyDeleteResult> deleted =
+        context.node.delete_study(reference, &reason);
+    if (!deleted) {
+        return ApiResult::failure("engine_error", reason, "/study");
+    }
+    return ApiResult::success(
+        {{"study", deleted->id},
+         {"name", deleted->name},
+         {"removed", {{"runs", deleted->removed_runs}}},
+         {"kept", {{"model", deleted->kept_model},
+                   {"run", deleted->kept_run}}}});
+}
+
 ApiResult handle_stop_trial(const nlohmann::json& input,
                             ApiContext& context) {
     const auto study = context.node.find_study(input.at("study").get<std::string>());
@@ -494,6 +547,14 @@ void register_study_capabilities(Registry& registry) {
         get_study_schema(), stop_study_output_schema(), CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "stop_study"}, true, false,
         handle_stop_study});
+    registry.add(Capability{
+        "delete_study", "Delete study",
+        "Delete a stopped or complete study and its non-promoted trial Runs "
+        "with their metrics while retaining promoted Model lineage; this is "
+        "not undoable.",
+        get_study_schema(), delete_study_output_schema(), CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_study"}, true, false,
+        handle_delete_study});
     registry.add(Capability{
         "stop_trial", "Stop trial",
         "Stop one running trial Run without stopping its study; this mutates state.",

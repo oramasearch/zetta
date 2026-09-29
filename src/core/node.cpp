@@ -1949,6 +1949,61 @@ std::shared_ptr<zetta::ml::Study> Node::find_study(
     return found == studies_.end() ? nullptr : *found;
 }
 
+std::optional<zetta::ml::StudyDeleteResult> Node::delete_study(
+    const std::string& id_or_name, std::string* error) {
+    const std::shared_ptr<zetta::ml::Study> study = find_study(id_or_name);
+    if (!study) {
+        if (error != nullptr) {
+            *error = "/study: no study named '" + id_or_name + "'";
+        }
+        return std::nullopt;
+    }
+    if (study->status() == zetta::ml::StudyStatus::Running) {
+        if (error != nullptr) {
+            *error = "/study: running studies must be stopped before deletion";
+        }
+        return std::nullopt;
+    }
+
+    zetta::ml::StudyDeleteResult result;
+    result.id = study->id();
+    result.name = study->spec().name;
+    result.kept_model = study->value().promoted_model;
+    if (!result.kept_model.empty()) {
+        if (const std::shared_ptr<zetta::ml::Model> model =
+                find_model(result.kept_model)) {
+            result.kept_run = model->run();
+        }
+        if (result.kept_run.empty()) {
+            const auto promoted_trial = std::ranges::find(
+                study->value().trials, result.kept_model,
+                &zetta::ml::StudyTrial::model);
+            if (promoted_trial != study->value().trials.end()) {
+                result.kept_run = promoted_trial->run;
+            }
+        }
+    }
+
+    std::vector<std::string> removable_runs;
+    for (const zetta::ml::StudyTrial& trial : study->value().trials) {
+        if (trial.run != result.kept_run) {
+            removable_runs.push_back(trial.run);
+        }
+    }
+    for (const std::string& run_id : removable_runs) {
+        if (drop_run(run_id)) {
+            result.removed_runs.push_back(run_id);
+        }
+    }
+    if (!drop_study(result.id)) {
+        if (error != nullptr) {
+            *error = "/study: could not delete study '" + result.name + "'";
+        }
+        return std::nullopt;
+    }
+    return result;
+}
+
 bool Node::drop_study(const std::string& id) {
     if (!find_study(id)) return false;
     if (replication_ != nullptr) replication_->remove(catalog::study_key(id));

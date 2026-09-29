@@ -45,8 +45,9 @@ MCP/HTTP work.
   exposed topics and long polls that suspend without holding threads.
 - [../ml/run-metrics.md](../ml/run-metrics.md) — the five run-metric capabilities,
   their REST and MCP request/response examples, and live topic reads (#1137).
-- [../ml/studies.md](../ml/studies.md) — the eight study capabilities, Run-backed
-  trials, promotion permission, analysis, and bounded live progress reads (#1138).
+- [../ml/studies.md](../ml/studies.md) — the nine study capabilities, Run-backed
+  trials, dedicated promotion/deletion permissions, analysis, lineage-preserving
+  cleanup, and bounded live progress reads (#1138, #1158).
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
@@ -181,6 +182,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `stop_study` | action | orchestration:stop_study | stop a study and its active trial Runs |
 | `stop_trial` | action | orchestration:stop_trial | stop one active trial Run without stopping its study |
 | `promote_trial` | action | orchestration:promote_trial (`studies:promote`) | register a complete trial's existing Model as the Study's promoted project version |
+| `delete_study` | action | orchestration:delete_study (`studies:delete`) | delete a stopped or complete study and non-promoted trial Runs with their metrics while preserving promoted Model lineage |
 | `create_policy` | action | orchestration:create_policy | create version 1 of a replicated decision policy |
 | `update_policy` | action | orchestration:update_policy | append a replacement version or apply bounded numeric tuning |
 | `decide` | action | orchestration:decide | apply a policy to one scored entity or a scored table and persist versioned decisions |

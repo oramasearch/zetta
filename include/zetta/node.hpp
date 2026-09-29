@@ -360,12 +360,16 @@ public:
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
 
-    // AutoML studies (#1138). The Study is replicated configuration and
-    // lifecycle state; each StudyTrial names exactly one Run.
+    // AutoML studies (#1138, #1158). The Study is replicated configuration and
+    // lifecycle state; each StudyTrial names exactly one Run. delete_study
+    // refuses a running Study, removes non-promoted trial Runs with their
+    // embedded metrics, and keeps the promoted Model's producing Run.
     std::shared_ptr<zetta::ml::Study> create_study(
         zetta::ml::StudySpec spec, std::string* error = nullptr);
     std::shared_ptr<zetta::ml::Study> find_study(
         const std::string& id_or_name) const;
+    std::optional<zetta::ml::StudyDeleteResult> delete_study(
+        const std::string& id_or_name, std::string* error = nullptr);
     bool drop_study(const std::string& id);
     std::vector<std::shared_ptr<zetta::ml::Study>> studies() const {
         return studies_;

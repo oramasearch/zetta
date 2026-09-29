@@ -7,7 +7,9 @@
 #include <thread>
 
 #include "temp_dir.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/compute/work_stealing_scheduler.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
 
@@ -298,5 +300,87 @@ TEST(Study, ReloadsItsRunBackedTrialsFromDisk) {
     EXPECT_EQ(study->value().trials.front().run, run_id);
     EXPECT_EQ(study->value().trials.front().seed, 1138u);
     EXPECT_TRUE(reloaded.find_run(run_id));
+    reloaded.stop();
+}
+
+TEST(Study, DeleteRemovesNonPromotedRunsAndKeepsPromotedLineage) {
+    zetta::test::TempDir directory;
+    zetta::cluster::ReplicationManager replication{"study-delete-test"};
+    std::string study_id;
+    std::string removed_run_id;
+    std::string kept_run_id;
+    std::string kept_model_id;
+    {
+        zetta::Node node{{directory.path().string(), false}, &replication};
+        ASSERT_TRUE(node.start());
+        const auto running_study = node.create_study(synthetic_spec(
+            "running", zetta::ml::SamplerKind::Random,
+            zetta::ml::PrunerKind::None, 1));
+        ASSERT_TRUE(running_study);
+        std::string error;
+        EXPECT_FALSE(node.delete_study(running_study->id(), &error));
+        EXPECT_NE(error.find("running"), std::string::npos);
+        EXPECT_TRUE(node.find_study(running_study->id()));
+
+        const auto study = node.create_study(synthetic_spec(
+            "deletable", zetta::ml::SamplerKind::Random,
+            zetta::ml::PrunerKind::None, 2));
+        const auto removed_run = node.create_run("", "non-promoted-trial");
+        const auto kept_run = node.create_run("", "promoted-trial");
+        ASSERT_TRUE(study);
+        ASSERT_TRUE(removed_run);
+        ASSERT_TRUE(kept_run);
+        study_id = study->id();
+        removed_run_id = removed_run->id();
+        kept_run_id = kept_run->id();
+        ASSERT_TRUE(node.log_run_metrics(
+            removed_run_id, 1, {{"validation.score", 0.7}}));
+        ASSERT_TRUE(node.log_run_metrics(
+            kept_run_id, 1, {{"validation.score", 0.9}}));
+
+        zetta::ml::StudyTrial removed_trial;
+        removed_trial.run = removed_run_id;
+        ASSERT_TRUE(study->add_trial(std::move(removed_trial)));
+        ASSERT_TRUE(study->finish_trial(
+            removed_run_id, zetta::ml::TrialState::Complete, 0.7, 1.0));
+        zetta::ml::StudyTrial kept_trial;
+        kept_trial.number = 1;
+        kept_trial.run = kept_run_id;
+        ASSERT_TRUE(study->add_trial(std::move(kept_trial)));
+        ASSERT_TRUE(study->finish_trial(
+            kept_run_id, zetta::ml::TrialState::Complete, 0.9, 1.0));
+
+        zetta::ml::ModelValue model_value;
+        model_value.name = "promoted-model";
+        model_value.kind = "classifier";
+        model_value.run = kept_run_id;
+        const auto model = node.create_model(std::move(model_value));
+        ASSERT_TRUE(model);
+        kept_model_id = model->id();
+        study->set_promoted_model(kept_model_id);
+        study->set_complete("trials complete");
+
+        const std::optional<zetta::ml::StudyDeleteResult> deleted =
+            node.delete_study(study_id, &error);
+        ASSERT_TRUE(deleted) << error;
+        EXPECT_EQ(deleted->removed_runs,
+                  (std::vector<std::string>{removed_run_id}));
+        EXPECT_EQ(deleted->kept_model, kept_model_id);
+        EXPECT_EQ(deleted->kept_run, kept_run_id);
+        EXPECT_FALSE(node.find_study(study_id));
+        EXPECT_FALSE(node.find_run(removed_run_id));
+        EXPECT_TRUE(node.find_run(kept_run_id));
+        EXPECT_TRUE(node.find_model(kept_model_id));
+        node.stop();
+    }
+
+    zetta::Node reloaded{{directory.path().string(), false}, &replication};
+    ASSERT_TRUE(reloaded.start());
+    EXPECT_FALSE(reloaded.find_study(study_id));
+    EXPECT_FALSE(reloaded.find_run(removed_run_id));
+    const auto kept_run = reloaded.find_run(kept_run_id);
+    ASSERT_TRUE(kept_run);
+    EXPECT_FALSE(kept_run->get_metrics().at("series").empty());
+    EXPECT_TRUE(reloaded.find_model(kept_model_id));
     reloaded.stop();
 }

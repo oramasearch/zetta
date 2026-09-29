@@ -121,7 +121,8 @@ What's inside, by domain (each links to that domain's docs):
   this registry and refuse unsupported model work.
   [AutoML studies](docs/ml/studies.md) search those native learners with typed
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
-  tracked Run trials; analysis and governed model promotion have REST/MCP parity.
+  tracked Run trials; analysis, governed model promotion, and lineage-preserving
+  deletion of stopped studies have REST/MCP parity.
   The [solution registry](docs/solutions/README.md) lists the 12 catalogue
   modules and eight Band-B sketches. Selected levels now execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action

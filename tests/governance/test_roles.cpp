@@ -129,6 +129,14 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     EXPECT_EQ(permission_operations("studies:promote"),
               (std::vector<Operation>{{CapabilityDomain::Orchestration,
                                        "promote_trial"}}));
+    EXPECT_EQ(permission_operations("studies:delete"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration,
+                                       "delete_study"}}));
+    EXPECT_FALSE(zetta::governance::capabilities_for_permissions(
+                     {"pipelines:manage"})
+                     .permits({CapabilityDomain::Orchestration,
+                               "delete_study"},
+                              "2026-09-29T00:00:00.000Z"));
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 
@@ -145,10 +153,10 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     EXPECT_EQ(permission_operations("pubsub:manage"),
               (std::vector<Operation>{{CapabilityDomain::Orchestration, "pubsub_manage"}}));
 
-    // The canonical list carries the #746 atoms, blob:read (#747), the three
-    // Orchestration atoms (#799), eight pub/sub atoms (#1029/#1136), and the
-    // study promotion atom (#1138).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 23u);
+    // The canonical list carries the #746 atoms, blob:read (#747), six
+    // orchestration atoms, eight pub/sub atoms (#1029/#1136), study promotion
+    // (#1138), and study deletion (#1158).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 24u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

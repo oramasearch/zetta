@@ -313,7 +313,8 @@ TEST(OpenApi, StudyCapabilitiesHaveRestSchemaParity) {
     const nlohmann::json document = zetta::api::openapi_document(registry);
     for (const char* name : {"create_study", "get_study", "list_studies",
                              "list_trials", "stop_study", "stop_trial",
-                             "promote_trial", "get_study_analysis"}) {
+                             "promote_trial", "delete_study",
+                             "get_study_analysis"}) {
         const auto capability = registry.find(name);
         ASSERT_TRUE(capability) << name;
         const std::string method =
