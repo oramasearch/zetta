@@ -38,7 +38,7 @@ a real zero.
 | --- | --- | --- |
 | `audit` | flat fingerprint and per-origin seek indexes, reusable segment cache, bounded recent window, pending persistence estimate, and read-summary windows | Index memory grows with retained event count. The recent window is bounded by `audit_recent_events`; retention bounds ordinary event age. No per-event catalog values or tombstones remain (#1164). |
 | `pubsub` | topic and inbox event stores | Governed by the detected/configured pub/sub memory budget. Inspect `system.pubsub_topics` for the topic-level breakdown. |
-| `replication` | Automerge document estimate, encoded-value cache, parsed snapshot, and bounded change journal, excluding audit values | Current replicated metadata grows with live and tombstoned keys. The pending journal is capped at 65,536 changes. |
+| `replication` | Automerge document estimate, encoded-value cache, parsed snapshot, and bounded change journal, excluding audit values | Current replicated metadata grows with live and tombstoned keys. Cache rebuilds and legacy-audit retirement remeasure counters from current entries; subtraction clamps at zero. The pending journal is capped at 65,536 changes. |
 | `datasets_tables` | database/table objects, resident JSONL rows, Parquet id indexes, and decoded page caches | JSONL rows are fully resident. Parquet decoded pages follow the configured cache budget; positional ids avoid a per-row id table. |
 | `registry_sessions_connections` | node registries, queued owner work, capability declarations, active HTTP parsers/sessions, idle connection cache, requests, and long-poll waiters | Entity registries follow their durable catalogs. HTTP connections and idle objects follow server admission/cache limits; long polls are coroutine waiters, not threads. |
 | `runtime` | coroutine frames and blocking-pool work | Work counts should fall after calls finish. Worker thread stack reservations appear in `reserved_bytes`. |
@@ -48,6 +48,9 @@ a real zero.
 Probe byte values are inexpensive ownership estimates, not object-layout proofs.
 Allocator and RSS fields remain the authority for total memory. The difference is
 kept visible instead of being assigned to an arbitrary owner.
+The replication estimate is re-baselined whenever a document is restored or
+legacy audit history is removed. This prevents retired catalog entries from
+leaving stale counters that wrap the unsigned `bytes` or `items` fields (#1167).
 The audit row counts retained segment ids without decoding historical events.
 `system.node_metrics.audit_memory_bytes` uses the same ownership calculation;
 the [replicated million-event proof](../testing/audit-replication.md) also checks
@@ -86,5 +89,6 @@ later page faults.
 
 `GET /v1/node_memory` and MCP `tools/call` with `name: "node_memory"` use the
 same capability declaration, output schema, authorization, audit, and handler.
-The returned subsystem list is ordered by descending bytes. OpenAPI is generated
-from that declaration.
+The returned subsystem list is ordered by descending bytes. The parity regression
+also verifies identical replication byte/item values on both transports. OpenAPI
+is generated from that declaration.

@@ -593,6 +593,29 @@ TEST(AuditTrail, CatalogMigrationDiscardsOneHundredThousandAuditHistories) {
     EXPECT_EQ(node.audit_event_count(), 100'000u);
     EXPECT_EQ(node.audit_watermarks().at("legacy").at("high"), 100'000u);
     EXPECT_EQ(replication.entry_count(), 1u);
+    const auto migrated_usage = replication.memory_usage();
+    ReplicationManager fresh_measurement(zetta::util::new_uuid());
+    ASSERT_TRUE(fresh_measurement.restore(replication.save()));
+    const auto fresh_usage = fresh_measurement.memory_usage();
+    EXPECT_EQ(migrated_usage.bytes, fresh_usage.bytes);
+    EXPECT_EQ(migrated_usage.items, fresh_usage.items);
+    EXPECT_EQ(migrated_usage.pending_change_bytes,
+              fresh_usage.pending_change_bytes);
+    EXPECT_EQ(migrated_usage.pending_changes, fresh_usage.pending_changes);
+    EXPECT_EQ(migrated_usage.audit_bytes, fresh_usage.audit_bytes);
+    EXPECT_EQ(migrated_usage.audit_items, fresh_usage.audit_items);
+    EXPECT_LT(migrated_usage.bytes, 1024u * 1024u);
+    EXPECT_LT(migrated_usage.items, 10u);
+    const auto memory = node.memory_snapshot();
+    const auto replication_probe = std::ranges::find_if(
+        memory.subsystems,
+        [](const auto& subsystem) {
+            return subsystem.name == "replication";
+        });
+    ASSERT_NE(replication_probe, memory.subsystems.end());
+    EXPECT_EQ(replication_probe->bytes, migrated_usage.bytes);
+    EXPECT_EQ(replication_probe->items,
+              migrated_usage.items + migrated_usage.pending_changes);
     EXPECT_TRUE(replication.knows_key("fixture:removed"));
     EXPECT_EQ(replication.snapshot().at("fixture:kept").at("value"), 17);
     for (std::size_t index = 0; index < 100'000; ++index) {

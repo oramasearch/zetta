@@ -1232,6 +1232,11 @@ TEST_F(RestServerFixture, PubSubCrudRestMcpSchemaParityAndCalls) {
 TEST_F(RestServerFixture, NodeMemoryHasRestAndMcpParity) {
     const auto capability = server->registry().find("node_memory");
     ASSERT_TRUE(capability);
+    const auto replication_probe = node.memory_accounting().register_probe(
+        "replication",
+        [] {
+            return zetta::memory::ProbeSample{1167, 1167, 0};
+        });
 
     const auto rest = request("GET", "/v1/node_memory");
     ASSERT_EQ(rest.status, 200) << rest.body;
@@ -1252,10 +1257,26 @@ TEST_F(RestServerFixture, NodeMemoryHasRestAndMcpParity) {
     EXPECT_NO_THROW(validator.validate(mcp_value));
     EXPECT_EQ(rest_value.at("subsystems").size(),
               mcp_value.at("subsystems").size());
+    bool found_replication = false;
     for (std::size_t index = 0; index < rest_value.at("subsystems").size(); ++index) {
         EXPECT_EQ(rest_value.at("subsystems").at(index).at("name"),
                   mcp_value.at("subsystems").at(index).at("name"));
+        if (rest_value.at("subsystems").at(index).at("name") ==
+            "replication") {
+            const auto& rest_replication =
+                rest_value.at("subsystems").at(index);
+            const auto& mcp_replication =
+                mcp_value.at("subsystems").at(index);
+            EXPECT_EQ(rest_replication.at("bytes"), 1167);
+            EXPECT_EQ(rest_replication.at("items"), 1167);
+            EXPECT_EQ(rest_replication.at("bytes"),
+                      mcp_replication.at("bytes"));
+            EXPECT_EQ(rest_replication.at("items"),
+                      mcp_replication.at("items"));
+            found_replication = true;
+        }
     }
+    EXPECT_TRUE(found_replication);
     bool found_server_ownership = false;
     for (const auto& subsystem : rest_value.at("subsystems")) {
         if (subsystem.at("name") == "registry_sessions_connections") {
@@ -1264,6 +1285,7 @@ TEST_F(RestServerFixture, NodeMemoryHasRestAndMcpParity) {
         }
     }
     EXPECT_TRUE(found_server_ownership);
+    EXPECT_TRUE(node.memory_accounting().unregister_probe(replication_probe));
 }
 
 TEST_F(RestServerFixture, ReceiveAuditPolicyMatchesRestAndMcp) {

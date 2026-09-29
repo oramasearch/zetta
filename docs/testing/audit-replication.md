@@ -34,14 +34,18 @@ legacy catalog events plus a removed audit key. Migration must retain every live
 event locally under `legacy`, leave zero known audit keys/tombstones, and shrink
 the saved catalog below 4 KiB while preserving an unrelated live key and removal.
 Merging the stale old document must not regrow audit history. Restart and new
-catalog writes must still replicate.
+catalog writes must still replicate. The same regression compares the migrated
+replication memory probe with a fresh measurement, requires small byte/item
+totals rather than unsigned wraparound, and verifies `system.memory` uses that
+measurement (#1167).
 The incremental-reconcile regression also keeps its ordinary catalog ticks fast
 after migrating 100,000 events, with concurrent segment-backed audit appends.
 
 Other regressions cover malformed frames, missing ranges, replay deduplication,
 summaries below retention low-water marks, mixed-version refusal with ordinary
 catalog delivery, and identical segment-backed SQL reads over REST and MCP.
-No new capability or event-value schema is introduced.
+The `node_memory` transport regression also compares exact replication bytes and
+items over REST and MCP. No new capability or event-value schema is introduced.
 
 Linux proof uses the work-order's external lane when available; no containers
 run on this host. The live-bus check is separate: after an all-node development
