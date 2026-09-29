@@ -23,6 +23,15 @@ zetta::cluster::NodeMetrics make_full_sample() {
     metrics.memory_used_bytes = 12ull * 1024 * 1024 * 1024;
     metrics.memory_total_bytes = 32ull * 1024 * 1024 * 1024;
     metrics.memory_percent = 37.5;
+    metrics.process_memory_available = true;
+    metrics.process_rss_bytes = 812ull * 1024 * 1024;
+    metrics.process_peak_rss_bytes = 900ull * 1024 * 1024;
+    metrics.allocator_memory_available = true;
+    metrics.allocator_in_use_bytes = 790ull * 1024 * 1024;
+    metrics.allocator_free_held_bytes = 22ull * 1024 * 1024;
+    metrics.attributed_memory_bytes = 750ull * 1024 * 1024;
+    metrics.unattributed_memory_bytes = 40ull * 1024 * 1024;
+    metrics.memory_explained_percent = 94.9367;
     metrics.storage_available = true;
     metrics.storage_used_bytes = 210ull * 1024 * 1024 * 1024;
     metrics.storage_total_bytes = 500ull * 1024 * 1024 * 1024;
@@ -54,6 +63,14 @@ TEST(NodeTelemetryWire, RoundTripsAvailableGroups) {
     EXPECT_EQ(m.memory_used_bytes, original.memory_used_bytes);
     EXPECT_EQ(m.memory_total_bytes, original.memory_total_bytes);
     EXPECT_DOUBLE_EQ(m.memory_percent, 37.5);
+    EXPECT_TRUE(m.process_memory_available);
+    EXPECT_EQ(m.process_rss_bytes, original.process_rss_bytes);
+    EXPECT_TRUE(m.allocator_memory_available);
+    EXPECT_EQ(m.allocator_in_use_bytes, original.allocator_in_use_bytes);
+    EXPECT_EQ(m.unattributed_memory_bytes,
+              original.unattributed_memory_bytes);
+    EXPECT_DOUBLE_EQ(m.memory_explained_percent,
+                     original.memory_explained_percent);
     EXPECT_TRUE(m.storage_available);
     EXPECT_EQ(m.storage_used_bytes, original.storage_used_bytes);
     EXPECT_DOUBLE_EQ(m.storage_percent, 42.0);
@@ -76,6 +93,8 @@ TEST(NodeTelemetryWire, UnavailableGroupsDegradeGracefully) {
     EXPECT_EQ(decoded->metrics.cpu_cores, 4u);
     EXPECT_FALSE(decoded->metrics.cpu_percent_available);
     EXPECT_FALSE(decoded->metrics.memory_available);
+    EXPECT_FALSE(decoded->metrics.process_memory_available);
+    EXPECT_FALSE(decoded->metrics.allocator_memory_available);
     EXPECT_FALSE(decoded->metrics.gpu_available);
     EXPECT_FALSE(decoded->metrics.storage_available);
     EXPECT_FALSE(decoded->metrics.network_available);

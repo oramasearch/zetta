@@ -52,6 +52,10 @@ answer depended on whether the steady clock advanced between two adjacent statem
 | `cpu_percent` | CPU utilization 0..100 across all cores |
 | `memory_used_bytes` / `memory_total_bytes` | physical RAM used / total |
 | `memory_percent` | RAM utilization 0..100 |
+| `process_rss_bytes` / `process_peak_rss_bytes` | this Zetta process's current and peak resident bytes |
+| `allocator_in_use_bytes` / `allocator_free_held_bytes` | allocator-owned live bytes and retained free bytes |
+| `attributed_memory_bytes` / `unattributed_memory_bytes` | sum of subsystem probes and the allocator remainder |
+| `memory_explained_percent` | attributed share of allocator in-use bytes |
 | `gpu_present` | whether a GPU gauge is available (false in a CPU-only core build) |
 | `gpu_percent` | GPU utilization 0..100 |
 | `vram_used_bytes` / `vram_total_bytes` | VRAM used / total |
@@ -69,6 +73,10 @@ answer depended on whether the steady clock advanced between two adjacent statem
 The pub/sub columns are live engine state rather than OS counters. They are
 `null` when pub/sub is disabled. A resize updates `pubsub_dispatch_threads` on
 the next query; see [pub/sub dispatch](../pubsub/dispatch.md).
+
+The process-memory columns come from the same registry as
+[`system.memory`](../ops/memory.md). They diagnose the Zetta process; the older
+`memory_*` columns describe the whole host.
 
 ## Graceful degradation
 

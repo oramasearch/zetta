@@ -33,6 +33,11 @@ five-minute audit summaries, while denied reads and mutations remain per-call;
 the trail uses checksummed compressed segments with bounded-memory indexing and
 configurable retention (#1154). Clustered pub/sub remains deferred (D39).
 
+Every node now reports [per-subsystem memory ownership](docs/ops/memory.md):
+`system.memory`, `system.node_metrics`, REST/MCP `node_memory`, periodic INFO
+lines, and the node status identify what drives RSS while allocator truth keeps
+unattributed and retained-free bytes visible (#1163).
+
 This repo is Orama Zetta's core: a fast, equal-peer **CRDT-replicated** store
 with clustering, distributed compute, and a native ML pipeline. A *zetta node*
 is one running instance — **headed** (default: an SDL3 + Dear ImGui desktop UI

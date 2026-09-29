@@ -144,6 +144,76 @@ ApiResult handle_server_info(const nlohmann::json&, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- node_memory -------------------------------------------------------------
+
+const nlohmann::json& node_memory_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& node_memory_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"sampled_at_ms", "allocator_available", "rss_available",
+          "allocator_in_use_bytes", "allocator_free_held_bytes", "rss_bytes",
+          "peak_rss_bytes", "anonymous_bytes", "attributed_bytes",
+          "unattributed_bytes", "over_attributed_bytes", "subsystems"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"sampled_at_ms", {{"type", "integer"}}},
+          {"allocator_available", {{"type", "boolean"}}},
+          {"rss_available", {{"type", "boolean"}}},
+          {"allocator_in_use_bytes", {{"type", "integer"}, {"minimum", 0}}},
+          {"allocator_free_held_bytes", {{"type", "integer"}, {"minimum", 0}}},
+          {"rss_bytes", {{"type", "integer"}, {"minimum", 0}}},
+          {"peak_rss_bytes", {{"type", "integer"}, {"minimum", 0}}},
+          {"anonymous_bytes", {{"type", "integer"}, {"minimum", 0}}},
+          {"attributed_bytes", {{"type", "integer"}, {"minimum", 0}}},
+          {"unattributed_bytes", {{"type", "integer"}, {"minimum", 0}}},
+          {"over_attributed_bytes", {{"type", "integer"}, {"minimum", 0}}},
+          {"subsystems",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"name", "bytes", "items", "reserved_bytes",
+                            "share_of_in_use"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"name", {{"type", "string"}}},
+                {"bytes", {{"type", "integer"}, {"minimum", 0}}},
+                {"items", {{"type", "integer"}, {"minimum", 0}}},
+                {"reserved_bytes", {{"type", "integer"}, {"minimum", 0}}},
+                {"share_of_in_use", {{"type", "number"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_node_memory(const nlohmann::json&, ApiContext& context) {
+    const auto snapshot = context.node.memory_snapshot();
+    nlohmann::json output;
+    output["sampled_at_ms"] = snapshot.sampled_at_ms;
+    output["allocator_available"] = snapshot.allocator.allocator_available;
+    output["rss_available"] = snapshot.allocator.rss_available;
+    output["allocator_in_use_bytes"] = snapshot.allocator.in_use_bytes;
+    output["allocator_free_held_bytes"] = snapshot.allocator.free_held_bytes;
+    output["rss_bytes"] = snapshot.allocator.rss_bytes;
+    output["peak_rss_bytes"] = snapshot.allocator.peak_rss_bytes;
+    output["anonymous_bytes"] = snapshot.allocator.anonymous_bytes;
+    output["attributed_bytes"] = snapshot.attributed_bytes;
+    output["unattributed_bytes"] = snapshot.unattributed_bytes;
+    output["over_attributed_bytes"] = snapshot.over_attributed_bytes;
+    output["subsystems"] = nlohmann::json::array();
+    for (const auto& subsystem : snapshot.subsystems) {
+        output["subsystems"].push_back(
+            {{"name", subsystem.name},
+             {"bytes", subsystem.bytes},
+             {"items", subsystem.items},
+             {"reserved_bytes", subsystem.reserved_bytes},
+             {"share_of_in_use", subsystem.share_of_in_use}});
+    }
+    return ApiResult::success(std::move(output));
+}
+
 // --- versions ----------------------------------------------------------------
 
 // "Which version am I actually talking to" — asked of the SOFTWARE and of the
@@ -8379,6 +8449,18 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_server_info});
+    registry.add(Capability{
+        "node_memory",
+        "Node memory",
+        "Read process RSS, allocator truth, and per-subsystem memory ownership. "
+        "No side effects.",
+        node_memory_schema(),
+        node_memory_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_node_memory});
 
     registry.add(Capability{
         "create_experiment",

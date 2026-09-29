@@ -1170,6 +1170,9 @@ TEST(QueryService, SelectsNodeMetricsSystemTable) {
 
     // Network utilization needs a link cap, so it degrades to null.
     EXPECT_TRUE(row["net_percent"].is_null());
+    EXPECT_FALSE(row["process_rss_bytes"].is_null());
+    EXPECT_FALSE(row["allocator_in_use_bytes"].is_null());
+    EXPECT_TRUE(row.contains("unattributed_memory_bytes"));
 
     EXPECT_EQ(row["pubsub_dispatch_mode"], "pool");
     EXPECT_EQ(row["pubsub_dispatch_threads"], 1);
@@ -1184,6 +1187,33 @@ TEST(QueryService, SelectsNodeMetricsSystemTable) {
     ASSERT_TRUE(projected.ok()) << projected.error;
     ASSERT_EQ(projected.rows.size(), 1u);
     EXPECT_EQ(projected.rows[0]["node_id"].get<std::string>(), node.node_id());
+
+    node.stop();
+}
+
+TEST(QueryService, SelectsMemoryBySubsystemWithUnattributedRow) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService service{node};
+
+    auto result = service.run(
+        "SELECT subsystem, bytes, items, share_of_in_use, "
+        "allocator_in_use_bytes, allocator_free_held_bytes, rss_bytes "
+        "FROM system.memory;",
+        "");
+
+    ASSERT_TRUE(result.ok()) << result.error;
+    const auto audit = std::ranges::find_if(result.rows, [](const auto& row) {
+        return row.at("subsystem") == "audit";
+    });
+    const auto unattributed = std::ranges::find_if(result.rows, [](const auto& row) {
+        return row.at("subsystem") == "unattributed";
+    });
+    EXPECT_NE(audit, result.rows.end());
+    EXPECT_NE(unattributed, result.rows.end());
+    ASSERT_FALSE(result.rows.empty());
+    EXPECT_GT(result.rows.front().at("rss_bytes").get<std::uint64_t>(), 0u);
 
     node.stop();
 }

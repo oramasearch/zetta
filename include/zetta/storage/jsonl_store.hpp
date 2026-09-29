@@ -39,6 +39,9 @@ public:
         return id_index_.contains(id);
     }
     std::size_t size() const override { return records_.size(); }
+    StorageMemoryUsage memory_usage() const override {
+        return StorageMemoryUsage{resident_bytes_, records_.size(), 0, 0};
+    }
     // Always resident: the handle borrows the row and its id straight out of
     // this store's own vectors — no page, no refcount, no allocation.
     ParquetLazyPtr at(std::size_t i) const override {
@@ -63,6 +66,8 @@ private:
     std::filesystem::path dir_;
     std::vector<nlohmann::json> records_;
     std::vector<std::string> ids_;             // parallel to records_
+    std::vector<std::size_t> resident_sizes_;  // parallel resident estimates
+    std::size_t resident_bytes_ = 0;
     // id -> row index. A SET plus a linear scan was O(n) on every update, and
     // `update` is the hot path when a multi-thousand-row table reconciles: the
     // lookup alone made reconcile quadratic before a single byte was written.

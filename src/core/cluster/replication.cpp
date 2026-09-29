@@ -31,6 +31,10 @@ struct ReplicationManager::State {
         std::make_shared<nlohmann::json>(nlohmann::json::object());
     std::unordered_map<std::string, std::string> encoded_values;
     std::deque<ChangeRecord> changes;
+    std::uint64_t encoded_bytes = 0;
+    std::uint64_t audit_encoded_bytes = 0;
+    std::uint64_t audit_items = 0;
+    std::uint64_t change_key_bytes = 0;
     ReplicationChangeToken current_token = 1;
     mutable std::mutex mutex;
 };
@@ -61,14 +65,44 @@ template <typename StateType>
 void record_change(StateType& state, const std::string& key) {
     ++state.current_token;
     state.changes.push_back({state.current_token, key});
+    state.change_key_bytes += key.size();
     if (state.changes.size() > kChangeJournalCapacity) {
+        state.change_key_bytes -= state.changes.front().key.size();
         state.changes.pop_front();
+    }
+}
+
+bool is_audit_key(const std::string& key) {
+    return key.starts_with("audit:");
+}
+
+template <typename StateType>
+void account_encoded_value(StateType& state, const std::string& key,
+                           const std::string* encoded) {
+    const auto existing = state.encoded_values.find(key);
+    if (existing != state.encoded_values.end()) {
+        const auto old_bytes = existing->first.size() +
+                               existing->second.size();
+        state.encoded_bytes -= old_bytes;
+        if (is_audit_key(existing->first)) {
+            state.audit_encoded_bytes -= old_bytes;
+            --state.audit_items;
+        }
+    }
+    if (encoded) {
+        const auto new_bytes = key.size() + encoded->size();
+        state.encoded_bytes += new_bytes;
+        if (is_audit_key(key)) {
+            state.audit_encoded_bytes += new_bytes;
+            ++state.audit_items;
+        }
     }
 }
 
 template <typename StateType>
 void cache_live_value(StateType& state, const std::string& key,
                       const std::string& encoded) {
+    account_encoded_value(state, key, &encoded);
     state.encoded_values[key] = encoded;
     nlohmann::json value =
         nlohmann::json::parse(encoded, nullptr, /*allow_exceptions=*/false);
@@ -122,6 +156,7 @@ void ReplicationManager::remove(const std::string& key) {
         transaction.put(am::root, key, encoded);
     });
     make_snapshot_mutable(*state_);
+    account_encoded_value(*state_, key, &encoded);
     state_->encoded_values[key] = encoded;
     state_->snapshot->erase(key);
     record_change(*state_, key);
@@ -190,6 +225,25 @@ std::size_t ReplicationManager::entry_count() const {
     return state_->snapshot->size();
 }
 
+ReplicationMemoryUsage ReplicationManager::memory_usage() const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    ReplicationMemoryUsage usage;
+    constexpr std::uint64_t kCopiesPerLiveValue = 3;
+    constexpr std::uint64_t kEntryOverhead = 160;
+    const auto all_value_bytes = state_->encoded_bytes * kCopiesPerLiveValue +
+                                 state_->encoded_values.size() * kEntryOverhead;
+    usage.audit_bytes = state_->audit_encoded_bytes * kCopiesPerLiveValue +
+                        state_->audit_items * kEntryOverhead;
+    usage.bytes = all_value_bytes - usage.audit_bytes;
+    usage.items = state_->encoded_values.size() - state_->audit_items;
+    usage.pending_change_bytes = state_->change_key_bytes +
+                                 state_->changes.size() * sizeof(State::ChangeRecord);
+    usage.pending_changes = state_->changes.size();
+    usage.bytes += usage.pending_change_bytes;
+    usage.audit_items = state_->audit_items;
+    return usage;
+}
+
 std::string ReplicationManager::version() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
     std::vector<am::ChangeHash> heads = state_->document.get_heads();
@@ -251,6 +305,7 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
         const std::optional<std::string> encoded =
             state_->document.get<std::string>(am::root, key);
         if (!encoded) {
+            account_encoded_value(*state_, key, nullptr);
             state_->encoded_values.erase(key);
             state_->snapshot->erase(key);
             record_change(*state_, key);
@@ -258,8 +313,10 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
         }
         const bool removed = is_tombstone(*encoded) || removed_locked(key);
         if (removed) {
-            state_->encoded_values[key] =
+            const std::string tombstone =
                 nlohmann::json{{std::string(kRemovedMarker), true}}.dump();
+            account_encoded_value(*state_, key, &tombstone);
+            state_->encoded_values[key] = tombstone;
             state_->snapshot->erase(key);
         } else {
             cache_live_value(*state_, key, *encoded);

@@ -2,6 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <string_view>
+
+#include "temp_dir.hpp"
+#include "zetta/node.hpp"
+
 namespace zetta::memory {
 namespace {
 
@@ -51,6 +57,34 @@ TEST(MemoryAccounting, FormatsPeriodicLogLine) {
 
   EXPECT_NE(line.find("memory: rss 812M in-use 790M audit 610M"), std::string::npos);
   EXPECT_NE(line.find("unattributed 180M"), std::string::npos);
+}
+
+TEST(MemoryAccounting, NodeStartupLogsMemoryAndStatusNamesTopOwner) {
+  zetta::test::TempDir directory;
+  zetta::NodeConfig config;
+  config.data_dir = directory.path().string();
+  config.preflight = false;
+  zetta::Node node{config};
+
+  testing::internal::CaptureStdout();
+  ASSERT_TRUE(node.start());
+  const std::string output = testing::internal::GetCapturedStdout();
+
+  EXPECT_NE(output.find("zetta: INFO memory: rss "), std::string::npos);
+  EXPECT_NE(node.status_line().find("| mem rss "), std::string::npos);
+  EXPECT_NE(node.status_line().find(" top "), std::string::npos);
+  const auto snapshot = node.memory_snapshot();
+  EXPECT_EQ(snapshot.subsystems.size(), 8u);
+  for (const std::string_view expected :
+       {"audit", "pubsub", "replication", "datasets_tables",
+        "registry_sessions_connections", "runtime", "models", "runs_jobs"}) {
+    EXPECT_NE(std::find_if(snapshot.subsystems.begin(), snapshot.subsystems.end(),
+                           [expected](const auto& subsystem) {
+                             return subsystem.name == expected;
+                           }),
+              snapshot.subsystems.end());
+  }
+  node.stop();
 }
 
 } // namespace

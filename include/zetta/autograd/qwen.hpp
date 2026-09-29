@@ -72,6 +72,8 @@ public:
     std::vector<Tensor>& parameters() { return parameters_; }
     const std::vector<Tensor>& parameters() const { return parameters_; }
 
+    std::size_t resident_bytes() const;
+
     // Look up a parameter by its HF name. Returns an invalid Tensor if absent.
     Tensor weight(const std::string& name) const;
 
