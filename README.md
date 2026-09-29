@@ -31,7 +31,9 @@ retention updates and audited deletions. Its default dispatcher is a
 bounded by configurable minimum and maximum worker counts. Authorised polling reads use
 five-minute audit summaries, while denied reads and mutations remain per-call;
 the trail uses checksummed compressed segments with bounded-memory indexing and
-configurable retention (#1154). Clustered pub/sub remains deferred (D39).
+configurable retention (#1154). Audit replication uses per-origin segment ranges,
+not in-memory CRDT events; upgrades require all nodes together (#1164).
+Clustered pub/sub remains deferred (D39).
 
 Every node now reports [per-subsystem memory ownership](docs/ops/memory.md):
 `system.memory`, `system.node_metrics`, REST/MCP `node_memory`, periodic INFO
@@ -272,9 +274,11 @@ the secure cluster automatically. See
 [docs/cloud/node-bootstrap-env.md](docs/cloud/node-bootstrap-env.md).
 
 Data replicates between nodes as an Automerge CRDT — databases, tables, rows,
-projects, runs, models, jobs, principals, and the audit trail created on any
+projects, runs, models, jobs, and principals created on any
 node converge onto every node, in memory and on disk, conflict-free, with no
-leader. Large-object bodies transfer peer-to-peer and are SHA-256-verified;
+leader. Audit events replicate separately through bounded segment-log ranges;
+legacy catalog events migrate locally without per-event CRDT tombstones.
+Large-object bodies transfer peer-to-peer and are SHA-256-verified;
 partitioned tables place their bodies on owner nodes only. See all nodes and
 their replication status in the headed **Cluster** panel, the headless
 heartbeat log, or SQL (`SELECT * FROM system.nodes;`). Detail:

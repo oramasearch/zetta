@@ -32,6 +32,13 @@ just degrades to `Unsupported`. Initialize it with
 
 ## Working with submodules
 
+Audit catalog retirement (#1164) uses the pinned automerge-cpp document/change
+codecs only inside `src/core/cluster/replication.cpp`. The adapter preserves
+non-audit operation identities and actor clocks while discarding audit history;
+no submodule files or pointers change. Codec upgrades must rerun the migration,
+concurrent-removal and restart regressions documented in
+[audit replication](../docs/governance/audit-trail.md).
+
 ```bash
 # Populate after a fresh clone (or clone with --recurse-submodules):
 git submodule update --init --recursive

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -130,6 +131,18 @@ public:
     // Merge a peer's serialized document into ours (conflict-free). Ignored if
     // the blob doesn't decode.
     void merge(std::span<const std::byte> blob);
+
+    // Restore this node's persisted document, including its local actor clock.
+    // Unlike a peer merge, this preserves the sequence used for the next write.
+    bool restore(std::span<const std::byte> blob);
+
+    // #1164: durably migrate live legacy audit values, then discard every audit
+    // operation (including removals) from history and all caches. The visitor
+    // must make the record durable before returning true. After retirement,
+    // local writes and peer merges cannot introduce audit: keys again.
+    bool retire_audit(const std::function<bool(const std::string&,
+                                             const nlohmann::json&)>& migrate,
+                      const std::function<bool()>& flush);
 
 private:
     struct State;

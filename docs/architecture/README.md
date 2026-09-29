@@ -9,6 +9,7 @@ in the sibling directories.
 - [architecture.md](architecture.md) — the node, run modes, data model, the async runtime and cluster, pub/sub (node-local messaging, the one locking subsystem), and module map.
 - [code-map.md](code-map.md) — the annotated file-by-file map of the codebase (build targets, include/zetta, src/core, src/gui, tests), including memory accounting, the Run-metric registry, and native trainer hooks.
 - [../ops/memory.md](../ops/memory.md) — process RSS, allocator truth, and the per-subsystem ownership registry exposed by every node.
+- [../governance/audit-trail.md](../governance/audit-trail.md) — the durable segment-log exception to catalog replication, legacy compaction and bounded startup (#1164).
 - [../pubsub/crud.md](../pubsub/crud.md) — node-local message mutation and async
   REST/MCP browse; pub/sub stores remain authoritative and D39 remains deferred.
 - [../pubsub/dispatch.md](../pubsub/dispatch.md) — the node's shared pub/sub

@@ -332,7 +332,10 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   on-disk store + in-memory `Node` tree are a **projection** of it. Never keep a
   parallel copy synced by hand. New shared state = a new key/shape in the
   document; a new *kind* of agreement = a new `ReplicationPolicy` — never a
-  bespoke sync path. (Two deliberate exceptions, both *messages* rather
+  bespoke sync path. Audit history is an approved durable-log exception (#1164):
+  per-origin segment ranges, never `audit:` CRDT entries; see
+  [`docs/governance/audit-trail.md`](docs/governance/audit-trail.md).
+  (Two other deliberate exceptions, both *messages* rather
   than state: the signal plane and pub/sub — see below.) (Known migration debt: cluster membership still lives in
   the `Cluster` peer table — move things *toward* this rule, never away.) See
   [`docs/cluster/replication.md`](docs/cluster/replication.md).

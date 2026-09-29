@@ -25,6 +25,8 @@ run / test.
 Pub/sub [CRUD](pubsub/crud.md) covers node-local topic/message management on
 REST and MCP, non-consuming reads, revisions, retention and mutation auditing;
 [dispatch](pubsub/dispatch.md) covers the shared topic-sized worker pool.
+The [audit trail](governance/audit-trail.md) uses per-origin segment replication
+outside the catalog, with [native convergence and memory proofs](testing/audit-replication.md).
 
 | Domain | Covers |
 |---|---|

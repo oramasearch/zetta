@@ -98,6 +98,7 @@ struct Cluster::State {
         std::size_t entries = 0;
         std::string version;
         std::chrono::steady_clock::time_point last_sync{};
+        unsigned audit_protocol_version = 0;
     };
 
     // An RPC awaiting its response: the promise the caller blocks on, plus the
@@ -119,6 +120,12 @@ struct Cluster::State {
     std::optional<net::tls_context> tls;
     ReplicationManager* replication = nullptr;  // gossip target (optional)
     zetta::data::BlobStore* blobs = nullptr;                 // large-object body transfer (optional)
+    unsigned audit_protocol_version = zetta::governance::kAuditProtocolVersion;
+    // These locks guard only the bounded owner/network message handoff.
+    std::mutex audit_mutex;
+    std::vector<AuditMessage> audit_messages;
+    std::size_t audit_message_bytes = 0;
+    std::string audit_status;
     std::chrono::steady_clock::duration idle_timeout{};
     std::chrono::steady_clock::duration reconnect_interval{};
     // How long a peer stays in the membership view after its live link drops
@@ -626,13 +633,14 @@ ClusterPeer parse_hello(const std::string& line) {
     if (protocol != kProtocol || verb != "HELLO") return ClusterPeer{};
     if (endpoints_token != "-") peer.endpoints = split_endpoints(endpoints_token);
     peer.dial_out_only = (reachability_token == "dial-out");
+    parser >> peer.audit_protocol_version;
     if (!peer.endpoints.empty()) peer.address = peer.endpoints.front();
     return peer;
 }
 
 std::string hello_line(const std::string& node_id,
                        const std::vector<std::string>& endpoints,
-                       bool dial_out_only) {
+                       bool dial_out_only, unsigned audit_protocol_version) {
     std::string joined;
     for (const std::string& endpoint : endpoints) {
         if (!joined.empty()) joined.push_back(',');
@@ -643,7 +651,8 @@ std::string hello_line(const std::string& node_id,
     // (#803). A wan node sends its endpoints + "wan".
     if (joined.empty()) joined = "-";
     return std::string(kProtocol) + " HELLO " + node_id + " " + joined +
-           (dial_out_only ? " dial-out" : " wan");
+           (dial_out_only ? " dial-out " : " wan ") +
+           std::to_string(audit_protocol_version);
 }
 
 // --- Replication gossip -----------------------------------------------------
@@ -755,6 +764,15 @@ void handle_signal(Cluster::State* self, const std::string& envelope,
 // Apply one received line to our state. `peer_node_id` is who sent it; replies
 // (a LORES for a LOREQ, a Response for a Request) are queued on the peer's outbox
 // for its writer to send. Runs on the network thread (the read pump).
+bool read_audit_sequence(std::istringstream& parser, std::uint64_t& sequence) {
+    std::string token;
+    if (!(parser >> token)) {
+        return false;
+    }
+    const auto parsed = std::from_chars(token.data(), token.data() + token.size(), sequence);
+    return parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size();
+}
+
 void apply_gossip(Cluster::State* self, const std::string& line,
                   const std::string& peer_node_id) {
     std::istringstream parser(line);
@@ -798,6 +816,69 @@ void apply_gossip(Cluster::State* self, const std::string& line,
                                 std::to_string(body.size()) + "B) -> " +
                                 (ok ? "stored" : "REJECTED (hash/size)"));
         }
+    } else if (verb == "AUSTATUS" || verb == "AUREQ" || verb == "AURES") {
+        bool compatible = false;
+        {
+            const std::lock_guard lock(self->mutex);
+            for (const auto& peer : self->peers) {
+                if (peer.node_id == peer_node_id) {
+                    compatible = peer.audit_protocol_version == self->audit_protocol_version &&
+                        self->audit_protocol_version == zetta::governance::kAuditProtocolVersion;
+                }
+            }
+        }
+        if (!compatible || line.size() > 24 * 1024 * 1024) {
+            return;
+        }
+        AuditMessage message;
+        message.peer = peer_node_id;
+        if (verb == "AUSTATUS") {
+            message.kind = AuditMessage::Kind::Status;
+            std::string origin;
+            zetta::governance::AuditWatermark watermark;
+            while (parser >> origin) {
+                if (!read_audit_sequence(parser, watermark.high) ||
+                    !read_audit_sequence(parser, watermark.low) ||
+                    !zetta::governance::valid_audit_origin(origin) ||
+                    origin == "legacy" || watermark.low > watermark.high ||
+                    message.watermarks.size() >= 4096) {
+                    return;
+                }
+                if (!message.watermarks.emplace(origin, watermark).second) {
+                    return;
+                }
+            }
+        } else {
+            message.kind = verb == "AUREQ" ? AuditMessage::Kind::Request : AuditMessage::Kind::Response;
+            auto& batch = message.batch;
+            if (!(parser >> batch.origin) || !read_audit_sequence(parser, batch.after) ||
+                batch.origin == "legacy" ||
+                !zetta::governance::valid_audit_origin(batch.origin)) {
+                return;
+            }
+            if (verb == "AURES") {
+                std::string encoded;
+                if (!read_audit_sequence(parser, batch.next) ||
+                    !read_audit_sequence(parser, batch.watermark.high) ||
+                    !read_audit_sequence(parser, batch.watermark.low) || !(parser >> encoded)) {
+                    return;
+                }
+                if (encoded != "-") {
+                    batch.frames = base64_decode_to_string(encoded);
+                }
+            }
+            std::string trailing;
+            if (parser >> trailing) {
+                return;
+            }
+        }
+        const std::lock_guard lock(self->audit_mutex);
+        if (self->audit_messages.size() >= 64 ||
+            self->audit_message_bytes + message.batch.frames.size() > 20 * 1024 * 1024) {
+            return;  // bounded backpressure; the receiver retries its cursor
+        }
+        self->audit_message_bytes += message.batch.frames.size();
+        self->audit_messages.push_back(std::move(message));
     } else if (verb == "SIGNAL") {
         // The envelope is the remainder of the line: compact JSON, but it may
         // contain spaces inside string values, so take the rest rather than a
@@ -865,6 +946,25 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
                 }
             } else if (!co_await write_line_serialized(link, ping_line())) {
                 // No gossip to send — a PING keeps the link alive.
+                break;
+            }
+            std::string audit_status;
+            {
+                const std::lock_guard lock(self->audit_mutex);
+                audit_status = self->audit_status;
+            }
+            bool audit_compatible = false;
+            {
+                const std::lock_guard lock(self->mutex);
+                for (const auto& peer : self->peers) {
+                    if (peer.node_id == peer_node_id) {
+                        audit_compatible = peer.audit_protocol_version == self->audit_protocol_version &&
+                            self->audit_protocol_version == zetta::governance::kAuditProtocolVersion;
+                    }
+                }
+            }
+            if (audit_compatible && !audit_status.empty() &&
+                !co_await write_line_serialized(link, std::move(audit_status))) {
                 break;
             }
             // Request bodies we lack, but don't re-ask the same peer too often
@@ -936,12 +1036,14 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     std::optional<std::string> their_hello;
     if (initiate) {
         co_await write_line(link->stream,
-                            hello_line(my_node_id, my_endpoints, self->dial_out_only));
+                            hello_line(my_node_id, my_endpoints, self->dial_out_only,
+                                       self->audit_protocol_version));
         their_hello = co_await read_line(link->stream, pending);
     } else {
         their_hello = co_await read_line(link->stream, pending);
         co_await write_line(link->stream,
-                            hello_line(my_node_id, my_endpoints, self->dial_out_only));
+                            hello_line(my_node_id, my_endpoints, self->dial_out_only,
+                                       self->audit_protocol_version));
     }
     if (!their_hello) {
         link->socket->close();
@@ -973,6 +1075,20 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     const std::string reached =
         !dialed_endpoint.empty() ? dialed_endpoint : peer.address;
     self->add_peer(peer.node_id, reached, peer.endpoints, peer.dial_out_only);
+    {
+        const std::lock_guard lock(self->mutex);
+        for (auto& record : self->peers) {
+            if (record.node_id == peer.node_id) {
+                record.audit_protocol_version = peer.audit_protocol_version;
+            }
+        }
+    }
+    if (peer.audit_protocol_version != self->audit_protocol_version) {
+        std::fprintf(stderr,
+            "zetta: audit replication refused for peer %s: protocol %u, local %u; "
+            "upgrade all nodes together. Catalog replication remains enabled.\n",
+            peer.node_id.c_str(), peer.audit_protocol_version, self->audit_protocol_version);
+    }
     log_event(self, std::string("+ peer ") + short_id(peer.node_id) + " @ " +
                         reached + (initiate ? " (dialed)" : " (accepted)"));
 
@@ -1247,6 +1363,7 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
       role_(ClusterRole::Follower) {
     state_->replication = replication;
     state_->blobs = blobs;
+    state_->audit_protocol_version = config_.audit_protocol_version;
     state_->idle_timeout =
         std::chrono::seconds(config_.peer_idle_timeout_seconds);
     state_->reconnect_interval =
@@ -1438,7 +1555,8 @@ std::vector<ClusterPeer> Cluster::peers() const {
         result.push_back(ClusterPeer{.node_id = peer.node_id,
                                      .address = peer.address,
                                      .endpoints = peer.endpoints,
-                                     .dial_out_only = peer.dial_out_only});
+                                     .dial_out_only = peer.dial_out_only,
+                                     .audit_protocol_version = peer.audit_protocol_version});
     }
     return result;
 }
@@ -1525,6 +1643,7 @@ std::vector<NodeStatus> Cluster::nodes() const {
     self.role = role_;
     self.is_self = true;
     self.connected = true;
+    self.audit_protocol_version = state_->audit_protocol_version;
     self.replication.known = have_replication;
     self.replication.entries = my_entries;
     self.replication.version = my_version;
@@ -1546,6 +1665,7 @@ std::vector<NodeStatus> Cluster::nodes() const {
         node.role = ClusterRole::Follower;
         node.is_self = false;
         node.connected = peer.connected;
+        node.audit_protocol_version = peer.audit_protocol_version;
         node.replication.known = peer.has_status;
         node.replication.entries = peer.entries;
         node.replication.version = peer.version;
@@ -1561,6 +1681,62 @@ std::vector<NodeStatus> Cluster::nodes() const {
 }
 
 // --- Signal plane -----------------------------------------------------------
+
+void Cluster::publish_audit_watermarks(
+    const std::map<std::string, zetta::governance::AuditWatermark>& watermarks) {
+    std::string status = "ZETTA/1 AUSTATUS";
+    for (const auto& [origin, watermark] : watermarks) {
+        if (origin != "legacy" && zetta::governance::valid_audit_origin(origin)) {
+            status += " " + origin + " " + std::to_string(watermark.high) +
+                      " " + std::to_string(watermark.low);
+        }
+    }
+    const std::lock_guard lock(state_->audit_mutex);
+    state_->audit_status = std::move(status);
+}
+
+std::vector<AuditMessage> Cluster::take_audit_messages() {
+    const std::lock_guard lock(state_->audit_mutex);
+    state_->audit_message_bytes = 0;
+    return std::exchange(state_->audit_messages, {});
+}
+
+bool Cluster::send_audit(const AuditMessage& message) {
+    bool compatible = false;
+    for (const auto& node : nodes()) {
+        if (node.node_id == message.peer && node.connected) {
+            compatible = node.audit_protocol_version == state_->audit_protocol_version &&
+                state_->audit_protocol_version == zetta::governance::kAuditProtocolVersion;
+        }
+    }
+    if (!compatible) {
+        return false;
+    }
+    const auto& batch = message.batch;
+    if (!zetta::governance::valid_audit_origin(batch.origin) || batch.origin == "legacy" ||
+        message.kind == AuditMessage::Kind::Status) {
+        return false;
+    }
+    std::string line = "ZETTA/1 ";
+    line += message.kind == AuditMessage::Kind::Request ? "AUREQ " : "AURES ";
+    line += batch.origin + " " + std::to_string(batch.after);
+    if (message.kind == AuditMessage::Kind::Response) {
+        line += " " + std::to_string(batch.next) + " " + std::to_string(batch.watermark.high) +
+                " " + std::to_string(batch.watermark.low) + " " +
+                (batch.frames.empty() ? "-" : detail::base64_encode_bytes(batch.frames));
+    }
+    const std::lock_guard lock(state_->outbox_mutex);
+    auto& queue = state_->outbox[message.peer];
+    std::size_t bytes = 0;
+    for (const auto& queued : queue) {
+        bytes += queued.size();
+    }
+    if (bytes + line.size() > 24 * 1024 * 1024) {
+        return false;
+    }
+    queue.push_back(std::move(line));
+    return true;
+}
 
 namespace {
 

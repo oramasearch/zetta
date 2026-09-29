@@ -108,7 +108,6 @@ struct ReplicationReconcileBatches {
     ReconcileBatch tokens;
     ReconcileBatch user_roles;
     ReconcileBatch policies;
-    ReconcileBatch audit_events;
     ReconcileBatch ledger_entries;
     ReconcileBatch nodes;
 };
@@ -186,9 +185,6 @@ ReconcileBatch* batch_for_replication_key(
     }
     if (key.starts_with(catalog::kPolicyPrefix)) {
         return &batches.policies;
-    }
-    if (key.starts_with(catalog::kAuditPrefix)) {
-        return &batches.audit_events;
     }
     if (key.starts_with(catalog::kLedgerPrefix)) {
         return &batches.ledger_entries;
@@ -321,11 +317,6 @@ zetta::memory::ProbeSample Node::audit_memory_usage() const {
         const auto usage = audit_trail_->memory_usage();
         sample.bytes += usage.bytes;
         sample.items += usage.items;
-    }
-    if (replication_) {
-        const auto usage = replication_->memory_usage();
-        sample.bytes += usage.audit_bytes;
-        sample.items = std::max(sample.items, usage.audit_items);
     }
     for (const auto& [key, window] : audit_summary_windows_) {
         sample.bytes += sizeof(window) + key.capacity() + window.actor.capacity() +
@@ -635,10 +626,28 @@ bool Node::start() {
     load_tokens();
     load_user_roles();
     load_policies();
-    load_audit_events();
+    if (!load_audit_events()) {
+        running_ = false;
+        return false;
+    }
     load_ledger_entries();
     if (replication_) {
-        load_replication();         // bring in the persisted CRDT document
+        if (!load_replication()) {
+            running_ = false;
+            return false;
+        }
+        std::string migration_error;
+        if (!replication_->retire_audit(
+                [&](const std::string& id, const nlohmann::json& value) {
+                    const auto parsed = zetta::governance::parse_audit_event_value(value, &migration_error);
+                    return parsed && audit_trail_->append(id, *parsed, &migration_error);
+                }, [&] {
+                    return audit_trail_->flush();
+                })) {
+            std::fprintf(stderr, "zetta: legacy audit migration failed: %s\n", migration_error.c_str());
+            running_ = false;
+            return false;
+        }
         migrate_to_replication();   // capture any local-only data into it
         const zetta::cluster::ReplicationChanges changes =
             replication_->changes_since(0);
@@ -651,7 +660,10 @@ bool Node::start() {
         persist_replication();
         last_seen_version_ = replication_->version();
     }
-    apply_audit_retention();
+    zetta::governance::AuditTrail::release_unused_memory();
+    // Opening the sidecar and bounded recent/tail frames is sufficient. The
+    // periodic retention pass runs later, outside the startup memory proof.
+    last_audit_retention_ = Clock::now();
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
         "%zu deployments, %zu runs, %zu studies, %zu models, %zu experiments, %zu monitors, "
@@ -832,6 +844,7 @@ void Node::tick() {
         }
     }
     flush_due_audit_summaries();
+    sync_audit_log();
     constexpr auto kAuditRetentionCheckInterval = std::chrono::hours(1);
     if (last_audit_retention_.time_since_epoch().count() == 0 ||
         Clock::now() - last_audit_retention_ >=
@@ -3910,19 +3923,21 @@ zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
     return decision;
 }
 
-// ----- audit trail (immutable records; replicated as audit:<uuid>) -----------
+// ----- audit trail (immutable records; replicated through segment ranges) ----
 
 fs::path Node::audit_dir() const {
     return fs::path(config_.data_dir) / "audit";
 }
 
-void Node::load_audit_events() {
+bool Node::load_audit_events() {
     audit_trail_ = std::make_unique<zetta::governance::AuditTrail>(
         audit_dir(), config_.audit_recent_events);
     std::string error;
     if (!audit_trail_->open(&error)) {
         std::printf("zetta: audit store could not open (%s)\n", error.c_str());
+        return false;
     }
+    return true;
 }
 
 void Node::record_audit_event(zetta::governance::AuditEventValue value) {
@@ -3930,11 +3945,10 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     // immutable record contract holds regardless of what the caller passed.
     const std::string id = zetta::util::new_uuid();
     value.time = zetta::util::now_iso8601();
-    // CRDT first (the source of truth), then materialize the on-disk projection.
-    if (replication_) {
-        replication_->set(catalog::audit_key(id), to_json(value));
+    std::string error;
+    if (!audit_trail_ || !audit_trail_->append_local(node_id_, id, std::move(value), &error)) {
+        std::fprintf(stderr, "zetta: audit append failed (%s)\n", error.c_str());
     }
-    materialize_audit_event(id, std::move(value));
 }
 
 std::vector<std::shared_ptr<zetta::governance::AuditEvent>>
@@ -3953,26 +3967,83 @@ std::size_t Node::audit_event_count() const {
     return audit_trail_ ? audit_trail_->size() : 0;
 }
 
-std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
-    std::string id, zetta::governance::AuditEventValue value) {
-    if (!audit_trail_) {
-        return nullptr;
+nlohmann::json Node::audit_watermarks() const {
+    nlohmann::json result = nlohmann::json::object();
+    if (audit_trail_) {
+        for (const auto& [origin, watermark] : audit_trail_->watermarks()) {
+            result[origin] = {{"high", watermark.high}, {"low", watermark.low}};
+        }
     }
-    if (audit_trail_->contains(id)) {
-        const auto recent = audit_trail_->recent_events();
-        const auto found = std::ranges::find_if(
-            recent, [&id](const auto& event) { return event->id() == id; });
-        return found == recent.end() ? nullptr : *found;
+    return result;
+}
+
+std::size_t Node::audit_memory_bytes() const {
+    return audit_memory_usage().bytes;
+}
+
+void Node::sync_audit_log() {
+    if (!cluster_ || !audit_trail_) {
+        return;
     }
-    std::string error;
-    const std::string event_id = id;
-    const zetta::governance::AuditEventValue event_value = value;
-    if (!audit_trail_->append(std::move(id), std::move(value), &error)) {
-        std::printf("zetta: audit append failed (%s)\n", error.c_str());
-        return nullptr;
+    const auto request_range = [&](const std::string& peer, const std::string& origin,
+                                    std::uint64_t after) {
+        const auto now = Clock::now();
+        const auto pending = audit_requests_.find(origin);
+        if (pending != audit_requests_.end() && now - pending->second < std::chrono::seconds(2)) {
+            return;
+        }
+        zetta::cluster::AuditMessage request;
+        request.kind = zetta::cluster::AuditMessage::Kind::Request;
+        request.peer = peer;
+        request.batch.origin = origin;
+        request.batch.after = after;
+        if (cluster_->send_audit(request)) {
+            audit_requests_[origin] = now;
+        }
+    };
+    bool caught_up = false;
+    for (auto& message : cluster_->take_audit_messages()) {
+        using Kind = zetta::cluster::AuditMessage::Kind;
+        std::string error;
+        if (message.kind == Kind::Status) {
+            const auto local = audit_trail_->watermarks();
+            for (const auto& [origin, watermark] : message.watermarks) {
+                const auto found = local.find(origin);
+                const auto high = found == local.end() ? 0 : found->second.high;
+                if (high < watermark.high || (found != local.end() && found->second.low < watermark.low)) {
+                    request_range(message.peer, origin, high);
+                }
+            }
+        } else if (message.kind == Kind::Request) {
+            auto batch = audit_trail_->read_range(message.batch.origin, message.batch.after, &error);
+            if (batch) {
+                message.kind = Kind::Response;
+                message.batch = std::move(*batch);
+                cluster_->send_audit(message);
+            }
+        } else {
+            audit_requests_.erase(message.batch.origin);
+            if (audit_trail_->receive(message.batch, &error)) {
+                audit_received_since_relief_ += message.batch.frames.size();
+                if (message.batch.next < message.batch.watermark.high) {
+                    request_range(message.peer, message.batch.origin, message.batch.next);
+                } else {
+                    caught_up = true;
+                }
+            }
+        }
+        if (!error.empty()) {
+            std::fprintf(stderr, "zetta: audit exchange with %s failed: %s\n", message.peer.c_str(), error.c_str());
+        }
     }
-    return std::make_shared<zetta::governance::AuditEvent>(
-        event_id, event_value, audit_dir());
+    // The message vector and decoded pages have been destroyed before asking
+    // the allocator to return unused pages. Small incremental writes do not
+    // trigger this process-wide operation.
+    if (caught_up && audit_requests_.empty() && audit_received_since_relief_ >= 8 * 1024 * 1024) {
+        zetta::governance::AuditTrail::release_unused_memory();
+        audit_received_since_relief_ = 0;
+    }
+    cluster_->publish_audit_watermarks(audit_trail_->watermarks());
 }
 
 void Node::record_authorized_read(std::string actor, std::string capability,
@@ -4078,11 +4149,7 @@ void Node::apply_audit_retention() {
     std::string error;
     const bool retained = audit_trail_->retain_since(
         cutoff,
-        [this](const std::string& id) {
-            if (replication_) {
-                replication_->remove(catalog::audit_key(id));
-            }
-        },
+        [](const std::string&) {},
         &error);
     if (!retained) {
         std::printf("zetta: audit retention failed (%s)\n", error.c_str());
@@ -4332,19 +4399,28 @@ fs::path Node::replication_path() const {
     return fs::path(config_.data_dir) / "replication.automerge";
 }
 
-void Node::load_replication() {
+bool Node::load_replication() {
     std::error_code ec;
     const fs::path path = replication_path();
-    if (!fs::exists(path, ec)) return;
+    if (!fs::exists(path, ec)) {
+        return !ec;
+    }
     std::ifstream in(path, std::ios::binary);
     const std::vector<char> raw((std::istreambuf_iterator<char>(in)),
                                 std::istreambuf_iterator<char>());
-    if (raw.empty()) return;
+    if (raw.empty()) {
+        std::fprintf(stderr, "zetta: empty or unreadable replicated catalog %s\n", path.c_str());
+        return false;
+    }
     std::vector<std::byte> bytes(raw.size());
     for (std::size_t i = 0; i < raw.size(); ++i) {
         bytes[i] = static_cast<std::byte>(raw[i]);
     }
-    replication_->merge(bytes);
+    if (!replication_->restore(bytes)) {
+        std::fprintf(stderr, "zetta: cannot restore replicated catalog %s\n", path.c_str());
+        return false;
+    }
+    return true;
 }
 
 void Node::persist_replication() {
@@ -4521,14 +4597,6 @@ void Node::migrate_to_replication() {
             }
         }
     }
-    if (audit_trail_) {
-        audit_trail_->for_each([&](const auto& event) {
-            if (!already_replicated(catalog::audit_key(event->id()))) {
-                replication_->set(catalog::audit_key(event->id()),
-                                  event->metadata());
-            }
-        });
-    }
     for (const auto& entry : ledger_entries_) {
         if (!already_replicated(catalog::ledger_key(entry->id()))) {
             replication_->set(catalog::ledger_key(entry->id()),
@@ -4566,7 +4634,6 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_tokens(snapshot);
     reconcile_user_roles(snapshot);
     reconcile_policies(snapshot);
-    reconcile_audit_events(snapshot);
     reconcile_ledger_entries(snapshot);
 }
 
@@ -4648,10 +4715,6 @@ void Node::reconcile_replication_changes(
     }
     if (!batches.policies.keys.empty()) {
         reconcile_policies(batches.policies.values, &batches.policies.keys);
-    }
-    if (!batches.audit_events.keys.empty()) {
-        reconcile_audit_events(batches.audit_events.values,
-                               &batches.audit_events.keys);
     }
     if (!batches.ledger_entries.keys.empty()) {
         reconcile_ledger_entries(batches.ledger_entries.values,
@@ -5529,33 +5592,6 @@ void Node::reconcile_access_keys(
             principal->materialize_key(id, std::move(entry.scope),
                                        std::move(entry.capabilities),
                                        entry.created);
-        }
-    }
-}
-
-void Node::reconcile_audit_events(
-    const nlohmann::json& snapshot,
-    const std::vector<std::string>* changed_keys) {
-    // Audit events (top-level, no parent): audit:<id> -> the event value. The
-    // trail's records are immutable, so reconcile only adds events the document
-    // has that we don't (a peer's, merged in via gossip). Retention removes old
-    // records through its dedicated tombstone path. Each value is validated at
-    // the boundary — a malformed CRDT value is ignored, not trusted into the
-    // trail.
-    //
-    // Every reconcile walks every audit key in the document, so this pass must
-    // stay O(n): an id already in the trail is skipped before its value is
-    // parsed, and a new one is indexed directly (materialize_audit_event), so
-    // reconciliation never sorts a full in-memory trail (#1070).
-    for (const auto& [key, value] : snapshot.items()) {
-        std::string id = catalog::id_after(key, catalog::kAuditPrefix);
-        if (id.empty() || !reconciliation_includes_key(changed_keys, key) ||
-            (audit_trail_ && audit_trail_->contains(id))) {
-            continue;
-        }
-        if (std::optional<zetta::governance::AuditEventValue> parsed =
-                zetta::governance::parse_audit_event_value(value)) {
-            materialize_audit_event(std::move(id), std::move(*parsed));
         }
     }
 }

@@ -33,7 +33,6 @@ nonempty buckets run in the same parent-before-child order as a full reconcile:
 | `deployment:` `run:` `model:` `profile:` `plan:` `index:` `job:` `part:` | top-level entity handlers |
 | `principal:` then `key:` | principals before access keys |
 | `user:` `role:` then `token:` `user_role:` `policy:` | credential parents before children |
-| `audit:` | append-only audit materialization |
 | `node:` | incremental membership update and partition rebalance |
 
 Each bucket contains only its changed live values. Its changed-key list scopes
@@ -44,6 +43,10 @@ manifest depends on the table parent being visible in the same pass.
 `agent:` and `vtable:` keys have no materialized `Node` entity or reconcile
 handler: their consumers read the replication manager directly. A changed tick
 therefore advances their change token without creating a projection pass.
+
+Audit history is no longer part of this journal (#1164). Startup migrates and
+compacts legacy `audit:` operations; subsequent audit frames replicate through
+per-origin segment ranges. See [audit replication](../governance/audit-trail.md).
 
 ## Full reconcile fallbacks
 

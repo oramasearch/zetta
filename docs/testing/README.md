@@ -13,6 +13,7 @@ follows**, proving a real person pursuing a real goal succeeds. An issue closes 
 not on a green build.
 
 - [mcp-journeys.md](mcp-journeys.md) — **simulated user tests**: journeys (tool sequences + read-back assertions) in three layers — in-process registry, loopback HTTP protocol, agent-driven exploratory — with the promotion rule (every discovery becomes a recorded journey).
+- [audit-replication.md](audit-replication.md) — native two-process million-event audit convergence, per-node RSS/restart bounds, 100,000-key migration and REST/MCP parity (#1164).
 - [test-suite.md](test-suite.md) — the in-app test suite (`zetta::testkit`, #462): the catalog model, the categories (compute / DDF / ML / cluster / governance / UC-1), the "adding a case" how-to + candidate-case inventory.
 - [e2e-integration.md](e2e-integration.md) — the **end-to-end integration test** (`tests/e2e/zetta-e2e.sh`): the three testing levels, the level-2 (testkit over `testsuite_run`) + level-3 (deployed-surface) coverage the e2e runs against a **live node** (incl. the authz-enforcement profile #780 — auth is always on since #799 — and the multi-node CRDT profile #781), and how it is packaged (`oramasearch/zetta-e2e`) and driven in-cluster by the operator's `ZettaClusterE2ETest` CRD (One Orama, orama-bridge#130).
 - [example-scripts.md](example-scripts.md) — the sim-Python example-script harness: run an example end to end as an integration test, failures surface the offending statement (#523).

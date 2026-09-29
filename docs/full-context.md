@@ -63,6 +63,11 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Audit replication (#1164):** segment logs carry per-origin sequences and
+  watermarks, not per-event CRDT entries. Legacy catalog history migrates locally
+  and is compacted; upgrades are all-nodes-together. Native two-process memory
+  and convergence coverage lives in [testing/audit-replication.md](testing/audit-replication.md).
+
 - **S-1 Churn & Retention (#1110)** — runnable at levels 1–4 with composed
   M-2/M-1/M-3 foundations, M-5 survival timing, M-6 positive-only uplift
   targeting, and M-8 treatment arbitration. The bound gate enforces eight
