@@ -456,6 +456,7 @@ can never disagree:
 | `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
 | `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |
 | `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
+| `audit:purge`   | `orchestration:purge_audit`   | remove audit rows before an explicit cutoff and record the purge (#1169) |
 | `pubsub:publish` / `pubsub:subscribe` / `pubsub:send_wildcard` | `data:pubsub_publish` / `data:pubsub_subscribe` / `data:pubsub_send_wildcard` | publish to, read from, and address wildcards in pub/sub (#1029, [../pubsub/governance.md](../pubsub/governance.md)) |
 | `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
 | `pipelines:manage` | all pipeline, dataset/connector, snapshot, graph, agent/profile/plan, solution, decision-policy, experiment, and run-metric write operations in `permission.cpp` | drive the authoring → gate → deploy → run → governed-action control surface over MCP/REST, including run parameters, metric series, and typed artifacts (#1102, #1103, #1104, #1105, #1137) |
@@ -469,8 +470,9 @@ needs, masking, RLS) is the scoped-grants / RLS work (#4 / #5). `mcp:call`
 (`api:query`) is what all read capabilities + the `sql` capability check today, so
 every built-in carries it.
 
-The three **orchestration atoms** (`pipelines:manage` / `serving:manage` /
-`cloud:manage`, #799) cover every registry **Orchestration** op — the pipeline
+The four **orchestration atoms** (`pipelines:manage` / `serving:manage` /
+`cloud:manage` / `audit:purge`, #799, #1169) cover every registry
+**Orchestration** op — the pipeline
 authoring/deploy/run flow, model+index exposure, and the cloud control surface.
 The capability model is exact-match (no wildcard), so each op must be named by some
 atom or **no** role could ever grant it. These went unwired while the only way to
@@ -478,7 +480,8 @@ reach orchestration over HTTP/MCP was the (now-removed) unauthenticated-local
 bypass, which skipped the capability check entirely; with **auth always on** the
 bootstrap owner (`admin` = the whole vocabulary) must actually hold them, so it can
 drive orchestration over HTTP/MCP/REST. **Only `admin` gets them** — `writer` and
-`reader` are unchanged. The admin-covers-every-registry-op invariant is guarded by a
+`reader` are unchanged. The dedicated audit atom is likewise admin-only. The
+admin-covers-every-registry-op invariant is guarded by a
 test (`AdminRoleCoversRegistry` in `tests/api/test_mcp_server.cpp`).
 
 ### Custom roles + the SQL grammar

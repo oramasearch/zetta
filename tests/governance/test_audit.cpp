@@ -35,6 +35,7 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/governance/scope.hpp"
 #include "zetta/util/uuid.hpp"
+#include "zetta/util/timestamp.hpp"
 
 using zetta::governance::AuditAction;
 using zetta::governance::AuditEventValue;
@@ -215,6 +216,73 @@ TEST(AuditTrail, AuthorizeEmitsDataAccessEvents) {
     node.stop();
 }
 
+TEST(AuditTrail, IdlePollingWindowsKeepOnlySessionStarts) {
+    TempDir tmp;
+    NodeConfig config = config_for(tmp);
+    config.audit_summary_window = std::chrono::milliseconds(1);
+    Node node{config};
+    ASSERT_TRUE(node.start());
+
+    constexpr std::size_t kPollers = 10;
+    // Six compressed windows model 30 minutes at the production five-minute
+    // setting without making the test wait on wall time.
+    for (std::size_t window = 0; window < 6; ++window) {
+        for (std::size_t poller = 0; poller < kPollers; ++poller) {
+            node.record_authorized_read(
+                "poller-" + std::to_string(poller), "receive_events",
+                "topic:idle", 0, false);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        node.tick();
+    }
+    node.flush_audit_summaries();
+
+    ASSERT_EQ(node.audit_event_count(), kPollers);
+    for (const auto& event : node.audit_events()) {
+        EXPECT_EQ(event->action(), AuditAction::DataAccess);
+        EXPECT_NE(event->detail().find("session started"), std::string::npos);
+    }
+    node.stop();
+}
+
+TEST(AuditTrail, ExplicitPurgeLeavesItsRecordAndClassWatermarks) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+
+    node.record_audit_event(AuditEventValue{});
+    AuditEventValue summary;
+    summary.action = AuditAction::DataAccessSummary;
+    summary.summary = zetta::governance::AuditReadSummary{
+        2, 1, "topic:orders", "2026-09-28T22:00:00Z",
+        "2026-09-28T22:05:00Z"};
+    node.record_audit_event(std::move(summary));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const std::string before = zetta::util::now_iso8601();
+
+    std::string error;
+    const auto removed = node.purge_audit_before(before, "admin-user", &error);
+    ASSERT_TRUE(removed) << error;
+    EXPECT_EQ(*removed, 2u);
+    ASSERT_EQ(node.audit_event_count(), 1u);
+    const auto purge = node.audit_events().front();
+    EXPECT_EQ(purge->action(), AuditAction::AuditPurged);
+    EXPECT_EQ(purge->actor(), "admin-user");
+    EXPECT_NE(purge->detail().find(before), std::string::npos);
+    EXPECT_NE(purge->detail().find("2 rows removed"), std::string::npos);
+    const auto watermark = node.audit_watermarks().at(node.node_id());
+    EXPECT_EQ(watermark.at("high"), 3u);
+    EXPECT_EQ(watermark.at("low"), 1u);
+    EXPECT_EQ(watermark.at("summary_low"), 2u);
+
+    const auto count_before_refusal = node.audit_event_count();
+    EXPECT_FALSE(node.purge_audit_before(
+        "2999-01-01T00:00:00Z", "admin-user", &error));
+    EXPECT_EQ(error, "before must not be in the future");
+    EXPECT_EQ(node.audit_event_count(), count_before_refusal);
+    node.stop();
+}
+
 // ----- persistence + replication --------------------------------------------
 
 TEST(AuditTrail, PersistsAcrossRestartViaDisk) {
@@ -339,6 +407,23 @@ TEST(AuditTrail, ReplicatesToPeer) {
     EXPECT_EQ(summary_event->value().summary->calls, 300u);
     EXPECT_EQ(summary_event->value().summary->events_delivered, 12u);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const std::string before = zetta::util::now_iso8601();
+    std::string purge_error;
+    const auto removed = a.purge_audit_before(before, "cluster-admin",
+                                               &purge_error);
+    ASSERT_TRUE(removed) << purge_error;
+    EXPECT_EQ(*removed, 2u);
+    ASSERT_TRUE(converge(a, b, [&] {
+        const auto peer_events = b.audit_events();
+        return peer_events.size() == 1u &&
+               peer_events.front()->action() == AuditAction::AuditPurged;
+    }));
+    ASSERT_EQ(a.audit_events().size(), 1u);
+    ASSERT_EQ(b.audit_events().size(), 1u);
+    EXPECT_EQ(a.audit_watermarks().at(id_a),
+              b.audit_watermarks().at(id_a));
+
     a.stop();
     b.stop();
     cluster_b.stop();
@@ -408,6 +493,8 @@ TEST(AuditTrail, BackgroundActionSpellingsRoundTrip) {
     EXPECT_EQ(to_string(AuditAction::DatasetAdded), "dataset_added");
     EXPECT_EQ(audit_action_from("cloud_inspected"), AuditAction::CloudInspected);
     EXPECT_EQ(audit_action_from("dataset_added"), AuditAction::DatasetAdded);
+    EXPECT_EQ(to_string(AuditAction::AuditPurged), "audit_purged");
+    EXPECT_EQ(audit_action_from("audit_purged"), AuditAction::AuditPurged);
 
     zetta::governance::AuditEventValue value;
     value.action = AuditAction::DatasetAdded;
@@ -503,7 +590,7 @@ TEST(AuditTrail, MembershipUsesTheIndexWithoutReadingSegmentsAgain) {
     EXPECT_EQ(trail.size(), 1u);
 }
 
-TEST(AuditTrail, RetentionRemovesOldCallsButPreservesSummaries) {
+TEST(AuditTrail, OrdinaryAndSummaryRetentionUseIndependentWindows) {
     TempDir tmp;
     zetta::governance::AuditTrail trail(tmp.path() / "audit");
     std::string error;
@@ -520,6 +607,10 @@ TEST(AuditTrail, RetentionRemovesOldCallsButPreservesSummaries) {
         300, 0, "topic:idle", "2026-01-01T00:00:00Z",
         "2026-01-01T00:05:00Z"};
     ASSERT_TRUE(trail.append("old-summary", old_summary, &error)) << error;
+    AuditEventValue retained_summary = old_summary;
+    retained_summary.time = "2026-04-01T00:05:00Z";
+    ASSERT_TRUE(trail.append("retained-summary", retained_summary, &error))
+        << error;
     AuditEventValue current_call;
     current_call.action = AuditAction::GraphCreated;
     current_call.time = "2026-09-28T00:00:00Z";
@@ -527,13 +618,18 @@ TEST(AuditTrail, RetentionRemovesOldCallsButPreservesSummaries) {
 
     std::vector<std::string> removed;
     ASSERT_TRUE(trail.retain_since(
-        "2026-06-01T00:00:00Z",
+        "2026-06-01T00:00:00Z", "2026-03-01T00:00:00Z",
         [&removed](const std::string& id) { removed.push_back(id); },
         &error)) << error;
-    EXPECT_EQ(removed, std::vector<std::string>{"old-call"});
+    EXPECT_EQ(removed,
+              (std::vector<std::string>{"old-call", "old-summary"}));
     EXPECT_FALSE(trail.contains("old-call"));
-    EXPECT_TRUE(trail.contains("old-summary"));
+    EXPECT_FALSE(trail.contains("old-summary"));
+    EXPECT_TRUE(trail.contains("retained-summary"));
     EXPECT_TRUE(trail.contains("current-call"));
+    const auto watermark = trail.watermarks().at("legacy");
+    EXPECT_EQ(watermark.low, 1u);
+    EXPECT_EQ(watermark.summary_low, 2u);
 }
 
 TEST(AuditTrail, MillionRecordsStayWithinMemoryAndDiskBudgets) {
@@ -675,8 +771,8 @@ TEST(AuditTrail, RangesDeduplicateRejectGapsAndPreserveRetainedSummaries) {
     ASSERT_TRUE(target.receive(*original, &error)) << error;
     ASSERT_TRUE(target.receive(*original, &error)) << error;
     EXPECT_EQ(target.size(), 4u);
-    ASSERT_TRUE(source.retain_since("2026-01-01T00:00:00Z", [](const std::string&) {
-    }, &error));
+    ASSERT_TRUE(source.retain_since(
+        "2026-01-01T00:00:00Z", "", [](const std::string&) {}, &error));
     EXPECT_EQ(source.size(), 2u);
     EXPECT_EQ(source.watermarks().at("origin").low, 3u);
     const auto retained = source.read_range("origin", 4, &error);
@@ -699,6 +795,18 @@ TEST(AuditTrail, RangesDeduplicateRejectGapsAndPreserveRetainedSummaries) {
     ASSERT_TRUE(fresh.receive(*sparse, &error)) << error;
     EXPECT_EQ(fresh.size(), 2u);
     EXPECT_TRUE(fresh.contains("summary"));
+
+    ASSERT_TRUE(source.retain_since(
+        "", "2026-01-01T00:00:00Z", [](const std::string&) {}, &error));
+    EXPECT_EQ(source.size(), 1u);
+    EXPECT_EQ(source.watermarks().at("origin").summary_low, 2u);
+    const auto expired_summary = source.read_range("origin", 4, &error);
+    ASSERT_TRUE(expired_summary) << error;
+    ASSERT_TRUE(target.receive(*expired_summary, &error)) << error;
+    ASSERT_TRUE(fresh.receive(*expired_summary, &error)) << error;
+    EXPECT_FALSE(target.contains("summary"));
+    EXPECT_FALSE(fresh.contains("summary"));
+    EXPECT_EQ(target.watermarks().at("origin").summary_low, 2u);
 }
 
 TEST(AuditTrail, CompactionPreservesConcurrentCatalogRemovalAndActorClocks) {
@@ -801,17 +909,17 @@ TEST(AuditTrail, RetentionPreservesInterleavedRecentReadsAndNeverReusesSequences
     ASSERT_TRUE(trail.append_local("a", "a-clock-skew", old));
     ASSERT_TRUE(trail.append_local("b", "b-last", current));
     std::vector<std::string> removed;
-    ASSERT_TRUE(trail.retain_since("2026-01-01T00:00:00Z", [&](const std::string& id) {
-        removed.push_back(id);
-    }));
+    ASSERT_TRUE(trail.retain_since(
+        "2026-01-01T00:00:00Z", "",
+        [&](const std::string& id) { removed.push_back(id); }));
     EXPECT_EQ(removed, (std::vector<std::string>{"a-old", "b-old"}));
     EXPECT_EQ(trail.size(), 4u);
     const auto recent = trail.recent_events();
     ASSERT_EQ(recent.size(), 2u);
     EXPECT_EQ(recent[0]->id(), "a-clock-skew");
     EXPECT_EQ(recent[1]->id(), "b-last");
-    ASSERT_TRUE(trail.retain_since("2027-01-01T00:00:00Z", [](const std::string&) {
-    }));
+    ASSERT_TRUE(trail.retain_since(
+        "2027-01-01T00:00:00Z", "", [](const std::string&) {}));
     EXPECT_EQ(trail.size(), 0u);
     ASSERT_TRUE(trail.open());
     EXPECT_EQ(trail.watermarks().at("a").high, 3u);
@@ -949,7 +1057,7 @@ TEST(AuditTrail, LegacyPeerIsRefusedForAuditButStillReplicatesCatalog) {
     ASSERT_EQ(rows.rows.size(), 2u);
     for (const auto& row : rows.rows) {
         const bool local = row.at("node_id") == modern_id;
-        EXPECT_EQ(row.at("audit_protocol_version"), local ? 1 : 0);
+        EXPECT_EQ(row.at("audit_protocol_version"), local ? 2 : 0);
         EXPECT_EQ(row.at("audit_compatible"), local);
     }
     modern.stop();

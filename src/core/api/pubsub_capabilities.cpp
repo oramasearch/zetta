@@ -518,6 +518,7 @@ void register_crud_capabilities(Registry& registry) {
     get.post_alias = true;
     get.audit_policy = AuditPolicy::SummarizeAuthorizedReads;
     get.audit_scope_field = "topic";
+    get.audit_result_field = "topic";
     add_pubsub_capability(registry, std::move(get));
     auto browse_input = receive_events_schema();
     browse_input["properties"].erase("max");
@@ -530,6 +531,7 @@ void register_crud_capabilities(Registry& registry) {
     browse.post_alias = true;
     browse.audit_policy = AuditPolicy::SummarizeAuthorizedReads;
     browse.audit_scope_field = "topic";
+    browse.audit_result_field = "events";
     add_pubsub_capability(registry, std::move(browse));
     add_pubsub_capability(registry, Capability{"update_topic", "Update topic", "Update mutable node-local topic settings and trim history on retention shrink; immutable settings are refused.",
         object_schema({{"topic", topic_property()}, {"settings", settings_schema()}}, {"topic", "settings"}),
@@ -595,6 +597,7 @@ void register_pubsub_capabilities(Registry& registry) {
         handle_list_topics};
     list.post_alias = true;
     list.audit_policy = AuditPolicy::SummarizeAuthorizedReads;
+    list.audit_result_field = "topics";
     add_pubsub_capability(registry, std::move(list));
 
     add_pubsub_capability(registry, Capability{
@@ -634,6 +637,7 @@ void register_pubsub_capabilities(Registry& registry) {
         }};
     receive.audit_policy = AuditPolicy::SummarizeAuthorizedReads;
     receive.audit_scope_field = "topic";
+    receive.audit_result_field = "events";
     add_pubsub_capability(registry, std::move(receive));
 }
 

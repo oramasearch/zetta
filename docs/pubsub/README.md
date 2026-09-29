@@ -22,8 +22,9 @@ header only ([events.md](events.md)).
   stack-then-ring locking, free list, spill and read-back, flush and restore); the
   deque-backed work `QueueStore` (#1026, #1136).
 - [crud.md](crud.md) — node-local topic/message CRUD, non-consuming browse, revisions,
-  explicit redelivery, scopes, hash-only mutation auditing, summarised polling
-  reads, store durability and REST/MCP parity (#1136, #1154).
+  explicit redelivery, scopes, hash-only mutation auditing, data-bearing polling
+  summaries with idle-window suppression, store durability and REST/MCP parity
+  (#1136, #1154, #1169).
 - [topics.md](topics.md) — the `PubSub` facade; topics as runtime objects; auto-creation;
   subscriptions (start position, groups, retention, gap notices); inboxes; the wildcard
   cache (#1027, #1028).

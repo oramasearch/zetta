@@ -204,6 +204,13 @@ task<std::invoke_result_t<Callable>> offload(Callable callable) {
     co_return std::move(**slot);
 }
 
+// Registry capabilities use the explicit blocking name so their declaration
+// and route make the scheduling contract visible at the call site.
+template <class Callable>
+task<std::invoke_result_t<Callable>> offload_blocking(Callable callable) {
+    co_return co_await offload(std::move(callable));
+}
+
 // --- Data parallelism: parallel_for over the shared runtime thread pool -------
 //
 // A blocking data-parallel primitive for CPU-bound work — the runtime's answer to

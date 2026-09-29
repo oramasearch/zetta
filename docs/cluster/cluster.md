@@ -178,12 +178,13 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   connection stays open; dropping it drops the live link. Peers are keyed by
   **reached address** — one entry per address — so a node that restarts (new id,
   same address) **replaces** its stale entry instead of leaving a ghost.
-- **Audit protocol** (#1164): upgraded peers advertise version `1`; an omitted
+- **Audit protocol** (#1164, #1169): upgraded peers advertise version `2`; an omitted
   field is legacy version `0`. A mismatch refuses audit status/ranges and logs
   the upgrade requirement while ordinary catalog replication continues. Incoming
   legacy `audit:` catalog operations are filtered before merge. Compatible
-  peers exchange `AUSTATUS` watermarks, `AUREQ` origin/cursor requests and
-  `AURES` checksummed frame pages. See [audit replication](../governance/audit-trail.md).
+  peers exchange `AUSTATUS` watermarks (high, ordinary low, and summary low),
+  `AUREQ` origin/cursor requests and `AURES` checksummed frame pages. See
+  [audit replication](../governance/audit-trail.md).
 - **A node advertises a SET of candidate endpoints, not one address** (#739). The
   HELLO carries a comma-separated set — the reachable listen address(es) plus any
   `--advertise HOST:PORT[,…]` extras (a node behind NAT / a load balancer lists its

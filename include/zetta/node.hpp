@@ -96,10 +96,11 @@ struct NodeConfig {
     std::size_t pubsub_topics_per_thread = 250;
     std::size_t pubsub_dispatch_min_threads = 1;
     std::optional<std::size_t> pubsub_dispatch_max_threads;
-    // Ordinary audit events expire after this age. Window summaries are kept
-    // so accountability survives compaction. A non-positive value disables
-    // retention for a test or an explicitly archival node (#1154).
+    // Ordinary audit events and window summaries have separate retention
+    // windows. A non-positive value disables that class's expiration for a
+    // test or an explicitly archival node (#1154, #1169).
     std::chrono::hours audit_retention = std::chrono::hours(24 * 30);
+    std::chrono::hours audit_summary_retention = std::chrono::hours(24 * 365);
     std::chrono::milliseconds audit_summary_window = std::chrono::minutes(5);
     std::size_t audit_recent_events = 2'048;
     // Linux-only, opt-in allocator release. Zero disables it. A periodic memory
@@ -744,6 +745,9 @@ public:
     // it stamps a fresh id + time and appends to the local segment log, whose
     // per-origin ranges replicate without entering the CRDT (#1164).
     void record_audit_event(zetta::governance::AuditEventValue value) override;
+    std::optional<std::size_t> purge_audit_before(
+        const std::string& before, std::string actor,
+        std::string* error = nullptr);
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const;
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> recent_audit_events() const;
     std::size_t audit_event_count() const;
@@ -752,10 +756,12 @@ public:
 
     // Registry policy for authorised polling reads (#1154). The first call for
     // an actor/capability/scope records a session start; calls and delivered
-    // events then land in five-minute summaries and are flushed on stop.
+    // events or returned data then land in five-minute summaries and are
+    // flushed on stop. Empty windows add no summary row.
     void record_authorized_read(std::string actor, std::string capability,
                                 std::string scope,
-                                std::uint64_t events_delivered);
+                                std::uint64_t events_delivered,
+                                bool returned_data);
     void flush_audit_summaries();
 
     // The solutions reward ledger (#1107). Both methods append a fresh,
@@ -1349,6 +1355,7 @@ private:
         Clock::time_point opened_at;
         std::uint64_t calls = 0;
         std::uint64_t events_delivered = 0;
+        bool returned_data = false;
     };
     std::map<std::string, AuditSummaryWindow> audit_summary_windows_;
     Clock::time_point last_audit_retention_{};

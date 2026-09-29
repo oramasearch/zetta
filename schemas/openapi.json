@@ -23169,6 +23169,111 @@
         ]
       }
     },
+    "/v1/purge_audit": {
+      "post": {
+        "description": "Remove audit records strictly before a UTC cutoff, advance replicated low-water marks, and append an audit_purged record describing the action. Requires orchestration:purge_audit.",
+        "operationId": "purge_audit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "before": {
+                    "description": "UTC cutoff; records strictly before it are removed.",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "before"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "before": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "before",
+                        "removed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Purge audit records",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/receive_events": {
       "get": {
         "description": "Read an exposed topic's held events from a sequence number, oldest first; with wait_ms, wait for new ones (long poll). Stateless: pass the returned next_sequence to continue. Requires data:pubsub_subscribe.",

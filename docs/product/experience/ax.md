@@ -53,6 +53,10 @@ relay it to a person.
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
   itself.
+- **Audit maintenance is explicit and governed**: `purge_audit` has identical
+  REST and MCP schemas, requires the admin-only `audit:purge` permission,
+  refuses future cutoffs, returns the removed-row count, and leaves its own
+  immutable record for the human reviewing the agent's work (#1169).
 - **Experiments before actions**: `create_experiment` defines seeded allocation
   tiers, `assign` records the entity before returning any proposed action and
   suppresses model-driven action for protected tiers, and `get_experiment`

@@ -51,6 +51,7 @@
 #include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/util/timestamp.hpp"
 #include "zetta/version.hpp"
 
 extern char** environ;
@@ -1280,7 +1281,7 @@ TEST_F(RestServerFixture, NodeMemoryHasRestAndMcpParity) {
     bool found_server_ownership = false;
     for (const auto& subsystem : rest_value.at("subsystems")) {
         if (subsystem.at("name") == "registry_sessions_connections") {
-            EXPECT_GE(subsystem.at("items").get<std::uint64_t>(), 127u);
+            EXPECT_GE(subsystem.at("items").get<std::uint64_t>(), 128u);
             found_server_ownership = true;
         }
     }
@@ -1288,7 +1289,7 @@ TEST_F(RestServerFixture, NodeMemoryHasRestAndMcpParity) {
     EXPECT_TRUE(node.memory_accounting().unregister_probe(replication_probe));
 }
 
-TEST_F(RestServerFixture, ReceiveAuditPolicyMatchesRestAndMcp) {
+TEST_F(RestServerFixture, EmptyReceiveWindowsAddNoSummaryOnRestOrMcp) {
     ASSERT_EQ(request("POST", "/v1/create_topic",
                       R"({"topic":"topic:audit-parity","exposed":true})")
                   .status,
@@ -1314,18 +1315,62 @@ TEST_F(RestServerFixture, ReceiveAuditPolicyMatchesRestAndMcp) {
     EXPECT_EQ(node.audit_event_count(), before + 1);
 
     node.flush_audit_summaries();
-    ASSERT_EQ(node.audit_event_count(), before + 2);
+    ASSERT_EQ(node.audit_event_count(), before + 1);
     const auto events = node.audit_events();
     const auto summary = std::ranges::find_if(events, [](const auto& event) {
         return event->action() ==
                    zetta::governance::AuditAction::DataAccessSummary &&
                event->target() == "api:receive_events";
     });
-    ASSERT_NE(summary, events.end());
-    ASSERT_TRUE((*summary)->value().summary);
-    EXPECT_EQ((*summary)->value().summary->calls, 2u);
-    EXPECT_EQ((*summary)->value().summary->events_delivered, 0u);
-    EXPECT_EQ((*summary)->value().summary->scope, "audit-parity");
+    EXPECT_EQ(summary, events.end());
+}
+
+TEST_F(RestServerFixture, PurgeAuditHasRestAndMcpParity) {
+    zetta::governance::AuditEventValue event;
+    event.target = "rest-purge-fixture";
+    node.record_audit_event(event);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const std::string rest_before = zetta::util::now_iso8601();
+    const auto rest = request(
+        "POST", "/v1/purge_audit",
+        nlohmann::json{{"before", rest_before}}.dump());
+    ASSERT_EQ(rest.status, 200) << rest.body;
+    const auto rest_value = json_of(rest).at("value");
+    EXPECT_EQ(rest_value.at("before"), rest_before);
+    EXPECT_EQ(rest_value.at("removed"), 1u);
+    ASSERT_EQ(node.audit_event_count(), 1u);
+    EXPECT_EQ(node.audit_events().front()->action(),
+              zetta::governance::AuditAction::AuditPurged);
+    const std::string purge_actor = node.audit_events().front()->actor();
+    EXPECT_FALSE(purge_actor.empty());
+
+    event.target = "mcp-purge-fixture";
+    node.record_audit_event(event);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const std::string mcp_before = zetta::util::now_iso8601();
+    const nlohmann::json mcp_call = {
+        {"jsonrpc", "2.0"},
+        {"id", 1169},
+        {"method", "tools/call"},
+        {"params", {{"name", "purge_audit"},
+                    {"arguments", {{"before", mcp_before}}}}}};
+    const auto mcp = request("POST", "/mcp", mcp_call.dump());
+    ASSERT_EQ(mcp.status, 200) << mcp.body;
+    const auto mcp_value =
+        json_of(mcp).at("result").at("structuredContent").at("value");
+    EXPECT_EQ(mcp_value.at("before"), mcp_before);
+    EXPECT_EQ(mcp_value.at("removed"), 2u);
+    ASSERT_EQ(node.audit_event_count(), 1u);
+    const auto purge = node.audit_events().front();
+    EXPECT_EQ(purge->action(), zetta::governance::AuditAction::AuditPurged);
+    EXPECT_EQ(purge->actor(), purge_actor);
+    EXPECT_NE(purge->detail().find(mcp_before), std::string::npos);
+
+    const auto future = request(
+        "POST", "/v1/purge_audit",
+        R"({"before":"2999-01-01T00:00:00Z"})");
+    EXPECT_EQ(future.status, 400);
+    EXPECT_EQ(json_of(future).at("error").at("code"), "invalid_input");
 }
 
 TEST_F(RestServerFixture, SegmentedAuditReadsHaveRestAndMcpParity) {

@@ -40,6 +40,7 @@ Today the interface exposes:
 | `parallel_for(count, body)` | Capy `thread_pool` + `run_async` | blocking data-parallel fan-out: split `[0, count)` into chunks, run each on the shared pool, join before returning |
 | `parallel_chunks(count)` | — | the number of chunks `parallel_for` would tile `count` into (for sizing per-chunk state) |
 | `offload(callable) -> task<T>` | `spawn` + `async_event` | run a **blocking** callable on a pool worker and resume the awaiting coroutine with its result — `co_await runtime::offload([]{ return blocking(); })`. The bridge for a backend adapter that can only block (a vendored C driver like **libpq**): the blocking call runs off every zetta network/main thread. Confine such a callable to the one adapter TU that names the backend library. |
+| `offload_blocking(callable) -> task<T>` | `offload` | explicit registry spelling for `Capability::blocks`; REST and MCP use it for internally synchronized storage work such as audit segment rewriting (#1169). |
 
 ```cpp
 #include "zetta/runtime.hpp"

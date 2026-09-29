@@ -50,6 +50,7 @@ namespace zetta::governance {
 //   roles:manage   -> api:manage_roles
 //   tokens:manage  -> api:manage_tokens
 //   cluster:admin  -> api:cluster_admin
+//   audit:purge    -> orchestration:purge_audit
 //   pubsub:publish -> data:pubsub_publish (subscribe, send_wildcard alike);
 //   pubsub:create / pubsub:manage -> orchestration:pubsub_create / pubsub_manage
 

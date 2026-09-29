@@ -80,6 +80,7 @@ struct Options {
     bool pubsub_dispatch_min_threads_from_cli = false;
     bool pubsub_dispatch_max_threads_from_cli = false;
     bool audit_retention_from_cli = false;
+    bool audit_summary_retention_from_cli = false;
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -162,7 +163,10 @@ void print_usage(const char* argv0) {
         "                      Maximum workers (default detected CPU count)\n"
         "  --audit-retention-days N\n"
         "                      Keep ordinary audit rows for N days (default 30);\n"
-        "                      summaries are preserved. Zero disables retention\n"
+        "                      zero keeps them forever\n"
+        "  --audit-summary-retention-days N\n"
+        "                      Keep audit summaries for N days (default 365);\n"
+        "                      zero keeps them forever\n"
         "  --governance        Enforce consent gating on cloud-touching calls.\n"
         "                      OFF by default (#995): a consent-gated capability\n"
         "                      executes on the first call and the bypass is\n"
@@ -183,6 +187,8 @@ void print_usage(const char* argv0) {
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
         "                      Ordinary audit retention in days\n"
+        "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
+        "                      Audit summary retention in days\n"
         "  ZETTA_MALLOC_TRIM_THRESHOLD_BYTES\n"
         "                      Opt-in free-held threshold for malloc_trim(0)\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
@@ -339,6 +345,22 @@ Options parse_args(int argc, char** argv) {
             }
             o.node.audit_retention = std::chrono::hours(24ULL * days);
             o.audit_retention_from_cli = true;
+        } else if (arg == "--audit-summary-retention-days") {
+            const char* value = take_value(
+                argc, argv, i, o, "--audit-summary-retention-days");
+            if (!value) {
+                break;
+            }
+            std::uint32_t days = 0;
+            if (!parse_uint32(value, days)) {
+                std::fprintf(
+                    stderr,
+                    "zetta: --audit-summary-retention-days wants a non-negative number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.node.audit_summary_retention = std::chrono::hours(24ULL * days);
+            o.audit_summary_retention_from_cli = true;
         } else if (arg == "--governance") {
             o.node.enforce_consent = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -593,6 +615,20 @@ int main(int argc, char** argv) {
                 return 2;
             }
             opts.node.audit_retention = std::chrono::hours(24ULL * days);
+        }
+    }
+    if (!opts.audit_summary_retention_from_cli) {
+        if (const char* environment =
+                std::getenv("ZETTA_AUDIT_SUMMARY_RETENTION_DAYS")) {
+            std::uint32_t days = 0;
+            if (!parse_uint32(environment, days)) {
+                std::fprintf(
+                    stderr,
+                    "zetta: ZETTA_AUDIT_SUMMARY_RETENTION_DAYS wants a non-negative number\n");
+                return 2;
+            }
+            opts.node.audit_summary_retention =
+                std::chrono::hours(24ULL * days);
         }
     }
     if (const char* environment =

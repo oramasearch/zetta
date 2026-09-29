@@ -3,7 +3,9 @@
 Registry declarations generate REST routes, MCP tools and OpenAPI. Pub/sub CRUD
 uses the same schemas and handlers on both transports, with coroutine long polls
 and no thread per waiter. Successful polling reads share audit sessions and
-window totals; writes, denials and failures stay per-call. See
+window totals only when they return data; empty windows add no summary. Writes,
+denials and failures stay per-call. The admin-only `purge_audit` action is
+offloaded for its segment rewrite and has REST/MCP/OpenAPI parity. See
 [CRUD](../../../docs/pubsub/crud.md) and
 [REST/OpenAPI](../../../docs/api/rest-openapi.md).
 
@@ -17,6 +19,6 @@ topics. MCP receive and browse waits inspect the first governed result directly;
 neither path holds a thread or changes non-object request error handling.
 See [run metrics](../../../docs/ml/run-metrics.md).
 
-`mcp_docs.cpp` also renders `/cli.md`. Its pub/sub section documents the dynamic
-dispatch-pool flags and their environment-variable equivalents; the CLI parity
-test keeps that page synchronized with `src/main.cpp`.
+`mcp_docs.cpp` also renders `/cli.md`. Its pub/sub and audit sections document
+the dispatch-pool and class-specific retention flags with their environment
+variables; the CLI parity test keeps that page synchronized with `src/main.cpp`.

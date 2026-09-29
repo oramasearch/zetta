@@ -972,8 +972,10 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
 
     // An audit event (authorize records a data_access decision).
     node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "churn"});
-    node.record_authorized_read(key->id(), "receive_events", "topic:idle", 0);
-    node.record_authorized_read(key->id(), "receive_events", "topic:idle", 2);
+    node.record_authorized_read(
+        key->id(), "receive_events", "topic:idle", 0, false);
+    node.record_authorized_read(
+        key->id(), "receive_events", "topic:idle", 2, true);
     node.flush_audit_summaries();
 
     // runs

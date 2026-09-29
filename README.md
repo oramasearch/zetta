@@ -29,10 +29,11 @@ REST and MCP: non-consuming browse, revision-checked edits, explicit redelivery,
 retention updates and audited deletions. Its default dispatcher is a
 [shared pool sized at one worker per 250 active topics](docs/pubsub/dispatch.md),
 bounded by configurable minimum and maximum worker counts. Authorised polling reads use
-five-minute audit summaries, while denied reads and mutations remain per-call;
-the trail uses checksummed compressed segments with bounded-memory indexing and
-configurable retention (#1154). Audit replication uses per-origin segment ranges,
-not in-memory CRDT events; upgrades require all nodes together (#1164).
+five-minute audit summaries only for windows that returned data, while denied
+reads and mutations remain per-call. Ordinary and summary retention are
+configured independently, and admins can run the audited `purge_audit` action
+over REST or MCP (#1154, #1169). Audit replication uses per-origin segment
+ranges, not in-memory CRDT events; upgrades require all nodes together (#1164).
 Clustered pub/sub remains deferred (D39).
 
 Every node now reports [per-subsystem memory ownership](docs/ops/memory.md):

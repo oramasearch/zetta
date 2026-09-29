@@ -88,6 +88,7 @@ enum class CapabilityKind { Read, Action, Job };
 enum class AuditPolicy {
     PerCall,
     SummarizeAuthorizedReads,
+    HandlerRecordsSuccess,
 };
 
 std::string_view to_string(CapabilityKind kind);
@@ -227,6 +228,15 @@ struct Capability {
     // and one input scope. Denials and failures remain per-call (#1154).
     AuditPolicy audit_policy = AuditPolicy::PerCall;
     std::string audit_scope_field;
+    // The output field that carries accessed data. An empty array/object/string
+    // means an idle read; a present scalar means data was returned. This keeps
+    // empty polling windows out of the audit log without hiding successful
+    // reads that returned topic metadata (#1169).
+    std::string audit_result_field;
+    // The handler performs blocking storage work against internally guarded
+    // state. REST and MCP run it through runtime::offload_blocking after the
+    // registry has completed its owner-thread authorization gate.
+    bool blocks = false;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh

@@ -839,8 +839,10 @@ void apply_gossip(Cluster::State* self, const std::string& line,
             while (parser >> origin) {
                 if (!read_audit_sequence(parser, watermark.high) ||
                     !read_audit_sequence(parser, watermark.low) ||
+                    !read_audit_sequence(parser, watermark.summary_low) ||
                     !zetta::governance::valid_audit_origin(origin) ||
                     origin == "legacy" || watermark.low > watermark.high ||
+                    watermark.summary_low > watermark.high ||
                     message.watermarks.size() >= 4096) {
                     return;
                 }
@@ -860,7 +862,9 @@ void apply_gossip(Cluster::State* self, const std::string& line,
                 std::string encoded;
                 if (!read_audit_sequence(parser, batch.next) ||
                     !read_audit_sequence(parser, batch.watermark.high) ||
-                    !read_audit_sequence(parser, batch.watermark.low) || !(parser >> encoded)) {
+                    !read_audit_sequence(parser, batch.watermark.low) ||
+                    !read_audit_sequence(parser, batch.watermark.summary_low) ||
+                    !(parser >> encoded)) {
                     return;
                 }
                 if (encoded != "-") {
@@ -1688,7 +1692,8 @@ void Cluster::publish_audit_watermarks(
     for (const auto& [origin, watermark] : watermarks) {
         if (origin != "legacy" && zetta::governance::valid_audit_origin(origin)) {
             status += " " + origin + " " + std::to_string(watermark.high) +
-                      " " + std::to_string(watermark.low);
+                      " " + std::to_string(watermark.low) +
+                      " " + std::to_string(watermark.summary_low);
         }
     }
     const std::lock_guard lock(state_->audit_mutex);
@@ -1723,6 +1728,7 @@ bool Cluster::send_audit(const AuditMessage& message) {
     if (message.kind == AuditMessage::Kind::Response) {
         line += " " + std::to_string(batch.next) + " " + std::to_string(batch.watermark.high) +
                 " " + std::to_string(batch.watermark.low) + " " +
+                std::to_string(batch.watermark.summary_low) + " " +
                 (batch.frames.empty() ? "-" : detail::base64_encode_bytes(batch.frames));
     }
     const std::lock_guard lock(state_->outbox_mutex);

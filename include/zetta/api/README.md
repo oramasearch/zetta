@@ -6,5 +6,7 @@ use transport-owned async events on both transports.
 Run-metric and pub/sub CRUD capabilities coexist in this registry; their shared
 long-poll path preserves the same owner-thread authorization and final read.
 `AuditPolicy` keeps writes, denials and failures per-call while selected
-authorised polling reads use window summaries.
+authorised polling reads use data-bearing window summaries. A blocking marker
+offloads the internally synchronized `purge_audit` segment rewrite without
+moving authorization off the owner thread (#1169).
 See [registry design](../../../docs/api/registry-design.md).
