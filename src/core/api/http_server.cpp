@@ -672,6 +672,10 @@ struct ApiServer::Impl {
     std::atomic<bool> is_running{false};
     std::atomic<bool> io_work_held{false};
     std::atomic<std::size_t> requests_in_flight{0};
+    std::atomic<std::size_t> active_connection_count{0};
+    std::atomic<std::size_t> idle_connection_count{0};
+    std::atomic<std::size_t> poll_waiter_count{0};
+    zetta::memory::MemoryAccounting::ProbeId memory_probe = 0;
     unsigned short bound_port = 0;
     std::string failure_reason;
 
@@ -681,6 +685,26 @@ struct ApiServer::Impl {
           cluster(owning_cluster),
           options(std::move(server_options)) {
         register_core_capabilities(capability_registry);
+        memory_probe = node.memory_accounting().register_probe(
+            "registry_sessions_connections", [this] {
+                const auto active =
+                    active_connection_count.load(std::memory_order_relaxed);
+                const auto idle =
+                    idle_connection_count.load(std::memory_order_relaxed);
+                const auto waiters = poll_waiter_count.load(std::memory_order_relaxed);
+                const auto requests =
+                    requests_in_flight.load(std::memory_order_relaxed);
+                const auto registrations = capability_registry.list().size();
+                return zetta::memory::ProbeSample{
+                    registrations * 768 + active * sizeof(Connection) +
+                        idle * sizeof(Connection) + waiters * 128 + requests * 256,
+                    registrations + active + idle + waiters + requests,
+                    0};
+            });
+    }
+
+    ~Impl() {
+        node.memory_accounting().unregister_probe(memory_probe);
     }
 
     runtime::task<> serve_connection(std::uint64_t id,
@@ -694,8 +718,11 @@ struct ApiServer::Impl {
         }
         connection->socket.close();
         connections.erase(id);
+        active_connection_count.store(connections.size(), std::memory_order_relaxed);
         if (is_running.load() && idle_connections.size() < options.idle_connection_cache) {
             idle_connections.push_back(std::move(connection));
+            idle_connection_count.store(idle_connections.size(),
+                                        std::memory_order_relaxed);
         }
     }
 
@@ -759,10 +786,14 @@ struct ApiServer::Impl {
             } else {
                 connection = std::move(idle_connections.back());
                 idle_connections.pop_back();
+                idle_connection_count.store(idle_connections.size(),
+                                            std::memory_order_relaxed);
                 connection->socket = std::move(accepted);
             }
             const auto id = next_connection++;
             connections.emplace(id, connection);
+            active_connection_count.store(connections.size(),
+                                          std::memory_order_relaxed);
             runtime::run_async(io_context.get_executor())(
                 serve_connection(id, std::move(connection)));
         }
@@ -781,7 +812,9 @@ struct ApiServer::Impl {
             if (auto event = registered.lock()) event->set();
         }
         poll_events.clear();
+        poll_waiter_count.store(0, std::memory_order_relaxed);
         idle_connections.clear();
+        idle_connection_count.store(0, std::memory_order_relaxed);
         co_return;
     }
 
@@ -1046,6 +1079,8 @@ struct ApiServer::Impl {
                     return event.expired();
                 });
                 poll_events.push_back(wait_event);
+                poll_waiter_count.store(poll_events.size(),
+                                        std::memory_order_relaxed);
                 co_await bridge.run_on_owner([&] {
                     ApiContext context{node, cluster, identity.acting_key, trace,
                                        &node.span_recorder(), &background};
@@ -1071,6 +1106,11 @@ struct ApiServer::Impl {
                         });
                     }
                 }
+                std::erase_if(poll_events, [&wait_event](const auto& event) {
+                    return event.expired() || event.lock() == wait_event;
+                });
+                poll_waiter_count.store(poll_events.size(),
+                                        std::memory_order_relaxed);
             } else if (capability->offloadable) {
                 // Offloadable handlers (chat) touch only thread-safe state and
                 // run on the pool so generation never pins the owner loop.

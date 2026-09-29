@@ -26,6 +26,13 @@ const nlohmann::json& schema_document() {
         "memory_used_bytes":    { "type": "integer", "minimum": 0 },
         "memory_total_bytes":   { "type": "integer", "minimum": 0 },
         "memory_percent":       { "type": "number" },
+        "process_rss_bytes":    { "type": "integer", "minimum": 0 },
+        "process_peak_rss_bytes": { "type": "integer", "minimum": 0 },
+        "allocator_in_use_bytes": { "type": "integer", "minimum": 0 },
+        "allocator_free_held_bytes": { "type": "integer", "minimum": 0 },
+        "attributed_memory_bytes": { "type": "integer", "minimum": 0 },
+        "unattributed_memory_bytes": { "type": "integer", "minimum": 0 },
+        "memory_explained_percent": { "type": "number" },
         "gpu_percent":          { "type": "number" },
         "vram_used_bytes":      { "type": "integer", "minimum": 0 },
         "vram_total_bytes":     { "type": "integer", "minimum": 0 },
@@ -88,6 +95,17 @@ std::string encode_node_metrics(const NodeMetrics& metrics,
         document["memory_total_bytes"] = metrics.memory_total_bytes;
         document["memory_percent"] = metrics.memory_percent;
     }
+    if (metrics.process_memory_available) {
+        document["process_rss_bytes"] = metrics.process_rss_bytes;
+        document["process_peak_rss_bytes"] = metrics.process_peak_rss_bytes;
+    }
+    if (metrics.allocator_memory_available) {
+        document["allocator_in_use_bytes"] = metrics.allocator_in_use_bytes;
+        document["allocator_free_held_bytes"] = metrics.allocator_free_held_bytes;
+        document["attributed_memory_bytes"] = metrics.attributed_memory_bytes;
+        document["unattributed_memory_bytes"] = metrics.unattributed_memory_bytes;
+        document["memory_explained_percent"] = metrics.memory_explained_percent;
+    }
     if (metrics.gpu_available) {
         document["gpu_percent"] = metrics.gpu_percent;
         document["vram_used_bytes"] = metrics.vram_used_bytes;
@@ -142,6 +160,26 @@ std::optional<NodeTelemetrySample> decode_node_metrics(std::string_view payload,
         metrics.memory_total_bytes =
             document.value("memory_total_bytes", std::uint64_t{0});
         metrics.memory_percent = document.value("memory_percent", 0.0);
+    }
+    if (document.contains("process_rss_bytes")) {
+        metrics.process_memory_available = true;
+        metrics.process_rss_bytes =
+            document.at("process_rss_bytes").get<std::uint64_t>();
+        metrics.process_peak_rss_bytes =
+            document.value("process_peak_rss_bytes", std::uint64_t{0});
+    }
+    if (document.contains("allocator_in_use_bytes")) {
+        metrics.allocator_memory_available = true;
+        metrics.allocator_in_use_bytes =
+            document.at("allocator_in_use_bytes").get<std::uint64_t>();
+        metrics.allocator_free_held_bytes =
+            document.value("allocator_free_held_bytes", std::uint64_t{0});
+        metrics.attributed_memory_bytes =
+            document.value("attributed_memory_bytes", std::uint64_t{0});
+        metrics.unattributed_memory_bytes =
+            document.value("unattributed_memory_bytes", std::uint64_t{0});
+        metrics.memory_explained_percent =
+            document.value("memory_explained_percent", 0.0);
     }
     if (document.contains("gpu_percent")) {
         metrics.gpu_available = true;

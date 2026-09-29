@@ -71,6 +71,7 @@ public:
     std::string decode(const std::vector<int>& ids) const;
 
     int vocab_size() const { return static_cast<int>(vocab_.size()); }
+    std::size_t resident_bytes() const;
 
     // A byte-level token string → its id, or -1 if absent.
     int token_to_id(const std::string& token) const;

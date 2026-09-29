@@ -20,6 +20,8 @@ zetta::storage::JsonlStore::JsonlStore(fs::path dir) : dir_(std::move(dir)) {
 void zetta::storage::JsonlStore::load() {
     records_.clear();
     ids_.clear();
+    resident_sizes_.clear();
+    resident_bytes_ = 0;
     id_index_.clear();
     // Chunks are contiguous from 0; stop at the first missing file.
     for (std::size_t chunk = 0;; ++chunk) {
@@ -46,6 +48,9 @@ void zetta::storage::JsonlStore::load() {
                 doc = std::move(parsed);
             }
             id_index_.emplace(id, ids_.size());
+            const std::size_t resident = line.size() * 2 + id.size() + 96;
+            resident_sizes_.push_back(resident);
+            resident_bytes_ += resident;
             ids_.push_back(std::move(id));
             records_.push_back(std::move(doc));
         }
@@ -55,7 +60,10 @@ void zetta::storage::JsonlStore::load() {
 void zetta::storage::JsonlStore::add(std::string id, nlohmann::json doc) {
     const std::size_t index = records_.size();
     const nlohmann::json line{{"_zid", id}, {"doc", doc}};
+    const std::size_t resident = line.dump().size() * 2 + id.size() + 96;
     records_.push_back(std::move(doc));
+    resident_sizes_.push_back(resident);
+    resident_bytes_ += resident;
     ids_.push_back(id);
     id_index_.emplace(std::move(id), index);
     // Append to the row's chunk (derived from its index), rolling to a fresh
@@ -70,6 +78,10 @@ void zetta::storage::JsonlStore::update(const std::string& id,
                                         nlohmann::json doc) {
     const std::size_t i = index_of(id);
     if (i == kMissing) return;
+    const std::size_t resident = doc.dump().size() * 2 + id.size() + 96;
+    resident_bytes_ -= resident_sizes_[i];
+    resident_bytes_ += resident;
+    resident_sizes_[i] = resident;
     records_[i] = std::move(doc);
     // Record the chunk; do not rewrite it yet. Reconciling a table issues one
     // update PER ROW, and a chunk holds up to kRecordsPerChunk rows — so
@@ -86,7 +98,9 @@ void zetta::storage::JsonlStore::update(const std::string& id,
 void zetta::storage::JsonlStore::remove(const std::string& id) {
     const std::size_t i = index_of(id);
     if (i == kMissing) return;
+    resident_bytes_ -= resident_sizes_[i];
     records_.erase(records_.begin() + static_cast<std::ptrdiff_t>(i));
+    resident_sizes_.erase(resident_sizes_.begin() + static_cast<std::ptrdiff_t>(i));
     ids_.erase(ids_.begin() + static_cast<std::ptrdiff_t>(i));
     id_index_.erase(id);
     // Every row after `i` shifted down, so its chunk assignment may have changed

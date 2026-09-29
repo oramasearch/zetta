@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -23,6 +24,18 @@
 // Today: Capy provides the coroutine foundation (`task<Value>`, executors,
 // thread pools). Corosio (networking) is wired in here when zetta grows a server.
 namespace zetta::runtime {
+
+struct MemoryUsage {
+    std::uint64_t bytes = 0;
+    std::uint64_t coroutine_frames = 0;
+    std::uint64_t blocking_queue_depth = 0;
+    std::uint64_t thread_count = 0;
+    std::uint64_t thread_stack_bytes = 0;
+};
+
+MemoryUsage memory_usage() noexcept;
+void blocking_work_started() noexcept;
+void blocking_work_finished() noexcept;
 
 // A coroutine returning Value (void by default).
 template <class Value = void>
@@ -168,6 +181,9 @@ void spawn(task<> coroutine, std::function<void()> on_complete);
 template <class Callable, class Result>
 task<> detail_run_blocking(Callable callable,
                            std::shared_ptr<std::optional<Result>> slot) {
+    struct Activity {
+        ~Activity() { blocking_work_finished(); }
+    } activity;
     slot->emplace(callable());
     co_return;
 }
@@ -181,6 +197,7 @@ task<std::invoke_result_t<Callable>> offload(Callable callable) {
     using Result = std::invoke_result_t<Callable>;
     auto slot = std::make_shared<std::optional<Result>>();
     auto done = std::make_shared<async_event>();
+    blocking_work_started();
     spawn(detail_run_blocking<Callable, Result>(std::move(callable), slot),
           [done] { done->set(); });
     [[maybe_unused]] auto ready = co_await done->wait();  // io_result: completion only

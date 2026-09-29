@@ -34,6 +34,7 @@
 #include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/study.hpp"
+#include "zetta/memory/accounting.hpp"
 #include "zetta/solutions/monitor.hpp"
 #include "zetta/workspace/workspace_profile.hpp"
 #include "zetta/billing/plan.hpp"
@@ -101,6 +102,9 @@ struct NodeConfig {
     std::chrono::hours audit_retention = std::chrono::hours(24 * 30);
     std::chrono::milliseconds audit_summary_window = std::chrono::minutes(5);
     std::size_t audit_recent_events = 2'048;
+    // Linux-only, opt-in allocator release. Zero disables it. A periodic memory
+    // sample calls malloc_trim(0) when allocator-held free bytes reach this.
+    std::uint64_t malloc_trim_threshold_bytes = 0;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -649,8 +653,13 @@ public:
     // CPU + network gauges are rates measured against the previous sample, which
     // the sampler updates each call. The storage gauge is taken over the node's
     // `data_dir` filesystem.
-    zetta::cluster::NodeMetrics sample_node_metrics() {
-        return node_metrics_sampler_.sample(config_.data_dir);
+    zetta::cluster::NodeMetrics sample_node_metrics();
+
+    zetta::memory::Snapshot memory_snapshot() const {
+        return memory_accounting_.snapshot();
+    }
+    zetta::memory::MemoryAccounting& memory_accounting() {
+        return memory_accounting_;
     }
 
     // The **cluster-wide** live telemetry snapshot: this node plus every peer
@@ -1093,6 +1102,16 @@ private:
     std::filesystem::path audit_dir() const;
     void flush_due_audit_summaries();
     void apply_audit_retention();
+    void register_memory_probes();
+    void report_memory(bool force);
+    zetta::memory::ProbeSample audit_memory_usage() const;
+    zetta::memory::ProbeSample pubsub_memory_usage() const;
+    zetta::memory::ProbeSample replication_memory_usage() const;
+    zetta::memory::ProbeSample dataset_memory_usage() const;
+    zetta::memory::ProbeSample registry_memory_usage() const;
+    zetta::memory::ProbeSample runtime_memory_usage() const;
+    zetta::memory::ProbeSample model_memory_usage() const;
+    zetta::memory::ProbeSample run_job_memory_usage() const;
 
     // Rebuild the immutable solutions ledger from data_dir/ledger.
     void load_ledger_entries();
@@ -1295,6 +1314,11 @@ private:
     std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
     zetta::governance::ConsentLedger consent_ledger_;                     // ephemeral; not replicated (#621)
     zetta::cluster::NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
+    zetta::memory::MemoryAccounting memory_accounting_;
+    Clock::time_point last_memory_check_{};
+    Clock::time_point last_memory_log_{};
+    Clock::time_point last_malloc_trim_{};
+    std::uint64_t last_rss_step_ = 0;
     // Live near-data pipeline instrumentation (#589): a bounded, in-memory ring of
     // the most-recent recorded jobs' local-vs-wire counters, the source for the
     // `system.pipeline_jobs` view. Ephemeral / observed; NOT replicated. Guarded by

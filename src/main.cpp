@@ -182,7 +182,9 @@ void print_usage(const char* argv0) {
         "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
-        "                      Ordinary audit retention in days\n",
+        "                      Ordinary audit retention in days\n"
+        "  ZETTA_MALLOC_TRIM_THRESHOLD_BYTES\n"
+        "                      Opt-in free-held threshold for malloc_trim(0)\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -592,6 +594,17 @@ int main(int argc, char** argv) {
             }
             opts.node.audit_retention = std::chrono::hours(24ULL * days);
         }
+    }
+    if (const char* environment =
+            std::getenv("ZETTA_MALLOC_TRIM_THRESHOLD_BYTES")) {
+        std::size_t threshold = 0;
+        if (!parse_positive_size(environment, threshold)) {
+            std::fprintf(
+                stderr,
+                "zetta: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES wants a positive number\n");
+            return 2;
+        }
+        opts.node.malloc_trim_threshold_bytes = threshold;
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a

@@ -21779,6 +21779,176 @@
         ]
       }
     },
+    "/v1/node_memory": {
+      "get": {
+        "description": "Read process RSS, allocator truth, and per-subsystem memory ownership. No side effects. Requires api:query.",
+        "operationId": "node_memory",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "allocator_available": {
+                          "type": "boolean"
+                        },
+                        "allocator_free_held_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "allocator_in_use_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "anonymous_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "attributed_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "over_attributed_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "peak_rss_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "rss_available": {
+                          "type": "boolean"
+                        },
+                        "rss_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "sampled_at_ms": {
+                          "type": "integer"
+                        },
+                        "subsystems": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bytes": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "items": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "reserved_bytes": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "share_of_in_use": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "bytes",
+                              "items",
+                              "reserved_bytes",
+                              "share_of_in_use"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "unattributed_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "sampled_at_ms",
+                        "allocator_available",
+                        "rss_available",
+                        "allocator_in_use_bytes",
+                        "allocator_free_held_bytes",
+                        "rss_bytes",
+                        "peak_rss_bytes",
+                        "anonymous_bytes",
+                        "attributed_bytes",
+                        "unattributed_bytes",
+                        "over_attributed_bytes",
+                        "subsystems"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Node memory",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/plan_features": {
       "get": {
         "description": "Read a methodology-specific feature and exclusion plan from dataset analysis, or an explicit transform_required proposal. No side effects and no transform is applied. Requires api:query.",

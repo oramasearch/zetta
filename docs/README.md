@@ -48,6 +48,7 @@ REST and MCP, non-consuming reads, revisions, retention and mutation auditing;
 | [governance/](governance/README.md) | Key-scoped access control, the audit trail, the governed console. |
 | [workspace/](workspace/README.md) | The Workspace Profile — the environment/role/daily-work + approved-source-refs entity behind the "Discover Opportunities" pathway (#886). |
 | [billing/](billing/README.md) | Metered usage + plan: the live `system.usage` snapshot (metered from engine state) and the Plan quota/tier entity it is measured against (Conflict D). No payment processor — on-prem. |
+| [ops/](ops/README.md) | Operator diagnostics and tuning: per-subsystem memory ownership, allocator truth, RSS, periodic reporting, and allocator guidance. |
 | [solutions/](solutions/README.md) | Shared solution components: deterministic experimental assignment, protected holdouts, treatment/exploration cells, exemptions, and uplift-training records. |
 | [gui/](gui/README.md) | The headed app: the Orama design system (read before GUI work), every panel, and the load-bearing rendering notes. |
 | [use-cases/](use-cases/README.md) | The use-case catalog framing + UC-1 churn end to end: dataset, entity resolution, the real step executor, the playbook, the at-scale tests. |

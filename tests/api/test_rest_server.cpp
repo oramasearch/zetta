@@ -1229,6 +1229,43 @@ TEST_F(RestServerFixture, PubSubCrudRestMcpSchemaParityAndCalls) {
     }
 }
 
+TEST_F(RestServerFixture, NodeMemoryHasRestAndMcpParity) {
+    const auto capability = server->registry().find("node_memory");
+    ASSERT_TRUE(capability);
+
+    const auto rest = request("GET", "/v1/node_memory");
+    ASSERT_EQ(rest.status, 200) << rest.body;
+    const nlohmann::json mcp_call = {
+        {"jsonrpc", "2.0"},
+        {"id", 1163},
+        {"method", "tools/call"},
+        {"params", {{"name", "node_memory"},
+                    {"arguments", nlohmann::json::object()}}}};
+    const auto mcp = request("POST", "/mcp", mcp_call.dump());
+    ASSERT_EQ(mcp.status, 200) << mcp.body;
+
+    const auto rest_value = json_of(rest).at("value");
+    const auto mcp_value =
+        json_of(mcp).at("result").at("structuredContent").at("value");
+    nlohmann::json_schema::json_validator validator(capability->output_schema);
+    EXPECT_NO_THROW(validator.validate(rest_value));
+    EXPECT_NO_THROW(validator.validate(mcp_value));
+    EXPECT_EQ(rest_value.at("subsystems").size(),
+              mcp_value.at("subsystems").size());
+    for (std::size_t index = 0; index < rest_value.at("subsystems").size(); ++index) {
+        EXPECT_EQ(rest_value.at("subsystems").at(index).at("name"),
+                  mcp_value.at("subsystems").at(index).at("name"));
+    }
+    bool found_server_ownership = false;
+    for (const auto& subsystem : rest_value.at("subsystems")) {
+        if (subsystem.at("name") == "registry_sessions_connections") {
+            EXPECT_GE(subsystem.at("items").get<std::uint64_t>(), 127u);
+            found_server_ownership = true;
+        }
+    }
+    EXPECT_TRUE(found_server_ownership);
+}
+
 TEST_F(RestServerFixture, ReceiveAuditPolicyMatchesRestAndMcp) {
     ASSERT_EQ(request("POST", "/v1/create_topic",
                       R"({"topic":"topic:audit-parity","exposed":true})")

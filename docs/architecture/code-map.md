@@ -47,6 +47,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
   node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + solution monitors + indexes + jobs + dataset partitions + principals; the immutable solutions ledger (record_action/record_outcome/ledger_entries, #1107); owns the shared ExperimentManager (#1105); the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); the per-node telemetry sampler (sample_node_metrics(), #581) + the cluster-wide telemetry snapshot (telemetry_snapshot(), #584); the live near-data pipeline instrumentation registry (record_pipeline_job()/pipeline_jobs(), the bounded source for system.pipeline_jobs, #589); the node's span ring (span_recorder(), the ONE source for system.traces/system.spans + list_traces/get_trace, #640); the computed-at-query-time dataset summaries (datasets(), the source for system.datasets, #585) + the detected-provisioner cache (record_provisioner_config()/provisioner_configs(), ephemeral, the source for system.provisioners); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
   runtime.hpp               zetta::runtime — async/coroutine interface over Capy (task/io_task/io_result/block_on/spawn/thread_pool + parallel_for data-parallel fan-out + the structured-concurrency pair when_all/timeout, #827)
+  memory/
+    README.md              navigation for the public memory-accounting interface
+    accounting.hpp         zetta::memory::MemoryAccounting — mergeable subsystem probes, allocator/RSS truth, unattributed and excess accounting, log formatting, and optional allocator trim (#1163)
   runtime/net.hpp           networking slice of the interface (Corosio; included by exactly two adapters — src/core/cluster/cluster.cpp inbound, src/core/api/native_http_transport.cpp outbound) incl. the TLS surface (tls_context/openssl_stream/any_stream, #466) and the async DNS resolver (resolver/resolver_results, for hostname peer seeds, #785)
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
@@ -60,8 +63,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     security.hpp            zetta::cluster::ClusterSecurity + generate/valid_join_token/derive_cluster_security/load_or_create_cluster_security/cluster_secret_schema — inter-node transport security (CTL-2/TB-3, #466): the join token derives the cluster CA (deterministic Ed25519), each node mints a CA-signed identity, persisted under <data_dir>/security/ with a schema-validated secret file (docs/cluster/security.md)
     signal.hpp              zetta::cluster::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
     collectives.hpp         zetta::cluster::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365); wire_bytes() + rounds_completed() live meters feed system.collective_rounds (#589)
-    replication.hpp         zetta::cluster::ReplicationManager — Automerge CRDT state; remove() writes a TOMBSTONE (never a map delete) and knows_key() sees through it (#838)
-    node_metrics.hpp        zetta::cluster::NodeMetrics/NodeMetricsSampler — live per-node host resource telemetry (CPU/memory/GPU+VRAM/storage/network), sampled from OS counters; ephemeral/observed, the source for system.node_metrics; graceful degradation to null when a counter is absent (#575 area 2, #581)
+    replication.hpp         zetta::cluster::ReplicationManager — Automerge CRDT state; remove() writes a TOMBSTONE (never a map delete) and knows_key() sees through it (#838); cheap document/cache/change-journal counters split audit ownership from other replicated state (#1163)
+    node_metrics.hpp        zetta::cluster::NodeMetrics/NodeMetricsSampler — live per-node host resource telemetry plus process RSS/allocator/probe totals, sampled from OS counters; ephemeral/observed, the source for system.node_metrics; graceful degradation to null when a counter is absent (#575 area 2, #581, #1163)
     node_telemetry.hpp      zetta::cluster::NodeTelemetryExchange + encode_node_metrics/decode_node_metrics/node_metrics_wire_schema — cluster-wide live telemetry over the signal plane (#584): each node broadcasts its own NodeMetrics as an ephemeral `node.metrics` event, a SignalHandler (the JobCoordinator's fallback) caches peers' by sender id; the schema-validated wire boundary; feeds the animated node-box gauges via Node::telemetry_snapshot(); not replicated
   data/                     the data model: databases, tables, partitioning + placement, large objects, datasets, imports
     database.hpp            zetta::data::Database — owns tables (disk-backed)
@@ -93,10 +96,10 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     connector.hpp           zetta::connect::ConnectorConfig/ConnectorRows/ConnectorResult/run_connector_query — run a read-only query against an external system and return typed rows for data::add_dataset_rows to shard across the cluster; Snowflake (SQL API v2) first; read-only single-statement guard at the boundary, token never serialized, no warehouse driver in-engine (ADR-17) (#827)
     http_transport.hpp      zetta::connect::HttpRequest/HttpResponse/HttpTransport + AsyncHttpTransport — the injected outbound-HTTP interface in both a synchronous and a coroutine (io_task) shape, so every connector is unit-testable against a fake with no network/credentials AND a distributed fetch can fan N exchanges out under runtime::when_all; secret_headers marks values no transport may put in a reason/log/argv; set_default_http_transport/default_http_transport hold the pair the zetta-api client installs at startup — zetta-core links no HTTP library (#827)
   storage/
-    engine.hpp              zetta::storage::StorageEngine interface — at(i) returns a ParquetLazyPtr handle, not a json& (#833); id_at(i) returns std::string BY VALUE so an engine may derive an id rather than hold one per row (#836)
+    engine.hpp              zetta::storage::StorageEngine interface — at(i) returns a ParquetLazyPtr handle, not a json& (#833); id_at(i) returns std::string BY VALUE so an engine may derive an id rather than hold one per row (#836); memory_usage reports resident rows and caches (#1163)
     lazy_row.hpp            zetta::storage::ParquetLazyPtr/RowPage/RowKey/RowPageSource — the row handle: a refcounted page that survives the store reaping it, a borrowed (allocation-free) state for always-resident engines, a failed read reported as a reason not null (docs/data/lazy-rows.md, #833)
     json_store.hpp          zetta::storage::JsonStore — in-memory vector<json> (header-only)
-    jsonl_store.hpp         zetta::storage::JsonlStore — JSONL on disk, 10k/chunk
+    jsonl_store.hpp         zetta::storage::JsonlStore — JSONL on disk, 10k/chunk; maintains a mutation-time resident-row estimate for memory accounting (#1163)
     parquet_store.hpp       zetta::storage::ParquetStore/ParquetStoreOptions/ParquetIdMode — disk-backed paging StorageEngine over a Parquet body: footer-only open, a row group per page, byte-budgeted cache, refused mutations, and POSITIONAL ids by default so nothing is held per row (id_index_bytes() reports the Indexed alternative's cost) (docs/data/parquet-store.md, #833, #836)
   query/                    zetta::query — the SQL layer: dialect frontends over a dialect-neutral AST (docs/data/query.md)
     ast.hpp                 the generic, dialect-neutral query AST (CreateDatabase/DropDatabase/CreateTable/DropTable/Insert/Select statements + TableRef/WhereClause/AggregateExpr) every frontend parses into and the executor runs — support a new dialect by writing a frontend, never by touching execution
@@ -372,6 +375,9 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs()/load_dataset_partitions() + replication capture/reconcile/persist + Node::datasets() (the computed-at-query-time DatasetSummary join, #585)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
+  memory/
+    README.md              navigation for the platform memory-accounting implementation
+    accounting.cpp         allocator/RSS readers for glibc/Linux and malloc zones/Mach, probe aggregation, compact formatting, and Linux malloc_trim (#1163)
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag (OS signals, not the signal plane)
   cluster/
@@ -743,12 +749,15 @@ schemas/                    generated, drift-checked JSON schemas (the C++ embed
   CLAUDE.md                 directory rule-card (tree-scoped rules)
 docs/                       domain-organized system docs (see docs/README.md)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
+  ops/                      operator diagnostics and tuning, including per-subsystem memory accounting (#1163)
   solutions/                runtime solution foundations and complete S-1, S-2, S-3, S-4, S-12 module contracts; policy, holdouts, actions, monitoring, and ROI readouts
     integration.md          module merge order, shared-code resolutions, scope, and native proof (#1122, #1128)
 modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   CMakeLists.txt            the test target — every test TU is listed here, grouped by domain
+  memory/README.md          navigation for memory-accounting registry and node-log tests
+  memory/test_accounting.cpp probe aggregation, fixture explanation ratio, unattributed accounting, unregister, and periodic log formatting (#1163)
   ml/test_entity_resolution.cpp  M-2 blocking, scoring, conflict-safe clustering, metric, and threshold tests (#1041/#1072)
   ml/test_entity_resolution_partitions.cpp  three-member owned-pair, EM allreduce, bounded-stream, component-merge oracle equivalence, and malformed-launch refusal (#1072)
   ml/test_segmentation.cpp  segmentation recovery, preprocessing, selection, cluster equivalence and persisted output acceptance (#1042)

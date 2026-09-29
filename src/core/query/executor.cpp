@@ -173,6 +173,7 @@ constexpr std::string_view kDatasetsTable = "datasets";
 constexpr std::string_view kLargeObjectsTable = "large_objects";
 constexpr std::string_view kCheckpointsTable = "checkpoints";
 constexpr std::string_view kNodeMetricsTable = "node_metrics";
+constexpr std::string_view kMemoryTable = "memory";
 constexpr std::string_view kPipelineJobsTable = "pipeline_jobs";
 constexpr std::string_view kCollectiveRoundsTable = "collective_rounds";
 constexpr std::string_view kSpansTable = "spans";
@@ -236,6 +237,8 @@ constexpr std::array kSystemTableCatalog = {
                     "no secret material"},
     SystemTableInfo{kLedgerTable,
                     "the immutable score, decision, action and outcome reward ledger"},
+    SystemTableInfo{kMemoryTable,
+                    "this process memory by owning subsystem plus allocator truth"},
     SystemTableInfo{kModelsTable,
                     "the model registry: trained models + their kind, "
                     "metrics, weights fingerprint"},
@@ -1712,6 +1715,20 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
         number_or_null(metrics.memory_available, metrics.memory_total_bytes);
     row["memory_percent"] =
         number_or_null(metrics.memory_available, metrics.memory_percent);
+    row["process_rss_bytes"] =
+        number_or_null(metrics.process_memory_available, metrics.process_rss_bytes);
+    row["process_peak_rss_bytes"] = number_or_null(
+        metrics.process_memory_available, metrics.process_peak_rss_bytes);
+    row["allocator_in_use_bytes"] = number_or_null(
+        metrics.allocator_memory_available, metrics.allocator_in_use_bytes);
+    row["allocator_free_held_bytes"] = number_or_null(
+        metrics.allocator_memory_available, metrics.allocator_free_held_bytes);
+    row["attributed_memory_bytes"] = number_or_null(
+        metrics.allocator_memory_available, metrics.attributed_memory_bytes);
+    row["unattributed_memory_bytes"] = number_or_null(
+        metrics.allocator_memory_available, metrics.unattributed_memory_bytes);
+    row["memory_explained_percent"] = number_or_null(
+        metrics.allocator_memory_available, metrics.memory_explained_percent);
     // GPU + VRAM (absent in a CPU-only core build → null)
     row["gpu_present"] = metrics.gpu_available;
     row["gpu_percent"] =
@@ -1756,6 +1773,39 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
     }
 
     return {std::move(row)};
+}
+
+std::vector<nlohmann::json> memory_rows(const Node& node) {
+    const auto snapshot = node.memory_snapshot();
+    std::vector<nlohmann::json> rows;
+    const auto append = [&](std::string subsystem, std::uint64_t bytes,
+                            std::uint64_t items, std::uint64_t reserved_bytes,
+                            double share) {
+        nlohmann::json row;
+        row["subsystem"] = std::move(subsystem);
+        row["bytes"] = bytes;
+        row["items"] = items;
+        row["reserved_bytes"] = reserved_bytes;
+        row["share_of_in_use"] = share;
+        row["allocator_in_use_bytes"] = snapshot.allocator.in_use_bytes;
+        row["allocator_free_held_bytes"] = snapshot.allocator.free_held_bytes;
+        row["rss_bytes"] = snapshot.allocator.rss_bytes;
+        row["peak_rss_bytes"] = snapshot.allocator.peak_rss_bytes;
+        row["anonymous_bytes"] = snapshot.allocator.anonymous_bytes;
+        row["sampled_at_ms"] = snapshot.sampled_at_ms;
+        rows.push_back(std::move(row));
+    };
+    for (const auto& subsystem : snapshot.subsystems) {
+        append(subsystem.name, subsystem.bytes, subsystem.items,
+               subsystem.reserved_bytes, subsystem.share_of_in_use);
+    }
+    const double unattributed_share = snapshot.allocator.in_use_bytes == 0
+                                          ? 0.0
+                                          : 100.0 * snapshot.unattributed_bytes /
+                                                snapshot.allocator.in_use_bytes;
+    append("unattributed", snapshot.unattributed_bytes, 0, 0,
+           unattributed_share);
+    return rows;
 }
 
 // One JSON row per recorded near-data compute job for the system.pipeline_jobs
@@ -2683,6 +2733,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kNodeMetricsTable) {
                         return select_over_rows(s, node_metrics_rows(node_));
+                    }
+                    if (sys == kMemoryTable) {
+                        return select_over_rows(s, memory_rows(node_));
                     }
                     if (sys == kPipelineJobsTable) {
                         return select_over_rows(s, pipeline_job_rows(node_));

@@ -21,6 +21,15 @@ struct ReplicationChanges {
     bool full_resync = false;
 };
 
+struct ReplicationMemoryUsage {
+    std::uint64_t bytes = 0;
+    std::uint64_t items = 0;
+    std::uint64_t pending_change_bytes = 0;
+    std::uint64_t pending_changes = 0;
+    std::uint64_t audit_bytes = 0;
+    std::uint64_t audit_items = 0;
+};
+
 // What/whom to replicate. The first (and currently only) policy is
 // ReplicateToAllNodes: every node holds a full copy of all replicated state.
 // More policies (sharded, quorum, ...) will be added through this policy enum.
@@ -105,6 +114,10 @@ public:
     // much is replicated" count (zetta seeds one key per node, so this is the
     // number of nodes the document knows about). Tombstones are not counted.
     std::size_t entry_count() const;
+
+    // Cheap counters for the CRDT document, parsed snapshot, encoded-value
+    // cache, and bounded pending-change journal.
+    ReplicationMemoryUsage memory_usage() const;
 
     // A short, stable fingerprint of the document's current Automerge heads
     // (the change-DAG leaves). Two nodes hold identical state exactly when their

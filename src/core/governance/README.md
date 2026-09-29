@@ -6,4 +6,6 @@ existing operation mappings. Mutation audit actions are schema-validated.
 The audit projection uses checksummed compressed segments, a compact
 constant-time id fingerprint index, batched legacy-file migration, and retention
 that preserves summary events (#1154).
+The projection also reports index, recent-window, and pending-persist ownership
+to the node memory registry (#1163).
 See [pub/sub CRUD](../../../docs/pubsub/crud.md).

@@ -29,6 +29,7 @@
 #include "zetta/governance/permission.hpp"
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/runtime.hpp"
+#include "zetta/agent/model_cache.hpp"
 #include "zetta/util/sha256.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
@@ -270,6 +271,7 @@ Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
       replication_(replication),
       experiment_manager_(config_.data_dir, replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
+    register_memory_probes();
     // The owner thread is adopted LAZILY, at the first tick() (#624) — never
     // here. A constructed-but-never-ticked node has no owner loop to drain
     // the gate, so run_on_owner treats it as ungated (inline); adopting the
@@ -293,6 +295,186 @@ Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
 // compute::JobCoordinator type is visible, and — for a node that reached stop()
 // — coordinator_ is already null, so the unwind never touches a dead cluster.
 Node::~Node() = default;
+
+void Node::register_memory_probes() {
+    memory_accounting_.register_probe("audit", [this] { return audit_memory_usage(); });
+    memory_accounting_.register_probe("pubsub", [this] { return pubsub_memory_usage(); });
+    memory_accounting_.register_probe("replication", [this] {
+        return replication_memory_usage();
+    });
+    memory_accounting_.register_probe("datasets_tables", [this] {
+        return dataset_memory_usage();
+    });
+    memory_accounting_.register_probe("registry_sessions_connections", [this] {
+        return registry_memory_usage();
+    });
+    memory_accounting_.register_probe("runtime", [this] { return runtime_memory_usage(); });
+    memory_accounting_.register_probe("models", [this] { return model_memory_usage(); });
+    memory_accounting_.register_probe("runs_jobs", [this] {
+        return run_job_memory_usage();
+    });
+}
+
+zetta::memory::ProbeSample Node::audit_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    if (audit_trail_) {
+        const auto usage = audit_trail_->memory_usage();
+        sample.bytes += usage.bytes;
+        sample.items += usage.items;
+    }
+    if (replication_) {
+        const auto usage = replication_->memory_usage();
+        sample.bytes += usage.audit_bytes;
+        sample.items = std::max(sample.items, usage.audit_items);
+    }
+    for (const auto& [key, window] : audit_summary_windows_) {
+        sample.bytes += sizeof(window) + key.capacity() + window.actor.capacity() +
+                        window.capability.capacity() + window.scope.capacity() +
+                        window.started.capacity();
+    }
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::pubsub_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    if (!pubsub_) {
+        return sample;
+    }
+    const auto topics = pubsub_->topic_stats();
+    sample.items = topics.size();
+    for (const auto& topic : topics) {
+        sample.bytes += topic.memory_bytes;
+        sample.items += topic.held_events;
+    }
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::replication_memory_usage() const {
+    if (!replication_) {
+        return {};
+    }
+    const auto usage = replication_->memory_usage();
+    return {usage.bytes, usage.items + usage.pending_changes, 0};
+}
+
+zetta::memory::ProbeSample Node::dataset_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    for (const auto& database : databases_) {
+        sample.bytes += sizeof(zetta::data::Database) + database->id().capacity() +
+                        database->name().capacity();
+        ++sample.items;
+        for (const auto& table : database->tables()) {
+            const auto usage = table->store().memory_usage();
+            sample.bytes += sizeof(zetta::data::Table) + usage.bytes;
+            sample.bytes += table->id().capacity() + table->name().capacity();
+            sample.items += usage.items + 1;
+        }
+    }
+    sample.bytes += dataset_partitions_.size() * 512;
+    sample.items += dataset_partitions_.size();
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::registry_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    const auto registry_items = projects_.size() + deployments_.size() +
+                                studies_.size() + monitors_.size() +
+                                workspace_profiles_.size() + plans_.size() +
+                                indexes_.size() + principals_.size() + users_.size() +
+                                roles_.size() + tokens_.size() + user_roles_.size() +
+                                policies_.size() + ledger_entries_.size();
+    sample.items = registry_items;
+    sample.bytes = registry_items * 512;
+    {
+        std::lock_guard lock{owner_work_mutex_};
+        sample.items += owner_work_queue_.size();
+        sample.bytes += owner_work_queue_.size() * sizeof(OwnerWork);
+    }
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::runtime_memory_usage() const {
+    const auto usage = zetta::runtime::memory_usage();
+    return {usage.bytes,
+            usage.coroutine_frames + usage.blocking_queue_depth + usage.thread_count,
+            usage.thread_stack_bytes};
+}
+
+zetta::memory::ProbeSample Node::model_memory_usage() const {
+    const auto loaded = zetta::agent::ModelCache::instance().memory_usage();
+    zetta::memory::ProbeSample sample{loaded.bytes, loaded.models, 0};
+    sample.bytes += models_.size() * (sizeof(zetta::ml::Model) + 1024);
+    sample.items += models_.size();
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::run_job_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    sample.bytes += runs_.size() * (sizeof(zetta::pipeline::Run) + 1024);
+    sample.items += runs_.size();
+    sample.bytes += jobs_.size() * (sizeof(zetta::compute::ComputeJob) + 1024);
+    sample.items += jobs_.size();
+    {
+        std::lock_guard lock{pipeline_jobs_mutex_};
+        sample.bytes += pipeline_jobs_.capacity() *
+                        sizeof(zetta::compute::PipelineJobInstrumentation);
+        sample.items += pipeline_jobs_.size();
+    }
+    return sample;
+}
+
+zetta::cluster::NodeMetrics Node::sample_node_metrics() {
+    auto metrics = node_metrics_sampler_.sample(config_.data_dir);
+    const auto memory = memory_snapshot();
+    metrics.process_memory_available = memory.allocator.rss_available;
+    metrics.process_rss_bytes = memory.allocator.rss_bytes;
+    metrics.process_peak_rss_bytes = memory.allocator.peak_rss_bytes;
+    metrics.allocator_memory_available = memory.allocator.allocator_available;
+    metrics.allocator_in_use_bytes = memory.allocator.in_use_bytes;
+    metrics.allocator_free_held_bytes = memory.allocator.free_held_bytes;
+    metrics.attributed_memory_bytes = memory.attributed_bytes;
+    metrics.unattributed_memory_bytes = memory.unattributed_bytes;
+    if (memory.allocator.in_use_bytes != 0) {
+        metrics.memory_explained_percent =
+            100.0 * static_cast<double>(memory.attributed_bytes) /
+            static_cast<double>(memory.allocator.in_use_bytes);
+    }
+    return metrics;
+}
+
+void Node::report_memory(bool force) {
+    constexpr auto kCheckInterval = std::chrono::seconds(1);
+    constexpr auto kLogInterval = std::chrono::minutes(5);
+    constexpr std::uint64_t kRssStepBytes = 256ULL * 1024 * 1024;
+    const auto now = Clock::now();
+    if (!force && last_memory_check_.time_since_epoch().count() != 0 &&
+        now - last_memory_check_ < kCheckInterval) {
+        return;
+    }
+    last_memory_check_ = now;
+    const auto snapshot = memory_snapshot();
+    const auto rss_step = snapshot.allocator.rss_bytes / kRssStepBytes;
+    const bool crossed_step = last_memory_log_.time_since_epoch().count() != 0 &&
+                              rss_step != last_rss_step_;
+    const bool periodic = last_memory_log_.time_since_epoch().count() == 0 ||
+                          now - last_memory_log_ >= kLogInterval;
+    if (force || crossed_step || periodic) {
+        std::printf("zetta: INFO %s\n",
+                    zetta::memory::format_log_line(snapshot).c_str());
+        last_memory_log_ = now;
+        last_rss_step_ = rss_step;
+    }
+    if (config_.malloc_trim_threshold_bytes != 0 &&
+        snapshot.allocator.free_held_bytes >= config_.malloc_trim_threshold_bytes &&
+        (last_malloc_trim_.time_since_epoch().count() == 0 ||
+         now - last_malloc_trim_ >= kLogInterval)) {
+        const auto trim = zetta::memory::trim_allocator();
+        last_malloc_trim_ = now;
+        std::printf("zetta: INFO memory: malloc_trim supported=%s released=%s\n",
+                    trim.supported ? "true" : "false",
+                    trim.released ? "true" : "false");
+    }
+}
 
 std::vector<compute::JobCheckpoint> Node::checkpoints() const {
     // The latest valid checkpoint per job — the read view behind system.checkpoints
@@ -533,6 +715,7 @@ bool Node::start() {
     // (a stop()/start() cycle). On first boot main attaches after start(), so this
     // is a no-op then and attach_cluster brings the coordinator up itself.
     start_coordinator();
+    report_memory(true);
     std::fflush(stdout);
     return true;
 }
@@ -662,6 +845,7 @@ void Node::tick() {
     //    same "synchronous on the thread that owns the Node" pattern every
     //    interactive submitter uses; the tick resumes when the co-run finishes.
     if (launch_listener_) launch_listener_->drain();
+    report_memory(false);
 }
 
 void Node::run_on_owner(const std::function<void()>& work) {
@@ -5513,7 +5697,14 @@ std::string Node::status_line() const {
         databases_.size(), projects_.size(), deployments_.size(),
         runs_.size(), models_.size(), principals_.size(),
         audit_event_count());
-    return buf;
+    std::string result = buf;
+    const auto memory = memory_snapshot();
+    result += " | mem rss " + zetta::memory::format_bytes(memory.allocator.rss_bytes);
+    if (!memory.subsystems.empty()) {
+        result += " top " + memory.subsystems.front().name + " " +
+                  zetta::memory::format_bytes(memory.subsystems.front().bytes);
+    }
+    return result;
 }
 
 }  // namespace zetta

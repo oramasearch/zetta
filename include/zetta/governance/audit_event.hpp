@@ -160,6 +160,15 @@ private:
 // migrated when the store opens. Older records are inflated only for a read.
 class AuditTrail {
 public:
+    struct MemoryUsage {
+        std::uint64_t bytes = 0;
+        std::uint64_t items = 0;
+        std::uint64_t index_bytes = 0;
+        std::uint64_t recent_bytes = 0;
+        std::uint64_t pending_persist_bytes = 0;
+        std::uint64_t pending_persist_items = 0;
+    };
+
     using EventVisitor =
         std::function<void(const std::shared_ptr<AuditEvent>& event)>;
     using RemovedVisitor = std::function<void(const std::string& id)>;
@@ -176,6 +185,7 @@ public:
                 std::string* error = nullptr);
     bool contains(std::string_view id) const;
     std::size_t size() const;
+    MemoryUsage memory_usage() const;
 
     std::vector<std::shared_ptr<AuditEvent>> events() const;
     std::vector<std::shared_ptr<AuditEvent>> recent_events() const;

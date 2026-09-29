@@ -528,10 +528,15 @@ TEST(AuditTrail, MillionRecordsStayWithinMemoryAndDiskBudgets) {
     value.actor = "service:load";
     value.target = "api:get_topic";
     value.time = "2026-09-28T22:00:00Z";
+    const auto before_accounting = trail.memory_usage();
+    std::uint64_t bytes_at_100k = 0;
     for (std::size_t event_index = 0; event_index < 1'000'000;
          ++event_index) {
         ASSERT_TRUE(trail.append("load-" + std::to_string(event_index), value,
                                  &error)) << error;
+        if (event_index == 99'999) {
+            bytes_at_100k = trail.memory_usage().bytes;
+        }
     }
     trail.flush();
     const auto after = resident_bytes();
@@ -540,6 +545,7 @@ TEST(AuditTrail, MillionRecordsStayWithinMemoryAndDiskBudgets) {
     EXPECT_LT(after - before, 100ULL * 1024ULL * 1024ULL);
     EXPECT_LT(disk_bytes, 50ULL * 1024ULL * 1024ULL);
     EXPECT_EQ(trail.size(), 1'000'000u);
+    EXPECT_GT(bytes_at_100k, before_accounting.bytes + 1024 * 1024);
     std::cout << "#1154 one million audit records: RSS delta "
               << (after - before) << " bytes, disk " << disk_bytes
               << " bytes\n";

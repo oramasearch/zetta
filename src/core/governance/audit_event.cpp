@@ -470,6 +470,35 @@ public:
         }
     }
 
+    MemoryUsage memory_usage() const {
+        MemoryUsage usage;
+        constexpr std::uint64_t kIndexNodeBytes =
+            sizeof(std::uint64_t) + sizeof(Location) + 3 * sizeof(void*);
+        usage.items = index_.size();
+        usage.index_bytes = index_.bucket_count() * sizeof(void*) +
+                            index_.size() * kIndexNodeBytes;
+        for (const auto& event : recent_) {
+            const auto& value = event->value();
+            usage.recent_bytes += sizeof(AuditEvent) + sizeof(void*);
+            usage.recent_bytes += event->id().capacity();
+            usage.recent_bytes += value.actor.capacity();
+            usage.recent_bytes += value.target.capacity();
+            usage.recent_bytes += value.detail.capacity();
+            usage.recent_bytes += value.time.capacity();
+            if (value.summary) {
+                usage.recent_bytes += sizeof(AuditReadSummary);
+                usage.recent_bytes += value.summary->scope.capacity();
+                usage.recent_bytes += value.summary->window_started.capacity();
+                usage.recent_bytes += value.summary->window_ended.capacity();
+            }
+        }
+        usage.pending_persist_items = unsynced_records_;
+        usage.pending_persist_bytes = unsynced_records_ * 256;
+        usage.bytes = usage.index_bytes + usage.recent_bytes +
+                      usage.pending_persist_bytes;
+        return usage;
+    }
+
     bool load_segment(std::uint32_t number, std::string* error) {
         const std::optional<std::string> bytes =
             inflate_segment(segment_path(number), error);
@@ -751,6 +780,10 @@ bool AuditTrail::contains(std::string_view id) const {
 
 std::size_t AuditTrail::size() const {
     return impl_->index_.size();
+}
+
+AuditTrail::MemoryUsage AuditTrail::memory_usage() const {
+    return impl_->memory_usage();
 }
 
 std::vector<std::shared_ptr<AuditEvent>> AuditTrail::events() const {

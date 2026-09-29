@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -20,6 +21,28 @@
 #include "zetta/runtime.hpp"
 
 namespace zetta::autograd {
+
+std::size_t QwenModel::resident_bytes() const {
+    std::size_t bytes = sizeof(QwenModel);
+    std::unordered_set<const Node*> seen;
+    for (const auto& parameter : parameters_) {
+        if (!parameter.valid() || !seen.insert(parameter.node().get()).second) {
+            continue;
+        }
+        const auto& node = *parameter.node();
+        bytes += sizeof(Node);
+        bytes += node.data.capacity() * sizeof(float);
+        bytes += node.grad.capacity() * sizeof(float);
+        bytes += node.shape.capacity() * sizeof(int);
+        bytes += node.parents.capacity() * sizeof(std::shared_ptr<Node>);
+    }
+    for (const auto& [name, index] : index_) {
+        (void)index;
+        bytes += sizeof(std::pair<const std::string, std::size_t>) +
+                 name.capacity();
+    }
+    return bytes;
+}
 
 namespace {
 

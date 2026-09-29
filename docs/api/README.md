@@ -138,6 +138,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | Name | Kind | Requires | Does |
 |---|---|---|---|
 | `server_info` | read | api:query | node identity, version, entity counts, membership |
+| `node_memory` | read | api:query | process RSS, allocator truth, and subsystem ownership |
 | `sql` | read | api:query | one governed SQL statement — every `system.*` view |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |

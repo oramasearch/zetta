@@ -44,6 +44,17 @@ struct NodeMetrics {
     std::uint64_t memory_total_bytes = 0;
     double memory_percent = 0.0;      // 0..100
 
+    // This zetta process and its allocator/probe breakdown.
+    bool process_memory_available = false;
+    std::uint64_t process_rss_bytes = 0;
+    std::uint64_t process_peak_rss_bytes = 0;
+    bool allocator_memory_available = false;
+    std::uint64_t allocator_in_use_bytes = 0;
+    std::uint64_t allocator_free_held_bytes = 0;
+    std::uint64_t attributed_memory_bytes = 0;
+    std::uint64_t unattributed_memory_bytes = 0;
+    double memory_explained_percent = 0.0;
+
     // GPU + VRAM (degrades gracefully — absent in a CPU-only core build/host)
     bool gpu_available = false;
     double gpu_percent = 0.0;         // 0..100

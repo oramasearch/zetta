@@ -2,6 +2,18 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "properties": {
+    "allocator_free_held_bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "allocator_in_use_bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "attributed_memory_bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
     "cpu_cores": {
       "minimum": 0,
       "type": "integer"
@@ -10,6 +22,9 @@
       "type": "number"
     },
     "gpu_percent": {
+      "type": "number"
+    },
+    "memory_explained_percent": {
       "type": "number"
     },
     "memory_percent": {
@@ -38,6 +53,14 @@
       "minLength": 1,
       "type": "string"
     },
+    "process_peak_rss_bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "process_rss_bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
     "sampled_at": {
       "type": "string"
     },
@@ -49,6 +72,10 @@
       "type": "integer"
     },
     "storage_used_bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "unattributed_memory_bytes": {
       "minimum": 0,
       "type": "integer"
     },
