@@ -7,6 +7,8 @@ the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
+The default gate registers 79 checks, including the four B-1 checks below.
+
 The reusable annotation and methodology-specific checks are:
 
 | Check | Name | What it catches |
