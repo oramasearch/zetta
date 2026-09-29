@@ -145,6 +145,16 @@ for the selected level. The policy constraints are checked again immediately
 before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
 operator contract and refusal list.
 
+### B-4 composed solution checks
+
+The three B-4 checks engage only for a solution manifest bound to `B-4`.
+`b4_per_field_confidence` requires a valid threshold for every declared field
+and matching M-11 confidence attributes. `b4_review_queue` requires an owned
+human-review route for every low-confidence field. `b4_validated_workflow`
+requires structured downstream input and all-fields validation before a
+workflow action. The policy constraints are checked again immediately before
+`run_solution` acts. See [B-4](../solutions/B-4.md) for the full contract.
+
 ### S-5 composed solution checks
 
 The S-5 checks engage only for a bound S-5 manifest and evaluate the composed

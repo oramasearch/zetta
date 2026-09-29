@@ -49,6 +49,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"B-1", "price_recommendation", "A0", "holdout", "net_margin", "currency", "margin_floor_violations"},
     DefaultAction{"B-2", "people_leader_review", "A2", "holdout", "attrition_reduction", "fraction", "small_group_outputs"},
     DefaultAction{"B-3", "route_ticket", "A2", "holdout", "resolution_quality", "resolution", "misroute_rate"},
+    DefaultAction{"B-4", "field_review_task", "A2", "holdout", "workflow_completed", "document", "unvalidated_workflow_actions"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -703,6 +704,56 @@ void ticket_triage_defaults(SolutionTemplates& result) {
         "holdout", "resolution_quality", "resolution", 30};
 }
 
+void document_workflow_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "validated"}, {"minimum_score", 0.9},
+         {"action", "workflow_handoff"},
+         {"allowed_actions",
+          {"validation_record", "workflow_review_task",
+           "workflow_handoff", "high_impact_approval",
+           "field_review_task"}}},
+        {{"name", "review"}, {"minimum_score", 0.0},
+         {"action", "field_review_task"},
+         {"allowed_actions",
+          {"validation_record", "workflow_review_task",
+           "workflow_handoff", "high_impact_approval",
+           "field_review_task"}}}};
+    result.policy["actions"] = {
+        {"validation_record", {{"autonomy", "A0"}}},
+        {"field_review_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1)}}},
+        {"workflow_review_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1)}}},
+        {"workflow_handoff",
+         {{"autonomy", "A2"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1)}}},
+        {"high_impact_approval",
+         {{"autonomy", "A1"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1);
+    result.policy["eligibility_rules"] = {
+        predicate("document_available", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("excluded", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"validated", 0.1}, {"review", 0.1}};
+    result.experiment.treatment_cells = {"workflow_enabled"};
+    result.guardrails = {
+        {"unvalidated_workflow_actions", 0.0, "maximum"},
+        {"review_queue_miss_rate", 0.0, "maximum"},
+        {"field_extraction_accuracy", 0.8, "minimum"},
+        {"field_validation_rate", 0.0, "minimum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {
+        "holdout", "workflow_completed", "document", 30};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -739,6 +790,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 employee_attrition_defaults(result);
             } else if (solution_id == "B-3") {
                 ticket_triage_defaults(result);
+            } else if (solution_id == "B-4") {
+                document_workflow_defaults(result);
             }
             return result;
         }
@@ -748,6 +801,18 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
 
 Json solution_policy_template(const std::string& solution_id, int level) {
     Json policy = solution_templates(solution_id).policy;
+    if (solution_id == "B-4") {
+        const std::string validated_action =
+            level <= 1 ? "validation_record"
+                       : level == 2 ? "workflow_review_task"
+                                    : "workflow_handoff";
+        for (Json& tier : policy["tiers"]) {
+            if (tier.at("name") == "validated") {
+                tier["action"] = validated_action;
+            }
+        }
+        return policy;
+    }
     if (solution_id == "B-3" && level >= 2) {
         for (Json& tier : policy["tiers"]) {
             if (tier.at("name") == "confident") {

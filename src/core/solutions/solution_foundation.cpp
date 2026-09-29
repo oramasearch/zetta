@@ -1006,6 +1006,94 @@ void bind_b2_correctness(ir::ExecutionGraph& graph,
     }
 }
 
+void bind_b4_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         int level,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-4") {
+        return;
+    }
+    const Json correctness =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json methodology =
+        sources.contains("M-11") && sources.at("M-11").is_object()
+            ? sources.at("M-11")
+            : Json::object();
+    const Json fields = methodology.value(
+        "fields", Json::array({"invoice_number", "date", "total"}));
+    const double default_threshold = correctness.value(
+        "default_field_threshold",
+        methodology.value("review_threshold", 0.8));
+    Json thresholds = correctness.value(
+        "field_thresholds", Json::object());
+    double conservative_review_threshold = default_threshold;
+    if (fields.is_array()) {
+        for (const Json& field : fields) {
+            if (!field.is_string()) {
+                continue;
+            }
+            const std::string name = field.get<std::string>();
+            if (!thresholds.contains(name)) {
+                thresholds[name] = default_threshold;
+            }
+            if (thresholds.at(name).is_number()) {
+                conservative_review_threshold = std::max(
+                    conservative_review_threshold,
+                    thresholds.at(name).get<double>());
+            }
+        }
+    }
+    const Json policy = solution_policy_template(solution.id, level);
+    manifest->attributes["b4_correctness"] = {
+        {"required_fields", fields},
+        {"field_thresholds", thresholds},
+        {"review",
+         {{"route_low_confidence_to_review", true},
+          {"queue", correctness.value(
+                        "review_queue", "document_field_review")},
+          {"action", "field_review_task"},
+          {"owner_required", true}}},
+        {"downstream",
+         {{"requires_all_fields_validated", true},
+          {"validation_flag", "fields_validated"},
+          {"structured_output_only", true},
+          {"workflow_actions",
+           {"workflow_review_task", "workflow_handoff",
+            "high_impact_approval"}}}},
+        {"policy", policy}};
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model ||
+            model->attributes.value("model_kind", std::string{}) !=
+                "document_extraction") {
+            continue;
+        }
+        model->attributes["field_thresholds"] = thresholds;
+        model->attributes["review_threshold"] =
+            conservative_review_threshold;
+        model->attributes["confidence_required"] = true;
+        model->attributes["retain_evidence"] = true;
+        model->attributes["route_low_confidence_to_review"] = true;
+    }
+    for (const std::shared_ptr<ir::Node>& action :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!action ||
+            action->attributes.value("route", std::string{}) !=
+                "review_queue") {
+            continue;
+        }
+        action->attributes["per_field_thresholds"] = thresholds;
+        action->attributes["human_review_action"] =
+            "field_review_task";
+    }
+}
+
 ApiResult configure_readout(Node& node, const pipeline::Project& project,
                             const pipeline::ProjectGraph& graph,
                             const Json& binding, const std::string& actor) {
@@ -1095,6 +1183,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["b1_correctness"] = {{"type", "object"}};
     schema["properties"]["b2_correctness"] = {{"type", "object"}};
     schema["properties"]["b3_correctness"] = {{"type", "object"}};
+    schema["properties"]["b4_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -1153,6 +1242,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_b2_correctness(composed.graph, *solution, settings,
                         input.at("sources"));
     bind_b3_correctness(composed.graph, *solution, input.at("sources"));
+    bind_b4_correctness(composed.graph, *solution, level,
+                        input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
     const pipeline::ValidationReport correctness =
@@ -1173,6 +1264,7 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         solution->id != "S-5" && solution->id != "S-11" &&
         solution->id != "B-1" &&
         solution->id != "B-3" &&
+        solution->id != "B-4" &&
         !settings.contains("decision_source")) {
         return ApiResult::failure("invalid_input", "this module requires explicit decision_source output and score bindings");
     }
@@ -1257,6 +1349,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                 {"entity_column", "chunk_id"},
                 {"score_column", "classifier_confidence"},
                 {"output_name", "embeddings"}};
+        } else if (solution->id == "B-4") {
+            binding["decision_source"] = {
+                {"methodology", "M-11"},
+                {"entity_column", "document"},
+                {"score_column", "confidence"},
+                {"output_name", "extracted fields"}};
         }
     }
     if (solution->id == "S-1") {
@@ -1299,6 +1397,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     } else if (solution->id == "S-9") {
         binding["s9_correctness"] = composed.graph.find_node("solution_manifest")
                                         ->attributes.at("s9_correctness");
+    } else if (solution->id == "B-4") {
+        binding["b4_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b4_correctness");
     } else if (solution->id == "S-10") {
         binding["s10_correctness"] = composed.graph.find_node("solution_manifest")
                                          ->attributes.at("s10_correctness");
@@ -1545,6 +1647,106 @@ std::optional<std::vector<Json>> score_rows(Node& node, const Json& binding,
     return std::nullopt;
 }
 
+std::optional<std::vector<Json>> aggregate_b4_fields(
+    const std::vector<Json>& rows, const Json& binding, std::string& error) {
+    const Json& correctness = binding.at("b4_correctness");
+    const Json& required_fields = correctness.at("required_fields");
+    const Json& thresholds = correctness.at("field_thresholds");
+    const std::string entity_column =
+        binding.at("decision_source").at("entity_column");
+    const std::string score_column =
+        binding.at("decision_source").at("score_column");
+    std::map<std::string, Json> documents;
+    std::map<std::string, std::set<std::string>> observed_fields;
+    for (const Json& row : rows) {
+        if (!row.contains(entity_column) || !row.contains("field") ||
+            !row.at("field").is_string() || !row.contains("value") ||
+            !row.contains(score_column) || !row.at(score_column).is_number()) {
+            error = "B-4 extracted fields must contain document, field, value, and numeric confidence";
+            return std::nullopt;
+        }
+        const std::string document_key = entity_key(row.at(entity_column));
+        const std::string field = row.at("field");
+        if (!thresholds.contains(field) ||
+            !thresholds.at(field).is_number()) {
+            error = "B-4 extracted an undeclared field '" + field + "'";
+            return std::nullopt;
+        }
+        if (!observed_fields[document_key].insert(field).second) {
+            error = "B-4 extracted field '" + field +
+                    "' more than once for document " + document_key;
+            return std::nullopt;
+        }
+        Json& document = documents[document_key];
+        if (document.empty()) {
+            document = {
+                {entity_column, row.at(entity_column)},
+                {score_column, 1.0},
+                {"extracted_fields", Json::object()},
+                {"field_confidences", Json::object()},
+                {"field_evidence", Json::array()},
+                {"low_confidence_fields", Json::array()},
+                {"document_available", true}};
+        }
+        const double confidence = row.at(score_column).get<double>();
+        const double threshold = thresholds.at(field).get<double>();
+        const bool has_value = !row.at("value").is_null() &&
+            (!row.at("value").is_string() ||
+             !row.at("value").get_ref<const std::string&>().empty());
+        const bool validated = has_value && confidence >= threshold;
+        document[score_column] = std::min(
+            document.at(score_column).get<double>(), confidence);
+        document["extracted_fields"][field] = row.at("value");
+        document["field_confidences"][field] = confidence;
+        Json evidence = {
+            {"field", field}, {"value", row.at("value")},
+            {"confidence", confidence}, {"threshold", threshold},
+            {"validated", validated}};
+        for (const std::string detail : {"page", "box"}) {
+            if (row.contains(detail)) {
+                evidence[detail] = row.at(detail);
+            }
+        }
+        document["field_evidence"].push_back(std::move(evidence));
+        if (!validated) {
+            document["low_confidence_fields"].push_back(field);
+        }
+    }
+    std::vector<Json> aggregated;
+    aggregated.reserve(documents.size());
+    const int level = binding.value("level", 1);
+    for (auto& [document_key, document] : documents) {
+        const std::set<std::string>& observed = observed_fields.at(document_key);
+        for (const Json& field : required_fields) {
+            if (!field.is_string() ||
+                !observed.contains(field.get_ref<const std::string&>())) {
+                error = "B-4 document " + document_key +
+                        " is missing required extracted field '" +
+                        (field.is_string()
+                             ? field.get<std::string>()
+                             : std::string("<invalid>")) +
+                        "'";
+                return std::nullopt;
+            }
+        }
+        const bool fields_validated =
+            document.at("low_confidence_fields").empty();
+        document["fields_validated"] = fields_validated;
+        document["review_queue_assigned"] = !fields_validated;
+        if (!fields_validated) {
+            document["action"] = "field_review_task";
+        } else if (level <= 1) {
+            document["action"] = "validation_record";
+        } else if (level == 2) {
+            document["action"] = "workflow_review_task";
+        } else {
+            document["action"] = "workflow_handoff";
+        }
+        aggregated.push_back(std::move(document));
+    }
+    return aggregated;
+}
+
 std::optional<std::vector<Json>> aggregate_replenishment_forecast(
     const std::vector<Json>& rows,
     const Json& mapping,
@@ -1774,6 +1976,12 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
         }
         return true;
     }
+    if (binding.value("solution", std::string{}) == "B-4" &&
+        decision.action != "field_review_task" &&
+        !entity.value("fields_validated", false)) {
+        error = "B-4 refuses downstream workflow delivery for unvalidated fields";
+        return false;
+    }
     const Json& destination = binding.at("delivery");
     const Json action = config.at("actions").at(decision.action);
     ActionTaskSpec spec;
@@ -1933,6 +2141,24 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
             entity.value("taxonomy_version", std::string{});
         spec.payload["classification_confidence"] = decision.score;
         spec.payload["requires_human_close_approval"] = true;
+    } else if (binding.value("solution", std::string{}) == "B-4") {
+        spec.payload["document_id"] = decision.entity_id;
+        spec.payload["fields_validated"] =
+            entity.value("fields_validated", false);
+        spec.payload["review_required"] =
+            !entity.value("fields_validated", false);
+        spec.payload["extracted_fields"] =
+            entity.value("extracted_fields", Json::object());
+        spec.payload["field_confidences"] =
+            entity.value("field_confidences", Json::object());
+        spec.payload["field_evidence"] =
+            entity.value("field_evidence", Json::array());
+        spec.payload["low_confidence_fields"] =
+            entity.value("low_confidence_fields", Json::array());
+        spec.payload["review_queue"] =
+            binding.at("b4_correctness")
+                .at("review")
+                .at("queue");
     }
     for (const std::string field : {
              "series", "timestamp", "point_forecast", "lower", "upper",
@@ -2179,6 +2405,14 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         return ApiResult::failure("engine_error", read_error);
     }
     std::vector<Json> decision_scores = *scored;
+    if (binding.value("solution", std::string{}) == "B-4") {
+        const auto aggregated = aggregate_b4_fields(
+            decision_scores, binding, read_error);
+        if (!aggregated) {
+            return ApiResult::failure("invalid_input", read_error);
+        }
+        decision_scores = *aggregated;
+    }
     if (binding.value("solution", std::string{}) == "S-6") {
         const auto aggregated = aggregate_replenishment_forecast(
             decision_scores, binding.at("decision_source"), read_error);
@@ -2302,6 +2536,20 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                      "contributors", "period"}) {
                 if (row.contains(field)) {
                     entity[field] = row.at(field);
+                }
+            }
+            if (binding.value("solution", std::string{}) == "B-4") {
+                for (const std::string field : {
+                         "extracted_fields", "field_confidences",
+                         "field_evidence", "low_confidence_fields",
+                         "fields_validated", "review_queue_assigned",
+                         "document_available", "action"}) {
+                    entity[field] = row.at(field);
+                }
+                if (binding.value("level", 1) >= 4 &&
+                    entity.value("fields_validated", false) &&
+                    entity.value("high_impact_workflow", false)) {
+                    entity["action"] = "high_impact_approval";
                 }
             }
             if (binding.value("solution", std::string{}) == "S-7" &&
@@ -2457,6 +2705,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::size_t b3_unapproved_closures = 0;
     double b3_resolution_quality = 0.0;
     std::size_t b3_resolution_count = 0;
+    std::size_t b4_unvalidated_workflow_actions = 0;
+    std::size_t b4_review_queue_misses = 0;
+    std::size_t b4_total_fields = 0;
+    std::size_t b4_validated_fields = 0;
     std::map<std::string, std::size_t> driver_counts;
     std::set<std::string> reportable_forecast_series;
     std::size_t protected_forecast_series = 0;
@@ -2651,6 +2903,13 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                  entity.value("taxonomy_version", std::string{})},
                 {"new_ticket_type",
                  entity.value("new_ticket_type", false)}};
+        } else if (binding.value("solution", std::string{}) == "B-4") {
+            entity["decision_cell"] = {
+                {"validation", entity.value("fields_validated", false)
+                                   ? "validated"
+                                   : "review"},
+                {"workflow_action", decision->action},
+                {"minimum_confidence", decision->score}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -2685,6 +2944,14 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                               .at("group_size_column")
                               .get<std::string>());
             decision_row["aggregate_only"] = true;
+        }
+        if (binding.value("solution", std::string{}) == "B-4") {
+            decision_row["fields_validated"] =
+                entity.at("fields_validated");
+            decision_row["review_queue_assigned"] =
+                entity.at("review_queue_assigned");
+            decision_row["low_confidence_fields"] =
+                entity.at("low_confidence_fields");
         }
         decisions->add_row(std::move(decision_row));
         if (decision->actionable) {
@@ -2771,6 +3038,28 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 ++challenges;
             } else if (decision->action == "fraud_review_task") {
                 ++review_tasks;
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-4") {
+            const bool validated =
+                entity.value("fields_validated", false);
+            const bool review_action =
+                decision->action == "field_review_task";
+            const bool business_workflow =
+                decision->action == "workflow_review_task" ||
+                decision->action == "workflow_handoff" ||
+                decision->action == "high_impact_approval";
+            if (!validated && business_workflow) {
+                ++b4_unvalidated_workflow_actions;
+            }
+            if (!validated && !decision->holdout && !review_action) {
+                ++b4_review_queue_misses;
+            }
+            for (const Json& field : entity.at("field_evidence")) {
+                ++b4_total_fields;
+                if (field.value("validated", false)) {
+                    ++b4_validated_fields;
+                }
             }
         }
         if (binding.value("solution", std::string{}) == "S-7" &&
@@ -3172,6 +3461,36 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             monitor->observe_guardrail(
                 "unapproved_auto_close",
                 static_cast<double>(b3_unapproved_closures));
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-4") {
+            monitor->observe_guardrail(
+                "unvalidated_workflow_actions",
+                static_cast<double>(b4_unvalidated_workflow_actions));
+            monitor->observe_guardrail(
+                "review_queue_miss_rate",
+                entities.empty()
+                    ? 0.0
+                    : static_cast<double>(b4_review_queue_misses) /
+                          static_cast<double>(entities.size()));
+            for (const pipeline::RunOutput& output : scores) {
+                if (output.kind != "model") {
+                    continue;
+                }
+                const std::shared_ptr<ml::Model> model =
+                    node.find_model(output.ref);
+                if (model && model->kind() == "document_extraction") {
+                    monitor->observe_guardrail(
+                        "field_extraction_accuracy",
+                        model->metrics().value("field_precision", 0.0));
+                }
+            }
+            monitor->observe_guardrail(
+                "field_validation_rate",
+                b4_total_fields == 0
+                    ? 0.0
+                    : static_cast<double>(b4_validated_fields) /
+                          static_cast<double>(b4_total_fields));
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
         } else {

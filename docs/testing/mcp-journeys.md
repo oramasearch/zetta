@@ -85,6 +85,10 @@ The B-3 journey composes M-10 and M-19, verifies explicit confidence/new-type
 abstention, customer-taxonomy queue and draft payloads, approval-only closure,
 six observed guardrails, protected holdout, and recovery of a planted 0.16
 resolution-quality effect (#1177).
+The B-4 solution journey lands synthetic invoice documents, verifies uncertain
+fields enter an owned review queue, verifies only fully validated structured
+documents reach workflow handoff, protects holdouts, and recovers a planted
+0.18 workflow-completion effect inside its 95% confidence interval (#1178).
 `Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
 table, creates a project, captures and compiles M-3, runs without a dataset
 override, polls the Run and reads separation metrics, input/exclusion facts and

@@ -3364,6 +3364,213 @@ journey::Journey planted_ticket_outcomes(
     return outcomes;
 }
 
+void land_document_workflow_data(Node& node) {
+    const auto database = node.create_database("documents");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("invoices");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const int document_id = index + 1;
+        const std::string invoice_number =
+            "INV-" + std::to_string(10000 + document_id);
+        const std::string invoice_date =
+            "2026-08-" + std::to_string(10 + index % 18);
+        const std::string total =
+            std::to_string(100 + index % 50);
+        const bool uncertain_invoice_number = index % 4 == 0;
+        const std::string invoice_key = uncertain_invoice_number
+                                            ? "invoice numbr"
+                                            : "invoice_number";
+        const std::string document =
+            invoice_key + ": " + invoice_number + "\ndate: " +
+            invoice_date + "\ntotal: " + total;
+        table->add_row(
+            {{"document_id", document_id},
+             {"document", document},
+             {"field_labels",
+              {{"invoice_number", invoice_number},
+               {"date", invoice_date},
+               {"total", total}}},
+             {"workflow_completed", 1},
+             {"observed_at", "2026-08-20T00:00:00.000Z"},
+             {"owner", "document-operations"},
+             {"workflow_eligible", true},
+             {"excluded", false},
+             {"high_impact_workflow", false}});
+    }
+    table->add_row(
+        {{"document_id", 9999},
+         {"document",
+          "invoice_number: FUTURE\ndate: 2026-10-01\ntotal: 999"},
+         {"field_labels",
+          {{"invoice_number", "FUTURE"},
+           {"date", "2026-10-01"},
+           {"total", "999"}}},
+         {"workflow_completed", 1},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"owner", "document-operations"},
+         {"workflow_eligible", true},
+         {"excluded", false},
+         {"high_impact_workflow", false}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json document_workflow_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "documents"},
+          {"source_table", "invoices"},
+          {"target_table", "invoice_snapshot"},
+          {"entity_column", "document_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "workflow_completed"},
+          {"feature_columns", {"document"}}}},
+        {"delivery",
+         {{"endpoint", "https://workflow.example.test/documents"},
+          {"owner", "document-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 50.0},
+          {"investment", 100.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey document_workflow_journey(
+    const nlohmann::json& foundation) {
+    journey::Journey flow{"document-workflow-solution", {}};
+    flow.steps = {
+        {"read executable document workflow defaults", "get_solution",
+         {{"solution", "B-4"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/measurement/design", "holdout"),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the document workflow project", "create_project",
+         {{"name", "document workflow"}}},
+        {"create the composed document workflow", "create_solution",
+         {{"project", "document workflow"},
+          {"solution", "B-4"},
+          {"level", 3},
+          {"sources",
+           {{"source", "documents"},
+            {"table", "invoices"},
+            {"M-11",
+             {{"document_column", "document"},
+              {"document_id_column", "entity_id"},
+              {"labels_column", "field_labels"},
+              {"fields", {"invoice_number", "date", "total"}},
+              {"review_threshold", 0.8}}},
+            {"correctness",
+             {{"field_thresholds",
+               {{"invoice_number", 0.9},
+                {"date", 0.85},
+                {"total", 0.9}}},
+              {"review_queue", "invoice-field-review"}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 1),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"document_graph", "/graph"},
+          {"document_policy", "/policy_id"},
+          {"document_experiment", "/experiment_id"}}},
+        {"read the document workflow policy", "get_policy",
+         {{"policy_id", "$document_policy"}},
+         {.checks = {
+              journey::equals("/current_version", 1),
+              journey::equals("/versions/0/config/tiers/0/action",
+                              "workflow_handoff"),
+              journey::equals(
+                  "/versions/0/config/actions/field_review_task/autonomy",
+                  "A2")}}},
+        {"run document workflow automation", "run_solution",
+         {{"project", "document workflow"},
+          {"graph", "$document_graph"},
+          {"delivery_token", "document-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"document_run", "/run_id"}}},
+        {"read the completed document workflow Run", "get_run",
+         {{"run_id", "$document_run"}},
+         {.checks = {journey::equals("/status", "succeeded")}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read document assignments", "get_experiment",
+         {{"experiment", "$document_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read document action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_document_workflow_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"document-workflow-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double completed =
+            0.5 + 0.08 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record document workflow outcome", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "workflow_completed"},
+              {"value", completed},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured document workflow effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted document workflow effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
+                  })}}});
+    return outcomes;
+}
+
 journey::Journey planted_service_level_outcomes(
     const nlohmann::json& entries,
     const nlohmann::json& binding) {
@@ -3997,6 +4204,147 @@ TEST_F(SolutionJourney,
     const auto outcomes =
         planted_claim_outcomes(ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2)
+                          << readout.value.at("correctness_certificate")
+                                 .dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+
+TEST_F(SolutionJourney,
+       DocumentWorkflowRoutesReviewAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_document_workflow_data(node);
+    const journey::Journey flow = document_workflow_journey(
+        document_workflow_configuration());
+    const journey::JourneyReport report =
+        journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("document workflow");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-4 CL-3");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-11");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "extracted fields");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "document");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "confidence");
+    EXPECT_EQ(graph->record().dump().find("document-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t review_decisions = 0;
+    std::size_t workflow_decisions = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+            continue;
+        }
+        EXPECT_TRUE(decision.actionable);
+        EXPECT_EQ(decision.autonomy, "A2");
+        if (decision.action == "field_review_task") {
+            ++review_decisions;
+        } else {
+            EXPECT_EQ(decision.action, "workflow_handoff");
+            ++workflow_decisions;
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(review_decisions, 0u);
+    EXPECT_GT(workflow_decisions, 0u);
+
+    std::size_t review_deliveries = 0;
+    std::size_t workflow_deliveries = 0;
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        const auto decision =
+            policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        EXPECT_EQ(payload.at("document_id"), decision->entity_id);
+        EXPECT_TRUE(payload.at("extracted_fields").is_object());
+        EXPECT_EQ(payload.at("extracted_fields").size(), 3u);
+        if (decision->action == "field_review_task") {
+            ++review_deliveries;
+            EXPECT_EQ(payload.at("review_required"), true);
+            EXPECT_EQ(payload.at("fields_validated"), false);
+            EXPECT_FALSE(payload.at("low_confidence_fields").empty());
+            EXPECT_EQ(payload.at("review_queue"),
+                      "invoice-field-review");
+        } else {
+            ++workflow_deliveries;
+            EXPECT_EQ(decision->action, "workflow_handoff");
+            EXPECT_EQ(payload.at("review_required"), false);
+            EXPECT_EQ(payload.at("fields_validated"), true);
+            EXPECT_TRUE(payload.at("low_confidence_fields").empty());
+        }
+    }
+    EXPECT_GT(review_deliveries, 0u);
+    EXPECT_GT(workflow_deliveries, 0u);
+
+    const auto document_results = node.find_database("document_results");
+    ASSERT_TRUE(document_results);
+    std::size_t extracted_rows = 0;
+    std::size_t queued_rows = 0;
+    for (const auto& table : document_results->tables()) {
+        if (table->name().starts_with("extracted_fields_")) {
+            extracted_rows += table->store().size();
+        }
+        if (table->name().starts_with("review_queue_")) {
+            queued_rows += table->store().size();
+        }
+    }
+    EXPECT_EQ(extracted_rows, 720u);
+    EXPECT_GT(queued_rows, 0u);
+    EXPECT_EQ(node.find_database("documents")
+                  ->find_table("invoice_snapshot")
+                  ->store()
+                  .size(),
+              240u);
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name == "unvalidated_workflow_actions" ||
+            guardrail.bound.name == "review_queue_miss_rate") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("document-fixture-token"),
+              std::string::npos);
+    const auto outcomes = planted_document_workflow_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured =
+        journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout =
             call("get_roi_readout", {{"solution", binding.at("scope")}});

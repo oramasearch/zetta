@@ -2700,6 +2700,211 @@ CheckResult B3LevelCompositionCheck::evaluate(
         name(), "B-3 selected level contains both methodology callbacks");
 }
 
+
+namespace {
+
+const json* b4_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-4") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-4 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    if (level < 1 || level > 4) {
+        error = "B-4 level must be between 1 and 4";
+        return nullptr;
+    }
+    const auto profile = manifest->attributes.find("b4_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-4 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b4_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-4 Pipeline to validate"};
+}
+
+CheckResult b4_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b4_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+} // namespace
+
+CheckResult B4PerFieldConfidenceCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b4_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b4_failure(name(), error);
+    }
+    const auto fields = profile->find("required_fields");
+    const auto thresholds = profile->find("field_thresholds");
+    if (fields == profile->end() || !fields->is_array() || fields->empty() ||
+        thresholds == profile->end() || !thresholds->is_object()) {
+        return b4_failure(
+            name(), "B-4 requires declared fields and a threshold for each field");
+    }
+    std::unordered_set<std::string> names;
+    double maximum_threshold = 0.0;
+    for (const json& field : *fields) {
+        if (!field.is_string() || field.get_ref<const std::string&>().empty() ||
+            !names.insert(field.get_ref<const std::string&>()).second) {
+            return b4_failure(
+                name(), "B-4 required fields must be unique non-empty names");
+        }
+        const auto threshold =
+            thresholds->find(field.get_ref<const std::string&>());
+        if (threshold == thresholds->end() || !threshold->is_number() ||
+            threshold->get<double>() <= 0.0 ||
+            threshold->get<double>() > 1.0) {
+            return b4_failure(
+                name(), "B-4 every required field needs a threshold in (0, 1]");
+        }
+        maximum_threshold =
+            std::max(maximum_threshold, threshold->get<double>());
+    }
+    const ir::Node* extraction = model_kind(graph, "document_extraction");
+    if (!has_methodology(graph, "M-11") || extraction == nullptr ||
+        !extraction->attributes.value("confidence_required", false) ||
+        !extraction->attributes.value("retain_evidence", false) ||
+        extraction->attributes.value("field_thresholds", json::object()) !=
+            *thresholds ||
+        extraction->attributes.value("review_threshold", 0.0) <
+            maximum_threshold) {
+        return b4_failure(
+            name(), "B-4 M-11 must retain evidence and enforce every field threshold");
+    }
+    return b4_success(
+        name(), "B-4 applies governed confidence thresholds to every field");
+}
+
+CheckResult B4ReviewQueueCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b4_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b4_failure(name(), error);
+    }
+    const json* review = object_field(*profile, "review");
+    const auto thresholds = profile->find("field_thresholds");
+    if (review == nullptr || thresholds == profile->end() ||
+        !review->value("route_low_confidence_to_review", false) ||
+        review->value("queue", std::string{}).empty() ||
+        review->value("action", std::string{}) != "field_review_task" ||
+        !review->value("owner_required", false)) {
+        return b4_failure(
+            name(), "B-4 low-confidence fields require an owned human-review queue");
+    }
+    const ir::Node* extraction = model_kind(graph, "document_extraction");
+    if (extraction == nullptr ||
+        !extraction->attributes.value("route_low_confidence_to_review", false)) {
+        return b4_failure(
+            name(), "B-4 M-11 must mark low-confidence fields for review");
+    }
+    bool has_review_action = false;
+    for (const std::shared_ptr<ir::Node>& action :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!action || !action->attributes.is_object()) {
+            continue;
+        }
+        if (action->attributes.value("route", std::string{}) ==
+                "review_queue" &&
+            action->attributes.value("human_review_action", std::string{}) ==
+                "field_review_task" &&
+            action->attributes.value("per_field_thresholds", json::object()) ==
+                *thresholds) {
+            has_review_action = true;
+            break;
+        }
+    }
+    if (!has_review_action) {
+        return b4_failure(
+            name(), "B-4 requires an M-11 action that routes failed fields to review");
+    }
+    return b4_success(
+        name(), "B-4 routes every low-confidence field to owned human review");
+}
+
+CheckResult B4ValidatedWorkflowCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b4_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b4_failure(name(), error);
+    }
+    const json* downstream = object_field(*profile, "downstream");
+    const json* policy = object_field(*profile, "policy");
+    if (downstream == nullptr || policy == nullptr ||
+        !downstream->value("requires_all_fields_validated", false) ||
+        downstream->value("validation_flag", std::string{}) !=
+            "fields_validated" ||
+        !downstream->value("structured_output_only", false)) {
+        return b4_failure(
+            name(), "B-4 workflow delivery must require all fields to validate");
+    }
+    const auto workflow_actions = downstream->find("workflow_actions");
+    const auto policy_actions = policy->find("actions");
+    if (workflow_actions == downstream->end() ||
+        !workflow_actions->is_array() || workflow_actions->empty() ||
+        policy_actions == policy->end() || !policy_actions->is_object() ||
+        !policy_actions->contains("field_review_task")) {
+        return b4_failure(
+            name(), "B-4 must distinguish review from workflow actions");
+    }
+    for (const json& action : *workflow_actions) {
+        if (!action.is_string() || action == "field_review_task" ||
+            !policy_actions->contains(action.get_ref<const std::string&>())) {
+            return b4_failure(
+                name(), "B-4 workflow action allowlist is invalid");
+        }
+    }
+    if (!has_methodology(graph, "M-11")) {
+        return b4_failure(name(), "B-4 levels require the M-11 callback");
+    }
+    return b4_success(
+        name(), "B-4 blocks business workflows until every field validates");
+}
+
 CheckResult S11LoggedPropensityCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
     bool applies = false;

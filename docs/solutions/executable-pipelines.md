@@ -66,6 +66,9 @@ B-2 binds M-1's real `Publish aggregate workforce risk` output in
 `workforce_results`, using `group_key` and `attrition_risk`. The input entity is
 already a protected cohort, and the runtime refuses individual identifiers,
 scores, or a cohort below the configured minimum before any methodology runs.
+B-4 binds M-11's real `extracted fields` output in `document_results`, with
+`document` and `confidence` columns. It groups field rows by document and
+refuses workflow delivery unless every declared field clears its own threshold.
 S-5 defaults to the real M-4 `forecast` output, with `series` as the
 entity and relative interval width in `exception_score` as the policy score.
 S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums

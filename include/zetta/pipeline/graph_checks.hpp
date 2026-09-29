@@ -454,6 +454,30 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-4 document-workflow adaptations (#1178). Every declared field has its own
+// threshold, uncertain fields enter an owned human-review queue, and business
+// workflow actions remain unavailable until every required field validates.
+class B4PerFieldConfidenceCheck final : public Check {
+public:
+    std::string name() const override { return "b4_per_field_confidence"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B4ReviewQueueCheck final : public Check {
+public:
+    std::string name() const override { return "b4_review_queue"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B4ValidatedWorkflowCheck final : public Check {
+public:
+    std::string name() const override { return "b4_validated_workflow"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-11 validates logged probabilities, contact constraints, and interpretation.
 class S11LoggedPropensityCheck final : public Check {
 public:
