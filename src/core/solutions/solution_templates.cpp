@@ -46,6 +46,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-10", "fraud_review_task", "A1", "champion_challenger", "fraud_loss", "currency", "false_declines"},
     DefaultAction{"S-11", "eligible_action", "A1", "uplift_cells", "net_value", "currency", "consent_violations"},
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
+    DefaultAction{"B-4", "field_review_task", "A2", "holdout", "workflow_completed", "document", "unvalidated_workflow_actions"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -548,6 +549,56 @@ void next_best_action_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void document_workflow_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "validated"}, {"minimum_score", 0.9},
+         {"action", "workflow_handoff"},
+         {"allowed_actions",
+          {"validation_record", "workflow_review_task",
+           "workflow_handoff", "high_impact_approval",
+           "field_review_task"}}},
+        {{"name", "review"}, {"minimum_score", 0.0},
+         {"action", "field_review_task"},
+         {"allowed_actions",
+          {"validation_record", "workflow_review_task",
+           "workflow_handoff", "high_impact_approval",
+           "field_review_task"}}}};
+    result.policy["actions"] = {
+        {"validation_record", {{"autonomy", "A0"}}},
+        {"field_review_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1)}}},
+        {"workflow_review_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1)}}},
+        {"workflow_handoff",
+         {{"autonomy", "A2"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1)}}},
+        {"high_impact_approval",
+         {{"autonomy", "A1"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1);
+    result.policy["eligibility_rules"] = {
+        predicate("document_available", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("excluded", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"validated", 0.1}, {"review", 0.1}};
+    result.experiment.treatment_cells = {"workflow_enabled"};
+    result.guardrails = {
+        {"unvalidated_workflow_actions", 0.0, "maximum"},
+        {"review_queue_miss_rate", 0.0, "maximum"},
+        {"field_extraction_accuracy", 0.8, "minimum"},
+        {"field_validation_rate", 0.0, "minimum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {
+        "holdout", "workflow_completed", "document", 30};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -578,6 +629,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 claims_triage_defaults(result);
             } else if (solution_id == "S-10") {
                 fraud_decisioning_defaults(result);
+            } else if (solution_id == "B-4") {
+                document_workflow_defaults(result);
             }
             return result;
         }
@@ -587,6 +640,18 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
 
 Json solution_policy_template(const std::string& solution_id, int level) {
     Json policy = solution_templates(solution_id).policy;
+    if (solution_id == "B-4") {
+        const std::string validated_action =
+            level <= 1 ? "validation_record"
+                       : level == 2 ? "workflow_review_task"
+                                    : "workflow_handoff";
+        for (Json& tier : policy["tiers"]) {
+            if (tier.at("name") == "validated") {
+                tier["action"] = validated_action;
+            }
+        }
+        return policy;
+    }
     if (solution_id != "S-6") {
         return policy;
     }

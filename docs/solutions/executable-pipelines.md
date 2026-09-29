@@ -62,6 +62,9 @@ S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
 S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
+B-4 binds M-11's real `extracted fields` output in `document_results`, with
+`document` and `confidence` columns. It groups field rows by document and
+refuses workflow delivery unless every declared field clears its own threshold.
 S-5 defaults to the real M-4 `forecast` output, with `series` as the
 entity and relative interval width in `exception_score` as the policy score.
 S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums

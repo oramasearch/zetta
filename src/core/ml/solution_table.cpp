@@ -39,7 +39,8 @@ Solution band_a(
     std::vector<SolutionDataRole> required_data_roles,
     std::string decision_policy_template, std::string measurement_design,
     std::vector<std::string> guardrails,
-    std::vector<SolutionCapabilityLevel> capability_levels) {
+    std::vector<SolutionCapabilityLevel> capability_levels,
+    std::string promotion_condition = {}) {
     Solution solution;
     solution.id = std::move(id);
     solution.name = std::move(name);
@@ -55,6 +56,7 @@ Solution band_a(
     solution.measurement_design = std::move(measurement_design);
     solution.guardrails = std::move(guardrails);
     solution.capability_levels = std::move(capability_levels);
+    solution.promotion_condition = std::move(promotion_condition);
     solution.templates = zetta::solutions::solution_templates(solution.id);
     solution.runnable = true;
     for (const SolutionMethodology& entry : solution.composition) {
@@ -80,6 +82,7 @@ Solution band_a(
                            : solution.id == "S-10" ? 1119
                            : solution.id == "S-11" ? 1120
                            : solution.id == "S-12" ? 1121
+                           : solution.id == "B-4" ? 1178
                                                    : 1102);
     return solution;
 }
@@ -504,6 +507,36 @@ const std::vector<Solution>& solutions() {
             {"no automated denial", "overpayment", "false referral", "complaints", "field extraction accuracy"},
             levels("SIU queue ranking", "add triage with human release",
                    "add instant pay inside allowlists", "add photo and subrogation assistance")),
+        band_a(
+            "B-4", "Document & Workflow Automation",
+            "Extract and validate documents while routing uncertain fields to review.",
+            "Automate high-volume document lanes with deterministic checks and audit samples.",
+            {{"M-11", "primary", 1}},
+            {"M-11"},
+            {"field-level human review tasks",
+             "validated structured-data workflow handoff"},
+            {"L1 review tasks", "L1 workflow handoff"},
+            {{"route uncertain fields to human review", "A2"},
+             {"handoff validated structured output", "A2"},
+             {"high-impact workflow release", "A1"},
+             {"confidence thresholds inside approved bounds", "A3"}},
+            {{"document", true, "source document or page image"},
+             {"field", true, "declared fields and a confidence threshold for each"},
+             {"label", true, "verified fields and workflow outcome"},
+             {"entity", true, "stable document, case, customer, or transaction key"},
+             {"time", true, "document arrival and workflow-outcome cutoff"},
+             {"owner", true, "human-review queue or workflow owner"},
+             {"eligibility", true, "workflow eligibility and suppression evidence"}},
+            "Per-field confidence thresholds, mandatory human review for uncertain fields, workflow eligibility, frequency caps, approval for high-impact release, and a kill switch.",
+            "Permanent holdout by validation tier, measuring completed workflows over the declared outcome window.",
+            {"unvalidated workflow actions", "review queue misses",
+             "field extraction accuracy", "field validation rate",
+             "action-execution rate"},
+            levels("extract fields, retain evidence, and route review tasks",
+                   "add owned validation and release tasks",
+                   "add validated structured-data workflow handoff",
+                   "add approval-gated high-impact workflow release"),
+            "Promote for a high-volume document lane or repeated demand from multiple deployed modules."),
         sketch("B-1", "Dynamic Pricing & Discount Governance",
                "Set prices or discounts inside explicit margin and authority bands.",
                "Govern price changes despite policy-confounded historical demand.",
@@ -528,14 +561,6 @@ const std::vector<Solution>& solutions() {
                 {"label", true, "routing and resolved outcome"},
                 {"entity", false, "customer, service, and product"}},
                "Promote when ticket volume is high enough and the service organization owns or funds its taxonomy."),
-        sketch("B-4", "Document & Workflow Automation",
-               "Extract and validate documents while routing uncertain fields to review.",
-               "Automate high-volume document lanes with deterministic checks and audit samples.",
-               {{"M-11", "primary", 1}},
-               {{"document", true, "source document and page images"},
-                {"label", true, "verified fields and workflow outcome"},
-                {"entity", false, "case, customer, or transaction"}},
-               "Promote for a high-volume document lane or repeated demand from multiple deployed modules."),
         sketch("B-5", "Supplier Risk & Procurement Intelligence",
                "Prioritize supplier risks and procurement actions with evidence.",
                "Reduce disruption exposure despite sparse, selected supplier outcomes.",

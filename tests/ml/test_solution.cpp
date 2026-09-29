@@ -230,6 +230,77 @@ zetta::ir::ExecutionGraph bound_s12_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_b4_graph(int level = 1) {
+    const zetta::ml::Solution* solution =
+        zetta::ml::find_solution("B-4");
+    if (solution == nullptr) {
+        return {};
+    }
+    const nlohmann::json fields = {
+        "invoice_number", "date", "total"};
+    const nlohmann::json thresholds = {
+        {"invoice_number", 0.95}, {"date", 0.85}, {"total", 0.9}};
+    zetta::ml::ComposedSolution composed = zetta::ml::compose_solution(
+        *solution, level,
+        {{"source", "documents"},
+         {"table", "invoices"},
+         {"M-11", {{"fields", fields}, {"review_threshold", 0.95}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00.000Z";
+    }
+    for (const auto& model :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) !=
+            "document_extraction") {
+            continue;
+        }
+        model->attributes["field_thresholds"] = thresholds;
+        model->attributes["review_threshold"] = 0.95;
+        model->attributes["confidence_required"] = true;
+        model->attributes["retain_evidence"] = true;
+        model->attributes["route_low_confidence_to_review"] = true;
+    }
+    for (const auto& action :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Act)) {
+        if (action->attributes.value("route", std::string{}) !=
+            "review_queue") {
+            continue;
+        }
+        action->attributes["per_field_thresholds"] = thresholds;
+        action->attributes["human_review_action"] =
+            "field_review_task";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["b4_correctness"] = {
+        {"required_fields", fields},
+        {"field_thresholds", thresholds},
+        {"review",
+         {{"route_low_confidence_to_review", true},
+          {"queue", "document_field_review"},
+          {"action", "field_review_task"},
+          {"owner_required", true}}},
+        {"downstream",
+         {{"requires_all_fields_validated", true},
+          {"validation_flag", "fields_validated"},
+          {"structured_output_only", true},
+          {"workflow_actions",
+           {"workflow_review_task", "workflow_handoff",
+            "high_impact_approval"}}}},
+        {"policy",
+         zetta::solutions::solution_policy_template("B-4", level)}};
+    return composed.graph;
+}
+
 zetta::ir::ExecutionGraph bound_s5_graph(int level = 1) {
     const zetta::ml::Solution* solution = zetta::ml::find_solution("S-5");
     if (solution == nullptr) {
@@ -748,7 +819,7 @@ TEST(SolutionRegistry, NextBestActionEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
 }
 
-TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
+TEST(SolutionRegistry, ListsThirteenCatalogueModulesAndSevenSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
     std::size_t catalogue = 0;
@@ -782,8 +853,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_EQ(solution.capability_levels.size(), 4u);
         }
     }
-    EXPECT_EQ(catalogue, 12u);
-    EXPECT_EQ(sketches, 8u);
+    EXPECT_EQ(catalogue, 13u);
+    EXPECT_EQ(sketches, 7u);
 }
 
 TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
@@ -800,6 +871,7 @@ TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
         {"S-10", {"M-1", "M-2", "M-12", "M-5"}},
         {"S-11", {"M-8", "M-1", "M-6", "M-2", "M-15"}},
         {"S-12", {"M-1", "M-2", "M-11", "M-3"}},
+        {"B-4", {"M-11"}},
     };
     for (const auto& [solution_id, methodology_ids] : expected) {
         const zetta::ml::Solution* solution =
@@ -1311,6 +1383,80 @@ TEST(SolutionRegistry, S12EveryLevelBuildsWithClaimScoreBindings) {
         EXPECT_EQ(std::find(methods.begin(), methods.end(), "M-3") !=
                       methods.end(),
                   level >= 3);
+    }
+}
+
+void expect_b4_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+TEST(SolutionRegistry, DocumentWorkflowEntryCarriesExecutableContract) {
+    const zetta::ml::Solution* document_workflow =
+        zetta::ml::find_solution("B-4");
+    ASSERT_NE(document_workflow, nullptr);
+    EXPECT_TRUE(document_workflow->runnable);
+    EXPECT_EQ(document_workflow->status, "catalogue");
+    EXPECT_EQ(document_workflow->issue,
+              "https://github.com/oramasearch/zetta/issues/1178");
+    EXPECT_FALSE(document_workflow->promotion_condition.empty());
+    EXPECT_FALSE(document_workflow->templates.minimal);
+    EXPECT_EQ(document_workflow->composition.size(), 1u);
+    EXPECT_EQ(document_workflow->composition.front().id, "M-11");
+    EXPECT_EQ(document_workflow->templates.measurement.design, "holdout");
+    EXPECT_EQ(document_workflow->templates.measurement.outcome,
+              "workflow_completed");
+    EXPECT_EQ(document_workflow->templates.guardrails.size(), 5u);
+    EXPECT_EQ(document_workflow->templates.guardrails.front().metric,
+              "unvalidated_workflow_actions");
+    EXPECT_TRUE(document_workflow->templates.policy.at("actions").contains(
+        "field_review_task"));
+    EXPECT_EQ(document_workflow->templates.policy.at("actions")
+                  .at("high_impact_approval")
+                  .at("autonomy"),
+              "A1");
+}
+
+TEST(SolutionRegistry, B4ChecksRefuseEveryDocumentWorkflowWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_b4_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto confidence = bound_b4_graph();
+    confidence.find_node("solution_manifest")
+        ->attributes["b4_correctness"]["field_thresholds"]
+                   ["invoice_number"] = 1.1;
+    expect_b4_failure(confidence, "b4_per_field_confidence");
+
+    auto review = bound_b4_graph();
+    review.find_node("solution_manifest")
+        ->attributes["b4_correctness"]["review"]
+                   ["route_low_confidence_to_review"] = false;
+    expect_b4_failure(review, "b4_review_queue");
+
+    auto downstream = bound_b4_graph();
+    downstream.find_node("solution_manifest")
+        ->attributes["b4_correctness"]["downstream"]
+                   ["requires_all_fields_validated"] = false;
+    expect_b4_failure(downstream, "b4_validated_workflow");
+}
+
+TEST(SolutionRegistry, B4EveryLevelBuildsThroughM11) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto graph = bound_b4_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        EXPECT_EQ(manifest->attributes.at("methodologies"),
+                  nlohmann::json::array({"M-11"}));
+        EXPECT_FALSE(zetta::ml::solution_stage_graph(graph, 1).empty());
     }
 }
 

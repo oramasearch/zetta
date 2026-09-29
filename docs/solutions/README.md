@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, S-10, S-11, and S-12. This is the scope of
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-4. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 The [pass-two integration](integration-pass-2.md) records subsequent modules
@@ -53,6 +53,9 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-11.md](S-11.md) — runnable next-best-action module: cross-channel
   arbitration, constrained exploration, logged propensities, consent/contact
   limits, and planted-effect proof (#1120).
+- [B-4.md](B-4.md) — runnable document and workflow automation module:
+  per-field confidence, owned review queues, validated structured handoff,
+  holdout, and planted-effect proof (#1178).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -79,26 +82,27 @@ one-tick checks for all added catalog families and existing table-backed state.
 
 Issue [#1102](https://github.com/oramasearch/zetta/issues/1102) adds the
 catalogue-level registry in `zetta::ml`. It is separate from the older headed
-deployment-card catalogue: this registry describes the S-1 through S-12 product
-modules, the eight Band-B sketches, and the methodology callbacks used to build
-each module's Pipeline.
+deployment-card catalogue: this registry describes the S-1 through S-12 and
+B-4 product modules, the seven remaining Band-B sketches, and the methodology
+callbacks used to build each module's Pipeline.
 
 ## Registry contract
 
 `include/zetta/ml/solution.hpp` defines `Solution` and its supporting value
 types. `solutions()` returns 20 stable entries in catalogue order:
 
-- S-1 through S-12 have product copy, use case, methodology composition,
+- S-1 through S-12 and B-4 have product copy, use case, methodology composition,
   execution order, action and latency classes, autonomy defaults, required data
   roles, policy and measurement templates, guardrails, and four selectable
   capability levels.
-- B-1 through B-8 have `status: "sketch"`, `runnable: false`, and a promotion
-  condition. Their data roles describe what promotion would require. They
+- B-1 through B-3 and B-5 through B-8 have `status: "sketch"`,
+  `runnable: false`, and a promotion condition. Their data roles describe what promotion would require. They
   cannot be built; the refusal repeats that promotion condition.
 - All seven production foundation components are integrated (#1128).
   `runnable` describes the default level's methodology availability;
   `missing_components` lists unavailable methodology callbacks only. It is
-  empty for the currently runnable S modules. Band-B entries remain sketches.
+  empty for the currently runnable modules. B-4 keeps its promotion condition
+  as a go-to-market gate while engineering remains runnable.
 
 The product copy contains no pricing or numerical return claims. It says what
 problem the module solves and what data roles it needs.
@@ -350,7 +354,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, S-10, S-11, and S-12 journeys.
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-4 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -368,6 +372,9 @@ and point-in-time promise-to-pay labels. All completed modules run these checks 
 the graph is persisted and again before execution.
 For S-12, it refuses automated denial, missing fairness review, weak document
 thresholds, missing claim-score bindings, and incomplete level composition.
+For B-4, it refuses incomplete per-field thresholds, low-confidence extraction
+without an owned review queue, and downstream workflow action before every
+required field is validated.
 
 For S-6, it refuses missing service or budget constraints, an M-4 horizon
 shorter than lead time, unsafe automatic/hard quantity bounds, and a level that

@@ -123,8 +123,8 @@ What's inside, by domain (each links to that domain's docs):
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
   tracked Run trials; analysis, governed model promotion, and lineage-preserving
   deletion of stopped studies have REST/MCP parity.
-  The [solution registry](docs/solutions/README.md) lists the 12 catalogue
-  modules and eight Band-B sketches. Selected levels now execute snapshots,
+  The [solution registry](docs/solutions/README.md) lists 13 catalogue
+  modules and seven Band-B sketches. Selected levels now execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
   S-1 is runnable at all four levels with eight named domain refusals,
@@ -139,6 +139,9 @@ What's inside, by domain (each links to that domain's docs):
   S-4 is runnable at all four levels with regulatory contact-limit,
   vulnerable-customer, and point-in-time promise-to-pay refusals; digital and
   dialer delivery; a permanent holdout; and net-recovery readout.
+  B-4 adds runnable document and workflow automation with per-field confidence
+  checks, owned review queues for uncertain fields, validated structured
+  workflow handoff, protected holdouts, and workflow-completion readout.
   S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
   SIU paths, A0-only denial, document-confidence and fairness refusals, action
   tasks, holdout, and ROI readout. S-5 is runnable at all four levels with
