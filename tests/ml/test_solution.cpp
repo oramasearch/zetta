@@ -299,6 +299,66 @@ zetta::ir::ExecutionGraph bound_s6_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_b1_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("B-1");
+    if (solution == nullptr) {
+        return {};
+    }
+    const nlohmann::json sources = {
+        {"source", "datasets"},
+        {"table", "pricing_history"},
+        {"M-4",
+         {{"time_column", "period"},
+          {"target_column", "demand"},
+          {"series_column", "series"},
+          {"horizon", 1}}},
+        {"M-6",
+         {{"entity", "series"},
+          {"treatment", "price_treatment"},
+          {"outcome", "demand_response"}}}};
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, sources);
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["b1_correctness"] = {
+        {"identification",
+         {{"identifiable_variation", false},
+          {"randomized_experiment", true},
+          {"treatment_column", "price_treatment"},
+          {"outcome_column", "demand_response"}}},
+        {"policy",
+         zetta::solutions::solution_policy_template("B-1", level)},
+        {"margin_floor", 0.25},
+        {"automatic_authority_limit", 0.05},
+        {"hard_authority_limit", 0.15},
+        {"leakage",
+         {{"prediction_time", "2026-09-01T00:00:00Z"},
+          {"competitor_price_cutoff", "2026-09-01T00:00:00Z"},
+          {"future_prices_excluded", true},
+          {"forbidden_feature_names",
+           {"future_price", "future_competitor_price"}},
+          {"feature_names", {"baseline_demand", "current_price"}}}},
+        {"level_action",
+         level <= 1 ? "price_recommendation"
+         : level == 2 ? "pricing_review_task"
+         : level == 3 ? "controlled_price_experiment"
+                      : "publish_price_change"},
+        {"kill_switch_configured", true}};
+    return composed.graph;
+}
+
 zetta::ir::ExecutionGraph bound_s7_graph(int level = 1) {
     const zetta::ml::Solution* solution = zetta::ml::find_solution("S-7");
     if (solution == nullptr) {
@@ -748,7 +808,7 @@ TEST(SolutionRegistry, NextBestActionEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
 }
 
-TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
+TEST(SolutionRegistry, ListsThirteenCatalogueModulesAndSevenSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
     std::size_t catalogue = 0;
@@ -782,8 +842,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_EQ(solution.capability_levels.size(), 4u);
         }
     }
-    EXPECT_EQ(catalogue, 12u);
-    EXPECT_EQ(sketches, 8u);
+    EXPECT_EQ(catalogue, 13u);
+    EXPECT_EQ(sketches, 7u);
 }
 
 TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
@@ -800,6 +860,7 @@ TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
         {"S-10", {"M-1", "M-2", "M-12", "M-5"}},
         {"S-11", {"M-8", "M-1", "M-6", "M-2", "M-15"}},
         {"S-12", {"M-1", "M-2", "M-11", "M-3"}},
+        {"B-1", {"M-4", "M-6", "M-16"}},
     };
     for (const auto& [solution_id, methodology_ids] : expected) {
         const zetta::ml::Solution* solution =
@@ -921,8 +982,42 @@ TEST(SolutionRegistry, ReplenishmentEntryCarriesExecutableDefaults) {
               "release_order");
 }
 
+TEST(SolutionRegistry, DynamicPricingEntryCarriesExecutableDefaults) {
+    const zetta::ml::Solution* pricing =
+        zetta::ml::find_solution("B-1");
+    ASSERT_NE(pricing, nullptr);
+    EXPECT_TRUE(pricing->runnable);
+    EXPECT_EQ(pricing->status, "catalogue");
+    EXPECT_EQ(pricing->issue,
+              "https://github.com/oramasearch/zetta/issues/1175");
+    EXPECT_FALSE(pricing->promotion_condition.empty());
+    EXPECT_FALSE(pricing->templates.minimal);
+    EXPECT_EQ(pricing->templates.measurement.design, "holdout");
+    EXPECT_EQ(pricing->templates.measurement.outcome, "net_margin");
+    EXPECT_EQ(pricing->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"price_change"}));
+    ASSERT_EQ(pricing->templates.guardrails.size(), 5u);
+    EXPECT_EQ(pricing->templates.guardrails.front().metric,
+              "margin_floor_violations");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("B-1", 1)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "price_recommendation");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("B-1", 3)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "controlled_price_experiment");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("B-1", 4)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "publish_price_change");
+}
+
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
-    const zetta::ml::Solution* sketch = zetta::ml::find_solution("B-1");
+    const zetta::ml::Solution* sketch = zetta::ml::find_solution("B-2");
     ASSERT_NE(sketch, nullptr);
     const zetta::ml::ComposedSolution refused =
         zetta::ml::compose_solution(*sketch, 1, {});
@@ -1478,6 +1573,96 @@ TEST(SolutionRegistry, S6EveryLevelBuildsThroughItsMethodologyCallbacks) {
             EXPECT_FALSE(zetta::ml::solution_stage_graph(
                              graph, static_cast<int>(stage))
                              .empty());
+        }
+    }
+}
+
+TEST(SolutionRegistry, B1CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_b1_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto unidentified = bound_b1_graph();
+    unidentified.find_node("solution_manifest")
+        ->attributes["b1_correctness"]["identification"]
+                   ["randomized_experiment"] = false;
+    const auto unidentified_report =
+        zetta::pipeline::default_gate().run(unidentified);
+    const auto* unidentified_check = check_result(
+        unidentified_report,
+        "solution/b1_elasticity_identification");
+    ASSERT_NE(unidentified_check, nullptr);
+    EXPECT_EQ(unidentified_check->status,
+              zetta::pipeline::CheckStatus::Fail);
+
+    auto margin = bound_b1_graph();
+    margin.find_node("solution_manifest")
+        ->attributes["b1_correctness"]["policy"]
+                   ["eligibility_rules"][2]["value"] = 0.20;
+    const auto margin_report =
+        zetta::pipeline::default_gate().run(margin);
+    const auto* margin_check = check_result(
+        margin_report, "solution/b1_margin_authority_policy");
+    ASSERT_NE(margin_check, nullptr);
+    EXPECT_EQ(margin_check->status, zetta::pipeline::CheckStatus::Fail);
+
+    auto approval = bound_b1_graph();
+    approval.find_node("solution_manifest")
+        ->attributes["b1_correctness"]["policy"]["actions"]
+                   ["publish_price_change"]["approval_above"] = 0.20;
+    const auto approval_report =
+        zetta::pipeline::default_gate().run(approval);
+    const auto* approval_check = check_result(
+        approval_report, "solution/b1_margin_authority_policy");
+    ASSERT_NE(approval_check, nullptr);
+    EXPECT_EQ(approval_check->status,
+              zetta::pipeline::CheckStatus::Fail);
+
+    auto leakage = bound_b1_graph();
+    leakage.find_node("solution_manifest")
+        ->attributes["b1_correctness"]["leakage"]["feature_names"]
+        .push_back("future_price");
+    const auto leakage_report =
+        zetta::pipeline::default_gate().run(leakage);
+    const auto* leakage_check = check_result(
+        leakage_report, "solution/b1_price_leakage");
+    ASSERT_NE(leakage_check, nullptr);
+    EXPECT_EQ(leakage_check->status,
+              zetta::pipeline::CheckStatus::Fail);
+
+    auto composition = bound_b1_graph();
+    composition.find_node("solution_manifest")
+        ->attributes["methodologies"] = {"M-4", "M-6"};
+    const auto composition_report =
+        zetta::pipeline::default_gate().run(composition);
+    const auto* composition_check = check_result(
+        composition_report, "solution/b1_level_composition");
+    ASSERT_NE(composition_check, nullptr);
+    EXPECT_EQ(composition_check->status,
+              zetta::pipeline::CheckStatus::Fail);
+}
+
+TEST(SolutionRegistry, B1EveryLevelBuildsThroughItsMethodologyCallbacks) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto graph = bound_b1_graph(level);
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n'
+            << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), 3u);
+        for (std::size_t stage = 1; stage <= 3; ++stage) {
+            const zetta::ir::ExecutionGraph stage_graph =
+                zetta::ml::solution_stage_graph(
+                    graph, static_cast<int>(stage));
+            EXPECT_FALSE(stage_graph.empty()) << level << ':' << stage;
+            const std::string methodology =
+                manifest->attributes.at("methodologies").at(stage - 1);
+            const zetta::ml::Methodology* callback =
+                zetta::ml::find_methodology(methodology);
+            ASSERT_NE(callback, nullptr) << methodology;
+            EXPECT_TRUE(callback->run) << methodology;
         }
     }
 }

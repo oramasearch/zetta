@@ -72,12 +72,14 @@ verifies that all 21 methodologies are runnable, rejects an unmatched non-predic
 and refuses an incomplete segmentation graph at the correctness gate. Graph and
 project views expose `methodology` plus `runnable` (#1061).
 
-The solution journey discovers 12 catalogue modules plus eight sketches and
+The solution journey discovers 13 catalogue modules plus seven sketches and
 creates S-1 CL-1 with explicit snapshot/delivery/economics inputs and executable
 defaults (#1128). It reads the policy, experiment and ROI definition, runs
 M-2/M-1/M-3 over the real snapshot, verifies protected holdout and ledger rows,
 then records a synthetic 0.2 treatment effect and recovers it inside the readout's
-95% confidence interval. The CRM HTTP boundary alone is substituted; the core
+95% confidence interval. The B-1 journey also runs M-4/M-6/M-16, verifies
+margin and authority enforcement, and recovers planted net margin. The CRM and
+pricing HTTP boundaries alone are substituted; the core
 engines and replicated records are real. Run `SolutionJourney.*`.
 `Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
 table, creates a project, captures and compiles M-3, runs without a dataset

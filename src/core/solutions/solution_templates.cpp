@@ -46,6 +46,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-10", "fraud_review_task", "A1", "champion_challenger", "fraud_loss", "currency", "false_declines"},
     DefaultAction{"S-11", "eligible_action", "A1", "uplift_cells", "net_value", "currency", "consent_violations"},
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
+    DefaultAction{"B-1", "price_recommendation", "A0", "holdout", "net_margin", "currency", "margin_floor_violations"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -340,6 +341,58 @@ void replenishment_defaults(SolutionTemplates& result) {
     result.measurement = {"holdout", "service_level", "fraction", 30};
 }
 
+void dynamic_pricing_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "high_demand"}, {"minimum_score", 24.0},
+         {"action", "price_recommendation"},
+         {"allowed_actions", {"price_recommendation", "pricing_review_task",
+                              "controlled_price_experiment",
+                              "publish_price_change", "no_contact"}}},
+        {{"name", "standard_demand"}, {"minimum_score", 0.0},
+         {"action", "price_recommendation"},
+         {"allowed_actions", {"price_recommendation", "pricing_review_task",
+                              "controlled_price_experiment",
+                              "publish_price_change", "no_contact"}}}};
+    result.policy["actions"] = {
+        {"price_recommendation",
+         {{"autonomy", "A0"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"pricing_review_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"controlled_price_experiment",
+         {{"autonomy", "A2"}, {"approval_field", "authority_distance"},
+          {"approval_above", 0.05}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"publish_price_change",
+         {{"autonomy", "A2"}, {"approval_field", "authority_distance"},
+          {"approval_above", 0.05}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 52;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("pricing_eligible", true),
+        predicate("current_price_fresh", true),
+        numeric_predicate("gross_margin", "gte", 0.25),
+        numeric_predicate("authority_distance", "lte", 0.15)};
+    result.policy["exclusion_rules"] = {
+        predicate("manual_pricing_only", true),
+        predicate("legal_hold", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"high_demand", 0.1}, {"standard_demand", 0.1}};
+    result.experiment.treatment_cells = {"price_change"};
+    result.guardrails = {
+        {"margin_floor_violations", 0.0, "maximum"},
+        {"authority_band_violations", 0.0, "maximum"},
+        {"unapproved_price_changes", 0.0, "maximum"},
+        {"price_feature_leakage", 0.0, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "net_margin", "currency", 30};
+}
+
 void kpi_anomaly_defaults(SolutionTemplates& result) {
     result.minimal = false;
     result.policy["tiers"] = {
@@ -578,6 +631,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 claims_triage_defaults(result);
             } else if (solution_id == "S-10") {
                 fraud_decisioning_defaults(result);
+            } else if (solution_id == "B-1") {
+                dynamic_pricing_defaults(result);
             }
             return result;
         }
@@ -587,14 +642,21 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
 
 Json solution_policy_template(const std::string& solution_id, int level) {
     Json policy = solution_templates(solution_id).policy;
-    if (solution_id != "S-6") {
+    if (solution_id != "S-6" && solution_id != "B-1") {
         return policy;
     }
-    const std::string action = level <= 1 ? "draft_order"
-                               : level >= 4 ? "release_order"
-                                            : "erp_replenishment_task";
+    const bool replenishment = solution_id == "S-6";
+    const std::string action = replenishment
+                                   ? level <= 1 ? "draft_order"
+                                     : level >= 4 ? "release_order"
+                                                  : "erp_replenishment_task"
+                                   : level <= 1 ? "price_recommendation"
+                                     : level == 2 ? "pricing_review_task"
+                                     : level == 3 ? "controlled_price_experiment"
+                                                  : "publish_price_change";
     for (Json& tier : policy["tiers"]) {
-        if (tier.at("name") == "replenish") {
+        if ((replenishment && tier.at("name") == "replenish") ||
+            (!replenishment && tier.at("name") != "no_change")) {
             tier["action"] = action;
         }
     }

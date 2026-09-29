@@ -537,6 +537,41 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-1 pricing adaptations (#1175). Recommendations require identifiable
+// variation, bounded policy authority, decision-time price features, and the
+// complete M-4/M-6/M-16 composition at every capability level.
+class B1ElasticityIdentificationCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b1_elasticity_identification";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B1MarginAuthorityPolicyCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b1_margin_authority_policy";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B1PriceLeakageCheck final : public Check {
+public:
+    std::string name() const override { return "b1_price_leakage"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B1LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "b1_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-7's domain adaptations (#1116). Driver language must remain
 // associational, anomaly delivery must obey an explicit alert budget, and KPI
 // scoring must use causal seasonal baselines rather than future observations.

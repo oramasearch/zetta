@@ -223,6 +223,16 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                         }
                     }
                 }
+                if (state->binding.value("solution", std::string{}) == "B-1" &&
+                    stage.methodology->id == "M-6") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "dataset" &&
+                            output.name == "treatment effects") {
+                            scored_outputs.push_back(output);
+                        }
+                    }
+                }
                 if (state->binding.value("solution", std::string{}) == "S-11" &&
                     stage.methodology->id == "M-15") {
                     for (const zetta::pipeline::RunOutput& output :

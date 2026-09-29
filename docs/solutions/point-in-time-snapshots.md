@@ -2,7 +2,7 @@
 
 Issue [#1103](https://github.com/oramasearch/zetta/issues/1103), under the
 [methodology epic](https://github.com/oramasearch/zetta/issues/984), adds the
-native time-travel foundation used when S-1 through S-12 compute features from
+native time-travel foundation used when runnable solution modules compute features from
 time-ordered data. It has three parts:
 
 1. `zetta::solutions::materialize_snapshot` persists one latest-visible row per
@@ -139,7 +139,7 @@ declared feature names, so snapshot lineage fields cannot become predictors.
 
 ## Portfolio integration
 
-Time-ordered feature paths in S-1 through S-12 use this foundation in two
+Time-ordered feature paths in runnable solution modules use this foundation in two
 explicit phases: materialize or select a snapshot before feature construction,
 then put the snapshot and window annotations above on the compiled graph. Static
 dimension inputs do not require a synthetic time axis. The interface deliberately

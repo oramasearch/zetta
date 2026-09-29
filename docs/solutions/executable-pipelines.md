@@ -68,6 +68,11 @@ S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums
 the declared lead-time horizon into one decision score per item-location. Its
 M-4 stage reads the configured bounded history table; M-16 and M-5 read the
 latest decision snapshot.
+B-1 binds M-4's real `forecast` table with `series` and `point_forecast`.
+M-4 reads bounded demand history; M-6 estimates price treatment effects and
+M-16 verifies the declared constraints from the point-in-time decision
+snapshot. The M-6 effect is joined to the action payload, while the policy
+enforces margin, hard authority, and approval limits.
 S-7 uses M-7's `anomaly table`, with `row` as entity and `score` as the
 anomaly score. Forum decisions copy the real flag, threshold, period, top
 candidate driver, deviation, and contributor list.
@@ -132,6 +137,12 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    S-11 rows carry the policy tier, channel, exploit/explore mode, selected
    action, predictive propensity, and actual selection probability. Its five
    guardrails are observed from the same execution.
+
+   B-1 rows carry demand band, current and recommended prices, authority
+   distance, and the M-6 effect. Its monitor observes margin-floor violations,
+   hard-band violations, unapproved changes, price-feature leakage, and action
+   execution. Only price changes inside the automatic band reach the connector;
+   larger eligible changes remain A1 pending approval.
 
    S-7 routes only flagged rows within its exact alert budget, publishes one
    candidate-driver report with a causal caveat, and includes the durable forum
@@ -231,6 +242,13 @@ M-16, and M-5, aggregates the real lead-time forecast, protects the permanent
 holdout, checks bounded ERP release payloads and all five guardrails, records
 centered service-level outcomes with a 0.12 effect, and verifies that the
 readout estimate and 95% confidence interval recover the planted effect.
+
+`SolutionJourney.DynamicPricingEnforcesBandsAndRecoversPlantedEffect` builds
+and runs level-4 B-1 over partitioned synthetic pricing history. It executes
+M-4, M-6, and M-16, proves the margin floor and hard band block their bad rows,
+keeps above-automatic-band changes pending approval, protects holdouts, checks
+all five guardrails, and recovers a planted 0.40 net-margin effect inside the
+readout confidence interval.
 
 `SolutionJourney.KpiAnomalyRoutesForumReportAndKeepsPhasedClaimsHonest` builds
 and runs S-7 over a partitioned seasonal KPI table with planted spikes and

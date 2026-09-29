@@ -107,6 +107,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   time-to-stockout, complete policy and holdout defaults, bounded ERP release,
   five observed guardrails, and a service-level ROI readout. See
   [solutions/S-6.md](solutions/S-6.md).
+- **B-1 Dynamic Pricing & Discount Governance (#1175)** — runnable at levels
+  1–4 with M-4/M-6/M-16, identifiable price-effect evidence, margin and
+  authority policy limits, controlled experiments, protected holdouts, A1
+  approval above the automatic band, governed price publication, and a
+  net-margin readout. Its customer-offering promotion condition remains
+  recorded. See [solutions/B-1.md](solutions/B-1.md).
 - **S-11 Next-Best-Action (#1120)** — runnable at levels 1–4 with
   M-2/M-1/M-6/M-8/M-15, complete request-time policy and uplift-cell defaults,
   exploit/explore arbitration, durable selection propensities, cross-channel

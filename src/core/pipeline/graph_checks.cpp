@@ -739,6 +739,49 @@ const json* s6_correctness_profile(const ir::ExecutionGraph& graph,
     return &*profile;
 }
 
+const json* b1_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-1") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-1 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b1_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-1 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b1_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-1 Pipeline to validate"};
+}
+
+CheckResult b1_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b1_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 CheckResult s1_not_applicable(std::string name) {
     return {std::move(name), CheckStatus::Pass,
             "no bound S-1 Pipeline to validate"};
@@ -1733,6 +1776,204 @@ CheckResult S6LevelCompositionCheck::evaluate(
     }
     return s6_success(name(),
                       "S-6 selected level has every required stage and action bound");
+}
+
+CheckResult B1ElasticityIdentificationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b1_failure(name(), error);
+    }
+    const json* identification = object_field(*profile, "identification");
+    if (identification == nullptr ||
+        (!identification->value("identifiable_variation", false) &&
+         !identification->value("randomized_experiment", false)) ||
+        identification->value("treatment_column", std::string{}).empty() ||
+        identification->value("outcome_column", std::string{}).empty()) {
+        return b1_failure(
+            name(),
+            "B-1 price effects require identifiable variation or a randomized experiment with named treatment and outcome columns");
+    }
+    const ir::Node* uplift = model_kind(graph, "uplift");
+    if (uplift == nullptr || !has_methodology(graph, "M-6")) {
+        return b1_failure(
+            name(), "B-1 requires the M-6 price-effect estimation stage");
+    }
+    return b1_success(
+        name(), "B-1 price effects are limited to identifiable variation");
+}
+
+CheckResult B1MarginAuthorityPolicyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b1_failure(name(), error);
+    }
+    const json* policy = object_field(*profile, "policy");
+    const auto has_numeric_rule = [](const json& config,
+                                     std::string_view field,
+                                     std::string_view operation,
+                                     double expected) {
+        const auto rules = config.find("eligibility_rules");
+        if (rules == config.end() || !rules->is_array()) {
+            return false;
+        }
+        return std::ranges::any_of(*rules, [&](const json& rule) {
+            return rule.is_object() &&
+                   rule.value("field", std::string{}) == field &&
+                   rule.value("operator", std::string{}) == operation &&
+                   rule.contains("value") && rule.at("value").is_number() &&
+                   std::abs(rule.at("value").get<double>() - expected) < 1e-12;
+        });
+    };
+    const double margin_floor = profile->value("margin_floor", 0.0);
+    const double automatic =
+        profile->value("automatic_authority_limit", 0.0);
+    const double hard = profile->value("hard_authority_limit", 0.0);
+    if (policy == nullptr || margin_floor <= 0.0 || automatic <= 0.0 ||
+        hard < automatic ||
+        !has_numeric_rule(*policy, "gross_margin", "gte", margin_floor) ||
+        !has_numeric_rule(*policy, "authority_distance", "lte", hard)) {
+        return b1_failure(
+            name(),
+            "B-1 policy must enforce its positive margin floor and hard authority band as eligibility rules");
+    }
+    const auto actions = policy->find("actions");
+    if (actions == policy->end() || !actions->is_object()) {
+        return b1_failure(name(), "B-1 policy must declare governed actions");
+    }
+    for (const std::string action_name : {
+             "controlled_price_experiment", "publish_price_change"}) {
+        const auto action = actions->find(action_name);
+        if (action == actions->end() || !action->is_object() ||
+            action->value("approval_field", std::string{}) !=
+                "authority_distance" ||
+            !action->contains("approval_above") ||
+            !action->at("approval_above").is_number() ||
+            action->at("approval_above").get<double>() > automatic) {
+            return b1_failure(
+                name(),
+                "B-1 experiments and published price changes must require approval above the automatic authority band");
+        }
+    }
+    const ir::Node* optimization = model_kind(graph, "optimization");
+    if (optimization == nullptr ||
+        !optimization->attributes.value("verify_constraints", false)) {
+        return b1_failure(
+            name(), "B-1 requires M-16 to verify pricing constraints");
+    }
+    return b1_success(
+        name(), "B-1 margin and authority bands are enforced by policy");
+}
+
+CheckResult B1PriceLeakageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b1_failure(name(), error);
+    }
+    const json* leakage = object_field(*profile, "leakage");
+    if (leakage == nullptr ||
+        !leakage->value("future_prices_excluded", false)) {
+        return b1_failure(
+            name(), "B-1 must explicitly exclude future price information");
+    }
+    const auto prediction = leakage->find("prediction_time");
+    const auto competitor = leakage->find("competitor_price_cutoff");
+    if (prediction == leakage->end() || competitor == leakage->end()) {
+        return b1_failure(
+            name(), "B-1 requires prediction and competitor-price cutoffs");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    const std::optional<solutions::TimePoint> competitor_time =
+        solutions::parse_time_point(*competitor);
+    if (!prediction_time || !competitor_time ||
+        prediction_time->kind != competitor_time->kind ||
+        competitor_time->value > prediction_time->value) {
+        return b1_failure(
+            name(),
+            "B-1 competitor prices must be observed no later than the decision time");
+    }
+    const auto blocked = leakage->find("forbidden_feature_names");
+    const auto features = leakage->find("feature_names");
+    if (blocked == leakage->end() || !blocked->is_array() ||
+        features == leakage->end() || !features->is_array()) {
+        return b1_failure(
+            name(), "B-1 requires declared price features and a leakage blocklist");
+    }
+    std::unordered_set<std::string> forbidden;
+    for (const json& entry : *blocked) {
+        if (entry.is_string()) {
+            forbidden.insert(normalize_type(entry.get<std::string>()));
+        }
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string() ||
+            forbidden.contains(normalize_type(feature.get<std::string>()))) {
+            return b1_failure(
+                name(), "B-1 predictors contain a future price field");
+        }
+    }
+    return b1_success(
+        name(), "B-1 competitor and own-price features are decision-time safe");
+}
+
+CheckResult B1LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b1_failure(name(), error);
+    }
+    if (!has_methodology(graph, "M-4") ||
+        !has_methodology(graph, "M-6") ||
+        !has_methodology(graph, "M-16")) {
+        return b1_failure(
+            name(), "B-1 requires M-4, M-6, and M-16 at every level");
+    }
+    const std::string expected_action =
+        level <= 1 ? "price_recommendation"
+        : level == 2 ? "pricing_review_task"
+        : level == 3 ? "controlled_price_experiment"
+                     : "publish_price_change";
+    if (profile->value("level_action", std::string{}) != expected_action) {
+        return b1_failure(
+            name(), "B-1 selected level has the wrong action authority");
+    }
+    if (level >= 4 && !profile->value("kill_switch_configured", false)) {
+        return b1_failure(
+            name(), "B-1 level 4 requires a configured kill switch");
+    }
+    return b1_success(
+        name(), "B-1 selected level has every required stage and action bound");
 }
 
 CheckResult S3ShortTenureCensoringCheck::evaluate(
