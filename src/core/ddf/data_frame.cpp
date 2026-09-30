@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/util/timestamp.hpp"
 
 namespace zetta::ddf {
@@ -40,13 +41,27 @@ std::optional<DataType> data_type_from_string(std::string_view text) {
 // against the column's dtype. A clear, path-qualified reason on failure.
 template <class Element>
 ComputeStatus extract(const nlohmann::json& doc, const std::string& field,
-                      std::size_t row, bool timestamp, Element& out) {
+                      std::size_t row, bool timestamp,
+                      const std::shared_ptr<const data::EntityKeyMapping>& entity_keys,
+                      Element& out) {
     const std::string where =
         "load_data_frame: row " + std::to_string(row) + " field '" + field + "'";
     if (!doc.is_object() || !doc.contains(field)) {
         return ComputeStatus::invalid_argument(where + " is missing");
     }
     const nlohmann::json& value = doc.at(field);
+    if constexpr (std::is_same_v<Element, std::int64_t>) {
+        if (entity_keys && value.is_string()) {
+            const std::optional<std::int64_t> derived =
+                entity_keys->derived(value.get_ref<const std::string&>());
+            if (!derived) {
+                return ComputeStatus::invalid_argument(
+                    where + " is absent from the resolved entity-key mapping");
+            }
+            out = *derived;
+            return ComputeStatus::success();
+        }
+    }
     if constexpr (std::is_floating_point_v<Element>) {
         if (timestamp) {
             const std::optional<double> seconds =
@@ -58,12 +73,22 @@ ComputeStatus extract(const nlohmann::json& doc, const std::string& field,
             out = static_cast<Element>(*seconds);
             return ComputeStatus::success();
         }
+        if (value.is_boolean()) {
+            out = value.get<bool>() ? static_cast<Element>(1)
+                                    : static_cast<Element>(0);
+            return ComputeStatus::success();
+        }
         if (!value.is_number()) {
             return ComputeStatus::invalid_argument(where + " is not a number");
         }
         out = static_cast<Element>(value.get<double>());
         return ComputeStatus::success();
     } else {
+        if (value.is_boolean()) {
+            out = value.get<bool>() ? static_cast<Element>(1)
+                                    : static_cast<Element>(0);
+            return ComputeStatus::success();
+        }
         if (!value.is_number()) {
             return ComputeStatus::invalid_argument(where + " is not a number");
         }
@@ -109,7 +134,9 @@ ComputeStatus extract(const nlohmann::json& doc, const std::string& field,
 // boundary or device error.
 template <class Element>
 ComputeStatus fill_chunks(const zetta::storage::StorageEngine& store, const std::string& field,
-                          bool timestamp, ComputeDevice& device, std::size_t chunk_rows,
+                          bool timestamp,
+                          const std::shared_ptr<const data::EntityKeyMapping>& entity_keys,
+                          ComputeDevice& device, std::size_t chunk_rows,
                           std::vector<DeviceBuffer>& out) {
     const std::size_t row_count = store.size();
     std::vector<Element> host;
@@ -126,7 +153,8 @@ ComputeStatus fill_chunks(const zetta::storage::StorageEngine& store, const std:
                     " could not be read: " + handle.error());
             }
             const ComputeStatus status =
-                extract<Element>(*handle, field, row, timestamp, value);
+                extract<Element>(*handle, field, row, timestamp, entity_keys,
+                                 value);
             if (!status.ok()) return status;
             host.push_back(value);
         }
@@ -158,32 +186,39 @@ ComputeStatus build_column(const zetta::storage::StorageEngine& store, const Col
     ComputeStatus status;
     switch (spec.dtype) {
         case DataType::Float32:
-            status = fill_chunks<float>(store, field, spec.timestamp, device,
-                                        chunk_rows, chunks);
+            status = fill_chunks<float>(store, field, spec.timestamp,
+                                        spec.entity_keys, device, chunk_rows,
+                                        chunks);
             break;
         case DataType::Float64:
-            status = fill_chunks<double>(store, field, spec.timestamp, device,
-                                         chunk_rows, chunks);
+            status = fill_chunks<double>(store, field, spec.timestamp,
+                                         spec.entity_keys, device, chunk_rows,
+                                         chunks);
             break;
         case DataType::Int32:
             status = fill_chunks<std::int32_t>(store, field, spec.timestamp,
-                                               device, chunk_rows, chunks);
+                                               spec.entity_keys, device,
+                                               chunk_rows, chunks);
             break;
         case DataType::Int64:
             status = fill_chunks<std::int64_t>(store, field, spec.timestamp,
-                                               device, chunk_rows, chunks);
+                                               spec.entity_keys, device,
+                                               chunk_rows, chunks);
             break;
         case DataType::UInt32:
             status = fill_chunks<std::uint32_t>(store, field, spec.timestamp,
-                                                device, chunk_rows, chunks);
+                                                spec.entity_keys, device,
+                                                chunk_rows, chunks);
             break;
         case DataType::UInt64:
             status = fill_chunks<std::uint64_t>(store, field, spec.timestamp,
-                                                device, chunk_rows, chunks);
+                                                spec.entity_keys, device,
+                                                chunk_rows, chunks);
             break;
         case DataType::UInt8:
             status = fill_chunks<std::uint8_t>(store, field, spec.timestamp,
-                                               device, chunk_rows, chunks);
+                                               spec.entity_keys, device,
+                                               chunk_rows, chunks);
             break;
     }
     if (!status.ok()) return status;

@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -62,6 +64,48 @@ class Cluster;
 
 namespace zetta::data {
 
+struct DatasetContract;
+
+// A text business identifier's deterministic numeric representation inside the
+// numeric ML engine. The map is dataset-scoped: two different strings may never
+// claim the same derived key in one dataset. Outputs use original() so the hash is
+// never exposed as the entity a customer must join against.
+struct EntityKeyMapping {
+    std::string column;
+    std::map<std::int64_t, std::string> derived_to_original;
+    std::map<std::string, std::int64_t> original_to_derived;
+
+    bool empty() const noexcept {
+        return derived_to_original.empty();
+    }
+    std::optional<std::int64_t> derived(std::string_view original) const;
+    nlohmann::json original(std::int64_t derived) const;
+    nlohmann::json to_json() const;
+};
+
+using EntityKeyHash = std::function<std::uint64_t(std::string_view)>;
+
+struct EntityKeyMappingResult {
+    std::shared_ptr<const EntityKeyMapping> mapping;
+    std::string error;
+
+    bool ok() const noexcept {
+        return error.empty();
+    }
+};
+
+// Build a collision-checked map for one entity column. `hash` is injectable only
+// so the collision refusal can be proved; production uses a stable FNV-1a hash.
+EntityKeyMappingResult derive_entity_key_mapping(
+    std::string column, const std::vector<nlohmann::json>& values,
+    const EntityKeyHash& hash = {});
+std::shared_ptr<const EntityKeyMapping> entity_key_mapping_from_json(
+    const nlohmann::json& value, std::string* error = nullptr);
+
+// Preserve integer entities and restore text entities for every user-facing row.
+nlohmann::json entity_output(const DatasetContract& contract,
+                             std::int64_t derived);
+
 // Which of the two forms a `dataset_path` used.
 enum class DatasetPathKind {
     Directory,  // a filesystem directory holding dataset.json + its row files
@@ -99,11 +143,12 @@ DatasetPath parse_dataset_path(std::string_view path,
 // manifest. Every field may be supplied by the caller; the ones left empty are
 // inferred.
 struct DatasetContract {
-    // The integer entity key: the thing being scored, one row per entity. The
-    // ranked at-risk list and the per-row drivers are labelled by it.
+    // The entity key: an integer passes through unchanged; text receives a
+    // dataset-scoped derived key internally and remains text in every output.
     std::string entity_column;
 
-    // The {0,1} training target. Never a feature.
+    // The numeric training target. Inference selects binary labels; an explicit
+    // override also supports continuous numeric targets. Never a feature.
     std::string label_column;
 
     // Optional time column containing finite epoch numbers or ISO-8601 strings.
@@ -113,11 +158,15 @@ struct DatasetContract {
     std::string time_column;
     double as_of = 0.0;
 
-    // The numeric columns carried through as X, in a stable order. Never contains
-    // the entity, label, or time column.
+    // The numeric or boolean columns carried through as X, in a stable order.
+    // Never contains the entity, label, or time column.
     std::vector<std::string> feature_columns;
 
-    bool operator==(const DatasetContract&) const = default;
+    // Populated only for a text entity column. Serialized with the contract for
+    // distributed launches, and persisted with Runs and Models.
+    std::shared_ptr<const EntityKeyMapping> entity_keys;
+
+    bool operator==(const DatasetContract& other) const;
 };
 
 // The result of inferring a contract: what was decided, why, and — when it could
@@ -149,12 +198,10 @@ const std::vector<std::string>& label_column_candidates();
 //     values are all binary ({0,1}, true/false, or empty). Binary-ness matters more
 //     than the name: a column called `label` holding free text is not a target.
 //   * **entity** — the first `entity_column_candidates()` name present whose
-//     sampled values are all integers. **It must be integer-valued**: the whole ML
-//     path keys entities by `std::int64_t`, and a ranked list keyed by a number
-//     that joins back to nothing is worse than a clear failure. A string id column
-//     is reported as exactly that, with the remedy.
+//     sampled values are consistently integer or non-empty text. Text values receive
+//     collision-checked derived int64 keys for compute and are restored in outputs.
 //   * **features** — every remaining column whose sampled values are all numeric
-//     (or boolean), in catalog order, excluding the entity, label, and time
+//     or boolean, in catalog order, excluding the entity, label, and time
 //     columns. At least one is required: a label with no features is not a
 //     training set.
 //   * **time / as_of** — never inferred (see the header note). Passed through from
@@ -166,7 +213,8 @@ DatasetContractResult infer_dataset_contract(const std::vector<std::string>& col
                                              const std::vector<nlohmann::json>& sample,
                                              const DatasetContract& overrides = {});
 
-// Read up to `limit` rows of `database`.`table`, for typing the columns.
+// Read up to `limit` rows of `database`.`table`, for typing the columns. A zero
+// limit means all rows; entity mapping uses it to detect collisions dataset-wide.
 //
 // An injection point (not a hard dependency) so the inference above is unit-testable
 // against rows built in a test, and so the read path stays where it belongs: the

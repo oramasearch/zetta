@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -13,6 +14,10 @@
 #include "zetta/compute/data_type.hpp"
 #include "zetta/compute/device_buffer.hpp"
 #include "zetta/storage/engine.hpp"
+
+namespace zetta::data {
+struct EntityKeyMapping;
+}
 
 // The DDF (distributed dataframe) core — a typed, columnar `DataFrame` over the
 // existing storage engine / tables (ARC-12 / GLO-11, entity ENT-33; part of the
@@ -29,11 +34,11 @@
 // uint). A DataFrame is therefore a *numeric* view of a table: the loader projects
 // the chosen numeric fields of each row into columns, validating each value at the
 // boundary (missing field / non-number / out-of-range -> a failing ComputeStatus,
-// never a throw across the seam, matching zetta-core's no-exceptions convention).
+// never a throw across the boundary, matching zetta-core's no-exceptions convention).
 //
 // Scope of this slice: the type, the table->frame loader, schema inference, and the
 // JSON boundary for the schema config. No Node CRUD, no SQL surface, no replication
-// — like the Provisioner seam, those are later slices once DDF *ops* land.
+// — like the Provisioner boundary, those are later slices once DDF *ops* land.
 namespace zetta::ddf {
 
 // One column's mapping from a row field to a typed device column.
@@ -43,6 +48,9 @@ struct ColumnSchema {
                                                             //   doc (empty => use name)
     compute::DataType dtype = compute::DataType::Float64;   // the column's element type
     bool timestamp = false;                                 // accept ISO-8601 or epoch
+    // Runtime-only mapping for a text business-id field projected into Int64.
+    // It is deliberately absent from the schema JSON boundary.
+    std::shared_ptr<const data::EntityKeyMapping> entity_keys;
 
     // The row field actually read: `field` when set, otherwise `name`.
     const std::string& source_field() const noexcept {
