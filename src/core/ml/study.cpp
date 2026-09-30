@@ -1,6 +1,7 @@
 #include "zetta/ml/study.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -19,8 +20,11 @@
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/work_stealing_scheduler.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/ddf/local_partitions.hpp"
+#include "zetta/ddf/ops.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ml/gbdt.hpp"
+#include "zetta/ml/gbdt_train_job.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -82,6 +86,7 @@ std::optional<StudyStatus> parse_enum(std::string_view value) {
     if (value == "running") return StudyStatus::Running;
     if (value == "stopped") return StudyStatus::Stopped;
     if (value == "complete") return StudyStatus::Complete;
+    if (value == "failed") return StudyStatus::Failed;
     return std::nullopt;
 }
 
@@ -181,7 +186,7 @@ const nlohmann::json& schema_document() {
             "released_metrics":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}}
           }
         },
-        "status":{"type":"string","enum":["running","stopped","complete"]},
+        "status":{"type":"string","enum":["running","stopped","complete","failed"]},
         "created":{"type":"string"},
         "updated":{"type":"string"},
         "trials":{"type":"array","items":{
@@ -206,6 +211,7 @@ const nlohmann::json& schema_document() {
         }},
         "spent_cost":{"type":"number","minimum":0},
         "stop_reason":{"type":"string"},
+        "failure_reason":{"type":"string"},
         "promoted_model":{"type":"string"}
       }
     })JSON");
@@ -497,6 +503,27 @@ double pearson_importance(const std::vector<double>& parameter,
                     std::sqrt(parameter_variance * objective_variance));
 }
 
+constexpr double kDefaultTrialCostSeconds = 60.0;
+
+double estimated_trial_cost(const StudyValue& value) {
+    double estimate = 0.0;
+    for (const StudyTrial& trial : value.trials) {
+        if (trial.state == TrialState::Complete && trial.cost > 0.0) {
+            estimate = std::max(estimate, trial.cost);
+        }
+    }
+    return estimate > 0.0 ? estimate : kDefaultTrialCostSeconds;
+}
+
+bool trial_cost_fits(const StudyValue& value,
+                     std::size_t reserved_trials = 0) {
+    if (value.spec.budgets.cost_cap <= 0.0) return true;
+    const double estimate = estimated_trial_cost(value);
+    const double reserved =
+        estimate * static_cast<double>(reserved_trials + 1);
+    return value.spent_cost + reserved <= value.spec.budgets.cost_cap;
+}
+
 }  // namespace
 
 std::string_view to_string(StudyDirection value) {
@@ -508,6 +535,7 @@ std::string_view to_string(StudyStatus value) {
         case StudyStatus::Running: return "running";
         case StudyStatus::Stopped: return "stopped";
         case StudyStatus::Complete: return "complete";
+        case StudyStatus::Failed: return "failed";
     }
     return "stopped";
 }
@@ -575,6 +603,7 @@ nlohmann::json to_json(const StudyValue& value) {
             {"trials", std::move(trials)},
             {"spent_cost", value.spent_cost},
             {"stop_reason", value.stop_reason},
+            {"failure_reason", value.failure_reason},
             {"promoted_model", value.promoted_model}};
 }
 
@@ -657,6 +686,7 @@ std::optional<StudyValue> parse_study_value(const nlohmann::json& value,
     parsed.updated = value.at("updated").get<std::string>();
     parsed.spent_cost = value.at("spent_cost").get<double>();
     parsed.stop_reason = value.at("stop_reason").get<std::string>();
+    parsed.failure_reason = value.value("failure_reason", std::string{});
     parsed.promoted_model = value.at("promoted_model").get<std::string>();
     for (const nlohmann::json& item : value.at("trials")) {
         StudyTrial trial;
@@ -786,6 +816,18 @@ void Study::stop(std::string reason) {
 void Study::set_complete(std::string reason) {
     value_.status = StudyStatus::Complete;
     value_.stop_reason = std::move(reason);
+    capture_and_persist();
+}
+
+void Study::fail(std::string stop_reason, std::string failure_reason) {
+    value_.status = StudyStatus::Failed;
+    value_.stop_reason = std::move(stop_reason);
+    value_.failure_reason = std::move(failure_reason);
+    for (StudyTrial& trial : value_.trials) {
+        if (trial.state != TrialState::Running) continue;
+        trial.state = TrialState::Failed;
+        trial.reason = value_.failure_reason;
+    }
     capture_and_persist();
 }
 
@@ -999,18 +1041,19 @@ StudyRunResult run_study(Node& node, Study& study,
             study.stop("max wall time reached");
             break;
         }
-        if (study.spec().budgets.cost_cap > 0.0 &&
-            study.value().spent_cost >= study.spec().budgets.cost_cap) {
+        if (!trial_cost_fits(study.value())) {
             study.stop("cost cap reached");
             break;
         }
         const std::size_t remaining = study.spec().budgets.max_trials -
                                       study.value().trials.size();
-        const std::size_t parallel_limit =
-            study.spec().budgets.cost_cap > 0.0
-                ? 1
-                : study.spec().budgets.max_parallel_trials;
-        const std::size_t batch_size = std::min(remaining, parallel_limit);
+        const std::size_t desired = std::min(
+            remaining, study.spec().budgets.max_parallel_trials);
+        std::size_t batch_size = 0;
+        while (batch_size < desired &&
+               trial_cost_fits(study.value(), batch_size)) {
+            ++batch_size;
+        }
         struct PendingTrial {
             std::string run;
             nlohmann::json params;
@@ -1188,6 +1231,13 @@ struct RealTrialPlan {
     ir::ExecutionGraph graph;
     usecases::churn::ChurnTableInput table;
     usecases::churn::ChurnSolutionOptions options;
+    bool dataset_level = false;
+};
+
+struct ResolvedStudyDataset {
+    data::DatasetPath path;
+    data::ResolvedDataset dataset;
+    std::vector<nlohmann::json> rows;
 };
 
 std::shared_ptr<pipeline::Project> study_project(
@@ -1199,6 +1249,239 @@ std::shared_ptr<pipeline::Project> study_project(
         }
     }
     return nullptr;
+}
+
+double study_holdout_fraction(const StudySpec& spec) {
+    double fraction = 0.2;
+    const auto parameter = std::ranges::find_if(
+        spec.search_space, [](const StudyParameter& candidate) {
+            return candidate.name == "holdout_fraction" ||
+                   candidate.name == "gbdt.holdout_fraction";
+        });
+    if (parameter != spec.search_space.end() &&
+        parameter->kind == ParameterKind::Float) {
+        fraction = std::clamp(fraction, parameter->minimum,
+                              parameter->maximum);
+    }
+    return fraction;
+}
+
+std::optional<double> binary_label(const nlohmann::json& value) {
+    if (value.is_boolean()) return value.get<bool>() ? 1.0 : 0.0;
+    if (!value.is_number()) return std::nullopt;
+    const double label = value.get<double>();
+    if (label == 0.0 || label == 1.0) return label;
+    return std::nullopt;
+}
+
+std::string displayed_time(const nlohmann::json& value) {
+    return value.is_string() ? value.get<std::string>() : value.dump();
+}
+
+std::optional<ResolvedStudyDataset> resolve_study_dataset(
+    Node& node, const StudySpec& spec, std::string& error) {
+    std::string dataset = spec.dataset;
+    if (dataset.empty() && !spec.project.empty() && !spec.pipeline.empty()) {
+        const std::shared_ptr<pipeline::Project> project =
+            study_project(node, spec.project);
+        if (!project) {
+            error = "study project was not found";
+            return std::nullopt;
+        }
+        const std::shared_ptr<pipeline::ProjectGraph> stored =
+            project->find_graph_by_id(spec.pipeline)
+                ? project->find_graph_by_id(spec.pipeline)
+                : project->find_graph(spec.pipeline);
+        if (!stored) {
+            error = "study Pipeline was not found";
+            return std::nullopt;
+        }
+        for (const std::shared_ptr<ir::Node>& source :
+             stored->graph().nodes_of_kind(ir::StepKind::Connect)) {
+            const nlohmann::json& attributes = source->attributes;
+            const std::string database = attributes.is_object()
+                                             ? attributes.value(
+                                                   "source", std::string{})
+                                             : std::string{};
+            const std::string table = attributes.is_object()
+                                          ? attributes.value(
+                                                "table", std::string{})
+                                          : std::string{};
+            if (database.empty() || table.empty()) continue;
+            dataset = database + "." + table;
+            break;
+        }
+    }
+    if (dataset.empty()) {
+        error = "study dataset was not supplied and the Pipeline names none";
+        return std::nullopt;
+    }
+
+    ResolvedStudyDataset result;
+    result.path = data::parse_dataset_path(dataset);
+    if (result.path.kind != data::DatasetPathKind::Table) {
+        error = "study datasets must name a landed database.table";
+        return std::nullopt;
+    }
+    const data::DatasetSampler sampler = data::default_dataset_sampler(node);
+    const data::SampledDataset sample =
+        data::sample_dataset(node, result.path, sampler);
+    if (!sample.ok()) {
+        error = sample.error;
+        return std::nullopt;
+    }
+    std::string read_error;
+    result.rows = sampler(sample.database, sample.table, 0, read_error);
+    if (!read_error.empty()) {
+        error = "dataset: could not read full table '" + dataset +
+                "': " + read_error;
+        return std::nullopt;
+    }
+    if (result.rows.size() != sample.rows) {
+        error = "dataset: full table read returned " +
+                std::to_string(result.rows.size()) + " of " +
+                std::to_string(sample.rows) + " rows";
+        return std::nullopt;
+    }
+
+    data::DatasetContract overrides;
+    if (std::ranges::contains(sample.columns, "observed_at")) {
+        bool found_time = false;
+        double latest = 0.0;
+        for (const nlohmann::json& row : result.rows) {
+            const auto value = row.find("observed_at");
+            if (value == row.end()) {
+                error = "dataset: a row is missing observed_at";
+                return std::nullopt;
+            }
+            const std::optional<double> seconds =
+                util::parse_time_seconds(*value);
+            if (!seconds) {
+                error = "dataset: observed_at contains an invalid time value";
+                return std::nullopt;
+            }
+            latest = found_time ? std::max(latest, *seconds) : *seconds;
+            found_time = true;
+        }
+        if (found_time) {
+            overrides.time_column = "observed_at";
+            overrides.as_of = latest;
+        }
+    }
+    result.dataset = data::resolve_dataset(
+        node, result.path, overrides, sampler);
+    if (!result.dataset.ok()) {
+        error = result.dataset.error;
+        return std::nullopt;
+    }
+    return result;
+}
+
+bool validate_resolved_study_data(const StudySpec& spec,
+                                  const ResolvedStudyDataset& resolved,
+                                  std::string& error) {
+    struct LabelledRow {
+        double time = 0.0;
+        double label = 0.0;
+        nlohmann::json source_time;
+    };
+    std::vector<LabelledRow> labelled;
+    labelled.reserve(resolved.rows.size());
+    const data::DatasetContract& contract = resolved.dataset.contract;
+    for (const nlohmann::json& row : resolved.rows) {
+        const auto label_value = row.find(contract.label_column);
+        if (label_value == row.end()) {
+            error = "dataset: a row is missing label column '" +
+                    contract.label_column + "'";
+            return false;
+        }
+        const std::optional<double> label = binary_label(*label_value);
+        if (!label) {
+            error = "dataset: label column '" + contract.label_column +
+                    "' must contain binary 0/1 or boolean values";
+            return false;
+        }
+        LabelledRow item;
+        item.label = *label;
+        if (!contract.time_column.empty()) {
+            const auto time_value = row.find(contract.time_column);
+            if (time_value == row.end()) {
+                error = "dataset: a row is missing time column '" +
+                        contract.time_column + "'";
+                return false;
+            }
+            const std::optional<double> time =
+                util::parse_time_seconds(*time_value);
+            if (!time) {
+                error = "dataset: time column '" + contract.time_column +
+                        "' contains an invalid value";
+                return false;
+            }
+            if (*time > contract.as_of) continue;
+            item.time = *time;
+            item.source_time = *time_value;
+        }
+        labelled.push_back(std::move(item));
+    }
+    if (labelled.size() < 2) {
+        error = "the validation split needs at least two point-in-time rows";
+        return false;
+    }
+
+    const auto count_classes = [](auto first, auto last) {
+        std::array<std::size_t, 2> counts{0, 0};
+        for (; first != last; ++first) {
+            ++counts[first->label > 0.5 ? 1 : 0];
+        }
+        return counts;
+    };
+    if (contract.time_column.empty()) {
+        const std::array<std::size_t, 2> counts =
+            count_classes(labelled.begin(), labelled.end());
+        if (counts[0] > 0 && counts[1] > 0) return true;
+        error = "the training dataset has " + std::to_string(counts[1]) +
+                " positive labels and " + std::to_string(counts[0]) +
+                " negative labels";
+        return false;
+    }
+
+    std::ranges::stable_sort(labelled, {}, &LabelledRow::time);
+    const std::size_t held_out = std::clamp<std::size_t>(
+        static_cast<std::size_t>(std::ceil(
+            static_cast<double>(labelled.size()) *
+            study_holdout_fraction(spec))),
+        1, labelled.size() - 1);
+    const double cutoff = labelled[labelled.size() - held_out].time;
+    const auto split = std::ranges::lower_bound(
+        labelled, cutoff, {}, &LabelledRow::time);
+    const std::array<std::size_t, 2> training =
+        count_classes(labelled.begin(), split);
+    const std::array<std::size_t, 2> validation =
+        count_classes(split, labelled.end());
+    if (training[0] == 0 || training[1] == 0) {
+        error = "the out-of-time training split has " +
+                std::to_string(training[1]) + " positive labels and " +
+                std::to_string(training[0]) + " negative labels";
+        if (training[1] == 0) {
+            const auto first_positive = std::ranges::find_if(
+                split, labelled.end(), [](const LabelledRow& row) {
+                    return row.label > 0.5;
+                });
+            if (first_positive != labelled.end()) {
+                error += "; positives only appear after " +
+                         displayed_time(first_positive->source_time);
+            }
+        }
+        return false;
+    }
+    if (validation[0] == 0 || validation[1] == 0) {
+        error = "the out-of-time validation split has " +
+                std::to_string(validation[1]) + " positive labels and " +
+                std::to_string(validation[0]) + " negative labels at cutoff " +
+                displayed_time(split->source_time);
+        return false;
+    }
+    return true;
 }
 
 std::optional<ml::GbdtParams> study_gbdt_params(
@@ -1240,7 +1523,6 @@ std::optional<RealTrialPlan> prepare_real_trial(
     const std::string& run_id, const std::atomic<bool>* cancel,
     std::string& error) {
     RealTrialPlan plan;
-    std::string dataset = spec.dataset;
     if (!spec.project.empty() || !spec.pipeline.empty()) {
         std::shared_ptr<pipeline::Project> project;
         std::shared_ptr<pipeline::ProjectGraph> stored;
@@ -1267,67 +1549,21 @@ std::optional<RealTrialPlan> prepare_real_trial(
             return std::nullopt;
         }
         if (!error.empty()) return std::nullopt;
-        if (dataset.empty()) {
-            for (const std::shared_ptr<ir::Node>& source :
-                 plan.graph.nodes_of_kind(ir::StepKind::Connect)) {
-                const std::string database =
-                    source->attributes.value("source", std::string{});
-                const std::string table =
-                    source->attributes.value("table", std::string{});
-                if (!database.empty() && !table.empty()) {
-                    dataset = database + "." + table;
-                    break;
-                }
-            }
-        }
     }
-    if (dataset.empty()) {
-        error = "study dataset was not supplied and the Pipeline names none";
-        return std::nullopt;
-    }
-    const data::DatasetPath path = data::parse_dataset_path(dataset);
-    if (path.kind != data::DatasetPathKind::Table) {
-        error = "study datasets must name a landed database.table";
-        return std::nullopt;
-    }
-    data::DatasetContract overrides;
-    const data::SampledDataset sampled_dataset = data::sample_dataset(node, path);
-    if (!sampled_dataset.ok()) {
-        error = sampled_dataset.error;
-        return std::nullopt;
-    }
-    const auto observed_at = std::ranges::find(sampled_dataset.columns,
-                                                "observed_at");
-    if (observed_at != sampled_dataset.columns.end()) {
-        double latest = 0.0;
-        bool found_time = false;
-        for (const nlohmann::json& row : sampled_dataset.sample) {
-            const auto value = row.find("observed_at");
-            if (value == row.end()) continue;
-            const std::optional<double> seconds = util::parse_time_seconds(*value);
-            if (!seconds) continue;
-            latest = found_time ? std::max(latest, *seconds) : *seconds;
-            found_time = true;
-        }
-        if (found_time) {
-            overrides.time_column = "observed_at";
-            overrides.as_of = latest;
-        }
-    }
-    const data::ResolvedDataset resolved = data::resolve_dataset(
-        node, path, overrides, data::default_dataset_sampler(node));
-    if (!resolved.ok()) {
-        error = resolved.error;
-        return std::nullopt;
-    }
-    plan.table.table_id = resolved.table_id;
-    plan.table.dataset_name = dataset;
-    plan.table.contract = resolved.contract;
-    plan.table.notes = resolved.notes;
+    const std::optional<ResolvedStudyDataset> resolved =
+        resolve_study_dataset(node, spec, error);
+    if (!resolved) return std::nullopt;
+    plan.table.table_id = resolved->dataset.table_id;
+    plan.table.dataset_name = resolved->dataset.database + "." +
+                              resolved->dataset.table;
+    plan.table.contract = resolved->dataset.contract;
+    plan.table.notes = resolved->dataset.notes;
+    plan.dataset_level = spec.project.empty() && spec.pipeline.empty();
 
     if (plan.graph.empty()) {
         plan.graph.add_node(ir::StepKind::Connect, "Load study dataset",
-                            {{"source", path.database}, {"table", path.table}},
+                            {{"source", resolved->path.database},
+                             {"table", resolved->path.table}},
                             "load_study_dataset");
         plan.graph.add_node(ir::StepKind::Clean, "Build study features", {},
                             "build_study_features");
@@ -1335,7 +1571,7 @@ std::optional<RealTrialPlan> prepare_real_trial(
             ir::StepKind::Model, "Train study model",
             {{"model_kind", "gbdt"},
              {"algo", "gbdt"},
-             {"target", resolved.contract.label_column}},
+             {"target", resolved->dataset.contract.label_column}},
             "train_study_model");
         plan.graph.add_edge("load_study_dataset", "build_study_features");
         plan.graph.add_edge("build_study_features", "train_study_model");
@@ -1350,6 +1586,125 @@ std::optional<RealTrialPlan> prepare_real_trial(
     plan.options.model_name = "study-" + run_id.substr(0, 8);
     plan.options.coordinate = true;
     return plan;
+}
+
+struct DatasetTrialResult {
+    std::string model;
+    std::string error;
+};
+
+DatasetTrialResult run_dataset_trial(Node& node, RealTrialPlan& plan,
+                                     const std::string& run_id) {
+    DatasetTrialResult outcome;
+    compute::JobCoordinator* coordinator = node.job_coordinator();
+    if (coordinator == nullptr) {
+        outcome.error = "no compute plane attached to this node";
+        return outcome;
+    }
+    if (coordinator->collectives().participants().size() != 1) {
+        outcome.error =
+            "dataset-level Study trials over partitioned tables currently "
+            "require a single-member cluster";
+        return outcome;
+    }
+
+    ddf::DataFrameSchema schema;
+    for (const std::string& feature :
+         plan.table.contract.feature_columns) {
+        schema.columns.push_back(
+            {.name = feature,
+             .field = feature,
+             .dtype = compute::DataType::Float64});
+    }
+    schema.columns.push_back(
+        {.name = plan.table.contract.label_column,
+         .field = plan.table.contract.label_column,
+         .dtype = compute::DataType::Int64});
+    if (!plan.table.contract.time_column.empty()) {
+        schema.columns.push_back(
+            {.name = plan.table.contract.time_column,
+             .field = plan.table.contract.time_column,
+             .dtype = compute::DataType::Float64,
+             .timestamp = true});
+    }
+
+    compute::CpuDevice device;
+    ddf::LocalShardResult shard;
+    node.run_on_owner([&] {
+        shard = ddf::load_local_partitions(
+            node, plan.table.table_id, schema, device);
+    });
+    if (!shard.ok()) {
+        outcome.error = "load full Study table: " + shard.status.message;
+        return outcome;
+    }
+
+    ddf::DataFrame frame = std::move(shard.frame);
+    if (!plan.table.contract.time_column.empty()) {
+        ddf::DataFrameResult filtered = ddf::filter(
+            frame,
+            {.column = plan.table.contract.time_column,
+             .comparison = ddf::Comparison::LessEqual,
+             .value = plan.table.contract.as_of});
+        if (!filtered.ok()) {
+            outcome.error = "filter Study table at point in time: " +
+                            filtered.status.message;
+            return outcome;
+        }
+        frame = std::move(filtered.frame);
+    }
+
+    std::vector<double> validation_times;
+    if (!plan.table.contract.time_column.empty()) {
+        validation_times.resize(frame.row_count());
+        const compute::ComputeStatus time_status = frame.to_host<double>(
+            plan.table.contract.time_column, validation_times);
+        if (!time_status.ok()) {
+            outcome.error = "read Study validation times: " +
+                            time_status.message;
+            return outcome;
+        }
+    }
+
+    std::shared_ptr<compute::ComputeJob> job;
+    node.run_on_owner([&] {
+        job = node.create_job(compute::JobKind::Train,
+                              plan.options.project,
+                              plan.options.graph, run_id);
+    });
+    if (!job) {
+        outcome.error = "could not create Study train job";
+        return outcome;
+    }
+    const DistributedTrainResult trained = run_train_job(
+        *coordinator, *job, frame,
+        plan.table.contract.feature_columns,
+        plan.table.contract.label_column, plan.options.params, &node,
+        plan.options.model_name, "study." + run_id, {},
+        kDefaultGbdtTimeout, {}, run_id, plan.options.training_progress,
+        validation_times);
+    if (!trained.ok()) {
+        node.run_on_owner([&] { outcome.error = job->detail(); });
+        return outcome;
+    }
+    outcome.model = trained.model_id;
+    node.run_on_owner([&] {
+        const std::shared_ptr<Model> model = node.find_model(outcome.model);
+        if (model) {
+            nlohmann::json metrics = model->metrics();
+            metrics["dataset_rows"] = frame.row_count();
+            model->set_metrics(std::move(metrics));
+        }
+        const std::shared_ptr<pipeline::Run> run = node.find_run(run_id);
+        if (run) {
+            run->set_outputs({pipeline::RunOutput{
+                "model", "Train study model", outcome.model}});
+            pipeline::RunLineage lineage;
+            lineage.sources = {"dataset:" + plan.table.dataset_name};
+            run->set_lineage(std::move(lineage));
+        }
+    });
+    return outcome;
 }
 
 std::optional<double> trial_objective(Node& node, const StudySpec& spec,
@@ -1395,7 +1750,33 @@ bool wall_time_reached(const StudyValue& value) {
                static_cast<double>(value.spec.budgets.max_wall_time_ms);
 }
 
+bool deterministic_data_error(std::string_view reason) {
+    return reason.contains("training labels are a single class") ||
+           reason.contains("no training rows") ||
+           reason.contains("label column") ||
+           reason.contains("out-of-time") ||
+           reason.contains("study dataset was not supplied");
+}
+
 }  // namespace
+
+bool validate_study_data(Node& node, const StudySpec& spec,
+                         std::string* error) {
+    std::string reason;
+    const std::optional<ResolvedStudyDataset> resolved =
+        resolve_study_dataset(node, spec, reason);
+    if (!resolved && spec.dataset.empty() && !spec.project.empty() &&
+        !spec.pipeline.empty() &&
+        reason == "study dataset was not supplied and the Pipeline names none") {
+        return true;
+    }
+    if (!resolved ||
+        !validate_resolved_study_data(spec, *resolved, reason)) {
+        if (error != nullptr) *error = std::move(reason);
+        return false;
+    }
+    return true;
+}
 
 struct StudyDriver::State {
     struct TrialResult {
@@ -1457,8 +1838,12 @@ bool StudyDriver::State::finish_for_budget(
     const std::shared_ptr<Study>& study, const StudyValue& snapshot) {
     std::string reason;
     if (wall_time_reached(snapshot)) reason = "wall_time";
-    if (reason.empty() && snapshot.spec.budgets.cost_cap > 0.0 &&
-        snapshot.spent_cost >= snapshot.spec.budgets.cost_cap) {
+    const bool has_running = std::ranges::any_of(
+        snapshot.trials, [](const StudyTrial& trial) {
+            return trial.state == TrialState::Running;
+        });
+    if (reason.empty() && !has_running &&
+        !trial_cost_fits(snapshot)) {
         reason = "budget";
     }
     if (reason.empty()) return false;
@@ -1494,12 +1879,21 @@ std::vector<StudyTrial> StudyDriver::State::prepare_batch(
         snapshot.spec.budgets.max_trials > snapshot.trials.size()
             ? snapshot.spec.budgets.max_trials - snapshot.trials.size()
             : 0;
-    const std::size_t limit = snapshot.spec.budgets.cost_cap > 0.0
-                                  ? 1
-                                  : snapshot.spec.budgets.max_parallel_trials;
+    const bool has_completed = std::ranges::any_of(
+        snapshot.trials, [](const StudyTrial& trial) {
+            return trial.state == TrialState::Complete;
+        });
+    const std::size_t limit = std::min<std::size_t>(
+        snapshot.spec.budgets.max_parallel_trials,
+        has_completed ? snapshot.spec.budgets.max_parallel_trials : 2);
     const std::size_t available =
         pending.size() < limit ? limit - pending.size() : 0;
-    const std::size_t add = std::min(remaining, available);
+    const std::size_t desired = std::min(remaining, available);
+    std::size_t add = 0;
+    while (add < desired &&
+           trial_cost_fits(snapshot, pending.size() + add)) {
+        ++add;
+    }
     node.run_on_owner([&] {
         for (std::size_t offset = 0; offset < add; ++offset) {
             const std::size_t number = study->value().trials.size();
@@ -1611,15 +2005,23 @@ StudyDriver::State::TrialResult StudyDriver::State::execute_trial(
                 return keep_running;
             };
         compute::CpuDevice device;
-        const usecases::churn::ChurnSolutionResult run =
-            usecases::churn::run_churn_solution_on_table(
-                node, device, plan->graph, plan->table, plan->options);
-        result.model = run.model_id;
-        if (!run.ok()) result.error = run.execution.error;
+        if (plan->dataset_level) {
+            DatasetTrialResult run =
+                run_dataset_trial(node, *plan, trial.run);
+            result.model = std::move(run.model);
+            result.error = std::move(run.error);
+        } else {
+            const usecases::churn::ChurnSolutionResult run =
+                usecases::churn::run_churn_solution_on_table(
+                    node, device, plan->graph, plan->table,
+                    plan->options);
+            result.model = run.model_id;
+            if (!run.ok()) result.error = run.execution.error;
+        }
         if (wall_budget_reached) {
             result.error = "study wall_time budget reached";
         }
-        if (run.ok()) {
+        if (result.error.empty() && !result.model.empty()) {
             node.run_on_owner([&] {
                 result.objective = trial_objective(
                     node, spec, result.model, result.error);
@@ -1655,6 +2057,10 @@ void StudyDriver::State::apply_results(
                     result.run, TrialState::Pruned, std::nullopt, result.cost,
                     "pruned by " + std::string(to_string(study->spec().pruner)),
                     result.model);
+                if (const std::shared_ptr<pipeline::Run> run =
+                        node.find_run(result.run)) {
+                    run->set_status(pipeline::RunStatus::Failed);
+                }
                 publish_progress(node, *study, "trial_pruned", result.run);
                 continue;
             }
@@ -1662,6 +2068,10 @@ void StudyDriver::State::apply_results(
                 study->finish_trial(result.run, TrialState::Failed,
                                     std::nullopt, result.cost, result.error,
                                     result.model);
+                if (const std::shared_ptr<pipeline::Run> run =
+                        node.find_run(result.run)) {
+                    run->set_status(pipeline::RunStatus::Failed);
+                }
                 publish_progress(node, *study, "trial_failed", result.run);
                 continue;
             }
@@ -1678,7 +2088,23 @@ void StudyDriver::State::apply_results(
             study->finish_trial(result.run, TrialState::Complete,
                                 result.objective, result.cost, {},
                                 result.model);
+            if (const std::shared_ptr<pipeline::Run> run =
+                    node.find_run(result.run)) {
+                run->set_status(pipeline::RunStatus::Succeeded);
+            }
             publish_progress(node, *study, "trial_completed", result.run);
+        }
+        const std::vector<StudyTrial>& trials = study->value().trials;
+        if (trials.size() < 2 ||
+            trials.back().state != TrialState::Failed ||
+            !deterministic_data_error(trials.back().reason)) {
+            return;
+        }
+        const StudyTrial& previous = trials[trials.size() - 2];
+        if (previous.state == TrialState::Failed &&
+            previous.reason == trials.back().reason) {
+            study->fail("data", trials.back().reason);
+            publish_progress(node, *study, "study_failed");
         }
     });
 }
@@ -1693,6 +2119,18 @@ void StudyDriver::State::drive(
     std::shared_ptr<Study> study;
     node.run_on_owner([&] { study = node.find_study(study_id); });
     if (!study) {
+        mark_done();
+        return;
+    }
+    StudySpec initial_spec;
+    node.run_on_owner([&] { initial_spec = study->spec(); });
+    std::string data_error;
+    if (!validate_study_data(node, initial_spec, &data_error)) {
+        node.run_on_owner([&] {
+            if (study->status() != StudyStatus::Running) return;
+            study->fail("data", data_error);
+            publish_progress(node, *study, "study_failed");
+        });
         mark_done();
         return;
     }

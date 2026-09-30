@@ -128,9 +128,11 @@ What's inside, by domain (each links to that domain's docs):
   methodology registry publishes the accepted study parameters, objectives,
   splits, defaults and dataset-path rules, and a read-only preflight returns a
   normalized candidate or a field-specific repair reason before creation. The
-  replicated driver resumes running studies after restart, records per-tree
-  curves and held-out objectives, enforces budgets, and exposes analysis,
-  governed model promotion, and lineage-preserving deletion over REST/MCP.
+  replicated driver preflights temporal class balance, trains dataset studies
+  over the full point-in-time table, resumes running studies after restart,
+  records per-tree curves and held-out objectives, reserves trial-second cost
+  before admission, and exposes analysis, governed model promotion, and
+  lineage-preserving deletion over REST/MCP.
   The [solution registry](docs/solutions/README.md) lists 20 runnable catalogue
   modules. Selected levels execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action

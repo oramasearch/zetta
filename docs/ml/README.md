@@ -16,7 +16,7 @@ for model work. M-21 adds event-time online logistic regression over pub/sub top
 
 - [models.md](models.md) — the `Model` entity: replicated metadata with producing Run and Project/Pipeline names, reversible text entity-key maps, page-ready listing, peer-to-peer weights body, and the `system.models` registry (ENT-14 / FEAT-6, #957, #1184).
 - [run-metrics.md](run-metrics.md) — replicated series, automatic per-metric steps, summaries, chart data, live topics, and DP suppression (#1137, #1205).
-- [studies.md](studies.md) — the replicated background Study driver, published methodology search spaces, read-only candidate validation, real M-1 dataset/Pipeline trial Runs, restart recovery, curves and pruning, budgets, analysis, promotion, live events, and REST/MCP parity (#1138, #1205, #1207).
+- [studies.md](studies.md) — the replicated background Study driver, published methodology search spaces, full-table split preflight and training, cost reservations, real M-1 dataset/Pipeline trial Runs, restart recovery, curves and pruning, analysis, promotion, live events, and REST/MCP parity (#1138, #1205, #1207, #1209).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic and squared error): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
 - [anomaly.md](anomaly.md) — runnable M-7/S-7: label-free distributed isolation forest + robust deviations and causal KPI residual scoring; exact alert budgets, correctness gates, table lineage, and registry run reports (#1046).
 - [forecast.md](forecast.md) — runnable M-4: native multi-series forecasting, temporal backtests, seasonal-naive FVA, intervals, distributed table execution and report read-back (`forecast`, #1043).

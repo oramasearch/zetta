@@ -31,9 +31,11 @@ GBDT model controls. The resulting Run keeps the Project and Pipeline ids.
 A dataset-level Study omits both fields and supplies `dataset` as
 `database.table`. The driver resolves its dataset contract, including text
 entity keys, numeric or boolean labels, and an `observed_at` column when one is
-present, then builds the native connect-clean-model graph. When observation
-times are available, the latest holdout fraction is reserved for validation;
-older rows train the model. Without time, M-1 retains its content-hash holdout.
+present. A bounded sample infers that contract only. Every point-in-time row in
+the full table is then loaded for training and validation, including repeated
+observations for one text entity key. When observation times are available, the
+latest holdout fraction is reserved for validation; older rows train the model.
+Without time, M-1 retains its content-hash holdout.
 Dataset-level execution currently supports M-1 only. `create_study` rejects
 another methodology before storing the Study and explains that it has no
 dataset-level driver.
@@ -106,11 +108,32 @@ Budgets contain `max_trials`, `max_wall_time_ms`, `max_parallel_trials`, and
 `cost_cap`. The runner checks active limits at admission boundaries and the
 wall-time deadline at every training round, reports consumed cost and its stop
 reason on the Study, and never admits more than `max_parallel_trials` into one
-scheduler batch. A finite cost cap uses one-trial admission so reported cost is
-checked before another trial starts.
+scheduler batch.
+
+Cost is measured in **trial-seconds**: wall-clock seconds from trial dataset
+resolution through training and objective collection. Before launch, each trial
+reserves the largest cost of a completed trial in the Study. Until a trial has
+completed, the conservative reservation is 60 trial-seconds. A parallel batch
+reserves that amount for every member, and a trial is not admitted when
+`spent_cost + reservations` would exceed `cost_cap`. A zero cap is unlimited.
+ExperimentsAgent should propose `cost_cap: 300` for a small five-trial Study so
+the initial conservative reservations fit in the same unit.
+
 Natural completion records status `complete` with `max_trials`, `wall_time`, or
 `budget`. An explicit `stop_study` records `stopped` and cooperatively cancels
 active Run training; `stop_trial` cancels only the named Run.
+
+`validate_study` and the background driver's first step inspect the requested
+split once before trial admission when the candidate names a dataset or its
+stored Pipeline names a table source. A Pipeline with no resolvable table keeps
+the existing structural validation path; its trials report the missing data.
+An out-of-time split must contain both label classes in its training and
+validation partitions. A failed check stores Study status `failed`,
+`stop_reason: data`, and a `failure_reason` that names the split and its positive
+and negative counts; when one class begins only after the cutoff, the reason
+also names its first observation time. As a fallback for a deterministic data
+problem that escapes preflight, two consecutive trials with the same data error
+fail the Study instead of consuming the remaining budget.
 
 For a differentially private trainer or dataset, the objective metric must be
 listed in `released_metrics`. Private per-step curves are suppressed from Run
@@ -136,9 +159,9 @@ it does not copy weights. The action requires the dedicated
 ## Deletion
 
 `delete_study` refuses a study whose status is `running`; call `stop_study`
-first. Deleting a stopped or complete study removes its replicated record and
-each non-promoted trial Run. Run metrics are part of the Run record, so its
-parameters, series, summaries, and metric artifacts are removed with it.
+first. Deleting a stopped, complete, or failed study removes its replicated
+record and each non-promoted trial Run. Run metrics are part of the Run record,
+so its parameters, series, summaries, and metric artifacts are removed with it.
 
 When a trial has been promoted, the promoted Model and the Run named by that
 Model's lineage remain registered. Deletion does not remove any Model. The
@@ -158,8 +181,9 @@ REST: `GET /v1/validate_study` with the candidate fields encoded as query
 parameters. MCP tool: `validate_study`. Permission: `mcp:call` (`api:query`).
 
 The input schema is identical to `create_study`. Validation performs the same
-normalization, dataset lookup, Project/Pipeline lookup and correctness gate,
-duplicate-name check, and study-spec checks as creation, but stores nothing.
+normalization, full-table split preflight, dataset lookup, Project/Pipeline
+lookup and correctness gate, duplicate-name check, and study-spec checks as
+creation, but stores nothing.
 `create_study` calls this shared validation path before it creates the record.
 
 ```json
@@ -174,10 +198,10 @@ duplicate-name check, and study-spec checks as creation, but stores nothing.
   },
   "from_defaults": true,
   "budgets": {
-    "max_trials": 40,
+    "max_trials": 5,
     "max_wall_time_ms": 3600000,
     "max_parallel_trials": 4,
-    "cost_cap": 25.0
+    "cost_cap": 300.0
   }
 }
 ```
@@ -223,10 +247,10 @@ REST: `POST /v1/create_study`. MCP tool: `create_study`. Permission:
   "sampler": "tpe",
   "pruner": "asha",
   "budgets": {
-    "max_trials": 40,
+    "max_trials": 5,
     "max_wall_time_ms": 3600000,
     "max_parallel_trials": 4,
-    "cost_cap": 25.0
+    "cost_cap": 300.0
   },
   "seed": 1138
 }
@@ -240,6 +264,7 @@ REST: `POST /v1/create_study`. MCP tool: `create_study`. Permission:
   "trials": [],
   "spent_cost": 0.0,
   "stop_reason": "",
+  "failure_reason": "",
   "promoted_model": ""
 }
 ```
@@ -412,8 +437,8 @@ REST: `GET /v1/get_study_analysis?study=study-uuid`. MCP tool:
 
 Progress is published as JSON to the exposed ephemeral topic
 `study-events.<study-id>`. The driver emits `trial_started`, `trial_completed`,
-`trial_pruned`, `trial_failed`, and `study_complete`; creation, intermediate
-progress, stopping, and promotion use the same topic.
+`trial_pruned`, `trial_failed`, `study_failed`, and `study_complete`; creation,
+intermediate progress, stopping, and promotion use the same topic.
 REST and MCP both use the existing bounded `receive_events` capability:
 
 ```json
