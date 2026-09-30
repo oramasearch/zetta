@@ -124,8 +124,10 @@ What's inside, by domain (each links to that domain's docs):
   this registry and refuse unsupported model work.
   [AutoML studies](docs/ml/studies.md) search those native learners with typed
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
-  tracked Run trials; analysis, governed model promotion, and lineage-preserving
-  deletion of stopped studies have REST/MCP parity.
+  real background M-1 training Runs over a dataset or stored Pipeline. The
+  replicated driver resumes running studies after restart, records per-tree
+  curves and held-out objectives, enforces budgets, and exposes analysis,
+  governed model promotion, and lineage-preserving deletion over REST/MCP.
   The [solution registry](docs/solutions/README.md) lists 20 runnable catalogue
   modules. Selected levels execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action

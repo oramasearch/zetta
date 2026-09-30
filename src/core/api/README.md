@@ -19,10 +19,12 @@ topics. MCP receive and browse waits inspect the first governed result directly;
 neither path holds a thread or changes non-object request error handling.
 See [run metrics](../../../docs/ml/run-metrics.md).
 
-The nine Study capabilities include `delete_study`, a separately permissioned
-action that refuses running studies, removes non-promoted trial Runs and their
-metrics, and preserves the promoted Model and producing Run. REST, MCP and
-OpenAPI share its registry declaration. See
+The nine Study capabilities validate executable M-1 objectives, datasets,
+Pipeline references, and canonical search controls before admission. They also
+include `delete_study`, a separately permissioned action that refuses running
+studies, removes non-promoted trial Runs and their metrics, and preserves the
+promoted Model and producing Run. REST, MCP and OpenAPI share the registry
+declarations (#1205). See
 [AutoML studies](../../../docs/ml/studies.md).
 
 The `list_runs`, `list_models`, and `list_studies` reads expose page-ready

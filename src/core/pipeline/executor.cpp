@@ -132,7 +132,8 @@ ExecutionResult GraphExecutor::execute(Node& node,
                                        const ir::ExecutionGraph& graph,
                                        std::string project,
                                        std::string graph_id,
-                                       const std::atomic<bool>* cancel) const {
+                                       const std::atomic<bool>* cancel,
+                                       std::shared_ptr<Run> existing_run) const {
     // Every node-tree write below (the Run creation + the Run's mutators) is
     // gated onto the node's owner thread (#624): inline for the synchronous
     // owner-thread callers, a queued handoff when a background-action worker
@@ -141,9 +142,12 @@ ExecutionResult GraphExecutor::execute(Node& node,
     // inside the gated blocks (the tick reconcile may touch the entity on the
     // owner thread while a step computes here).
     ExecutionResult result;
-    node.run_on_owner([&] {
-        result.run = node.create_run(std::move(project), std::move(graph_id));
-    });
+    result.run = std::move(existing_run);
+    if (!result.run) {
+        node.run_on_owner([&] {
+            result.run = node.create_run(std::move(project), std::move(graph_id));
+        });
+    }
     if (!result.run) return result;  // node could not create the run
     Run& run = *result.run;
 
@@ -257,6 +261,15 @@ ExecutionResult GraphExecutor::execute(Node& node,
                                  "' failed: " + outcome.error});
             });
             break;  // fail-fast: downstream steps do not run
+        }
+        if (cancel != nullptr && cancel->load(std::memory_order_acquire)) {
+            cancelled = true;
+            result.error = "run cancelled by user";
+            node.run_on_owner([&] {
+                run.add_log({zetta::util::now_iso8601(), "warn",
+                             "run cancelled by user: remaining steps skipped"});
+            });
+            break;
         }
         for (RunOutput& output : outcome.outputs) {
             // A `report` names what the run FOUND, and it is assembled from the

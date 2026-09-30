@@ -36,6 +36,7 @@ add_executable(zetta-tests
   api/test_search_journey.cpp
   api/test_create_index_journey.cpp
   api/test_action_journeys.cpp
+  api/test_study_driver.cpp
   api/test_serving.cpp
   api/test_scoped_grants_api.cpp
   api/test_row_security_api.cpp

@@ -177,6 +177,8 @@ public:
     // Params are recorded once. Keys are already flattened dotted names and
     // values are scalar JSON values.
     bool log_params(nlohmann::json params, std::string* error = nullptr);
+    // A restarted Study trial keeps params and clears partial metric outputs.
+    void reset_metrics_for_retry();
     // Artifact is validated against the Run's typed artifact union.
     bool log_artifact(nlohmann::json artifact, std::string* error = nullptr);
 

@@ -732,6 +732,13 @@ bool Run::log_params(nlohmann::json params, std::string* error) {
     return true;
 }
 
+void Run::reset_metrics_for_retry() {
+    value_.metrics["series"] = nlohmann::json::object();
+    value_.metrics["summary"] = nlohmann::json::object();
+    value_.metrics["artifacts"] = nlohmann::json::array();
+    capture_and_persist();
+}
+
 bool Run::log_artifact(nlohmann::json artifact, std::string* error) {
     if (!artifact.is_object()) {
         if (error != nullptr) {

@@ -22,6 +22,11 @@ and MCP (#1184).
 Solution creation parity confirms that REST and MCP both retain policy predicate
 evidence on the solution manifest without adding it to methodology step configs
 (#1197).
+The server-level Study journey creates M-1 studies through the registry over a
+connector-shaped churn table, verifies real dataset and Pipeline trial Runs,
+restart recovery, curves, analysis and promotion, and confirms `stop_study`
+cancels the active training Run. The same journey checks canonical wall-time and
+cost stop reasons without admitting excess trials (#1205).
 The S-1 solution journey also runs CL-1 and CL-4 over text customer identifiers,
 ISO observation times and boolean labels, checking decision tables, ledger rows
 and webhook payloads (#957).

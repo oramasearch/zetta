@@ -152,14 +152,20 @@ ChurnSolutionResult run_churn_solution_with_coordinator(
     pipeline.result_score_column = options.result_score_column;
     pipeline.project = options.project;
     pipeline.graph = options.graph;
+    pipeline.training_progress = options.training_progress;
 
     auto churn = std::make_shared<ChurnStepExecutor>(node, coordinator, device,
                                                      std::move(pipeline));
     zetta::pipeline::GraphExecutor executor{churn};
 
     ChurnSolutionResult result;
+    std::shared_ptr<zetta::pipeline::Run> run;
+    if (!options.run_id.empty()) {
+        node.run_on_owner([&] { run = node.find_run(options.run_id); });
+    }
     result.execution = executor.execute(node, graph, options.project,
-                                        options.graph, options.cancel);
+                                        options.graph, options.cancel,
+                                        std::move(run));
     result.model_id = churn->model_id();
     result.ranked = churn->ranked();
     result.drivers = churn->driver_ranking();
@@ -526,14 +532,19 @@ ChurnSolutionResult run_churn_solution_on_table(
     pipeline.result_score_column = options.result_score_column;
     pipeline.project = options.project;
     pipeline.graph = options.graph;
+    pipeline.training_progress = options.training_progress;
 
     auto churn = std::make_shared<ChurnStepExecutor>(node, *coordinator, device,
                                                      std::move(pipeline));
     zetta::pipeline::GraphExecutor executor{churn};
 
     ChurnSolutionResult result;
+    std::shared_ptr<zetta::pipeline::Run> run;
+    if (!options.run_id.empty()) {
+        node.run_on_owner([&] { run = node.find_run(options.run_id); });
+    }
     result.execution = executor.execute(node, graph, options.project, options.graph,
-                                        options.cancel);
+                                        options.cancel, std::move(run));
     result.model_id = churn->model_id();
     result.ranked = churn->ranked();
     result.drivers = churn->driver_ranking();

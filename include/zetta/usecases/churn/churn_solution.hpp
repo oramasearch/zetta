@@ -112,6 +112,8 @@ struct ChurnSolutionOptions {
     std::string model_name = "churn_model";  // the registered Model's human name
     std::string project;                     // labels the Run + every ComputeJob
     std::string graph;                       // graph id label
+    std::string run_id;                      // reuse this Run for a study trial
+    ml::TrainProgressCallback training_progress;
     std::string result_database = "churn_results";
     std::string result_table_prefix = "at_risk_";
     std::string result_entity_column = "account";

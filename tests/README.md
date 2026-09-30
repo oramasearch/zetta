@@ -9,5 +9,10 @@ and restart peak memory (#1164). See [the proof runbook](../docs/testing/audit-r
 Study lifecycle tests cover running-study refusal, non-promoted Run and metric
 removal, promoted lineage retention, restart persistence, and REST/MCP parity
 (#1158).
+Server-level Study journeys additionally cover real M-1 dataset and Pipeline
+training, restart resumption, wall and cost limits, active cancellation, curves,
+analysis, and actual-model promotion (#1205).
+GBDT coverage verifies that out-of-time Study validation derives one global
+timestamp cutoff and reports the same holdout across different shard counts.
 Project graph and API tests cover denormalized name creation, rename propagation,
 legacy startup backfill, page summaries, and REST/MCP list parity (#1184).

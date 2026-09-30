@@ -16,7 +16,7 @@ for model work. M-21 adds event-time online logistic regression over pub/sub top
 
 - [models.md](models.md) — the `Model` entity: replicated metadata with producing Run and Project/Pipeline names, reversible text entity-key maps, page-ready listing, peer-to-peer weights body, and the `system.models` registry (ENT-14 / FEAT-6, #957, #1184).
 - [run-metrics.md](run-metrics.md) — replicated step series, params, summaries, typed chart data, downsampling, live topics, and DP curve suppression (#1137).
-- [studies.md](studies.md) — Run-backed AutoML studies with typed and conditional search spaces, enforced budgets, analysis, promotion, lineage-preserving deletion, page-ready objective summaries, live events, and REST/MCP parity (#1138, #1158, #1184).
+- [studies.md](studies.md) — the replicated background Study driver, real M-1 dataset/Pipeline trial Runs, restart recovery, curves and pruning, budgets, analysis, promotion, live events, and REST/MCP parity (#1138, #1205).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic and squared error): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
 - [anomaly.md](anomaly.md) — runnable M-7/S-7: label-free distributed isolation forest + robust deviations and causal KPI residual scoring; exact alert budgets, correctness gates, table lineage, and registry run reports (#1046).
 - [forecast.md](forecast.md) — runnable M-4: native multi-series forecasting, temporal backtests, seasonal-naive FVA, intervals, distributed table execution and report read-back (`forecast`, #1043).
@@ -24,7 +24,7 @@ for model work. M-21 adds event-time online logistic regression over pub/sub top
 - [uplift.md](uplift.md) — runnable M-6 causal uplift: native T- and X-learners, propensity overlap enforcement, held-out Qini/AUUC selection, effect and Qini tables, and registry execution (#1045).
 - [graph.md](graph.md) — M-12 graph ML: time-bounded degrees, PageRank, components, label propagation, clustering coefficient, and node2vec-style embeddings; runnable through the methodology registry (#1051).
 - [ensemble.md](ensemble.md) — M-18 native out-of-fold stacking: complementary GBDT variants, regularized logistic meta-model, time-ordered folds, refit bases, blended scores, and holdout lift over the best base (#1057).
-- [held-out-metrics.md](held-out-metrics.md) — hold rows OUT of training and measure the model on them: what `in_sample` vs `held_out` mean, the sharding-invariant split, and why both ride one collective (`holdout_fraction`, #953).
+- [held-out-metrics.md](held-out-metrics.md) — hold rows OUT of training and measure the model on them: content-hash splits for ordinary runs, out-of-time Study validation, and why both metric sets ride one collective (`holdout_fraction`, #953, #1205).
 - [calibration.md](calibration.md) — probability calibration: Platt + isotonic fit on a held-out split, attached to the `GbdtModel` (Brier/ECE improve, AUC preserved) (`Calibrator`, #391).
 - [gbdt-score.md](gbdt-score.md) — batch scoring / rank-at-risk: calibrated risk per entity, ranked into an at-risk list, SPMD with a device `sort_by_key` rank (`score_gbdt`, #392).
 - [explaining-one-row.md](explaining-one-row.md) — "why is THIS one at risk": exact per-row TreeSHAP for one account, recomputed from the Model, contributions that sum to the score (`explain`, #948 step 6).

@@ -732,6 +732,7 @@ bool Node::start() {
     // (a stop()/start() cycle). On first boot main attaches after start(), so this
     // is a no-op then and attach_cluster brings the coordinator up itself.
     start_coordinator();
+    study_driver_ = std::make_unique<zetta::ml::StudyDriver>(*this);
     report_memory(true);
     std::fflush(stdout);
     return true;
@@ -803,6 +804,7 @@ void Node::tick() {
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
     controller_.reconcile();
+    if (study_driver_) study_driver_->reconcile();
     // 2b. Search plane (#641): keep this node's per-partition search sub-indexes
     //     current with the (replicated) Search index entities + the placed
     //     partitions this node owns — so any node can answer a peer's
@@ -928,6 +930,10 @@ void Node::drain_owner_work() {
 
 void Node::stop() {
     if (!running_) return;
+    if (study_driver_) {
+        study_driver_->stop();
+        study_driver_.reset();
+    }
     // Tear the coordinator down first, while the attached cluster is still alive
     // (its signal-handler unwind is a cheap atomic store, and the steal loop joins
     // promptly) — so the cluster can be stopped/destroyed after us safely (#579).
@@ -946,6 +952,11 @@ void Node::stop() {
     running_ = false;
     std::printf("zetta: node stopped\n");
     std::fflush(stdout);
+}
+
+void Node::request_stop_study_work(const std::string& study_id,
+                                   const std::string& run_id) {
+    if (study_driver_) study_driver_->request_stop(study_id, run_id);
 }
 
 void Node::attach_cluster(zetta::cluster::Cluster& cluster, unsigned worker_count) {

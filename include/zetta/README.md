@@ -7,9 +7,10 @@ separately from the CRDT catalog (#1164). Audit interfaces also expose
 independent summary retention and the admin purge action (#1169). See
 [audit replication](../../docs/governance/audit-trail.md).
 
-The public Study lifecycle includes guarded deletion: running studies are
-refused, non-promoted trial Runs and their embedded metrics are removed, and
-the promoted Model's producing Run is retained (#1158). See
+The public Study lifecycle includes a replicated background driver, retryable
+trial Runs, cooperative training progress, and guarded deletion: running
+studies are refused, non-promoted trial Runs and their embedded metrics are
+removed, and the promoted Model's producing Run is retained (#1158, #1205). See
 [AutoML studies](../../docs/ml/studies.md).
 
 Run and Model values also carry denormalized Project/Pipeline names. Node
