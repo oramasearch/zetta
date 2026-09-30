@@ -501,7 +501,7 @@ Methodology make_m8_methodology() {
   methodology.solutions = {"S-11"};
   methodology.keywords = {"recommend", "next best action", "next-best-action"};
   methodology.inputs = {
-      {"entity", true, "integer recipient identifier"},
+      {"entity", true, "integer or text recipient identifier"},
       {"treatment", true, "integer candidate action or item"},
       {"label", true, "binary response or conversion outcome"},
       {"time", true, "interaction time for chronological holdout"},

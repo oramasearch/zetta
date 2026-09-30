@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <memory>
 #include <utility>
 
 #include "zetta/data/dataset.hpp"
@@ -55,11 +56,6 @@ bool is_binary_value(const nlohmann::json& value) {
         const double number = value.get<double>();
         return number == 0.0 || number == 1.0;
     }
-    if (value.is_string()) {
-        const std::string text = lowered(value.get<std::string>());
-        return text == "0" || text == "1" || text == "true" || text == "false" ||
-               text == "t" || text == "f" || text == "yes" || text == "no";
-    }
     return false;
 }
 
@@ -74,6 +70,10 @@ bool is_integer_value(const nlohmann::json& value) {
         return number == static_cast<double>(static_cast<std::int64_t>(number));
     }
     return false;
+}
+
+bool is_text_value(const nlohmann::json& value) {
+    return value.is_string() && !value.get_ref<const std::string&>().empty();
 }
 
 bool is_numeric_value(const nlohmann::json& value) {
@@ -101,6 +101,147 @@ std::string join(const std::vector<std::string>& items, const char* separator) {
 }
 
 }  // namespace
+
+std::optional<std::int64_t> EntityKeyMapping::derived(
+    std::string_view original) const {
+    const auto found = original_to_derived.find(std::string(original));
+    if (found == original_to_derived.end()) {
+        return std::nullopt;
+    }
+    return found->second;
+}
+
+nlohmann::json EntityKeyMapping::original(std::int64_t derived_id) const {
+    const auto found = derived_to_original.find(derived_id);
+    if (found == derived_to_original.end()) {
+        return derived_id;
+    }
+    return found->second;
+}
+
+nlohmann::json EntityKeyMapping::to_json() const {
+    nlohmann::json entries = nlohmann::json::array();
+    for (const auto& [derived_id, original_id] : derived_to_original) {
+        entries.push_back({{"derived_id", derived_id},
+                           {"original_value", original_id}});
+    }
+    return {{"column", column}, {"entries", std::move(entries)}};
+}
+
+EntityKeyMappingResult derive_entity_key_mapping(
+    std::string column, const std::vector<nlohmann::json>& values,
+    const EntityKeyHash& hash) {
+    EntityKeyMappingResult result;
+    auto mapping = std::make_shared<EntityKeyMapping>();
+    mapping->column = std::move(column);
+    const auto stable_hash = [&hash](std::string_view value) {
+        if (hash) {
+            return hash(value);
+        }
+        std::uint64_t derived = UINT64_C(14695981039346656037);
+        for (const unsigned char character : value) {
+            derived ^= character;
+            derived *= UINT64_C(1099511628211);
+        }
+        return derived;
+    };
+    for (const nlohmann::json& value : values) {
+        if (!value.is_string() || value.get_ref<const std::string&>().empty()) {
+            result.error = "dataset: the entity column '" + mapping->column +
+                           "' mixes text with non-text or empty values";
+            return result;
+        }
+        const std::string original = value.get<std::string>();
+        if (mapping->original_to_derived.contains(original)) {
+            continue;
+        }
+        // Several native aggregation paths widen exact integer keys to double.
+        // Keep the derived id inside double's exact-integer range so grouping,
+        // joins and later int64 restoration preserve the same key bit-for-bit.
+        constexpr std::uint64_t kExactIntegerMask =
+            (UINT64_C(1) << 53) - UINT64_C(1);
+        const std::int64_t derived_id = static_cast<std::int64_t>(
+            stable_hash(original) & kExactIntegerMask);
+        const auto collision = mapping->derived_to_original.find(derived_id);
+        if (collision != mapping->derived_to_original.end() &&
+            collision->second != original) {
+            result.error =
+                "dataset: derived entity key collision in column '" +
+                mapping->column + "': '" + collision->second + "' and '" +
+                original + "' map to " + std::to_string(derived_id);
+            return result;
+        }
+        mapping->derived_to_original.emplace(derived_id, original);
+        mapping->original_to_derived.emplace(original, derived_id);
+    }
+    if (mapping->empty()) {
+        result.error = "dataset: the text entity column '" + mapping->column +
+                       "' has no values to key";
+        return result;
+    }
+    result.mapping = std::move(mapping);
+    return result;
+}
+
+std::shared_ptr<const EntityKeyMapping> entity_key_mapping_from_json(
+    const nlohmann::json& value, std::string* error) {
+    const auto fail = [error](std::string reason) {
+        if (error != nullptr) {
+            *error = std::move(reason);
+        }
+        return std::shared_ptr<const EntityKeyMapping>{};
+    };
+    if (!value.is_object() || !value.contains("column") ||
+        !value.at("column").is_string() ||
+        value.at("column").get_ref<const std::string&>().empty() ||
+        !value.contains("entries") || !value.at("entries").is_array()) {
+        return fail("entity key mapping requires a column and entries array");
+    }
+    auto mapping = std::make_shared<EntityKeyMapping>();
+    mapping->column = value.at("column").get<std::string>();
+    for (const nlohmann::json& entry : value.at("entries")) {
+        if (!entry.is_object() || !entry.contains("derived_id") ||
+            !entry.at("derived_id").is_number_integer() ||
+            !entry.contains("original_value") ||
+            !entry.at("original_value").is_string() ||
+            entry.at("original_value").get_ref<const std::string&>().empty()) {
+            return fail("entity key mapping entry is malformed");
+        }
+        const std::int64_t derived_id =
+            entry.at("derived_id").get<std::int64_t>();
+        const std::string original =
+            entry.at("original_value").get<std::string>();
+        if (!mapping->derived_to_original.emplace(derived_id, original).second ||
+            !mapping->original_to_derived.emplace(original, derived_id).second) {
+            return fail("entity key mapping contains a duplicate key or value");
+        }
+    }
+    if (mapping->empty()) {
+        return fail("entity key mapping is empty");
+    }
+    return mapping;
+}
+
+nlohmann::json entity_output(const DatasetContract& contract,
+                             std::int64_t derived) {
+    if (!contract.entity_keys) {
+        return derived;
+    }
+    return contract.entity_keys->original(derived);
+}
+
+bool DatasetContract::operator==(const DatasetContract& other) const {
+    const bool mappings_equal =
+        (!entity_keys && !other.entity_keys) ||
+        (entity_keys && other.entity_keys &&
+         entity_keys->column == other.entity_keys->column &&
+         entity_keys->derived_to_original ==
+             other.entity_keys->derived_to_original);
+    return entity_column == other.entity_column &&
+           label_column == other.label_column &&
+           time_column == other.time_column && as_of == other.as_of &&
+           feature_columns == other.feature_columns && mappings_equal;
+}
 
 std::string_view to_string(DatasetPathKind kind) {
     switch (kind) {
@@ -236,54 +377,110 @@ DatasetContractResult infer_dataset_contract(const std::vector<std::string>& col
                 "label_column.";
             if (!named_but_not_binary.empty()) {
                 reason += " (" + join(named_but_not_binary, ", ") +
-                          " matched by name but is not binary in the sampled rows)";
+                          " matched by name but is not binary numeric data in the "
+                          "sampled rows; cast it to 0/1 before running, for example " +
+                          named_but_not_binary.front() + "::int)";
             }
             return fail(std::move(reason));
         }
+    } else if (!sample.empty() &&
+               !all_values(sample, result.contract.label_column,
+                           is_numeric_value)) {
+        return fail("dataset: the label column '" +
+                    result.contract.label_column +
+                    "' is non-numeric; cast it to a numeric type before "
+                    "running (for SQL, use " + result.contract.label_column +
+                    "::int for a binary label)");
     }
 
     // --- the entity ---------------------------------------------------------
-    // Must be integer-valued: entities are keyed by int64 the whole way through the
-    // ML path, and a ranked list keyed by a number that joins back to nothing is
-    // worse than a clear failure here.
+    // Numeric algorithms still use int64 keys. Text business identifiers get a
+    // deterministic dataset-scoped key and are restored at every output boundary.
     if (result.contract.entity_column.empty()) {
-        std::vector<std::string> named_but_not_integer;
+        std::vector<std::string> named_but_not_keyable;
         for (const std::string& candidate : entity_column_candidates()) {
             const std::string column = find_column(columns, candidate);
-            if (column.empty() || column == result.contract.label_column) continue;
+            if (column.empty() || column == result.contract.label_column) {
+                continue;
+            }
             if (all_values(sample, column, is_integer_value)) {
                 result.contract.entity_column = column;
                 result.notes.push_back("entity column: '" + column +
                                        "' (integer across the sampled rows)");
                 break;
             }
-            named_but_not_integer.push_back(column);
+            if (all_values(sample, column, is_text_value)) {
+                std::vector<nlohmann::json> values;
+                for (const nlohmann::json* value : values_of(sample, column)) {
+                    values.push_back(*value);
+                }
+                EntityKeyMappingResult mapped =
+                    derive_entity_key_mapping(column, values);
+                if (!mapped.ok()) {
+                    return fail(std::move(mapped.error));
+                }
+                result.contract.entity_column = column;
+                result.contract.entity_keys = std::move(mapped.mapping);
+                result.notes.push_back(
+                    "entity column '" + column +
+                    "' (text; keyed by a derived id, outputs carry the original "
+                    "value)");
+                break;
+            }
+            named_but_not_keyable.push_back(column);
         }
         if (result.contract.entity_column.empty()) {
-            std::string reason = "dataset: no integer entity column found — looked for " +
+            std::string reason = "dataset: no keyable entity column found — looked for " +
                                  join(entity_column_candidates(), " / ") + ".";
-            if (!named_but_not_integer.empty()) {
-                reason += " " + join(named_but_not_integer, ", ") +
-                          " matched by name but holds non-integer values; entities are keyed "
-                          "by a 64-bit integer, so add an integer key column (or name one "
-                          "with the dataset contract's entity_column).";
+            if (!named_but_not_keyable.empty()) {
+                reason += " " + join(named_but_not_keyable, ", ") +
+                          " matched by name but contains values that are neither "
+                          "integers nor text.";
             } else {
                 reason += " Name one with the dataset contract's entity_column.";
             }
             return fail(std::move(reason));
         }
-    } else if (!sample.empty() &&
-               !all_values(sample, result.contract.entity_column, is_integer_value)) {
-        return fail("dataset: the entity column '" + result.contract.entity_column +
-                    "' holds non-integer values; entities are keyed by a 64-bit integer");
+    } else if (!sample.empty()) {
+        if (all_values(sample, result.contract.entity_column, is_integer_value)) {
+            result.notes.push_back("entity column: '" +
+                                   result.contract.entity_column +
+                                   "' (integer across the sampled rows)");
+        } else if (all_values(sample, result.contract.entity_column,
+                              is_text_value)) {
+            std::vector<nlohmann::json> values;
+            for (const nlohmann::json* value :
+                 values_of(sample, result.contract.entity_column)) {
+                values.push_back(*value);
+            }
+            EntityKeyMappingResult mapped = derive_entity_key_mapping(
+                result.contract.entity_column, values);
+            if (!mapped.ok()) {
+                return fail(std::move(mapped.error));
+            }
+            result.contract.entity_keys = std::move(mapped.mapping);
+            result.notes.push_back(
+                "entity column '" + result.contract.entity_column +
+                "' (text; keyed by a derived id, outputs carry the original value)");
+        } else {
+            return fail("dataset: the entity column '" +
+                        result.contract.entity_column +
+                        "' contains values that are neither integers nor text");
+        }
     }
 
     // --- the features -------------------------------------------------------
     if (result.contract.feature_columns.empty()) {
         for (const std::string& column : columns) {
-            if (column == result.contract.entity_column) continue;
-            if (column == result.contract.label_column) continue;
-            if (column == result.contract.time_column) continue;
+            if (column == result.contract.entity_column) {
+                continue;
+            }
+            if (column == result.contract.label_column) {
+                continue;
+            }
+            if (column == result.contract.time_column) {
+                continue;
+            }
             if (!all_values(sample, column, is_numeric_value)) {
                 // Said out loud: a column left out silently is one the caller assumes
                 // the model used (lake's UX review 2026-09-27; categorical features are
@@ -347,7 +544,9 @@ DatasetSampler default_dataset_sampler(Node& node, const zetta::cluster::Cluster
             return std::vector<nlohmann::json>{};
         }
         std::vector<nlohmann::json> rows = outcome.rows;
-        if (limit > 0 && rows.size() > limit) rows.resize(limit);
+        if (limit > 0 && rows.size() > limit) {
+            rows.resize(limit);
+        }
         return rows;
     };
 }
@@ -457,16 +656,51 @@ ResolvedDataset resolve_dataset(Node& node, const DatasetPath& path,
         return resolved;
     }
     resolved.contract = std::move(contract.contract);
+    if (resolved.contract.entity_keys) {
+        std::string mapping_error;
+        const DatasetSampler read =
+            sampler ? sampler : default_dataset_sampler(node, cluster);
+        const std::vector<nlohmann::json> rows =
+            read(sampled.database, sampled.table, 0, mapping_error);
+        if (!mapping_error.empty()) {
+            resolved.error = "dataset: could not map text entity column '" +
+                             resolved.contract.entity_column + "': " +
+                             mapping_error;
+            return resolved;
+        }
+        std::vector<nlohmann::json> values;
+        values.reserve(rows.size());
+        for (const nlohmann::json& row : rows) {
+            if (!row.is_object() ||
+                !row.contains(resolved.contract.entity_column)) {
+                resolved.error = "dataset: a row is missing text entity column '" +
+                                 resolved.contract.entity_column + "'";
+                return resolved;
+            }
+            values.push_back(row.at(resolved.contract.entity_column));
+        }
+        EntityKeyMappingResult mapped = derive_entity_key_mapping(
+            resolved.contract.entity_column, values);
+        if (!mapped.ok()) {
+            resolved.error = std::move(mapped.error);
+            return resolved;
+        }
+        resolved.contract.entity_keys = std::move(mapped.mapping);
+    }
     resolved.notes = std::move(contract.notes);
     return resolved;
 }
 
 nlohmann::json to_json(const DatasetContract& contract) {
-    return nlohmann::json{{"entity_column", contract.entity_column},
-                          {"label_column", contract.label_column},
-                          {"time_column", contract.time_column},
-                          {"as_of", contract.as_of},
-                          {"feature_columns", contract.feature_columns}};
+    nlohmann::json value{{"entity_column", contract.entity_column},
+                         {"label_column", contract.label_column},
+                         {"time_column", contract.time_column},
+                         {"as_of", contract.as_of},
+                         {"feature_columns", contract.feature_columns}};
+    if (contract.entity_keys) {
+        value["entity_key_mapping"] = contract.entity_keys->to_json();
+    }
+    return value;
 }
 
 std::optional<DatasetContract> dataset_contract_from_json(const nlohmann::json& value,
@@ -510,6 +744,14 @@ std::optional<DatasetContract> dataset_contract_from_json(const nlohmann::json& 
             contract.feature_columns.push_back(column.get<std::string>());
         }
     }
+    if (const auto mapping = value.find("entity_key_mapping");
+        mapping != value.end()) {
+        std::string reason;
+        contract.entity_keys = entity_key_mapping_from_json(*mapping, &reason);
+        if (!contract.entity_keys) {
+            return fail("dataset_contract.entity_key_mapping: " + reason);
+        }
+    }
     if (!contract.time_column.empty() && value.find("as_of") == value.end()) {
         return fail(
             "dataset_contract.as_of: required with a time_column — a cutoff column with no "
@@ -531,7 +773,7 @@ const nlohmann::json& dataset_contract_schema() {
         document["properties"]["entity_column"] = {
             {"type", "string"},
             {"description",
-             "the integer key of the thing being scored, one row per entity"}};
+             "the integer or text business key of the thing being scored, one row per entity"}};
         document["properties"]["label_column"] = {
             {"type", "string"}, {"description", "the {0,1} training target"}};
         document["properties"]["time_column"] = {
@@ -553,8 +795,26 @@ const nlohmann::json& dataset_contract_schema() {
             {"type", "array"},
             {"items", {{"type", "string"}, {"minLength", 1}}},
             {"description",
-             "the numeric columns to train on; omit to use every numeric column that is "
-             "not the entity, label, or time column"}};
+             "the numeric or boolean columns to train on; omit to use every numeric or "
+             "boolean column that is not the entity, label, or time column"}};
+        nlohmann::json mapping;
+        mapping["type"] = "object";
+        mapping["description"] =
+            "resolved text business ids and their derived int64 keys";
+        mapping["required"] = {"column", "entries"};
+        mapping["additionalProperties"] = false;
+        mapping["properties"]["column"] = {
+            {"type", "string"}, {"minLength", 1}};
+        mapping["properties"]["entries"]["type"] = "array";
+        mapping["properties"]["entries"]["items"] = {
+            {"type", "object"},
+            {"required", {"derived_id", "original_value"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"derived_id", {{"type", "integer"}}},
+              {"original_value",
+               {{"type", "string"}, {"minLength", 1}}}}}};
+        document["properties"]["entity_key_mapping"] = std::move(mapping);
         return document;
     }();
     return schema;

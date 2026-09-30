@@ -22,4 +22,7 @@ and MCP (#1184).
 Solution creation parity confirms that REST and MCP both retain policy predicate
 evidence on the solution manifest without adding it to methodology step configs
 (#1197).
+The S-1 solution journey also runs CL-1 and CL-4 over text customer identifiers,
+ISO observation times and boolean labels, checking decision tables, ledger rows
+and webhook payloads (#957).
 See [CRUD verification](../../docs/pubsub/crud.md#verification).

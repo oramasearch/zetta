@@ -138,6 +138,7 @@ struct RunSnapshot {
     bool found = false;
     zetta::pipeline::RunStatus status = zetta::pipeline::RunStatus::Pending;
     std::vector<zetta::pipeline::RunOutput> outputs;
+    nlohmann::json entity_key_mapping = nlohmann::json::object();
 };
 
 RunSnapshot read_run(const std::shared_ptr<SolutionState>& state,
@@ -148,6 +149,7 @@ RunSnapshot read_run(const std::shared_ptr<SolutionState>& state,
             snapshot.found = true;
             snapshot.status = run->status();
             snapshot.outputs = run->outputs();
+            snapshot.entity_key_mapping = run->entity_key_mapping();
         }
     });
     return snapshot;
@@ -210,6 +212,14 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
             const RunSnapshot snapshot = read_run(state, stage_run_id);
             if (snapshot.found &&
                 snapshot.status == zetta::pipeline::RunStatus::Succeeded) {
+                if (!snapshot.entity_key_mapping.empty()) {
+                    update_master(state, [&](zetta::pipeline::Run& run) {
+                        if (run.entity_key_mapping().empty()) {
+                            run.set_entity_key_mapping(
+                                snapshot.entity_key_mapping);
+                        }
+                    });
+                }
                 if (stage.methodology->id == state->binding.at("decision_source").at("methodology").get<std::string>()) {
                     scored_outputs = snapshot.outputs;
                 }

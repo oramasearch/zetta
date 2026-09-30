@@ -76,7 +76,9 @@ What's inside, by domain (each links to that domain's docs):
   placement, sharded blob placement, rebalance-on-join), a **native Parquet
   reader** (no Arrow), dataset ingest (parquet/jsonl/json/csv), and a
   Postgres-subset SQL layer that is **dialect-agnostic** with virtual
-  `system.*` observability tables.
+  `system.*` observability tables. Dataset contracts accept ordinary text business ids
+  through collision-checked derived keys while all outputs retain the original value;
+  boolean labels and features load as 0/1.
 - **[Cluster + replication](docs/cluster/README.md)** — equal peers over TCP,
   no leader; **everything replicates** as an Automerge CRDT (the document is
   the source of truth, disk is its projection); an ephemeral **signal plane**

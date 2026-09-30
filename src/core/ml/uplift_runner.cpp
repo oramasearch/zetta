@@ -30,7 +30,8 @@ ddf::DataFrameSchema uplift_schema(const data::DatasetContract &contract,
   ddf::DataFrameSchema schema;
   schema.columns.push_back(ddf::ColumnSchema{.name = contract.entity_column,
                                              .field = contract.entity_column,
-                                             .dtype = DataType::Int64});
+                                             .dtype = DataType::Int64,
+                                             .entity_keys = contract.entity_keys});
   schema.columns.push_back(ddf::ColumnSchema{.name = options.treatment_column,
                                              .field = options.treatment_column,
                                              .dtype = DataType::Float64});
@@ -195,7 +196,7 @@ UpliftRunResult run_uplift_on_table(Node &node,
     for (const TreatmentEffect &effect : output.uplift.treatment_effects) {
       effects->add_row(
           {{"rank", ++rank},
-           {"entity", effect.entity},
+           {"entity", data::entity_output(dataset.contract, effect.entity)},
            {"estimated_uplift", effect.estimated_uplift},
            {"propensity", effect.propensity},
            {"treatment", effect.treatment},
@@ -220,6 +221,10 @@ UpliftRunResult run_uplift_on_table(Node &node,
                        {"treatment", options.treatment_column},
                        {"outcome", options.outcome_column},
                        {"features", dataset.contract.feature_columns}};
+    if (dataset.contract.entity_keys) {
+      value.feature_schema["entity_key_mapping"] =
+          dataset.contract.entity_keys->to_json();
+    }
     value.metrics = metrics(output.uplift, options);
     model = node.create_model(std::move(value));
     if (model) {
@@ -235,6 +240,10 @@ UpliftRunResult run_uplift_on_table(Node &node,
 
   for (const std::string &note : dataset.notes) {
     output.run->add_log({util::now_iso8601(), "info", "dataset: " + note});
+  }
+  if (dataset.contract.entity_keys) {
+    output.run->set_entity_key_mapping(
+        dataset.contract.entity_keys->to_json());
   }
   if (output.uplift.observational) {
     output.run->add_log({util::now_iso8601(), "warn",

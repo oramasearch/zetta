@@ -116,6 +116,7 @@ struct ChurnPipelineConfig {
     // read say so, instead of reporting the graph's own sources as read.
     std::string accounts_dataset;
     std::vector<std::string> dataset_notes;
+    std::shared_ptr<const data::EntityKeyMapping> entity_keys;
 
     ddf::FeaturizeSpec featurize;        // the point-in-time (leakage-free) feature graph
     ml::GbdtParams params;               // the GBDT hyperparameters

@@ -8,6 +8,40 @@
     "deployment": {
       "type": "string"
     },
+    "entity_key_mapping": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "entries": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "derived_id": {
+                "type": "integer"
+              },
+              "original_value": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "derived_id",
+              "original_value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "column",
+        "entries"
+      ],
+      "type": "object"
+    },
     "features": {
       "additionalProperties": false,
       "properties": {

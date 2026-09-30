@@ -432,7 +432,8 @@ DataFrameSchema table_accounts_schema(
     // would be a second name for one concept.
     schema.columns.push_back(ColumnSchema{.name = std::string(kTableEntityColumn),
                                           .field = contract.entity_column,
-                                          .dtype = DataType::Int64});
+                                          .dtype = DataType::Int64,
+                                          .entity_keys = contract.entity_keys});
     for (const std::string& feature : contract.feature_columns) {
         schema.columns.push_back(
             ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});
@@ -509,6 +510,7 @@ ChurnSolutionResult run_churn_solution_on_table(
     pipeline.accounts_table = input.table_id;
     pipeline.accounts_dataset = input.dataset_name;
     pipeline.dataset_notes = input.notes;
+    pipeline.entity_keys = input.contract.entity_keys;
     pipeline.accounts_schema = table_accounts_schema(
         input.contract, options.params.objective == "squared_error");
     pipeline.events_schema = churn_events_schema();  // empty frame; static mode

@@ -15,6 +15,8 @@ Distinct from the domain docs, which describe how something *works*, and from
   traps that stop an evaluator: the consent gate refusing a *local* Postgres, a compiled
   Pipeline sitting `proposed` until `approve_plan`, `--listen` being the peer port, and the
   complete build-time egress list a locked-down build template will ask for.
+  Warehouse entity columns may use text business identifiers; Runs, outputs and
+  deliveries retain those values.
 - [charles-delivery-runbook.md](charles-delivery-runbook.md) — the **Motive-specific** cut of
   the same path, for the `v0.1.0` delivery to Charles Philippe. Adds the four repos he needs
   read access to, the two build hosts that matter (his 32 GB M-series and a Motive Ubuntu
@@ -22,6 +24,7 @@ Distinct from the domain docs, which describe how something *works*, and from
   not the operator**, and the build-time egress list for a locked-down template. ⚠️ **Names
   Motive staff and internals** — use `from-clone-to-deployed-model.md` for any other
   evaluator, and keep commercial terms out of both.
+  The worked dataset may keep text account identifiers without a numeric surrogate.
 - [regenerating-the-run-report.md](regenerating-the-run-report.md) — reproduce every figure
   in the churn reports from a clean checkout: generate the dataset, run the pipeline to emit
   its facts artifact, write the prose from those facts, and refresh the diagrams. Pairs with

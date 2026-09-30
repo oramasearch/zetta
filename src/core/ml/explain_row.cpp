@@ -136,7 +136,8 @@ RowExplanation explain_entity(Node& node, const Model& model, const std::string&
     DataFrameSchema schema;
     schema.columns.push_back(ColumnSchema{.name = std::string(kEntityColumn),
                                           .field = contract.entity_column,
-                                          .dtype = DataType::Int64});
+                                          .dtype = DataType::Int64,
+                                          .entity_keys = contract.entity_keys});
     for (const std::string& feature : features) {
         schema.columns.push_back(
             ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});

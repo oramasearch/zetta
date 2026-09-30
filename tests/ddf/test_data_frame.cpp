@@ -9,6 +9,7 @@
 #include "zetta/compute/compute_status.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/storage/json_store.hpp"
 #include "zetta/data/table.hpp"
@@ -92,6 +93,50 @@ TEST(DataFrame, IntegerColumnAcceptsFloatFeatureValues) {
     std::vector<float> values;
     ASSERT_TRUE(result.frame.to_host<float>("v", values).ok());
     EXPECT_EQ(values, (std::vector<float>{7.0f, 8.0f}));
+}
+
+TEST(DataFrame, BooleanColumnsLoadAsZeroAndOne) {
+    const zetta::storage::JsonStore store = make_store({
+        {{"label", false}, {"active", true}},
+        {{"label", true}, {"active", false}},
+    });
+    DataFrameSchema schema;
+    schema.columns = {
+        ColumnSchema{.name = "label", .dtype = DataType::Int64},
+        ColumnSchema{.name = "active", .dtype = DataType::Float64},
+    };
+    CpuDevice device;
+    auto result = load_data_frame(store, schema, device);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    std::vector<std::int64_t> labels;
+    std::vector<double> active;
+    ASSERT_TRUE(result.frame.to_host<std::int64_t>("label", labels).ok());
+    ASSERT_TRUE(result.frame.to_host<double>("active", active).ok());
+    EXPECT_EQ(labels, (std::vector<std::int64_t>{0, 1}));
+    EXPECT_EQ(active, (std::vector<double>{1.0, 0.0}));
+}
+
+TEST(DataFrame, TextEntityColumnLoadsThroughItsResolvedMapping) {
+    const zetta::storage::JsonStore store = make_store({
+        {{"customer_id", "c00041"}},
+        {{"customer_id", "c00042"}},
+    });
+    const auto mapped = zetta::data::derive_entity_key_mapping(
+        "customer_id", {"c00041", "c00042"});
+    ASSERT_TRUE(mapped.ok()) << mapped.error;
+    DataFrameSchema schema;
+    schema.columns = {ColumnSchema{.name = "entity",
+                                   .field = "customer_id",
+                                   .dtype = DataType::Int64,
+                                   .entity_keys = mapped.mapping}};
+    CpuDevice device;
+    auto result = load_data_frame(store, schema, device);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    std::vector<std::int64_t> entities;
+    ASSERT_TRUE(result.frame.to_host<std::int64_t>("entity", entities).ok());
+    ASSERT_EQ(entities.size(), 2u);
+    EXPECT_EQ(mapped.mapping->original(entities[0]), "c00041");
+    EXPECT_EQ(mapped.mapping->original(entities[1]), "c00042");
 }
 
 TEST(DataFrame, TimestampColumnNormalizesIsoAndEpochValues) {

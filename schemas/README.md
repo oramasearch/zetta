@@ -20,3 +20,8 @@ the registry declaration documented in [memory accounting](../docs/ops/memory.md
 The `purge_audit` action is generated into OpenAPI, and `audit_purged` is part of
 the generated audit-event action enum; both are documented in
 [audit trail](../docs/governance/audit-trail.md).
+
+Text entity keys and boolean predictors are represented in the generated scoring,
+prediction, Run, and methodology-launch contracts (#957). Their dataset-scoped
+mapping and original-value outputs are documented in
+[dataset paths](../docs/data/dataset-path.md).

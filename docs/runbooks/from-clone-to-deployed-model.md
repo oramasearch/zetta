@@ -328,18 +328,17 @@ aggregate-bandwidth path — do not present it as one.
 
 #### Shape the source query for the model, not just for the read
 
-Two column rules are enforced at the `connect` step — *after* the dataset lands — so a
-query that ingests happily can still fail the pipeline later with a message that does not
-point back here. Both are fixed in the **source** query.
+The dataset contract validates column roles before the Run starts. Ordinary warehouse
+text identifiers and boolean targets need no source-query workaround.
 
 | Rule | What you see if you miss it | Fix in the SELECT |
 |---|---|---|
-| The **entity column must be a 64-bit integer** | `run` refuses: ``dataset: the entity column 'account_id' holds non-integer values; entities are keyed by a 64-bit integer`` | derive one — `('x'\|\|substr(md5(account_id),1,8))::bit(32)::bigint AS account_key` |
-| The **label and every feature must be numeric** | the run starts, then fails: ``connect step … row 0 field 'churned' is not a number`` | cast it — `churned::int AS churned` |
+| The **entity column must be an integer or non-empty text value** | mixed or empty entity values are refused during contract resolution | keep the warehouse business id; text ids resolve back on every output |
+| The **label must be numeric/boolean 0/1; features numeric/boolean** | contract resolution names a non-numeric column and its cast | cast only other representations |
 
-A Postgres `boolean` label and a text/UUID primary key are the two common ways to hit
-these, and most real tables have both. String entity keys are a known limitation, not a
-defect ([`../data/dataset-path.md`](../data/dataset-path.md) — *"String entity keys"*).
+A Postgres `boolean` label loads as 0/1. Text and UUID primary keys receive stable,
+collision-checked internal keys while reports retain their original values
+([`../data/dataset-path.md`](../data/dataset-path.md)).
 
 **Measured end to end on 600 rows**, the source query that satisfies both:
 
@@ -431,8 +430,7 @@ P run '{"project":"churn","graph":"churn skeleton",
         "holdout_fraction":0.3}'
 ```
 
-`account_key`, not the table's own text id — a text entity column is refused here and a
-boolean label fails inside the run. See
+The table's own text id and boolean label are valid here. See
 [§4.2](#shape-the-source-query-for-the-model-not-just-for-the-read).
 
 **Set `holdout_fraction`.** Without it every metric is in-sample — scored on the rows the

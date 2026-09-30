@@ -73,7 +73,8 @@ TableScoreResult score_table(Node& node, const Model& model, const std::string& 
     DataFrameSchema schema;
     schema.columns.push_back(ColumnSchema{.name = std::string(kEntityColumn),
                                           .field = contract.entity_column,
-                                          .dtype = DataType::Int64});
+                                          .dtype = DataType::Int64,
+                                          .entity_keys = contract.entity_keys});
     for (const std::string& feature : features) {
         schema.columns.push_back(
             ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});
@@ -98,6 +99,7 @@ TableScoreResult score_table(Node& node, const Model& model, const std::string& 
     }
 
     TableScoreResult result;
+    result.entity_keys = contract.entity_keys;
     result.feature_columns = features;
     result.drivers = ranked_drivers(model.value().feature_schema);
     result.partitions_read = shard.partitions_read;
@@ -189,6 +191,10 @@ TableScoreResult score_rows(const Model& model, const std::vector<nlohmann::json
     }
 
     TableScoreResult result;
+    if (const auto mapping = model.feature_schema().find("entity_key_mapping");
+        mapping != model.feature_schema().end()) {
+        result.entity_keys = data::entity_key_mapping_from_json(*mapping);
+    }
     result.feature_columns = features;
     result.drivers = ranked_drivers(model.value().feature_schema);
     result.rows_scored = rows.size();

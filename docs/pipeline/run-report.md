@@ -101,9 +101,8 @@ and constraint within the declared tolerance.
 **It always answers (#1007).** A run with no resolvable model output answers
 `not_found` (404) saying there are no measured numbers — it does not wait for one.
 The at-risk rows are read without typed accessors that throw: a `rank` or `risk`
-that is not a number reads as `0`, and an `account` that is not an integer (a
-business id never derived to a key, #957) is reported verbatim as `entity` rather
-than failing the whole report. A dataset-less churn run (the built-in demo data) is
+that is not a number reads as `0`, and text entity values remain the original
+business ids after their internal derived keys are resolved (#957). A dataset-less churn run (the built-in demo data) is
 covered end to end over REST in `tests/api/test_rest_server.cpp`.
 
 ## What the run has to write down

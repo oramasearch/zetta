@@ -51,7 +51,8 @@ MCP/HTTP work.
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
-  data:predict / data:search key scoping, every request a span + audited).
+  data:predict / data:search key scoping, reversible text entity ids, every
+  request a span + audited; #957).
 
 ## The endpoints (shipped with #615, REST with #618)
 

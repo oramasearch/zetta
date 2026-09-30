@@ -27,7 +27,8 @@ ddf::DataFrameSchema runner_schema(const data::DatasetContract& contract) {
     schema.columns.push_back(
         {.name = "entity",
          .field = contract.entity_column,
-         .dtype = compute::DataType::Int64});
+         .dtype = compute::DataType::Int64,
+         .entity_keys = contract.entity_keys});
     for (const std::string& feature : contract.feature_columns) {
         schema.columns.push_back(
             {.name = feature,
@@ -149,13 +150,15 @@ void materialize_outputs(
     }
     for (const LabelQueueEntry& entry : trained.label_queue) {
         queue->add_row({{"rank", entry.rank},
-                        {"row", entry.entity},
+                        {"row", data::entity_output(
+                                    dataset.contract, entry.entity)},
                         {"uncertainty", entry.uncertainty},
                         {"diversity", entry.diversity},
                         {"score", entry.score}});
     }
     for (const WeakLabel& label : trained.local_weak_labels) {
-        weak->add_row({{"row", label.entity},
+        weak->add_row({{"row", data::entity_output(
+                                   dataset.contract, label.entity)},
                        {"probabilistic_label", label.probability},
                        {"contributing_functions",
                         label.contributing_functions}});
@@ -182,6 +185,11 @@ void materialize_outputs(
         {"gold_split", "disjoint"},
         {"weak_labels_are_gold", false},
     };
+    if (dataset.contract.entity_keys) {
+        model_value.feature_schema["entity_key_mapping"] =
+            dataset.contract.entity_keys->to_json();
+        run->set_entity_key_mapping(dataset.contract.entity_keys->to_json());
+    }
     model_value.metrics = metrics_json(trained.metrics);
     const std::shared_ptr<Model> model =
         node.create_model(std::move(model_value));

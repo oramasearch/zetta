@@ -100,16 +100,14 @@ nlohmann::json model_from_source_messages(const nlohmann::json& arguments) {
             "there is.\n"
             "   THREE RULES the frame must satisfy, all enforced later and all "
             "fixed here:\n"
-            "   - The ENTITY column must be a 64-bit INTEGER. A text/UUID business "
-            "id is refused. Derive one, e.g. for Postgres:\n"
-            "       ('x'||substr(md5(account_id),1,8))::bit(32)::bigint AS entity_key\n"
-            "   - The LABEL must be numeric {0,1}. A boolean lands fine and then "
-            "fails mid-run. Cast it: churned::int AS churned\n"
-            "   - Every FEATURE must be numeric. Text columns are dropped "
+            "   - The ENTITY may be an integer or text/UUID business id. Text ids "
+            "are keyed internally and every output keeps the original value.\n"
+            "   - The LABEL may be numeric {0,1} or boolean true/false; booleans "
+            "load as 0/1. Cast any other representation before running.\n"
+            "   - Every FEATURE must be numeric or boolean. Text columns are dropped "
             "silently, so encode what matters: (plan = 'free')::int AS is_free\n"
-            "   Keep the original business id in a SECOND dataset if you will need "
-            "to join results back to readable names \u2014 do not carry it in the "
-            "training frame.\n\n";
+            "   Keep the business id in the training frame as the entity column; "
+            "scores, decisions, and deliveries return that same value.\n\n";
 
     text += "3. Build the pipeline: `create_project` { name }, then "
             "`capture_intent` { project, text: the ask }, then `compile_intent` "

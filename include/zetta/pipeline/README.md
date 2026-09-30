@@ -6,3 +6,6 @@ reconciliation does not emit them again; audit travels through the independent
 
 Project and Pipeline renames notify the owning Node so Run, Model, and Study
 display names remain current (#1184). See [Runs](../../../docs/pipeline/runs.md).
+
+Runs produced from text-keyed datasets persist the collision-checked derived-key
+map so durable model and solution records can restore the original business id.

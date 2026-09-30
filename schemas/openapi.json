@@ -397,11 +397,46 @@
                         ]
                       },
                       "entity_column": {
-                        "description": "the integer key of the thing being scored, one row per entity",
+                        "description": "the integer or text business key of the thing being scored, one row per entity",
                         "type": "string"
                       },
+                      "entity_key_mapping": {
+                        "additionalProperties": false,
+                        "description": "resolved text business ids and their derived int64 keys",
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "entries": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "derived_id": {
+                                  "type": "integer"
+                                },
+                                "original_value": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "derived_id",
+                                "original_value"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "entries"
+                        ],
+                        "type": "object"
+                      },
                       "feature_columns": {
-                        "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                        "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
                         "items": {
                           "minLength": 1,
                           "type": "string"
@@ -5196,11 +5231,46 @@
                             ]
                           },
                           "entity_column": {
-                            "description": "the integer key of the thing being scored, one row per entity",
+                            "description": "the integer or text business key of the thing being scored, one row per entity",
                             "type": "string"
                           },
+                          "entity_key_mapping": {
+                            "additionalProperties": false,
+                            "description": "resolved text business ids and their derived int64 keys",
+                            "properties": {
+                              "column": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "entries": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "derived_id": {
+                                      "type": "integer"
+                                    },
+                                    "original_value": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "derived_id",
+                                    "original_value"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "column",
+                              "entries"
+                            ],
+                            "type": "object"
+                          },
                           "feature_columns": {
-                            "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                            "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
                             "items": {
                               "minLength": 1,
                               "type": "string"
@@ -9225,11 +9295,46 @@
                       ]
                     },
                     "entity_column": {
-                      "description": "the integer key of the thing being scored, one row per entity",
+                      "description": "the integer or text business key of the thing being scored, one row per entity",
                       "type": "string"
                     },
+                    "entity_key_mapping": {
+                      "additionalProperties": false,
+                      "description": "resolved text business ids and their derived int64 keys",
+                      "properties": {
+                        "column": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "entries": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "derived_id": {
+                                "type": "integer"
+                              },
+                              "original_value": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "derived_id",
+                              "original_value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "column",
+                        "entries"
+                      ],
+                      "type": "object"
+                    },
                     "feature_columns": {
-                      "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                      "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
                       "items": {
                         "minLength": 1,
                         "type": "string"
@@ -9271,7 +9376,14 @@
             "required": false,
             "schema": {
               "description": "the entity key to explain, read from `dataset_path`",
-              "type": "integer"
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ]
             }
           },
           {
@@ -9354,7 +9466,14 @@
                         },
                         "entity": {
                           "description": "present when a dataset entity was explained",
-                          "type": "integer"
+                          "oneOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
                         },
                         "raw": {
                           "description": "this row's raw score. Equals base_value + the sum of contributions",
@@ -12862,6 +12981,40 @@
                         },
                         "deployment": {
                           "type": "string"
+                        },
+                        "entity_key_mapping": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "entries": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "derived_id": {
+                                    "type": "integer"
+                                  },
+                                  "original_value": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "derived_id",
+                                  "original_value"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "column",
+                            "entries"
+                          ],
+                          "type": "object"
                         },
                         "features": {
                           "additionalProperties": false,
@@ -21943,7 +22096,14 @@
                   "entities": {
                     "description": "optional entity key per row (defaults to the row index); must match rows in length",
                     "items": {
-                      "type": "integer"
+                      "oneOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
                     },
                     "type": "array"
                   },
@@ -21952,10 +22112,17 @@
                     "type": "string"
                   },
                   "rows": {
-                    "description": "the batch to score: one object per entity mapping feature name to its numeric value; every feature the model was trained on must be present (extra features are ignored)",
+                    "description": "the batch to score: one object per entity mapping feature name to its numeric or boolean value; every feature the model was trained on must be present (extra features are ignored)",
                     "items": {
                       "additionalProperties": {
-                        "type": "number"
+                        "oneOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          }
+                        ]
                       },
                       "type": "object"
                     },
@@ -22012,7 +22179,14 @@
                             "additionalProperties": false,
                             "properties": {
                               "entity": {
-                                "type": "integer"
+                                "oneOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "string"
+                                  }
+                                ]
                               },
                               "risk": {
                                 "description": "the model's calibrated probability in [0, 1]",
@@ -24449,11 +24623,46 @@
                         ]
                       },
                       "entity_column": {
-                        "description": "the integer key of the thing being scored, one row per entity",
+                        "description": "the integer or text business key of the thing being scored, one row per entity",
                         "type": "string"
                       },
+                      "entity_key_mapping": {
+                        "additionalProperties": false,
+                        "description": "resolved text business ids and their derived int64 keys",
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "entries": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "derived_id": {
+                                  "type": "integer"
+                                },
+                                "original_value": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "derived_id",
+                                "original_value"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "entries"
+                        ],
+                        "type": "object"
+                      },
                       "feature_columns": {
-                        "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                        "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
                         "items": {
                           "minLength": 1,
                           "type": "string"
@@ -25322,11 +25531,46 @@
                       ]
                     },
                     "entity_column": {
-                      "description": "the integer key of the thing being scored, one row per entity",
+                      "description": "the integer or text business key of the thing being scored, one row per entity",
                       "type": "string"
                     },
+                    "entity_key_mapping": {
+                      "additionalProperties": false,
+                      "description": "resolved text business ids and their derived int64 keys",
+                      "properties": {
+                        "column": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "entries": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "derived_id": {
+                                "type": "integer"
+                              },
+                              "original_value": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "derived_id",
+                              "original_value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "column",
+                        "entries"
+                      ],
+                      "type": "object"
+                    },
                     "feature_columns": {
-                      "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                      "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
                       "items": {
                         "minLength": 1,
                         "type": "string"
@@ -25367,7 +25611,14 @@
                 "schema": {
                   "description": "entity key per supplied row (default: the row's index)",
                   "items": {
-                    "type": "integer"
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
                   },
                   "type": "array"
                 }
@@ -25478,7 +25729,14 @@
                           "items": {
                             "properties": {
                               "entity": {
-                                "type": "integer"
+                                "oneOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "string"
+                                  }
+                                ]
                               },
                               "risk": {
                                 "type": "number"

@@ -58,8 +58,10 @@ selected_columns(const NextBestActionPipeline &pipeline) {
   return result;
 }
 
-data::ResolvedDataset resolve_input(Node &node,
-                                    NextBestActionPipeline &pipeline) {
+data::ResolvedDataset resolve_input(
+    Node &node, NextBestActionPipeline &pipeline,
+    const data::DatasetSampler &sampler = {},
+    std::shared_ptr<const data::EntityKeyMapping> entity_keys = {}) {
   data::ResolvedDataset resolved;
   resolved.database = pipeline.database;
   resolved.table = pipeline.table;
@@ -103,6 +105,47 @@ data::ResolvedDataset resolve_input(Node &node,
         {"catalog_rows", dataset.rows}};
     resolved.table_id = dataset.table_id;
     resolved.rows = dataset.rows;
+    if (entity_keys) {
+      resolved.contract.entity_keys = std::move(entity_keys);
+      return resolved;
+    }
+    if (sampler) {
+      std::string sample_error;
+      const std::vector<Json> rows = sampler(
+          resolved.database, resolved.table, 0, sample_error);
+      if (!sample_error.empty()) {
+        resolved.error =
+            "next-best-action could not map entity column: " + sample_error;
+        return resolved;
+      }
+      std::vector<Json> values;
+      values.reserve(rows.size());
+      bool text_entities = false;
+      for (const Json &row : rows) {
+        const auto entity = row.find(resolved.contract.entity_column);
+        if (entity == row.end()) {
+          resolved.error =
+              "next-best-action row is missing entity column '" +
+              resolved.contract.entity_column + "'";
+          return resolved;
+        }
+        text_entities = text_entities || entity->is_string();
+        values.push_back(*entity);
+      }
+      if (text_entities) {
+        data::EntityKeyMappingResult mapped =
+            data::derive_entity_key_mapping(
+                resolved.contract.entity_column, values);
+        if (!mapped.ok()) {
+          resolved.error = std::move(mapped.error);
+          return resolved;
+        }
+        resolved.contract.entity_keys = std::move(mapped.mapping);
+        resolved.notes.push_back(
+            "entity column '" + resolved.contract.entity_column +
+            "' (text; keyed by a derived id, outputs carry the original value)");
+      }
+    }
     return resolved;
   }
   resolved.error = "next-best-action table not found: " + pipeline.database +
@@ -197,7 +240,16 @@ run_peer(Node &node, const compute::CoordinatedLaunchRequest &request) {
   pipeline->params.model_name =
       request.payload["model_name"].get<std::string>();
   pipeline->params.round_tag = "ml.next_best_action." + request.id;
-  const data::ResolvedDataset dataset = resolve_input(node, *pipeline);
+  std::shared_ptr<const data::EntityKeyMapping> entity_keys;
+  if (!request.payload["entity_key_mapping"].is_null()) {
+    entity_keys = data::entity_key_mapping_from_json(
+        request.payload["entity_key_mapping"], &error);
+    if (!entity_keys) {
+      return {false, "next-best-action launch: " + error};
+    }
+  }
+  const data::ResolvedDataset dataset =
+      resolve_input(node, *pipeline, {}, std::move(entity_keys));
   if (!dataset.ok()) {
     return {false, dataset.error};
   }
@@ -220,12 +272,15 @@ const nlohmann::json &next_best_action_launch_schema() {
       {"title", "zetta.NextBestActionLaunch"},
       {"type", "object"},
       {"additionalProperties", false},
-      {"required", {"graph", "project_id", "graph_id", "model_name"}},
+      {"required",
+       {"graph", "project_id", "graph_id", "model_name",
+        "entity_key_mapping"}},
       {"properties",
        {{"graph", {{"type", "object"}}},
         {"project_id", {{"type", "string"}, {"minLength", 1}}},
         {"graph_id", {{"type", "string"}, {"minLength", 1}}},
-        {"model_name", {{"type", "string"}, {"minLength", 1}}}}}};
+        {"model_name", {{"type", "string"}, {"minLength", 1}}},
+        {"entity_key_mapping", {{"type", {"object", "null"}}}}}}};
   return schema;
 }
 
@@ -264,7 +319,9 @@ api::ApiResult run_next_best_action_methodology(RunRequest &request) {
         "M-8 reads the source, roles and policy in its stored pipeline; use "
         "compile hints and coordinated execution");
   }
-  data::ResolvedDataset dataset = resolve_input(node, *pipeline);
+  data::ResolvedDataset dataset = resolve_input(
+      node, *pipeline,
+      data::default_dataset_sampler(node, request.context->cluster));
   if (!dataset.ok()) {
     return api::ApiResult::failure("invalid_input", dataset.error);
   }
@@ -320,7 +377,11 @@ api::ApiResult run_next_best_action_methodology(RunRequest &request) {
   launch.payload = {{"graph", ir::to_json(request.graph->graph())},
                     {"project_id", request.project->id()},
                     {"graph_id", request.graph->id()},
-                    {"model_name", work->params.model_name}};
+                    {"model_name", work->params.model_name},
+                    {"entity_key_mapping",
+                     work->dataset.contract.entity_keys
+                         ? work->dataset.contract.entity_keys->to_json()
+                         : Json(nullptr)}};
   node.coordinated_launch()->fan_out(launch);
 
   auto action = std::make_shared<RecommendationAction>();

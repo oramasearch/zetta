@@ -367,7 +367,8 @@ ddf::DataFrameSchema survival_schema(const data::ResolvedDataset& dataset,
     schema.columns.push_back(
         {.name = "entity",
          .field = dataset.contract.entity_column,
-         .dtype = DataType::Int64});
+         .dtype = DataType::Int64,
+         .entity_keys = dataset.contract.entity_keys});
     schema.columns.push_back(
         {.name = "start_time",
          .field = dataset.contract.time_column,
@@ -760,6 +761,10 @@ SurvivalRunResult run_survival_on_dataset(
                 {"objective", "discrete_time_hazard"},
                 {"features", dataset.contract.feature_columns},
                 {"drivers", std::move(drivers)}};
+            if (dataset.contract.entity_keys) {
+                model_value.feature_schema["entity_key_mapping"] =
+                    dataset.contract.entity_keys->to_json();
+            }
             model_value.metrics = {
                 {"concordance", result.training.metrics.concordance},
                 {"integrated_brier_score",
@@ -800,7 +805,8 @@ SurvivalRunResult run_survival_on_dataset(
                 for (const SurvivalCurve& curve : result.training.curves) {
                     for (const SurvivalPoint& point : curve.points) {
                         survival_table->add_row(
-                            {{"entity", curve.entity},
+                            {{"entity", data::entity_output(
+                                            dataset.contract, curve.entity)},
                              {"horizon", point.horizon},
                              {"hazard", point.hazard},
                              {"survival", point.survival},
@@ -829,6 +835,10 @@ SurvivalRunResult run_survival_on_dataset(
     }
 
     node.run_on_owner([&] {
+        if (dataset.contract.entity_keys) {
+            result.run->set_entity_key_mapping(
+                dataset.contract.entity_keys->to_json());
+        }
         std::vector<pipeline::RunOutput> outputs;
         if (!result.model_id.empty()) {
             outputs.push_back(
