@@ -134,6 +134,7 @@ struct ChurnPipelineConfig {
     // in system.jobs); the Run is labelled separately via GraphExecutor.
     std::string project;
     std::string graph;
+    ml::TrainProgressCallback training_progress;
 };
 
 // The real churn StepExecutor. Construct with the node, a started JobCoordinator, a

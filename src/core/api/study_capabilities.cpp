@@ -5,6 +5,7 @@
 
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
@@ -237,7 +238,7 @@ std::vector<zetta::ml::StudyParameter> default_space(
     if (family.choices.empty()) family.choices.push_back(methodology.id);
     if (methodology.id != "M-1") return {std::move(family)};
 
-    family.choices = {"gbdt", "linear"};
+    family.choices = {"gbdt"};
     zetta::ml::StudyParameter trees;
     trees.name = "gbdt.num_trees";
     trees.kind = zetta::ml::ParameterKind::Integer;
@@ -260,14 +261,101 @@ std::vector<zetta::ml::StudyParameter> default_space(
     learning_rate.maximum = 0.5;
     learning_rate.logarithmic = true;
     zetta::ml::StudyParameter regularization;
-    regularization.name = "linear.l2";
+    regularization.name = "gbdt.l2_regularization";
     regularization.minimum = 0.000001;
     regularization.maximum = 10.0;
     regularization.logarithmic = true;
     regularization.condition_parameter = "model_family";
-    regularization.condition_values = {"linear"};
+    regularization.condition_values = {"gbdt"};
     return {std::move(family), std::move(trees), std::move(depth),
             std::move(learning_rate), std::move(regularization)};
+}
+
+bool validate_driver_spec(zetta::Node& node, zetta::ml::StudySpec& spec,
+                          std::string& reason) {
+    const bool has_project = !spec.project.empty();
+    const bool has_pipeline = !spec.pipeline.empty();
+    if (has_project != has_pipeline) {
+        reason = "/project: project and pipeline must be supplied together";
+        return false;
+    }
+    if (!has_project && spec.dataset.empty()) {
+        reason = "/dataset: a dataset-level study requires database.table";
+        return false;
+    }
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::find_methodology(spec.methodology);
+    if (methodology == nullptr || methodology->id != "M-1") {
+        reason = "/methodology: the study driver currently supports M-1; '" +
+                 spec.methodology + "' cannot run real study trials";
+        return false;
+    }
+    spec.methodology = methodology->id;
+    if (spec.objective.validation_split != "validation") {
+        reason = "/objective/validation_split: M-1 supports the 'validation' split";
+        return false;
+    }
+    static const std::set<std::string> objective_metrics = {
+        "validation.accuracy", "validation.auc", "validation.log_loss"};
+    if (!objective_metrics.contains(spec.objective.metric)) {
+        reason = "/objective/metric: unsupported M-1 validation metric '" +
+                 spec.objective.metric + "'";
+        return false;
+    }
+    static const std::set<std::string> supported = {
+        "model_family", "gbdt.num_trees", "gbdt.max_depth",
+        "gbdt.max_bins", "learning_rate", "gbdt.learning_rate",
+        "l2_regularization", "gbdt.l2_regularization",
+        "min_split_gain", "gbdt.min_split_gain", "min_child_hessian",
+        "gbdt.min_child_hessian", "holdout_fraction",
+        "gbdt.holdout_fraction"};
+    for (zetta::ml::StudyParameter& parameter : spec.search_space) {
+        if (!supported.contains(parameter.name)) {
+            reason = "/search_space/" + parameter.name +
+                     ": unknown M-1 hyperparameter";
+            return false;
+        }
+        for (nlohmann::json& value : parameter.condition_values) {
+            if (value == "gradient_boosting") value = "gbdt";
+        }
+        if (parameter.name != "model_family") continue;
+        for (nlohmann::json& choice : parameter.choices) {
+            if (!choice.is_string()) {
+                reason = "/search_space/model_family/choices: must be strings";
+                return false;
+            }
+            const std::string family = choice.get<std::string>();
+            if (family == "gradient_boosting") {
+                choice = "gbdt";
+            } else if (family != "gbdt") {
+                reason = "/search_space/model_family/choices: unsupported family '" +
+                         family + "'";
+                return false;
+            }
+        }
+        std::ranges::sort(parameter.choices,
+                          [](const nlohmann::json& left,
+                             const nlohmann::json& right) {
+                              return left.dump() < right.dump();
+                          });
+        const auto unique = std::ranges::unique(parameter.choices);
+        parameter.choices.erase(unique.begin(), unique.end());
+    }
+    if (!spec.dataset.empty()) {
+        const zetta::data::DatasetPath path =
+            zetta::data::parse_dataset_path(spec.dataset);
+        if (path.kind != zetta::data::DatasetPathKind::Table) {
+            reason = "/dataset: study datasets must name database.table";
+            return false;
+        }
+        const zetta::data::ResolvedDataset dataset =
+            zetta::data::resolve_dataset(node, path);
+        if (!dataset.ok()) {
+            reason = "/dataset: " + dataset.error;
+            return false;
+        }
+    }
+    return true;
 }
 
 std::optional<zetta::ml::StudySpec> spec_from_input(
@@ -372,9 +460,12 @@ void publish_study_event(zetta::Node& node,
 ApiResult handle_create_study(const nlohmann::json& input,
                               ApiContext& context) {
     std::string reason;
-    const std::optional<zetta::ml::StudySpec> spec =
+    std::optional<zetta::ml::StudySpec> spec =
         spec_from_input(input, reason);
     if (!spec) return ApiResult::failure("invalid_input", reason);
+    if (!validate_driver_spec(context.node, *spec, reason)) {
+        return ApiResult::failure("invalid_input", reason);
+    }
     if (!spec->project.empty() || !spec->pipeline.empty()) {
         const auto project = project_for(context.node, spec->project);
         if (!project) {
@@ -463,11 +554,13 @@ ApiResult handle_stop_study(const nlohmann::json& input,
             running.push_back(trial.run);
         }
     }
-    study->stop("stopped by caller");
+    context.node.request_stop_study_work(study->id());
+    study->stop("stopped");
     for (const std::string& run_id : running) {
         if (const auto run = context.node.find_run(run_id)) {
             run->set_status(zetta::pipeline::RunStatus::Failed);
         }
+        publish_study_event(context.node, study, "trial_failed", run_id);
     }
     publish_study_event(context.node, study, "stopped");
     return ApiResult::success({{"study", study->id()},
@@ -501,13 +594,14 @@ ApiResult handle_stop_trial(const nlohmann::json& input,
     if (!study) return ApiResult::failure("not_found", "study was not found", "/study");
     const std::string run_id = input.at("run").get<std::string>();
     std::string reason;
+    context.node.request_stop_study_work(study->id(), run_id);
     if (!study->stop_trial(run_id, "stopped by caller", &reason)) {
         return ApiResult::failure("invalid_input", reason, "/run");
     }
     if (const auto run = context.node.find_run(run_id)) {
         run->set_status(zetta::pipeline::RunStatus::Failed);
     }
-    publish_study_event(context.node, study, "trial_stopped", run_id);
+    publish_study_event(context.node, study, "trial_failed", run_id);
     return ApiResult::success(
         {{"study", study->id()}, {"run", run_id}, {"state", "failed"}});
 }

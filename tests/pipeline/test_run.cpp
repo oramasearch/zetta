@@ -3,6 +3,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <latch>
+#include <limits>
 #include <string>
 #include <thread>
 
@@ -296,6 +298,201 @@ TEST(RunMetrics, PrivacySuppressionSurvivesRestartAndDoesNotAddSystemMetrics) {
     EXPECT_EQ(run->get_metrics().at("metrics_suppressed"), "differential_privacy");
     EXPECT_EQ(run->get_metrics().at("series").size(), 1u);
     restored.stop();
+}
+
+TEST(RunMetrics, AutomaticSystemSamplesAdvanceWithinTheSameNaturalStep) {
+    TempDir directory;
+    Node node{config_for(directory)};
+    ASSERT_TRUE(node.start());
+    const auto run = node.create_run();
+    ASSERT_TRUE(run);
+    std::string error;
+    ASSERT_TRUE(node.log_run_metrics(
+        run->id(), 0, {{"fit.started", 1.0}}, {}, &error))
+        << error;
+    ASSERT_TRUE(node.log_run_metrics(
+        run->id(), 0, {{"train.loss", 0.5}}, {}, &error))
+        << error;
+    const auto& metrics = run->value().metrics;
+    EXPECT_EQ(metrics["series"]["system.memory.used_bytes"]["steps"],
+              nlohmann::json::array({0, 1}));
+    EXPECT_EQ(metrics["series"]["system.memory.percent"]["steps"],
+              nlohmann::json::array({0, 1}));
+    EXPECT_EQ(metrics["series"]["train.loss"]["steps"],
+              nlohmann::json::array({0}));
+    node.stop();
+}
+
+TEST(RunMetrics, InitialMetricAndSamplerRaceThroughTheOwnerQueue) {
+    TempDir directory;
+    Node node{config_for(directory)};
+    ASSERT_TRUE(node.start());
+    node.tick();
+    const auto run = node.create_run();
+    ASSERT_TRUE(run);
+    std::latch start{1};
+    std::latch queued{2};
+    node.set_owner_wakeup([&] {
+        queued.count_down();
+    });
+    bool initial_ok = false;
+    bool sampler_ok = false;
+    std::string initial_error;
+    std::string sampler_error;
+    std::jthread initial([&] {
+        start.wait();
+        node.run_on_owner([&] {
+            EXPECT_TRUE(node.on_owner_thread());
+            initial_ok = node.log_run_metrics(
+                run->id(), 0, {{"fit.started", 1.0}}, {}, &initial_error);
+        });
+    });
+    std::jthread sampler([&] {
+        start.wait();
+        node.run_on_owner([&] {
+            EXPECT_TRUE(node.on_owner_thread());
+            sampler_ok = node.log_run_metrics(
+                run->id(), 0, {{"train.loss", 0.5}}, {}, &sampler_error);
+        });
+    });
+    start.count_down();
+    // Both producers must be queued before the owner allocates either step.
+    queued.wait();
+    node.set_owner_wakeup({});
+    node.drain_owner_work();
+    initial.join();
+    sampler.join();
+    EXPECT_TRUE(initial_ok) << initial_error;
+    EXPECT_TRUE(sampler_ok) << sampler_error;
+    const auto& series = run->value().metrics["series"];
+    EXPECT_EQ(series["system.memory.used_bytes"]["steps"],
+              nlohmann::json::array({0, 1}));
+    EXPECT_EQ(series["system.memory.percent"]["steps"],
+              nlohmann::json::array({0, 1}));
+    node.stop();
+}
+
+TEST(RunMetrics, AutomaticStepsArePerRunAndMetricAndSurviveRestart) {
+    TempDir directory;
+    std::string run_id;
+    {
+        Node node{config_for(directory)};
+        ASSERT_TRUE(node.start());
+        const auto run = node.create_run();
+        ASSERT_TRUE(run);
+        run_id = run->id();
+        ASSERT_TRUE(run->log_metrics(40, {{"system.memory.percent", 10.0}}));
+        ASSERT_TRUE(node.log_run_metrics(run_id, 4, {{"fit.started", 1.0}}));
+        ASSERT_TRUE(node.log_run_metrics(run_id, 4, {{"train.loss", 0.5}}));
+        const auto& series = run->value().metrics["series"];
+        EXPECT_EQ(series["system.memory.percent"]["steps"],
+                  nlohmann::json::array({40, 41, 42}));
+        EXPECT_EQ(series["system.memory.used_bytes"]["steps"],
+                  nlohmann::json::array({4, 5}));
+
+        const auto other_run = node.create_run();
+        ASSERT_TRUE(other_run);
+        ASSERT_TRUE(node.log_run_metrics(
+            other_run->id(), 4, {{"fit.started", 1.0}}));
+        EXPECT_EQ(other_run->value().metrics["series"]
+                      ["system.memory.percent"]["steps"],
+                  nlohmann::json::array({4}));
+        node.stop();
+    }
+    Node restored{config_for(directory)};
+    ASSERT_TRUE(restored.start());
+    const auto run = restored.find_run(run_id);
+    ASSERT_TRUE(run);
+    ASSERT_TRUE(restored.log_run_metrics(run_id, 1, {{"validation.auc", 0.8}}));
+    ASSERT_TRUE(restored.log_run_metrics(run_id, 100, {{"train.loss", 0.4}}));
+    const auto& metrics = run->value().metrics;
+    EXPECT_EQ(metrics["series"]["system.memory.percent"]["steps"],
+              nlohmann::json::array({40, 41, 42, 43, 100}));
+    EXPECT_EQ(metrics["series"]["system.memory.used_bytes"]["steps"],
+              nlohmann::json::array({4, 5, 6, 100}));
+    EXPECT_EQ(metrics["summary"]["system.memory.percent"]["final_step"], 100);
+    restored.stop();
+}
+
+TEST(RunMetrics, CallerStepsRemainStrictAndRejectionIsAtomic) {
+    TempDir directory;
+    Node node{config_for(directory)};
+    ASSERT_TRUE(node.start());
+    const auto run = node.create_run();
+    ASSERT_TRUE(run);
+    ASSERT_TRUE(node.log_run_metrics(
+        run->id(), 3, {{"train.loss", 0.5}, {"system.memory.percent", 25.0}}));
+    const auto before = run->value().metrics;
+    EXPECT_EQ(before["series"]["system.memory.percent"]["values"],
+              nlohmann::json::array({25.0}));
+    std::string error;
+    EXPECT_FALSE(node.log_run_metrics(
+        run->id(), 3, {{"train.loss", 0.4}}, {}, &error));
+    EXPECT_NE(error.find("train.loss"), std::string::npos);
+    EXPECT_EQ(run->value().metrics, before);
+    EXPECT_FALSE(node.log_run_metrics(
+        run->id(), 2, {{"train.loss", 0.4}}, {}, &error));
+    EXPECT_EQ(run->value().metrics, before);
+    EXPECT_FALSE(node.log_run_metrics(
+        run->id(), 3, {{"system.memory.percent", 26.0}}, {}, &error));
+    EXPECT_NE(error.find("system.memory.percent"), std::string::npos);
+    EXPECT_EQ(run->value().metrics, before);
+    node.stop();
+}
+
+TEST(RunMetrics, AutomaticStepExhaustionDoesNotWrapOrPartiallyCommit) {
+    TempDir directory;
+    Node node{config_for(directory)};
+    ASSERT_TRUE(node.start());
+    const auto run = node.create_run();
+    ASSERT_TRUE(run);
+    std::string error;
+    // The JSON Schema validator accepts signed 64-bit nonnegative integers.
+    ASSERT_TRUE(run->log_metrics(std::numeric_limits<std::int64_t>::max(),
+                                 {{"system.memory.used_bytes", 1.0}}, {}, &error))
+        << error;
+    const auto before = run->value().metrics;
+    EXPECT_FALSE(node.log_run_metrics(
+        run->id(), 0, {{"train.loss", 0.4}}, {}, &error));
+    EXPECT_NE(error.find("system.memory.used_bytes"), std::string::npos);
+    EXPECT_EQ(run->value().metrics, before);
+    node.stop();
+}
+
+TEST(RunMetrics, AutomaticLiveBatchesMatchStoredSteps) {
+    TempDir directory;
+    Node node{config_for(directory)};
+    ASSERT_TRUE(node.start());
+    const auto run = node.create_run();
+    ASSERT_TRUE(run);
+    const std::string time = "2026-09-30T00:00:00.000Z";
+    ASSERT_TRUE(node.log_run_metrics(run->id(), 7, {{"fit.started", 1.0}}, time));
+    ASSERT_TRUE(node.log_run_metrics(run->id(), 7, {{"train.loss", 0.5}}, time));
+    const zetta::pubsub::Identity engine{
+        zetta::pubsub::Address{"service", "run-metrics"}, {}};
+    zetta::pubsub::SubscribeOptions options;
+    options.start = zetta::pubsub::StartPosition::Oldest;
+    auto subscription = node.pubsub()->subscribe(
+        engine, {"agent", "metric-test"}, {"topic", "run-metrics." + run->id()},
+        options);
+    ASSERT_TRUE(subscription);
+    nlohmann::json observed = nlohmann::json::object();
+    for (int batch_index = 0; batch_index < 3; ++batch_index) {
+        const auto delivery = subscription->receive(std::chrono::seconds(5));
+        ASSERT_TRUE(delivery);
+        const auto batch = nlohmann::json::parse(delivery->event.payload.bytes());
+        EXPECT_EQ(batch.at("run"), run->id());
+        EXPECT_EQ(batch.at("time"), time);
+        for (const auto& [name, value] : batch.at("values").items()) {
+            observed[name]["steps"].push_back(batch.at("step"));
+            observed[name]["values"].push_back(value);
+            observed[name]["times"].push_back(batch.at("time"));
+        }
+    }
+    EXPECT_EQ(observed, run->value().metrics.at("series"));
+    EXPECT_FALSE(subscription->receive(std::chrono::milliseconds(0)));
+    subscription.reset();
+    node.stop();
 }
 
 TEST(RunMetrics, QwenFineTuneProducesReadableAndLiveLossCurves) {

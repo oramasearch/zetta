@@ -125,7 +125,8 @@ public:
     ExecutionResult execute(Node& node, const ir::ExecutionGraph& graph,
                             std::string project = {},
                             std::string graph_id = {},
-                            const std::atomic<bool>* cancel = nullptr) const;
+                            const std::atomic<bool>* cancel = nullptr,
+                            std::shared_ptr<Run> existing_run = {}) const;
 
     // The step executor this orchestrator runs each step with.
     const StepExecutor& step_executor() const { return *step_executor_; }

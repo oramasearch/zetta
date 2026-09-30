@@ -177,6 +177,7 @@ struct ChurnStepExecutor::State {
     bool features_ready = false;
     ddf::FeatureTable feature_table;
     ddf::DataFrame feature_frame;  // device-backed X+label, materialized once, reused
+    std::vector<double> validation_times;
 
     // The GLOBAL feature table, before it is sliced to this node's entities. The
     // featurize job broadcasts it identically to every node, so keeping it costs
@@ -390,6 +391,28 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
     state.dataset_events = result.events_read;
     state.global_table = std::move(result.table);
     state.feature_table = slice_feature_table(state.global_table, local_entities);
+    if (!config_.featurize.time_column.empty()) {
+        std::vector<std::int64_t> entities(state.accounts.row_count());
+        std::vector<double> times(state.accounts.row_count());
+        if (state.accounts.to_host<std::int64_t>(config_.entity_column,
+                                                 entities).ok() &&
+            state.accounts.to_host<double>(config_.featurize.time_column,
+                                           times).ok()) {
+            std::unordered_map<std::int64_t, double> time_by_entity;
+            for (std::size_t index = 0; index < entities.size(); ++index) {
+                time_by_entity[entities[index]] = times[index];
+            }
+            state.validation_times.reserve(state.feature_table.row_count());
+            for (const std::int64_t entity : state.feature_table.entities) {
+                const auto found = time_by_entity.find(entity);
+                if (found == time_by_entity.end()) {
+                    state.validation_times.clear();
+                    break;
+                }
+                state.validation_times.push_back(found->second);
+            }
+        }
+    }
 
     auto frame = state.feature_table.to_data_frame(device_);
     if (!frame.ok()) {
@@ -428,7 +451,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
         coordinator_, *job, state.feature_frame,
         state.feature_table.feature_names, state.feature_table.label_name,
         config_.params, &node_, config_.model_name, /*round_tag=*/{},
-        config_.calibration, ml::kDefaultGbdtTimeout, {}, state.run_id);
+        config_.calibration, ml::kDefaultGbdtTimeout, {}, state.run_id,
+        config_.training_progress, state.validation_times);
     if (!result.ok()) {
         std::string detail;
         node_.run_on_owner([&] { detail = job->detail(); });

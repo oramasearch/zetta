@@ -306,8 +306,22 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
     }
 
     const auto caller = journey_caller();
+    const auto project = node.create_project("mcp study project");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    graph.add_node(zetta::ir::StepKind::Connect, "Read source", {}, "read");
+    graph.add_node(zetta::ir::StepKind::Clean, "Build features", {}, "clean");
+    graph.add_node(zetta::ir::StepKind::Model, "Train GBDT",
+                   {{"model_kind", "gbdt"}, {"calibrated", true}}, "model");
+    graph.add_edge("read", "clean");
+    graph.add_edge("clean", "model");
+    const auto pipeline =
+        project->create_graph("mcp study pipeline", std::move(graph));
+    ASSERT_TRUE(pipeline);
     const nlohmann::json input = {
         {"name", "mcp-study"},
+        {"project", project->id()},
+        {"pipeline", pipeline->id()},
         {"methodology", "M-1"},
         {"objective",
          {{"metric", "validation.auc"},
@@ -332,7 +346,8 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
     EXPECT_TRUE(caller("get_study_analysis", {{"study", study_id}}).ok);
 
     const auto study = node.find_study(study_id);
-    const auto stopped_run = node.create_run("", "mcp-study-trial");
+    const auto stopped_run =
+        node.create_run(project->id(), pipeline->id());
     ASSERT_TRUE(study);
     ASSERT_TRUE(stopped_run);
     zetta::ml::StudyTrial stopped_trial;
@@ -344,7 +359,8 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
                        {{"study", study_id}, {"run", stopped_run->id()}})
                     .ok);
 
-    const auto promoted_run = node.create_run("", "mcp-study-trial");
+    const auto promoted_run =
+        node.create_run(project->id(), pipeline->id());
     ASSERT_TRUE(promoted_run);
     zetta::ml::StudyTrial promoted_trial;
     promoted_trial.number = 1;
@@ -364,7 +380,8 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
         "promote_trial", {{"study", study_id}, {"run", promoted_run->id()}});
     ASSERT_TRUE(promoted.ok) << promoted.error.message;
     EXPECT_EQ(promoted.value.at("model"), model->id());
-    const auto active_run = node.create_run("", "mcp-study-trial");
+    const auto active_run =
+        node.create_run(project->id(), pipeline->id());
     ASSERT_TRUE(active_run);
     zetta::ml::StudyTrial active_trial;
     active_trial.number = 2;

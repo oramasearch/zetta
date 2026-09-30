@@ -10,15 +10,22 @@
 #include <numeric>
 #include <random>
 #include <set>
+#include <thread>
 #include <utility>
 
 #include <nlohmann/json-schema.hpp>
 
 #include "zetta/cluster/replication.hpp"
+#include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/work_stealing_scheduler.hpp"
+#include "zetta/data/dataset_path.hpp"
+#include "zetta/ir/serialization.hpp"
+#include "zetta/ml/gbdt.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pubsub/pubsub.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/util/timestamp.hpp"
 
 #include "../catalog.hpp"
@@ -749,6 +756,22 @@ bool Study::stop_trial(const std::string& run, std::string reason,
                         std::move(reason), {}, error);
 }
 
+bool Study::reset_trial_for_retry(const std::string& run,
+                                  std::string* error) {
+    StudyTrial* trial = find_trial(run);
+    if (trial == nullptr || trial->state != TrialState::Running) {
+        if (error != nullptr) *error = "/run: no running trial with that Run";
+        return false;
+    }
+    trial->objective.reset();
+    trial->cost = 0.0;
+    trial->intermediate.clear();
+    trial->reason.clear();
+    trial->model.clear();
+    capture_and_persist();
+    return true;
+}
+
 void Study::stop(std::string reason) {
     value_.status = StudyStatus::Stopped;
     value_.stop_reason = std::move(reason);
@@ -1157,6 +1180,632 @@ StudyRunResult run_study(Node& node, Study& study,
     }
     result.stop_reason = study.value().stop_reason;
     return result;
+}
+
+namespace {
+
+struct RealTrialPlan {
+    ir::ExecutionGraph graph;
+    usecases::churn::ChurnTableInput table;
+    usecases::churn::ChurnSolutionOptions options;
+};
+
+std::shared_ptr<pipeline::Project> study_project(
+    Node& node, const std::string& reference) {
+    for (const std::shared_ptr<pipeline::Project>& project : node.projects()) {
+        if (project &&
+            (project->id() == reference || project->name() == reference)) {
+            return project;
+        }
+    }
+    return nullptr;
+}
+
+std::optional<ml::GbdtParams> study_gbdt_params(
+    const nlohmann::json& sampled, std::string& error) {
+    nlohmann::json values =
+        usecases::churn::default_churn_gbdt_params().to_json();
+    values["holdout_fraction"] = 0.2;
+    for (const auto& [name, value] : sampled.items()) {
+        if (name == "model_family") {
+            if (!value.is_string() || value.get<std::string>() != "gbdt") {
+                error = "model_family: only canonical 'gbdt' is supported";
+                return std::nullopt;
+            }
+            continue;
+        }
+        std::string parameter = name;
+        if (parameter.starts_with("gbdt.")) {
+            parameter.erase(0, std::string{"gbdt."}.size());
+        }
+        static const std::set<std::string> supported = {
+            "num_trees", "max_depth", "max_bins", "learning_rate",
+            "l2_regularization", "min_split_gain", "min_child_hessian",
+            "holdout_fraction"};
+        if (!supported.contains(parameter)) {
+            error = "unsupported M-1 hyperparameter '" + name + "'";
+            return std::nullopt;
+        }
+        values[parameter] = value;
+    }
+    std::optional<ml::GbdtParams> parsed = ml::GbdtParams::from_json(values);
+    if (!parsed) {
+        error = "sampled M-1 hyperparameters are invalid";
+    }
+    return parsed;
+}
+
+std::optional<RealTrialPlan> prepare_real_trial(
+    Node& node, const StudySpec& spec, const nlohmann::json& sampled,
+    const std::string& run_id, const std::atomic<bool>* cancel,
+    std::string& error) {
+    RealTrialPlan plan;
+    std::string dataset = spec.dataset;
+    if (!spec.project.empty() || !spec.pipeline.empty()) {
+        std::shared_ptr<pipeline::Project> project;
+        std::shared_ptr<pipeline::ProjectGraph> stored;
+        node.run_on_owner([&] {
+            project = study_project(node, spec.project);
+            if (!project) return;
+            stored = project->find_graph_by_id(spec.pipeline)
+                         ? project->find_graph_by_id(spec.pipeline)
+                         : project->find_graph(spec.pipeline);
+            if (!stored) return;
+            const std::optional<ir::ExecutionGraph> copied =
+                ir::from_json(ir::to_json(stored->graph()), &error);
+            if (!copied) return;
+            plan.graph = *copied;
+            plan.options.project = project->id();
+            plan.options.graph = stored->id();
+        });
+        if (!project) {
+            error = "study project was not found";
+            return std::nullopt;
+        }
+        if (!stored) {
+            error = "study Pipeline was not found";
+            return std::nullopt;
+        }
+        if (!error.empty()) return std::nullopt;
+        if (dataset.empty()) {
+            for (const std::shared_ptr<ir::Node>& source :
+                 plan.graph.nodes_of_kind(ir::StepKind::Connect)) {
+                const std::string database =
+                    source->attributes.value("source", std::string{});
+                const std::string table =
+                    source->attributes.value("table", std::string{});
+                if (!database.empty() && !table.empty()) {
+                    dataset = database + "." + table;
+                    break;
+                }
+            }
+        }
+    }
+    if (dataset.empty()) {
+        error = "study dataset was not supplied and the Pipeline names none";
+        return std::nullopt;
+    }
+    const data::DatasetPath path = data::parse_dataset_path(dataset);
+    if (path.kind != data::DatasetPathKind::Table) {
+        error = "study datasets must name a landed database.table";
+        return std::nullopt;
+    }
+    data::DatasetContract overrides;
+    const data::SampledDataset sampled_dataset = data::sample_dataset(node, path);
+    if (!sampled_dataset.ok()) {
+        error = sampled_dataset.error;
+        return std::nullopt;
+    }
+    const auto observed_at = std::ranges::find(sampled_dataset.columns,
+                                                "observed_at");
+    if (observed_at != sampled_dataset.columns.end()) {
+        double latest = 0.0;
+        bool found_time = false;
+        for (const nlohmann::json& row : sampled_dataset.sample) {
+            const auto value = row.find("observed_at");
+            if (value == row.end()) continue;
+            const std::optional<double> seconds = util::parse_time_seconds(*value);
+            if (!seconds) continue;
+            latest = found_time ? std::max(latest, *seconds) : *seconds;
+            found_time = true;
+        }
+        if (found_time) {
+            overrides.time_column = "observed_at";
+            overrides.as_of = latest;
+        }
+    }
+    const data::ResolvedDataset resolved = data::resolve_dataset(
+        node, path, overrides, data::default_dataset_sampler(node));
+    if (!resolved.ok()) {
+        error = resolved.error;
+        return std::nullopt;
+    }
+    plan.table.table_id = resolved.table_id;
+    plan.table.dataset_name = dataset;
+    plan.table.contract = resolved.contract;
+    plan.table.notes = resolved.notes;
+
+    if (plan.graph.empty()) {
+        plan.graph.add_node(ir::StepKind::Connect, "Load study dataset",
+                            {{"source", path.database}, {"table", path.table}},
+                            "load_study_dataset");
+        plan.graph.add_node(ir::StepKind::Clean, "Build study features", {},
+                            "build_study_features");
+        plan.graph.add_node(
+            ir::StepKind::Model, "Train study model",
+            {{"model_kind", "gbdt"},
+             {"algo", "gbdt"},
+             {"target", resolved.contract.label_column}},
+            "train_study_model");
+        plan.graph.add_edge("load_study_dataset", "build_study_features");
+        plan.graph.add_edge("build_study_features", "train_study_model");
+    }
+
+    const std::optional<ml::GbdtParams> params =
+        study_gbdt_params(sampled, error);
+    if (!params) return std::nullopt;
+    plan.options.params = *params;
+    plan.options.run_id = run_id;
+    plan.options.cancel = cancel;
+    plan.options.model_name = "study-" + run_id.substr(0, 8);
+    plan.options.coordinate = true;
+    return plan;
+}
+
+std::optional<double> trial_objective(Node& node, const StudySpec& spec,
+                                      const std::string& model_id,
+                                      std::string& error) {
+    const std::shared_ptr<Model> model = node.find_model(model_id);
+    if (!model) {
+        error = "trial completed without a registered model";
+        return std::nullopt;
+    }
+    std::string metric = spec.objective.metric;
+    const std::size_t dot = metric.rfind('.');
+    if (dot != std::string::npos) metric.erase(0, dot + 1);
+    const nlohmann::json& metrics = model->metrics();
+    const std::string validation_metric = "held_out_" + metric;
+    const auto found = metrics.find(validation_metric);
+    if (found == metrics.end() || !found->is_number()) {
+        error = "trial model did not report objective metric '" +
+                spec.objective.metric + "' on validation split '" +
+                spec.objective.validation_split + "'";
+        return std::nullopt;
+    }
+    return found->get<double>();
+}
+
+std::size_t stable_hash(std::string_view value) {
+    std::size_t hash = 1469598103934665603ull;
+    for (const unsigned char character : value) {
+        hash ^= character;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+bool wall_time_reached(const StudyValue& value) {
+    if (value.spec.budgets.max_wall_time_ms == 0) return false;
+    const std::optional<double> created =
+        util::parse_iso8601_seconds(value.created);
+    const std::optional<double> now =
+        util::parse_iso8601_seconds(util::now_iso8601());
+    return created && now &&
+           (*now - *created) * 1000.0 >=
+               static_cast<double>(value.spec.budgets.max_wall_time_ms);
+}
+
+}  // namespace
+
+struct StudyDriver::State {
+    struct TrialResult {
+        std::string run;
+        std::optional<double> objective;
+        double cost = 0.0;
+        std::string model;
+        std::string error;
+        bool pruned = false;
+    };
+
+    struct ActiveStudy {
+        std::string id;
+        std::shared_ptr<std::atomic<bool>> cancel;
+        std::shared_ptr<std::atomic<bool>> done;
+        std::map<std::string, std::shared_ptr<std::atomic<bool>>> trial_cancels;
+    };
+
+    explicit State(Node& owned_node)
+        : node(owned_node), driver_scheduler(1), trial_scheduler(4) {}
+
+    Node& node;
+    compute::WorkStealingScheduler driver_scheduler;
+    compute::WorkStealingScheduler trial_scheduler;
+    std::vector<ActiveStudy> active;
+    bool stopping = false;
+
+    ActiveStudy* find_active(const std::string& study_id);
+    bool owns(const Study& study) const;
+    std::vector<StudyTrial> prepare_batch(const std::shared_ptr<Study>& study,
+                                          const StudyValue& snapshot);
+    TrialResult execute_trial(const std::shared_ptr<Study>& study,
+                              const StudyTrial& trial);
+    void apply_results(const std::shared_ptr<Study>& study,
+                       const std::vector<TrialResult>& results);
+    bool finish_for_budget(const std::shared_ptr<Study>& study,
+                           const StudyValue& snapshot);
+    void drive(const std::string& study_id,
+               const std::shared_ptr<std::atomic<bool>>& cancelled,
+               const std::shared_ptr<std::atomic<bool>>& done);
+    void launch(const std::shared_ptr<Study>& study);
+};
+
+StudyDriver::State::ActiveStudy* StudyDriver::State::find_active(
+    const std::string& study_id) {
+    const auto found = std::ranges::find(active, study_id, &ActiveStudy::id);
+    return found == active.end() ? nullptr : &*found;
+}
+
+bool StudyDriver::State::owns(const Study& study) const {
+    const std::vector<std::string> members = node.cluster_members();
+    if (members.empty()) return false;
+    const std::string& owner =
+        members[stable_hash(study.id()) % members.size()];
+    return owner == node.node_id();
+}
+
+bool StudyDriver::State::finish_for_budget(
+    const std::shared_ptr<Study>& study, const StudyValue& snapshot) {
+    std::string reason;
+    if (wall_time_reached(snapshot)) reason = "wall_time";
+    if (reason.empty() && snapshot.spec.budgets.cost_cap > 0.0 &&
+        snapshot.spent_cost >= snapshot.spec.budgets.cost_cap) {
+        reason = "budget";
+    }
+    if (reason.empty()) return false;
+    node.run_on_owner([&] {
+        if (study->status() != StudyStatus::Running) return;
+        std::vector<std::string> running;
+        for (const StudyTrial& trial : study->value().trials) {
+            if (trial.state == TrialState::Running) {
+                running.push_back(trial.run);
+            }
+        }
+        for (const std::string& run_id : running) {
+            study->stop_trial(run_id, "study budget reached: " + reason);
+            if (const std::shared_ptr<pipeline::Run> run =
+                    node.find_run(run_id)) {
+                run->set_status(pipeline::RunStatus::Failed);
+            }
+            publish_progress(node, *study, "trial_failed", run_id);
+        }
+        study->set_complete(reason);
+        publish_progress(node, *study, "study_complete");
+    });
+    return true;
+}
+
+std::vector<StudyTrial> StudyDriver::State::prepare_batch(
+    const std::shared_ptr<Study>& study, const StudyValue& snapshot) {
+    std::vector<StudyTrial> pending;
+    for (const StudyTrial& trial : snapshot.trials) {
+        if (trial.state == TrialState::Running) pending.push_back(trial);
+    }
+    const std::size_t remaining =
+        snapshot.spec.budgets.max_trials > snapshot.trials.size()
+            ? snapshot.spec.budgets.max_trials - snapshot.trials.size()
+            : 0;
+    const std::size_t limit = snapshot.spec.budgets.cost_cap > 0.0
+                                  ? 1
+                                  : snapshot.spec.budgets.max_parallel_trials;
+    const std::size_t available =
+        pending.size() < limit ? limit - pending.size() : 0;
+    const std::size_t add = std::min(remaining, available);
+    node.run_on_owner([&] {
+        for (std::size_t offset = 0; offset < add; ++offset) {
+            const std::size_t number = study->value().trials.size();
+            const nlohmann::json params = StudyOptimizer::sample(
+                study->spec(), study->value().trials, number);
+            const std::shared_ptr<pipeline::Run> run =
+                node.create_run(study->spec().project,
+                                study->spec().pipeline);
+            if (!run) {
+                study->stop("could not create a trial Run");
+                break;
+            }
+            run->set_status(pipeline::RunStatus::Running);
+            StudyTrial trial;
+            trial.number = number;
+            trial.run = run->id();
+            trial.params = params;
+            trial.seed = study->spec().seed + number;
+            nlohmann::json run_params = params;
+            run_params["study.id"] = study->id();
+            run_params["study.seed"] = trial.seed;
+            std::string error;
+            if (!run->log_params(std::move(run_params), &error)) {
+                study->stop(error);
+                break;
+            }
+            if (study->spec().differential_privacy) {
+                run->suppress_metrics_for_privacy();
+            }
+            if (!study->add_trial(trial)) break;
+            pending.push_back(std::move(trial));
+            publish_progress(node, *study, "trial_started", run->id());
+        }
+    });
+    return pending;
+}
+
+StudyDriver::State::TrialResult StudyDriver::State::execute_trial(
+    const std::shared_ptr<Study>& study, const StudyTrial& trial) {
+    TrialResult result;
+    result.run = trial.run;
+    StudySpec spec;
+    std::string study_id;
+    node.run_on_owner([&] {
+        spec = study->spec();
+        study_id = study->id();
+    });
+    const auto trial_cancel = std::make_shared<std::atomic<bool>>(false);
+    node.run_on_owner([&] {
+        if (ActiveStudy* found = find_active(study_id)) {
+            found->trial_cancels[trial.run] = trial_cancel;
+        }
+    });
+    const auto started = std::chrono::steady_clock::now();
+    bool wall_budget_reached = false;
+    std::optional<RealTrialPlan> plan;
+    node.run_on_owner([&] {
+        const std::vector<std::shared_ptr<Model>> models = node.models();
+        for (const std::shared_ptr<Model>& model : models) {
+            if (model && (model->run() == trial.run ||
+                          model->run_id() == trial.run)) {
+                node.drop_model(model->id());
+            }
+        }
+        if (const std::shared_ptr<pipeline::Run> run =
+                node.find_run(trial.run)) {
+            run->reset_metrics_for_retry();
+            run->set_status(pipeline::RunStatus::Running);
+        }
+        study->reset_trial_for_retry(trial.run);
+    });
+    plan = prepare_real_trial(node, spec, trial.params, trial.run,
+                              trial_cancel.get(), result.error);
+    if (plan) {
+        plan->options.training_progress =
+            [&](int step, const std::map<std::string, double>& values) {
+                if (trial_cancel->load(std::memory_order_acquire)) return false;
+                StudyValue current_value;
+                node.run_on_owner([&] { current_value = study->value(); });
+                if (wall_time_reached(current_value)) {
+                    wall_budget_reached = true;
+                    trial_cancel->store(true, std::memory_order_release);
+                    return false;
+                }
+                const auto loss = values.find("train.log_loss");
+                if (loss == values.end()) return true;
+                const double value = spec.objective.direction ==
+                                             StudyDirection::Maximize
+                                         ? 1.0 / (1.0 + loss->second)
+                                         : loss->second;
+                bool keep_running = true;
+                node.run_on_owner([&] {
+                    std::string report_error;
+                    keep_running = study->report_intermediate(
+                        trial.run, static_cast<std::uint64_t>(step), value,
+                        &report_error);
+                    if (!keep_running) return;
+                    publish_progress(node, *study, "trial_progress", trial.run,
+                                     static_cast<std::uint64_t>(step), value);
+                    const auto current = std::ranges::find(
+                        study->value().trials, trial.run, &StudyTrial::run);
+                    if (current != study->value().trials.end() &&
+                        StudyOptimizer::should_prune(
+                            spec, study->value().trials, *current)) {
+                        result.pruned = true;
+                        keep_running = false;
+                    }
+                });
+                return keep_running;
+            };
+        compute::CpuDevice device;
+        const usecases::churn::ChurnSolutionResult run =
+            usecases::churn::run_churn_solution_on_table(
+                node, device, plan->graph, plan->table, plan->options);
+        result.model = run.model_id;
+        if (!run.ok()) result.error = run.execution.error;
+        if (wall_budget_reached) {
+            result.error = "study wall_time budget reached";
+        }
+        if (run.ok()) {
+            node.run_on_owner([&] {
+                result.objective = trial_objective(
+                    node, spec, result.model, result.error);
+            });
+        }
+    }
+    result.cost = std::max(
+        0.001,
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      started)
+            .count());
+    node.run_on_owner([&] {
+        if (ActiveStudy* found = find_active(study_id)) {
+            found->trial_cancels.erase(trial.run);
+        }
+    });
+    return result;
+}
+
+void StudyDriver::State::apply_results(
+    const std::shared_ptr<Study>& study,
+    const std::vector<TrialResult>& results) {
+    node.run_on_owner([&] {
+        for (const TrialResult& result : results) {
+            const auto found = std::ranges::find(
+                study->value().trials, result.run, &StudyTrial::run);
+            if (found == study->value().trials.end() ||
+                found->state != TrialState::Running) {
+                continue;
+            }
+            if (result.pruned) {
+                study->finish_trial(
+                    result.run, TrialState::Pruned, std::nullopt, result.cost,
+                    "pruned by " + std::string(to_string(study->spec().pruner)),
+                    result.model);
+                publish_progress(node, *study, "trial_pruned", result.run);
+                continue;
+            }
+            if (!result.objective) {
+                study->finish_trial(result.run, TrialState::Failed,
+                                    std::nullopt, result.cost, result.error,
+                                    result.model);
+                publish_progress(node, *study, "trial_failed", result.run);
+                continue;
+            }
+            if (found->intermediate.empty()) {
+                std::string params_error;
+                const std::optional<GbdtParams> params =
+                    study_gbdt_params(found->params, params_error);
+                study->report_intermediate(
+                    result.run,
+                    static_cast<std::uint64_t>(
+                        params ? std::max(1, params->num_trees) : 1),
+                    *result.objective);
+            }
+            study->finish_trial(result.run, TrialState::Complete,
+                                result.objective, result.cost, {},
+                                result.model);
+            publish_progress(node, *study, "trial_completed", result.run);
+        }
+    });
+}
+
+void StudyDriver::State::drive(
+    const std::string& study_id,
+    const std::shared_ptr<std::atomic<bool>>& cancelled,
+    const std::shared_ptr<std::atomic<bool>>& done) {
+    const auto mark_done = [&] {
+        done->store(true, std::memory_order_release);
+    };
+    std::shared_ptr<Study> study;
+    node.run_on_owner([&] { study = node.find_study(study_id); });
+    if (!study) {
+        mark_done();
+        return;
+    }
+    while (!cancelled->load(std::memory_order_acquire)) {
+        StudyValue snapshot;
+        node.run_on_owner([&] { snapshot = study->value(); });
+        if (snapshot.status != StudyStatus::Running) break;
+        if (!owns(*study)) break;
+        if (finish_for_budget(study, snapshot)) break;
+        const std::vector<StudyTrial> pending =
+            prepare_batch(study, snapshot);
+        if (pending.empty()) {
+            node.run_on_owner([&] {
+                if (study->status() != StudyStatus::Running) return;
+                study->set_complete("max_trials");
+                publish_progress(node, *study, "study_complete");
+            });
+            break;
+        }
+        const std::vector<TrialResult> results = trial_scheduler.parallel_map(
+            pending, [&](const StudyTrial& trial) {
+                return execute_trial(study, trial);
+            });
+        if (cancelled->load(std::memory_order_acquire)) break;
+        apply_results(study, results);
+    }
+    mark_done();
+}
+
+void StudyDriver::State::launch(const std::shared_ptr<Study>& study) {
+    ActiveStudy entry;
+    entry.id = study->id();
+    entry.cancel = std::make_shared<std::atomic<bool>>(false);
+    entry.done = std::make_shared<std::atomic<bool>>(false);
+    const std::string study_id = entry.id;
+    const std::shared_ptr<std::atomic<bool>> cancelled = entry.cancel;
+    const std::shared_ptr<std::atomic<bool>> done = entry.done;
+    active.push_back(std::move(entry));
+    driver_scheduler.submit(
+        [this, study_id, cancelled, done] {
+            drive(study_id, cancelled, done);
+        });
+}
+
+StudyDriver::StudyDriver(Node& node)
+    : state_(std::make_unique<State>(node)) {}
+
+StudyDriver::~StudyDriver() {
+    stop();
+}
+
+void StudyDriver::reconcile() {
+    if (!state_ || state_->stopping || state_->node.job_coordinator() == nullptr) {
+        return;
+    }
+    std::erase_if(state_->active, [](const State::ActiveStudy& active) {
+        return active.done->load(std::memory_order_acquire);
+    });
+    for (State::ActiveStudy& active : state_->active) {
+        const std::shared_ptr<Study> study =
+            state_->node.find_study(active.id);
+        if (!study || study->status() != StudyStatus::Running ||
+            state_->owns(*study)) {
+            continue;
+        }
+        active.cancel->store(true, std::memory_order_release);
+        for (const auto& [_, cancel] : active.trial_cancels) {
+            cancel->store(true, std::memory_order_release);
+        }
+    }
+    for (const std::shared_ptr<Study>& study : state_->node.studies()) {
+        if (!study || study->status() != StudyStatus::Running) continue;
+        if (!state_->owns(*study)) continue;
+        if (state_->find_active(study->id()) != nullptr) continue;
+        state_->launch(study);
+    }
+}
+
+void StudyDriver::request_stop(const std::string& study_id,
+                               const std::string& run_id) {
+    if (!state_) return;
+    const auto found = std::ranges::find(state_->active, study_id,
+                                          &State::ActiveStudy::id);
+    if (found == state_->active.end()) return;
+    if (run_id.empty()) {
+        found->cancel->store(true, std::memory_order_release);
+        for (const auto& [_, cancel] : found->trial_cancels) {
+            cancel->store(true, std::memory_order_release);
+        }
+        return;
+    }
+    const auto trial = found->trial_cancels.find(run_id);
+    if (trial != found->trial_cancels.end()) {
+        trial->second->store(true, std::memory_order_release);
+    }
+}
+
+void StudyDriver::stop() {
+    if (!state_ || state_->stopping) return;
+    state_->stopping = true;
+    for (State::ActiveStudy& active : state_->active) {
+        active.cancel->store(true, std::memory_order_release);
+        for (const auto& [_, cancel] : active.trial_cancels) {
+            cancel->store(true, std::memory_order_release);
+        }
+    }
+    while (std::ranges::any_of(
+        state_->active, [](const State::ActiveStudy& active) {
+            return !active.done->load(std::memory_order_acquire);
+        })) {
+        state_->node.drain_owner_work();
+        std::this_thread::yield();
+    }
 }
 
 }  // namespace zetta::ml

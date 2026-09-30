@@ -376,6 +376,8 @@ public:
         return studies_;
     }
     std::size_t study_count() const { return studies_.size(); }
+    void request_stop_study_work(const std::string& study_id,
+                                 const std::string& run_id = {});
 
     // Run experiment tracking (#1137). These owner-thread entry points update
     // the replicated Run record. Metric batches also sample available host
@@ -1319,6 +1321,7 @@ private:
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<zetta::ml::Study>> studies_;           // sorted (created, id)
+    std::unique_ptr<zetta::ml::StudyDriver> study_driver_;
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
     std::vector<std::shared_ptr<zetta::solutions::Monitor>> monitors_; // sorted (created, id)
     std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>

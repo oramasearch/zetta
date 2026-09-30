@@ -7,8 +7,42 @@ metric on a named validation split. A **trial** is exactly one durable
 and its terminal state is `pruned`, `failed`, or `complete`.
 
 Studies are native C++ records. They do not load a foreign ML runtime or call a
-hosted model service. Trial batches use the local work-stealing scheduler, and
-the study runner accepts the same native evaluator on every worker.
+hosted model service. A node-owned background driver discovers replicated
+`running` studies during `Node::tick`. A stable hash of the Study id over the
+replicated membership selects one driver node, so peers do not launch duplicate
+trials. The driver and its training batches use work-stealing schedulers; all
+entity mutations return through `Node::run_on_owner`, so training never blocks
+the owner loop.
+
+Every admitted trial creates a normal Run before training starts. The Run is
+therefore visible through `list_runs` as well as `list_trials`, and it owns the
+same logs, per-tree metrics, outputs, model reference, and lineage as a Run
+started directly by a user. A restart reloads the Study and Runs from replicated
+state and disk. The selected node resumes a `running` Study from those recorded
+trials instead of beginning a new search. A retried Run replaces any model from
+an interrupted attempt, so only its terminal model remains promotable.
+
+## What a trial runs
+
+A Pipeline-scoped Study supplies both `project` and `pipeline`. Each trial
+copies that stored graph and executes it with sampled M-1 values overriding the
+GBDT model controls. The resulting Run keeps the Project and Pipeline ids.
+
+A dataset-level Study omits both fields and supplies `dataset` as
+`database.table`. The driver resolves its dataset contract, including text
+entity keys, numeric or boolean labels, and an `observed_at` column when one is
+present, then builds the native connect-clean-model graph. When observation
+times are available, the latest holdout fraction is reserved for validation;
+older rows train the model. Without time, M-1 retains its content-hash holdout.
+Dataset-level execution currently supports M-1 only. `create_study` rejects
+another methodology before storing the Study and explains that it has no
+dataset-level driver.
+
+M-1 search names are the canonical GBDT controls (`gbdt.num_trees`,
+`gbdt.max_depth`, `gbdt.max_bins`, `learning_rate`, regularization and split
+controls, and `holdout_fraction`). Unknown names fail at `create_study`.
+`gradient_boosting` in `model_family` choices or conditions is canonicalized to
+`gbdt`; another model family is rejected.
 
 ## Study definition
 
@@ -18,6 +52,11 @@ selection cannot consume final test data. If a project Pipeline is supplied,
 `create_study` runs the existing correctness gate before accepting it; this
 reuses methodology leakage checks.
 
+The real M-1 driver accepts the `validation` split with `validation.auc`,
+`validation.accuracy`, or `validation.log_loss`. Unsupported split and metric
+names are rejected when the Study is created. The selected metric is read from
+the registered trial model's corresponding `held_out_*` metric.
+
 Project and Pipeline refs supplied as ids are normalized to their display names
 when the Study is created. Later renames update those stored names, and startup
 normalizes older records against the loaded registries.
@@ -26,22 +65,28 @@ Search parameters are ordered and typed:
 
 - `int` and `float` have minimum/maximum bounds, an optional step, and linear
   or logarithmic sampling.
-- `categorical` has a closed list of scalar choices. `model_family` may select
-  GBDT, linear, or a methodology learner.
+- `categorical` has a closed list of scalar choices. The current real M-1 driver
+  accepts canonical `gbdt` as `model_family`.
 - A parameter is conditional when `condition_parameter` names an earlier
   parameter and `condition_values` lists the parent values that activate it.
 - `from_defaults: true` supplies the selected methodology's model-family
-  defaults. M-1 defaults include conditional GBDT and linear controls.
+  defaults. M-1 defaults contain executable GBDT controls.
 
 Samplers are `grid`, `random`, and TPE. Pruners are `median` and ASHA, plus
-`none`. Median and ASHA compare the current Run metric with completed peers at
-the same step and cooperatively end a losing trial. Every seed is persisted.
+`none`. M-1 reports a normalized per-tree training-loss curve while the terminal
+objective comes from the requested held-out validation metric. Median and ASHA
+compare curve points with completed peers at the same tree and cooperatively end
+a losing trial. Every seed is persisted.
 
 Budgets contain `max_trials`, `max_wall_time_ms`, `max_parallel_trials`, and
-`cost_cap`. The runner checks every active limit at admission boundaries,
-reports consumed cost and its stop reason on the Study, and never admits more
-than `max_parallel_trials` into one scheduler batch. A finite cost cap uses
-one-trial admission so reported cost is checked before another trial starts.
+`cost_cap`. The runner checks active limits at admission boundaries and the
+wall-time deadline at every training round, reports consumed cost and its stop
+reason on the Study, and never admits more than `max_parallel_trials` into one
+scheduler batch. A finite cost cap uses one-trial admission so reported cost is
+checked before another trial starts.
+Natural completion records status `complete` with `max_trials`, `wall_time`, or
+`budget`. An explicit `stop_study` records `stopped` and cooperatively cancels
+active Run training; `stop_trial` cancels only the named Run.
 
 For a differentially private trainer or dataset, the objective metric must be
 listed in `released_metrics`. Private per-step curves are suppressed from Run
@@ -93,7 +138,7 @@ REST: `POST /v1/create_study`. MCP tool: `create_study`. Permission:
   "name": "churn-tuning",
   "project": "retention",
   "pipeline": "production",
-  "dataset": "accounts-snapshot",
+  "dataset": "warehouse.accounts_snapshot",
   "methodology": "M-1",
   "objective": {
     "metric": "validation.auc",
@@ -213,7 +258,7 @@ cooperatively.
 ```
 
 ```json
-{ "study": "study-uuid", "status": "stopped", "reason": "stopped by caller" }
+{ "study": "study-uuid", "status": "stopped", "reason": "stopped" }
 ```
 
 ### `stop_trial`
@@ -292,8 +337,9 @@ REST: `GET /v1/get_study_analysis?study=study-uuid`. MCP tool:
 ## Live progress
 
 Progress is published as JSON to the exposed ephemeral topic
-`study-events.<study-id>`. Events cover study lifecycle, trial start,
-intermediate steps, pruning, completion, failure, stopping, and promotion.
+`study-events.<study-id>`. The driver emits `trial_started`, `trial_completed`,
+`trial_pruned`, `trial_failed`, and `study_complete`; creation, intermediate
+progress, stopping, and promotion use the same topic.
 REST and MCP both use the existing bounded `receive_events` capability:
 
 ```json
@@ -312,6 +358,8 @@ per request.
 
 The replicated catalog key is `study:<uuid>`. Its local projection is
 `<data-dir>/<uuid>/study.json`; restart and reconciliation validate the closed
-Study schema before materializing it. The schema is published as
-`study.schema.json`, and all nine capability schemas appear in
-`schemas/openapi.json` and MCP `tools/list`.
+Study schema before materializing it. A running Study is eligible on exactly
+one replicated member after reconciliation, including after a restart, and a node
+cooperatively releases in-flight work if membership selects a new owner. The
+schema is published as `study.schema.json`, and all nine capability schemas
+appear in `schemas/openapi.json` and MCP `tools/list`.

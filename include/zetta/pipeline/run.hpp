@@ -169,14 +169,24 @@ public:
     void set_display_names(std::string project_name,
                            std::string pipeline_name);
 
-    // The one internal write API used by trainers. A metric's step must be
-    // strictly greater than its previous step. Values must be finite.
+    // Strict caller metric writes. A metric's step must be greater than its
+    // previous step, including caller-supplied system.* values. Values are finite.
     bool log_metrics(std::uint64_t step,
                      const std::map<std::string, double>& values,
                      std::string time = {}, std::string* error = nullptr);
+    // Owner-thread-only batch write (#1205; docs/ml/run-metrics.md). Caller
+    // values remain strict. Automatic system samples advance independently
+    // past their persisted last step, atomically with the caller's metrics.
+    bool log_metrics_with_system_sample(
+        std::uint64_t natural_step,
+        const std::map<std::string, double>& values,
+        const std::map<std::string, double>& system_values,
+        std::string time = {}, std::string* error = nullptr);
     // Params are recorded once. Keys are already flattened dotted names and
     // values are scalar JSON values.
     bool log_params(nlohmann::json params, std::string* error = nullptr);
+    // A restarted Study trial keeps params and clears partial metric outputs.
+    void reset_metrics_for_retry();
     // Artifact is validated against the Run's typed artifact union.
     bool log_artifact(nlohmann::json artifact, std::string* error = nullptr);
 

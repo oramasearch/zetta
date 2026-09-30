@@ -732,6 +732,7 @@ bool Node::start() {
     // (a stop()/start() cycle). On first boot main attaches after start(), so this
     // is a no-op then and attach_cluster brings the coordinator up itself.
     start_coordinator();
+    study_driver_ = std::make_unique<zetta::ml::StudyDriver>(*this);
     report_memory(true);
     std::fflush(stdout);
     return true;
@@ -803,6 +804,7 @@ void Node::tick() {
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
     controller_.reconcile();
+    if (study_driver_) study_driver_->reconcile();
     // 2b. Search plane (#641): keep this node's per-partition search sub-indexes
     //     current with the (replicated) Search index entities + the placed
     //     partitions this node owns — so any node can answer a peer's
@@ -928,6 +930,10 @@ void Node::drain_owner_work() {
 
 void Node::stop() {
     if (!running_) return;
+    if (study_driver_) {
+        study_driver_->stop();
+        study_driver_.reset();
+    }
     // Tear the coordinator down first, while the attached cluster is still alive
     // (its signal-handler unwind is a cheap atomic store, and the steal loop joins
     // promptly) — so the cluster can be stopped/destroyed after us safely (#579).
@@ -946,6 +952,11 @@ void Node::stop() {
     running_ = false;
     std::printf("zetta: node stopped\n");
     std::fflush(stdout);
+}
+
+void Node::request_stop_study_work(const std::string& study_id,
+                                   const std::string& run_id) {
+    if (study_driver_) study_driver_->request_stop(study_id, run_id);
 }
 
 void Node::attach_cluster(zetta::cluster::Cluster& cluster, unsigned worker_count) {
@@ -1796,6 +1807,40 @@ std::shared_ptr<zetta::pipeline::Run> Node::find_run(const std::string& id) cons
     return nullptr;
 }
 
+namespace {
+
+std::map<std::string, double> run_system_sample(
+    const zetta::cluster::NodeMetrics& host,
+    const std::map<std::string, double>& values) {
+    std::map<std::string, double> system_values;
+    if (host.cpu_percent_available) {
+        system_values["system.cpu.percent"] = host.cpu_percent;
+    }
+    if (host.memory_available) {
+        system_values["system.memory.used_bytes"] =
+            static_cast<double>(host.memory_used_bytes);
+        system_values["system.memory.percent"] = host.memory_percent;
+    }
+    if (host.gpu_available) {
+        system_values["system.gpu.percent"] = host.gpu_percent;
+        system_values["system.gpu.vram_used_bytes"] =
+            static_cast<double>(host.vram_used_bytes);
+    }
+    if (const auto tokens = values.find("train.tokens_per_second");
+        tokens != values.end()) {
+        system_values["system.throughput.per_second"] = tokens->second;
+    } else if (const auto rows = values.find("train.rows_per_second");
+               rows != values.end()) {
+        system_values["system.throughput.per_second"] = rows->second;
+    }
+    std::erase_if(system_values, [&](const auto& metric) {
+        return values.contains(metric.first);
+    });
+    return system_values;
+}
+
+}  // namespace
+
 bool Node::log_run_metrics(const std::string& run_id, std::uint64_t step,
                            std::map<std::string, double> values,
                            std::string time, std::string* error) {
@@ -1806,33 +1851,15 @@ bool Node::log_run_metrics(const std::string& run_id, std::uint64_t step,
         }
         return false;
     }
+    std::map<std::string, double> system_values;
     if (run->value().metrics_suppressed.empty()) {
-        const zetta::cluster::NodeMetrics host = sample_node_metrics();
-        if (host.cpu_percent_available && !values.contains("system.cpu.percent")) {
-            values["system.cpu.percent"] = host.cpu_percent;
-        }
-        if (host.memory_available) {
-            values.try_emplace("system.memory.used_bytes",
-                               static_cast<double>(host.memory_used_bytes));
-            values.try_emplace("system.memory.percent", host.memory_percent);
-        }
-        if (host.gpu_available) {
-            values.try_emplace("system.gpu.percent", host.gpu_percent);
-            values.try_emplace("system.gpu.vram_used_bytes",
-                               static_cast<double>(host.vram_used_bytes));
-        }
-        if (const auto tokens = values.find("train.tokens_per_second");
-            tokens != values.end()) {
-            values.try_emplace("system.throughput.per_second", tokens->second);
-        } else if (const auto rows = values.find("train.rows_per_second");
-                   rows != values.end()) {
-            values.try_emplace("system.throughput.per_second", rows->second);
-        }
+        system_values = run_system_sample(sample_node_metrics(), values);
     }
     if (time.empty()) {
         time = zetta::util::now_iso8601();
     }
-    if (!run->log_metrics(step, values, time, error)) {
+    if (!run->log_metrics_with_system_sample(step, values, system_values,
+                                            time, error)) {
         return false;
     }
     if (pubsub_ == nullptr) {
@@ -1865,24 +1892,36 @@ bool Node::log_run_metrics(const std::string& run_id, std::uint64_t step,
         }
         return false;
     }
-    zetta::pubsub::PublishRequest request;
-    request.to = {topic};
-    request.encoding = zetta::pubsub::Encoding::Json;
-    request.mime_type = "application/json";
-    request.correlation_id = run_id;
-    request.payload = nlohmann::json{{"run", run_id},
-                                     {"step", step},
-                                     {"values", values},
-                                     {"time", time}}
-                          .dump();
-    const zetta::pubsub::PublishResult published =
-        pubsub_->publish(engine, std::move(request));
-    if (!published.accepted) {
-        if (error != nullptr) {
-            *error = "/run: metric batch was stored but live publish failed: " +
-                     published.error;
+    std::map<std::uint64_t, std::map<std::string, double>> batches;
+    if (!values.empty()) {
+        batches[step] = std::move(values);
+    }
+    for (const auto& [name, value] : system_values) {
+        const auto stored_step = run->value().metrics.at("series")
+                                     .at(name).at("steps").back()
+                                     .get<std::uint64_t>();
+        batches[stored_step][name] = value;
+    }
+    for (const auto& [stored_step, batch] : batches) {
+        zetta::pubsub::PublishRequest request;
+        request.to = {topic};
+        request.encoding = zetta::pubsub::Encoding::Json;
+        request.mime_type = "application/json";
+        request.correlation_id = run_id;
+        request.payload = nlohmann::json{{"run", run_id},
+                                        {"step", stored_step},
+                                        {"values", batch},
+                                        {"time", time}}
+                              .dump();
+        const zetta::pubsub::PublishResult published =
+            pubsub_->publish(engine, std::move(request));
+        if (!published.accepted) {
+            if (error != nullptr) {
+                *error = "/run: metric batch was stored but live publish failed: " +
+                         published.error;
+            }
+            return false;
         }
-        return false;
     }
     return true;
 }

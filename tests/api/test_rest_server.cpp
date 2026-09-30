@@ -53,6 +53,7 @@
 #include "zetta/node.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/project.hpp"
+#include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/version.hpp"
@@ -686,8 +687,22 @@ TEST_F(RestServerFixture, RunMetricCapabilitiesWorkOverRest) {
 }
 
 TEST_F(RestServerFixture, StudyCapabilitiesWorkOverRest) {
+    const auto project = node.create_project("rest study project");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    graph.add_node(zetta::ir::StepKind::Connect, "Read source", {}, "read");
+    graph.add_node(zetta::ir::StepKind::Clean, "Build features", {}, "clean");
+    graph.add_node(zetta::ir::StepKind::Model, "Train GBDT",
+                   {{"model_kind", "gbdt"}, {"calibrated", true}}, "model");
+    graph.add_edge("read", "clean");
+    graph.add_edge("clean", "model");
+    const auto pipeline =
+        project->create_graph("rest study pipeline", std::move(graph));
+    ASSERT_TRUE(pipeline);
     const nlohmann::json input = {
         {"name", "rest-study"},
+        {"project", project->id()},
+        {"pipeline", pipeline->id()},
         {"methodology", "M-1"},
         {"objective",
          {{"metric", "validation.auc"},
@@ -722,7 +737,8 @@ TEST_F(RestServerFixture, StudyCapabilitiesWorkOverRest) {
               200);
 
     const auto study = node.find_study(study_id);
-    const auto stopped_run = node.create_run("", "rest-study-trial");
+    const auto stopped_run =
+        node.create_run(project->id(), pipeline->id());
     ASSERT_TRUE(study);
     ASSERT_TRUE(stopped_run);
     zetta::ml::StudyTrial stopped_trial;
@@ -737,7 +753,8 @@ TEST_F(RestServerFixture, StudyCapabilitiesWorkOverRest) {
             .dump());
     EXPECT_EQ(stopped.status, 200) << stopped.body;
 
-    const auto promoted_run = node.create_run("", "rest-study-trial");
+    const auto promoted_run =
+        node.create_run(project->id(), pipeline->id());
     ASSERT_TRUE(promoted_run);
     zetta::ml::StudyTrial promoted_trial;
     promoted_trial.number = 1;
@@ -759,7 +776,8 @@ TEST_F(RestServerFixture, StudyCapabilitiesWorkOverRest) {
             .dump());
     ASSERT_EQ(promoted.status, 200) << promoted.body;
     EXPECT_EQ(json_of(promoted).at("value").at("model"), model->id());
-    const auto active_run = node.create_run("", "rest-study-trial");
+    const auto active_run =
+        node.create_run(project->id(), pipeline->id());
     ASSERT_TRUE(active_run);
     zetta::ml::StudyTrial active_trial;
     active_trial.number = 2;

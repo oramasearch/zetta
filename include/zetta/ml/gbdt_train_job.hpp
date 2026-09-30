@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -50,6 +52,9 @@ class Node;
 }
 
 namespace zetta::ml {
+
+using TrainProgressCallback =
+    std::function<bool(int, const std::map<std::string, double>&)>;
 
 // The default per-collective timeout for a training round (a generous 10s, like
 // Collectives::kDefaultTimeout — kept local so this header need not pull in the
@@ -165,6 +170,8 @@ DistributedTrainResult run_train_job(
     CalibrationConfig calibration = {},
     std::chrono::milliseconds timeout = kDefaultGbdtTimeout,
     TrainCheckpointConfig checkpoint = {},
-    const std::string& run_id = {});
+    const std::string& run_id = {},
+    TrainProgressCallback progress = {},
+    const std::vector<double>& validation_times = {});
 
 }  // namespace zetta::ml

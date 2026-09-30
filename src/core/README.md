@@ -12,8 +12,13 @@ Pub/sub payloads and topic/message CRUD remain node-local.
 The default shared dispatcher grows at one worker per 250 active keys.
 The node memory registry combines cheap ownership probes with platform allocator
 and RSS readings, then feeds SQL, telemetry, API, logs, and status output.
-Study deletion is an owner-thread Node operation that tombstones the Study and
-non-promoted trial Runs while retaining promoted Model lineage (#1158).
+Study reconciliation selects one replicated owner to run real M-1 trial graphs
+on background schedulers. Owner-thread handoffs persist Runs, curves, budgets,
+restart recovery, terminal events, and actual model promotion; deletion still
+tombstones non-promoted trials while retaining promoted lineage (#1158, #1205).
+Automatic Run gauges allocate increasing steps per metric on the owner thread;
+caller metrics remain strict, and live batches report the stored steps. See
+[Run metrics](../../docs/ml/run-metrics.md) (#1205).
 The owner thread also resolves display names at Run/Model creation, propagates
 Project/Pipeline renames, and performs idempotent startup backfill (#1184).
 See [architecture](../../docs/architecture/README.md) and

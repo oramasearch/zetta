@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -147,6 +148,9 @@ public:
                       std::string* error = nullptr);
     bool stop_trial(const std::string& run, std::string reason,
                     std::string* error = nullptr);
+    // Preserve immutable parameters while clearing partial retry outputs.
+    bool reset_trial_for_retry(const std::string& run,
+                               std::string* error = nullptr);
     void stop(std::string reason);
     void set_complete(std::string reason);
     void set_promoted_model(std::string model);
@@ -202,5 +206,26 @@ struct StudyRunResult {
 StudyRunResult run_study(Node& node, Study& study,
                          compute::WorkStealingScheduler& scheduler,
                          const TrialEvaluator& evaluate);
+
+// Drives replicated running studies on their deterministic owner node. The
+// driver itself and its trial batches execute on work-stealing schedulers;
+// Node state changes are handed back through Node::run_on_owner.
+class StudyDriver {
+public:
+    explicit StudyDriver(Node& node);
+    ~StudyDriver();
+
+    StudyDriver(const StudyDriver&) = delete;
+    StudyDriver& operator=(const StudyDriver&) = delete;
+
+    void reconcile();
+    void request_stop(const std::string& study_id,
+                      const std::string& run_id = {});
+    void stop();
+
+private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
 
 }  // namespace zetta::ml

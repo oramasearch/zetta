@@ -384,7 +384,8 @@ zetta::ml::DistributedTrainResult run_distributed_train(
     const std::vector<Json>& rows, const std::vector<std::string>& features,
     const std::string& label, const GbdtParams& params, std::size_t node_count,
     std::uint16_t base_port, bool register_model,
-    zetta::ml::CalibrationConfig calibration = {}, bool track_metrics = false) {
+    zetta::ml::CalibrationConfig calibration = {}, bool track_metrics = false,
+    const std::vector<double>& validation_times = {}) {
     const std::vector<std::string> ids = {"node-a", "node-b", "node-c"};
     std::vector<std::unique_ptr<ComputeNode>> nodes;
     for (std::size_t index = 0; index < node_count; ++index) {
@@ -406,6 +407,7 @@ zetta::ml::DistributedTrainResult run_distributed_train(
 
     std::vector<std::unique_ptr<CpuDevice>> devices;
     std::vector<DataFrame> frames;
+    std::vector<std::vector<double>> time_shards;
     const std::size_t per = (rows.size() + node_count - 1) / node_count;
     for (std::size_t index = 0; index < node_count; ++index) {
         devices.push_back(std::make_unique<CpuDevice>());
@@ -414,6 +416,11 @@ zetta::ml::DistributedTrainResult run_distributed_train(
             training_schema(features, label), *devices[index]);
         EXPECT_TRUE(frame.ok()) << frame.status.message;
         frames.push_back(std::move(frame.frame));
+        const std::size_t begin = std::min(index * per, validation_times.size());
+        const std::size_t end =
+            std::min((index + 1) * per, validation_times.size());
+        time_shards.emplace_back(validation_times.begin() + begin,
+                                 validation_times.begin() + end);
     }
 
     std::vector<zetta::ml::DistributedTrainResult> results(node_count);
@@ -428,7 +435,8 @@ zetta::ml::DistributedTrainResult run_distributed_train(
                 label, params,
                 register_model || track_metrics ? &nodes[index]->node : nullptr, {},
                 {}, calibration, zetta::ml::kDefaultGbdtTimeout, {},
-                index == 0 && metric_run ? metric_run->id() : std::string{});
+                index == 0 && metric_run ? metric_run->id() : std::string{},
+                {}, time_shards[index]);
         });
     }
     for (auto& thread : threads) thread.join();
@@ -911,6 +919,34 @@ TEST(GbdtHoldout, HoldoutIsShardingInvariant) {
 
     ASSERT_TRUE(single.has_held_out);
     ASSERT_TRUE(multi.has_held_out);
+    EXPECT_EQ(single.held_out_rows, multi.held_out_rows);
+    EXPECT_EQ(single.train_rows, multi.train_rows);
+    EXPECT_NEAR(single.held_out.auc, multi.held_out.auc, 1e-9);
+    EXPECT_NEAR(single.held_out.log_loss, multi.held_out.log_loss, 1e-9);
+}
+
+TEST(GbdtHoldout, TemporalHoldoutUsesOneGlobalCutoffAcrossShards) {
+    const Synthetic data = make_noise(101);
+    const std::vector<Json> rows = synthetic_rows(data, "y");
+    std::vector<double> validation_times(rows.size());
+    for (std::size_t index = 0; index < validation_times.size(); ++index) {
+        validation_times[index] = static_cast<double>(index);
+    }
+    GbdtParams params;
+    params.num_trees = 12;
+    params.max_depth = 4;
+    params.holdout_fraction = 0.2;
+
+    const auto single = run_distributed_train(
+        rows, data.names, "y", params, 1, 22460, false, {}, false,
+        validation_times);
+    const auto multi = run_distributed_train(
+        rows, data.names, "y", params, 3, 22470, false, {}, false,
+        validation_times);
+
+    ASSERT_TRUE(single.has_held_out);
+    ASSERT_TRUE(multi.has_held_out);
+    EXPECT_EQ(single.held_out_rows, 21u);
     EXPECT_EQ(single.held_out_rows, multi.held_out_rows);
     EXPECT_EQ(single.train_rows, multi.train_rows);
     EXPECT_NEAR(single.held_out.auc, multi.held_out.auc, 1e-9);

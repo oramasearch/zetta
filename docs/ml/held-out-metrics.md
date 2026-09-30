@@ -42,8 +42,14 @@ not look alike.
 
 ## How rows are chosen
 
-By `row_is_holdout` — an FNV-1a content hash of the row, the same function
-calibration has always used. Two properties follow:
+Ordinary runs use `row_is_holdout` — an FNV-1a content hash of the row, the same
+function calibration has always used. A table-backed Study with an observation
+time supplies that ordered column to the trainer instead: one cluster-wide
+cutoff reserves the newest `holdout_fraction` of rows for evaluation and only
+older rows fit the trees. This is the Study contract's out-of-time validation
+rule, independent of how those rows are sharded.
+
+The content-hash path has two properties:
 
 - **Sharding-invariant.** Which rows are held out does not depend on how the rows
   were spread over nodes, so a run's headline metric does not change when the

@@ -15,6 +15,7 @@
 #include "zetta/compute/compute_status.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/run.hpp"
 
 #include "feature_columns.hpp"
 
@@ -146,7 +147,9 @@ DistributedTrainResult run_train_job(
     const std::string& label_column, const GbdtParams& params, Node* node,
     const std::string& model_name, const std::string& round_tag,
     CalibrationConfig calibration, std::chrono::milliseconds timeout,
-    TrainCheckpointConfig checkpoint, const std::string& run_id) {
+    TrainCheckpointConfig checkpoint, const std::string& run_id,
+    TrainProgressCallback progress,
+    const std::vector<double>& validation_times) {
     DistributedTrainResult out;
     const std::string tag =
         round_tag.empty() ? default_round_tag(feature_columns, label_column)
@@ -187,6 +190,61 @@ DistributedTrainResult run_train_job(
         std::vector<double> eval_labels;
         const bool wants_eval_holdout = params.holdout_fraction > 0.0;
         const bool splitting = calibration.enabled || wants_eval_holdout;
+        std::vector<bool> temporal_eval(shard_rows, false);
+        bool temporal_split = false;
+        if (wants_eval_holdout) {
+            const double local_has_times =
+                validation_times.size() == shard_rows &&
+                        (shard_rows == 0 || !validation_times.empty())
+                    ? 1.0
+                    : 0.0;
+            const auto agreed = round.allreduce(
+                tag + ".validation_times.enabled", {local_has_times},
+                zetta::cluster::CollectiveOp::Minimum, timeout);
+            if (!agreed || agreed->size() != 1) {
+                return {.ok = false,
+                        .detail = "gbdt validation times: agreement failed"};
+            }
+            temporal_split = agreed->front() == 1.0;
+        }
+        if (temporal_split) {
+            const auto gathered = round.gather(
+                tag + ".validation_times.gather", validation_times, timeout);
+            if (!gathered) {
+                return {.ok = false,
+                        .detail = "gbdt validation times: gather failed"};
+            }
+            std::vector<double> cutoff_wire;
+            if (round.is_root()) {
+                std::vector<double> global_times;
+                for (const std::vector<double>& member : *gathered) {
+                    global_times.insert(global_times.end(), member.begin(),
+                                        member.end());
+                }
+                if (global_times.size() > 1) {
+                    std::ranges::stable_sort(global_times);
+                    const std::size_t held_out = std::clamp<std::size_t>(
+                        static_cast<std::size_t>(std::ceil(
+                            static_cast<double>(global_times.size()) *
+                            params.holdout_fraction)),
+                        1, global_times.size() - 1);
+                    cutoff_wire.push_back(
+                        global_times[global_times.size() - held_out]);
+                }
+            }
+            const auto cutoff = round.broadcast(
+                tag + ".validation_times.cutoff", cutoff_wire, timeout);
+            if (!cutoff) {
+                return {.ok = false,
+                        .detail = "gbdt validation times: broadcast failed"};
+            }
+            temporal_split = cutoff->size() == 1;
+            if (temporal_split) {
+                for (std::size_t row = 0; row < shard_rows; ++row) {
+                    temporal_eval[row] = validation_times[row] >= cutoff->front();
+                }
+            }
+        }
         if (splitting) {
             train_columns.assign(feature_columns.size(), {});
             holdout_columns.assign(feature_columns.size(), {});
@@ -196,7 +254,10 @@ DistributedTrainResult run_train_job(
                 // same rows whether or not calibration is on.
                 const bool evaluate =
                     wants_eval_holdout &&
-                    row_is_holdout(columns, r, labels[r], params.holdout_fraction);
+                    (temporal_split
+                         ? temporal_eval[r]
+                         : row_is_holdout(columns, r, labels[r],
+                                          params.holdout_fraction));
                 // The hash input is unchanged from what calibration has always
                 // used. Disjointness comes from `!evaluate`; perturbing the input
                 // would change WHICH rows calibrate, and so the calibrated
@@ -241,7 +302,8 @@ DistributedTrainResult run_train_job(
         // The root owns the Run; peers still participate in metric reductions.
         const auto metrics_enabled = round.broadcast(
             tag + ".metrics.enabled",
-            {node != nullptr && !run_id.empty() ? 1.0 : 0.0}, timeout);
+            {node != nullptr && (!run_id.empty() || progress) ? 1.0 : 0.0},
+            timeout);
         if (!metrics_enabled || metrics_enabled->size() != 1) {
             return {.ok = false,
                     .detail = "gbdt run metrics: participant agreement failed"};
@@ -257,21 +319,32 @@ DistributedTrainResult run_train_job(
             run_params["features"] = feature_columns.size();
             bool params_logged = false;
             node->run_on_owner([&] {
-                params_logged = node->log_run_params(run_id, run_params);
+                const std::shared_ptr<pipeline::Run> run =
+                    node->find_run(run_id);
+                if (run && !run->value().metrics.at("params").empty()) {
+                    params_logged = true;
+                } else {
+                    params_logged = node->log_run_params(run_id, run_params);
+                }
             });
             if (!params_logged) {
                 return {.ok = false,
                         .detail = "gbdt run metrics: parameters could not be logged"};
             }
-            hooks.on_metrics = [node, &run_id](
+            hooks.on_metrics = [node, &run_id, &progress](
                                    int step,
                                    const std::map<std::string, double>& values) {
-                bool logged = false;
-                node->run_on_owner([&] {
-                    logged = node->log_run_metrics(
-                        run_id, static_cast<std::uint64_t>(step), values);
-                });
-                return logged;
+                bool keep_running = true;
+                if (!run_id.empty()) {
+                    node->run_on_owner([&] {
+                        keep_running = node->log_run_metrics(
+                            run_id, static_cast<std::uint64_t>(step), values);
+                    });
+                }
+                if (keep_running && progress) {
+                    keep_running = progress(step, values);
+                }
+                return keep_running;
             };
         }
         if (checkpoint.store != nullptr) {
@@ -536,7 +609,8 @@ DistributedTrainResult run_train_job(
                          : model_name;
         value.kind = out.regression ? "regressor" : "classifier";
         value.project = job.project();
-        value.run = job.run();
+        value.run = run_id.empty() ? job.run() : run_id;
+        value.run_id = value.run;
         nlohmann::json drivers = nlohmann::json::array();
         for (std::size_t index = 0; index < feature_columns.size() &&
                                     index < out.feature_importances.size();
