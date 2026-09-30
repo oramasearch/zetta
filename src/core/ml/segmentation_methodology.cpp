@@ -433,6 +433,9 @@ api::ApiResult run_methodology(RunRequest &request) {
         return api::ApiResult::failure("invalid_input",
                                        "segmentation: " + error);
     }
+    if (const auto cutoff = config.find("as_of"); cutoff != config.end()) {
+        config["as_of"] = *zetta::util::parse_time_seconds(*cutoff);
+    }
     const auto &source =
         graph.nodes_of_kind(ir::StepKind::Connect).front()->attributes;
     const std::string path = request.input.value(
@@ -545,7 +548,7 @@ Methodology make_m3_methodology() {
         {"entity", true, "integer entity key kept out of features"},
         {"feature", true, "numeric attributes and bounded categorical roles"},
         {"label", false, "label/outcome column to exclude, never a target"},
-        {"time", false, "explicit numeric time cutoff; never inferred"}};
+        {"time", false, "explicit ISO-8601 or epoch cutoff; never inferred"}};
     methodology.outputs = {"model", "segment assignments", "segment profiles",
                            "run report"};
     methodology.metrics = {"chosen k",       "silhouette",

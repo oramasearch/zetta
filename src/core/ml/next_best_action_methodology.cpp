@@ -9,6 +9,8 @@
 
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/util/timestamp.hpp"
+
 namespace zetta::ml {
 namespace {
 
@@ -50,6 +52,7 @@ Json model_defaults() {
           {"contact_cap_column", "contact_cap"},
           {"interaction_count_column", "interaction_count"},
           {"interaction_time_column", "interaction_time"},
+          {"as_of", 0.0},
           {"logging_propensity_column", "logging_propensity"},
           {"num_trees", 40},
           {"max_depth", 3},
@@ -92,6 +95,10 @@ ir::ExecutionGraph build_next_best_action_shape(const ShapeRequest &request) {
       } else if (key == "model_kind" &&
                  (!value.is_string() || !is_kind(value.get<std::string>()))) {
         model["requested_model_kind"] = value;
+      } else if (key == "time_column") {
+        if (!request.hints.contains("interaction_time_column")) {
+          model["interaction_time_column"] = value;
+        }
       } else {
         model[key] = value;
       }
@@ -273,6 +280,14 @@ bool read_columns(const Json &options, NextBestActionPipeline &pipeline,
   pipeline.contract.entity_column = values[0];
   pipeline.contract.label_column = values[2];
   pipeline.contract.time_column = values[9];
+  const std::optional<double> cutoff =
+      zetta::util::parse_time_seconds(options.at("as_of"));
+  if (!cutoff) {
+    error = "next-best-action as_of must be a finite epoch number or "
+            "ISO-8601 timestamp";
+    return false;
+  }
+  pipeline.contract.as_of = *cutoff;
   pipeline.contract.feature_columns = feature_columns;
   params.action_column = values[1];
   params.value_column = values[3];
@@ -395,6 +410,13 @@ const nlohmann::json &next_best_action_step_schema() {
         {"contact_cap_column", required_column},
         {"interaction_count_column", required_column},
         {"interaction_time_column", required_column},
+        {"as_of",
+         {{"oneOf",
+           Json::array(
+               {{{"type", "number"}},
+                {{"type", "string"},
+                 {"pattern",
+                  "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"}}})}}},
         {"logging_propensity_column", {{"type", "string"}}},
         {"num_trees", {{"type", "integer"}, {"minimum", 1}, {"maximum", 1000}}},
         {"max_depth", {{"type", "integer"}, {"minimum", 1}, {"maximum", 16}}},

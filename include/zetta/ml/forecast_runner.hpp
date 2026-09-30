@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@ struct ForecastRunParams {
   std::string series_column;
   std::string time_column;
   std::string target_column;
+  std::optional<double> as_of;
   std::string output_database = "forecasts";
   std::string output_table = "forecast";
   std::string model_name = "forecast";

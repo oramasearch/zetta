@@ -32,6 +32,9 @@ data::ResolvedDataset resolve_history(Node &node, ForecastPipeline &pipeline) {
   resolved.table = pipeline.table;
   auto &params = pipeline.params;
   resolved.contract.time_column = params.time_column;
+  if (params.as_of) {
+    resolved.contract.as_of = *params.as_of;
+  }
   resolved.contract.label_column = params.target_column;
   resolved.contract.entity_column = params.series_column;
   for (const data::DatasetSummary &dataset : node.datasets()) {

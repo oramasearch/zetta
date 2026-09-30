@@ -385,8 +385,16 @@
                     "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
                     "properties": {
                       "as_of": {
-                        "description": "the cutoff: only rows with time_column <= as_of contribute",
-                        "type": "number"
+                        "description": "the cutoff as a finite epoch number or ISO-8601 timestamp; only rows with time_column <= as_of contribute",
+                        "oneOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                            "type": "string"
+                          }
+                        ]
                       },
                       "entity_column": {
                         "description": "the integer key of the thing being scored, one row per entity",
@@ -5176,8 +5184,16 @@
                         "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
                         "properties": {
                           "as_of": {
-                            "description": "the cutoff: only rows with time_column <= as_of contribute",
-                            "type": "number"
+                            "description": "the cutoff as a finite epoch number or ISO-8601 timestamp; only rows with time_column <= as_of contribute",
+                            "oneOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                                "type": "string"
+                              }
+                            ]
                           },
                           "entity_column": {
                             "description": "the integer key of the thing being scored, one row per entity",
@@ -9197,8 +9213,16 @@
                   "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
                   "properties": {
                     "as_of": {
-                      "description": "the cutoff: only rows with time_column <= as_of contribute",
-                      "type": "number"
+                      "description": "the cutoff as a finite epoch number or ISO-8601 timestamp; only rows with time_column <= as_of contribute",
+                      "oneOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                          "type": "string"
+                        }
+                      ]
                     },
                     "entity_column": {
                       "description": "the integer key of the thing being scored, one row per entity",
@@ -24413,8 +24437,16 @@
                     "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
                     "properties": {
                       "as_of": {
-                        "description": "the cutoff: only rows with time_column <= as_of contribute",
-                        "type": "number"
+                        "description": "the cutoff as a finite epoch number or ISO-8601 timestamp; only rows with time_column <= as_of contribute",
+                        "oneOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                            "type": "string"
+                          }
+                        ]
                       },
                       "entity_column": {
                         "description": "the integer key of the thing being scored, one row per entity",
@@ -25278,8 +25310,16 @@
                   "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
                   "properties": {
                     "as_of": {
-                      "description": "the cutoff: only rows with time_column <= as_of contribute",
-                      "type": "number"
+                      "description": "the cutoff as a finite epoch number or ISO-8601 timestamp; only rows with time_column <= as_of contribute",
+                      "oneOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                          "type": "string"
+                        }
+                      ]
                     },
                     "entity_column": {
                       "description": "the integer key of the thing being scored, one row per entity",

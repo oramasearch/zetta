@@ -8,7 +8,7 @@ when adding or changing a dataframe op; the substrate's device seam is
 [../compute/compute-device.md](../compute/compute-device.md) and the ML consumers are in
 [../ml/](../ml/gbdt.md).
 
-- [ddf.md](ddf.md) — the `DataFrame` core: typed numeric columns, chunked, device-backed — the substrate every DDF op operates on (ARC-12 / ENT-33; #380).
+- [ddf.md](ddf.md) — the `DataFrame` core: typed numeric columns, ISO-or-epoch timestamp normalization, chunked and device-backed — the substrate every DDF op operates on (ARC-12 / ENT-33; #380, #1199).
 - [ddf-ops.md](ddf-ops.md) — the local ops: `scan` / `filter` / `project` (#381) plus `sort` / `concat` / `slice`, the single-node building blocks (#385).
 - [ddf-distributed-sort.md](ddf-distributed-sort.md) — sample-partition + local sort + merge across the cluster, all-to-all shuffle over the signal plane (`DistributedSorter`, #385).
 - [ddf-join.md](ddf-join.md) — the distributed inner equi-join: repartition by key via collectives, then a local hash/sort-merge join per shard (`distributed_join`, #382).

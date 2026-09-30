@@ -42,6 +42,7 @@ struct ColumnSchema {
     std::string field;                                      // JSON key in each row's
                                                             //   doc (empty => use name)
     compute::DataType dtype = compute::DataType::Float64;   // the column's element type
+    bool timestamp = false;                                 // accept ISO-8601 or epoch
 
     // The row field actually read: `field` when set, otherwise `name`.
     const std::string& source_field() const noexcept {
@@ -57,7 +58,8 @@ struct DataFrameSchema {
     bool empty() const noexcept { return columns.empty(); }
     std::size_t column_count() const noexcept { return columns.size(); }
 
-    // The JSON form: { "columns": [ { "name", "field"?, "dtype" }, ... ] }.
+    // The JSON form:
+    // { "columns": [ { "name", "field"?, "dtype", "timestamp"? }, ... ] }.
     nlohmann::json to_json() const;
 
     // Parse + validate a schema config at the boundary; the non-throwing inverse of
@@ -225,8 +227,9 @@ struct DataFrameResult {
 
 // Load `store`'s rows into a typed, chunked DataFrame on `device`, one column per
 // `schema` entry. Non-throwing: returns a failing ComputeStatus (and an empty
-// frame) on a device error or when a row's field is missing, not a number, not an
-// integer for an integer column, or out of range for the column's dtype.
+// frame) on a device error or when a row's field is missing, not a number (or an
+// ISO-8601 value for a timestamp float column), not an integer for an integer
+// column, or out of range for the column's dtype.
 DataFrameResult load_data_frame(const zetta::storage::StorageEngine& store,
                                 const DataFrameSchema& schema,
                                 compute::ComputeDevice& device,

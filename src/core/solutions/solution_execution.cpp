@@ -175,6 +175,16 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
     }
     state->input["dataset_path"] = prepared.value.at("dataset_path");
     state->input["dataset"] = state->binding.at("dataset");
+    if (state->input["dataset"].is_object()) {
+        const nlohmann::json& snapshot = state->binding.at("snapshot");
+        if (!state->input["dataset"].contains("time_column")) {
+            state->input["dataset"]["time_column"] =
+                snapshot.at("time_column");
+        }
+        if (!state->input["dataset"].contains("as_of")) {
+            state->input["dataset"]["as_of"] = snapshot.at("as_of");
+        }
+    }
     state->input["solution_snapshot_as_of"] = state->binding.at("snapshot").at("as_of");
     outputs.push_back({"dataset", "solution snapshot", prepared.value.at("dataset_path")});
     for (std::size_t index = 0; index < state->stages.size(); ++index) {

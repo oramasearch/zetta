@@ -371,7 +371,8 @@ ddf::DataFrameSchema survival_schema(const data::ResolvedDataset& dataset,
     schema.columns.push_back(
         {.name = "start_time",
          .field = dataset.contract.time_column,
-         .dtype = DataType::Float64});
+         .dtype = DataType::Float64,
+         .timestamp = true});
     schema.columns.push_back(
         {.name = "duration",
          .field = params.duration_column,
@@ -383,7 +384,8 @@ ddf::DataFrameSchema survival_schema(const data::ResolvedDataset& dataset,
     schema.columns.push_back(
         {.name = "feature_time",
          .field = params.feature_time_column,
-         .dtype = DataType::Float64});
+         .dtype = DataType::Float64,
+         .timestamp = true});
     for (const std::string& feature : dataset.contract.feature_columns) {
         schema.columns.push_back(
             {.name = feature, .field = feature, .dtype = DataType::Float64});

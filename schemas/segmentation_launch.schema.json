@@ -15,7 +15,16 @@
       },
       "properties": {
         "as_of": {
-          "type": "number"
+          "description": "inclusive cutoff as epoch seconds or an ISO-8601 UTC timestamp",
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+              "type": "string"
+            }
+          ]
         },
         "categorical_columns": {
           "items": {

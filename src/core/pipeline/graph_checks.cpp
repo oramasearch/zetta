@@ -45,9 +45,14 @@ const nlohmann::json& graph_step_annotations_schema() {
       "additionalProperties": { "type": "string", "minLength": 1 }
     },
     "as_of": {
-      "description": "The point-in-time cutoff for an ML step: every feature must be computed only from data available at or before this instant. ISO-8601 UTC date or date-time (e.g. \"2024-01-01\" or \"2024-01-01T00:00:00Z\"). Required when `features` is present.",
-      "type": "string",
-      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+      "description": "The point-in-time cutoff for an ML step: every feature must be computed only from data available at or before this instant. Accepts finite epoch seconds or an ISO-8601 UTC date/date-time. Required when `features` is present.",
+      "oneOf": [
+        { "type": "number" },
+        {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+        }
+      ]
     },
     "source_kind": {
       "description": "Whether a terminal feature source is an immutable point-in-time snapshot or a live table. Feature lineage accepts only snapshot.",

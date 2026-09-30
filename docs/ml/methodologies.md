@@ -67,6 +67,13 @@ for structural execution and logs that it trained and scored nothing.
 The methodology is `null` for structural graphs and unknown model kinds;
 structural graphs are runnable, while unknown model kinds are not.
 
+Methodologies that declare a `time` input share one timestamp boundary. Their
+`as_of` cutoff and time-column values accept ISO-8601 timestamps or finite epoch
+seconds and normalize to epoch seconds before filtering or training. This applies
+to the DDF-backed M-1, M-3, M-4, M-5, M-8, and M-18 paths and to the direct time
+readers. Their schemas expose both accepted forms rather than requiring callers
+to translate warehouse timestamps first.
+
 ## Runnable implementations
 
 `src/core/ml/methodology.cpp` wraps the existing behavior behind the interface:

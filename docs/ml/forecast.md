@@ -17,15 +17,16 @@ intervals. It uses no foreign runtime or hosted model.
 `run_forecast_table` takes a `ResolvedDataset` plus `ForecastRunParams`. The table
 has:
 
-- a required numeric timestamp column;
+- a required ISO-8601 or finite epoch timestamp column;
 - a required numeric target column;
 - an optional integer series-key column within the exact numeric collective
   range (−2^53 through 2^53); without it, the table is one series.
 
-Rows may arrive unordered. The runner sorts each series by timestamp and refuses
-missing, non-finite, or duplicate timestamps. The median observed timestamp step
-sets future timestamps, so daily and weekly numeric timestamp encodings use the
-same code path.
+Rows may arrive unordered. The runner normalizes ISO-8601 and epoch values to
+epoch seconds, sorts each series by timestamp, and refuses missing, non-finite,
+or duplicate timestamps. An optional `as_of` in either form excludes later rows
+before training. The median observed timestamp step sets future timestamps, so
+daily and weekly encodings use the same code path after normalization.
 
 Each series must be complete on one partition owner. Before training, members
 gather only their series keys and refuse a key owned by more than one member. This
@@ -144,6 +145,7 @@ Land a numeric history table through `add_dataset` or a connector. Then call
     "source": "demand",
     "table": "history",
     "time_column": "day",
+    "as_of": "2026-09-01T00:00:00Z",
     "target_column": "demand",
     "series_column": "store_id",
     "horizon": 7,

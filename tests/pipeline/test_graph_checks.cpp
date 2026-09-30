@@ -127,6 +127,15 @@ TEST(SchemaTypeCheck, CleanGraphPasses) {
     EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
 }
 
+TEST(SchemaTypeCheck, EpochAsOfAnnotationPasses) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+                   json{{"as_of", 1711929600.0}}, "n-model");
+
+    const CheckResult result = SchemaTypeCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
 TEST(SchemaTypeCheck, MissingFieldFailsWithReason) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Connect, "load",

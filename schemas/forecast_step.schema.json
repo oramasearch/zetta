@@ -2,6 +2,17 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "properties": {
+    "as_of": {
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+          "type": "string"
+        }
+      ]
+    },
     "backtest_folds": {
       "maximum": 1000000,
       "minimum": 1,

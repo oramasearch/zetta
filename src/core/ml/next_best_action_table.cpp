@@ -71,7 +71,8 @@ DataFrameSchema table_schema(const data::ResolvedDataset &dataset,
                      .dtype = DataType::Float64},
                     {.name = std::string(kInteractionTime),
                      .field = params.interaction_time_column,
-                     .dtype = DataType::Float64}};
+                     .dtype = DataType::Float64,
+                     .timestamp = true}};
   if (!params.logging_propensity_column.empty()) {
     schema.columns.push_back({.name = std::string(kLoggingPropensity),
                               .field = params.logging_propensity_column,

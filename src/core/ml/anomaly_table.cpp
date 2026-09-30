@@ -137,12 +137,14 @@ bool append_partition_rows(const data::DatasetPartition &catalog,
       output.columns[feature].push_back(*value);
     }
     if (mode == AnomalyMode::KpiTimeSeries) {
+      const auto found = row.find(contract.time_column);
       const std::optional<double> period =
-          numeric_value(row, contract.time_column);
+          found == row.end() ? std::nullopt
+                             : zetta::util::parse_time_seconds(*found);
       if (!period || !std::isfinite(*period)) {
         error = row_error(catalog, row_index,
                           "time column '" + contract.time_column +
-                              "' is not finite numeric data");
+                              "' is not a finite epoch number or ISO-8601 timestamp");
         return false;
       }
       output.periods.push_back(*period);

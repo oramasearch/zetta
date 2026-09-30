@@ -253,6 +253,10 @@ void land_retention_data(Node& node) {
         const bool persuadable = index < 120;
         const int treatment = index % 2;
         const int outcome = persuadable ? treatment : 1 - treatment;
+        const std::string iso_time =
+            "2026-08-01T00:00:00." +
+            std::to_string(1000 + index).substr(1) + "Z";
+        const double epoch_time = 1785542400.0 + index;
         table->add_row({{"entity", index + 1}, {"record_id", index + 1},
                        {"source", "fixture"}, {"name", "Customer " + std::to_string(index + 1)},
                        {"label", index % 10 != 0 ? 1 : 0}, {"feature", index % 13 + 0.5},
@@ -261,7 +265,18 @@ void land_retention_data(Node& node) {
                        {"duration", static_cast<double>(30 + index % 60)},
                        {"start_time", static_cast<double>(index)},
                        {"feature_time", static_cast<double>(index)},
-                       {"time", "2026-08-01T00:00:00.000Z"},
+                       {"time", iso_time},
+                       {"iso_feature_time", iso_time},
+                       {"epoch_time", epoch_time},
+                       {"epoch_feature_time", epoch_time},
+                       {"offer_code", index % 3},
+                       {"action_value", 10.0 + index % 5},
+                       {"action_cost", 1.0},
+                       {"eligible", 1.0},
+                       {"contacts", 0.0},
+                       {"contact_cap", 3.0},
+                       {"interaction_count", 1.0},
+                       {"logging_propensity", 0.5},
                        {"in_collections", false}, {"open_complaint", false},
                        {"vulnerable", false}});
     }
@@ -271,6 +286,14 @@ void land_retention_data(Node& node) {
                    {"duration", 30.0}, {"start_time", 240.0},
                    {"feature_time", 240.0},
                    {"time", "2026-10-01T00:00:00.000Z"},
+                   {"iso_feature_time", "2026-10-01T00:00:00.000Z"},
+                   {"epoch_time", 1790812800.0},
+                   {"epoch_feature_time", 1790812800.0},
+                   {"offer_code", 0}, {"action_value", 10.0},
+                   {"action_cost", 1.0}, {"eligible", 1.0},
+                   {"contacts", 0.0}, {"contact_cap", 3.0},
+                   {"interaction_count", 1.0},
+                   {"logging_propensity", 0.5},
                    {"in_collections", false}, {"open_complaint", false}, {"vulnerable", false}});
     const auto written = zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
@@ -4857,6 +4880,145 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
         }
     }
     EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney, S1AllLevelsRunWithAutomaticIsoOrEpochTimeRoles) {
+    SolutionDeliveryBoundary delivery;
+    land_retention_data(node);
+    const nlohmann::json representations = {
+        {{"name", "iso"},
+         {"time_column", "time"},
+         {"feature_time_column", "iso_feature_time"},
+         {"as_of", "2026-09-01T00:00:00.000Z"}},
+        {{"name", "epoch"},
+         {"time_column", "epoch_time"},
+         {"feature_time_column", "epoch_feature_time"},
+         {"as_of", 1788220800.0}},
+    };
+    for (const nlohmann::json& representation : representations) {
+        for (int level = 1; level <= 4; ++level) {
+            const std::string suffix =
+                representation.at("name").get<std::string>() +
+                "-cl" + std::to_string(level);
+            const std::string project_name = "retention-" + suffix;
+            const std::string target_table =
+                "retention_snapshot_" +
+                representation.at("name").get<std::string>() +
+                "_cl" + std::to_string(level);
+            ASSERT_TRUE(call("create_project", {{"name", project_name}}).ok)
+                << suffix;
+            const nlohmann::json sources = {
+                {"source", "datasets"},
+                {"table", "customers"},
+                {"M-3",
+                 {{"entity_column", "entity_id"},
+                  {"label_column", "label"},
+                  {"feature_columns", {"feature", "uplift_segment"}}}},
+                {"M-5",
+                 {{"duration_column", "duration"},
+                  {"event_indicator", "label"},
+                  {"feature_time_column",
+                   representation.at("feature_time_column")}}},
+                {"M-6",
+                 {{"entity", "entity_id"},
+                  {"treatment", "treatment"},
+                  {"outcome", "outcome"}}},
+                {"M-8",
+                 {{"entity_column", "entity_id"},
+                  {"action_column", "offer_code"},
+                  {"label_column", "label"},
+                  {"feature_columns", {"feature", "uplift_segment"}},
+                  {"value_column", "action_value"},
+                  {"cost_column", "action_cost"},
+                  {"eligibility_column", "eligible"},
+                  {"contacts_column", "contacts"},
+                  {"contact_cap_column", "contact_cap"},
+                  {"interaction_count_column", "interaction_count"},
+                  {"logging_propensity_column", "logging_propensity"},
+                  {"num_trees", 8},
+                  {"max_depth", 2},
+                  {"als_iterations", 2}}},
+            };
+            const nlohmann::json foundation = {
+                {"snapshot",
+                 {{"database", "datasets"},
+                  {"source_table", "customers"},
+                  {"target_table", target_table},
+                  {"entity_column", "entity"},
+                  {"time_column", representation.at("time_column")},
+                  {"as_of", representation.at("as_of")}}},
+                {"dataset",
+                 {{"entity_column", "entity_id"},
+                  {"label_column", "label"},
+                  {"feature_columns", {"feature", "uplift_segment"}}}},
+                {"delivery",
+                 {{"kind", "webhook"},
+                  {"endpoint", "https://crm.example.test/tasks"},
+                  {"owner", "retention-team"}}},
+                {"roi_model",
+                 {{"value_per_outcome", 100.0},
+                  {"investment", 200.0},
+                  {"currency", "USD"}}},
+            };
+            const ApiResult created = call(
+                "create_solution",
+                {{"project", project_name},
+                 {"solution", "S-1"},
+                 {"level", level},
+                 {"sources", sources},
+                 {"foundation", foundation}});
+            ASSERT_TRUE(created.ok)
+                << suffix << ": " << created.error.message;
+
+            const auto project = node.find_project(project_name);
+            ASSERT_TRUE(project) << suffix;
+            const auto graph = project->find_graph(
+                created.value.at("graph").get<std::string>());
+            ASSERT_TRUE(graph) << suffix;
+            const auto segmentation = graph->graph().find_node(
+                "solution_stage_3_train_segments");
+            ASSERT_TRUE(segmentation) << suffix;
+            const auto& segmentation_config =
+                segmentation->attributes.at("segmentation");
+            EXPECT_EQ(segmentation_config.at("time_column"),
+                      representation.at("time_column"))
+                << suffix;
+            EXPECT_EQ(segmentation_config.at("as_of"),
+                      representation.at("as_of"))
+                << suffix;
+
+            const ApiResult started = call(
+                "run_solution",
+                {{"project", project_name},
+                 {"graph", created.value.at("graph")},
+                 {"delivery_token", "fixture-only-token"}});
+            ASSERT_TRUE(started.ok)
+                << suffix << ": " << started.error.message;
+            ApiResult status;
+            for (int attempt = 0; attempt < 8000; ++attempt) {
+                node.tick();
+                background.prune();
+                status = call(
+                    "get_run", {{"run_id", started.value.at("run_id")}});
+                if (status.ok && status.value.at("status") != "running") {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            ASSERT_TRUE(status.ok) << suffix << ": " << status.error.message;
+            if (status.value.at("status") != "succeeded") {
+                for (const auto& run : node.runs()) {
+                    ADD_FAILURE() << suffix << '\n' << run->metadata().dump(2);
+                }
+            }
+            ASSERT_EQ(status.value.at("status"), "succeeded")
+                << suffix << ": " << status.value.dump(2);
+            const auto snapshot =
+                node.find_database("datasets")->find_table(target_table);
+            ASSERT_TRUE(snapshot) << suffix;
+            EXPECT_EQ(snapshot->store().size(), 240u) << suffix;
+        }
+    }
 }
 
 TEST_F(SolutionJourney,
