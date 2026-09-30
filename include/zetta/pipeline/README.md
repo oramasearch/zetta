@@ -13,3 +13,8 @@ map so durable model and solution records can restore the original business id.
 Graph execution may continue a caller-supplied Run. Study trials use that path
 so admission, graph logs, metrics, lineage, and the trained model share one
 durable Run id (#1205).
+
+Run metric writes commit caller values and automatic system samples atomically
+on the owner thread. Only automatic samples advance past a conflicting step;
+caller values retain strict validation. See
+[Run metrics](../../../docs/ml/run-metrics.md) (#1205).

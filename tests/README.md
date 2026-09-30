@@ -12,6 +12,10 @@ removal, promoted lineage retention, restart persistence, and REST/MCP parity
 Server-level Study journeys additionally cover real M-1 dataset and Pipeline
 training, restart resumption, wall and cost limits, active cancellation, curves,
 analysis, and actual-model promotion (#1205).
+Run metric regressions cover same-step automatic gauges, competing initial and
+trainer samples through the owner queue, restart ordering, strict caller
+validation, and live-event step agreement (#1205). See
+[pipeline tests](pipeline/README.md).
 GBDT coverage verifies that out-of-time Study validation derives one global
 timestamp cutoff and reports the same holdout across different shard counts.
 Project graph and API tests cover denormalized name creation, rename propagation,

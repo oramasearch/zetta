@@ -32,9 +32,23 @@ The replicated `Run.metrics` object contains:
   calibration, feature importance, and sample predictions. These are vendored
   data, not image links.
 
-Metric values must be finite, and each metric's step must increase. Parameters
-can be recorded only once. The Run JSON Schema closes every object, including
-the per-artifact data shape.
+Metric values must be finite, and each metric's step must increase. Caller-
+supplied steps remain strict, including explicitly supplied `system.*` values:
+a repeated or decreasing step rejects the entire batch without changing any
+series. Parameters can be recorded only once. The Run JSON Schema closes every
+object, including the per-artifact data shape.
+
+Automatic CPU, memory, GPU, and throughput samples use the trainer's step as
+their natural step. Each automatic metric allocates
+`max(last_step + 1, natural_step)` independently within its Run; its first sample
+uses the natural step. Allocation reads the persisted series and commits on
+the same owner thread as the metric store. Background producers enter through
+`Node::run_on_owner`, so an initial fit point and a trainer sample queued at the
+same natural step both succeed. Different training/validation series can also
+share a natural step without colliding on the automatic gauges. No volatile
+counter is needed: restart and replication retain the last allocated steps.
+Step exhaustion rejects the whole batch without wrapping. This fixes the
+automatic-gauge collision exercised by Study trial Runs (#1205).
 
 DP Runs carry `metrics_suppressed: "differential_privacy"` at the top level of
 `get_run` and `get_run_metrics`. This reason survives replication and restart.
@@ -51,8 +65,8 @@ Run's CRDT value and disk projection, so they replicate and restart with the Run
 
 ## Live batches
 
-Every successful metric write publishes the same batch as JSON to the exposed,
-ephemeral topic `run-metrics.<run>`:
+Every successful metric write publishes JSON batches to the exposed, ephemeral
+topic `run-metrics.<run>`, grouped by their actual stored step:
 
 ```json
 {
@@ -63,10 +77,14 @@ ephemeral topic `run-metrics.<run>`:
 }
 ```
 
-The batch also includes available CPU, memory, and GPU gauges. A trainer's row
-or token rate is copied to `system.throughput.per_second`. A UI or agent tails
-the topic through the existing `receive_events` capability. MCP uses the same
-bounded long poll with `wait_ms` and `max`; it does not hold a thread per waiter.
+The batch also includes available CPU, memory, and GPU gauges when their stored
+steps match. Gauges advanced past the trainer's step appear in additional
+batches at their allocated steps, with the same timestamp. A trainer's row or
+token rate is copied to `system.throughput.per_second`. Explicit caller values
+take precedence over automatic samples. A UI or agent tails the topic through
+the existing `receive_events` capability. MCP uses the same bounded long poll
+with `wait_ms` and `max`; it does not hold a thread per waiter. No JSON shape or
+capability schema changes are introduced by automatic step allocation.
 
 ## Capabilities
 
@@ -164,3 +182,7 @@ and unchanged non-DP training reductions with full per-tree reporting.
 This work belongs to the methodology epic
 [#984](https://github.com/oramasearch/zetta/issues/984) and implements
 [#1137](https://github.com/oramasearch/zetta/issues/1137).
+Automatic sample ordering regressions live in `tests/pipeline/test_run.cpp`:
+duplicate natural steps, queued initial/trainer samples, independent Run and
+metric ordering across restart, strict caller rejection, step exhaustion, and
+live-event/stored-step agreement (#1205).

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <set>
@@ -639,16 +640,17 @@ void Run::set_display_names(std::string project_name,
 bool Run::log_metrics(std::uint64_t step,
                       const std::map<std::string, double>& values,
                       std::string time, std::string* error) {
-    if (values.empty()) {
-        if (error != nullptr) {
-            *error = "/values: at least one metric is required";
-        }
-        return false;
-    }
-    if (time.empty()) {
-        time = zetta::util::now_iso8601();
-    }
-    nlohmann::json candidate = value_.metrics;
+    return log_metrics_with_system_sample(step, values, {}, std::move(time),
+                                          error);
+}
+
+namespace {
+
+bool append_metric_sample(nlohmann::json& candidate,
+                          std::uint64_t natural_step,
+                          const std::map<std::string, double>& values,
+                          const std::string& time, bool automatic,
+                          std::string* error) {
     for (const auto& [name, value] : values) {
         if (name.empty() || !std::isfinite(value)) {
             if (error != nullptr) {
@@ -663,13 +665,20 @@ bool Run::log_metrics(std::uint64_t step,
                       {"values", nlohmann::json::array()},
                       {"times", nlohmann::json::array()}};
         }
-        if (!series["steps"].empty() &&
-            step <= series["steps"].back().get<std::uint64_t>()) {
-            if (error != nullptr) {
-                *error = "/step: must be greater than the last step for metric '" +
-                         name + "'";
+        std::uint64_t step = natural_step;
+        if (!series["steps"].empty()) {
+            const auto last_step = series["steps"].back().get<std::uint64_t>();
+            if (step <= last_step) {
+                if (!automatic ||
+                    last_step == std::numeric_limits<std::uint64_t>::max()) {
+                    if (error != nullptr) {
+                        *error = "/step: must be greater than the last step for metric '" +
+                                 name + "'";
+                    }
+                    return false;
+                }
+                step = last_step + 1;
             }
-            return false;
         }
         series["steps"].push_back(step);
         series["values"].push_back(value);
@@ -697,6 +706,31 @@ bool Run::log_metrics(std::uint64_t step,
             retain_indices(series, envelope_lttb_indices(
                                        stored, kMetricPointsAfterCompaction));
         }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool Run::log_metrics_with_system_sample(
+    std::uint64_t natural_step,
+    const std::map<std::string, double>& values,
+    const std::map<std::string, double>& system_values,
+    std::string time, std::string* error) {
+    if (values.empty() && system_values.empty()) {
+        if (error != nullptr) {
+            *error = "/values: at least one metric is required";
+        }
+        return false;
+    }
+    if (time.empty()) {
+        time = zetta::util::now_iso8601();
+    }
+    nlohmann::json candidate = value_.metrics;
+    if (!append_metric_sample(candidate, natural_step, values, time, false, error) ||
+        !append_metric_sample(candidate, natural_step, system_values, time, true,
+                              error)) {
+        return false;
     }
     nlohmann::json run_candidate = metadata();
     run_candidate["metrics"] = candidate;
