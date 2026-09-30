@@ -311,7 +311,8 @@ TEST(OpenApi, RunMetricCapabilitiesHaveRestSchemaParity) {
 TEST(OpenApi, StudyCapabilitiesHaveRestSchemaParity) {
     const Registry registry = core_registry();
     const nlohmann::json document = zetta::api::openapi_document(registry);
-    for (const char* name : {"create_study", "get_study", "list_studies",
+    for (const char* name : {"validate_study", "create_study", "get_study",
+                             "list_studies",
                              "list_trials", "stop_study", "stop_trial",
                              "promote_trial", "delete_study",
                              "get_study_analysis"}) {

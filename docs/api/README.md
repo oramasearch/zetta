@@ -45,7 +45,7 @@ MCP/HTTP work.
   exposed topics and long polls that suspend without holding threads.
 - [../ml/run-metrics.md](../ml/run-metrics.md) — the five run-metric capabilities,
   their REST and MCP request/response examples, and live topic reads (#1137).
-- [../ml/studies.md](../ml/studies.md) — the nine study capabilities, Run-backed
+- [../ml/studies.md](../ml/studies.md) — the ten study capabilities, published search spaces, read-only validation, Run-backed
   trials, dedicated promotion/deletion permissions, analysis, lineage-preserving
   cleanup, and bounded live progress reads (#1138, #1158).
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
@@ -161,7 +161,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
-| `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, primary solutions, model kinds, implementation status, and tracking issues |
+| `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, study support and published search spaces, primary solutions, model kinds, implementation status, and tracking issues |
 | `list_ledger` | read | api:query | immutable action and outcome entries from the replicated [solutions audit ledger](../solutions/audit-ledger.md) |
 | `list_solutions` | read | api:query | all 20 runnable catalogue solutions, with composition, product contract, `levels` objects, missing components, and runnable status |
 | `get_solution` | read | api:query | one runnable catalogue solution by id; `solution.levels[].level` is the integer posted to `create_solution` |
@@ -169,6 +169,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_trace` | read | api:query | every span of one trace id |
 | `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
 | `get_study` | read | api:query | one study's objective, search space, sampler, pruner, budgets, usage, state, and Run trials |
+| `validate_study` | read | api:query | validate and normalize a create-study candidate without storing it, returning a field path and repair reason when invalid |
 | `list_studies` | read | api:query | all studies with flattened Project/Pipeline names, lifecycle state, timestamps and objective summary |
 | `list_trials` | read | api:query | one study's Run trials, optionally filtered by running/pruned/failed/complete state |
 | `get_study_analysis` | read | api:query | best trial, optimization history, parameter importances, parallel-coordinate rows, and confidence leaderboard |

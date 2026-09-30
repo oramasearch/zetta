@@ -40,9 +40,33 @@ dataset-level driver.
 
 M-1 search names are the canonical GBDT controls (`gbdt.num_trees`,
 `gbdt.max_depth`, `gbdt.max_bins`, `learning_rate`, regularization and split
-controls, and `holdout_fraction`). Unknown names fail at `create_study`.
+controls, and `holdout_fraction`). Unknown names fail during validation.
 `gradient_boosting` in `model_family` choices or conditions is canonicalized to
 `gbdt`; another model family is rejected.
+
+## Published search space
+
+`list_methodologies` publishes study support alongside each methodology. A
+supported entry has `studies: true`, an empty `study_reason`, and a
+`study_search_space` containing:
+
+- parameters with canonical name, kind, bounds, step, sampling mode, default,
+  choices, aliases, and conditions;
+- supported objective metrics and validation splits; and
+- the dataset-path contract.
+
+M-1 currently publishes `model_family` with the sole choice `gbdt`, the eight
+GBDT and holdout controls accepted by the real driver,
+`validation.accuracy`, `validation.auc`, and `validation.log_loss`, and the
+`validation` split. Dataset-level studies require an existing
+`database.table`; directory paths are not accepted. Methodologies without a
+study driver return `studies: false`, a reason, and a null
+`study_search_space`.
+
+The published defaults and the validator's accepted parameter names, kinds,
+aliases, choices, metrics, and splits come from one methodology definition.
+Callers can therefore construct a candidate from the published object and
+preflight it before asking a person to confirm creation.
 
 ## Study definition
 
@@ -127,6 +151,56 @@ Run. The action has its own `studies:delete` permission; neither
 Each operation is registered once. REST uses `/v1/<capability>` and MCP uses a
 tool with the exact capability name and the same closed input/output schemas.
 All examples below omit the common REST response envelope.
+
+### `validate_study`
+
+REST: `GET /v1/validate_study` with the candidate fields encoded as query
+parameters. MCP tool: `validate_study`. Permission: `mcp:call` (`api:query`).
+
+The input schema is identical to `create_study`. Validation performs the same
+normalization, dataset lookup, Project/Pipeline lookup and correctness gate,
+duplicate-name check, and study-spec checks as creation, but stores nothing.
+`create_study` calls this shared validation path before it creates the record.
+
+```json
+{
+  "name": "churn-tuning",
+  "dataset": "warehouse.accounts_snapshot",
+  "methodology": "M-1",
+  "objective": {
+    "metric": "validation.auc",
+    "direction": "maximize",
+    "validation_split": "validation"
+  },
+  "from_defaults": true,
+  "budgets": {
+    "max_trials": 40,
+    "max_wall_time_ms": 3600000,
+    "max_parallel_trials": 4,
+    "cost_cap": 25.0
+  }
+}
+```
+
+```json
+{
+  "valid": true,
+  "reason": "",
+  "path": "",
+  "normalized_spec": {
+    "name": "churn-tuning",
+    "methodology": "M-1",
+    "sampler": "tpe",
+    "pruner": "asha"
+  }
+}
+```
+
+The actual `normalized_spec` is complete, including the expanded search space
+and budget defaults. An invalid candidate returns `valid: false`, a precise
+`path`, a repair-oriented `reason`, and `normalized_spec: null`. Validation
+failures remain successful read responses so clients can repair the candidate
+without interpreting an action error.
 
 ### `create_study`
 
@@ -361,5 +435,5 @@ The replicated catalog key is `study:<uuid>`. Its local projection is
 Study schema before materializing it. A running Study is eligible on exactly
 one replicated member after reconciliation, including after a restart, and a node
 cooperatively releases in-flight work if membership selects a new owner. The
-schema is published as `study.schema.json`, and all nine capability schemas
+schema is published as `study.schema.json`, and all ten capability schemas
 appear in `schemas/openapi.json` and MCP `tools/list`.

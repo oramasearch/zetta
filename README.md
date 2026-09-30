@@ -125,6 +125,9 @@ What's inside, by domain (each links to that domain's docs):
   [AutoML studies](docs/ml/studies.md) search those native learners with typed
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
   real background M-1 training Runs over a dataset or stored Pipeline. The
+  methodology registry publishes the accepted study parameters, objectives,
+  splits, defaults and dataset-path rules, and a read-only preflight returns a
+  normalized candidate or a field-specific repair reason before creation. The
   replicated driver resumes running studies after restart, records per-tree
   curves and held-out objectives, enforces budgets, and exposes analysis,
   governed model promotion, and lineage-preserving deletion over REST/MCP.

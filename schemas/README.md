@@ -11,9 +11,10 @@ The generated OpenAPI includes both the five pub/sub CRUD additions and the five
 [run-metric capabilities](../docs/ml/run-metrics.md). Regenerate their combined
 registry output after merging; never resolve this artifact by hand.
 
-The nine [Study capabilities](../docs/ml/studies.md), including the dedicated
-`delete_study` action and its retained-lineage output, are generated into the
-same OpenAPI artifact (#1158).
+The ten [Study capabilities](../docs/ml/studies.md), including read-only
+`validate_study` and the dedicated `delete_study` action, are generated into
+the same OpenAPI artifact. The `list_methodologies` schema also publishes Study
+support and the accepted search-space contract (#1158, #1207).
 
 The `node_memory` read and its process/subsystem output schema are generated from
 the registry declaration documented in [memory accounting](../docs/ops/memory.md).
