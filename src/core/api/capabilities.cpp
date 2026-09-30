@@ -5128,7 +5128,8 @@ const nlohmann::json& score_schema() {
              "data at all. Each row is keyed by the model's own feature columns"}}},
           {"entities",
            {{"type", "array"},
-            {"items", {{"type", "integer"}}},
+            {"items",
+             {{"oneOf", {{{"type", "integer"}}, {{"type", "string"}}}}}},
             {"description",
              "entity key per supplied row (default: the row's index)"}}},
           {"top_k",
@@ -5149,7 +5150,9 @@ const nlohmann::json& score_output_schema() {
             {"items",
              {{"type", "object"},
               {"properties",
-               {{"entity", {{"type", "integer"}}},
+               {{"entity",
+                 {{"oneOf",
+                   {{{"type", "integer"}}, {{"type", "string"}}}}}},
                 {"risk", {{"type", "number"}}}}}}}}},
           {"feature_columns",
            {{"type", "array"},
@@ -5195,14 +5198,38 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
     const std::size_t top_k = input.value("top_k", std::size_t{0});
     zetta::ml::TableScoreResult scored;
     if (rows != input.end()) {
+        std::shared_ptr<const zetta::data::EntityKeyMapping> entity_keys;
+        if (const auto mapping = model->feature_schema().find("entity_key_mapping");
+            mapping != model->feature_schema().end()) {
+            std::string reason;
+            entity_keys = zetta::data::entity_key_mapping_from_json(*mapping, &reason);
+            if (!entity_keys) {
+                return ApiResult::failure(
+                    "engine_error",
+                    "model has an invalid entity key mapping: " + reason);
+            }
+        }
         std::vector<std::int64_t> entities;
         if (const auto given = input.find("entities"); given != input.end()) {
             for (const nlohmann::json& entity : *given) {
-                if (!entity.is_number_integer()) {
-                    return ApiResult::failure("invalid_input",
-                                              "entities[]: must be integers");
+                if (entity.is_number_integer()) {
+                    entities.push_back(entity.get<std::int64_t>());
+                    continue;
                 }
-                entities.push_back(entity.get<std::int64_t>());
+                if (!entity.is_string() || !entity_keys) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "entities[]: text keys require a model trained with text entity ids");
+                }
+                const std::optional<std::int64_t> derived =
+                    entity_keys->derived(entity.get_ref<const std::string&>());
+                if (!derived) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "entities[]: unknown text entity '" +
+                            entity.get<std::string>() + "'");
+                }
+                entities.push_back(*derived);
             }
         }
         scored = zetta::ml::score_rows(*model, rows->get<std::vector<nlohmann::json>>(),
@@ -5237,7 +5264,11 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
 
     nlohmann::json ranked = nlohmann::json::array();
     for (const zetta::ml::EntityScore& score : scored.ranked) {
-        ranked.push_back({{"entity", score.entity}, {"risk", score.risk}});
+        ranked.push_back(
+            {{"entity", scored.entity_keys
+                            ? scored.entity_keys->original(score.entity)
+                            : nlohmann::json(score.entity)},
+             {"risk", score.risk}});
     }
     nlohmann::json drivers = nlohmann::json::array();
     for (const zetta::ml::ModelDriver& driver : scored.drivers) {
@@ -5276,7 +5307,7 @@ const nlohmann::json& explain_schema() {
              "`database.table` holding the entity; pair with `entity`"}}},
           {"dataset", zetta::data::dataset_contract_schema()},
           {"entity",
-           {{"type", "integer"},
+           {{"oneOf", {{{"type", "integer"}}, {{"type", "string"}}}},
             {"description",
              "the entity key to explain, read from `dataset_path`"}}},
           {"row",
@@ -5293,7 +5324,7 @@ const nlohmann::json& explain_output_schema() {
         {"required", {"contributions", "base_value", "raw", "risk"}},
         {"properties",
          {{"entity",
-           {{"type", "integer"},
+           {{"oneOf", {{{"type", "integer"}}, {{"type", "string"}}}},
             {"description", "present when a dataset entity was explained"}}},
           {"base_value",
            {{"type", "number"},
@@ -5355,6 +5386,7 @@ ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
     }
 
     zetta::ml::RowExplanation explained;
+    std::shared_ptr<const zetta::data::EntityKeyMapping> entity_keys;
     if (row != input.end()) {
         explained = zetta::ml::explain_row(*model, *row);
     } else {
@@ -5384,10 +5416,28 @@ ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
             zetta::data::default_dataset_sampler(context.node, context.cluster));
         if (!resolved.ok()) return ApiResult::failure("engine_error", resolved.error);
 
+        std::int64_t internal_entity = 0;
+        entity_keys = resolved.contract.entity_keys;
+        if (entity->is_number_integer()) {
+            internal_entity = entity->get<std::int64_t>();
+        } else if (entity->is_string() && entity_keys) {
+            const std::optional<std::int64_t> derived =
+                entity_keys->derived(entity->get_ref<const std::string&>());
+            if (!derived) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "unknown text entity '" + entity->get<std::string>() + "'");
+            }
+            internal_entity = *derived;
+        } else {
+            return ApiResult::failure(
+                "invalid_input",
+                "a text entity requires a dataset with text entity ids");
+        }
         compute::CpuDevice device;
         explained = zetta::ml::explain_entity(context.node, *model, resolved.table_id,
                                               resolved.contract, device,
-                                              entity->get<std::int64_t>());
+                                              internal_entity);
     }
     if (!explained.ok()) return ApiResult::failure("engine_error", explained.error);
 
@@ -5398,7 +5448,11 @@ ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
                                  {"contribution", contribution.contribution}});
     }
     nlohmann::json output;
-    if (explained.entity) output["entity"] = *explained.entity;
+    if (explained.entity) {
+        output["entity"] = entity_keys
+                               ? entity_keys->original(*explained.entity)
+                               : nlohmann::json(*explained.entity);
+    }
     output["base_value"] = explained.base_value;
     output["raw"] = explained.raw;
     output["risk"] = explained.risk;

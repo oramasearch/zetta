@@ -31,7 +31,9 @@ constexpr const char* kRankResultsDatabase = "rank_results";
 ddf::DataFrameSchema rank_schema(const data::ResolvedDataset& dataset, const RankParams& params) {
     using compute::DataType;
     ddf::DataFrameSchema schema;
-    schema.columns.push_back({.name = dataset.contract.entity_column, .dtype = DataType::Int64});
+    schema.columns.push_back({.name = dataset.contract.entity_column,
+                              .dtype = DataType::Int64,
+                              .entity_keys = dataset.contract.entity_keys});
     schema.columns.push_back({.name = params.group_column, .dtype = DataType::Int64});
     schema.columns.push_back({.name = dataset.contract.label_column, .dtype = DataType::Float64});
     for (const std::string& feature : dataset.contract.feature_columns) {
@@ -199,7 +201,8 @@ RankRunResult run_rank_on_table(Node& node, compute::ComputeDevice& device,
             }
             for (const RankedEntity& row : output.training.ranked) {
                 table->add_row({{"group", row.group},
-                                {"entity", row.entity},
+                                {"entity", data::entity_output(
+                                               dataset.contract, row.entity)},
                                 {"score", row.score},
                                 {"rank", row.rank},
                                 {"relevance", row.relevance}});
@@ -226,6 +229,17 @@ RankRunResult run_rank_on_table(Node& node, compute::ComputeDevice& device,
     lineage.freshness = util::now_iso8601();
     lineage.confidence = output.training.validation.ndcg_at_k;
     node.run_on_owner([&] {
+        if (dataset.contract.entity_keys) {
+            output.run->set_entity_key_mapping(
+                dataset.contract.entity_keys->to_json());
+            if (const std::shared_ptr<Model> model =
+                    node.find_model(output.training.model_id)) {
+                nlohmann::json feature_schema = model->feature_schema();
+                feature_schema["entity_key_mapping"] =
+                    dataset.contract.entity_keys->to_json();
+                model->set_feature_schema(std::move(feature_schema));
+            }
+        }
         output.run->set_outputs(std::move(outputs));
         output.run->set_lineage(std::move(lineage));
         output.run->add_log({util::now_iso8601(), "info",

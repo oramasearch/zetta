@@ -450,20 +450,17 @@ then partitioning what it got. Correct, and single-node.
 
 #### Shape the source query for the model, not just for the read
 
-Two column rules are enforced deep in the run — at the `connect` step, *after* the dataset
-has landed — so a query that ingests happily still fails the pipeline minutes later with a
-message that does not obviously point back here. Both are fixed in the **source** query,
-which is why this belongs in §4.1 and not §4.3.
+The dataset contract validates column roles before the Run starts. Ordinary warehouse
+text identifiers and boolean targets need no source-query workaround.
 
 | Rule | What you see if you miss it | Fix in the SELECT |
 |---|---|---|
-| The **entity column must be a 64-bit integer** | `run` refuses immediately: ``dataset: the entity column 'account_id' holds non-integer values; entities are keyed by a 64-bit integer`` | derive one — `('x'\|\|substr(md5(account_id),1,8))::bit(32)::bigint AS account_key` |
-| The **label (and every feature) must be numeric** | the run reaches `running`, then fails: ``connect step 'Load customer accounts' failed: … row 0 field 'churned' is not a number`` | cast it — `churned::int AS churned` |
+| The **entity column must be an integer or non-empty text value** | mixed or empty values are refused before the Run starts | keep the warehouse business id; every output restores it |
+| The **label must be numeric/boolean 0/1; features numeric/boolean** | contract resolution names a non-numeric column and its cast | cast only other representations |
 
-A Postgres `boolean` is the common way to trip the second one, and a text/UUID/Salesforce
-account id is the common way to trip the first — **both of which his real `accounts` table
-almost certainly has.** String entity keys are a known limitation, not a bug
-([`docs/data/dataset-path.md`](../data/dataset-path.md) — *"String entity keys"*).
+A Postgres `boolean` loads as 0/1. A text/UUID/Salesforce account id receives a stable,
+collision-checked internal key and remains unchanged in outputs
+([`docs/data/dataset-path.md`](../data/dataset-path.md)).
 
 **The query that satisfies both, measured end to end on 600 rows:**
 
@@ -597,9 +594,8 @@ P run '{"project":"churn","graph":"churn skeleton",
         "holdout_fraction":0.3}'
 ```
 
-`account_key` and `accounts_ml`, not `account_id` and `accounts` — see
-[§4.1](#shape-the-source-query-for-the-model-not-just-for-the-read). A text entity column
-is refused here, and a boolean label gets past this call and fails inside the run.
+The source `account_id` and boolean label are valid directly; see
+[§4.1](#shape-the-source-query-for-the-model-not-just-for-the-read).
 
 **Set `holdout_fraction`.** Without it every metric in the report is in-sample — scored on
 the rows the model trained on — and they flatter. This is not theoretical: an in-sample AUC

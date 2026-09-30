@@ -351,6 +351,11 @@ api::ApiResult run_m2(RunRequest &request) {
       nlohmann::json{{"scoring_method", table_result.resolution.scoring_method},
                      {"match_threshold", params.match_threshold},
                      {"review_threshold", params.review_threshold}};
+  if (dataset.contract.entity_keys) {
+    model_value.feature_schema["entity_key_mapping"] =
+        dataset.contract.entity_keys->to_json();
+    run->set_entity_key_mapping(dataset.contract.entity_keys->to_json());
+  }
   model_value.metrics =
       metrics_json(table_result.resolution, params, dataset.rows, excluded);
   const std::shared_ptr<Model> model =

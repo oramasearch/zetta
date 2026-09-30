@@ -45,7 +45,8 @@ ddf::DataFrameSchema ensemble_schema(const data::DatasetContract& contract) {
     schema.columns.push_back(
         ColumnSchema{.name = std::string(kEntityColumn),
                      .field = contract.entity_column,
-                     .dtype = DataType::Int64});
+                     .dtype = DataType::Int64,
+                     .entity_keys = contract.entity_keys});
     for (const std::string& feature : contract.feature_columns) {
         schema.columns.push_back(ColumnSchema{.name = feature,
                                               .field = feature,
@@ -104,7 +105,8 @@ struct WrittenTables {
 };
 
 WrittenTables write_result_tables(Node& node, const std::string& graph,
-                                  const EnsembleTrainResult& trained) {
+                                  const EnsembleTrainResult& trained,
+                                  const data::DatasetContract& contract) {
     WrittenTables written;
     const std::string suffix = normalized_table_suffix(graph);
     std::shared_ptr<data::Database> database =
@@ -131,7 +133,8 @@ WrittenTables write_result_tables(Node& node, const std::string& graph,
         for (std::size_t index = 0; index < ranked.size(); ++index) {
             const EnsembleScore& score = ranked[index];
             nlohmann::json row = {{"rank", index + 1},
-                                  {"account", score.entity},
+                                  {"account", data::entity_output(
+                                                  contract, score.entity)},
                                   {"risk", score.blended_score},
                                   {"label", score.label},
                                   {"held_out", score.held_out}};
@@ -266,6 +269,10 @@ private:
         value.kind = "ensemble";
         value.project = options_.project;
         value.feature_schema = model_feature_schema(trained_.training);
+        if (dataset_.contract.entity_keys) {
+            value.feature_schema["entity_key_mapping"] =
+                dataset_.contract.entity_keys->to_json();
+        }
         value.metrics = model_metrics(trained_.training);
         std::shared_ptr<Model> model;
         node_.run_on_owner([&] {
@@ -298,7 +305,8 @@ private:
         }
         node_.run_on_owner([&] {
             tables_ =
-                write_result_tables(node_, options_.graph, trained_.training);
+                write_result_tables(node_, options_.graph, trained_.training,
+                                    dataset_.contract);
         });
         if (tables_.scores.empty() || tables_.weights.empty()) {
             return pipeline::StepOutcome{
@@ -363,6 +371,10 @@ EnsembleRunResult run_ensemble_on_dataset(
     EnsembleRunResult result;
     result.execution =
         executor.execute(node, graph, options.project, options.graph);
+    if (result.execution.run && dataset.contract.entity_keys) {
+        result.execution.run->set_entity_key_mapping(
+            dataset.contract.entity_keys->to_json());
+    }
     result.model_id = steps->model_id();
     result.scores_table = steps->tables().scores;
     result.weights_table = steps->tables().weights;

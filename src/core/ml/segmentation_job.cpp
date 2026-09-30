@@ -66,13 +66,23 @@ bool append_row(const nlohmann::json &document,
         return false;
     }
     const auto entity = document.find(contract.entity_column);
-    if (entity == document.end() || !entity->is_number()) {
+    if (entity == document.end()) {
         error = "segmentation dataset: entity column '" +
-                contract.entity_column + "' is missing or not numeric";
+                contract.entity_column + "' is missing";
         return false;
     }
     std::int64_t entity_key = 0;
-    if (entity->is_number_unsigned() &&
+    if (contract.entity_keys && entity->is_string()) {
+        const std::optional<std::int64_t> derived =
+            contract.entity_keys->derived(
+                entity->get_ref<const std::string&>());
+        if (!derived) {
+            error = "segmentation dataset: text entity is absent from the "
+                    "resolved mapping";
+            return false;
+        }
+        entity_key = *derived;
+    } else if (entity->is_number_unsigned() &&
         entity->get<std::uint64_t>() <=
             static_cast<std::uint64_t>(
                 std::numeric_limits<std::int64_t>::max())) {
@@ -355,6 +365,11 @@ bool materialize_outputs(Node &node,
         {"table_id", dataset.table_id},
         {"contract", zetta::data::to_json(dataset.contract)},
         {"notes", dataset.notes}};
+    if (dataset.contract.entity_keys) {
+        model_value.feature_schema["entity_key_mapping"] =
+            dataset.contract.entity_keys->to_json();
+        run->set_entity_key_mapping(dataset.contract.entity_keys->to_json());
+    }
     model_value.metrics = model_metrics(output.segmentation);
     model_value.metrics["read_rows"] = output.read_rows;
     model_value.metrics["clustered_rows"] =
@@ -412,7 +427,8 @@ bool materialize_outputs(Node &node,
     for (const SegmentAssignment &assignment :
          output.segmentation.assignments) {
         assignments->add_row(
-            {{"entity", assignment.entity},
+            {{"entity", zetta::data::entity_output(
+                            dataset.contract, assignment.entity)},
              {"segment_id", assignment.segment_id},
              {"distance_to_center", assignment.distance_to_center}});
     }

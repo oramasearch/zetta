@@ -76,6 +76,9 @@ struct RunValue {
     std::vector<RunLogEntry> logs;
     std::vector<RunOutput> outputs;
     RunLineage lineage;
+    // Empty for integer entities. Text-backed runs persist the deterministic
+    // derived-id map so their intermediate numeric keys remain auditable.
+    nlohmann::json entity_key_mapping = nlohmann::json::object();
     // Frozen input choices, not a fresh analysis at report time (#1062).
     nlohmann::json features = {{"used", nlohmann::json::array()},
                                {"excluded", nlohmann::json::array()}};
@@ -142,6 +145,9 @@ public:
     const std::vector<RunLogEntry>& logs() const { return value_.logs; }
     const std::vector<RunOutput>& outputs() const { return value_.outputs; }
     const RunLineage& lineage() const { return value_.lineage; }
+    const nlohmann::json& entity_key_mapping() const {
+        return value_.entity_key_mapping;
+    }
     const RunValue& value() const { return value_; }
     const std::filesystem::path& dir() const { return dir_; }
 
@@ -153,6 +159,8 @@ public:
     void set_outputs(std::vector<RunOutput> outputs);
     void set_lineage(RunLineage lineage);
     void set_trace_id(std::string trace_id);  // the run's trace (#640)
+    bool set_entity_key_mapping(nlohmann::json mapping,
+                                std::string* error = nullptr);
     bool set_features(nlohmann::json features, std::string* error = nullptr);
     void suppress_metrics_for_privacy();
 

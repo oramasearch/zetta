@@ -186,6 +186,23 @@ const nlohmann::json& schema_document() {
         "created": { "type": "string" },
         "updated": { "type": "string" },
         "trace_id": { "type": "string" },
+        "entity_key_mapping": {
+          "type": "object",
+          "required": ["column", "entries"],
+          "additionalProperties": false,
+          "properties": {
+            "column": {"type": "string", "minLength": 1},
+            "entries": {"type": "array", "items": {
+              "type": "object",
+              "required": ["derived_id", "original_value"],
+              "additionalProperties": false,
+              "properties": {
+                "derived_id": {"type": "integer"},
+                "original_value": {"type": "string", "minLength": 1}
+              }
+            }}
+          }
+        },
         "metrics_suppressed": { "type": "string",
                                 "enum": ["differential_privacy"] },
         "features": {
@@ -464,6 +481,9 @@ nlohmann::json to_json(const RunValue& value) {
     if (!value.metrics_suppressed.empty()) {
         output["metrics_suppressed"] = value.metrics_suppressed;
     }
+    if (!value.entity_key_mapping.empty()) {
+        output["entity_key_mapping"] = value.entity_key_mapping;
+    }
     return output;
 }
 
@@ -501,6 +521,8 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
     parsed.created = value.value("created", std::string{});
     parsed.updated = value.value("updated", std::string{});
     parsed.trace_id = value.value("trace_id", std::string{});
+    parsed.entity_key_mapping =
+        value.value("entity_key_mapping", nlohmann::json::object());
     parsed.features = value.value("features", parsed.features);
     parsed.metrics = value.value("metrics", parsed.metrics);
     parsed.metrics_suppressed =
@@ -570,6 +592,18 @@ void Run::set_lineage(RunLineage lineage) {
 void Run::set_trace_id(std::string trace_id) {
     value_.trace_id = std::move(trace_id);
     capture_and_persist();
+}
+
+bool Run::set_entity_key_mapping(nlohmann::json mapping,
+                                 std::string* error) {
+    nlohmann::json candidate = metadata();
+    candidate["entity_key_mapping"] = mapping;
+    if (!validate_run_value(candidate, error)) {
+        return false;
+    }
+    value_.entity_key_mapping = std::move(mapping);
+    capture_and_persist();
+    return true;
 }
 
 bool Run::set_features(nlohmann::json features, std::string* error) {

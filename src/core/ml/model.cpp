@@ -207,6 +207,11 @@ void Model::set_metrics(nlohmann::json metrics) {
     capture_and_persist();
 }
 
+void Model::set_feature_schema(nlohmann::json feature_schema) {
+    value_.feature_schema = std::move(feature_schema);
+    capture_and_persist();
+}
+
 void Model::set_display_lineage(std::string project_name,
                                 std::string pipeline_name,
                                 std::string run_id) {

@@ -29,6 +29,10 @@ The `list_runs`, `list_models`, and `list_studies` reads expose page-ready
 display names, metrics and timestamps through one registry definition, keeping
 REST, MCP and OpenAPI output in lockstep (#1184).
 
+Dataset-backed scoring and explanation accept text business identifiers and
+return them unchanged; their schemas are generated from the registry alongside
+the dataset contract (#957).
+
 `mcp_docs.cpp` also renders `/cli.md`. Its pub/sub and audit sections document
 the dispatch-pool and class-specific retention flags with their environment
 variables; the CLI parity test keeps that page synchronized with `src/main.cpp`.

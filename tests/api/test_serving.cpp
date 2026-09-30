@@ -6,6 +6,7 @@
 // tests/api/test_rest_server.cpp.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -19,6 +20,7 @@
 #include "zetta/api/registry.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
@@ -185,6 +187,29 @@ TEST_F(ServingFixture, ModelExposeServePredictDenyAndUnexpose) {
                      oracle.ranked[0].risk);
     EXPECT_DOUBLE_EQ(served.value.at("ranked")[1].at("risk").get<double>(),
                      oracle.ranked[1].risk);
+
+    const auto entity_keys = zetta::data::derive_entity_key_mapping(
+        "customer_id", {"c00041", "c00042"});
+    ASSERT_TRUE(entity_keys.ok()) << entity_keys.error;
+    model->set_feature_schema(
+        {{"entity_key_mapping", entity_keys.mapping->to_json()}});
+    const nlohmann::json text_body{
+        {"rows",
+         {{{"f0", true}, {"f1", 0.1}, {"f2", 0.2}},
+          {{"f0", false}, {"f1", 0.1}, {"f2", 0.2}}}},
+        {"entities", {"c00041", "c00042"}}};
+    const ApiResult text_served =
+        serve_predict("churn-v1", text_body, serving_key);
+    ASSERT_TRUE(text_served.ok) << text_served.error.message;
+    ASSERT_EQ(text_served.value.at("ranked").size(), 2u);
+    std::vector<std::string> text_entities;
+    for (const auto& score : text_served.value.at("ranked")) {
+        ASSERT_TRUE(score.at("entity").is_string()) << score.dump();
+        text_entities.push_back(score.at("entity").get<std::string>());
+    }
+    std::sort(text_entities.begin(), text_entities.end());
+    EXPECT_EQ(text_entities,
+              (std::vector<std::string>{"c00041", "c00042"}));
     EXPECT_EQ(served.trace_id.size(), 32u);
     bool saw_serve_span = false;
     for (const auto& span : node.span_recorder().recent(20)) {

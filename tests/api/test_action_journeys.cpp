@@ -20,11 +20,10 @@
 #include <memory>
 #include <numbers>
 #include <set>
-#include <set>
 #include <sstream>
 #include <string>
-#include <vector>
 #include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -243,7 +242,7 @@ struct SolutionJourney : ::testing::Test {
     }
 };
 
-void land_retention_data(Node& node) {
+void land_retention_data(Node& node, bool text_entities = false) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);
     const auto table = database->create_table("customers");
@@ -257,9 +256,11 @@ void land_retention_data(Node& node) {
             "2026-08-01T00:00:00." +
             std::to_string(1000 + index).substr(1) + "Z";
         const double epoch_time = 1785542400.0 + index;
-        table->add_row({{"entity", index + 1}, {"record_id", index + 1},
-                       {"source", "fixture"}, {"name", "Customer " + std::to_string(index + 1)},
-                       {"label", index % 10 != 0 ? 1 : 0}, {"feature", index % 13 + 0.5},
+        nlohmann::json row = {{"source", "fixture"},
+                       {"name", "Customer " + std::to_string(index + 1)},
+                       {"label", text_entities ? nlohmann::json(index % 10 != 0)
+                                               : nlohmann::json(index % 10 != 0 ? 1 : 0)},
+                       {"feature", index % 13 + 0.5},
                        {"uplift_segment", persuadable ? 1.0 : 0.0},
                        {"treatment", treatment}, {"outcome", outcome},
                        {"duration", static_cast<double>(30 + index % 60)},
@@ -278,9 +279,22 @@ void land_retention_data(Node& node) {
                        {"interaction_count", 1.0},
                        {"logging_propensity", 0.5},
                        {"in_collections", false}, {"open_complaint", false},
-                       {"vulnerable", false}});
+                       {"vulnerable", false}};
+        if (text_entities) {
+            std::string customer_id = "c" + std::to_string(100000 + index);
+            customer_id.erase(1, 1);
+            row["customer_id"] = customer_id;
+            row["record_id"] = customer_id;
+            row["observed_at"] = iso_time;
+        } else {
+            row["entity"] = index + 1;
+            row["record_id"] = index + 1;
+        }
+        table->add_row(std::move(row));
     }
-    table->add_row({{"entity", 9999}, {"record_id", 9999}, {"source", "fixture"},
+    nlohmann::json future = {{"record_id", text_entities ? nlohmann::json("c09999")
+                                                        : nlohmann::json(9999)},
+                   {"source", "fixture"},
                    {"name", "Future customer"}, {"label", 1}, {"feature", 999.0},
                    {"uplift_segment", 1.0}, {"treatment", 1}, {"outcome", 1},
                    {"duration", 30.0}, {"start_time", 240.0},
@@ -294,7 +308,15 @@ void land_retention_data(Node& node) {
                    {"contacts", 0.0}, {"contact_cap", 3.0},
                    {"interaction_count", 1.0},
                    {"logging_propensity", 0.5},
-                   {"in_collections", false}, {"open_complaint", false}, {"vulnerable", false}});
+                   {"in_collections", false}, {"open_complaint", false}, {"vulnerable", false}};
+    if (text_entities) {
+        future["customer_id"] = "c09999";
+        future["observed_at"] = "2026-10-01T00:00:00.000Z";
+        future["label"] = true;
+    } else {
+        future["entity"] = 9999;
+    }
+    table->add_row(std::move(future));
     const auto written = zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
 }
@@ -5018,6 +5040,204 @@ TEST_F(SolutionJourney, S1AllLevelsRunWithAutomaticIsoOrEpochTimeRoles) {
             ASSERT_TRUE(snapshot) << suffix;
             EXPECT_EQ(snapshot->store().size(), 240u) << suffix;
         }
+    }
+}
+
+TEST_F(SolutionJourney,
+       S1LevelsOneAndFourPreserveTextBusinessIdsAndBooleanLabels) {
+    SolutionDeliveryBoundary delivery;
+    land_retention_data(node, true);
+    const auto is_business_id = [](const std::string& value) {
+        return value.size() == 6 && value.front() == 'c' &&
+               std::all_of(value.begin() + 1, value.end(),
+                           [](const unsigned char character) {
+                               return std::isdigit(character) != 0;
+                           });
+    };
+    for (const int level : {1, 4}) {
+        const std::string suffix = "text-cl" + std::to_string(level);
+        const std::string project_name = "retention-" + suffix;
+        const std::string target_table =
+            "retention_snapshot_text_cl" + std::to_string(level);
+        ASSERT_TRUE(call("create_project", {{"name", project_name}}).ok);
+        const nlohmann::json sources = {
+            {"source", "datasets"},
+            {"table", "customers"},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "label"},
+              {"feature_columns", {"feature", "uplift_segment"}}}},
+            {"M-5",
+             {{"duration_column", "duration"},
+              {"event_indicator", "label"},
+              {"feature_time_column", "iso_feature_time"}}},
+            {"M-6",
+             {{"entity", "entity_id"},
+              {"treatment", "treatment"},
+              {"outcome", "outcome"}}},
+            {"M-8",
+             {{"entity_column", "entity_id"},
+              {"action_column", "offer_code"},
+              {"label_column", "label"},
+              {"feature_columns", {"feature", "uplift_segment"}},
+              {"value_column", "action_value"},
+              {"cost_column", "action_cost"},
+              {"eligibility_column", "eligible"},
+              {"contacts_column", "contacts"},
+              {"contact_cap_column", "contact_cap"},
+              {"interaction_count_column", "interaction_count"},
+              {"logging_propensity_column", "logging_propensity"},
+              {"num_trees", 8},
+              {"max_depth", 2},
+              {"als_iterations", 2}}},
+        };
+        const nlohmann::json foundation = {
+            {"snapshot",
+             {{"database", "datasets"},
+              {"source_table", "customers"},
+              {"target_table", target_table},
+              {"entity_column", "customer_id"},
+              {"time_column", "observed_at"},
+              {"as_of", "2026-09-01T00:00:00.000Z"}}},
+            {"dataset",
+             {{"entity_column", "entity_id"},
+              {"label_column", "label"},
+              {"feature_columns", {"feature", "uplift_segment"}}}},
+            {"delivery",
+             {{"kind", "webhook"},
+              {"endpoint", "https://crm.example.test/tasks"},
+              {"owner", "retention-team"}}},
+            {"roi_model",
+             {{"value_per_outcome", 100.0},
+              {"investment", 200.0},
+              {"currency", "USD"}}},
+        };
+        const ApiResult created = call(
+            "create_solution",
+            {{"project", project_name},
+             {"solution", "S-1"},
+             {"level", level},
+             {"sources", sources},
+             {"foundation", foundation}});
+        ASSERT_TRUE(created.ok) << suffix << ": " << created.error.message;
+        const std::size_t delivery_start = delivery.requests.size();
+        const ApiResult started = call(
+            "run_solution",
+            {{"project", project_name},
+             {"graph", created.value.at("graph")},
+             {"delivery_token", "fixture-only-token"}});
+        ASSERT_TRUE(started.ok) << suffix << ": " << started.error.message;
+        ApiResult status;
+        for (int attempt = 0; attempt < 8000; ++attempt) {
+            node.tick();
+            background.prune();
+            status = call(
+                "get_run", {{"run_id", started.value.at("run_id")}});
+            if (status.ok && status.value.at("status") != "running") {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        ASSERT_TRUE(status.ok) << suffix << ": " << status.error.message;
+        if (status.value.at("status") != "succeeded") {
+            for (const auto& run : node.runs()) {
+                for (const auto& entry : run->logs()) {
+                    ADD_FAILURE() << suffix << ": " << run->pipeline_name()
+                                  << ": " << entry.message;
+                }
+            }
+        }
+        ASSERT_EQ(status.value.at("status"), "succeeded")
+            << suffix << ": " << status.value.dump(2);
+        ASSERT_TRUE(status.value.contains("entity_key_mapping")) << suffix;
+        EXPECT_EQ(status.value.at("entity_key_mapping").at("column"),
+                  "entity_id")
+            << suffix;
+
+        std::string decision_table;
+        for (const auto& output : status.value.at("outputs")) {
+            if (output.at("name") == "solution decisions") {
+                decision_table = output.at("ref").get<std::string>();
+            }
+        }
+        ASSERT_FALSE(decision_table.empty()) << suffix;
+        const ApiResult decisions = call(
+            "sql", {{"statement", "SELECT * FROM " + decision_table + ";"}});
+        ASSERT_TRUE(decisions.ok) << suffix << ": " << decisions.error.message;
+        ASSERT_FALSE(decisions.value.at("rows").empty()) << suffix;
+        for (const auto& row : decisions.value.at("rows")) {
+            ASSERT_TRUE(row.at("entity_id").is_string()) << row.dump();
+            EXPECT_TRUE(is_business_id(
+                row.at("entity_id").get<std::string>()))
+                << row.dump();
+        }
+
+        const auto project = node.find_project(project_name);
+        ASSERT_TRUE(project) << suffix;
+        const auto graph = project->find_graph(
+            created.value.at("graph").get<std::string>());
+        ASSERT_TRUE(graph) << suffix;
+        const auto& binding =
+            graph->graph()
+                .find_node("solution_manifest")
+                ->attributes.at("foundation");
+        zetta::solutions::DecisionPolicyStore policies(
+            *node.replication(), &node, &node.experiment_manager());
+        std::size_t policy_decisions = 0;
+        for (const auto& decision : policies.decisions()) {
+            if (decision.policy_id !=
+                binding.at("policy_id").get<std::string>()) {
+                continue;
+            }
+            ++policy_decisions;
+            EXPECT_TRUE(is_business_id(decision.entity_id))
+                << decision.entity_id;
+        }
+        EXPECT_GT(policy_decisions, 0u) << suffix;
+
+        std::size_t webhook_entities = 0;
+        for (std::size_t index = delivery_start;
+             index < delivery.requests.size(); ++index) {
+            const auto& request = delivery.requests[index];
+            if (request.contains("entity_id") &&
+                request.at("entity_id").is_string() &&
+                is_business_id(
+                    request.at("entity_id").get<std::string>())) {
+                ++webhook_entities;
+            }
+            if (!request.contains("payload") ||
+                !request.at("payload").is_object() ||
+                !request.at("payload").contains("decision_log")) {
+                continue;
+            }
+            for (const auto& decision :
+                 request.at("payload").at("decision_log")) {
+                ASSERT_TRUE(decision.at("entity_id").is_string())
+                    << decision.dump();
+                EXPECT_TRUE(is_business_id(
+                    decision.at("entity_id").get<std::string>()))
+                    << decision.dump();
+                ++webhook_entities;
+            }
+        }
+        EXPECT_GT(webhook_entities, 0u) << suffix;
+
+        const ApiResult ledger =
+            call("list_ledger", nlohmann::json::object());
+        ASSERT_TRUE(ledger.ok) << suffix << ": " << ledger.error.message;
+        std::size_t ledger_entities = 0;
+        for (const auto& entry : ledger.value.at("entries")) {
+            if (entry.at("kind") != "action" ||
+                !entry.at("subject").is_string()) {
+                continue;
+            }
+            const std::string subject = entry.at("subject");
+            if (!is_business_id(subject)) {
+                continue;
+            }
+            ++ledger_entities;
+        }
+        EXPECT_GT(ledger_entities, 0u) << suffix;
     }
 }
 

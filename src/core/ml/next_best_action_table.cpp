@@ -1,6 +1,7 @@
 #include "zetta/ml/next_best_action_table.hpp"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -44,7 +45,8 @@ DataFrameSchema table_schema(const data::ResolvedDataset &dataset,
   DataFrameSchema schema;
   schema.columns = {{.name = std::string(kEntity),
                      .field = dataset.contract.entity_column,
-                     .dtype = DataType::Int64},
+                     .dtype = DataType::Int64,
+                     .entity_keys = dataset.contract.entity_keys},
                     {.name = std::string(kAction),
                      .field = params.action_column,
                      .dtype = DataType::Int64},
@@ -172,6 +174,30 @@ run_table(Node &node, const data::ResolvedDataset &dataset,
     output.error = std::move(error);
     return output;
   }
+
+  std::vector<std::int64_t> dense_to_derived;
+  std::map<std::int64_t, std::int64_t> derived_to_dense;
+  if (dataset.contract.entity_keys) {
+    dense_to_derived.reserve(
+        dataset.contract.entity_keys->derived_to_original.size());
+    for (const auto &[derived, original] :
+         dataset.contract.entity_keys->derived_to_original) {
+      (void)original;
+      const std::int64_t dense =
+          static_cast<std::int64_t>(dense_to_derived.size());
+      dense_to_derived.push_back(derived);
+      derived_to_dense.emplace(derived, dense);
+    }
+    for (std::int64_t &entity : entities) {
+      const auto dense = derived_to_dense.find(entity);
+      if (dense == derived_to_dense.end()) {
+        output.error =
+            "next best action: derived entity is absent from the dense mapping";
+        return output;
+      }
+      entity = dense->second;
+    }
+  }
   std::vector<std::vector<double>> features(
       dataset.contract.feature_columns.size());
   for (std::size_t index = 0; index < features.size(); ++index) {
@@ -222,6 +248,20 @@ run_table(Node &node, const data::ResolvedDataset &dataset,
   if (!output.ok() || !materialize_outputs) {
     return output;
   }
+  if (dataset.contract.entity_keys) {
+    for (RankedAction &recommendation : output.recommendations) {
+      if (recommendation.entity < 0 ||
+          static_cast<std::size_t>(recommendation.entity) >=
+              dense_to_derived.size()) {
+        output.error =
+            "next best action: recommendation contains an unknown dense entity";
+        output.status = compute::JobStatus::Failed;
+        return output;
+      }
+      recommendation.entity =
+          dense_to_derived[static_cast<std::size_t>(recommendation.entity)];
+    }
+  }
   if (run == nullptr) {
     output.error = "next best action: output materialization requires a Run";
     output.status = compute::JobStatus::Failed;
@@ -250,7 +290,8 @@ run_table(Node &node, const data::ResolvedDataset &dataset,
     }
     for (const RankedAction &recommendation : output.recommendations) {
       recommendations->add_row(
-          {{"entity", recommendation.entity},
+          {{"entity", data::entity_output(dataset.contract,
+                                           recommendation.entity)},
            {"action", recommendation.action},
            {"rank", recommendation.rank},
            {"propensity", recommendation.propensity},
@@ -303,6 +344,11 @@ run_table(Node &node, const data::ResolvedDataset &dataset,
         {"offline_evaluation_refusal", output.offline.refusal},
         {"causal_caveat",
          "propensity is not causal lift; use M-6 to decide whether to treat"}};
+    if (dataset.contract.entity_keys) {
+      model.feature_schema["entity_key_mapping"] =
+          dataset.contract.entity_keys->to_json();
+      run->set_entity_key_mapping(dataset.contract.entity_keys->to_json());
+    }
     model.metrics = {
         {"rows", output.rows},
         {"action_models", output.propensity_models.size()},

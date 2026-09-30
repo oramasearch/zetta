@@ -222,8 +222,9 @@ bool resolve_categories(const data::DatasetSummary &summary, const Json &config,
 // Unlike the supervised resolver, M-3 never needs to inspect a label value.
 // Catalog names select candidates; the trainer checks types and cardinality
 // globally over owned partitions, not from a possibly biased local sample.
-data::ResolvedDataset resolve_table(Node &node, const data::DatasetPath &path,
-                                    Json &config) {
+data::ResolvedDataset resolve_table(
+    Node &node, const data::DatasetPath &path, Json &config,
+    const cluster::Cluster *cluster) {
     data::ResolvedDataset resolved;
     resolved.database = path.database;
     resolved.table = path.table;
@@ -263,6 +264,41 @@ data::ResolvedDataset resolve_table(Node &node, const data::DatasetPath &path,
         resolved.contract.time_column = config.value("time_column", "");
         resolved.contract.as_of = config.value("as_of", 0.0);
         resolved.contract.feature_columns = params.feature_columns;
+        std::string sample_error;
+        const std::vector<Json> rows =
+            data::default_dataset_sampler(node, cluster)(
+                resolved.database, resolved.table, 0, sample_error);
+        if (!sample_error.empty()) {
+            resolved.error = "segmentation: could not map entity column: " +
+                             sample_error;
+            return resolved;
+        }
+        std::vector<Json> entity_values;
+        entity_values.reserve(rows.size());
+        bool text_entities = false;
+        for (const Json& row : rows) {
+            const auto entity = row.find(params.entity_column);
+            if (entity == row.end()) {
+                resolved.error = "segmentation: a row is missing entity column '" +
+                                 params.entity_column + "'";
+                return resolved;
+            }
+            text_entities = text_entities || entity->is_string();
+            entity_values.push_back(*entity);
+        }
+        if (text_entities) {
+            data::EntityKeyMappingResult mapped =
+                data::derive_entity_key_mapping(params.entity_column,
+                                                entity_values);
+            if (!mapped.ok()) {
+                resolved.error = mapped.error;
+                return resolved;
+            }
+            resolved.contract.entity_keys = std::move(mapped.mapping);
+            resolved.notes.push_back(
+                "entity column '" + params.entity_column +
+                "' (text; keyed by a derived id, outputs carry the original value)");
+        }
         return resolved;
     }
     resolved.error = "segmentation: pipeline table '" + path.database + "." +
@@ -278,6 +314,10 @@ Json launch_payload(const data::ResolvedDataset &dataset, const Json &config,
             {"table_id", dataset.table_id},
             {"rows", dataset.rows},
             {"notes", dataset.notes},
+            {"entity_key_mapping",
+             dataset.contract.entity_keys
+                 ? dataset.contract.entity_keys->to_json()
+                 : Json(nullptr)},
             {"config", config},
             {"project", options.project},
             {"graph", options.graph},
@@ -441,7 +481,9 @@ api::ApiResult run_methodology(RunRequest &request) {
     const std::string path = request.input.value(
         "dataset_path", source.at("source").get<std::string>() + "." +
                             source.at("table").get<std::string>());
-    auto dataset = resolve_table(node, data::parse_dataset_path(path), config);
+    auto dataset = resolve_table(
+        node, data::parse_dataset_path(path), config,
+        request.context->cluster);
     if (!dataset.ok()) {
         return api::ApiResult::failure("engine_error", dataset.error);
     }
@@ -520,6 +562,13 @@ run_peer(Node &node, compute::CoordinatedLaunchListener &listener,
     dataset.contract.as_of = config.value("as_of", 0.0);
     dataset.contract.feature_columns =
         config.at("feature_columns").get<std::vector<std::string>>();
+    if (!payload.at("entity_key_mapping").is_null()) {
+        dataset.contract.entity_keys = data::entity_key_mapping_from_json(
+            payload.at("entity_key_mapping"), &error);
+        if (!dataset.contract.entity_keys) {
+            return {false, "segmentation launch: " + error};
+        }
+    }
     SegmentationRunOptions options;
     options.project = payload.at("project");
     options.graph = payload.at("graph");
@@ -545,7 +594,7 @@ Methodology make_m3_methodology() {
     methodology.solutions = {"S-9"};
     methodology.keywords = {"segment", "cluster", "group", "persona", "cohort"};
     methodology.inputs = {
-        {"entity", true, "integer entity key kept out of features"},
+        {"entity", true, "integer or text entity key kept out of features"},
         {"feature", true, "numeric attributes and bounded categorical roles"},
         {"label", false, "label/outcome column to exclude, never a target"},
         {"time", false, "explicit ISO-8601 or epoch cutoff; never inferred"}};
@@ -570,7 +619,7 @@ const Json &segmentation_launch_schema() {
                        {"additionalProperties", false},
                        {"required",
                         {"database", "table", "table_id", "rows", "notes",
-                         "config", "project", "graph", "model_name", "run_id",
+                         "entity_key_mapping", "config", "project", "graph", "model_name", "run_id",
                          "output_node", "round_tag"}}};
         for (const auto *key :
              {"database", "table", "table_id", "project", "graph", "model_name",
@@ -580,6 +629,8 @@ const Json &segmentation_launch_schema() {
         result["properties"]["rows"] = {{"type", "integer"}, {"minimum", 0}};
         result["properties"]["notes"] = {{"type", "array"},
                                          {"items", {{"type", "string"}}}};
+        result["properties"]["entity_key_mapping"] = {
+            {"type", {"object", "null"}}};
         Json config = segmentation_config_schema();
         config["required"].push_back("entity_column");
         config["required"].push_back("feature_columns");

@@ -1,6 +1,8 @@
 #include "zetta/api/serving.hpp"
 
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -8,6 +10,7 @@
 
 #include "../base64.hpp"  // zetta::detail::base64_encode_bytes (src/core/base64.hpp)
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/index/index.hpp"
@@ -108,35 +111,38 @@ nlohmann::json strip_intent(const nlohmann::json& input,
 }  // namespace
 
 const nlohmann::json& predict_request_schema() {
-    static const nlohmann::json schema = {
-        {"$schema", "http://json-schema.org/draft-07/schema#"},
-        {"title", "zetta.PredictRequest"},
-        {"type", "object"},
-        {"required", {"rows"}},
-        {"additionalProperties", false},
-        {"properties",
-         {{"rows",
-           {{"type", "array"},
+    static const nlohmann::json schema = [] {
+        nlohmann::json document = {
+            {"$schema", "http://json-schema.org/draft-07/schema#"},
+            {"title", "zetta.PredictRequest"},
+            {"type", "object"},
+            {"required", {"rows"}},
+            {"additionalProperties", false}};
+        document["properties"]["rows"] = {
+            {"type", "array"},
             {"minItems", 1},
             {"description",
              "the batch to score: one object per entity mapping feature name "
-             "to its numeric value; every feature the model was trained on "
+             "to its numeric or boolean value; every feature the model was trained on "
              "must be present (extra features are ignored)"},
-            {"items",
-             {{"type", "object"},
-              {"additionalProperties", {{"type", "number"}}}}}}},
-          {"entities",
-           {{"type", "array"},
+            {"items", {{"type", "object"}}}};
+        document["properties"]["rows"]["items"]["additionalProperties"] = {
+            {"oneOf", {{{"type", "number"}}, {{"type", "boolean"}}}}};
+        document["properties"]["entities"] = {
+            {"type", "array"},
             {"description",
              "optional entity key per row (defaults to the row index); must "
-             "match rows in length"},
-            {"items", {{"type", "integer"}}}}},
-          {"top_k",
-           {{"type", "integer"},
+             "match rows in length"}};
+        document["properties"]["entities"]["items"] = {
+            {"oneOf", {{{"type", "integer"}}, {{"type", "string"}}}}};
+        document["properties"]["top_k"] = {
+            {"type", "integer"},
             {"minimum", 1},
             {"description",
              "cap the ranked at-risk list to the k highest-risk entities "
-             "(absent = all rows)"}}}}}};
+             "(absent = all rows)"}};
+        return document;
+    }();
     return schema;
 }
 
@@ -161,7 +167,9 @@ const nlohmann::json& predict_response_schema() {
               {"required", {"entity", "risk"}},
               {"additionalProperties", false},
               {"properties",
-               {{"entity", {{"type", "integer"}}},
+               {{"entity",
+                 {{"oneOf",
+                   {{{"type", "integer"}}, {{"type", "string"}}}}}},
                 {"risk",
                  {{"type", "number"},
                   {"description",
@@ -370,12 +378,47 @@ ApiResult serve_predict(Node& node, const ServeRequest& request) {
                         "' the model requires",
                     "/rows/" + std::to_string(row)));
             }
-            columns[feature][row] = value->get<double>();
+            columns[feature][row] = value->is_boolean()
+                                        ? (value->get<bool>() ? 1.0 : 0.0)
+                                        : value->get<double>();
+        }
+    }
+    std::shared_ptr<const zetta::data::EntityKeyMapping> entity_keys;
+    if (const auto mapping = model->feature_schema().find("entity_key_mapping");
+        mapping != model->feature_schema().end()) {
+        std::string mapping_error;
+        entity_keys = zetta::data::entity_key_mapping_from_json(
+            *mapping, &mapping_error);
+        if (!entity_keys) {
+            return serve.finish(ApiResult::failure(
+                "engine_error",
+                "model has an invalid entity key mapping: " + mapping_error));
         }
     }
     std::vector<std::int64_t> entities;
     if (const auto it = input.find("entities"); it != input.end()) {
-        entities = it->get<std::vector<std::int64_t>>();
+        entities.reserve(it->size());
+        for (const nlohmann::json& entity : *it) {
+            if (entity.is_number_integer()) {
+                entities.push_back(entity.get<std::int64_t>());
+                continue;
+            }
+            if (!entity.is_string() || !entity_keys) {
+                return serve.finish(ApiResult::failure(
+                    "invalid_input",
+                    "text entities require a model trained with text entity ids",
+                    "/entities"));
+            }
+            const std::optional<std::int64_t> derived =
+                entity_keys->derived(entity.get_ref<const std::string&>());
+            if (!derived) {
+                return serve.finish(ApiResult::failure(
+                    "invalid_input",
+                    "unknown text entity '" + entity.get<std::string>() + "'",
+                    "/entities"));
+            }
+            entities.push_back(*derived);
+        }
         if (entities.size() != row_count) {
             return serve.finish(ApiResult::failure(
                 "invalid_input",
@@ -408,7 +451,11 @@ ApiResult serve_predict(Node& node, const ServeRequest& request) {
 
     nlohmann::json ranked = nlohmann::json::array();
     for (const zetta::ml::EntityScore& score : scored.ranked) {
-        ranked.push_back({{"entity", score.entity}, {"risk", score.risk}});
+        ranked.push_back(
+            {{"entity", entity_keys
+                            ? entity_keys->original(score.entity)
+                            : nlohmann::json(score.entity)},
+             {"risk", score.risk}});
     }
     serve.span.set_attribute(
         "result_shape", nlohmann::json{{"rows", row_count},

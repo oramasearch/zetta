@@ -160,6 +160,40 @@ resolve_anomaly_dataset(Node &node, const AnomalyPlan &plan,
       }
     }
   }
+  if (!result.contract.entity_column.empty() && sampler) {
+    std::string error;
+    const std::vector<nlohmann::json> rows =
+        sampler(plan.database, plan.table, 0, error);
+    if (!error.empty()) {
+      result.error = "anomaly: cannot map entity column: " + error;
+      return result;
+    }
+    std::vector<nlohmann::json> values;
+    values.reserve(rows.size());
+    bool has_text = false;
+    for (const nlohmann::json& row : rows) {
+      const auto entity = row.find(result.contract.entity_column);
+      if (entity == row.end()) {
+        result.error = "anomaly: a row is missing entity column '" +
+                       result.contract.entity_column + "'";
+        return result;
+      }
+      has_text = has_text || entity->is_string();
+      values.push_back(*entity);
+    }
+    if (has_text) {
+      data::EntityKeyMappingResult mapped = data::derive_entity_key_mapping(
+          result.contract.entity_column, values);
+      if (!mapped.ok()) {
+        result.error = mapped.error;
+        return result;
+      }
+      result.contract.entity_keys = std::move(mapped.mapping);
+      result.notes.push_back(
+          "entity column '" + result.contract.entity_column +
+          "' (text; keyed by a derived id, outputs carry the original value)");
+    }
+  }
   if (result.contract.feature_columns.empty()) {
     result.error =
         "anomaly: no numeric feature columns remain after role exclusions";
@@ -371,7 +405,7 @@ Methodology make_anomaly_methodology() {
   result.keywords = {"anomaly", "outlier", "unusual", "spike"};
   result.inputs = {
       {"feature", true, "numeric features or metrics"},
-      {"entity", false, "integer row identity; otherwise row ordinal"},
+      {"entity", false, "integer or text row identity; otherwise row ordinal"},
       {"label", false, "binary label used only for precision@k"},
       {"time", false, "required numeric observation time in KPI mode"}};
   result.outputs = {"anomaly table", "budget report", "model", "lineage"};
@@ -402,7 +436,8 @@ void install_anomaly_launch_runner(compute::CoordinatedLaunchListener &listener,
           return Outcome{
               false, "anomaly launch: requires a valid tabular plan: " + error};
         }
-        const auto dataset = resolve_anomaly_dataset(node, *plan);
+        const auto dataset = resolve_anomaly_dataset(
+            node, *plan, data::default_dataset_sampler(node));
         if (!dataset.ok()) {
           return Outcome{false, dataset.error};
         }

@@ -102,9 +102,9 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
 //
 // The serialized **weights** are deliberately NOT in the document: like a large
 // object's body they live on disk (`<model-uuid>/weights`) and move peer-to-peer
-// over the existing large-object body seam (BlobStore / LOREQ-LORES), verified
+// over the existing large-object body channel (BlobStore / LOREQ-LORES), verified
 // against the `size` + `sha256` in this model's metadata. The metadata replicates
-// today and the body follows over that seam.
+// today and the body follows over that channel.
 //
 // The id is the folder name and never changes; `kind` / stable lineage refs are
 // fixed at creation. Display lineage follows Project/Pipeline renames.
@@ -162,12 +162,15 @@ public:
     // Attach (or replace) the serialized weights: compute the size + SHA-256,
     // write the body to disk atomically, then capture `model:<id>` into the CRDT
     // (when replicated) and rewrite model.json. The metadata (size + hash)
-    // replicates; peers fetch the body over the large-object body seam.
+    // replicates; peers fetch the body over the large-object body channel.
     bool set_weights(std::string_view bytes);
 
     // Update the evaluation metrics (free-form name→number object), then capture
     // + persist. The weights body is untouched.
     void set_metrics(nlohmann::json metrics);
+    // Update the free-form input contract metadata. Used after training when a
+    // table-backed run must attach its text entity-key map to the Model.
+    void set_feature_schema(nlohmann::json feature_schema);
 
     // Refresh denormalized lineage after creation, startup backfill, or a
     // rename. `run` remains populated for wire compatibility.
@@ -177,7 +180,7 @@ public:
 
     // Replace the metadata to match a (replicated) document value, then rewrite
     // model.json — with NO capture and WITHOUT touching the weights body (used by
-    // reconciliation; the body arrives separately over the body seam).
+    // reconciliation; the body arrives separately over the body channel).
     void apply_value(ModelValue value);
 
     // Write this model's metadata (+ id) to dir/model.json.

@@ -25,6 +25,7 @@
 #include "zetta/ml/gbdt_score_job.hpp"
 #include "zetta/ml/gbdt_train_job.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -214,6 +215,12 @@ ChurnStepExecutor::ChurnStepExecutor(Node& node,
 void ChurnStepExecutor::bind_run(Node& node, const std::string& run_id) {
     if (&node == &node_) {
         state_->run_id = run_id;
+        if (config_.entity_keys) {
+            if (const std::shared_ptr<zetta::pipeline::Run> run =
+                    node_.find_run(run_id)) {
+                run->set_entity_key_mapping(config_.entity_keys->to_json());
+            }
+        }
     }
 }
 
@@ -471,6 +478,12 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
                 metrics["dataset_majority_class_accuracy"] = std::max(rate, 1.0 - rate);
             }
             model->set_metrics(std::move(metrics));
+            if (config_.entity_keys) {
+                nlohmann::json feature_schema = model->feature_schema();
+                feature_schema["entity_key_mapping"] =
+                    config_.entity_keys->to_json();
+                model->set_feature_schema(std::move(feature_schema));
+            }
         });
     }
 
@@ -670,7 +683,10 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
             ++position;
             std::vector<std::pair<std::string, nlohmann::json>> cells = {
                 {"rank", position},
-                {entity_column, action.entity},
+                {entity_column,
+                 config_.entity_keys
+                     ? config_.entity_keys->original(action.entity)
+                     : nlohmann::json(action.entity)},
                 {score_column, action.risk},
                 {"dominant_driver", action.dominant_driver},
                 {"driver_effect", action.dominant_value}};

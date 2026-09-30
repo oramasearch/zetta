@@ -116,6 +116,19 @@ bool append_partition_rows(const data::DatasetPartition &catalog,
     output.ordinals.push_back(ordinal);
     if (contract.entity_column.empty()) {
       output.row_keys.push_back(static_cast<std::int64_t>(ordinal));
+    } else if (contract.entity_keys) {
+      const auto entity = row.find(contract.entity_column);
+      const std::optional<std::int64_t> derived =
+          entity != row.end() && entity->is_string()
+              ? contract.entity_keys->derived(
+                    entity->get_ref<const std::string&>())
+              : std::nullopt;
+      if (!derived) {
+        error = row_error(catalog, row_index,
+                          "text entity is absent from the resolved mapping");
+        return false;
+      }
+      output.row_keys.push_back(*derived);
     } else if (const std::optional<std::int64_t> entity =
                    integer_value(row, contract.entity_column)) {
       output.row_keys.push_back(*entity);
@@ -322,6 +335,10 @@ void materialize_outputs(Node &node, const data::ResolvedDataset &dataset,
         {"not_used", dataset.notes}}},
       {"drivers", ranked_driver_json(distributed.records,
                                      dataset.contract.feature_columns)}};
+  if (dataset.contract.entity_keys) {
+    model_value.feature_schema["entity_key_mapping"] =
+        dataset.contract.entity_keys->to_json();
+  }
   model_value.metrics = {{"threshold", distributed.report.threshold},
                          {"rows_scored", distributed.report.rows_scored},
                          {"flagged", distributed.report.flagged},
@@ -393,7 +410,8 @@ void materialize_outputs(Node &node, const data::ResolvedDataset &dataset,
                                {"deviation", contribution.deviation}});
     }
     nlohmann::json row = {{"rank", rank_by_record[index]},
-                          {"row", record.row},
+                          {"row", data::entity_output(dataset.contract,
+                                                       record.row)},
                           {"score", record.score},
                           {"flagged", record.flagged},
                           {"threshold", distributed.report.threshold},
@@ -431,6 +449,9 @@ void materialize_outputs(Node &node, const data::ResolvedDataset &dataset,
   result.report_table = std::string(kResultsDatabase) + "." + report_name;
 
   if (run != nullptr) {
+    if (dataset.contract.entity_keys) {
+      run->set_entity_key_mapping(dataset.contract.entity_keys->to_json());
+    }
     std::vector<pipeline::RunOutput> outputs = run->outputs();
     outputs.push_back({"model", "anomaly model", result.model_id});
     outputs.push_back({"dataset", "anomaly table", result.anomaly_table});
