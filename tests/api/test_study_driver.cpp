@@ -417,4 +417,144 @@ TEST_F(StudyDriverJourney, CreateRejectsUnknownParametersAndUnsupportedMethods) 
               std::string::npos);
 }
 
+TEST_F(StudyDriverJourney, ValidateAndCreateUseTheSameNormalizedSpec) {
+    struct ValidationCase {
+        std::string name;
+        std::function<void(Json&)> change;
+    };
+    const std::vector<ValidationCase> cases = {
+        {"defaults", [](Json& input) {
+             input.erase("search_space");
+             input["from_defaults"] = true;
+         }},
+        {"family alias", [](Json& input) {
+             Json family = {{"name", "model_family"},
+                            {"kind", "categorical"},
+                            {"minimum", 0.0},
+                            {"maximum", 1.0},
+                            {"step", 0.0},
+                            {"log", false},
+                            {"choices", Json::array({"gradient_boosting"})},
+                            {"condition_parameter", ""},
+                            {"condition_values", Json::array()}};
+             input["search_space"].insert(input["search_space"].begin(),
+                                           std::move(family));
+         }},
+        {"unsupported family", [](Json& input) {
+             Json family = {{"name", "model_family"},
+                            {"kind", "categorical"},
+                            {"minimum", 0.0},
+                            {"maximum", 1.0},
+                            {"step", 0.0},
+                            {"log", false},
+                            {"choices", Json::array({"linear"})},
+                            {"condition_parameter", ""},
+                            {"condition_values", Json::array()}};
+             input["search_space"].insert(input["search_space"].begin(),
+                                           std::move(family));
+         }},
+        {"unknown parameter", [](Json& input) {
+             input["search_space"][0]["name"] = "unknown_control";
+         }},
+        {"unsupported methodology", [](Json& input) {
+             input["methodology"] = "M-2";
+         }},
+        {"wrong split", [](Json& input) {
+             input["objective"]["validation_split"] = "holdout";
+         }},
+        {"directory dataset", [](Json& input) {
+             input["dataset"] = "./study_data/churn";
+         }},
+    };
+
+    for (std::size_t index = 0; index < cases.size(); ++index) {
+        SCOPED_TRACE(cases[index].name);
+        Json input = study_input(
+            "validation parity " + std::to_string(index), 1, 4, 6);
+        cases[index].change(input);
+        const ApiResult validated = call("validate_study", input);
+        ASSERT_TRUE(validated.ok) << validated.error.message;
+        EXPECT_FALSE(node.find_study(input.at("name").get<std::string>()));
+        const ApiResult created = call("create_study", input);
+        EXPECT_EQ(validated.value.at("valid").get<bool>(), created.ok);
+        if (created.ok) {
+            EXPECT_EQ(validated.value.at("normalized_spec"),
+                      created.value.at("spec"));
+            EXPECT_TRUE(validated.value.at("reason").get<std::string>().empty());
+            EXPECT_TRUE(validated.value.at("path").get<std::string>().empty());
+            EXPECT_TRUE(call("stop_study", {{"study", created.value.at("id")}}).ok);
+            continue;
+        }
+        EXPECT_TRUE(validated.value.at("normalized_spec").is_null());
+        EXPECT_EQ(validated.value.at("reason"), created.error.message);
+        EXPECT_EQ(validated.value.at("path"), created.error.path);
+    }
+}
+
+TEST_F(StudyDriverJourney, PublishedStudySpaceBuildsAValidSpec) {
+    const ApiResult listed =
+        call("list_methodologies", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    const auto m1 = std::ranges::find_if(
+        listed.value.at("methodologies"), [](const Json& methodology) {
+            return methodology.at("id") == "M-1";
+        });
+    ASSERT_NE(m1, listed.value.at("methodologies").end());
+    ASSERT_TRUE(m1->at("studies").get<bool>());
+    const Json& published = m1->at("study_search_space");
+    ASSERT_EQ(published.at("parameters").size(), 9u);
+    const auto family = std::ranges::find(
+        published.at("parameters"), "model_family",
+        [](const Json& parameter) { return parameter.at("name"); });
+    ASSERT_NE(family, published.at("parameters").end());
+    EXPECT_EQ(family->at("kind"), "categorical");
+    EXPECT_EQ(family->at("default"), "gbdt");
+    EXPECT_EQ(family->at("choices"), Json::array({"gbdt"}));
+    const auto trees = std::ranges::find(
+        published.at("parameters"), "gbdt.num_trees",
+        [](const Json& parameter) { return parameter.at("name"); });
+    ASSERT_NE(trees, published.at("parameters").end());
+    EXPECT_EQ(trees->at("kind"), "int");
+    EXPECT_EQ(trees->at("minimum"), 10.0);
+    EXPECT_EQ(trees->at("maximum"), 200.0);
+    EXPECT_EQ(trees->at("default"), 100);
+    const auto regularization = std::ranges::find(
+        published.at("parameters"), "l2_regularization",
+        [](const Json& parameter) { return parameter.at("name"); });
+    ASSERT_NE(regularization, published.at("parameters").end());
+    EXPECT_EQ(regularization->at("aliases"),
+              Json::array({"gbdt.l2_regularization"}));
+    EXPECT_EQ(published.at("objective_metrics"),
+              Json::array({"validation.accuracy", "validation.auc",
+                           "validation.log_loss"}));
+    EXPECT_EQ(published.at("validation_splits"),
+              Json::array({"validation"}));
+    EXPECT_EQ(published.at("dataset_path").at("format"),
+              "database.table");
+    EXPECT_TRUE(published.at("dataset_path").at("must_exist"));
+    EXPECT_FALSE(published.at("dataset_path").at("directory_paths"));
+
+    Json input = study_input("published search space", 1, 4, 6);
+    input["search_space"] = Json::array();
+    for (Json parameter : published.at("parameters")) {
+        parameter.erase("default");
+        parameter.erase("aliases");
+        input["search_space"].push_back(std::move(parameter));
+    }
+    const ApiResult validated = call("validate_study", input);
+    ASSERT_TRUE(validated.ok) << validated.error.message;
+    EXPECT_TRUE(validated.value.at("valid").get<bool>())
+        << validated.value.at("path") << ": "
+        << validated.value.at("reason");
+
+    const auto m2 = std::ranges::find_if(
+        listed.value.at("methodologies"), [](const Json& methodology) {
+            return methodology.at("id") == "M-2";
+        });
+    ASSERT_NE(m2, listed.value.at("methodologies").end());
+    EXPECT_FALSE(m2->at("studies").get<bool>());
+    EXPECT_FALSE(m2->at("study_reason").get<std::string>().empty());
+    EXPECT_TRUE(m2->at("study_search_space").is_null());
+}
+
 }  // namespace

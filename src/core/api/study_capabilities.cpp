@@ -1,4 +1,5 @@
-// AutoML studies on the control surface (#1138, #1158; docs/ml/studies.md).
+// AutoML studies on the control surface (#1138, #1158, #1207;
+// docs/ml/studies.md).
 
 #include <algorithm>
 #include <set>
@@ -32,6 +33,23 @@ const nlohmann::json& create_study_schema() {
         document["properties"]["from_defaults"] = {{"type", "boolean"}};
         return document;
     }();
+    return schema;
+}
+
+const nlohmann::json& validate_study_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"valid", "reason", "path", "normalized_spec"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"valid", {{"type", "boolean"}}},
+          {"reason", {{"type", "string"}}},
+          {"path", {{"type", "string"}}},
+          {"normalized_spec",
+           {{"oneOf",
+             nlohmann::json::array(
+                 {zetta::ml::study_value_schema().at("properties").at("spec"),
+                  nlohmann::json{{"type", "null"}}})}}}}}};
     return schema;
 }
 
@@ -227,48 +245,126 @@ nlohmann::json with_id(const std::shared_ptr<zetta::ml::Study>& study) {
     return output;
 }
 
-std::vector<zetta::ml::StudyParameter> default_space(
-    const zetta::ml::Methodology& methodology) {
-    zetta::ml::StudyParameter family;
-    family.name = "model_family";
-    family.kind = zetta::ml::ParameterKind::Categorical;
-    const std::set<std::string> unique(methodology.model_kinds.begin(),
-                                       methodology.model_kinds.end());
-    for (const std::string& model : unique) family.choices.push_back(model);
-    if (family.choices.empty()) family.choices.push_back(methodology.id);
-    if (methodology.id != "M-1") return {std::move(family)};
+struct StudyParameterDefinition {
+    zetta::ml::StudyParameter parameter;
+    nlohmann::json default_value;
+    std::vector<std::string> aliases;
+};
 
-    family.choices = {"gbdt"};
-    zetta::ml::StudyParameter trees;
-    trees.name = "gbdt.num_trees";
-    trees.kind = zetta::ml::ParameterKind::Integer;
-    trees.minimum = 10;
-    trees.maximum = 200;
-    trees.step = 10;
-    trees.condition_parameter = "model_family";
-    trees.condition_values = {"gbdt"};
-    zetta::ml::StudyParameter depth;
-    depth.name = "gbdt.max_depth";
-    depth.kind = zetta::ml::ParameterKind::Integer;
-    depth.minimum = 2;
-    depth.maximum = 8;
-    depth.step = 1;
-    depth.condition_parameter = "model_family";
-    depth.condition_values = {"gbdt"};
-    zetta::ml::StudyParameter learning_rate;
-    learning_rate.name = "learning_rate";
-    learning_rate.minimum = 0.001;
-    learning_rate.maximum = 0.5;
-    learning_rate.logarithmic = true;
-    zetta::ml::StudyParameter regularization;
-    regularization.name = "gbdt.l2_regularization";
-    regularization.minimum = 0.000001;
-    regularization.maximum = 10.0;
-    regularization.logarithmic = true;
-    regularization.condition_parameter = "model_family";
-    regularization.condition_values = {"gbdt"};
-    return {std::move(family), std::move(trees), std::move(depth),
-            std::move(learning_rate), std::move(regularization)};
+struct StudyMethodologyDefinition {
+    std::string methodology;
+    std::vector<StudyParameterDefinition> parameters;
+    std::vector<std::string> objective_metrics;
+    std::vector<std::string> validation_splits;
+};
+
+StudyParameterDefinition numeric_parameter(
+    std::string name, zetta::ml::ParameterKind kind, double minimum,
+    double maximum, double step, bool logarithmic,
+    nlohmann::json default_value, std::vector<std::string> aliases = {}) {
+    zetta::ml::StudyParameter parameter;
+    parameter.name = std::move(name);
+    parameter.kind = kind;
+    parameter.minimum = minimum;
+    parameter.maximum = maximum;
+    parameter.step = step;
+    parameter.logarithmic = logarithmic;
+    parameter.condition_parameter = "model_family";
+    parameter.condition_values = {"gbdt"};
+    return {std::move(parameter), std::move(default_value),
+            std::move(aliases)};
+}
+
+const StudyMethodologyDefinition& m1_study_definition() {
+    static const StudyMethodologyDefinition definition = [] {
+        StudyMethodologyDefinition value;
+        value.methodology = "M-1";
+        zetta::ml::StudyParameter family;
+        family.name = "model_family";
+        family.kind = zetta::ml::ParameterKind::Categorical;
+        family.choices = {"gbdt"};
+        value.parameters.push_back({std::move(family), "gbdt", {}});
+        value.parameters.push_back(numeric_parameter(
+            "gbdt.num_trees", zetta::ml::ParameterKind::Integer, 10, 200,
+            10, false, 100));
+        value.parameters.push_back(numeric_parameter(
+            "gbdt.max_depth", zetta::ml::ParameterKind::Integer, 2, 8, 1,
+            false, 4));
+        value.parameters.push_back(numeric_parameter(
+            "gbdt.max_bins", zetta::ml::ParameterKind::Integer, 8, 256, 8,
+            false, 32));
+        value.parameters.push_back(numeric_parameter(
+            "learning_rate", zetta::ml::ParameterKind::Float, 0.001, 0.5,
+            0.0, true, 0.3, {"gbdt.learning_rate"}));
+        value.parameters.push_back(numeric_parameter(
+            "l2_regularization", zetta::ml::ParameterKind::Float, 0.000001,
+            10.0, 0.0, true, 1.0,
+            {"gbdt.l2_regularization"}));
+        value.parameters.push_back(numeric_parameter(
+            "min_split_gain", zetta::ml::ParameterKind::Float, 0.0,
+            10.0, 0.0, false, 0.0, {"gbdt.min_split_gain"}));
+        value.parameters.push_back(numeric_parameter(
+            "min_child_hessian", zetta::ml::ParameterKind::Float, 0.000001,
+            10.0, 0.0, true, 0.001,
+            {"gbdt.min_child_hessian"}));
+        value.parameters.push_back(numeric_parameter(
+            "holdout_fraction", zetta::ml::ParameterKind::Float, 0.01, 0.5,
+            0.0, false, 0.2, {"gbdt.holdout_fraction"}));
+        value.objective_metrics = {
+            "validation.accuracy", "validation.auc",
+            "validation.log_loss"};
+        value.validation_splits = {"validation"};
+        return value;
+    }();
+    return definition;
+}
+
+const StudyMethodologyDefinition* study_definition(
+    std::string_view methodology) {
+    const zetta::ml::Methodology* resolved =
+        zetta::ml::find_methodology(methodology);
+    if (resolved != nullptr && resolved->id == "M-1") {
+        return &m1_study_definition();
+    }
+    return nullptr;
+}
+
+const StudyParameterDefinition* parameter_definition(
+    const StudyMethodologyDefinition& methodology,
+    std::string_view name) {
+    for (const StudyParameterDefinition& definition : methodology.parameters) {
+        if (definition.parameter.name == name ||
+            std::ranges::contains(definition.aliases, name)) {
+            return &definition;
+        }
+    }
+    return nullptr;
+}
+
+nlohmann::json parameter_definition_json(
+    const StudyParameterDefinition& definition) {
+    const zetta::ml::StudyParameter& parameter = definition.parameter;
+    return {{"name", parameter.name},
+            {"kind", zetta::ml::to_string(parameter.kind)},
+            {"minimum", parameter.minimum},
+            {"maximum", parameter.maximum},
+            {"step", parameter.step},
+            {"log", parameter.logarithmic},
+            {"default", definition.default_value},
+            {"choices", parameter.choices},
+            {"aliases", definition.aliases},
+            {"condition_parameter", parameter.condition_parameter},
+            {"condition_values", parameter.condition_values}};
+}
+
+std::vector<zetta::ml::StudyParameter> default_space(
+    const StudyMethodologyDefinition& methodology) {
+    std::vector<zetta::ml::StudyParameter> parameters;
+    parameters.reserve(methodology.parameters.size());
+    for (const StudyParameterDefinition& definition : methodology.parameters) {
+        parameters.push_back(definition.parameter);
+    }
+    return parameters;
 }
 
 bool validate_driver_spec(zetta::Node& node, zetta::ml::StudySpec& spec,
@@ -285,51 +381,68 @@ bool validate_driver_spec(zetta::Node& node, zetta::ml::StudySpec& spec,
     }
     const zetta::ml::Methodology* methodology =
         zetta::ml::find_methodology(spec.methodology);
-    if (methodology == nullptr || methodology->id != "M-1") {
+    const StudyMethodologyDefinition* definition =
+        methodology != nullptr ? study_definition(methodology->id) : nullptr;
+    if (methodology == nullptr || definition == nullptr) {
         reason = "/methodology: the study driver currently supports M-1; '" +
                  spec.methodology + "' cannot run real study trials";
         return false;
     }
     spec.methodology = methodology->id;
-    if (spec.objective.validation_split != "validation") {
+    if (!std::ranges::contains(definition->validation_splits,
+                               spec.objective.validation_split)) {
         reason = "/objective/validation_split: M-1 supports the 'validation' split";
         return false;
     }
-    static const std::set<std::string> objective_metrics = {
-        "validation.accuracy", "validation.auc", "validation.log_loss"};
-    if (!objective_metrics.contains(spec.objective.metric)) {
+    if (!std::ranges::contains(definition->objective_metrics,
+                               spec.objective.metric)) {
         reason = "/objective/metric: unsupported M-1 validation metric '" +
                  spec.objective.metric + "'";
         return false;
     }
-    static const std::set<std::string> supported = {
-        "model_family", "gbdt.num_trees", "gbdt.max_depth",
-        "gbdt.max_bins", "learning_rate", "gbdt.learning_rate",
-        "l2_regularization", "gbdt.l2_regularization",
-        "min_split_gain", "gbdt.min_split_gain", "min_child_hessian",
-        "gbdt.min_child_hessian", "holdout_fraction",
-        "gbdt.holdout_fraction"};
+    std::set<std::string> normalized_names;
     for (zetta::ml::StudyParameter& parameter : spec.search_space) {
-        if (!supported.contains(parameter.name)) {
+        const StudyParameterDefinition* accepted =
+            parameter_definition(*definition, parameter.name);
+        if (accepted == nullptr) {
             reason = "/search_space/" + parameter.name +
                      ": unknown M-1 hyperparameter";
             return false;
         }
+        parameter.name = accepted->parameter.name;
+        if (!normalized_names.insert(parameter.name).second) {
+            reason = "/search_space/" + parameter.name +
+                     ": parameter appears more than once after normalization";
+            return false;
+        }
+        if (parameter.kind != accepted->parameter.kind) {
+            reason = "/search_space/" + parameter.name +
+                     "/kind: expected '" +
+                     std::string(zetta::ml::to_string(accepted->parameter.kind)) +
+                     "'";
+            return false;
+        }
+        if (!parameter.condition_parameter.empty()) {
+            const StudyParameterDefinition* parent = parameter_definition(
+                *definition, parameter.condition_parameter);
+            if (parent != nullptr) {
+                parameter.condition_parameter = parent->parameter.name;
+            }
+        }
         for (nlohmann::json& value : parameter.condition_values) {
             if (value == "gradient_boosting") value = "gbdt";
         }
-        if (parameter.name != "model_family") continue;
+        if (parameter.kind != zetta::ml::ParameterKind::Categorical) continue;
         for (nlohmann::json& choice : parameter.choices) {
-            if (!choice.is_string()) {
-                reason = "/search_space/model_family/choices: must be strings";
-                return false;
-            }
-            const std::string family = choice.get<std::string>();
-            if (family == "gradient_boosting") {
-                choice = "gbdt";
-            } else if (family != "gbdt") {
-                reason = "/search_space/model_family/choices: unsupported family '" +
-                         family + "'";
+            if (choice == "gradient_boosting") choice = "gbdt";
+            if (!std::ranges::contains(accepted->parameter.choices, choice)) {
+                const std::string rendered =
+                    choice.is_string() ? choice.get<std::string>() : choice.dump();
+                reason = parameter.name == "model_family"
+                             ? "/search_space/model_family/choices: unsupported family '" +
+                                   rendered + "'"
+                             : "/search_space/" + parameter.name +
+                                   "/choices: unsupported choice '" + rendered + "'";
                 return false;
             }
         }
@@ -387,8 +500,15 @@ std::optional<zetta::ml::StudySpec> spec_from_input(
             return std::nullopt;
         }
         nlohmann::json parameters = nlohmann::json::array();
+        const StudyMethodologyDefinition* definition =
+            study_definition(methodology->id);
+        if (definition == nullptr) {
+            reason = "/methodology: the study driver currently supports M-1; '" +
+                     methodology->id + "' cannot run real study trials";
+            return std::nullopt;
+        }
         for (const zetta::ml::StudyParameter& parameter :
-             default_space(*methodology)) {
+             default_space(*definition)) {
             parameters.push_back(
                 {{"name", parameter.name},
                  {"kind", zetta::ml::to_string(parameter.kind)},
@@ -417,6 +537,32 @@ std::optional<zetta::ml::StudySpec> spec_from_input(
     return parsed->spec;
 }
 
+struct StudyValidation {
+    std::optional<zetta::ml::StudySpec> spec;
+    std::string code;
+    std::string reason;
+    std::string path;
+};
+
+StudyValidation validation_failure(std::string code, std::string reason,
+                                   std::string path = {}) {
+    if (path.empty() && reason.starts_with('/')) {
+        const std::size_t separator = reason.find(": ");
+        if (separator != std::string::npos) {
+            path = reason.substr(0, separator);
+            reason.erase(0, separator + 2);
+        }
+    }
+    return {std::nullopt, std::move(code), std::move(reason),
+            std::move(path)};
+}
+
+nlohmann::json normalized_spec_json(const zetta::ml::StudySpec& spec) {
+    zetta::ml::StudyValue value;
+    value.spec = spec;
+    return zetta::ml::to_json(value).at("spec");
+}
+
 std::shared_ptr<zetta::pipeline::Project> project_for(
     zetta::Node& node, const std::string& reference) {
     for (const auto& project : node.projects()) {
@@ -425,6 +571,54 @@ std::shared_ptr<zetta::pipeline::Project> project_for(
         }
     }
     return nullptr;
+}
+
+StudyValidation validate_and_normalize_study(const nlohmann::json& input,
+                                             ApiContext& context) {
+    std::string reason;
+    std::optional<zetta::ml::StudySpec> spec =
+        spec_from_input(input, reason);
+    if (!spec) {
+        return validation_failure("invalid_input", std::move(reason));
+    }
+    if (!validate_driver_spec(context.node, *spec, reason)) {
+        return validation_failure("invalid_input", std::move(reason));
+    }
+    if (!spec->project.empty() || !spec->pipeline.empty()) {
+        const auto project = project_for(context.node, spec->project);
+        if (!project) {
+            return validation_failure("not_found", "project was not found",
+                                      "/project");
+        }
+        const auto graph = project->find_graph_by_id(spec->pipeline)
+                               ? project->find_graph_by_id(spec->pipeline)
+                               : project->find_graph(spec->pipeline);
+        if (!graph) {
+            return validation_failure("not_found", "pipeline was not found",
+                                      "/pipeline");
+        }
+        const zetta::pipeline::ValidationReport report =
+            zetta::pipeline::default_gate().run(graph->graph());
+        if (report.block_deploy) {
+            return validation_failure(
+                "invalid_input",
+                "the pipeline failed Verification and cannot be studied",
+                "/pipeline");
+        }
+        spec->project = project->name();
+        spec->pipeline = graph->name();
+    }
+    if (context.node.find_study(spec->name)) {
+        return validation_failure("invalid_input",
+                                  "a study with this name already exists",
+                                  "/name");
+    }
+    if (!zetta::ml::validate_study_spec(*spec, &reason)) {
+        return validation_failure("invalid_input", std::move(reason));
+    }
+    StudyValidation result;
+    result.spec = std::move(spec);
+    return result;
 }
 
 void publish_study_event(zetta::Node& node,
@@ -459,39 +653,37 @@ void publish_study_event(zetta::Node& node,
 
 ApiResult handle_create_study(const nlohmann::json& input,
                               ApiContext& context) {
+    StudyValidation validation = validate_and_normalize_study(input, context);
+    if (!validation.spec) {
+        return ApiResult::failure(validation.code, validation.reason,
+                                  validation.path);
+    }
     std::string reason;
-    std::optional<zetta::ml::StudySpec> spec =
-        spec_from_input(input, reason);
-    if (!spec) return ApiResult::failure("invalid_input", reason);
-    if (!validate_driver_spec(context.node, *spec, reason)) {
-        return ApiResult::failure("invalid_input", reason);
+    const auto study = context.node.create_study(*validation.spec, &reason);
+    if (!study) {
+        const StudyValidation failure =
+            validation_failure("invalid_input", std::move(reason));
+        return ApiResult::failure(failure.code, failure.reason, failure.path);
     }
-    if (!spec->project.empty() || !spec->pipeline.empty()) {
-        const auto project = project_for(context.node, spec->project);
-        if (!project) {
-            return ApiResult::failure("not_found", "project was not found",
-                                      "/project");
-        }
-        const auto graph = project->find_graph_by_id(spec->pipeline)
-                               ? project->find_graph_by_id(spec->pipeline)
-                               : project->find_graph(spec->pipeline);
-        if (!graph) {
-            return ApiResult::failure("not_found", "pipeline was not found",
-                                      "/pipeline");
-        }
-        const zetta::pipeline::ValidationReport report =
-            zetta::pipeline::default_gate().run(graph->graph());
-        if (report.block_deploy) {
-            return ApiResult::failure(
-                "invalid_input",
-                "the pipeline failed Verification and cannot be studied",
-                "/pipeline");
-        }
-    }
-    const auto study = context.node.create_study(*spec, &reason);
-    if (!study) return ApiResult::failure("invalid_input", reason);
     publish_study_event(context.node, study, "created");
     return ApiResult::success(with_id(study));
+}
+
+ApiResult handle_validate_study(const nlohmann::json& input,
+                                ApiContext& context) {
+    StudyValidation validation = validate_and_normalize_study(input, context);
+    if (!validation.spec) {
+        return ApiResult::success(
+            {{"valid", false},
+             {"reason", validation.reason},
+             {"path", validation.path},
+             {"normalized_spec", nullptr}});
+    }
+    return ApiResult::success(
+        {{"valid", true},
+         {"reason", ""},
+         {"path", ""},
+         {"normalized_spec", normalized_spec_json(*validation.spec)}});
 }
 
 ApiResult handle_get_study(const nlohmann::json& input,
@@ -652,7 +844,48 @@ ApiResult handle_analysis(const nlohmann::json& input, ApiContext& context) {
 
 }  // namespace
 
+nlohmann::json study_search_space_for_methodology(
+    std::string_view methodology) {
+    const StudyMethodologyDefinition* definition =
+        study_definition(methodology);
+    if (definition == nullptr) {
+        const zetta::ml::Methodology* resolved =
+            zetta::ml::find_methodology(methodology);
+        const std::string id =
+            resolved != nullptr ? resolved->id : std::string(methodology);
+        return {
+            {"studies", false},
+            {"study_reason",
+             "Study trials are not supported for " + id +
+                 "; the study driver currently supports M-1."},
+            {"study_search_space", nullptr}};
+    }
+    nlohmann::json parameters = nlohmann::json::array();
+    for (const StudyParameterDefinition& parameter : definition->parameters) {
+        parameters.push_back(parameter_definition_json(parameter));
+    }
+    return {
+        {"studies", true},
+        {"study_reason", ""},
+        {"study_search_space",
+         {{"parameters", std::move(parameters)},
+          {"objective_metrics", definition->objective_metrics},
+          {"validation_splits", definition->validation_splits},
+          {"dataset_path",
+           {{"kind", "table"},
+            {"format", "database.table"},
+            {"must_exist", true},
+            {"required_without_project_pipeline", true},
+            {"directory_paths", false}}}}}};
+}
+
 void register_study_capabilities(Registry& registry) {
+    registry.add(Capability{
+        "validate_study", "Validate study",
+        "Validate and normalize a proposed AutoML study without creating it or changing state.",
+        create_study_schema(), validate_study_output_schema(),
+        CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"}, false,
+        false, handle_validate_study});
     registry.add(Capability{
         "create_study", "Create study",
         "Create a replicated AutoML study after validating its non-test objective and Pipeline; this mutates state.",

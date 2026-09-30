@@ -62,14 +62,19 @@ relay it to a person.
   suppresses model-driven action for protected tiers, and `get_experiment`
   exposes balance, exemption erosion, and the assignment rows used by uplift
   training ([experiments.md](../../solutions/experiments.md), #1105).
-- **Studies before promotion**: an agent can create, inspect, stop, delete,
+- **Studies before promotion**: an agent reads the methodology's published
+  study parameters, objective metrics, validation splits, and dataset rules,
+  then calls `validate_study` before proposing creation. An invalid candidate
+  includes a field path and repair reason; a valid candidate includes the
+  normalized spec that creation will use. The agent can create, inspect, stop,
+  delete,
   analyze, and follow a native AutoML study through the same REST/MCP
   capabilities. Deletion has its own permission, refuses running studies,
   removes non-promoted trial Runs and their metrics, and retains promoted
   Model lineage. Every
   trial is a Run with recorded parameters and seed; promotion is isolated behind
   `studies:promote`, so ordinary Pipeline management cannot replace the project
-  model ([studies.md](../../ml/studies.md), #1138, #1158).
+  model ([studies.md](../../ml/studies.md), #1138, #1158, #1207).
 - **One read for list pages**: `list_runs`, `list_models`, and `list_studies`
   include the Project/Pipeline names, status or serving state, metric summaries,
   and timestamps their pages display. The same values and schemas are available
@@ -85,7 +90,8 @@ relay it to a person.
   `get_run_report.features` lists used sources/transforms and exclusions with reasons.
 - **Methodology discovery** ([#1061](https://github.com/oramasearch/zetta/issues/1061)):
   `list_methodologies` exposes the 21-entry portfolio, required inputs, outputs,
-  metrics, and runnable status. `compile_intent` accepts a methodology or
+  metrics, runnable status, and per-methodology Study support. `compile_intent`
+  accepts a methodology or
   solution selector; M-1 through M-21 are runnable, while unsupported work names
   its implementation issue. `run`
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each

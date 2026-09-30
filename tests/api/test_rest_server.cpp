@@ -17,12 +17,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <nlohmann/json-schema.hpp>
@@ -66,6 +68,22 @@ struct HttpResponse {
     int status = 0;
     std::string body;
 };
+
+std::string query_encode(std::string_view value) {
+    static constexpr char hex[] = "0123456789ABCDEF";
+    std::string encoded;
+    for (const unsigned char character : value) {
+        if (std::isalnum(character) || character == '-' || character == '_' ||
+            character == '.' || character == '~') {
+            encoded.push_back(static_cast<char>(character));
+            continue;
+        }
+        encoded.push_back('%');
+        encoded.push_back(hex[character >> 4]);
+        encoded.push_back(hex[character & 0x0F]);
+    }
+    return encoded;
+}
 
 int open_http_request(unsigned short port, const std::string& method,
                       const std::string& target, const std::string& body,
@@ -714,8 +732,24 @@ TEST_F(RestServerFixture, StudyCapabilitiesWorkOverRest) {
           {"max_parallel_trials", 1},
           {"cost_cap", 0.0}}},
         {"from_defaults", true}};
+    std::string validation_target = "/v1/validate_study";
+    bool first_parameter = true;
+    for (const auto& [name, value] : input.items()) {
+        validation_target += first_parameter ? "?" : "&";
+        first_parameter = false;
+        validation_target += name + "=" +
+            query_encode(value.is_string() ? value.get<std::string>()
+                                           : value.dump());
+    }
+    const auto validated = request("GET", validation_target);
+    ASSERT_EQ(validated.status, 200) << validated.body;
+    const nlohmann::json validation_value =
+        json_of(validated).at("value");
+    ASSERT_TRUE(validation_value.at("valid").get<bool>());
     const auto created = request("POST", "/v1/create_study", input.dump());
     ASSERT_EQ(created.status, 200) << created.body;
+    EXPECT_EQ(validation_value.at("normalized_spec"),
+              json_of(created).at("value").at("spec"));
     const std::string study_id =
         json_of(created).at("value").at("id").get<std::string>();
     const auto running_delete = request(

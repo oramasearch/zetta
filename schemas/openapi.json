@@ -18596,6 +18596,158 @@
                                   "type": "string"
                                 },
                                 "type": "array"
+                              },
+                              "studies": {
+                                "type": "boolean"
+                              },
+                              "study_reason": {
+                                "type": "string"
+                              },
+                              "study_search_space": {
+                                "oneOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "dataset_path": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "directory_paths": {
+                                            "type": "boolean"
+                                          },
+                                          "format": {
+                                            "const": "database.table",
+                                            "type": "string"
+                                          },
+                                          "kind": {
+                                            "const": "table",
+                                            "type": "string"
+                                          },
+                                          "must_exist": {
+                                            "type": "boolean"
+                                          },
+                                          "required_without_project_pipeline": {
+                                            "type": "boolean"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "format",
+                                          "must_exist",
+                                          "required_without_project_pipeline",
+                                          "directory_paths"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "objective_metrics": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "parameters": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "aliases": {
+                                              "items": {
+                                                "type": "string"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "choices": {
+                                              "items": {
+                                                "type": [
+                                                  "string",
+                                                  "number",
+                                                  "integer",
+                                                  "boolean"
+                                                ]
+                                              },
+                                              "type": "array"
+                                            },
+                                            "condition_parameter": {
+                                              "type": "string"
+                                            },
+                                            "condition_values": {
+                                              "items": {
+                                                "type": [
+                                                  "string",
+                                                  "number",
+                                                  "integer",
+                                                  "boolean"
+                                                ]
+                                              },
+                                              "type": "array"
+                                            },
+                                            "default": {
+                                              "type": [
+                                                "string",
+                                                "number",
+                                                "integer",
+                                                "boolean"
+                                              ]
+                                            },
+                                            "kind": {
+                                              "enum": [
+                                                "int",
+                                                "float",
+                                                "categorical"
+                                              ],
+                                              "type": "string"
+                                            },
+                                            "log": {
+                                              "type": "boolean"
+                                            },
+                                            "maximum": {
+                                              "type": "number"
+                                            },
+                                            "minimum": {
+                                              "type": "number"
+                                            },
+                                            "name": {
+                                              "type": "string"
+                                            },
+                                            "step": {
+                                              "minimum": 0,
+                                              "type": "number"
+                                            }
+                                          },
+                                          "required": [
+                                            "name",
+                                            "kind",
+                                            "minimum",
+                                            "maximum",
+                                            "step",
+                                            "log",
+                                            "default",
+                                            "choices",
+                                            "aliases",
+                                            "condition_parameter",
+                                            "condition_values"
+                                          ],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "validation_splits": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      }
+                                    },
+                                    "required": [
+                                      "parameters",
+                                      "objective_metrics",
+                                      "validation_splits",
+                                      "dataset_path"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
                               }
                             },
                             "required": [
@@ -18609,7 +18761,10 @@
                               "metrics",
                               "runnable",
                               "partial",
-                              "issue"
+                              "issue",
+                              "studies",
+                              "study_reason",
+                              "study_search_space"
                             ],
                             "type": "object"
                           },
@@ -29710,6 +29865,565 @@
         "summary": "Upload a dataset",
         "tags": [
           "action"
+        ]
+      }
+    },
+    "/v1/validate_study": {
+      "get": {
+        "description": "Validate and normalize a proposed AutoML study without creating it or changing state. Requires api:query.",
+        "operationId": "validate_study",
+        "parameters": [
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cost_cap": {
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "max_parallel_trials": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "max_trials": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "max_wall_time_ms": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "max_trials",
+                    "max_wall_time_ms",
+                    "max_parallel_trials",
+                    "cost_cap"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "in": "query",
+            "name": "budgets",
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "differential_privacy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_defaults",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "methodology",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "direction": {
+                      "enum": [
+                        "minimize",
+                        "maximize"
+                      ],
+                      "type": "string"
+                    },
+                    "metric": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "validation_split": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "metric",
+                    "direction",
+                    "validation_split"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "in": "query",
+            "name": "objective",
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "pipeline",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pruner",
+            "required": false,
+            "schema": {
+              "enum": [
+                "none",
+                "median",
+                "asha"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              }
+            },
+            "in": "query",
+            "name": "released_metrics",
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "sampler",
+            "required": false,
+            "schema": {
+              "enum": [
+                "grid",
+                "random",
+                "tpe"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "choices": {
+                        "items": {
+                          "type": [
+                            "string",
+                            "number",
+                            "integer",
+                            "boolean"
+                          ]
+                        },
+                        "type": "array"
+                      },
+                      "condition_parameter": {
+                        "type": "string"
+                      },
+                      "condition_values": {
+                        "items": {
+                          "type": [
+                            "string",
+                            "number",
+                            "integer",
+                            "boolean"
+                          ]
+                        },
+                        "type": "array"
+                      },
+                      "kind": {
+                        "enum": [
+                          "int",
+                          "float",
+                          "categorical"
+                        ],
+                        "type": "string"
+                      },
+                      "log": {
+                        "type": "boolean"
+                      },
+                      "maximum": {
+                        "type": "number"
+                      },
+                      "minimum": {
+                        "type": "number"
+                      },
+                      "name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "step": {
+                        "minimum": 0,
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "kind",
+                      "minimum",
+                      "maximum",
+                      "step",
+                      "log",
+                      "choices",
+                      "condition_parameter",
+                      "condition_values"
+                    ],
+                    "type": "object"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              }
+            },
+            "in": "query",
+            "name": "search_space",
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "seed",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "normalized_spec": {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "budgets": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "cost_cap": {
+                                      "minimum": 0,
+                                      "type": "number"
+                                    },
+                                    "max_parallel_trials": {
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "max_trials": {
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "max_wall_time_ms": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "max_trials",
+                                    "max_wall_time_ms",
+                                    "max_parallel_trials",
+                                    "cost_cap"
+                                  ],
+                                  "type": "object"
+                                },
+                                "dataset": {
+                                  "type": "string"
+                                },
+                                "differential_privacy": {
+                                  "type": "boolean"
+                                },
+                                "methodology": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "name": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "objective": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "direction": {
+                                      "enum": [
+                                        "minimize",
+                                        "maximize"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "metric": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "validation_split": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "metric",
+                                    "direction",
+                                    "validation_split"
+                                  ],
+                                  "type": "object"
+                                },
+                                "pipeline": {
+                                  "type": "string"
+                                },
+                                "project": {
+                                  "type": "string"
+                                },
+                                "pruner": {
+                                  "enum": [
+                                    "none",
+                                    "median",
+                                    "asha"
+                                  ],
+                                  "type": "string"
+                                },
+                                "released_metrics": {
+                                  "items": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "sampler": {
+                                  "enum": [
+                                    "grid",
+                                    "random",
+                                    "tpe"
+                                  ],
+                                  "type": "string"
+                                },
+                                "search_space": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "choices": {
+                                        "items": {
+                                          "type": [
+                                            "string",
+                                            "number",
+                                            "integer",
+                                            "boolean"
+                                          ]
+                                        },
+                                        "type": "array"
+                                      },
+                                      "condition_parameter": {
+                                        "type": "string"
+                                      },
+                                      "condition_values": {
+                                        "items": {
+                                          "type": [
+                                            "string",
+                                            "number",
+                                            "integer",
+                                            "boolean"
+                                          ]
+                                        },
+                                        "type": "array"
+                                      },
+                                      "kind": {
+                                        "enum": [
+                                          "int",
+                                          "float",
+                                          "categorical"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "log": {
+                                        "type": "boolean"
+                                      },
+                                      "maximum": {
+                                        "type": "number"
+                                      },
+                                      "minimum": {
+                                        "type": "number"
+                                      },
+                                      "name": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "step": {
+                                        "minimum": 0,
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "name",
+                                      "kind",
+                                      "minimum",
+                                      "maximum",
+                                      "step",
+                                      "log",
+                                      "choices",
+                                      "condition_parameter",
+                                      "condition_values"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "minItems": 1,
+                                  "type": "array"
+                                },
+                                "seed": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "project",
+                                "pipeline",
+                                "dataset",
+                                "methodology",
+                                "objective",
+                                "search_space",
+                                "sampler",
+                                "pruner",
+                                "budgets",
+                                "seed",
+                                "differential_privacy",
+                                "released_metrics"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "valid": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "valid",
+                        "reason",
+                        "path",
+                        "normalized_spec"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Validate study",
+        "tags": [
+          "read"
         ]
       }
     },

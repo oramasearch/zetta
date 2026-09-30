@@ -9,7 +9,7 @@ and `system.node_metrics` over REST and MCP.
 Segment-backed `system.audit` rows, the audit protocol metric, admin-only
 `purge_audit` REST/MCP parity, empty-window suppression, and the
 `system.memory` audit row have REST/MCP SQL parity coverage (#1164, #1169).
-The core registry contains 129 capabilities, including the `node_memory` read,
+The core registry contains 130 capabilities, including the `node_memory` read,
 `purge_audit`, and the separately permissioned `delete_study` action.
 Its parity test validates both REST and MCP values against one output schema and
 compares their subsystem ordering and exact replication byte/item values
@@ -27,6 +27,9 @@ connector-shaped churn table, verifies real dataset and Pipeline trial Runs,
 restart recovery, curves, analysis and promotion, and confirms `stop_study`
 cancels the active training Run. The same journey checks canonical wall-time and
 cost stop reasons without admitting excess trials (#1205).
+It also checks that `validate_study` and `create_study` accept and reject the
+same table of candidates, and that a Study spec assembled from the published
+M-1 search space validates over registry, REST, MCP, and OpenAPI parity (#1207).
 The S-1 solution journey also runs CL-1 and CL-4 over text customer identifiers,
 ISO observation times and boolean labels, checking decision tables, ledger rows
 and webhook payloads (#957).

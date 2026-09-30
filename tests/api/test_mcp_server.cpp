@@ -290,7 +290,8 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
     ASSERT_TRUE(listed["result"]["tools"].is_array()) << listed.dump();
     zetta::api::Registry registry;
     zetta::api::register_core_capabilities(registry);
-    for (const char* name : {"create_study", "get_study", "list_studies",
+    for (const char* name : {"validate_study", "create_study", "get_study",
+                             "list_studies",
                              "list_trials", "stop_study", "stop_trial",
                              "promote_trial", "delete_study",
                              "get_study_analysis"}) {
@@ -333,8 +334,15 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
           {"max_parallel_trials", 1},
           {"cost_cap", 0.0}}},
         {"from_defaults", true}};
+    const auto validated = caller("validate_study", input);
+    ASSERT_TRUE(validated.ok) << validated.error.message;
+    ASSERT_TRUE(validated.value.at("valid").get<bool>());
+    EXPECT_TRUE(validated.value.at("reason").get<std::string>().empty());
+    EXPECT_TRUE(validated.value.at("path").get<std::string>().empty());
     const auto created = caller("create_study", input);
     ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_EQ(validated.value.at("normalized_spec"),
+              created.value.at("spec"));
     const std::string study_id = created.value.at("id");
     const auto running_delete =
         caller("delete_study", {{"study", study_id}});

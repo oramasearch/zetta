@@ -68,7 +68,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        129u); // +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        130u); // +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -98,7 +98,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
                              "compare_runs"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
-    for (const char* name : {"create_study", "get_study", "list_studies",
+    for (const char* name : {"validate_study", "create_study", "get_study",
+                             "list_studies",
                              "list_trials", "stop_study", "stop_trial",
                              "promote_trial", "delete_study",
                              "get_study_analysis"}) {
@@ -144,6 +145,15 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     ASSERT_EQ(methodologies.value.at("methodologies").size(), 21u);
     EXPECT_EQ(methodologies.value.at("methodologies").front().at("id"), "M-1");
     EXPECT_TRUE(methodologies.value.at("methodologies").front().at("runnable"));
+    EXPECT_TRUE(methodologies.value.at("methodologies").front().at("studies"));
+    EXPECT_FALSE(methodologies.value.at("methodologies").front()
+                     .at("study_search_space")
+                     .is_null());
+    EXPECT_FALSE(methodologies.value.at("methodologies").at(1).at("studies"));
+    EXPECT_FALSE(methodologies.value.at("methodologies").at(1)
+                     .at("study_reason")
+                     .get<std::string>()
+                     .empty());
     const ApiResult solutions = call("list_solutions", nlohmann::json::object());
     ASSERT_TRUE(solutions.ok);
     ASSERT_EQ(solutions.value.at("solutions").size(), 20u);

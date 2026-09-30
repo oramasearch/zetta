@@ -2984,11 +2984,61 @@ const nlohmann::json& list_methodologies_output_schema() {
           {"description", {{"type", "string"}}}}}};
     static const nlohmann::json string_array = {
         {"type", "array"}, {"items", {{"type", "string"}}}};
+    static const nlohmann::json study_parameter_schema = {
+        {"type", "object"},
+        {"required",
+         {"name", "kind", "minimum", "maximum", "step", "log", "default",
+          "choices", "aliases", "condition_parameter", "condition_values"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"kind", {{"type", "string"},
+                    {"enum", {"int", "float", "categorical"}}}},
+          {"minimum", {{"type", "number"}}},
+          {"maximum", {{"type", "number"}}},
+          {"step", {{"type", "number"}, {"minimum", 0}}},
+          {"log", {{"type", "boolean"}}},
+          {"default", {{"type", {"string", "number", "integer", "boolean"}}}},
+          {"choices",
+           {{"type", "array"},
+            {"items",
+             {{"type", {"string", "number", "integer", "boolean"}}}}}},
+          {"aliases", string_array},
+          {"condition_parameter", {{"type", "string"}}},
+          {"condition_values",
+           {{"type", "array"},
+            {"items",
+             {{"type", {"string", "number", "integer", "boolean"}}}}}}}}};
+    static const nlohmann::json study_dataset_path_schema = {
+        {"type", "object"},
+        {"required",
+         {"kind", "format", "must_exist",
+          "required_without_project_pipeline", "directory_paths"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"kind", {{"type", "string"}, {"const", "table"}}},
+          {"format", {{"type", "string"}, {"const", "database.table"}}},
+          {"must_exist", {{"type", "boolean"}}},
+          {"required_without_project_pipeline", {{"type", "boolean"}}},
+          {"directory_paths", {{"type", "boolean"}}}}}};
+    static const nlohmann::json study_search_space_schema = {
+        {"type", "object"},
+        {"required",
+         {"parameters", "objective_metrics", "validation_splits",
+          "dataset_path"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"parameters",
+           {{"type", "array"}, {"items", study_parameter_schema}}},
+          {"objective_metrics", string_array},
+          {"validation_splits", string_array},
+          {"dataset_path", study_dataset_path_schema}}}};
     static const nlohmann::json methodology_schema = {
         {"type", "object"},
         {"required",
          {"id", "name", "family", "model_kinds", "solutions", "inputs",
-          "outputs", "metrics", "runnable", "partial", "issue"}},
+          "outputs", "metrics", "runnable", "partial", "issue", "studies",
+          "study_reason", "study_search_space"}},
         {"additionalProperties", false},
         {"properties",
          {{"id", {{"type", "string"}}},
@@ -3001,7 +3051,14 @@ const nlohmann::json& list_methodologies_output_schema() {
           {"metrics", string_array},
           {"runnable", {{"type", "boolean"}}},
           {"partial", {{"type", "boolean"}}},
-          {"issue", {{"type", "string"}}}}}};
+          {"issue", {{"type", "string"}}},
+          {"studies", {{"type", "boolean"}}},
+          {"study_reason", {{"type", "string"}}},
+          {"study_search_space",
+           {{"oneOf",
+             nlohmann::json::array(
+                 {study_search_space_schema,
+                  nlohmann::json{{"type", "null"}}})}}}}}};
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required", {"methodologies"}},
@@ -3016,7 +3073,12 @@ ApiResult handle_list_methodologies(const nlohmann::json&, ApiContext&) {
     nlohmann::json entries = nlohmann::json::array();
     for (const zetta::ml::Methodology& methodology :
          zetta::ml::methodologies()) {
-        entries.push_back(zetta::ml::methodology_json(methodology));
+        nlohmann::json entry = zetta::ml::methodology_json(methodology);
+        for (auto& [key, value] :
+             study_search_space_for_methodology(methodology.id).items()) {
+            entry[key] = value;
+        }
+        entries.push_back(std::move(entry));
     }
     return ApiResult::success({{"methodologies", std::move(entries)}});
 }
