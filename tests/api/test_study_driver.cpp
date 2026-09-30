@@ -388,22 +388,23 @@ TEST_F(StudyDriverJourney, WallAndCostBudgetsStopAdmission) {
     ASSERT_TRUE(wall_run);
     EXPECT_EQ(wall_run->status(), zetta::pipeline::RunStatus::Failed);
 
+    // A cap below one trial's first reservation (60 trial-seconds) can never admit a trial, so
+    // it is rejected at validation instead of completing with zero trials (live 2026-09-30:
+    // an agent proposed cost_cap 5).
     Json cost_input = study_input("cost budget", 3, 4, 4);
     cost_input["budgets"]["cost_cap"] = 59.0;
+    const ApiResult cost_validated = call("validate_study", cost_input);
+    ASSERT_TRUE(cost_validated.ok) << cost_validated.error.message;
+    EXPECT_FALSE(cost_validated.value.at("valid").get<bool>());
+    EXPECT_NE(cost_validated.value.at("reason").get<std::string>().find("cannot admit one trial"),
+              std::string::npos)
+        << cost_validated.value.dump();
+    EXPECT_EQ(cost_validated.value.at("path").get<std::string>(), "/budgets/cost_cap")
+        << cost_validated.value.dump();
     const ApiResult cost_created = call("create_study", cost_input);
-    ASSERT_TRUE(cost_created.ok) << cost_created.error.message;
-    const std::string cost_study_id = cost_created.value.at("id");
-    ASSERT_TRUE(pump_until([&] {
-        const auto study = node.find_study(cost_study_id);
-        return study && study->status() == zetta::ml::StudyStatus::Complete;
-    }));
-    const auto cost_study = node.find_study(cost_study_id);
-    ASSERT_TRUE(cost_study);
-    EXPECT_EQ(cost_study->value().stop_reason, "budget");
-    EXPECT_TRUE(cost_study->value().trials.empty());
-    EXPECT_EQ(cost_study->value().spent_cost, 0.0);
-    EXPECT_LE(cost_study->value().spent_cost,
-              cost_study->spec().budgets.cost_cap);
+    ASSERT_FALSE(cost_created.ok);
+    EXPECT_NE(cost_created.error.message.find("cannot admit one trial"), std::string::npos)
+        << cost_created.error.message;
 }
 
 TEST_F(StudyDriverJourney, RejectsAnUnlearnableOutOfTimeSplitBeforeTrials) {

@@ -115,7 +115,9 @@ resolution through training and objective collection. Before launch, each trial
 reserves the largest cost of a completed trial in the Study. Until a trial has
 completed, the conservative reservation is 60 trial-seconds. A parallel batch
 reserves that amount for every member, and a trial is not admitted when
-`spent_cost + reservations` would exceed `cost_cap`. A zero cap is unlimited.
+`spent_cost + reservations` would exceed `cost_cap`. A zero cap is unlimited. A positive cap
+below one first reservation (60 trial-seconds) could never admit a trial, so `validate_study` and
+`create_study` reject it at `/budgets/cost_cap`.
 ExperimentsAgent should propose `cost_cap: 300` for a small five-trial Study so
 the initial conservative reservations fit in the same unit.
 

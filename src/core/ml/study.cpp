@@ -668,6 +668,14 @@ bool validate_study_spec(const StudySpec& spec, std::string* error) {
         spec.budgets.max_parallel_trials == 0) {
         return fail("/budgets: max_trials and max_parallel_trials must be positive");
     }
+    // A cap below one trial's first reservation can never admit a trial; say so here rather
+    // than completing the study with zero trials (docs/ml/studies.md, cost in trial-seconds).
+    if (spec.budgets.cost_cap > 0.0 && spec.budgets.cost_cap < kDefaultTrialCostSeconds) {
+        return fail("/budgets/cost_cap: " + std::to_string(spec.budgets.cost_cap) +
+                    " trial-seconds cannot admit one trial; the first reservation is " +
+                    std::to_string(kDefaultTrialCostSeconds) +
+                    " trial-seconds (use 0 for unlimited)");
+    }
     if (spec.differential_privacy &&
         !std::ranges::contains(spec.released_metrics, spec.objective.metric)) {
         return fail("/objective/metric: a differentially private study may optimize only a released metric");
