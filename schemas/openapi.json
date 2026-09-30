@@ -5828,6 +5828,9 @@
                         "created": {
                           "type": "string"
                         },
+                        "failure_reason": {
+                          "type": "string"
+                        },
                         "id": {
                           "type": "string"
                         },
@@ -6036,7 +6039,8 @@
                           "enum": [
                             "running",
                             "stopped",
-                            "complete"
+                            "complete",
+                            "failed"
                           ],
                           "type": "string"
                         },
@@ -15169,6 +15173,9 @@
                         "created": {
                           "type": "string"
                         },
+                        "failure_reason": {
+                          "type": "string"
+                        },
                         "id": {
                           "type": "string"
                         },
@@ -15377,7 +15384,8 @@
                           "enum": [
                             "running",
                             "stopped",
-                            "complete"
+                            "complete",
+                            "failed"
                           ],
                           "type": "string"
                         },
@@ -20312,6 +20320,9 @@
                               "created": {
                                 "type": "string"
                               },
+                              "failure_reason": {
+                                "type": "string"
+                              },
                               "id": {
                                 "type": "string"
                               },
@@ -20557,7 +20568,8 @@
                                 "enum": [
                                   "running",
                                   "stopped",
-                                  "complete"
+                                  "complete",
+                                  "failed"
                                 ],
                                 "type": "string"
                               },

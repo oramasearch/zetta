@@ -11,7 +11,10 @@ removal, promoted lineage retention, restart persistence, and REST/MCP parity
 (#1158).
 Server-level Study journeys additionally cover real M-1 dataset and Pipeline
 training, restart resumption, wall and cost limits, active cancellation, curves,
-analysis, and actual-model promotion (#1205).
+analysis, and actual-model promotion (#1205). The full-table monthly-data
+regression proves a learnable signal exceeds 0.7 validation AUC without losing
+repeated entity observations; split preflight and cost reservation regressions
+cover failed data status and cap-safe admission (#1209).
 Run metric regressions cover same-step automatic gauges, competing initial and
 trainer samples through the owner queue, restart ordering, strict caller
 validation, and live-event step agreement (#1205). See

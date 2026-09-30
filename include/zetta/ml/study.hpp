@@ -29,7 +29,7 @@ class WorkStealingScheduler;
 namespace zetta::ml {
 
 enum class StudyDirection { Minimize, Maximize };
-enum class StudyStatus { Running, Stopped, Complete };
+enum class StudyStatus { Running, Stopped, Complete, Failed };
 enum class TrialState { Running, Pruned, Failed, Complete };
 enum class SamplerKind { Grid, Random, Tpe };
 enum class PrunerKind { None, Median, Asha };
@@ -109,6 +109,7 @@ struct StudyValue {
     std::vector<StudyTrial> trials;
     double spent_cost = 0.0;
     std::string stop_reason;
+    std::string failure_reason;
     std::string promoted_model;
 };
 
@@ -127,6 +128,12 @@ bool validate_study_value(const nlohmann::json& value,
 std::optional<StudyValue> parse_study_value(const nlohmann::json& value,
                                             std::string* error = nullptr);
 bool validate_study_spec(const StudySpec& spec, std::string* error = nullptr);
+
+// Validate the resolved M-1 dataset and its requested validation split before a
+// Study spends a trial. The check reads the complete table; the bounded sample is
+// used only to infer the column contract. Returns a repair-oriented data reason.
+bool validate_study_data(Node& node, const StudySpec& spec,
+                         std::string* error = nullptr);
 
 class Study {
 public:
@@ -153,6 +160,7 @@ public:
                                std::string* error = nullptr);
     void stop(std::string reason);
     void set_complete(std::string reason);
+    void fail(std::string stop_reason, std::string failure_reason);
     void set_promoted_model(std::string model);
     void set_project_pipeline(std::string project, std::string pipeline);
     void apply_value(StudyValue value);

@@ -179,7 +179,7 @@ TEST(Study, CostAndTrialBudgetsStopAdmissionAndReportTheReason) {
     zetta::ml::StudySpec spec = synthetic_spec(
         "cost-cap", zetta::ml::SamplerKind::Random,
         zetta::ml::PrunerKind::None, 10);
-    spec.budgets.cost_cap = 2.0;
+    spec.budgets.cost_cap = 120.0;
     const auto study = node.create_study(std::move(spec));
     ASSERT_TRUE(study);
     const auto result = zetta::ml::run_study(
@@ -187,10 +187,10 @@ TEST(Study, CostAndTrialBudgetsStopAdmissionAndReportTheReason) {
         [](const nlohmann::json&, std::uint64_t, const std::string&,
            const zetta::ml::TrialReporter&,
            const std::atomic<bool>&) {
-            return zetta::ml::TrialOutcome{.objective = 1.0, .cost = 1.0};
+            return zetta::ml::TrialOutcome{.objective = 1.0, .cost = 60.0};
         });
     EXPECT_EQ(result.launched, 2u);
-    EXPECT_EQ(study->value().spent_cost, 2.0);
+    EXPECT_EQ(study->value().spent_cost, 120.0);
     EXPECT_EQ(study->status(), zetta::ml::StudyStatus::Stopped);
     EXPECT_EQ(result.stop_reason, "cost cap reached");
     node.stop();

@@ -616,6 +616,10 @@ StudyValidation validate_and_normalize_study(const nlohmann::json& input,
     if (!zetta::ml::validate_study_spec(*spec, &reason)) {
         return validation_failure("invalid_input", std::move(reason));
     }
+    if (!zetta::ml::validate_study_data(context.node, *spec, &reason)) {
+        return validation_failure("invalid_input", std::move(reason),
+                                  "/dataset");
+    }
     StudyValidation result;
     result.spec = std::move(spec);
     return result;

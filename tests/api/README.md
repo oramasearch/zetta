@@ -30,6 +30,10 @@ cost stop reasons without admitting excess trials (#1205).
 It also checks that `validate_study` and `create_study` accept and reject the
 same table of candidates, and that a Study spec assembled from the published
 M-1 search space validates over registry, REST, MCP, and OpenAPI parity (#1207).
+Monthly server data with repeated text ids proves dataset trials train and
+validate on all 12,000 rows with AUC above 0.7. A last-month-only positive class
+is rejected before admission, and a cap below the first reservation launches no
+trial (#1209).
 The S-1 solution journey also runs CL-1 and CL-4 over text customer identifiers,
 ISO observation times and boolean labels, checking decision tables, ledger rows
 and webhook payloads (#957).

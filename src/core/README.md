@@ -16,6 +16,9 @@ Study reconciliation selects one replicated owner to run real M-1 trial graphs
 on background schedulers. Owner-thread handoffs persist Runs, curves, budgets,
 restart recovery, terminal events, and actual model promotion; deletion still
 tombstones non-promoted trials while retaining promoted lineage (#1158, #1205).
+Dataset trials keep all point-in-time rows after contract inference, temporal
+class preflight records a failed data status before admission, and trial-second
+reservations keep new batches within their cost cap (#1209).
 Automatic Run gauges allocate increasing steps per metric on the owner thread;
 caller metrics remain strict, and live batches report the stored steps. See
 [Run metrics](../../docs/ml/run-metrics.md) (#1205).

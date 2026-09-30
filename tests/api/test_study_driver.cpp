@@ -56,6 +56,27 @@ std::vector<Json> churn_rows(std::size_t count) {
     return rows;
 }
 
+std::vector<Json> monthly_churn_rows(bool positives_only_in_last_month) {
+    std::vector<Json> rows;
+    rows.reserve(12000);
+    for (std::size_t month = 1; month <= 6; ++month) {
+        for (std::size_t customer = 0; customer < 2000; ++customer) {
+            const bool positive_customer = customer % 6 == 0;
+            const bool positive = positive_customer &&
+                                  (!positives_only_in_last_month || month == 6);
+            std::string observed_at = "2026-0" + std::to_string(month) +
+                                      "-01T00:00:00Z";
+            rows.push_back(
+                {{"customer_id", "customer-" + std::to_string(customer)},
+                 {"observed_at", std::move(observed_at)},
+                 {"usage", positive_customer ? 4.0 : 90.0},
+                 {"complaints", positive_customer ? 9.0 : 0.0},
+                 {"churned", positive ? 1 : 0}});
+        }
+    }
+    return rows;
+}
+
 Json integer_parameter(std::string name, int minimum, int maximum,
                        int step) {
     maximum = std::max(maximum, minimum + 1);
@@ -157,6 +178,18 @@ protected:
         ApiContext context{node, &cluster, {}, {}, &node.span_recorder(),
                            &background};
         return registry.call(name, input, context);
+    }
+
+    void land_table(std::string table, std::vector<Json> rows) {
+        zetta::data::AddDatasetOptions options;
+        options.database = "study_data";
+        options.table_name = std::move(table);
+        options.partitioned = true;
+        options.members = {node.node_id()};
+        const zetta::data::AddDatasetResult added =
+            zetta::data::add_dataset_rows(node, std::move(rows), options);
+        ASSERT_TRUE(added.ok()) << added.error;
+        ASSERT_TRUE(added.table);
     }
 
     bool pump_until(const std::function<bool()>& ready,
@@ -356,7 +389,7 @@ TEST_F(StudyDriverJourney, WallAndCostBudgetsStopAdmission) {
     EXPECT_EQ(wall_run->status(), zetta::pipeline::RunStatus::Failed);
 
     Json cost_input = study_input("cost budget", 3, 4, 4);
-    cost_input["budgets"]["cost_cap"] = 0.0005;
+    cost_input["budgets"]["cost_cap"] = 59.0;
     const ApiResult cost_created = call("create_study", cost_input);
     ASSERT_TRUE(cost_created.ok) << cost_created.error.message;
     const std::string cost_study_id = cost_created.value.at("id");
@@ -367,8 +400,99 @@ TEST_F(StudyDriverJourney, WallAndCostBudgetsStopAdmission) {
     const auto cost_study = node.find_study(cost_study_id);
     ASSERT_TRUE(cost_study);
     EXPECT_EQ(cost_study->value().stop_reason, "budget");
-    ASSERT_EQ(cost_study->value().trials.size(), 1u);
-    EXPECT_GE(cost_study->value().spent_cost, 0.001);
+    EXPECT_TRUE(cost_study->value().trials.empty());
+    EXPECT_EQ(cost_study->value().spent_cost, 0.0);
+    EXPECT_LE(cost_study->value().spent_cost,
+              cost_study->spec().budgets.cost_cap);
+}
+
+TEST_F(StudyDriverJourney, RejectsAnUnlearnableOutOfTimeSplitBeforeTrials) {
+    land_table("last_month_churn", monthly_churn_rows(true));
+    Json input = study_input("unlearnable split", 4, 4, 6);
+    input["dataset"] = "study_data.last_month_churn";
+    input["budgets"]["max_parallel_trials"] = 2;
+    input["budgets"]["cost_cap"] = 300.0;
+
+    const ApiResult validated = call("validate_study", input);
+    ASSERT_TRUE(validated.ok) << validated.error.message;
+    EXPECT_FALSE(validated.value.at("valid").get<bool>());
+    EXPECT_EQ(validated.value.at("path"), "/dataset");
+    EXPECT_NE(validated.value.at("reason").get<std::string>().find(
+                  "out-of-time training split has 0 positive labels"),
+              std::string::npos);
+    EXPECT_NE(validated.value.at("reason").get<std::string>().find(
+                  "positives only appear after 2026-06-01T00:00:00Z"),
+              std::string::npos);
+
+    zetta::ml::StudySpec spec;
+    spec.name = "driver preflight failure";
+    spec.dataset = "study_data.last_month_churn";
+    spec.methodology = "M-1";
+    spec.objective.metric = "validation.auc";
+    spec.objective.direction = zetta::ml::StudyDirection::Maximize;
+    spec.objective.validation_split = "validation";
+    zetta::ml::StudyParameter trees;
+    trees.name = "gbdt.num_trees";
+    trees.kind = zetta::ml::ParameterKind::Integer;
+    trees.minimum = 4.0;
+    trees.maximum = 6.0;
+    trees.step = 2.0;
+    spec.search_space = {std::move(trees)};
+    spec.sampler = zetta::ml::SamplerKind::Grid;
+    spec.pruner = zetta::ml::PrunerKind::None;
+    spec.budgets.max_trials = 4;
+    spec.budgets.max_parallel_trials = 2;
+    spec.budgets.cost_cap = 300.0;
+    spec.seed = 1209;
+    const auto study = node.create_study(std::move(spec));
+    ASSERT_TRUE(study);
+    ASSERT_TRUE(pump_until([&] {
+        return study->status() == zetta::ml::StudyStatus::Failed;
+    }));
+    EXPECT_EQ(study->value().stop_reason, "data");
+    EXPECT_TRUE(study->value().trials.empty());
+    EXPECT_NE(study->value().failure_reason.find(
+                  "out-of-time training split has 0 positive labels"),
+              std::string::npos);
+}
+
+TEST_F(StudyDriverJourney, LearnableMonthlyStudyUsesTheFullTable) {
+    land_table("monthly_churn", monthly_churn_rows(false));
+    Json input = study_input("learnable monthly study", 2, 8, 10);
+    input["dataset"] = "study_data.monthly_churn";
+    input["budgets"]["max_parallel_trials"] = 2;
+    input["budgets"]["cost_cap"] = 300.0;
+
+    const ApiResult validated = call("validate_study", input);
+    ASSERT_TRUE(validated.ok) << validated.error.message;
+    ASSERT_TRUE(validated.value.at("valid").get<bool>())
+        << validated.value.at("reason");
+    const ApiResult created = call("create_study", input);
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string study_id = created.value.at("id");
+    ASSERT_TRUE(pump_until([&] {
+        const auto study = node.find_study(study_id);
+        return study && study->status() == zetta::ml::StudyStatus::Complete;
+    }));
+
+    const auto study = node.find_study(study_id);
+    ASSERT_TRUE(study);
+    ASSERT_EQ(study->value().trials.size(), 2u);
+    EXPECT_LE(study->value().spent_cost, study->spec().budgets.cost_cap);
+    for (const zetta::ml::StudyTrial& trial : study->value().trials) {
+        ASSERT_EQ(trial.state, zetta::ml::TrialState::Complete)
+            << trial.reason;
+        ASSERT_TRUE(trial.objective.has_value());
+        EXPECT_GT(*trial.objective, 0.7);
+        const auto model = node.find_model(trial.model);
+        ASSERT_TRUE(model);
+        const Json metrics = model->metrics();
+        EXPECT_EQ(metrics.at("dataset_rows"), 12000.0);
+        EXPECT_EQ(metrics.at("in_sample_rows").get<double>() +
+                      metrics.at("held_out_rows").get<double>(),
+                  12000.0);
+        EXPECT_GT(metrics.at("held_out_auc").get<double>(), 0.7);
+    }
 }
 
 TEST_F(StudyDriverJourney, CreateRejectsUnknownParametersAndUnsupportedMethods) {
