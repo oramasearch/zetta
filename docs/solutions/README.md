@@ -7,6 +7,9 @@ and policy decisions to actions and measured outcomes.
 Executable composition forwards a snapshot's ISO-or-epoch `time_column` and
 `as_of` roles to every methodology that declares time input, without requiring
 duplicate per-methodology configuration (#1199).
+Single-table solutions with a declared entity role use keyed M-2, preserve that
+identifier through downstream outputs and decisions, and derive decision-source
+columns from the composed dataset and M-1 output contracts (#1204).
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
 S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-8. This is the scope of
@@ -21,9 +24,9 @@ The workspace integration routes projected solution records through the engine's
 [incremental reconciliation](../cluster/solution-reconciliation.md), with
 one-tick checks for all added catalog families and existing table-backed state.
 
-- [S-1.md](S-1.md) — runnable churn and retention module: data roles,
-  levels, policy and holdout defaults, action payloads, run sequence, and every
-  domain refusal (#1110).
+- [S-1.md](S-1.md) — runnable churn and retention module: data roles, keyed or
+  fuzzy entity resolution, levels, policy and holdout defaults, action payloads,
+  run sequence, and every domain refusal (#1110, #1204).
 - [S-2.md](S-2.md) — runnable lead and opportunity scoring module: conversion
   labels, capacity-aware CRM queues, SLAs, holdout, and planted-effect proof
   (#1111).

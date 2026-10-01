@@ -26,3 +26,8 @@ Text entity keys and boolean predictors are represented in the generated scoring
 prediction, Run, and methodology-launch contracts (#957). Their dataset-scoped
 mapping and original-value outputs are documented in
 [dataset paths](../docs/data/dataset-path.md).
+
+The generated `entity_resolution_launch` contract carries the selected fuzzy or
+keyed mode and, for keyed runs, the entity column and source table used to retain
+the dataset's original identifiers. See
+[entity resolution](../docs/ml/entity_resolution.md).

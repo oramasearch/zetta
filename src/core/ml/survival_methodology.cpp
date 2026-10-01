@@ -35,11 +35,21 @@ bool survival_owns(const ir::ExecutionGraph& graph) {
 }
 
 ir::ExecutionGraph build_survival_shape(const ShapeRequest& request) {
+    const bool dataset_contract_binding = request.solution == "S-1";
     const std::string source = request.hints.value("source", "datasets");
     const std::string table = request.hints.value("table", "survival_subjects");
     const std::string duration =
         request.hints.value("duration_column", "duration");
-    const std::string event = request.hints.value("event_indicator", "event");
+    const std::string event = dataset_contract_binding
+        ? request.hints.value(
+              "event_indicator",
+              request.hints.value("label_column", std::string("event")))
+        : request.hints.value("event_indicator", std::string("event"));
+    const std::string entity = request.hints.value(
+        "entity_column", std::string("entity"));
+    const std::string feature_time = request.hints.value(
+        "feature_time_column",
+        request.hints.value("time_column", std::string("feature_time")));
 
     ir::ExecutionGraph graph;
     graph.add_node(
@@ -57,8 +67,11 @@ ir::ExecutionGraph build_survival_shape(const ShapeRequest& request) {
         ir::StepKind::Model, "Train discrete-time hazards",
         nlohmann::json{
             {"model_kind", "survival"},
+            {"entity_column", entity},
             {"duration_column", duration},
             {"event_indicator", event},
+            {"feature_time_column", feature_time},
+            {"dataset_contract_binding", dataset_contract_binding},
             {"censoring_handled", true},
             {"stop_after_event", true},
             {"point_in_time_features", true},
@@ -155,10 +168,26 @@ api::ApiResult run_survival_methodology(RunRequest& request) {
     params.project = request.project->id();
     params.graph = request.graph->id();
     params.model_name = request.input.value("model_name", params.model_name);
-    params.duration_column =
-        request.input.value("duration_column", params.duration_column);
-    params.feature_time_column =
-        request.input.value("feature_time_column", params.feature_time_column);
+    const std::vector<std::shared_ptr<ir::Node>> models =
+        request.graph->graph().nodes_of_kind(ir::StepKind::Model);
+    const ir::Node* model = models.empty() ? nullptr : models.front().get();
+    const bool dataset_contract_binding =
+        model != nullptr &&
+        model->attributes.value("dataset_contract_binding", false);
+    const std::string duration_column =
+        dataset_contract_binding
+            ? model->attributes.value("duration_column",
+                                      params.duration_column)
+            : params.duration_column;
+    const std::string feature_time_column =
+        dataset_contract_binding
+            ? model->attributes.value("feature_time_column",
+                                      params.feature_time_column)
+            : params.feature_time_column;
+    params.duration_column = request.input.value(
+        "duration_column", duration_column);
+    params.feature_time_column = request.input.value(
+        "feature_time_column", feature_time_column);
     params.training.interval_width =
         request.input.value("interval_width", params.training.interval_width);
     params.training.max_intervals =

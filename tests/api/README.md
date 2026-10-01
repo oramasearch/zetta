@@ -34,7 +34,9 @@ Monthly server data with repeated text ids proves dataset trials train and
 validate on all 12,000 rows with AUC above 0.7. A last-month-only positive class
 is rejected before admission, and a cap below the first reservation launches no
 trial (#1209).
-The S-1 solution journey also runs CL-1 and CL-4 over text customer identifiers,
-ISO observation times and boolean labels, checking decision tables, ledger rows
-and webhook payloads (#957).
+The S-1 live-shape journey runs CL-1 and CL-4 over 12,000 single-table rows with
+text customer identifiers, ISO observation times, and 0/1 flags. It verifies
+keyed M-2 output, dataset-derived downstream joins, holdouts, decision tables,
+ledger rows, ROI, and webhook payloads; an unmatchable multi-source fixture is
+refused during confirmation with its missing identity columns (#957, #1204).
 See [CRUD verification](../../docs/pubsub/crud.md#verification).

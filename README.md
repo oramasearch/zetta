@@ -106,6 +106,9 @@ What's inside, by domain (each links to that domain's docs):
   **native correctness oracle** (no Python/XGBoost anywhere).
   [M-3 segmentation](docs/ml/segmentation.md) runs from customer-table intents,
   producing entity assignments, descriptive segment profiles and separation metrics.
+  [M-2 entity resolution](docs/ml/entity_resolution.md) uses declared keys for
+  single-source tables and retains distributed fuzzy matching for multi-source
+  identity data.
   The native [forecast runner](docs/ml/forecast.md) adds temporal backtests,
   seasonal-naive comparisons, and forecast tables with prediction intervals;
   M-4 runs on the pipeline's own table through the methodology registry and
@@ -137,7 +140,8 @@ What's inside, by domain (each links to that domain's docs):
   modules. Selected levels execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
-  S-1 is runnable at all four levels with eight named domain refusals,
+  S-1 is runnable at all four levels with keyed single-table entity propagation,
+  confirm-time fuzzy-input refusals, eight named domain refusals,
   top-three reason codes, risk × value × driver cells, governed CRM/journey
   delivery, tier holdouts, driver reports, uplift no-contact targeting, and ROI
   readout. S-2 is runnable at all four levels with point-in-time conversion

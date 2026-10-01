@@ -1453,17 +1453,31 @@ CheckResult S1EntityResolutionCheck::evaluate(
     }
     const json* entity = object_field(*profile, "entity_resolution");
     const ir::Node* resolver = model_kind(graph, "entity_resolution");
+    const std::string mode =
+        entity == nullptr
+            ? std::string{}
+            : entity->value("mode", std::string("fuzzy"));
+    const std::string duplicate_policy =
+        entity == nullptr
+            ? std::string{}
+            : entity->value("duplicate_policy", std::string{});
     if (entity == nullptr ||
         entity->value("methodology", std::string{}) != "M-2" ||
         entity->value("actionable_unit", std::string{}).empty() ||
-        entity->value("duplicate_policy", std::string{}) != "refuse" ||
-        resolver == nullptr) {
+        resolver == nullptr ||
+        resolver->attributes.value("resolution_mode", std::string{}) != mode ||
+        (mode == "keyed" &&
+         duplicate_policy != "collapse_repeated_observations") ||
+        (mode == "fuzzy" && duplicate_policy != "refuse")) {
         return s1_failure(
-            name(), "S-1 requires M-2 to resolve a named actionable unit and "
-                    "must refuse duplicate entities");
+            name(), "S-1 requires M-2 keyed or fuzzy mode for a named "
+                    "actionable unit with the matching duplicate policy");
     }
-    return s1_success(name(),
-                      "M-2 resolves one duplicate-free actionable entity");
+    return s1_success(
+        name(), mode == "keyed"
+                    ? "M-2 keyed mode keeps one entity per declared key and "
+                      "collapses repeated observations"
+                    : "M-2 fuzzy mode resolves one conflict-safe actionable entity");
 }
 
 CheckResult S1LeakageReviewCheck::evaluate(
@@ -5431,6 +5445,28 @@ CheckResult EntityResolutionGraphCheck::evaluate(
             continue;
         }
 
+        const std::string mode =
+            node->attributes.value("resolution_mode", std::string("fuzzy"));
+        if (mode == "keyed") {
+            const auto entity_column =
+                node->attributes.find("entity_column");
+            if (entity_column == node->attributes.end() ||
+                !entity_column->is_string() ||
+                entity_column->get_ref<const std::string&>().empty()) {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": keyed entity resolution must name entity_column"};
+            }
+            continue;
+        }
+        if (mode != "fuzzy") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": resolution_mode must be keyed or fuzzy"};
+        }
+
         const auto blocking = node->attributes.find("blocking_keys");
         if (blocking == node->attributes.end() || !blocking->is_array() ||
             blocking->empty()) {
@@ -5471,8 +5507,8 @@ CheckResult EntityResolutionGraphCheck::evaluate(
     }
     return CheckResult{
         name(), CheckStatus::Pass,
-        "every entity-resolution model states safe blocking, thresholds, and "
-        "conflict handling"};
+        "every entity-resolution model states keyed identity or safe fuzzy "
+        "blocking, thresholds, and conflict handling"};
 }
 
 CheckResult SurvivalCensoringCheck::evaluate(

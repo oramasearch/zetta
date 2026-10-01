@@ -94,6 +94,38 @@ TEST(DecisionPolicy, EnforcesExclusionsAndContactAndFrequencyCaps) {
     EXPECT_EQ(frequency_capped->reasons.front(), "frequency cap reached");
 }
 
+TEST(DecisionPolicy, DecisionBatchPreservesFrequencyAndBudgetConstraints) {
+    ReplicationManager replication{zetta::util::new_uuid()};
+    DecisionPolicyStore store{replication};
+    Json config = policy_config();
+    config["budget"]["limit"] = 25.0;
+    config.erase("tunable_bounds");
+    std::string error;
+    const auto policy =
+        store.create("batched-retention", std::move(config), "owner", &error);
+    ASSERT_TRUE(policy) << error;
+    ASSERT_TRUE(store.begin_decision_batch(policy->id, &error)) << error;
+
+    const auto first =
+        store.decide(policy->id, entity("same"), "agent", &error);
+    ASSERT_TRUE(first) << error;
+    EXPECT_TRUE(first->actionable);
+    const auto second =
+        store.decide(policy->id, entity("same"), "agent", &error);
+    ASSERT_TRUE(second) << error;
+    EXPECT_TRUE(second->actionable);
+    const auto frequency_block =
+        store.decide(policy->id, entity("same"), "agent", &error);
+    ASSERT_TRUE(frequency_block) << error;
+    EXPECT_EQ(frequency_block->reasons.front(), "frequency cap reached");
+    const auto budget_block =
+        store.decide(policy->id, entity("different"), "agent", &error);
+    ASSERT_TRUE(budget_block) << error;
+    EXPECT_EQ(budget_block->reasons.front(), "budget exhausted");
+
+    store.end_decision_batch();
+}
+
 TEST(DecisionPolicy, RetentionTemplateEnforcesActionAuthorityAndRecordedMonthlyCaps) {
     ReplicationManager replication{zetta::util::new_uuid()};
     DecisionPolicyStore store{replication};

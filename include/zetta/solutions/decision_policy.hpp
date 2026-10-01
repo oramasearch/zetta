@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -118,6 +119,10 @@ public:
         nlohmann::json entity,
         std::string actor,
         std::string* error = nullptr);
+    bool begin_decision_batch(
+        const std::string& policy_id,
+        std::string* error = nullptr);
+    void end_decision_batch();
     std::optional<DecisionRecord> get_decision(
         const std::string& decision_id) const;
     std::vector<DecisionRecord> decisions() const;
@@ -133,9 +138,17 @@ public:
         const DecisionRecord& decision) const;
 
 private:
+    struct DecisionBatchState {
+        DecisionPolicy policy;
+        nlohmann::json baseline = nlohmann::json::object();
+        double committed_spend = 0.0;
+        std::map<std::string, std::size_t> contacts;
+    };
+
     zetta::cluster::ReplicationManager& replication_;
     zetta::governance::AuditSink* audit_;
     ExperimentManager* experiment_manager_;
+    std::optional<DecisionBatchState> decision_batch_;
 };
 
 struct BatchDecisionOptions {

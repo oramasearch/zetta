@@ -78,6 +78,93 @@ std::shared_ptr<data::Table> table_at(Node& node, const std::string& path) {
     return database ? database->find_table(path.substr(split + 1)) : nullptr;
 }
 
+std::optional<Json> methodology_decision_source(
+    const ir::ExecutionGraph& graph, std::string_view methodology) {
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (!node || !node->attributes.is_object() ||
+            node->attributes.value("methodology", std::string{}) !=
+                methodology ||
+            !node->attributes.contains("entity_output_column") ||
+            !node->attributes.contains("score_output_column")) {
+            continue;
+        }
+        Json source = {
+            {"methodology", methodology},
+            {"entity_column", node->attributes.at("entity_output_column")},
+            {"score_column", node->attributes.at("score_output_column")},
+            {"output_name", node->name}};
+        return source;
+    }
+    return std::nullopt;
+}
+
+std::string validate_entity_resolution_columns(
+    Node& node, const SnapshotSpec& snapshot,
+    const ir::ExecutionGraph& graph) {
+    const std::vector<std::shared_ptr<ir::Node>> models =
+        graph.nodes_of_kind(ir::StepKind::Model);
+    const auto resolver = std::ranges::find_if(
+        models, [](const std::shared_ptr<ir::Node>& node) {
+            return node &&
+                   node->attributes.value("model_kind", std::string{}) ==
+                       "entity_resolution";
+        });
+    if (resolver == models.end()) {
+        return {};
+    }
+    std::vector<std::string> columns;
+    for (const data::DatasetSummary& dataset : node.datasets()) {
+        if (dataset.database == snapshot.database &&
+            dataset.name == snapshot.source_table) {
+            columns = dataset.columns;
+            break;
+        }
+    }
+    if (columns.empty()) {
+        return {};
+    }
+    const auto has_column = [&columns](std::string_view name) {
+        return std::ranges::find(columns, name) != columns.end();
+    };
+    const std::string mode =
+        (*resolver)->attributes.value("resolution_mode", std::string("fuzzy"));
+    if (mode == "keyed") {
+        const std::string entity_column =
+            (*resolver)->attributes.value("entity_column", std::string{});
+        if (!entity_column.empty() &&
+            (has_column(entity_column) ||
+             has_column(snapshot.entity_column))) {
+            return {};
+        }
+        return "M-2 keyed mode requires the declared entity column '" +
+               entity_column + "'";
+    }
+
+    std::vector<std::string> missing;
+    for (const std::string required : {"source", "record_id"}) {
+        if (!has_column(required)) {
+            missing.push_back(required);
+        }
+    }
+    const std::vector<std::string> evidence = {
+        "name", "email", "phone", "address"};
+    if (!std::ranges::any_of(evidence, has_column)) {
+        missing.insert(missing.end(), evidence.begin(), evidence.end());
+    }
+    if (missing.empty()) {
+        return {};
+    }
+    std::string listed;
+    for (const std::string& column : missing) {
+        if (!listed.empty()) {
+            listed += ", ";
+        }
+        listed += column;
+    }
+    return "M-2 fuzzy mode requires source, record_id, and at least one of "
+           "name, email, phone, address; missing columns: " + listed;
+}
+
 Json create_bindings(Node& node, const pipeline::Project& project,
                      const ml::Solution& solution, const std::string& name,
                      const Json& policy_config, const Json& settings,
@@ -198,6 +285,21 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
     const Json default_blocklist = {
         "churned", "churn_date", "cancellation_reason",
         "retention_outcome", "post_churn_status"};
+    std::string entity_resolution_mode = "fuzzy";
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (model &&
+            model->attributes.value("model_kind", std::string{}) ==
+                "entity_resolution") {
+            entity_resolution_mode = model->attributes.value(
+                "resolution_mode", std::string("fuzzy"));
+            break;
+        }
+    }
+    const std::string duplicate_policy =
+        entity_resolution_mode == "keyed"
+            ? "collapse_repeated_observations"
+            : "refuse";
     Json profile = {
         {"prediction_time", snapshot.as_of},
         {"feature_window_end", feature_window_end},
@@ -220,10 +322,11 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
            common.value("calibration_disjoint", true)}}},
         {"entity_resolution",
          {{"methodology", "M-2"},
+          {"mode", entity_resolution_mode},
           {"actionable_unit",
            settings.at("dataset").value("entity_column", std::string{})},
           {"duplicate_policy",
-           common.value("duplicate_policy", "refuse")}}},
+           common.value("duplicate_policy", duplicate_policy)}}},
         {"leaky_feature_blocklist",
          common.value("leaky_feature_blocklist", default_blocklist)},
         {"feature_names",
@@ -1472,13 +1575,20 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         return ApiResult::failure("invalid_input", error);
     }
     auto composed = ml::compose_solution(*solution, level, input.at("sources"),
-                                         snapshot->to_json());
+                                         snapshot->to_json(),
+                                         settings.at("dataset"));
     if (!composed.ok()) {
         return ApiResult::failure("not_supported", composed.error);
     }
     const auto database = context.node.find_database(snapshot->database);
     if (!database || !database->find_table(snapshot->source_table)) {
         return ApiResult::failure("not_found", "snapshot source table does not exist");
+    }
+    const std::string entity_resolution_error =
+        validate_entity_resolution_columns(context.node, *snapshot,
+                                           composed.graph);
+    if (!entity_resolution_error.empty()) {
+        return ApiResult::failure("invalid_input", entity_resolution_error);
     }
     bind_sources(composed.graph, *snapshot);
     bind_s1_correctness(composed.graph, *snapshot, settings,
@@ -1557,6 +1667,30 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         return ApiResult::failure("engine_error", error);
     }
     binding["level"] = level;
+    if (binding.contains("decision_source")) {
+        const std::string methodology =
+            binding.at("decision_source").at("methodology");
+        if (methodology == "M-3" || methodology == "M-5" ||
+            methodology == "M-6") {
+            binding["decision_source"]["entity_column"] =
+                settings.at("dataset").at("entity_column");
+        }
+    }
+    if (!binding.contains("decision_source")) {
+        const auto primary_methodology = std::ranges::find_if(
+            solution->composition,
+            [](const ml::SolutionMethodology& entry) {
+                return entry.role == "primary";
+            });
+        if (primary_methodology != solution->composition.end() &&
+            primary_methodology->id == "M-1") {
+            const std::optional<Json> source = methodology_decision_source(
+                composed.graph, primary_methodology->id);
+            if (source) {
+                binding["decision_source"] = *source;
+            }
+        }
+    }
     if (!binding.contains("decision_source") && solution->id == "S-3") {
         binding["decision_source"] = {
             {"methodology", "M-1"},
@@ -2180,6 +2314,8 @@ std::optional<std::map<std::string, Json>> uplift_rows(
     const int minimum_level = solution_id == "B-1" ? 1
                               : solution_id == "S-9" ? 2
                                                       : 3;
+    const std::string entity_column =
+        binding.at("dataset").at("entity_column");
     if ((solution_id != "S-1" && solution_id != "S-3" && solution_id != "S-4" &&
          solution_id != "S-9" && solution_id != "B-1") ||
         binding.value("level", 1) < minimum_level) {
@@ -2199,7 +2335,7 @@ std::optional<std::map<std::string, Json>> uplift_rows(
             return std::nullopt;
         }
         for (const Json& row : *rows) {
-            if (!row.contains("entity") ||
+            if (!row.contains(entity_column) ||
                 !row.contains("estimated_uplift") ||
                 !row.at("estimated_uplift").is_number() ||
                 !row.contains("recommended") ||
@@ -2207,7 +2343,7 @@ std::optional<std::map<std::string, Json>> uplift_rows(
                 error = solution_id + " treatment effects have an invalid row";
                 return std::nullopt;
             }
-            targeting[entity_key(row.at("entity"))] = row;
+            targeting[entity_key(row.at(entity_column))] = row;
         }
         return targeting;
     }
@@ -3352,6 +3488,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             break;
         }
     }
+    std::string decision_batch_error;
+    if (!policies.begin_decision_batch(policy->id, &decision_batch_error)) {
+        return ApiResult::failure("engine_error", decision_batch_error);
+    }
     for (Json& entity : entities) {
         std::string error;
         if (binding.value("solution", std::string{}) == "S-11") {
@@ -3628,6 +3768,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                                        {"driver", driver}};
         }
         Json decision_row = to_json(*decision);
+        decision_row[binding.at("dataset").at("entity_column")]
+            = entity.at("entity_id");
         decision_row["decision_cell"] = entity.at("decision_cell");
         decision_row["reason_codes"] =
             entity.value("reason_codes", Json::array());
@@ -3988,6 +4130,7 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 entity.value("maintenance_capacity_utilization", 0.0));
         }
     }
+    policies.end_decision_batch();
     double cost = 0.0;
     std::map<std::string, std::size_t> monthly_contacts;
     const std::string month_start = util::iso8601_seconds_ago(30LL * 86400);

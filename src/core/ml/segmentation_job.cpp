@@ -427,8 +427,9 @@ bool materialize_outputs(Node &node,
     for (const SegmentAssignment &assignment :
          output.segmentation.assignments) {
         assignments->add_row(
-            {{"entity", zetta::data::entity_output(
-                            dataset.contract, assignment.entity)},
+            {{dataset.contract.entity_column,
+              zetta::data::entity_output(
+                  dataset.contract, assignment.entity)},
              {"segment_id", assignment.segment_id},
              {"distance_to_center", assignment.distance_to_center}});
     }

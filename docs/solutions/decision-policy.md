@@ -87,6 +87,12 @@ deciding concurrently can each act on a partial merged view. Workloads requiring
 a strict cluster-wide spending ledger must route a policy's decisions through one
 writer until a scoped consensus primitive exists.
 
+Solution Runs evaluate their decision rows as one owner-thread batch. The batch
+reads the policy and previously committed decisions once, then carries budget and
+per-entity contact counts forward after each durable decision. This preserves the
+same sequential constraints without copying and rescanning all earlier rows for
+every entity. Request-time calls continue to read the latest replicated state.
+
 ## Autonomy and approval
 
 | Class | Decision result |

@@ -61,8 +61,12 @@ ir::ExecutionGraph build_m6_shape(const ShapeRequest &request) {
       hint_string(request.hints, "table", "uplift_population");
   const std::string treatment =
       hint_string(request.hints, "treatment", "treatment");
-  const std::string outcome = hint_string(request.hints, "outcome", "outcome");
-  const std::string entity = hint_string(request.hints, "entity", "entity");
+  const std::string outcome = hint_string(
+      request.hints, "outcome",
+      hint_string(request.hints, "label_column", "outcome"));
+  const std::string entity = hint_string(
+      request.hints, "entity",
+      hint_string(request.hints, "entity_column", "entity"));
 
   nlohmann::json model = {{"model_kind", "uplift"},
                           {"treatment", treatment},

@@ -1080,6 +1080,21 @@ EntityResolutionResult resolve_records(
             [](const EntityRecord &left, const EntityRecord &right) {
               return record_key(left) < record_key(right);
             });
+  if (params.mode == EntityResolutionMode::Keyed) {
+    records.erase(
+        std::unique(records.begin(), records.end(),
+                    [](const EntityRecord &left, const EntityRecord &right) {
+                      return record_key(left) == record_key(right);
+                    }),
+        records.end());
+    result.scoring_method = "declared_entity_key";
+    result.entities.reserve(records.size());
+    for (const EntityRecord &record : records) {
+      result.entities.push_back(
+          {record.source, record.record_id, record.record_id, 1.0});
+    }
+    return result;
+  }
   const auto duplicate = std::adjacent_find(
       records.begin(), records.end(),
       [](const EntityRecord &left, const EntityRecord &right) {
@@ -1232,6 +1247,16 @@ std::string_view to_string(MatchBand band) {
   return "non_match";
 }
 
+std::string_view to_string(EntityResolutionMode mode) {
+  switch (mode) {
+  case EntityResolutionMode::Fuzzy:
+    return "fuzzy";
+  case EntityResolutionMode::Keyed:
+    return "keyed";
+  }
+  return "fuzzy";
+}
+
 std::string normalize_entity_text(std::string_view text) {
   std::string result;
   bool pending_space = false;
@@ -1376,8 +1401,13 @@ run_entity_resolution(Node &node, const data::ResolvedDataset &dataset,
   records.reserve(query.rows.size());
   for (const nlohmann::json &row : query.rows) {
     EntityRecord record;
-    record.source = text_cell(row, params.source_column);
-    record.record_id = text_cell(row, params.record_id_column);
+    if (params.mode == EntityResolutionMode::Keyed) {
+      record.source = params.keyed_source;
+      record.record_id = text_cell(row, params.keyed_entity_column);
+    } else {
+      record.source = text_cell(row, params.source_column);
+      record.record_id = text_cell(row, params.record_id_column);
+    }
     record.name = text_cell(row, params.name_column);
     record.address = text_cell(row, params.address_column);
     record.email = text_cell(row, params.email_column);

@@ -33,6 +33,9 @@ contains these configurable numeric columns:
 
 The logging-propensity column can be omitted only when offline policy evaluation is not required.
 The implementation never estimates or guesses a missing logging propensity.
+Value, cost, eligibility, contact-count, contact-cap, and interaction-count columns may also be
+declared as predictors. Entity, action, response-label, and interaction-time columns remain
+excluded from the feature set, and duplicate feature names are refused.
 
 ## Training and distribution
 

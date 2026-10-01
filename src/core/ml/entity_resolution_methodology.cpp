@@ -54,33 +54,65 @@ ir::ExecutionGraph build_m2_shape(const ShapeRequest &request) {
   ir::ExecutionGraph graph;
   const std::string source = hint_string(request, "source", "datasets");
   const std::string table = hint_string(request, "table", "records");
+  const std::string entity_column =
+      hint_string(request, "entity_column", "");
+  const auto sources = request.hints.find("sources");
+  const bool multiple_sources =
+      sources != request.hints.end() && sources->is_array() &&
+      sources->size() > 1;
+  const bool keyed = !request.solution.empty() &&
+                     !entity_column.empty() && !multiple_sources;
   graph.add_node(
       ir::StepKind::Connect, "Read records from every source",
       nlohmann::json{{"source", source},
                      {"table", table},
-                     {"required_columns", {"source", "record_id", "name"}}},
+                     {"required_columns",
+                      keyed ? nlohmann::json::array({entity_column})
+                            : nlohmann::json::array(
+                                  {"source", "record_id"})},
+                     {"resolution_mode", keyed ? "keyed" : "fuzzy"}},
       "read_records");
-  graph.add_node(ir::StepKind::Clean, "Normalize and block candidate pairs",
-                 nlohmann::json{{"normalization", "email_phone_name_address"},
-                                {"blocking_routes",
-                                 {"exact_email", "exact_phone", "sorted_name",
-                                  "minhash_lsh"}}},
-                 "block_pairs");
+  graph.add_node(
+      ir::StepKind::Clean,
+      keyed ? "Use declared entity key" : "Normalize and block candidate pairs",
+      keyed
+          ? nlohmann::json{{"resolution_mode", "keyed"},
+                           {"entity_column", entity_column},
+                           {"duplicate_rows", "collapse_observations"}}
+          : nlohmann::json{{"resolution_mode", "fuzzy"},
+                           {"normalization", "email_phone_name_address"},
+                           {"blocking_routes",
+                            {"exact_email", "exact_phone", "sorted_name",
+                             "minhash_lsh"}}},
+      "block_pairs");
   graph.add_node(
       ir::StepKind::Model, "Score entity matches",
-      nlohmann::json{
-          {"model_kind", "entity_resolution"},
-          {"scorer", "fellegi_sunter_em"},
-          {"label_column", "truth_entity"},
-          {"blocking_keys", {"email", "phone", "name", "address"}},
-          {"match_threshold", 0.82},
-          {"review_threshold", 0.55},
-          {"conflict_policy", "reject_verified_identifier_conflicts"}},
+      keyed
+          ? nlohmann::json{{"model_kind", "entity_resolution"},
+                           {"resolution_mode", "keyed"},
+                           {"entity_column", entity_column},
+                           {"scorer", "declared_entity_key"}}
+          : nlohmann::json{
+                {"model_kind", "entity_resolution"},
+                {"resolution_mode", "fuzzy"},
+                {"scorer", "fellegi_sunter_em"},
+                {"label_column", "truth_entity"},
+                {"blocking_keys", {"email", "phone", "name", "address"}},
+                {"match_threshold", 0.82},
+                {"review_threshold", 0.55},
+                {"conflict_policy", "reject_verified_identifier_conflicts"}},
       "score_pairs");
   graph.add_node(
-      ir::StepKind::Clean, "Cluster conflict-safe entities",
-      nlohmann::json{{"hard_keys", {"verified_email", "verified_phone"}},
-                     {"transitive_conflicts", "reject"}},
+      ir::StepKind::Clean,
+      keyed ? "Keep one resolved entity per declared key"
+            : "Cluster conflict-safe entities",
+      keyed
+          ? nlohmann::json{{"resolution_mode", "keyed"},
+                           {"entity_column", entity_column}}
+          : nlohmann::json{
+                {"resolution_mode", "fuzzy"},
+                {"hard_keys", {"verified_email", "verified_phone"}},
+                {"transitive_conflicts", "reject"}},
       "cluster_entities");
   graph.add_node(
       ir::StepKind::Serve, "Write resolution tables",
@@ -110,6 +142,19 @@ std::optional<std::string> graph_dataset_path(const ir::ExecutionGraph &graph) {
 
 EntityResolutionParams graph_params(const ir::ExecutionGraph &graph) {
   EntityResolutionParams params;
+  for (const auto &node : graph.nodes_of_kind(ir::StepKind::Connect)) {
+    if (!node || !node->attributes.is_object()) {
+      continue;
+    }
+    const std::string source =
+        node->attributes.value("source", std::string{});
+    const std::string table =
+        node->attributes.value("table", std::string{});
+    if (!source.empty() && !table.empty()) {
+      params.keyed_source = source + "." + table;
+      break;
+    }
+  }
   for (const auto &node : graph.nodes()) {
     if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) {
       continue;
@@ -125,6 +170,11 @@ EntityResolutionParams graph_params(const ir::ExecutionGraph &graph) {
     if (const auto value = node->attributes.find("one_record_per_source");
         value != node->attributes.end() && value->is_boolean()) {
       params.one_record_per_source = value->get<bool>();
+    }
+    if (node->attributes.value("resolution_mode", std::string{}) == "keyed") {
+      params.mode = EntityResolutionMode::Keyed;
+      params.keyed_entity_column =
+          node->attributes.value("entity_column", std::string{});
     }
   }
   return params;
@@ -162,6 +212,9 @@ nlohmann::json params_json(const EntityResolutionParams &params) {
           {"match_threshold", params.match_threshold},
           {"review_threshold", params.review_threshold},
           {"one_record_per_source", params.one_record_per_source},
+          {"mode", to_string(params.mode)},
+          {"keyed_entity_column", params.keyed_entity_column},
+          {"keyed_source", params.keyed_source},
           {"source_column", params.source_column},
           {"record_id_column", params.record_id_column},
           {"name_column", params.name_column},
@@ -182,6 +235,10 @@ EntityResolutionParams params_from_json(const nlohmann::json &value) {
   params.match_threshold = value.at("match_threshold");
   params.review_threshold = value.at("review_threshold");
   params.one_record_per_source = value.at("one_record_per_source");
+  params.mode = value.at("mode") == "keyed" ? EntityResolutionMode::Keyed
+                                             : EntityResolutionMode::Fuzzy;
+  params.keyed_entity_column = value.at("keyed_entity_column");
+  params.keyed_source = value.at("keyed_source");
   params.source_column = value.at("source_column");
   params.record_id_column = value.at("record_id_column");
   params.name_column = value.at("name_column");
@@ -252,7 +309,10 @@ api::ApiResult run_m2(RunRequest &request) {
 
   EntityResolutionParams params = graph_params(request.graph->graph());
   data::FeaturePlanOptions feature_options;
-  feature_options.entity_column = params.record_id_column;
+  feature_options.entity_column =
+      params.mode == EntityResolutionMode::Keyed
+          ? params.keyed_entity_column
+          : params.record_id_column;
   for (const auto& summary : context.node.datasets()) {
     if (summary.table_id != dataset.table_id) {
       continue;
@@ -264,21 +324,25 @@ api::ApiResult run_m2(RunRequest &request) {
             "pairwise identity evidence for candidate matching"});
       }
     };
-    add(params.name_column, {"name_jaro_winkler", "name_token_jaccard"},
-        "normalized Jaro-Winkler and token Jaccard pair similarities");
-    add(params.address_column, {"address_token_jaccard"}, "address token Jaccard similarity");
-    add(params.email_column, {"email_agreement", "email_missing"},
-        "normalized exact email agreement and pair missing flag");
-    add(params.phone_column, {"phone_agreement", "phone_missing"},
-        "normalized exact phone agreement and pair missing flag");
-    add(params.date_column, {"date_similarity", "date_missing"},
-        "exponential date-distance similarity and pair missing flag");
-    add(params.email_verified_column, {"verified_email_constraint"},
-        "reject conflicting verified emails during clustering");
-    add(params.phone_verified_column, {"verified_phone_constraint"},
-        "reject conflicting verified phone numbers during clustering");
-    if (std::find(summary.columns.begin(), summary.columns.end(), params.truth_entity_column) != summary.columns.end()) {
-      feature_options.label_column = params.truth_entity_column;
+    if (params.mode == EntityResolutionMode::Fuzzy) {
+      add(params.name_column, {"name_jaro_winkler", "name_token_jaccard"},
+          "normalized Jaro-Winkler and token Jaccard pair similarities");
+      add(params.address_column, {"address_token_jaccard"},
+          "address token Jaccard similarity");
+      add(params.email_column, {"email_agreement", "email_missing"},
+          "normalized exact email agreement and pair missing flag");
+      add(params.phone_column, {"phone_agreement", "phone_missing"},
+          "normalized exact phone agreement and pair missing flag");
+      add(params.date_column, {"date_similarity", "date_missing"},
+          "exponential date-distance similarity and pair missing flag");
+      add(params.email_verified_column, {"verified_email_constraint"},
+          "reject conflicting verified emails during clustering");
+      add(params.phone_verified_column, {"verified_phone_constraint"},
+          "reject conflicting verified phone numbers during clustering");
+      if (std::find(summary.columns.begin(), summary.columns.end(),
+                    params.truth_entity_column) != summary.columns.end()) {
+        feature_options.label_column = params.truth_entity_column;
+      }
     }
   }
   const auto feature_plan = plan_run_features(request, "M-2", dataset, feature_options);
@@ -338,7 +402,9 @@ api::ApiResult run_m2(RunRequest &request) {
   }
 
   const std::uint64_t excluded =
-      dataset.rows >= table_result.resolution.entities.size()
+      params.mode == EntityResolutionMode::Keyed
+          ? 0
+          : dataset.rows >= table_result.resolution.entities.size()
           ? dataset.rows - table_result.resolution.entities.size()
           : 0;
   ModelValue model_value;
@@ -349,6 +415,7 @@ api::ApiResult run_m2(RunRequest &request) {
   model_value.run = run->id();
   model_value.feature_schema =
       nlohmann::json{{"scoring_method", table_result.resolution.scoring_method},
+                     {"resolution_mode", to_string(params.mode)},
                      {"match_threshold", params.match_threshold},
                      {"review_threshold", params.review_threshold}};
   if (dataset.contract.entity_keys) {
@@ -506,7 +573,8 @@ const nlohmann::json &entity_resolution_launch_schema() {
         {"additionalProperties", false},
         {"required",
          {"seed", "sorted_neighbourhood_window", "match_threshold",
-          "review_threshold", "one_record_per_source", "source_column",
+          "review_threshold", "one_record_per_source", "mode",
+          "keyed_entity_column", "keyed_source", "source_column",
           "record_id_column", "name_column", "address_column",
           "email_column", "phone_column", "date_column",
           "email_verified_column", "phone_verified_column",
@@ -519,6 +587,10 @@ const nlohmann::json &entity_resolution_launch_schema() {
     params["properties"]["review_threshold"] = {
         {"type", "number"}, {"minimum", 0.0}, {"maximum", 1.0}};
     params["properties"]["one_record_per_source"] = {{"type", "boolean"}};
+    params["properties"]["mode"] = {
+        {"type", "string"}, {"enum", {"fuzzy", "keyed"}}};
+    params["properties"]["keyed_entity_column"] = {{"type", "string"}};
+    params["properties"]["keyed_source"] = {{"type", "string"}};
     for (const auto *key :
          {"source_column", "record_id_column", "name_column",
           "address_column", "email_column", "phone_column", "date_column",

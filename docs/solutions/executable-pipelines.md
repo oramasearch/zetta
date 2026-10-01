@@ -37,11 +37,13 @@ economics. The implementation supplies none of those business inputs.
 }
 ```
 
-The numbers and destination above are synthetic example inputs. The source also
-needs the selected methodologies' roles (for CL-1 M-2: `source`, `record_id`,
-`name`) and the policy's named predicates. A missing S-1 exclusion flag blocks
-action; it is not filled with false. Predicate and cost evidence is joined from
-the frozen snapshot, not copied from the model's feature list.
+The numbers and destination above are synthetic example inputs. A single source
+with `foundation.dataset.entity_column` uses keyed M-2 and needs no fuzzy
+identity columns. Multi-source or no-key inputs require `source`, `record_id`,
+and at least one of `name`, `email`, `phone`, or `address`. The source also needs
+the policy's named predicates. A missing S-1 exclusion flag blocks action; it is
+not filled with false. Predicate and cost evidence is joined from the frozen
+snapshot, not copied from the model's feature list.
 
 `sources` is stored unchanged on the solution manifest. Composition projects
 only shared source locations and declared methodology input roles into a shape,
@@ -68,7 +70,10 @@ project UUID and graph name.
 Non-M-1 primary methodologies without a module default require an explicit `foundation.decision_source`:
 `methodology`, `entity_column`, `score_column`, and optional `output_name` and positive `horizon`.
 It selects a real output table from that child Run, never a fabricated score or
-a substitute classifier. S-1 and S-2 use M-1's `account` / `risk` score table.
+a substitute classifier. M-3, M-5, and M-6 reconcile that binding's entity
+column to the dataset contract because their result tables publish that column.
+S-1 and S-2 derive the entity column from the dataset
+contract and the score column from M-1's actual published output.
 S-2 binds conversion propensity to its conversion-band decision cell. S-3 uses
 M-1's `Write lifetime value predictions` output with `entity` /
 `predicted_value`; its squared-error model and result table drive policy

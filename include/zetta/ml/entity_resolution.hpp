@@ -41,12 +41,22 @@ struct EntityRecord {
   std::string truth_entity;
 };
 
+enum class EntityResolutionMode {
+  Fuzzy,
+  Keyed,
+};
+
+std::string_view to_string(EntityResolutionMode mode);
+
 struct EntityResolutionParams {
   std::uint64_t seed = 1041;
   std::size_t sorted_neighbourhood_window = 4;
   double match_threshold = 0.82;
   double review_threshold = 0.55;
   bool one_record_per_source = false;
+  EntityResolutionMode mode = EntityResolutionMode::Fuzzy;
+  std::string keyed_entity_column;
+  std::string keyed_source;
 
   std::string source_column = "source";
   std::string record_id_column = "record_id";

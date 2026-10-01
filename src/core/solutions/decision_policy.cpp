@@ -360,7 +360,8 @@ DecisionRecord evaluate(
     const DecisionPolicy& policy,
     const Json& entity,
     double spend,
-    const Json& snapshot) {
+    const Json& snapshot,
+    std::size_t batch_contacts = 0) {
     const PolicyVersion& current = *policy.current();
     const Json& config = current.config;
     DecisionRecord decision;
@@ -397,8 +398,9 @@ DecisionRecord evaluate(
         }
     }
 
-    const std::size_t contacts = std::max(count_or(entity, "contacts"),
-                                        recorded_contacts(snapshot, decision, {}));
+    const std::size_t contacts = std::max(
+        count_or(entity, "contacts"),
+        recorded_contacts(snapshot, decision, {}) + batch_contacts);
     const std::size_t contact_cap = std::min(
         config.value("contact_cap", std::numeric_limits<std::size_t>::max()),
         action_settings.value("contact_cap", std::numeric_limits<std::size_t>::max()));
@@ -411,8 +413,9 @@ DecisionRecord evaluate(
         "frequency_cap", config.value("frequency_cap", Json::object()));
     const std::string since = zetta::util::iso8601_seconds_ago(
         frequency.value("window_seconds", 1LL));
-    const std::size_t recent_actions = std::max(count_or(entity, "recent_actions"),
-                                               recorded_contacts(snapshot, decision, since));
+    const std::size_t recent_actions = std::max(
+        count_or(entity, "recent_actions"),
+        recorded_contacts(snapshot, decision, since) + batch_contacts);
     const std::size_t maximum_actions = frequency.value(
         "max_actions",
         std::numeric_limits<std::size_t>::max());
@@ -887,13 +890,61 @@ std::optional<DecisionPolicy> DecisionPolicyStore::update(
     return policy;
 }
 
+bool DecisionPolicyStore::begin_decision_batch(
+    const std::string& policy_id,
+    std::string* error) {
+    if (decision_batch_) {
+        if (error != nullptr) {
+            *error = "a decision batch is already active";
+        }
+        return false;
+    }
+    Json baseline = replication_.snapshot();
+    const auto found =
+        baseline.find(zetta::catalog::decision_policy_key(policy_id));
+    if (found == baseline.end()) {
+        if (error != nullptr) {
+            *error = "no decision policy with id '" + policy_id + "'";
+        }
+        return false;
+    }
+    const std::optional<DecisionPolicy> policy =
+        parse_decision_policy(*found, error);
+    if (!policy) {
+        return false;
+    }
+    const std::uint64_t version = policy->current()->version;
+    decision_batch_ = DecisionBatchState{
+        .policy = *policy,
+        .baseline = std::move(baseline),
+        .committed_spend = 0.0,
+        .contacts = {}};
+    if (policy->current()->config.contains("budget")) {
+        decision_batch_->committed_spend = committed_spend(
+            decision_batch_->baseline, policy_id, version);
+    }
+    return true;
+}
+
+void DecisionPolicyStore::end_decision_batch() {
+    decision_batch_.reset();
+}
+
 std::optional<DecisionRecord> DecisionPolicyStore::decide(
     const std::string& policy_id,
     Json entity,
     std::string,
     std::string* error) {
-    const std::optional<DecisionPolicy> policy = get(policy_id);
-    if (!policy) {
+    std::optional<DecisionPolicy> standalone_policy;
+    if (!decision_batch_) {
+        standalone_policy = get(policy_id);
+    }
+    const DecisionPolicy* policy = decision_batch_
+                                       ? &decision_batch_->policy
+                                       : standalone_policy
+                                             ? &*standalone_policy
+                                             : nullptr;
+    if (policy == nullptr || policy->id != policy_id) {
         if (error != nullptr) {
             *error = "no decision policy with id '" + policy_id + "'";
         }
@@ -939,12 +990,24 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
         }
         return std::nullopt;
     }
-    const Json snapshot = replication_.snapshot();
+    Json standalone_snapshot;
+    const Json* snapshot = nullptr;
     double spend = 0.0;
-    if (policy->current()->config.contains("budget")) {
-        spend = committed_spend(snapshot, policy_id, policy->current()->version);
+    std::size_t batch_contacts = 0;
+    if (decision_batch_) {
+        snapshot = &decision_batch_->baseline;
+        spend = decision_batch_->committed_spend;
+        batch_contacts = decision_batch_->contacts[json_text(entity.at("entity_id"))];
+    } else {
+        standalone_snapshot = replication_.snapshot();
+        snapshot = &standalone_snapshot;
+        if (policy->current()->config.contains("budget")) {
+            spend = committed_spend(
+                *snapshot, policy_id, policy->current()->version);
+        }
     }
-    DecisionRecord decision = evaluate(*policy, entity, spend, snapshot);
+    DecisionRecord decision = evaluate(
+        *policy, entity, spend, *snapshot, batch_contacts);
     if (entity.contains("experiment")) {
         if (experiment_manager_ == nullptr) {
             if (error != nullptr) {
@@ -984,6 +1047,13 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
                 "experiment cell '" + decision.cell +
                 "' protects model-driven action");
         }
+    }
+    if (decision_batch_ && !decision.holdout &&
+        (decision.status == "allowed" ||
+         decision.status == "pending_approval" ||
+         decision.status == "approved")) {
+        decision_batch_->committed_spend += decision.cost;
+        ++decision_batch_->contacts[decision.entity_id];
     }
     replication_.set(zetta::catalog::decision_key(decision.id), to_json(decision));
     return decision;

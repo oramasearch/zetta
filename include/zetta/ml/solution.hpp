@@ -85,7 +85,8 @@ nlohmann::json solution_json(const Solution& solution);
 
 ComposedSolution compose_solution(const Solution& solution, int level,
                                   const nlohmann::json& sources,
-                                  const nlohmann::json& snapshot = {});
+                                  const nlohmann::json& snapshot = {},
+                                  const nlohmann::json& dataset = {});
 ir::ExecutionGraph solution_stage_graph(const ir::ExecutionGraph& graph,
                                         int stage);
 
