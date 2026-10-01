@@ -30,7 +30,7 @@
 // playbook pipeline instead of the stubbed DefaultStepExecutor.
 //
 // The real per-step compute already exists as zetta::usecases::churn::ChurnStepExecutor (#396),
-// but it is driven *by injection* into a GraphExecutor and needs a lot the seam
+// but it is driven *by injection* into a GraphExecutor and needs context the interface
 // can't supply on its own: a started JobCoordinator, a ComputeDevice, and this
 // node's NUMERIC input shards (the churn pipeline operates purely on numeric DDF
 // columns). This module is that glue, factored out of the test harness so the
@@ -207,6 +207,17 @@ struct ChurnTableInput {
     // zetta::data::resolve_dataset, which infers what the caller left unsaid and
     // reports every inference.
     zetta::data::DatasetContract contract;
+
+    // S-1 trains on rolling forward-labelled examples derived from the source
+    // history while scoring the current snapshot named above. The rows use an
+    // internal sample key because one business entity contributes at multiple
+    // cutoffs. Other M-1 callers leave this empty and train on `table_id`.
+    std::vector<nlohmann::json> forward_label_rows;
+    zetta::data::DatasetContract forward_label_contract;
+    std::string forward_label_source;
+    std::size_t forward_label_censored = 0;
+    std::size_t forward_label_inactive = 0;
+    bool score_active_only = false;
 
     bool empty() const { return table_id.empty(); }
 };

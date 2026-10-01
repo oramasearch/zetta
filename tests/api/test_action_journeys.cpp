@@ -242,15 +242,17 @@ struct SolutionJourney : ::testing::Test {
         };
     }
 
-    void run_live_shape(int level);
+    void run_live_shape(int level, bool spread_positives = false);
     void verify_live_shape_tables(
         const ApiResult& status,
         int level,
+        std::size_t active_entities,
         std::string& decisions_table);
     void verify_live_shape_evidence(
         const nlohmann::json& binding,
         const std::vector<nlohmann::json>& delivery_requests,
-        std::size_t delivery_start);
+        std::size_t delivery_start,
+        std::size_t active_entities);
 };
 
 void land_retention_data(Node& node, bool text_entities = false) {
@@ -259,120 +261,138 @@ void land_retention_data(Node& node, bool text_entities = false) {
     const auto table = database->create_table("customers");
     ASSERT_TRUE(table);
     table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    const std::vector<std::string> months = {
+        "2026-03-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "2026-05-01T00:00:00.000Z",
+        "2026-06-01T00:00:00.000Z",
+        "2026-07-01T00:00:00.000Z",
+        "2026-08-01T00:00:00.000Z",
+        "2026-09-01T00:00:00.000Z",
+        "2026-10-01T00:00:00.000Z",
+        "2026-11-01T00:00:00.000Z"};
+    const std::vector<double> epoch_months = {
+        1772323200.0, 1775001600.0, 1777593600.0,
+        1780272000.0, 1782864000.0, 1785542400.0,
+        1788220800.0, 1790812800.0, 1793491200.0};
     for (int index = 0; index < 240; ++index) {
         const bool persuadable = index < 120;
         const int treatment = index % 2;
         const int outcome = persuadable ? treatment : 1 - treatment;
-        const std::string iso_time =
-            "2026-08-01T00:00:00." +
-            std::to_string(1000 + index).substr(1) + "Z";
-        const double epoch_time = 1785542400.0 + index;
-        nlohmann::json row = {{"source", "fixture"},
-                       {"name", "Customer " + std::to_string(index + 1)},
-                       {"label", text_entities ? nlohmann::json(index % 10 != 0)
-                                               : nlohmann::json(index % 10 != 0 ? 1 : 0)},
-                       {"feature", index % 13 + 0.5},
-                       {"uplift_segment", persuadable ? 1.0 : 0.0},
-                       {"treatment", treatment}, {"outcome", outcome},
-                       {"duration", static_cast<double>(30 + index % 60)},
-                       {"start_time", static_cast<double>(index)},
-                       {"feature_time", static_cast<double>(index)},
-                       {"time", iso_time},
-                       {"iso_feature_time", iso_time},
-                       {"epoch_time", epoch_time},
-                       {"epoch_feature_time", epoch_time},
-                       {"offer_code", index % 3},
-                       {"action_value", 10.0 + index % 5},
-                       {"action_cost", 1.0},
-                       {"eligible", 1.0},
-                       {"contacts", 0.0},
-                       {"contact_cap", 3.0},
-                       {"interaction_count", 1.0},
-                       {"logging_propensity", 0.5},
-                       {"in_collections", false}, {"open_complaint", false},
-                       {"vulnerable", false}};
-        if (text_entities) {
-            std::string customer_id = "c" + std::to_string(100000 + index);
-            customer_id.erase(1, 1);
-            row["customer_id"] = customer_id;
-            row["record_id"] = customer_id;
-            row["observed_at"] = iso_time;
-        } else {
-            row["entity"] = index + 1;
-            row["record_id"] = index + 1;
+        const int cohort = index % 10;
+        const int first_month = cohort < 3 ? cohort : 3;
+        const int final_month = cohort < 3 ? cohort + 5 : 8;
+        for (int month = first_month; month <= final_month; ++month) {
+            const bool churned = cohort < 3 && month == final_month;
+            const bool impending =
+                cohort < 3 && month + 1 == final_month &&
+                (index / 10) % 4 != 0;
+            const bool false_alarm =
+                cohort >= 3 && (index / 10) % 25 == 0;
+            nlohmann::json row = {
+                {"source", "fixture"},
+                {"name", "Customer " + std::to_string(index + 1)},
+                {"label", text_entities ? nlohmann::json(churned)
+                                        : nlohmann::json(churned ? 1 : 0)},
+                {"feature", impending || false_alarm ? 10.0 : 1.0},
+                {"uplift_segment", persuadable ? 1.0 : 0.0},
+                {"treatment", treatment},
+                {"outcome", outcome},
+                {"duration", static_cast<double>(30 + index % 60)},
+                {"start_time", static_cast<double>(index)},
+                {"feature_time", epoch_months[month]},
+                {"time", months[month]},
+                {"iso_feature_time", months[month]},
+                {"epoch_time", epoch_months[month]},
+                {"epoch_feature_time", epoch_months[month]},
+                {"observed_at", months[month]},
+                {"offer_code", index % 3},
+                {"action_value", 10.0 + index % 5},
+                {"action_cost", 1.0},
+                {"eligible", 1.0},
+                {"contacts", 0.0},
+                {"contact_cap", 3.0},
+                {"interaction_count", 1.0},
+                {"logging_propensity", 0.5},
+                {"in_collections", false},
+                {"open_complaint", false},
+                {"vulnerable", false}};
+            if (text_entities) {
+                std::string customer_id =
+                    "c" + std::to_string(100000 + index);
+                customer_id.erase(1, 1);
+                row["customer_id"] = customer_id;
+                row["record_id"] = customer_id;
+            } else {
+                row["entity"] = index + 1;
+                row["record_id"] = index + 1;
+            }
+            table->add_row(std::move(row));
         }
-        table->add_row(std::move(row));
     }
-    nlohmann::json future = {{"record_id", text_entities ? nlohmann::json("c09999")
-                                                        : nlohmann::json(9999)},
-                   {"source", "fixture"},
-                   {"name", "Future customer"}, {"label", 1}, {"feature", 999.0},
-                   {"uplift_segment", 1.0}, {"treatment", 1}, {"outcome", 1},
-                   {"duration", 30.0}, {"start_time", 240.0},
-                   {"feature_time", 240.0},
-                   {"time", "2026-10-01T00:00:00.000Z"},
-                   {"iso_feature_time", "2026-10-01T00:00:00.000Z"},
-                   {"epoch_time", 1790812800.0},
-                   {"epoch_feature_time", 1790812800.0},
-                   {"offer_code", 0}, {"action_value", 10.0},
-                   {"action_cost", 1.0}, {"eligible", 1.0},
-                   {"contacts", 0.0}, {"contact_cap", 3.0},
-                   {"interaction_count", 1.0},
-                   {"logging_propensity", 0.5},
-                   {"in_collections", false}, {"open_complaint", false}, {"vulnerable", false}};
-    if (text_entities) {
-        future["customer_id"] = "c09999";
-        future["observed_at"] = "2026-10-01T00:00:00.000Z";
-        future["label"] = true;
-    } else {
-        future["entity"] = 9999;
-    }
-    table->add_row(std::move(future));
     const auto written = zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
-void land_live_shape_retention_data(Node& node) {
+void land_live_shape_retention_data(Node& node, bool spread_positives) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);
     const auto table = database->create_table("e2e_churn_s1");
     ASSERT_TRUE(table);
     table->set_partitioner(
         std::make_shared<zetta::data::RoundRobinPartitioner>(12));
-    for (int index = 0; index < 12000; ++index) {
+    const std::vector<std::string> months = {
+        "2025-09-01T00:00:00Z", "2025-10-01T00:00:00Z",
+        "2025-11-01T00:00:00Z", "2025-12-01T00:00:00Z",
+        "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z",
+        "2026-03-01T00:00:00Z", "2026-04-01T00:00:00Z",
+        "2026-05-01T00:00:00Z", "2026-06-01T00:00:00Z"};
+    for (int index = 0; index < 2000; ++index) {
         std::string customer_id = "c" + std::to_string(100000 + index);
         customer_id.erase(1, 1);
-        const std::uint32_t mixed =
-            static_cast<std::uint32_t>(index) * 2654435761U + 1013904223U;
         const int in_collections = index % 11 == 0 ? 1 : 0;
         const int open_complaint = index % 17 == 0 ? 1 : 0;
         const int vulnerable = index % 29 == 0 ? 1 : 0;
-        const int churned =
-            ((mixed >> 9U) + static_cast<std::uint32_t>(in_collections)) % 5U ==
-                    0U
-                ? 1
-                : 0;
-        const std::string observed_at =
-            "2026-03-" + std::to_string(10 + index % 15) + "T00:00:00Z";
-        table->add_row(
-            {{"customer_id", customer_id},
-             {"observed_at", observed_at},
-             {"usage", 0.1 + static_cast<double>(mixed % 800U) / 1000.0},
-             {"tenure_months", 6 + index % 84},
-             {"complaints", index % 4},
-             {"monthly_value", 25.0 + static_cast<double>(index % 175)},
-             {"in_collections", in_collections},
-             {"open_complaint", open_complaint},
-             {"vulnerable", vulnerable},
-             {"churned", churned}});
+        const std::uint32_t mixed =
+            static_cast<std::uint32_t>(index) * 2654435761U + 1013904223U;
+        const int cohort = index % 10;
+        int final_month = -1;
+        if (spread_positives && cohort < 4) {
+            final_month = 5 + cohort;
+        } else if (!spread_positives && cohort == 0) {
+            final_month = 7;
+        } else if (!spread_positives && cohort == 1) {
+            final_month = 8;
+        }
+        const int first_month = final_month >= 0 ? final_month - 5 : 4;
+        const int last_month = final_month >= 0 ? final_month : 9;
+        for (int month = first_month; month <= last_month; ++month) {
+            const bool churned = month == final_month;
+            table->add_row(
+                 {{"customer_id", customer_id},
+                 {"observed_at", months[month]},
+                 {"start_time", months[first_month]},
+                 {"usage", 0.1 +
+                               static_cast<double>((mixed >> 16U) % 800U) /
+                                   1000.0},
+                 {"tenure_months", 6 + (mixed >> 11U) % 84U},
+                 {"complaints", (mixed >> 19U) % 4U},
+                 {"monthly_value",
+                  25.0 + static_cast<double>((mixed >> 3U) % 175U)},
+                 {"in_collections", in_collections},
+                 {"open_complaint", open_complaint},
+                 {"vulnerable", vulnerable},
+                 {"churned", churned ? 1 : 0}});
+        }
     }
     const auto written =
         zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
-nlohmann::json live_shape_foundation(const std::string& target_table) {
-    return {
+nlohmann::json live_shape_foundation(const std::string& target_table,
+                                     bool survival_time = false) {
+    nlohmann::json foundation = {
         {"snapshot",
          {{"database", "datasets"},
           {"source_table", "e2e_churn_s1"},
@@ -393,6 +413,10 @@ nlohmann::json live_shape_foundation(const std::string& target_table) {
          {{"currency", "USD"},
           {"investment", 200.0},
           {"value_per_outcome", 100.0}}}};
+    if (survival_time) {
+        foundation["dataset"]["time_column"] = "start_time";
+    }
+    return foundation;
 }
 
 nlohmann::json live_shape_sources(int level) {
@@ -5024,7 +5048,7 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     const auto decisions_read = call("sql", {
         {"statement", "SELECT * FROM solution_results." + results->tables().front()->name() + ";"}});
     ASSERT_TRUE(decisions_read.ok) << decisions_read.error.message;
-    EXPECT_EQ(decisions_read.value.at("rows").size(), 240u);
+    EXPECT_EQ(decisions_read.value.at("rows").size(), 192u);
     EXPECT_EQ(node.find_database("datasets")->find_table("retention_snapshot")->store().size(), 240u);
     const auto monitor = node.find_monitor(binding.at("monitor_id"));
     ASSERT_TRUE(monitor);
@@ -5385,12 +5409,15 @@ TEST_F(SolutionJourney,
     }
 }
 
-void SolutionJourney::run_live_shape(int level) {
+void SolutionJourney::run_live_shape(int level, bool spread_positives) {
     SolutionDeliveryBoundary delivery;
-    land_live_shape_retention_data(node);
+    land_live_shape_retention_data(node, spread_positives);
+    const std::string variant =
+        spread_positives ? "spread" : "concentrated";
     const std::string project_name =
-        "live-shape-cl" + std::to_string(level);
-    const std::string target_table = "e2e_s1c_snapshot";
+        "live-shape-" + variant + "-cl" + std::to_string(level);
+    const std::string target_table =
+        "e2e_s1_" + variant + "_snapshot";
     ASSERT_TRUE(call("create_project", {{"name", project_name}}).ok);
     const ApiResult created = call(
         "create_solution",
@@ -5398,7 +5425,8 @@ void SolutionJourney::run_live_shape(int level) {
          {"solution", "S-1"},
          {"level", level},
          {"sources", live_shape_sources(level)},
-         {"foundation", live_shape_foundation(target_table)}});
+         {"foundation",
+          live_shape_foundation(target_table, level >= 2)}});
     ASSERT_TRUE(created.ok)
         << "CL-" << level << ": " << created.error.message;
 
@@ -5456,17 +5484,35 @@ void SolutionJourney::run_live_shape(int level) {
     ASSERT_EQ(status.value.at("status"), "succeeded")
         << status.value.dump(2);
 
+    bool logged_forward_counts = false;
+    for (const auto& run : node.runs()) {
+        for (const auto& entry : run->logs()) {
+            EXPECT_EQ(entry.message.find("was not read"), std::string::npos)
+                << entry.message;
+            if (entry.message.find("forward labels: rows=") !=
+                std::string::npos) {
+                logged_forward_counts = true;
+            }
+        }
+    }
+    EXPECT_TRUE(logged_forward_counts);
+
     std::string decisions_table;
-    verify_live_shape_tables(status, level, decisions_table);
+    const std::size_t active_entities =
+        spread_positives ? 1400u : 1800u;
+    verify_live_shape_tables(
+        status, level, active_entities, decisions_table);
     verify_live_shape_evidence(
-        binding, delivery.requests, delivery_start);
+        binding, delivery.requests, delivery_start, active_entities);
 }
 
 void SolutionJourney::verify_live_shape_tables(
     const ApiResult& status,
     int level,
+    std::size_t active_entities,
     std::string& decisions_table) {
     std::map<std::string, std::string> methodology_tables;
+    std::string snapshot_table;
     for (const auto& output : status.value.at("outputs")) {
         if (output.at("kind") != "dataset") {
             continue;
@@ -5474,6 +5520,8 @@ void SolutionJourney::verify_live_shape_tables(
         const std::string name = output.at("name");
         if (name == "solution decisions") {
             decisions_table = output.at("ref");
+        } else if (name == "solution snapshot") {
+            snapshot_table = output.at("ref");
         } else if (name == "resolved entities" ||
                    name == "match pairs" ||
                    name == "segment assignments" ||
@@ -5483,6 +5531,7 @@ void SolutionJourney::verify_live_shape_tables(
         }
     }
     ASSERT_FALSE(decisions_table.empty());
+    ASSERT_FALSE(snapshot_table.empty());
     ASSERT_TRUE(methodology_tables.contains("resolved entities"));
     ASSERT_TRUE(methodology_tables.contains("match pairs"));
     ASSERT_TRUE(methodology_tables.contains("segment assignments"));
@@ -5497,6 +5546,11 @@ void SolutionJourney::verify_live_shape_tables(
                            methodology_tables.at("match pairs") + ";"}});
     ASSERT_TRUE(pairs.ok) << pairs.error.message;
     EXPECT_TRUE(pairs.value.at("rows").empty());
+
+    const ApiResult snapshot = call(
+        "sql", {{"statement", "SELECT * FROM " + snapshot_table + ";"}});
+    ASSERT_TRUE(snapshot.ok) << snapshot.error.message;
+    EXPECT_EQ(snapshot.value.at("rows").size(), 2000u);
 
     for (const std::string& output_name : {
              "segment assignments", "survival table",
@@ -5520,10 +5574,9 @@ void SolutionJourney::verify_live_shape_tables(
 
     const ApiResult decisions = call(
         "sql",
-        {{"statement", "SELECT * FROM " + decisions_table +
-                           " LIMIT 1;"}});
+        {{"statement", "SELECT * FROM " + decisions_table + ";"}});
     ASSERT_TRUE(decisions.ok) << decisions.error.message;
-    ASSERT_FALSE(decisions.value.at("rows").empty());
+    ASSERT_EQ(decisions.value.at("rows").size(), active_entities);
     ASSERT_TRUE(
         decisions.value.at("rows").front().contains("customer_id"));
     EXPECT_TRUE(is_live_shape_id(
@@ -5533,11 +5586,12 @@ void SolutionJourney::verify_live_shape_tables(
 void SolutionJourney::verify_live_shape_evidence(
     const nlohmann::json& binding,
     const std::vector<nlohmann::json>& delivery_requests,
-    std::size_t delivery_start) {
+    std::size_t delivery_start,
+    std::size_t active_entities) {
     const auto experiment = node.experiment_manager().report(
         binding.at("experiment_id").get<std::string>());
     ASSERT_TRUE(experiment);
-    EXPECT_EQ(experiment->assignments, 12000u);
+    EXPECT_EQ(experiment->assignments, active_entities);
     EXPECT_GT(experiment->holdout_assignments, 0u);
 
     bool delivered_live_id = false;
@@ -5597,6 +5651,71 @@ TEST_F(SolutionJourney, S1LiveShapeRunsKeyedAtLevelOne) {
 
 TEST_F(SolutionJourney, S1LiveShapeRunsKeyedAtLevelFour) {
     run_live_shape(4);
+}
+
+TEST_F(SolutionJourney, S1LiveShapeWithPositivesSpreadAcrossMonthsSucceeds) {
+    run_live_shape(1, true);
+}
+
+TEST_F(SolutionJourney,
+       S1ForwardLabelProblemsFailAtConfirmationWithMeasuredCounts) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const std::vector<std::string> all_months = {
+        "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z",
+        "2026-03-01T00:00:00Z", "2026-04-01T00:00:00Z",
+        "2026-05-01T00:00:00Z", "2026-06-01T00:00:00Z"};
+    const auto add_table = [&](const std::string& name,
+                               std::size_t month_count) {
+        const auto table = database->create_table(name);
+        ASSERT_TRUE(table);
+        for (int entity = 0; entity < 4; ++entity) {
+            for (std::size_t month = 0; month < month_count; ++month) {
+                table->add_row(
+                    {{"customer_id", "c0000" + std::to_string(entity)},
+                     {"observed_at", all_months[month]},
+                     {"usage", 1.0 + entity},
+                     {"tenure_months", 12 + entity},
+                     {"complaints", entity % 2},
+                     {"monthly_value", 50.0 + entity},
+                     {"in_collections", false},
+                     {"open_complaint", false},
+                     {"vulnerable", false},
+                     {"churned", 0}});
+            }
+        }
+    };
+    add_table("s1_one_class", all_months.size());
+    add_table("s1_unobserved", 4);
+
+    const auto confirm = [&](const std::string& table_name,
+                             const std::string& expected_reason) {
+        const std::string project_name = "confirm-" + table_name;
+        ASSERT_TRUE(call("create_project", {{"name", project_name}}).ok);
+        nlohmann::json sources = live_shape_sources(1);
+        sources["table"] = table_name;
+        sources["M-2"]["table"] = table_name;
+        nlohmann::json foundation =
+            live_shape_foundation(table_name + "_snapshot");
+        foundation["snapshot"]["source_table"] = table_name;
+        const ApiResult created = call(
+            "create_solution",
+            {{"project", project_name},
+             {"solution", "S-1"},
+             {"level", 1},
+             {"sources", sources},
+             {"foundation", foundation}});
+        EXPECT_FALSE(created.ok);
+        EXPECT_EQ(created.error.code, "invalid_input");
+        EXPECT_NE(created.error.message.find("s1_label_window"),
+                  std::string::npos)
+            << created.error.message;
+        EXPECT_NE(created.error.message.find(expected_reason),
+                  std::string::npos)
+            << created.error.message;
+    };
+    confirm("s1_one_class", "train_positive=0");
+    confirm("s1_unobserved", "not fully observed");
 }
 
 TEST_F(SolutionJourney,

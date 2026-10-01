@@ -87,7 +87,18 @@ zetta::ir::ExecutionGraph bound_s1_graph(int level = 1) {
           {"stable_across_windows", true},
           {"group_column", "customer_id"},
           {"group_disjoint", true}}},
-        {"labels", {{"fully_observed", true}}},
+        {"labels",
+         {{"fully_observed", true},
+          {"data_last_time", 1707000000.0},
+          {"declared_window_end", 1705000000.0},
+          {"declared_window_fully_observed", true},
+          {"eligible_windows", 3},
+          {"windows_with_both_classes", 3},
+          {"training_positives", 20},
+          {"training_negatives", 80},
+          {"validation_positives", 10},
+          {"validation_negatives", 40},
+          {"censored", 5}}},
         {"sampling",
          {{"used", false},
           {"calibration", "platt"},
@@ -1978,6 +1989,18 @@ TEST(SolutionRegistry, S1CorrectnessChecksRefuseEveryWrongCase) {
         ->attributes["s1_correctness"]["label_window_start"] =
             "2024-01-01T12:00:00Z";
     expect_s1_failure(label_window, "s1_label_window");
+
+    auto unobserved = bound_s1_graph();
+    unobserved.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["labels"]
+                   ["declared_window_fully_observed"] = false;
+    expect_s1_failure(unobserved, "s1_label_window");
+
+    auto one_class = bound_s1_graph();
+    one_class.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["labels"]
+                   ["validation_positives"] = 0;
+    expect_s1_failure(one_class, "s1_label_window");
 
     auto temporal = bound_s1_graph();
     temporal.find_node("solution_manifest")

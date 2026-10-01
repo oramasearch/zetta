@@ -123,6 +123,32 @@ TEST(MethodologyRegistry, UnavailableFixtureNamesItsTrackingIssue) {
     EXPECT_NE(message.find(unavailable.issue), std::string::npos);
 }
 
+TEST(MethodologyRegistry, RetentionSingleTableShapeHasOneConnectStep) {
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::find_methodology("M-1");
+    ASSERT_NE(methodology, nullptr);
+
+    zetta::ml::ShapeRequest retention_request;
+    retention_request.project = "retention";
+    retention_request.intent = "retain customers";
+    retention_request.solution = "S-1";
+    retention_request.hints = {{"source", "warehouse"},
+                               {"table", "customer_months"}};
+    const zetta::ir::ExecutionGraph retention_graph =
+        methodology->build_shape(retention_request);
+    EXPECT_EQ(
+        retention_graph.nodes_of_kind(zetta::ir::StepKind::Connect).size(),
+        1u);
+
+    zetta::ml::ShapeRequest collections_request = retention_request;
+    collections_request.solution = "S-4";
+    const zetta::ir::ExecutionGraph collections_graph =
+        methodology->build_shape(collections_request);
+    EXPECT_EQ(
+        collections_graph.nodes_of_kind(zetta::ir::StepKind::Connect).size(),
+        2u);
+}
+
 TEST(MethodologyRegistry, VisionBuildsItsOwnRunnableShape) {
     const zetta::ml::Methodology* vision = zetta::ml::find_methodology("M-13");
     ASSERT_NE(vision, nullptr);

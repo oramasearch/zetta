@@ -262,15 +262,17 @@ void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
     }
 }
 
-void bind_s1_correctness(ir::ExecutionGraph& graph,
-                         const SnapshotSpec& snapshot,
-                         const Json& settings,
-                         const Json& sources) {
+std::string bind_s1_correctness(Node& node,
+                                ir::ExecutionGraph& graph,
+                                const SnapshotSpec& snapshot,
+                                const Json& settings,
+                                const Json& sources,
+                                int outcome_window_days) {
     const std::shared_ptr<ir::Node> manifest =
         graph.find_node("solution_manifest");
     if (!manifest ||
         manifest->attributes.value("solution", std::string{}) != "S-1") {
-        return;
+        return {};
     }
     const Json common =
         sources.contains("correctness") && sources.at("correctness").is_object()
@@ -280,6 +282,9 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
             : Json::object();
     const double blackout_gap =
         common.value("blackout_gap_seconds", 7.0 * 86400.0);
+    const double outcome_window_seconds =
+        static_cast<double>(outcome_window_days) * 86400.0;
+    const int rolling_windows = common.value("rolling_windows", 3);
     const std::optional<TimePoint> cutoff = parse_time_point(snapshot.as_of);
     const double feature_window_end = cutoff ? cutoff->value : 0.0;
     const Json default_blocklist = {
@@ -304,17 +309,22 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
         {"prediction_time", snapshot.as_of},
         {"feature_window_end", feature_window_end},
         {"label_window_start", feature_window_end + blackout_gap},
+        {"label_window_end",
+         feature_window_end + blackout_gap + outcome_window_seconds},
         {"blackout_gap_seconds", blackout_gap},
         {"validation",
          {{"split", common.value("split", "out_of_time")},
-          {"rolling_windows", common.value("rolling_windows", 3)},
+          {"rolling_windows", rolling_windows},
           {"stable_across_windows",
            common.value("stable_across_windows", true)},
           {"group_column",
            settings.at("dataset").value("entity_column", std::string{})},
           {"group_disjoint", common.value("group_disjoint", true)}}},
         {"labels",
-         {{"fully_observed", common.value("fully_observed_labels", true)}}},
+         {{"fully_observed", common.value("fully_observed_labels", true)},
+          {"label_column",
+           settings.at("dataset").value("label_column", std::string{})},
+          {"window_seconds", outcome_window_seconds}}},
         {"sampling",
          {{"used", common.value("sampling_used", false)},
           {"calibration", common.value("calibration", "platt")},
@@ -333,6 +343,45 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
          settings.at("dataset").value("feature_columns", Json::array())},
         {"too_good_auc_threshold",
          common.value("too_good_auc_threshold", 0.95)}};
+    const ForwardLabelResult forward_labels = build_forward_labels(
+        node, snapshot,
+        ForwardLabelSpec{
+            .label_column =
+                settings.at("dataset").value("label_column", std::string{}),
+            .feature_columns =
+                settings.at("dataset")
+                    .value("feature_columns", std::vector<std::string>{}),
+            .blackout_gap_seconds = blackout_gap,
+            .window_seconds = outcome_window_seconds,
+            .rolling_windows =
+                rolling_windows > 0
+                    ? static_cast<std::size_t>(rolling_windows)
+                    : 0});
+    if (!forward_labels.ok()) {
+        return forward_labels.error;
+    }
+    profile["labels"]["data_last_time"] = forward_labels.data_last_time;
+    profile["labels"]["declared_window_end"] =
+        forward_labels.declared_window_end;
+    profile["labels"]["declared_window_fully_observed"] =
+        forward_labels.declared_window_fully_observed;
+    profile["labels"]["eligible_windows"] =
+        forward_labels.windows.size();
+    profile["labels"]["windows_with_both_classes"] =
+        forward_labels.windows_with_both_classes;
+    profile["labels"]["training_rows"] = forward_labels.training_rows;
+    profile["labels"]["training_positives"] =
+        forward_labels.training_positives;
+    profile["labels"]["training_negatives"] =
+        forward_labels.training_negatives;
+    profile["labels"]["validation_rows"] =
+        forward_labels.validation_rows;
+    profile["labels"]["validation_positives"] =
+        forward_labels.validation_positives;
+    profile["labels"]["validation_negatives"] =
+        forward_labels.validation_negatives;
+    profile["labels"]["censored"] = forward_labels.censored;
+    profile["labels"]["inactive"] = forward_labels.inactive;
     if (common.contains("reported_auc")) {
         profile["reported_auc"] = common.at("reported_auc");
     }
@@ -348,6 +397,7 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
         model->attributes["sleeping_dogs_action"] = "no_contact";
         model->attributes["positive_uplift_only"] = true;
     }
+    return {};
 }
 
 void bind_s2_correctness(ir::ExecutionGraph& graph,
@@ -1591,8 +1641,14 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         return ApiResult::failure("invalid_input", entity_resolution_error);
     }
     bind_sources(composed.graph, *snapshot);
-    bind_s1_correctness(composed.graph, *snapshot, settings,
-                        input.at("sources"));
+    const std::string s1_label_error = bind_s1_correctness(
+        context.node, composed.graph, *snapshot, settings,
+        input.at("sources"), solution->templates.measurement.window_days);
+    if (!s1_label_error.empty()) {
+        return ApiResult::failure(
+            "invalid_input", "solution correctness gate: s1_label_window: " +
+                                 s1_label_error);
+    }
     bind_s2_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
     bind_s6_correctness(composed.graph, input.at("sources"));

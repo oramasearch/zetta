@@ -8,7 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
-// Point-in-time snapshot tables and row-level as-of joins (#1103).
+// Point-in-time snapshot tables, row-level as-of joins, and S-1 forward
+// outcome labels (#1103, #1214).
 //
 // Snapshot tables use the logical key `(entity_id, as_of)`. Each materialized
 // row also records `_source_as_of` and `_source_table`, so downstream lineage
@@ -79,6 +80,63 @@ struct SnapshotResult {
 // `(entity_id, as_of)` key is refused. Partition-only sources are read through
 // the existing one-owner-per-partition scatter/gather path.
 SnapshotResult materialize_snapshot(Node& node, const SnapshotSpec& spec);
+
+// S-1 learns whether an active entity has a positive outcome after the
+// prediction cutoff, not whether it was already positive at that cutoff.
+// Each retained training row carries features from at or before its cutoff and
+// a label from (cutoff + blackout, cutoff + blackout + window]. A positive
+// outcome completes observation immediately; a negative row is retained only
+// when that entity has an observation at or beyond the window end.
+struct ForwardLabelSpec {
+    std::string label_column;
+    std::vector<std::string> feature_columns;
+    double blackout_gap_seconds = 0.0;
+    double window_seconds = 0.0;
+    std::size_t rolling_windows = 3;
+};
+
+struct ForwardLabelWindow {
+    double cutoff = 0.0;
+    std::size_t rows = 0;
+    std::size_t positives = 0;
+    std::size_t negatives = 0;
+    std::size_t censored = 0;
+    std::size_t inactive = 0;
+
+    bool has_both_classes() const noexcept {
+        return positives > 0 && negatives > 0;
+    }
+};
+
+struct ForwardLabelResult {
+    std::vector<nlohmann::json> rows;
+    std::vector<ForwardLabelWindow> windows;
+    double data_last_time = 0.0;
+    double declared_window_end = 0.0;
+    bool declared_window_fully_observed = false;
+    std::size_t windows_with_both_classes = 0;
+    std::size_t training_rows = 0;
+    std::size_t training_positives = 0;
+    std::size_t training_negatives = 0;
+    std::size_t validation_rows = 0;
+    std::size_t validation_positives = 0;
+    std::size_t validation_negatives = 0;
+    std::size_t censored = 0;
+    std::size_t inactive = 0;
+    std::string error;
+
+    bool ok() const noexcept {
+        return error.empty();
+    }
+};
+
+// Read the snapshot source through its ordinary local or distributed table
+// path and build rolling forward-labelled rows. The generated rows use the
+// internal `_s1_sample_id` entity and `_s1_cutoff` time columns so repeated
+// observations of one business entity remain distinct training examples.
+ForwardLabelResult build_forward_labels(Node& node,
+                                        const SnapshotSpec& snapshot,
+                                        const ForwardLabelSpec& spec);
 
 struct AsOfJoinSpec {
     std::string left_entity_column;

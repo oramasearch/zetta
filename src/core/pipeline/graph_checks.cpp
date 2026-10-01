@@ -1314,8 +1314,70 @@ CheckResult S1LabelWindowCheck::evaluate(
             name(), "S-1 label window (T, T+H] must start after the feature "
                     "window and its blackout gap");
     }
-    return s1_success(name(),
-                      "S-1 label window starts after the blackout gap");
+    const json* labels = object_field(*profile, "labels");
+    if (labels == nullptr ||
+        !labels->contains("declared_window_fully_observed") ||
+        !labels->contains("data_last_time") ||
+        !labels->contains("declared_window_end")) {
+        return s1_failure(
+            name(),
+            "S-1 label-window evidence was not measured from the source data");
+    }
+    const std::size_t eligible_windows =
+        labels->value("eligible_windows", std::size_t{0});
+    const std::size_t both_classes =
+        labels->value("windows_with_both_classes", std::size_t{0});
+    const std::size_t training_positives =
+        labels->value("training_positives", std::size_t{0});
+    const std::size_t training_negatives =
+        labels->value("training_negatives", std::size_t{0});
+    const std::size_t validation_positives =
+        labels->value("validation_positives", std::size_t{0});
+    const std::size_t validation_negatives =
+        labels->value("validation_negatives", std::size_t{0});
+    const std::size_t censored =
+        labels->value("censored", std::size_t{0});
+    const std::string counts =
+        "windows=" + std::to_string(eligible_windows) +
+        ", both_classes=" + std::to_string(both_classes) +
+        ", train_positive=" + std::to_string(training_positives) +
+        ", train_negative=" + std::to_string(training_negatives) +
+        ", validation_positive=" +
+        std::to_string(validation_positives) +
+        ", validation_negative=" +
+        std::to_string(validation_negatives) +
+        ", censored=" + std::to_string(censored);
+    if (!labels->value("declared_window_fully_observed", false)) {
+        return s1_failure(
+            name(),
+            "S-1 label window is not fully observed: data_last_time=" +
+                std::to_string(labels->value("data_last_time", 0.0)) +
+                ", window_end=" +
+                std::to_string(labels->value("declared_window_end", 0.0)) +
+                "; " + counts);
+    }
+    if (eligible_windows < 2) {
+        return s1_failure(
+            name(),
+            "S-1 needs an earlier training window and a latest validation "
+            "window; " + counts);
+    }
+    if (both_classes == 0) {
+        return s1_failure(
+            name(), "S-1 has no forward label window with both classes; " +
+                        counts);
+    }
+    if (training_positives == 0 || training_negatives == 0 ||
+        validation_positives == 0 || validation_negatives == 0) {
+        return s1_failure(
+            name(),
+            "S-1 rolling out-of-time train and validation populations must "
+            "each contain both classes; " + counts);
+    }
+    return s1_success(
+        name(),
+        "S-1 forward labels are fully observed with rolling out-of-time "
+        "class balance; " + counts);
 }
 
 CheckResult S1TemporalValidationCheck::evaluate(

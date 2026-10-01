@@ -261,7 +261,14 @@ non-positive effect remains non-actionable, including protected holdouts.
 `SolutionJourney.S1AllLevelsRunWithAutomaticIsoOrEpochTimeRoles` creates and
 runs S-1 at CL-1 through CL-4 twice: once with ISO timestamps and once with
 epoch seconds. Each run omits repeated methodology time settings and verifies
-that the future source row is absent from the materialized snapshot.
+that features remain at the snapshot cutoff while rolling forward outcomes are
+derived from later source observations.
+
+`SolutionJourney.S1LiveShapeRunsKeyedAtLevelOne` and its spread-across-months
+variant use 2,000 text-keyed customers with six monthly observations each. They
+prove that M-1 trains on the declared future outcome window, holds out the latest
+fully observed cutoff, scores only active customers at the current snapshot, and
+delivers decisions, holdouts, webhook attempts, ledger rows, and an ROI readout.
 
 `SolutionJourney.LeadScoringRoutesCapacityAwareQueuesAndRecoversPlantedEffect`
 builds and runs S-2 over a partitioned synthetic CRM table. It excludes a

@@ -224,16 +224,22 @@ TEST(ChurnTableRun, AConnectorLandedTableTrainsAModelOnItsOwnColumns) {
     EXPECT_EQ(result.execution.run->status(), RunStatus::Succeeded);
 
     // The run says what it read (lake's UX review 2026-09-27): its lineage names the
-    // dataset, never the blueprint's own warehouse sources, and a connect step that
-    // was not read says so rather than passing silently.
+    // dataset, never the blueprint's own warehouse sources, and repeated connect
+    // steps say that they reuse the source already loaded by this run.
     EXPECT_EQ(result.execution.run->lineage().sources,
               (std::vector<std::string>{"dataset:churn_demo.accounts"}));
     bool trained_on = false;
+    bool reused = false;
     for (const auto& log : result.execution.run->logs()) {
         if (log.message == "dataset: trained on churn_demo.accounts") trained_on = true;
+        if (log.message.find("reuses dataset churn_demo.accounts") !=
+            std::string::npos) {
+            reused = true;
+        }
         EXPECT_EQ(log.message.find("warehouse"), std::string::npos) << log.message;
     }
     EXPECT_TRUE(trained_on) << "the run logs the dataset it trained on";
+    EXPECT_TRUE(reused) << "the run logs that its second connect reuses the dataset";
 
     // 3. A real registered Model, trained on the CUSTOMER'S columns — not the
     // fixture's mrr/seats/tenure_days.

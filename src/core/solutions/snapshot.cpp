@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -204,6 +207,26 @@ struct SelectedRow {
     TimePoint parsed_time;
     json row;
 };
+
+struct ForwardObservation {
+    TimePoint time;
+    bool positive = false;
+    json row;
+};
+
+std::optional<bool> binary_label(const json& value) {
+    if (value.is_boolean()) {
+        return value.get<bool>();
+    }
+    if (!value.is_number()) {
+        return std::nullopt;
+    }
+    const double numeric = value.get<double>();
+    if (!std::isfinite(numeric)) {
+        return std::nullopt;
+    }
+    return numeric > 0.5;
+}
 
 std::optional<std::vector<json>> select_snapshot_rows(
     const std::vector<json>& source_rows, const SnapshotSpec& spec,
@@ -512,6 +535,226 @@ SnapshotResult materialize_snapshot(Node& node, const SnapshotSpec& spec) {
     }
     result.table = std::move(target);
     result.materialized_rows = additions->size();
+    return result;
+}
+
+ForwardLabelResult build_forward_labels(Node& node,
+                                        const SnapshotSpec& snapshot,
+                                        const ForwardLabelSpec& spec) {
+    ForwardLabelResult result;
+    if (spec.label_column.empty()) {
+        result.error = "forward labels require a label column";
+        return result;
+    }
+    if (spec.feature_columns.empty()) {
+        result.error = "forward labels require at least one feature column";
+        return result;
+    }
+    if (!std::isfinite(spec.blackout_gap_seconds) ||
+        spec.blackout_gap_seconds < 0.0 ||
+        !std::isfinite(spec.window_seconds) || spec.window_seconds <= 0.0) {
+        result.error =
+            "forward labels require a non-negative blackout and positive window";
+        return result;
+    }
+    if (spec.rolling_windows < 2) {
+        result.error = "forward labels require at least two rolling windows";
+        return result;
+    }
+
+    const std::optional<TimePoint> prediction =
+        parse_time_point(snapshot.as_of);
+    if (!prediction) {
+        result.error = "forward labels received an invalid prediction cutoff";
+        return result;
+    }
+    const std::shared_ptr<data::Database> database =
+        node.find_database(snapshot.database);
+    if (!database) {
+        result.error = "database '" + snapshot.database + "' does not exist";
+        return result;
+    }
+    const std::shared_ptr<data::Table> source =
+        database->find_table(snapshot.source_table);
+    if (!source) {
+        result.error = "source table '" + snapshot.database + "." +
+                       snapshot.source_table + "' does not exist";
+        return result;
+    }
+    std::string read_error;
+    const std::optional<std::vector<json>> source_rows =
+        table_rows(node, *source, &read_error);
+    if (!source_rows) {
+        result.error = std::move(read_error);
+        return result;
+    }
+    if (source_rows->empty()) {
+        result.error = "forward label source is empty";
+        return result;
+    }
+
+    std::map<std::string, std::vector<ForwardObservation>> observations;
+    std::set<double> candidate_cutoffs;
+    candidate_cutoffs.insert(prediction->value);
+    result.data_last_time = -std::numeric_limits<double>::infinity();
+    for (std::size_t index = 0; index < source_rows->size(); ++index) {
+        const json& row = source_rows->at(index);
+        if (!row.is_object()) {
+            result.error = "forward label source row " +
+                           std::to_string(index) + " is not an object";
+            return result;
+        }
+        const auto entity = row.find(snapshot.entity_column);
+        const std::string entity_key =
+            entity == row.end() ? std::string{} : scalar_key(*entity);
+        if (entity_key.empty()) {
+            result.error = "forward label source row " +
+                           std::to_string(index) +
+                           " has no scalar entity column '" +
+                           snapshot.entity_column + "'";
+            return result;
+        }
+        const auto time_value = row.find(snapshot.time_column);
+        if (time_value == row.end()) {
+            result.error = "forward label source row " +
+                           std::to_string(index) + " has no time column '" +
+                           snapshot.time_column + "'";
+            return result;
+        }
+        std::string time_error;
+        const std::optional<TimePoint> time =
+            parse_time_point(*time_value, &time_error);
+        if (!time || time->kind != prediction->kind) {
+            result.error = "forward label source row " +
+                           std::to_string(index) +
+                           " has an incompatible time: " + time_error;
+            return result;
+        }
+        const auto label_value = row.find(spec.label_column);
+        const std::optional<bool> positive =
+            label_value == row.end() ? std::nullopt
+                                     : binary_label(*label_value);
+        if (!positive) {
+            result.error = "forward label source row " +
+                           std::to_string(index) +
+                           " has no finite boolean or numeric label column '" +
+                           spec.label_column + "'";
+            return result;
+        }
+        for (const std::string& feature : spec.feature_columns) {
+            if (!row.contains(feature)) {
+                result.error = "forward label source row " +
+                               std::to_string(index) +
+                               " has no feature column '" + feature + "'";
+                return result;
+            }
+        }
+        observations[entity_key].push_back(
+            ForwardObservation{*time, *positive, row});
+        result.data_last_time =
+            std::max(result.data_last_time, time->value);
+        if (time->value <= prediction->value) {
+            candidate_cutoffs.insert(time->value);
+        }
+    }
+    for (auto& [entity, rows] : observations) {
+        (void)entity;
+        std::ranges::stable_sort(
+            rows, [](const ForwardObservation& left,
+                     const ForwardObservation& right) {
+                if (left.time.value != right.time.value) {
+                    return left.time.value < right.time.value;
+                }
+                return left.row.dump() < right.row.dump();
+            });
+    }
+
+    result.declared_window_end = prediction->value +
+                                 spec.blackout_gap_seconds +
+                                 spec.window_seconds;
+    result.declared_window_fully_observed =
+        result.data_last_time >= result.declared_window_end;
+
+    std::vector<double> eligible_cutoffs;
+    for (const double cutoff : candidate_cutoffs) {
+        const double window_end = cutoff + spec.blackout_gap_seconds +
+                                  spec.window_seconds;
+        if (cutoff <= prediction->value &&
+            window_end <= result.data_last_time) {
+            eligible_cutoffs.push_back(cutoff);
+        }
+    }
+    if (eligible_cutoffs.size() > spec.rolling_windows) {
+        eligible_cutoffs.erase(
+            eligible_cutoffs.begin(),
+            eligible_cutoffs.end() -
+                static_cast<std::ptrdiff_t>(spec.rolling_windows));
+    }
+
+    std::int64_t sample_id = 1;
+    for (const double cutoff : eligible_cutoffs) {
+        ForwardLabelWindow window;
+        window.cutoff = cutoff;
+        const double label_start = cutoff + spec.blackout_gap_seconds;
+        const double label_end = label_start + spec.window_seconds;
+        for (const auto& [entity, rows] : observations) {
+            (void)entity;
+            const auto feature_end = std::upper_bound(
+                rows.begin(), rows.end(), cutoff,
+                [](double value, const ForwardObservation& observation) {
+                    return value < observation.time.value;
+                });
+            if (feature_end == rows.begin()) {
+                continue;
+            }
+            const ForwardObservation& feature_row = *std::prev(feature_end);
+            if (feature_row.positive) {
+                ++window.inactive;
+                ++result.inactive;
+                continue;
+            }
+            const bool positive = std::ranges::any_of(
+                rows, [label_start, label_end](const ForwardObservation& row) {
+                    return row.time.value > label_start &&
+                           row.time.value <= label_end && row.positive;
+                });
+            if (!positive && rows.back().time.value < label_end) {
+                ++window.censored;
+                ++result.censored;
+                continue;
+            }
+
+            json training_row = feature_row.row;
+            training_row["_s1_sample_id"] = sample_id;
+            training_row["_s1_cutoff"] = cutoff;
+            training_row[spec.label_column] = positive ? 1 : 0;
+            result.rows.push_back(std::move(training_row));
+            ++sample_id;
+            ++window.rows;
+            if (positive) {
+                ++window.positives;
+            } else {
+                ++window.negatives;
+            }
+        }
+        if (window.has_both_classes()) {
+            ++result.windows_with_both_classes;
+        }
+        result.windows.push_back(window);
+    }
+
+    if (!result.windows.empty()) {
+        const ForwardLabelWindow& validation = result.windows.back();
+        result.validation_rows = validation.rows;
+        result.validation_positives = validation.positives;
+        result.validation_negatives = validation.negatives;
+        for (auto window = result.windows.begin();
+             window != std::prev(result.windows.end()); ++window) {
+            result.training_rows += window->rows;
+            result.training_positives += window->positives;
+            result.training_negatives += window->negatives;
+        }
+    }
     return result;
 }
 
