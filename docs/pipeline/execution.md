@@ -7,7 +7,7 @@ execution (status, logs, outputs, lineage). This is an atomic slice of **FEAT-5*
 ExecutionGraph IR (*what* to run) and the Run record (*the result*).
 
 This page documents the **orchestrator**: `zetta::pipeline::GraphExecutor` and the
-`zetta::pipeline::StepExecutor` seam it runs each step through.
+`zetta::pipeline::StepExecutor` interface it runs each step through.
 
 ```
 include/zetta/pipeline/executor.hpp   GraphExecutor, StepExecutor, DefaultStepExecutor,
@@ -21,9 +21,9 @@ This slice **orchestrates** execution; it does not train a real model or build a
 real index. A `DefaultStepExecutor` derives a faithful, schema-valid `Run` from
 the graph's structure — exactly the same altitude as the rest of R1 (a
 [deployment](deployments.md) records a *summary*, a run records *outputs*). Real
-per-step compute plugs in behind the `StepExecutor` seam **without touching the
-orchestrator**, the same shape as the gate's `Check` seam ([gate.md](gate.md))
-and the `StorageEngine` seam ([storage.md](../data/storage.md)).
+per-step compute plugs in behind the `StepExecutor` interface **without touching the
+orchestrator**, the same shape as the gate's `Check` interface ([gate.md](gate.md))
+and the `StorageEngine` interface ([storage.md](../data/storage.md)).
 
 ## Running a graph
 
@@ -219,8 +219,9 @@ https://github.com/oramasearch/lake/issues/253):
 - **A table-backed churn run** (`dataset_path = "<database>.<table>"`, #947) records the dataset
   as its only lineage source (`dataset:<database>.<table>`) on its first connect step and logs
   `dataset: trained on <database>.<table>` plus each of `resolve_dataset`'s notes. Every other
-  connect step logs `connect: <name> was not read: this run trained on <database>.<table>` instead
-  of reporting the graph's own `source:table` as read. `StepOutcome::notes` carries these lines.
+  connect step logs `connect: <name> reuses dataset <database>.<table> already loaded by this run`
+  instead of reporting the graph's own `source:table` as read. `StepOutcome::notes` carries these
+  lines. Single-table S-1 graphs compose one connect step, so they do not imply a second source.
 - **A run given no `dataset_path` reads its pipeline's own table** when there is one: the first
   connect step whose `source` + `table` attributes name a dataset this node holds, with the first
   model step's `target` as the label (`dataset.label_column`). It logs `dataset: read from the

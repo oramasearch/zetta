@@ -564,7 +564,24 @@ TEST_F(ReplicatedRestServerFixture,
        CreateSolutionPreservesAutomaticTimeRolesOverRestAndMcp) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);
-    ASSERT_TRUE(database->create_table("customers"));
+    const auto customers = database->create_table("customers");
+    ASSERT_TRUE(customers);
+    const std::vector<std::string> months = {
+        "2026-07-01T00:00:00.000Z",
+        "2026-08-01T00:00:00.000Z",
+        "2026-09-01T00:00:00.000Z",
+        "2026-10-01T00:00:00.000Z",
+        "2026-11-01T00:00:00.000Z"};
+    for (int entity = 1; entity <= 4; ++entity) {
+        const int final_month = entity <= 3 ? entity : 4;
+        for (int month = 0; month <= final_month; ++month) {
+            customers->add_row(
+                {{"entity", entity},
+                 {"observed_at", months[month]},
+                 {"label", entity <= 3 && month == final_month ? 1 : 0},
+                 {"feature", entity <= 3 ? 1.0 : 10.0}});
+        }
+    }
     ASSERT_TRUE(node.create_project("solution-rest"));
     ASSERT_TRUE(node.create_project("solution-mcp"));
 

@@ -512,6 +512,8 @@ ChurnSolutionResult run_churn_solution_on_table(
             "the in-memory dataset path.");
     }
 
+    const zetta::storage::JsonStore forward_labels =
+        make_store(input.forward_label_rows);
     ChurnPipelineConfig pipeline;
     pipeline.accounts_table = input.table_id;
     pipeline.accounts_dataset = input.dataset_name;
@@ -521,6 +523,16 @@ ChurnSolutionResult run_churn_solution_on_table(
         input.contract, options.params.objective == "squared_error");
     pipeline.events_schema = churn_events_schema();  // empty frame; static mode
     pipeline.featurize = table_featurize_spec(input.contract);
+    if (!input.forward_label_rows.empty()) {
+        pipeline.training_accounts_store = &forward_labels;
+        pipeline.training_accounts_schema = table_accounts_schema(
+            input.forward_label_contract,
+            options.params.objective == "squared_error");
+        pipeline.training_featurize =
+            table_featurize_spec(input.forward_label_contract);
+        pipeline.training_dataset = input.forward_label_source;
+        pipeline.score_active_only = input.score_active_only;
+    }
     pipeline.params = options.params;
     pipeline.calibration = options.calibration;
     pipeline.entity_column = std::string(kTableEntityColumn);

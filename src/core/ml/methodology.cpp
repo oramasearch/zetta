@@ -16,6 +16,7 @@
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/solutions/snapshot.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 
@@ -66,6 +67,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     const bool supplier_risk = request.solution == "B-5";
     const bool credit_underwriting = request.solution == "B-7";
     const bool healthcare_operations = request.solution == "B-6";
+    const bool retention = request.solution == "S-1";
     const std::string dataset_entity =
         request.hints.is_object()
             ? request.hints.value("entity_column", std::string("account"))
@@ -307,32 +309,34 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
                          ? "resolved customers eligible for outbound audience selection"
                          : "active accounts to score for churn risk"}},
         "load_customers");
-    graph.add_node(
-        ir::StepKind::Connect,
-        credit_underwriting ? "Load verified application and bureau evidence"
-        : fraud_decisioning ? "Load request-time and graph signals"
-        : supplier_risk ? "Load delivery and external risk evidence"
-        : lead_scoring ? "Load pre-qualification engagement"
-                         : collections ? "Load payment and contact history"
-                                       : automated_outbound ? "Load pre-send engagement and contact history"
-                             : "Load usage & billing activity",
-        nlohmann::json{
-            {"source", "warehouse"},
-            {"table", credit_underwriting ? "credit_evidence"
-                         : fraud_decisioning ? "authorization_signals"
-                         : supplier_risk ? "supplier_risk_signals"
-                         : lead_scoring ? "lead_events"
-                         : collections ? "collections_events"
-                                       : "events"},
-            {"note", credit_underwriting ? "verified pre-decision income, exposure, and repayment signals"
-                         : fraud_decisioning ? "request-time device, merchant, counterparty, and graph features"
-                         : supplier_risk ? "point-in-time delivery, quality, concentration, and external publications"
-                         : lead_scoring ? "point-in-time engagement signals per lead"
-                         : collections ? "point-in-time payment, delinquency, and contact signals"
-                                       : automated_outbound
-                         ? "point-in-time engagement, consent, suppression, and contact evidence"
-                         : "engagement + payment signals per account"}},
-        "load_activity");
+    if (!retention) {
+        graph.add_node(
+            ir::StepKind::Connect,
+            credit_underwriting ? "Load verified application and bureau evidence"
+            : fraud_decisioning ? "Load request-time and graph signals"
+            : supplier_risk ? "Load delivery and external risk evidence"
+            : lead_scoring ? "Load pre-qualification engagement"
+                             : collections ? "Load payment and contact history"
+                                           : automated_outbound ? "Load pre-send engagement and contact history"
+                                 : "Load usage & billing activity",
+            nlohmann::json{
+                {"source", "warehouse"},
+                {"table", credit_underwriting ? "credit_evidence"
+                             : fraud_decisioning ? "authorization_signals"
+                             : supplier_risk ? "supplier_risk_signals"
+                             : lead_scoring ? "lead_events"
+                             : collections ? "collections_events"
+                                           : "events"},
+                {"note", credit_underwriting ? "verified pre-decision income, exposure, and repayment signals"
+                             : fraud_decisioning ? "request-time device, merchant, counterparty, and graph features"
+                             : supplier_risk ? "point-in-time delivery, quality, concentration, and external publications"
+                             : lead_scoring ? "point-in-time engagement signals per lead"
+                             : collections ? "point-in-time payment, delinquency, and contact signals"
+                                           : automated_outbound
+                             ? "point-in-time engagement, consent, suppression, and contact evidence"
+                             : "engagement + payment signals per account"}},
+            "load_activity");
+    }
     graph.add_node(
         ir::StepKind::Clean,
         credit_underwriting ? "Build point-in-time credit features"
@@ -460,7 +464,9 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "notify_retention");
 
     graph.add_edge("load_customers", "build_features");
-    graph.add_edge("load_activity", "build_features");
+    if (!retention) {
+        graph.add_edge("load_activity", "build_features");
+    }
     graph.add_edge("build_features", "train_churn_model");
     graph.add_edge("train_churn_model", "index_scores");
     graph.add_edge("index_scores", "serve_scores");
@@ -487,6 +493,7 @@ api::ApiResult run_m1(RunRequest& request) {
     nlohmann::json dataset_notes = nlohmann::json::array();
     nlohmann::json dataset_contract;
     data::FeaturePlan feature_plan;
+    std::optional<double> temporal_holdout_fraction;
     // A landed table named by the pipeline is the default data source.
     if (!request.input.contains("dataset_path")) {
         for (const auto& source : request.graph->graph().nodes_of_kind(ir::StepKind::Connect)) {
@@ -547,6 +554,115 @@ api::ApiResult run_m1(RunRequest& request) {
             }
             dataset_notes = table.notes;
             dataset_contract = to_json(resolved.contract);
+            if (request.input.value("solution", std::string{}) == "S-1") {
+                const auto source_snapshot =
+                    request.input.find("solution_source_snapshot");
+                const auto correctness =
+                    request.input.find("s1_forward_label");
+                if (source_snapshot == request.input.end() ||
+                    correctness == request.input.end() ||
+                    !correctness->is_object()) {
+                    return api::ApiResult::failure(
+                        "invalid_input",
+                        "S-1 run is missing its forward-label contract");
+                }
+                std::string snapshot_error;
+                const std::optional<solutions::SnapshotSpec> snapshot =
+                    solutions::SnapshotSpec::from_json(
+                        *source_snapshot, &snapshot_error);
+                if (!snapshot) {
+                    return api::ApiResult::failure(
+                        "invalid_input",
+                        "S-1 source snapshot: " + snapshot_error);
+                }
+                const nlohmann::json labels = correctness->value(
+                    "labels", nlohmann::json::object());
+                const nlohmann::json validation = correctness->value(
+                    "validation", nlohmann::json::object());
+                const int rolling_windows =
+                    validation.value("rolling_windows", 3);
+                const solutions::ForwardLabelResult forward =
+                    solutions::build_forward_labels(
+                        context.node, *snapshot,
+                        solutions::ForwardLabelSpec{
+                            .label_column = resolved.contract.label_column,
+                            .feature_columns =
+                                resolved.contract.feature_columns,
+                            .blackout_gap_seconds = correctness->value(
+                                "blackout_gap_seconds", 0.0),
+                            .window_seconds = labels.value(
+                                "window_seconds", 0.0),
+                            .rolling_windows =
+                                rolling_windows > 0
+                                    ? static_cast<std::size_t>(rolling_windows)
+                                    : 0});
+                if (!forward.ok()) {
+                    return api::ApiResult::failure(
+                        "invalid_input",
+                        "S-1 forward labels: " + forward.error);
+                }
+                const bool balanced =
+                    forward.declared_window_fully_observed &&
+                    forward.windows.size() >= 2 &&
+                    forward.windows_with_both_classes > 0 &&
+                    forward.training_positives > 0 &&
+                    forward.training_negatives > 0 &&
+                    forward.validation_positives > 0 &&
+                    forward.validation_negatives > 0;
+                if (!balanced) {
+                    return api::ApiResult::failure(
+                        "invalid_input",
+                        "S-1 forward-label evidence changed after confirmation: "
+                        "windows=" + std::to_string(forward.windows.size()) +
+                        ", balanced_windows=" +
+                        std::to_string(forward.windows_with_both_classes) +
+                        ", train_positive=" +
+                        std::to_string(forward.training_positives) +
+                        ", train_negative=" +
+                        std::to_string(forward.training_negatives) +
+                        ", validation_positive=" +
+                        std::to_string(forward.validation_positives) +
+                        ", validation_negative=" +
+                        std::to_string(forward.validation_negatives) +
+                        ", censored=" + std::to_string(forward.censored));
+                }
+                const std::optional<solutions::TimePoint> prediction =
+                    solutions::parse_time_point(snapshot->as_of);
+                if (!prediction) {
+                    return api::ApiResult::failure(
+                        "invalid_input", "S-1 prediction cutoff is invalid");
+                }
+                table.forward_label_rows = forward.rows;
+                table.forward_label_contract.entity_column = "_s1_sample_id";
+                table.forward_label_contract.label_column =
+                    resolved.contract.label_column;
+                table.forward_label_contract.time_column = "_s1_cutoff";
+                table.forward_label_contract.as_of = prediction->value;
+                table.forward_label_contract.feature_columns =
+                    resolved.contract.feature_columns;
+                table.forward_label_source =
+                    snapshot->database + "." + snapshot->source_table;
+                table.forward_label_censored = forward.censored;
+                table.forward_label_inactive = forward.inactive;
+                table.score_active_only = true;
+                table.notes.push_back(
+                    "forward labels: rows=" +
+                    std::to_string(forward.rows.size()) +
+                    ", train_positive=" +
+                    std::to_string(forward.training_positives) +
+                    ", train_negative=" +
+                    std::to_string(forward.training_negatives) +
+                    ", validation_positive=" +
+                    std::to_string(forward.validation_positives) +
+                    ", validation_negative=" +
+                    std::to_string(forward.validation_negatives) +
+                    ", censored=" + std::to_string(forward.censored) +
+                    ", inactive=" + std::to_string(forward.inactive));
+                temporal_holdout_fraction =
+                    static_cast<double>(forward.validation_rows) /
+                    static_cast<double>(forward.rows.size());
+                dataset_notes = table.notes;
+            }
         } else {
             auto loaded =
                 zetta::usecases::churn::load_churn_dataset(path.directory);
@@ -627,6 +743,9 @@ api::ApiResult run_m1(RunRequest& request) {
     }
     options.params.holdout_fraction = request.input.value(
         "holdout_fraction", options.params.holdout_fraction);
+    if (temporal_holdout_fraction) {
+        options.params.holdout_fraction = *temporal_holdout_fraction;
+    }
     for (const auto& model :
          request.graph->graph().nodes_of_kind(ir::StepKind::Model)) {
         if (model->attributes.value("objective", std::string{}) ==

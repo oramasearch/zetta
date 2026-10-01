@@ -10,6 +10,9 @@ duplicate per-methodology configuration (#1199).
 Single-table solutions with a declared entity role use keyed M-2, preserve that
 identifier through downstream outputs and decisions, and derive decision-source
 columns from the composed dataset and M-1 output contracts (#1204).
+S-1 derives outcomes from its declared post-cutoff window, excludes and counts
+censored negatives, validates on the latest fully observed rolling cutoff, and
+scores active entities from the current snapshot (#1214).
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
 S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-8. This is the scope of
@@ -25,8 +28,9 @@ The workspace integration routes projected solution records through the engine's
 one-tick checks for all added catalog families and existing table-backed state.
 
 - [S-1.md](S-1.md) — runnable churn and retention module: data roles, keyed or
-  fuzzy entity resolution, levels, policy and holdout defaults, action payloads,
-  run sequence, and every domain refusal (#1110, #1204).
+  fuzzy entity resolution, forward labels and censoring, levels, policy and
+  holdout defaults, action payloads, run sequence, and every domain refusal
+  (#1110, #1204, #1214).
 - [S-2.md](S-2.md) — runnable lead and opportunity scoring module: conversion
   labels, capacity-aware CRM queues, SLAs, holdout, and planted-effect proof
   (#1111).
@@ -447,7 +451,9 @@ shapes before applying the matching `M-*` object. Policy predicates, confirmed
 missing predicates, and other solution evidence cannot enter a closed step
 schema (#1197). A missing selected shape or runner is refused explicitly.
 For S-1, the composed gate also enforces its domain checks and the selected
-level's M-5, M-6, or M-8 requirements before the graph is persisted or run.
+level's M-5, M-6, or M-8 requirements before the graph is persisted or run. Its
+label-window check measures source coverage, rolling train/validation class
+counts, and censoring before confirmation; declaration alone cannot pass.
 For S-2, it refuses non-point-in-time conversion labels, post-qualification
 predictors, and routing without current owner, territory, and rep-capacity
 evidence. Levels 3 and 4 require M-6.

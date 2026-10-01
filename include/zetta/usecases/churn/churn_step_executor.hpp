@@ -112,11 +112,20 @@ struct ChurnPipelineConfig {
     // windowed spec is a configuration error the featurize step reports.
     std::string accounts_table;
     // That table as the caller named it (`database.table`), and what resolving it decided.
-    // A table-backed run's lineage names this dataset, and its connect steps that were not
-    // read say so, instead of reporting the graph's own sources as read.
+    // A table-backed run's lineage names this dataset. Repeated connect steps explicitly
+    // report that they reuse the already-loaded source.
     std::string accounts_dataset;
     std::vector<std::string> dataset_notes;
     std::shared_ptr<const data::EntityKeyMapping> entity_keys;
+
+    // Optional S-1 rolling examples. Training reads this source while scoring
+    // continues to read `accounts_table`, keeping future outcomes out of the
+    // current feature snapshot.
+    const zetta::storage::StorageEngine* training_accounts_store = nullptr;
+    ddf::DataFrameSchema training_accounts_schema;
+    ddf::FeaturizeSpec training_featurize;
+    std::string training_dataset;
+    bool score_active_only = false;
 
     ddf::FeaturizeSpec featurize;        // the point-in-time (leakage-free) feature graph
     ml::GbdtParams params;               // the GBDT hyperparameters

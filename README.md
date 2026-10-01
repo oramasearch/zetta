@@ -141,7 +141,8 @@ What's inside, by domain (each links to that domain's docs):
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
   S-1 is runnable at all four levels with keyed single-table entity propagation,
-  confirm-time fuzzy-input refusals, eight named domain refusals,
+  forward-window labels, censored-negative exclusion, rolling out-of-time
+  validation, measured confirm-time class/coverage refusals, fuzzy-input refusals,
   top-three reason codes, risk × value × driver cells, governed CRM/journey
   delivery, tier holdouts, driver reports, uplift no-contact targeting, and ROI
   readout. S-2 is runnable at all four levels with point-in-time conversion

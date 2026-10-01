@@ -188,6 +188,12 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
         }
     }
     state->input["solution_snapshot_as_of"] = state->binding.at("snapshot").at("as_of");
+    if (state->binding.value("solution", std::string{}) == "S-1") {
+        state->input["solution_source_snapshot"] =
+            state->binding.at("snapshot");
+        state->input["s1_forward_label"] =
+            state->binding.at("s1_correctness");
+    }
     outputs.push_back({"dataset", "solution snapshot", prepared.value.at("dataset_path")});
     for (std::size_t index = 0; index < state->stages.size(); ++index) {
         const SolutionStage& stage = state->stages[index];

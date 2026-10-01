@@ -19,6 +19,7 @@ namespace {
 
 using nlohmann::json;
 using zetta::solutions::AsOfJoinSpec;
+using zetta::solutions::ForwardLabelSpec;
 using zetta::solutions::SnapshotSpec;
 
 zetta::NodeConfig node_config(const zetta::test::TempDir& directory) {
@@ -139,6 +140,68 @@ TEST(Snapshot, PreservesDistinctIntegerEntityKeysBeyondDoublePrecision) {
     ASSERT_TRUE(first_row) << first_row.error();
     ASSERT_TRUE(second_row) << second_row.error();
     EXPECT_NE(first_row->at("entity_id"), second_row->at("entity_id"));
+    node.stop();
+}
+
+TEST(Snapshot, BuildsRollingForwardLabelsAndExcludesCensoredNegatives) {
+    zetta::test::TempDir directory;
+    zetta::Node node{node_config(directory)};
+    ASSERT_TRUE(node.start());
+    const auto database = node.create_database("features");
+    ASSERT_TRUE(database);
+    const auto events = database->create_table("events");
+    ASSERT_TRUE(events);
+
+    const auto add = [&](std::string account, int observed_at, int churned,
+                         double usage) {
+        events->add_row({{"account", std::move(account)},
+                         {"observed_at", observed_at},
+                         {"churned", churned},
+                         {"usage", usage}});
+    };
+    for (const int time : {10, 20, 30}) {
+        add("a", time, 0, 1.0);
+        add("b", time, 0, 8.0);
+        add("c", time, time == 30 ? 1 : 0, 2.0);
+        add("d", time, 0, 5.0);
+    }
+    add("a", 40, 1, 1.0);
+    add("b", 40, 0, 8.0);
+    add("b", 50, 0, 8.0);
+
+    SnapshotSpec forward_snapshot = numeric_snapshot_spec();
+    forward_snapshot.as_of = 30.0;
+    const zetta::solutions::ForwardLabelResult result =
+        zetta::solutions::build_forward_labels(
+            node, forward_snapshot,
+            ForwardLabelSpec{.label_column = "churned",
+                             .feature_columns = {"usage"},
+                             .blackout_gap_seconds = 2.0,
+                             .window_seconds = 8.0,
+                             .rolling_windows = 3});
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.windows.size(), 3u);
+    EXPECT_TRUE(result.declared_window_fully_observed);
+    EXPECT_EQ(result.data_last_time, 50.0);
+    EXPECT_EQ(result.windows_with_both_classes, 2u);
+    EXPECT_EQ(result.training_positives, 1u);
+    EXPECT_GT(result.training_negatives, 0u);
+    EXPECT_EQ(result.validation_positives, 1u);
+    EXPECT_EQ(result.validation_negatives, 1u);
+    EXPECT_EQ(result.censored, 1u);
+    EXPECT_GT(result.inactive, 0u);
+
+    bool found_forward_positive = false;
+    for (const json& row : result.rows) {
+        EXPECT_TRUE(row.contains("_s1_sample_id"));
+        EXPECT_TRUE(row.contains("_s1_cutoff"));
+        if (row.at("account") == "a" &&
+            row.at("_s1_cutoff") == 30.0) {
+            found_forward_positive = true;
+            EXPECT_EQ(row.at("churned"), 1);
+        }
+    }
+    EXPECT_TRUE(found_forward_positive);
     node.stop();
 }
 
