@@ -9,6 +9,7 @@
 namespace {
 
 using zetta::ml::EntityRecord;
+using zetta::ml::EntityResolutionMode;
 using zetta::ml::EntityResolutionParams;
 using zetta::ml::EntityResolutionResult;
 
@@ -82,6 +83,27 @@ TEST(EntityResolution, PlantedDuplicatesResolveWithHighPairwiseF1) {
   EXPECT_GT(result.metrics.bcubed_precision, 0.9);
   EXPECT_GT(result.metrics.bcubed_recall, 0.9);
   EXPECT_EQ(result.entities.size(), duplicate_fixture().size());
+}
+
+TEST(EntityResolution, KeyedModeCollapsesRepeatedObservationsWithoutPairs) {
+  const std::vector<EntityRecord> observations = {
+      {"datasets.customers", "c00001"},
+      {"datasets.customers", "c00001"},
+      {"datasets.customers", "c00002"},
+      {"datasets.customers", "c00002"},
+  };
+  EntityResolutionParams params;
+  params.mode = EntityResolutionMode::Keyed;
+
+  const EntityResolutionResult result =
+      zetta::ml::resolve_entities({observations}, params);
+
+  ASSERT_TRUE(result.ok()) << result.error;
+  EXPECT_EQ(result.scoring_method, "declared_entity_key");
+  EXPECT_EQ(result.entities.size(), 2u);
+  EXPECT_TRUE(result.pairs.empty());
+  EXPECT_EQ(result.entities[0].entity_id, "c00001");
+  EXPECT_EQ(result.entities[1].entity_id, "c00002");
 }
 
 TEST(EntityResolution, ConflictingVerifiedKeyStopsTransitiveBridgeMerge) {

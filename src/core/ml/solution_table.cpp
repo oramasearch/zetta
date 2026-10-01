@@ -180,10 +180,15 @@ void project_shared_hints(nlohmann::json& hints,
 
 nlohmann::json source_hints(const nlohmann::json& sources,
                             const Methodology& methodology,
-                            const nlohmann::json& snapshot) {
+                            const nlohmann::json& snapshot,
+                            const nlohmann::json& dataset,
+                            std::string_view solution) {
     nlohmann::json hints = nlohmann::json::object();
     if (!sources.is_object()) {
         return hints;
+    }
+    if (solution == "S-1") {
+        project_shared_hints(hints, dataset, methodology);
     }
     project_shared_hints(hints, sources, methodology);
     if (const auto common = sources.find("common");
@@ -206,6 +211,24 @@ nlohmann::json source_hints(const nlohmann::json& sources,
     if (const auto specific = sources.find(methodology.id);
         specific != sources.end() && specific->is_object()) {
         hints.update(*specific);
+    }
+    if (solution == "S-1" && methodology.id == "M-5") {
+        if (!hints.contains("event_indicator") &&
+            hints.contains("label_column")) {
+            hints["event_indicator"] = hints.at("label_column");
+        }
+        if (!hints.contains("duration_column") &&
+            dataset.contains("feature_columns") &&
+            dataset.at("feature_columns").is_array() &&
+            std::ranges::find(dataset.at("feature_columns"),
+                              "tenure_months") !=
+                dataset.at("feature_columns").end()) {
+            hints["duration_column"] = "tenure_months";
+        }
+        if (!hints.contains("feature_time_column") &&
+            hints.contains("time_column")) {
+            hints["feature_time_column"] = hints.at("time_column");
+        }
     }
     return hints;
 }
@@ -890,7 +913,8 @@ nlohmann::json solution_json(const Solution& solution) {
 
 ComposedSolution compose_solution(const Solution& solution, int level,
                                   const nlohmann::json& sources,
-                                  const nlohmann::json& snapshot) {
+                                  const nlohmann::json& snapshot,
+                                  const nlohmann::json& dataset) {
     ComposedSolution result;
     if (solution.status == "sketch") {
         result.error = solution.name + " (" + solution.id +
@@ -942,7 +966,8 @@ ComposedSolution compose_solution(const Solution& solution, int level,
         }
         ShapeRequest request;
         request.solution = solution.id;
-        request.hints = source_hints(sources, *methodology, snapshot);
+        request.hints = source_hints(sources, *methodology, snapshot,
+                                     dataset, solution.id);
         const ir::ExecutionGraph stage_graph = methodology->build_shape(request);
         if (stage_graph.empty()) {
             result.error = methodology->name + " (" + methodology->id +

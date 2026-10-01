@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <chrono>
 #include <cstdint>
@@ -240,6 +241,16 @@ struct SolutionJourney : ::testing::Test {
             background.prune();
         };
     }
+
+    void run_live_shape(int level);
+    void verify_live_shape_tables(
+        const ApiResult& status,
+        int level,
+        std::string& decisions_table);
+    void verify_live_shape_evidence(
+        const nlohmann::json& binding,
+        const std::vector<nlohmann::json>& delivery_requests,
+        std::size_t delivery_start);
 };
 
 void land_retention_data(Node& node, bool text_entities = false) {
@@ -319,6 +330,139 @@ void land_retention_data(Node& node, bool text_entities = false) {
     table->add_row(std::move(future));
     const auto written = zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
+}
+
+void land_live_shape_retention_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("e2e_churn_s1");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(12));
+    for (int index = 0; index < 12000; ++index) {
+        std::string customer_id = "c" + std::to_string(100000 + index);
+        customer_id.erase(1, 1);
+        const std::uint32_t mixed =
+            static_cast<std::uint32_t>(index) * 2654435761U + 1013904223U;
+        const int in_collections = index % 11 == 0 ? 1 : 0;
+        const int open_complaint = index % 17 == 0 ? 1 : 0;
+        const int vulnerable = index % 29 == 0 ? 1 : 0;
+        const int churned =
+            ((mixed >> 9U) + static_cast<std::uint32_t>(in_collections)) % 5U ==
+                    0U
+                ? 1
+                : 0;
+        const std::string observed_at =
+            "2026-03-" + std::to_string(10 + index % 15) + "T00:00:00Z";
+        table->add_row(
+            {{"customer_id", customer_id},
+             {"observed_at", observed_at},
+             {"usage", 0.1 + static_cast<double>(mixed % 800U) / 1000.0},
+             {"tenure_months", 6 + index % 84},
+             {"complaints", index % 4},
+             {"monthly_value", 25.0 + static_cast<double>(index % 175)},
+             {"in_collections", in_collections},
+             {"open_complaint", open_complaint},
+             {"vulnerable", vulnerable},
+             {"churned", churned}});
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json live_shape_foundation(const std::string& target_table) {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "e2e_churn_s1"},
+          {"target_table", target_table},
+          {"entity_column", "customer_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-04-01T00:00:00Z"}}},
+        {"dataset",
+         {{"entity_column", "customer_id"},
+          {"label_column", "churned"},
+          {"feature_columns",
+           {"complaints", "monthly_value", "tenure_months", "usage"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://e2e-webhook.oramadev.net/hook"},
+          {"owner", "retention-team"}}},
+        {"roi_model",
+         {{"currency", "USD"},
+          {"investment", 200.0},
+          {"value_per_outcome", 100.0}}}};
+}
+
+nlohmann::json live_shape_sources(int level) {
+    nlohmann::json sources = {
+        {"source", "datasets"},
+        {"table", "e2e_churn_s1"},
+        {"M-1",
+         {{"entity_column", "customer_id"},
+          {"feature_columns",
+           {"complaints", "monthly_value", "tenure_months", "usage"}},
+          {"label_column", "churned"},
+          {"time_column", "observed_at"}}},
+        {"M-2",
+         {{"record_id", "customer_id"},
+          {"source", "datasets"},
+          {"table", "e2e_churn_s1"}}},
+        {"M-3",
+         {{"entity_column", "customer_id"},
+          {"feature_columns",
+           {"complaints", "monthly_value", "tenure_months", "usage"}},
+          {"label_column", "churned"},
+          {"time_column", "observed_at"}}},
+        {"missing_policy_predicates", nlohmann::json::array()},
+        {"policy_predicates",
+         {{"in_collections", "in_collections"},
+          {"open_complaint", "open_complaint"},
+          {"vulnerable", "vulnerable"}}}};
+    if (level >= 3) {
+        sources["M-6"] = {
+            {"entity", "customer_id"},
+            {"treatment", "in_collections"},
+            {"outcome", "churned"}};
+    }
+    if (level >= 4) {
+        sources["M-8"] = {
+            {"entity_column", "customer_id"},
+            {"action_column", "open_complaint"},
+            {"label_column", "churned"},
+            {"feature_columns",
+             {"complaints", "monthly_value", "tenure_months", "usage"}},
+            {"value_column", "monthly_value"},
+            {"cost_column", "usage"},
+            {"eligibility_column", "vulnerable"},
+            {"contacts_column", "complaints"},
+            {"contact_cap_column", "tenure_months"},
+            {"interaction_count_column", "in_collections"},
+            {"interaction_time_column", "observed_at"},
+            {"logging_propensity_column", ""},
+            {"num_trees", 8},
+            {"max_depth", 2},
+            {"als_iterations", 2}};
+    }
+    return sources;
+}
+
+bool is_live_shape_id(const nlohmann::json& value) {
+    if (!value.is_string()) {
+        return false;
+    }
+    const std::string id = value.get<std::string>();
+    return id.size() == 6 && id.front() == 'c' &&
+           std::ranges::all_of(
+               id.substr(1), [](unsigned char character) {
+                   return std::isdigit(character) != 0;
+               });
+}
+
+bool is_c0_live_shape_id(const nlohmann::json& value) {
+    return is_live_shape_id(value) &&
+           value.get_ref<const std::string&>().starts_with("c0");
 }
 
 void land_employee_attrition_data(Node& node) {
@@ -5239,6 +5383,278 @@ TEST_F(SolutionJourney,
         }
         EXPECT_GT(ledger_entities, 0u) << suffix;
     }
+}
+
+void SolutionJourney::run_live_shape(int level) {
+    SolutionDeliveryBoundary delivery;
+    land_live_shape_retention_data(node);
+    const std::string project_name =
+        "live-shape-cl" + std::to_string(level);
+    const std::string target_table = "e2e_s1c_snapshot";
+    ASSERT_TRUE(call("create_project", {{"name", project_name}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", project_name},
+         {"solution", "S-1"},
+         {"level", level},
+         {"sources", live_shape_sources(level)},
+         {"foundation", live_shape_foundation(target_table)}});
+    ASSERT_TRUE(created.ok)
+        << "CL-" << level << ": " << created.error.message;
+
+    const auto project = node.find_project(project_name);
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph(
+        created.value.at("graph").get<std::string>());
+    ASSERT_TRUE(graph);
+    const auto manifest = graph->graph().find_node("solution_manifest");
+    ASSERT_TRUE(manifest);
+    const auto resolver =
+        graph->graph().find_node("solution_stage_1_score_pairs");
+    ASSERT_TRUE(resolver);
+    EXPECT_EQ(resolver->attributes.at("resolution_mode"), "keyed");
+    EXPECT_EQ(resolver->attributes.at("entity_column"), "customer_id");
+    const auto& binding = manifest->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "customer_id");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"), "risk");
+    EXPECT_EQ(binding.at("s1_correctness")
+                  .at("entity_resolution")
+                  .at("mode"),
+              "keyed");
+
+    const std::size_t delivery_start = delivery.requests.size();
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", project_name},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok)
+        << "CL-" << level << ": " << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 30000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call(
+            "get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            for (const auto& entry : run->logs()) {
+                ADD_FAILURE() << "CL-" << level << ": "
+                              << run->pipeline_name() << ": "
+                              << entry.message;
+            }
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+
+    std::string decisions_table;
+    verify_live_shape_tables(status, level, decisions_table);
+    verify_live_shape_evidence(
+        binding, delivery.requests, delivery_start);
+}
+
+void SolutionJourney::verify_live_shape_tables(
+    const ApiResult& status,
+    int level,
+    std::string& decisions_table) {
+    std::map<std::string, std::string> methodology_tables;
+    for (const auto& output : status.value.at("outputs")) {
+        if (output.at("kind") != "dataset") {
+            continue;
+        }
+        const std::string name = output.at("name");
+        if (name == "solution decisions") {
+            decisions_table = output.at("ref");
+        } else if (name == "resolved entities" ||
+                   name == "match pairs" ||
+                   name == "segment assignments" ||
+                   name == "survival table" ||
+                   name == "treatment effects") {
+            methodology_tables[name] = output.at("ref");
+        }
+    }
+    ASSERT_FALSE(decisions_table.empty());
+    ASSERT_TRUE(methodology_tables.contains("resolved entities"));
+    ASSERT_TRUE(methodology_tables.contains("match pairs"));
+    ASSERT_TRUE(methodology_tables.contains("segment assignments"));
+    if (level == 4) {
+        ASSERT_TRUE(methodology_tables.contains("survival table"));
+        ASSERT_TRUE(methodology_tables.contains("treatment effects"));
+    }
+
+    const ApiResult pairs = call(
+        "sql",
+        {{"statement", "SELECT * FROM " +
+                           methodology_tables.at("match pairs") + ";"}});
+    ASSERT_TRUE(pairs.ok) << pairs.error.message;
+    EXPECT_TRUE(pairs.value.at("rows").empty());
+
+    for (const std::string& output_name : {
+             "segment assignments", "survival table",
+             "treatment effects"}) {
+        if (!methodology_tables.contains(output_name)) {
+            continue;
+        }
+        const ApiResult rows = call(
+            "sql",
+            {{"statement", "SELECT * FROM " +
+                               methodology_tables.at(output_name) +
+                               " LIMIT 1;"}});
+        ASSERT_TRUE(rows.ok) << output_name << ": " << rows.error.message;
+        ASSERT_FALSE(rows.value.at("rows").empty()) << output_name;
+        ASSERT_TRUE(rows.value.at("rows").front().contains("customer_id"))
+            << output_name;
+        EXPECT_TRUE(is_live_shape_id(
+            rows.value.at("rows").front().at("customer_id")))
+            << output_name;
+    }
+
+    const ApiResult decisions = call(
+        "sql",
+        {{"statement", "SELECT * FROM " + decisions_table +
+                           " LIMIT 1;"}});
+    ASSERT_TRUE(decisions.ok) << decisions.error.message;
+    ASSERT_FALSE(decisions.value.at("rows").empty());
+    ASSERT_TRUE(
+        decisions.value.at("rows").front().contains("customer_id"));
+    EXPECT_TRUE(is_live_shape_id(
+        decisions.value.at("rows").front().at("customer_id")));
+}
+
+void SolutionJourney::verify_live_shape_evidence(
+    const nlohmann::json& binding,
+    const std::vector<nlohmann::json>& delivery_requests,
+    std::size_t delivery_start) {
+    const auto experiment = node.experiment_manager().report(
+        binding.at("experiment_id").get<std::string>());
+    ASSERT_TRUE(experiment);
+    EXPECT_EQ(experiment->assignments, 12000u);
+    EXPECT_GT(experiment->holdout_assignments, 0u);
+
+    bool delivered_live_id = false;
+    for (std::size_t index = delivery_start;
+         index < delivery_requests.size(); ++index) {
+        const nlohmann::json& request = delivery_requests[index];
+        if (request.contains("entity_id") &&
+            is_c0_live_shape_id(request.at("entity_id"))) {
+            delivered_live_id = true;
+        }
+        if (!request.contains("payload") ||
+            !request.at("payload").is_object() ||
+            !request.at("payload").contains("decision_log")) {
+            continue;
+        }
+        for (const auto& decision :
+            request.at("payload").at("decision_log")) {
+            if ((decision.contains("customer_id") &&
+                 is_c0_live_shape_id(decision.at("customer_id"))) ||
+                (decision.contains("entity_id") &&
+                 is_c0_live_shape_id(decision.at("entity_id")))) {
+                delivered_live_id = true;
+            }
+        }
+    }
+    EXPECT_TRUE(delivered_live_id);
+
+    const ApiResult ledger =
+        call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_TRUE(std::ranges::any_of(
+        ledger.value.at("entries"),
+        [](const nlohmann::json& entry) {
+            return entry.at("kind") == "action" &&
+                   is_live_shape_id(entry.at("subject"));
+        }));
+
+    const ApiResult readout = call(
+        "get_roi_readout", {{"solution", binding.at("scope")}});
+    ASSERT_TRUE(readout.ok) << readout.error.message;
+    EXPECT_FALSE(readout.value.at("correctness_certificate").empty());
+    EXPECT_TRUE(std::ranges::any_of(
+        readout.value.at("correctness_certificate").at("checks"),
+        [](const nlohmann::json& check) {
+            return check.at("name") == "solution/s1_entity_resolution" &&
+                   check.at("status") == "pass" &&
+                   check.at("reason")
+                       .get<std::string>()
+                       .find("keyed mode") != std::string::npos;
+        })) << readout.value.at("correctness_certificate").dump(2);
+    EXPECT_GT(readout.value.at("agent_operations").at("actions"), 0);
+}
+
+TEST_F(SolutionJourney, S1LiveShapeRunsKeyedAtLevelOne) {
+    run_live_shape(1);
+}
+
+TEST_F(SolutionJourney, S1LiveShapeRunsKeyedAtLevelFour) {
+    run_live_shape(4);
+}
+
+TEST_F(SolutionJourney,
+       S1UnmatchableMultiSourceInputFailsAtConfirmWithColumnNames) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("unmatchable_sources");
+    ASSERT_TRUE(table);
+    table->add_row(
+        {{"source", "crm"},
+         {"record_id", "crm-1"},
+         {"observed_at", "2026-03-01T00:00:00Z"},
+         {"usage", 1.0},
+         {"churned", 0}});
+    table->add_row(
+        {{"source", "billing"},
+         {"record_id", "billing-1"},
+         {"observed_at", "2026-03-01T00:00:00Z"},
+         {"usage", 2.0},
+         {"churned", 1}});
+    ASSERT_TRUE(call("create_project", {{"name", "unmatchable"}}).ok);
+    nlohmann::json foundation = {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "unmatchable_sources"},
+          {"target_table", "unmatchable_snapshot"},
+          {"entity_column", "record_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-04-01T00:00:00Z"}}},
+        {"dataset",
+         {{"entity_column", "record_id"},
+          {"label_column", "churned"},
+          {"feature_columns", {"usage"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://example.test/unmatchable"},
+          {"owner", "retention-team"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1.0},
+          {"investment", 0.0},
+          {"currency", "USD"}}}};
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "unmatchable"},
+         {"solution", "S-1"},
+         {"level", 1},
+         {"sources",
+          {{"source", "datasets"},
+           {"table", "unmatchable_sources"},
+           {"M-2", {{"sources", {"crm", "billing"}}}}}},
+         {"foundation", foundation}});
+
+    EXPECT_FALSE(created.ok);
+    EXPECT_EQ(created.error.code, "invalid_input");
+    EXPECT_NE(created.error.message.find("name"), std::string::npos);
+    EXPECT_NE(created.error.message.find("email"), std::string::npos);
+    EXPECT_NE(created.error.message.find("phone"), std::string::npos);
+    EXPECT_NE(created.error.message.find("address"), std::string::npos);
 }
 
 TEST_F(SolutionJourney,

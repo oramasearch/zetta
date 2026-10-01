@@ -805,8 +805,9 @@ SurvivalRunResult run_survival_on_dataset(
                 for (const SurvivalCurve& curve : result.training.curves) {
                     for (const SurvivalPoint& point : curve.points) {
                         survival_table->add_row(
-                            {{"entity", data::entity_output(
-                                            dataset.contract, curve.entity)},
+                            {{dataset.contract.entity_column,
+                              data::entity_output(
+                                  dataset.contract, curve.entity)},
                              {"horizon", point.horizon},
                              {"hazard", point.hazard},
                              {"survival", point.survival},

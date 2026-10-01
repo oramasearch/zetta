@@ -1,15 +1,25 @@
 # Entity resolution
 
-Implemented for [#1041](https://github.com/oramasearch/zetta/issues/1041) and
-distributed in [#1072](https://github.com/oramasearch/zetta/issues/1072),
-methodology M-2 with model kind `entity_resolution`.
+Implemented for [#1041](https://github.com/oramasearch/zetta/issues/1041),
+distributed in [#1072](https://github.com/oramasearch/zetta/issues/1072), and
+extended with keyed single-source resolution in
+[#1204](https://github.com/oramasearch/zetta/issues/1204), methodology M-2 with
+model kind `entity_resolution`.
 
 ## What it does
 
-The native runner resolves records from several source systems into persistent,
-deterministic entity identifiers. It emits a resolved-entity table mapping
-`source, record_id` to `entity_id, confidence` and a match-pair table containing
-the score, decision band, candidate routes, and deterministic owner partition.
+The native runner has keyed and fuzzy modes. Both emit a resolved-entity table
+mapping `source, record_id` to `entity_id, confidence` and a match-pair table.
+
+Keyed mode applies to one source with a declared stable entity column. Each
+distinct entity value becomes its own resolved entity, the original value is
+preserved as `entity_id`, confidence is 1, and the match-pair table is empty.
+Repeated rows for one entity are ordinary snapshot observations and collapse to
+one mapping; they are not identity conflicts.
+
+Fuzzy mode resolves records from several source systems into persistent,
+deterministic entity identifiers. Its match-pair table contains the score,
+decision band, candidate routes, and deterministic owner partition.
 
 Candidate generation combines three independent routes:
 
@@ -34,20 +44,28 @@ disagreement.
 ## Inputs and outputs
 
 The public API accepts either owned record partitions or a
-`zetta::data::ResolvedDataset`. Table columns default to `source`, `record_id`,
-`name`, `address`, `email`, `phone`, `date`, verification flags, and optional
-`truth_entity`; every name is configurable in `EntityResolutionParams`.
+`zetta::data::ResolvedDataset`. Keyed mode requires `keyed_entity_column` and
+optionally accepts `keyed_source`. Fuzzy-mode table columns default to `source`,
+`record_id`, `name`, `address`, `email`, `phone`, `date`, verification flags,
+and optional `truth_entity`; every name is configurable in
+`EntityResolutionParams`.
 
 `run_entity_resolution` reads the resolved table and writes both outputs under
-`entity_resolution_results`. It reports excluded rows missing a source or record
-identifier. It does not modify the input table.
+`entity_resolution_results`. Fuzzy mode reports excluded rows missing a source
+or record identifier. It does not modify the input table.
+
+Solution confirmation selects keyed mode only for a single source with a
+declared dataset entity column. Multi-source or no-key inputs retain fuzzy mode
+and confirmation refuses them before a run unless they provide `source`,
+`record_id`, and at least one of `name`, `email`, `phone`, or `address`. The
+error lists the missing columns.
 
 ## Scoring, clustering, and correctness
 
 The stated defaults are match `>= 0.82`, review `>= 0.55`, and non-match below
 `0.55`. Parameters must satisfy `0 <= review < match <= 1`.
 
-Match edges are processed from strongest to weakest. A proposed union is refused
+In fuzzy mode, match edges are processed from strongest to weakest. A proposed union is refused
 when it would combine incompatible verified emails or phones. When the dataset
 declares at most one record per source, a union that duplicates a source is also
 refused. Conflict checks inspect the whole candidate clusters before every union,
@@ -99,13 +117,14 @@ bridge, match the single-member oracle.
 
 ## Running it
 
-The registry integration compiles M-2 into its own connect, normalize/block,
-score, cluster, and output pipeline. Run input names the pipeline table through
-the connect step's `source` and `table`; an explicit `dataset_path` may override
-that table. The run may also override its column contract and thresholds. Poll
-the Run to completion, then query its two dataset outputs or call
-`get_run_report` for the metrics, thresholds, source, exclusions, and output
-table references.
+The registry integration compiles fuzzy M-2 into connect, normalize/block,
+score, cluster, and output steps. Keyed M-2 uses connect, key projection, and
+the same two output contracts, without fuzzy blocking or scoring. Run input
+names the pipeline table through the connect step's `source` and `table`; an
+explicit `dataset_path` may override that table. The run may also override its
+column contract and thresholds. Poll the Run to completion, then query its two
+dataset outputs or call `get_run_report` for the mode, metrics, thresholds,
+source, exclusions, and output table references.
 
 ## Boundaries
 

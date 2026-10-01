@@ -263,6 +263,9 @@ bool read_columns(const Json &options, NextBestActionPipeline &pipeline,
     error = "next-best-action requires at least one feature column";
     return false;
   }
+  const std::set<std::string> protected_columns = {
+      values[0], values[1], values[2], values[9]};
+  std::set<std::string> declared_features;
   std::vector<std::string> feature_columns;
   for (const Json &feature : features) {
     if (!feature.is_string() || feature.get<std::string>().empty()) {
@@ -270,8 +273,10 @@ bool read_columns(const Json &options, NextBestActionPipeline &pipeline,
       return false;
     }
     std::string name = feature.get<std::string>();
-    if (!used.insert(name).second) {
-      error = "next-best-action feature and role columns must be distinct";
+    if (protected_columns.contains(name) ||
+        !declared_features.insert(name).second) {
+      error = "next-best-action features must be distinct from entity, action, "
+              "label, and time columns";
       return false;
     }
     feature_columns.push_back(std::move(name));

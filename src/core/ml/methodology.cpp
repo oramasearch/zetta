@@ -66,6 +66,14 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     const bool supplier_risk = request.solution == "B-5";
     const bool credit_underwriting = request.solution == "B-7";
     const bool healthcare_operations = request.solution == "B-6";
+    const std::string dataset_entity =
+        request.hints.is_object()
+            ? request.hints.value("entity_column", std::string("account"))
+            : "account";
+    const std::string dataset_label =
+        request.hints.is_object()
+            ? request.hints.value("label_column", std::string("churned"))
+            : "churned";
 
     if (request.solution == "B-2") {
         const std::string group_column =
@@ -162,6 +170,11 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         graph.add_node(
             ir::StepKind::Act, "Write lifetime value predictions",
             nlohmann::json{{"output", "lifetime_value_predictions"},
+                           {"result_database", "lifetime_value_results"},
+                           {"result_table_prefix", "lifetime_value_"},
+                           {"entity_output_column",
+                            request.hints.value("entity_column", "entity")},
+                           {"score_output_column", "predicted_value"},
                            {"note", "one predicted-value row per customer"}},
             "notify_retention");
         graph.add_edge("load_customers", "build_features");
@@ -361,7 +374,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
                          : lead_scoring ? "converted"
                          : collections ? "promise_to_pay"
                                        : automated_outbound ? "response"
-                                                       : "churned"},
+                                                       : dataset_label},
                        {"note", credit_underwriting ? "predict matured repayment risk for each applicant"
                          : fraud_decisioning ? "predict matured fraud risk for each authorization"
                          : supplier_risk ? "predict disruption risk for each supplier relationship"
@@ -434,7 +447,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
                   : fraud_decisioning ? "transaction"
                   : supplier_risk ? "supplier"
                   : collections ? "receivable"
-                  : automated_outbound ? "entity" : "account"},
+                  : automated_outbound ? "entity" : dataset_entity},
              {"score_output_column", credit_underwriting ? "credit_risk"
                   : fraud_decisioning ? "fraud_score"
                   : supplier_risk ? "supplier_risk_score"

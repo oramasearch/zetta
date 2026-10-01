@@ -196,7 +196,8 @@ UpliftRunResult run_uplift_on_table(Node &node,
     for (const TreatmentEffect &effect : output.uplift.treatment_effects) {
       effects->add_row(
           {{"rank", ++rank},
-           {"entity", data::entity_output(dataset.contract, effect.entity)},
+           {dataset.contract.entity_column,
+            data::entity_output(dataset.contract, effect.entity)},
            {"estimated_uplift", effect.estimated_uplift},
            {"propensity", effect.propensity},
            {"treatment", effect.treatment},

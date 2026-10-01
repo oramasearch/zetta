@@ -23,3 +23,5 @@ GBDT coverage verifies that out-of-time Study validation derives one global
 timestamp cutoff and reports the same holdout across different shard counts.
 Project graph and API tests cover denormalized name creation, rename propagation,
 legacy startup backfill, page summaries, and REST/MCP list parity (#1184).
+Native M-2 coverage includes keyed projection that collapses repeated snapshot
+observations while preserving distinct text entity identifiers (#1204).

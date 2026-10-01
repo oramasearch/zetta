@@ -35,10 +35,23 @@
         "email_verified_column": {
           "type": "string"
         },
+        "keyed_entity_column": {
+          "type": "string"
+        },
+        "keyed_source": {
+          "type": "string"
+        },
         "match_threshold": {
           "maximum": 1.0,
           "minimum": 0.0,
           "type": "number"
+        },
+        "mode": {
+          "enum": [
+            "fuzzy",
+            "keyed"
+          ],
+          "type": "string"
         },
         "name_column": {
           "type": "string"
@@ -81,6 +94,9 @@
         "match_threshold",
         "review_threshold",
         "one_record_per_source",
+        "mode",
+        "keyed_entity_column",
+        "keyed_source",
         "source_column",
         "record_id_column",
         "name_column",
