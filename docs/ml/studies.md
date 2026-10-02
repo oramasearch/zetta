@@ -36,6 +36,17 @@ the full table is then loaded for training and validation, including repeated
 observations for one text entity key. When observation times are available, the
 latest holdout fraction is reserved for validation; older rows train the model.
 Without time, M-1 retains its content-hash holdout.
+
+Both kinds of trial select their inputs through the same feature plan a Run of
+that table uses (`ml::plan_table_features`, see
+[featurization](../data/featurization.md#phase-b-the-plan-is-a-run-precondition)):
+the resolved contract's feature columns are replaced by the plan's accepted
+sources, the Pipeline's explicit feature roles and safety annotations apply, and
+the trial's Run records the same `features` used/excluded provenance. A trial
+whose plan has no consumable input fails with the same
+`create_eligible_features` message as a Run
+([#1216](https://github.com/oramasearch/zetta/issues/1216)).
+
 Dataset-level execution currently supports M-1 only. `create_study` rejects
 another methodology before storing the Study and explains that it has no
 dataset-level driver.

@@ -131,6 +131,11 @@ struct MethodologyRule {
     bool prediction_per_entity = true;
     bool needs_distances = false;
     bool time_ordered = false;
+    // The methodology's trainer reads prepared numeric columns only (the M-1
+    // GBDT and the other tree trainers). Text categories are then excluded
+    // with a reason that says how to include them, instead of being planned
+    // as one-hot or target-encoded features nothing consumes (#1216).
+    bool numeric_inputs_only = false;
 };
 
 // One rule table keyed by the methodology registry's stable IDs and aliases.
@@ -180,6 +185,9 @@ struct FeaturePlanOptions {
     // Native featurizers declare their actual derived features here. Sources
     // are checked against the same analysis before they can be used (#1062).
     std::vector<FeaturePlanEntry> native_entries;
+    // The caller's trainer reads prepared numeric columns only. Registered
+    // table runs set this; the methodology rule can also require it (#1216).
+    bool numeric_inputs_only = false;
 };
 
 FeaturePlan plan_features(const DatasetAnalysis& analysis, const FeaturePlanOptions& options);

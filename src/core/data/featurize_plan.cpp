@@ -21,7 +21,7 @@ struct MethodologyRuleEntry {
 
 const std::vector<MethodologyRuleEntry>& methodology_rules() {
     static const std::vector<MethodologyRuleEntry> rules = {
-        {MethodologyRule{"M-1", MethodologyFamily::Tree, true, true, false, false},
+        {MethodologyRule{"M-1", MethodologyFamily::Tree, true, true, false, false, true},
          {"m-1", "classification", "classifier", "churn", "tree", "gbdt"}},
         {MethodologyRule{"M-2", MethodologyFamily::Native, false, true, false, false},
          {"entity_resolution", "entity-resolution", "m-2"}},
@@ -29,7 +29,7 @@ const std::vector<MethodologyRuleEntry>& methodology_rules() {
          {"segmentation", "segment", "clustering", "cluster", "m-3"}},
         {MethodologyRule{"M-4", MethodologyFamily::Forecast, true, false, false, true},
          {"forecast", "forecasting", "time_series", "m-4"}},
-        {MethodologyRule{"M-5", MethodologyFamily::Tree, true, true, false, true},
+        {MethodologyRule{"M-5", MethodologyFamily::Tree, true, true, false, true, true},
          {"survival", "time_to_event", "m-5"}},
         {MethodologyRule{"M-6", MethodologyFamily::Uplift, true, true, false, false},
          {"uplift", "causal", "treatment_effect", "m-6"}},
@@ -55,7 +55,7 @@ const std::vector<MethodologyRuleEntry>& methodology_rules() {
          {"optimization", "operations_research", "m-16"}},
         {MethodologyRule{"M-17", MethodologyFamily::Native, true, false, false, false},
          {"bayesian", "probabilistic", "uncertainty", "m-17"}},
-        {MethodologyRule{"M-18", MethodologyFamily::Tree, true, true, false, true},
+        {MethodologyRule{"M-18", MethodologyFamily::Tree, true, true, false, true, true},
          {"ensemble", "ensembling", "stacking", "m-18"}},
         {MethodologyRule{"M-19", MethodologyFamily::Native, true, true, true, false},
          {"label_efficiency", "active_learning", "weak_supervision", "m-19"}},
@@ -279,8 +279,29 @@ void append_boolean_plan(FeaturePlan& plan, const ColumnAnalysis& column) {
                             "two-valued data has a direct binary representation"});
 }
 
+bool numeric_coded(const ColumnAnalysis& column) {
+    return !column.quantiles.empty() && column.string_lengths.empty();
+}
+
 void append_categorical_plan(FeaturePlan& plan, const ColumnAnalysis& column,
-                             const MethodologyRule& rule, bool time_ordered) {
+                             const MethodologyRule& rule, bool time_ordered,
+                             bool numeric_inputs_only) {
+    if (numeric_inputs_only) {
+        // A trainer that reads numeric columns splits an integer-coded count
+        // (support_tickets, failed_payments) directly; one-hot would produce a
+        // feature it cannot read (#1216).
+        if (numeric_coded(column)) {
+            append_numeric_plan(plan, column, rule);
+            return;
+        }
+        exclude_once(plan, column.name,
+                     "text categories (" + std::to_string(column.distinct_count) +
+                         " levels) are not encoded for this trainer, which reads numeric "
+                         "columns only; to include it, add a clean step that writes one 0/1 "
+                         "column per level (for example " +
+                         column.name + "_is_<level>)");
+        return;
+    }
     const std::string rare_rule = "group levels with fewer than 10 rows or below 0.5% into OTHER; "
                                   "keep missing as its own level";
     if (column.distinct_count <= 20) {
@@ -326,6 +347,16 @@ void append_datetime_plan(FeaturePlan& plan, const ColumnAnalysis& column,
          "values"});
 }
 
+std::string identifier_reason(const ColumnAnalysis& column) {
+    std::string reason = "identifiers are excluded and are never target-encoded";
+    if (std::ranges::contains(column.role_candidates, "entity_key")) {
+        return reason + "; the name marks it as a key (id, *_id, *_key) — rename the column "
+                        "if it is a measurement";
+    }
+    return reason + "; its values identify rows (unique or UUID-like text) — derive a numeric "
+                    "feature from it in a clean step to use it";
+}
+
 void append_column_plan(FeaturePlan& plan, const ColumnAnalysis& column,
                         const MethodologyRule& rule, const FeaturePlanOptions& options,
                         const std::string& label, const std::string& group, bool time_ordered) {
@@ -362,7 +393,7 @@ void append_column_plan(FeaturePlan& plan, const ColumnAnalysis& column,
 
     switch (column.semantic_type) {
     case SemanticType::Identifier:
-        exclude_once(plan, column.name, "identifiers are excluded and are never target-encoded");
+        exclude_once(plan, column.name, identifier_reason(column));
         return;
     case SemanticType::Numeric:
         append_numeric_plan(plan, column, rule);
@@ -371,7 +402,8 @@ void append_column_plan(FeaturePlan& plan, const ColumnAnalysis& column,
         append_boolean_plan(plan, column);
         return;
     case SemanticType::Categorical:
-        append_categorical_plan(plan, column, rule, time_ordered);
+        append_categorical_plan(plan, column, rule, time_ordered,
+                                rule.numeric_inputs_only || options.numeric_inputs_only);
         return;
     case SemanticType::Datetime:
         append_datetime_plan(plan, column, rule, options);

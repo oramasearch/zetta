@@ -60,8 +60,14 @@ rules in order:
 - **datetime:** at least 95% of non-null values parse as dates or epoch values in a
   plausible range;
 - **free text:** median length over 30 characters or high token diversity;
-- **identifier:** more than 98% distinct, sequential, UUID-shaped, or named like an
-  identifier;
+- **identifier:** named like a key (`id`, `*_id`, `*_key`, an entity-key name,
+  `identifier`, `uuid`), UUID-shaped, or text that is more than 98% distinct. A
+  **numeric column is never an identifier because of its values**: high
+  cardinality, uniqueness, or a contiguous integer run alone do not exclude it
+  ([#1216](https://github.com/oramasearch/zetta/issues/1216)). On a small table a
+  count or amount such as `tenure_months` is often unique in the sample; it stays
+  numeric, with evidence noting that only its name or the declared entity would
+  make it a key. The planner separately excludes the declared entity column;
 - **categorical:** no more than 50 distinct values and no more than 5% of sampled
   rows by default; `AnalysisOptions` exposes both thresholds;
 - **numeric:** numeric after sentinel codes and integer-coded categoricals are checked;
@@ -74,7 +80,9 @@ silent edit to the data.
 ## Table analysis
 
 The analysis returns candidate keys with their observed uniqueness and one table
-grain:
+grain. A single column is a candidate key only when it is an identifier (by the
+rules above) or named like an entity key, and it has no nulls and more than 98%
+distinct values; a unique measurement is not reported as a key:
 
 - **entity:** a unique candidate key gives one row per entity;
 - **event:** an entity repeats and an event timestamp is present;
@@ -103,7 +111,14 @@ Every excluded column has its own reason. The common rules are:
   supervised categoricals use out-of-fold target encoding with smoothing `m = 20`;
   levels occurring fewer than 10 times or below 0.5% become `OTHER`, and missing is
   its own level;
-- identifiers are excluded and are never target encoded;
+- **numeric-input trainers** (the M-1, M-5 and M-18 tree rules, and every
+  registered table run whose trainer reads the numeric dataset contract) get no
+  one-hot or target-encoded features, because nothing would consume them: an
+  integer-coded categorical (a count such as `support_tickets`) is planned as a
+  numeric column, and a text categorical is excluded with a reason that says how to
+  include it (a clean step that writes one 0/1 column per level);
+- identifiers are excluded and are never target encoded; the reason says whether
+  the name or the values made it a key, and how to use it;
 - datetimes become elapsed age/tenure/recency relative to `as_of`, plus calendar
   parts and cyclical hour/weekday values; the raw timestamp is excluded;
 - free text is excluded with the reason `needs M-10 embeddings`;
@@ -194,7 +209,16 @@ and configured interval width; raw follow-up duration remains excluded as a pred
 The read-only advisory plan's generic encoding suggestions are not represented as
 executed transformations when a trainer has no such input contract. Unsupported
 sources name the required clean/encoding step; a plan with no consumable features
-requires `create_eligible_features`. This integration adds no new trainer, target
+requires `create_eligible_features`, and its description lists every excluded
+column (other than the label and the entity) with its reason, each of which says
+how to include that column. The same message is returned when the dataset contract
+has no numeric feature at all, before planning reaches the run.
+
+`ml::plan_table_features` is the shared implementation behind
+`plan_run_features`. Study trials call it with their Pipeline graph (or an empty
+graph for a dataset-level Study), so a run and a trial over the same table and
+Pipeline train on the same feature list, and a trial's Run records the same
+`features` provenance ([#1216](https://github.com/oramasearch/zetta/issues/1216)). This integration adds no new trainer, target
 encoder, embedding runtime, or silent table writes. Native temporal featurizers
 retain their existing cutoff/split checks instead of inventing a snapshot date.
 

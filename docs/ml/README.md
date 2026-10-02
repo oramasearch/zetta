@@ -16,7 +16,7 @@ for model work. M-21 adds event-time online logistic regression over pub/sub top
 
 - [models.md](models.md) — the `Model` entity: replicated metadata with producing Run and Project/Pipeline names, reversible text entity-key maps, page-ready listing, peer-to-peer weights body, and the `system.models` registry (ENT-14 / FEAT-6, #957, #1184).
 - [run-metrics.md](run-metrics.md) — replicated series, automatic per-metric steps, summaries, chart data, live topics, and DP suppression (#1137, #1205).
-- [studies.md](studies.md) — the replicated background Study driver, published methodology search spaces, full-table split preflight and training, cost reservations, real M-1 dataset/Pipeline trial Runs, restart recovery, curves and pruning, analysis, promotion, live events, and REST/MCP parity (#1138, #1205, #1207, #1209).
+- [studies.md](studies.md) — the replicated background Study driver, published methodology search spaces, full-table split preflight and training, cost reservations, real M-1 dataset/Pipeline trial Runs, restart recovery, curves and pruning, analysis, promotion, live events, REST/MCP parity, and the shared run feature plan (#1138, #1205, #1207, #1209, #1216).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic and squared error): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
 - [anomaly.md](anomaly.md) — runnable M-7/S-7: label-free distributed isolation forest + robust deviations and causal KPI residual scoring; exact alert budgets, correctness gates, table lineage, and registry run reports (#1046).
 - [forecast.md](forecast.md) — runnable M-4: native multi-series forecasting, temporal backtests, seasonal-naive FVA, intervals, distributed table execution and report read-back (`forecast`, #1043).
@@ -32,7 +32,7 @@ for model work. M-21 adds event-time online logistic regression over pub/sub top
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [integration.md](integration.md) — integration branch merge order, primary solution ownership, diff audit and native proof (#1082).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
-- [Data-first featurization](../data/featurization.md) — all 21 methodologies enforce run preconditions and report native feature/exclusion provenance, including grouped posteriors, stacking, labelling rules, private inputs, and event windows (#1062).
+- [Data-first featurization](../data/featurization.md) — all 21 methodologies enforce run preconditions and report native feature/exclusion provenance, including grouped posteriors, stacking, labelling rules, private inputs, and event windows; numeric measures are never identifiers by value alone (#1062, #1216).
 - [entity_resolution.md](entity_resolution.md) — M-2 keyed single-source projection or distributed fuzzy owned-pair blocking and scoring, allreduced EM, merged conflict-safe components, result tables, and metrics (#1041, #1072, #1204).
 - [next_best_action.md](next_best_action.md) — M-8 propensity composition, implicit-feedback ALS, hard policy constraints, recommendation tables, and offline IPS/DR evaluation (#1047).
 - [rank.md](rank.md) — M-9 native LambdaMART: whole-group validation, distributed histogram training, ranked-queue tables, NDCG@k, and yield at budget (#1048).

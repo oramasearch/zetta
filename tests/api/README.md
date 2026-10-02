@@ -31,9 +31,19 @@ It also checks that `validate_study` and `create_study` accept and reject the
 same table of candidates, and that a Study spec assembled from the published
 M-1 search space validates over registry, REST, MCP, and OpenAPI parity (#1207).
 Monthly server data with repeated text ids proves dataset trials train and
-validate on all 12,000 rows with AUC above 0.7. A last-month-only positive class
+validate on all 12,000 rows with AUC above 0.7; its signals are strong but
+imperfect, because trials share the run feature plan and a column that
+reproduces the label is excluded as a leakage candidate (#1216). A last-month-only positive class
 is rejected before admission, and a cap below the first reservation launches no
 trial (#1209).
+The Getting started journey (`test_getting_started_churn.cpp`) uploads a
+deterministic 400-row churn CSV (`account_id`, `support_tickets`,
+`tenure_months`, `monthly_spend`, `failed_payments`, a text `plan`, `churned`),
+builds and approves an M-1 Pipeline, runs it to a held-out score, and checks that
+the four numeric measures are used, `plan` is excluded with how to include it,
+only `account_id` is a candidate key, and a dataset-level Study trial records the
+same feature list. A text-only table fails with `create_eligible_features`
+naming each excluded column and how to include it (#1216).
 The S-1 live-shape journey runs CL-1 and CL-4 over 12,000 single-table rows:
 2,000 text-keyed customers with six ISO-timestamped monthly observations each.
 One fixture concentrates positive outcomes near the end and another spreads
