@@ -36,6 +36,18 @@ imperfect, because trials share the run feature plan and a column that
 reproduces the label is excluded as a leakage candidate (#1216). A last-month-only positive class
 is rejected before admission, and a cap below the first reservation launches no
 trial (#1209).
+The 12-row Study from the UX review (#1217) finishes two 200-tree trials in
+seconds and grows the replicated document by under 512 KB (it grew 2.6 MB
+before captures were coalesced), with the CRDT matching every in-memory Run
+and Study afterwards. A 12-row table whose validation split holds no rows fails
+each trial with that reason and the study ends `failed` (`stop_reason: data`)
+with it, never `complete`; a Run that vanishes mid-training fails its trial at
+once with `run metric logging failed at tree N`. `create_study` errors carry
+`path` (schema rejections included) and offer `from_defaults`, which alone
+makes a `{name, methodology, dataset}` input valid; objective metric aliases
+(`validation.auc`, `ROC-AUC`, `auc`, ...) normalize to `held_out_auc`, the
+name the trial objective is read under. A Study that fails every trial on the
+wall-time budget now ends `failed`.
 The Getting started journey (`test_getting_started_churn.cpp`) uploads a
 deterministic 400-row churn CSV (`account_id`, `support_tickets`,
 `tenure_months`, `monthly_spend`, `failed_payments`, a text `plan`, `churned`),

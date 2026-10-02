@@ -1,6 +1,7 @@
 # Held-out metrics
 
-**Issue:** [#953](https://github.com/oramasearch/zetta/issues/953) ·
+**Issue:** [#953](https://github.com/oramasearch/zetta/issues/953),
+[#1217](https://github.com/oramasearch/zetta/issues/1217) (names) ·
 **Code:** `src/core/ml/gbdt_train_job.cpp`, `include/zetta/ml/gbdt.hpp`,
 `include/zetta/ml/gbdt_train_job.hpp` ·
 **Tests:** `tests/ml/test_gbdt.cpp` (`GbdtHoldout.*`)
@@ -113,6 +114,27 @@ and failed 7 runs out of 7 on `Testkit.DistributedCasesRunOnARealCluster`.
 `GbdtHoldout.RegisteredModelMetricsSurviveTheEntityBoundary` now catches that
 class in two milliseconds by parsing the registered model back through its own
 boundary schema.
+
+## Metric names
+
+A held-out figure's report key is its one name everywhere
+([#1217](https://github.com/oramasearch/zetta/issues/1217)): a methodology's
+`metrics` list, the run report, and a Study's `objective.metric` all use it.
+`zetta::ml::metric_names()` (`include/zetta/ml/metric_names.hpp`) is the table;
+`canonical_metric_name` resolves an input, ignoring case and treating spaces,
+dots and hyphens alike.
+
+| Canonical | Accepted on input |
+|---|---|
+| `held_out_auc` | `validation.auc`, `ROC-AUC`, `held-out ROC-AUC`, `roc_auc`, `auc` |
+| `held_out_log_loss` | `validation.log_loss`, `log loss`, `log_loss`, `logloss` |
+| `held_out_accuracy` | `validation.accuracy`, `accuracy` |
+| `held_out_rmse` | `validation.rmse`, `RMSE`, `rmse` |
+| `held_out_mae` | `validation.mae`, `MAE`, `mae` |
+
+Aliases are input only; nothing writes them back out. A bare `auc` names the
+held-out figure here because a Study only optimizes on its validation split —
+the model record's legacy top-level `auc` is still the in-sample one, as above.
 
 ## Control surface
 

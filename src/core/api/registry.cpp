@@ -79,23 +79,39 @@ public:
             reason_ = pointer.to_string().empty()
                           ? message
                           : pointer.to_string() + ": " + message;
+            path_ = pointer.to_string();
+            // A missing required property is reported at its parent; the
+            // field at fault is the property itself (#1217).
+            constexpr std::string_view kRequired = "required property '";
+            if (message.starts_with(kRequired)) {
+                const std::size_t end = message.find('\'', kRequired.size());
+                if (end != std::string::npos) {
+                    path_ += "/" + message.substr(kRequired.size(),
+                                                  end - kRequired.size());
+                }
+            }
         }
     }
     bool failed() const { return failed_; }
     const std::string& reason() const { return reason_; }
+    const std::string& path() const { return path_; }
 
 private:
     bool failed_ = false;
     std::string reason_;
+    std::string path_;
 };
 
+// Validates `input`; on failure fills the reason and the JSON pointer of the
+// field at fault, so a schema rejection carries `path` like a handler's own.
 bool validate_input(const nlohmann::json& schema, const nlohmann::json& input,
-                    std::string* reason) {
+                    std::string* reason, std::string* path) {
     nlohmann::json_schema::json_validator validator;
     validator.set_root_schema(schema);
     collecting_error_handler handler;
     validator.validate(input, handler);
     if (handler.failed() && reason) *reason = handler.reason();
+    if (handler.failed() && path) *path = handler.path();
     return !handler.failed();
 }
 
@@ -224,8 +240,17 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     }
 
     std::string reason;
-    if (!validate_input(capability->input_schema, effective_input, &reason)) {
-        return finish(ApiResult::failure("invalid_input", reason));
+    std::string path;
+    if (!validate_input(capability->input_schema, effective_input, &reason,
+                        &path)) {
+        if (capability->invalid_input_hint) {
+            if (const std::string hint =
+                    capability->invalid_input_hint(effective_input);
+                !hint.empty()) {
+                reason += "; " + hint;
+            }
+        }
+        return finish(ApiResult::failure("invalid_input", reason, path));
     }
 
     // Authorization (deny-by-default). Under the default-deny gate (#745) the

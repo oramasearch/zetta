@@ -576,6 +576,7 @@ add_library(zetta-core STATIC
   src/core/ml/ensemble_runner.cpp
   src/core/ml/ensemble_train_job.cpp
   src/core/ml/methodology.cpp
+  src/core/ml/metric_names.cpp
   src/core/ml/study.cpp
   src/core/ml/methodology_optimization.cpp
   src/core/ml/methodology_table.cpp

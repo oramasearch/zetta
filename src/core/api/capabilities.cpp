@@ -3024,13 +3024,19 @@ const nlohmann::json& list_methodologies_output_schema() {
     static const nlohmann::json study_search_space_schema = {
         {"type", "object"},
         {"required",
-         {"parameters", "objective_metrics", "validation_splits",
-          "dataset_path"}},
+         {"parameters", "objective_metrics", "objective_metric_aliases",
+          "validation_splits", "dataset_path"}},
         {"additionalProperties", false},
         {"properties",
          {{"parameters",
            {{"type", "array"}, {"items", study_parameter_schema}}},
           {"objective_metrics", string_array},
+          {"objective_metric_aliases",
+           {{"type", "object"},
+            {"description",
+             "accepted input aliases per canonical objective metric; they "
+             "normalize to the canonical name"},
+            {"additionalProperties", string_array}}},
           {"validation_splits", string_array},
           {"dataset_path", study_dataset_path_schema}}}};
     static const nlohmann::json methodology_schema = {

@@ -1455,7 +1455,9 @@ TEST_F(RestServerFixture, PageListsHaveRestAndMcpParity) {
                              .at("value")
                              .at("studies")[0]
                              .at("metric_summary");
-    EXPECT_EQ(summary.at("metric"), "validation.auc");
+    // The summary names the canonical metric even for a study stored with an
+    // alias (#1217).
+    EXPECT_EQ(summary.at("metric"), "held_out_auc");
     EXPECT_EQ(summary.at("completed_trials"), 1);
     EXPECT_EQ(summary.at("best"), 0.93);
 }

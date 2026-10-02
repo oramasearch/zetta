@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -177,11 +178,27 @@ public:
     // Owner-thread-only batch write (#1205; docs/ml/run-metrics.md). Caller
     // values remain strict. Automatic system samples advance independently
     // past their persisted last step, atomically with the caller's metrics.
+    //
+    // `coalesce` is for a trainer streaming one batch per round (#1217): the
+    // value changes in memory at once, but the replicated capture and run.json
+    // are written at most once per kCaptureInterval. Every whole-value capture
+    // is kept in the CRDT's history, so a capture per boosting round grew the
+    // document quadratically and made each owner-thread save slower — reads
+    // stalled behind it. A deferred capture is written by flush_capture (the
+    // Node's tick, its stop, or any later immediate capture).
     bool log_metrics_with_system_sample(
         std::uint64_t natural_step,
         const std::map<std::string, double>& values,
         const std::map<std::string, double>& system_values,
-        std::string time = {}, std::string* error = nullptr);
+        std::string time = {}, std::string* error = nullptr,
+        bool coalesce = false);
+
+    static constexpr std::chrono::milliseconds kCaptureInterval{1000};
+    // True while a coalesced change is in memory but not yet captured.
+    bool capture_pending() const { return capture_pending_; }
+    // Write a pending capture when its interval has passed (or `force`).
+    // Returns true when nothing remains pending.
+    bool flush_capture(bool force = false);
     // Params are recorded once. Keys are already flattened dotted names and
     // values are scalar JSON values.
     bool log_params(nlohmann::json params, std::string* error = nullptr);
@@ -212,6 +229,8 @@ private:
 
     std::string id_;
     RunValue value_;
+    bool capture_pending_ = false;
+    std::chrono::steady_clock::time_point last_capture_{};
     std::filesystem::path dir_;
     zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
 };

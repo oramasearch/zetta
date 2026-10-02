@@ -63,6 +63,26 @@ minimum, and global maximum points into the retained set. Read-time
 `max_points` uses the same extrema-preserving selection. Metrics are part of the
 Run's CRDT value and disk projection, so they replicate and restart with the Run.
 
+## Coalesced trainer captures
+
+A trainer that logs every round passes `coalesce` to `Node::log_run_metrics`
+(the GBDT train job does, [#1217](https://github.com/oramasearch/zetta/issues/1217)).
+The batch is validated and applied to the in-memory Run at once — `get_run`,
+`get_run_metrics` and the live topic see every point — but the Run's
+replicated capture and `run.json` are written at most once per
+`Run::kCaptureInterval` (one second). `Node::tick` writes a pending capture
+once its interval has passed, `Node::stop` writes all of them, and any other
+change to the Run (its status, outputs, lineage) captures the whole value
+including the pending points. While a capture is pending, reconciliation does
+not replace the Run with its older replicated value.
+
+The CRDT keeps every captured value in its history. Capturing the whole Run on
+every round made the document grow with the square of the rounds and made the
+owner thread's once-a-second save of it slower all the time a trainer ran.
+Callers that log occasionally, including the `log_run_metrics` capability,
+still capture every batch. A Study's per-round intermediate values coalesce
+the same way ([studies](studies.md#captures-while-a-trial-trains)).
+
 ## Live batches
 
 Every successful metric write publishes JSON batches to the exposed, ephemeral

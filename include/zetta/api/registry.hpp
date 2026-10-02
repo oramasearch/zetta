@@ -237,6 +237,10 @@ struct Capability {
     // state. REST and MCP run it through runtime::offload_blocking after the
     // registry has completed its owner-thread authorization gate.
     bool blocks = false;
+    // Appended to an input-schema rejection when it returns non-empty text:
+    // the capability's one-step way past the error for this input (e.g.
+    // create_study offers from_defaults, #1217). Empty = the reason alone.
+    std::function<std::string(const nlohmann::json& input)> invalid_input_hint;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh

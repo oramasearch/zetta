@@ -874,8 +874,11 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
                  global_loss[1] /
                      std::max(elapsed, std::numeric_limits<double>::min())}};
             if (!hooks.on_metrics(static_cast<int>(model.trees.size()), values)) {
+                // The hook owns the reason (a failed metric write, a pruned or
+                // cancelled trial, a spent budget); the caller reports it.
                 result.status = ComputeStatus::backend_error(
-                    "train_gbdt: run metric logging failed");
+                    "train_gbdt: the metrics hook stopped training after tree " +
+                    std::to_string(model.trees.size()));
                 return result;
             }
         }

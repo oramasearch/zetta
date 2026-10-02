@@ -255,7 +255,9 @@ struct TrainHooks {
     // No hook means no metric computation or collective. DP callers force
     // suppress_metrics so private training data never enters this path (#1137).
     // Returning false stops training with an error so a lost metric batch is not
-    // silently reported as a fully tracked run.
+    // silently reported as a fully tracked run. The status names only the tree
+    // it stopped after: the hook knows why (a failed write, a pruned or
+    // cancelled trial, a spent budget) and its owner reports that reason.
     std::function<bool(int step, const std::map<std::string, double>& values)>
         on_metrics;
     bool suppress_metrics = false;

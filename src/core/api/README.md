@@ -26,7 +26,11 @@ controls before admission. They also
 include `delete_study`, a separately permissioned action that refuses running
 studies, removes non-promoted trial Runs and their metrics, and preserves the
 promoted Model and producing Run. REST, MCP and OpenAPI share the registry
-declarations (#1205, #1207). See
+declarations (#1205, #1207). Objective metrics use the canonical held-out
+names with aliases accepted on input, and `create_study` errors carry `path`
+and offer `from_defaults` (#1217). Every input-schema rejection carries the
+field at fault in `path`, and a capability's `invalid_input_hint` may add a
+way past it. See
 [AutoML studies](../../../docs/ml/studies.md).
 
 The `list_runs`, `list_models`, and `list_studies` reads expose page-ready

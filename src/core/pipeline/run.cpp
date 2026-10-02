@@ -716,7 +716,7 @@ bool Run::log_metrics_with_system_sample(
     std::uint64_t natural_step,
     const std::map<std::string, double>& values,
     const std::map<std::string, double>& system_values,
-    std::string time, std::string* error) {
+    std::string time, std::string* error, bool coalesce) {
     if (values.empty() && system_values.empty()) {
         if (error != nullptr) {
             *error = "/values: at least one metric is required";
@@ -739,6 +739,22 @@ bool Run::log_metrics_with_system_sample(
         return false;
     }
     value_.metrics = std::move(candidate);
+    if (coalesce && std::chrono::steady_clock::now() - last_capture_ <
+                        kCaptureInterval) {
+        value_.updated = zetta::util::now_iso8601();
+        capture_pending_ = true;
+        return true;
+    }
+    capture_and_persist();
+    return true;
+}
+
+bool Run::flush_capture(bool force) {
+    if (!capture_pending_) return true;
+    if (!force &&
+        std::chrono::steady_clock::now() - last_capture_ < kCaptureInterval) {
+        return false;
+    }
     capture_and_persist();
     return true;
 }
@@ -848,6 +864,8 @@ void Run::apply_value(RunValue value) {
 
 void Run::capture_and_persist() {
     value_.updated = zetta::util::now_iso8601();
+    capture_pending_ = false;
+    last_capture_ = std::chrono::steady_clock::now();
     // CRDT first (the source of truth), then the on-disk projection.
     if (replication_) replication_->set(catalog::run_key(id_), metadata());
     persist_meta();
