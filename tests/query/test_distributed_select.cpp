@@ -281,6 +281,29 @@ TEST(ScatterGatherWire, RequestAndResponseRoundTripThroughTheirSchemas) {
     ASSERT_EQ(back->groups.size(), 1u);
     EXPECT_EQ(back->groups[0].aggregates[0].count, 4u);
     EXPECT_FALSE(back->groups[0].aggregates[0].integral);
+    EXPECT_FALSE(back->columns_seen);  // not reported -> not checked
+
+    // A whole-table aggregate: aggregates with no group key (#1218).
+    PartitionScanRequest whole;
+    whole.table = "tbl:x";
+    whole.aggregates = {ScanAggregate{AggregateFunc::Count, ""}};
+    const std::optional<PartitionScanRequest> whole_back =
+        zetta::query::decode_partition_scan_request(
+            zetta::query::encode_partition_scan_request(whole), &error);
+    ASSERT_TRUE(whole_back) << error;
+    EXPECT_TRUE(whole_back->aggregating());
+    EXPECT_TRUE(whole_back->group_by.empty());
+    ASSERT_EQ(whole_back->aggregates.size(), 1u);
+
+    // The columns an owner's rows carry travel with its answer.
+    response.columns_seen = std::vector<std::string>{"segment", "amount"};
+    const std::optional<PartitionScanResponse> with_columns =
+        zetta::query::decode_partition_scan_response(
+            zetta::query::encode_partition_scan_response(response), &error);
+    ASSERT_TRUE(with_columns) << error;
+    ASSERT_TRUE(with_columns->columns_seen);
+    EXPECT_EQ(*with_columns->columns_seen,
+              (std::vector<std::string>{"segment", "amount"}));
 }
 
 TEST(ScatterGatherWire, MalformedMessagesAreRejectedAtTheBoundary) {
@@ -336,6 +359,79 @@ TEST(ScatterGatherSelect, SingleNodeAnswersAPartitionOnlyTableFromItsPartitions)
     EXPECT_FALSE(filtered.rows[0].contains("segment"));
 
     node.stop();
+}
+
+// #1218 over a partition-only table: a whole-table aggregate, a text GROUP BY
+// key, an unknown column and SELECT *'s columns all answer through the owners'
+// scan exactly as they do over a replicated table.
+TEST(ScatterGatherSelect, WholeTableAggregatesTextKeysAndColumnsOverPartitions) {
+    TempDir dir;
+    Node node{config_for(dir)};
+    node.start();
+
+    std::vector<nlohmann::json> rows;
+    for (int i = 0; i < 30; ++i) {
+        rows.push_back(nlohmann::json{{"plan", i % 3 == 0 ? "pro" : "free"},
+                                      {"amount", i}});
+    }
+    AddDatasetOptions options;
+    options.table_name = "plans";
+    options.partition_count = 4;
+    options.partition_only = true;
+    const AddDatasetResult added = add_dataset_rows(node, rows, options);
+    ASSERT_TRUE(added.ok()) << added.error;
+
+    QueryService service{node};
+    const auto counted = service.run("SELECT count(*) FROM datasets.plans;", "");
+    ASSERT_TRUE(counted.ok()) << counted.error;
+    ASSERT_EQ(counted.rows.size(), 1u);
+    EXPECT_EQ(counted.rows[0].at("count"), 30);
+
+    const auto none =
+        service.run("SELECT count(*) FROM datasets.plans WHERE amount > 100;", "");
+    ASSERT_TRUE(none.ok()) << none.error;
+    ASSERT_EQ(none.rows.size(), 1u);
+    EXPECT_EQ(none.rows[0].at("count"), 0);
+
+    const auto grouped = service.run(
+        "SELECT plan, count(*), sum(amount) FROM datasets.plans GROUP BY plan;", "");
+    ASSERT_TRUE(grouped.ok()) << grouped.error;
+    ASSERT_EQ(grouped.rows.size(), 2u);
+    EXPECT_EQ(grouped.rows[0].at("plan"), "free");
+    EXPECT_EQ(grouped.rows[0].at("count"), 20);
+    EXPECT_EQ(grouped.rows[1].at("plan"), "pro");
+    EXPECT_EQ(grouped.rows[1].at("count"), 10);
+    EXPECT_EQ(grouped.rows[1].at("sum_amount"), 135);  // 0 + 3 + ... + 27
+
+    const auto unknown = service.run("SELECT nope FROM datasets.plans;", "");
+    EXPECT_FALSE(unknown.ok());
+    EXPECT_NE(unknown.error.find("column \"nope\" does not exist"), std::string::npos)
+        << unknown.error;
+
+    const auto star = service.run("SELECT * FROM datasets.plans LIMIT 3;", "");
+    ASSERT_TRUE(star.ok()) << star.error;
+    EXPECT_EQ(star.rows.size(), 3u);
+    EXPECT_EQ(std::set<std::string>(star.columns.begin(), star.columns.end()),
+              (std::set<std::string>{"plan", "amount"}));
+
+    node.stop();
+}
+
+// A whole-table aggregate with nothing to merge is still one row.
+TEST(ScatterGatherMerge, WholeTableAggregateOverNoGroupsIsOneRow) {
+    SelectStmt statement;
+    statement.table = {"datasets", "cached"};
+    statement.items.push_back(
+        GroupedItem{AggregateExpr{AggregateFunc::Count, ""}, "", ""});
+    statement.items.push_back(
+        GroupedItem{AggregateExpr{AggregateFunc::Sum, "amount"}, "", ""});
+
+    const zetta::query::SelectOutcome merged =
+        zetta::query::merge_scan_responses(statement, {}, {});
+    ASSERT_TRUE(merged.ok()) << merged.error;
+    ASSERT_EQ(merged.rows.size(), 1u);
+    EXPECT_EQ(merged.rows[0].at("count"), 0);
+    EXPECT_TRUE(merged.rows[0].at("sum_amount").is_null());
 }
 
 // --- two nodes: the same answer, from partitions split across them --------------
@@ -427,6 +523,31 @@ TEST(ScatterGatherSelect, MultiNodeAggregatesMatchTheSingleNodeAnswer) {
     }
     EXPECT_EQ(all.rows.size(), 60u);
     EXPECT_EQ(labels.size(), 60u);
+    // SELECT * names its columns from what the owners' rows carry (#1218).
+    EXPECT_EQ(std::set<std::string>(all.columns.begin(), all.columns.end()),
+              (std::set<std::string>{"segment", "amount", "label"}));
+
+    // A whole-table aggregate and a text GROUP BY key merge across the split,
+    // and a column no owner saw is an error on either coordinator (#1218).
+    for (QueryService* service : {&service_a, &service_b}) {
+        const auto counted =
+            service->run("SELECT count(*) FROM datasets.cached WHERE segment = 1;", "");
+        ASSERT_TRUE(counted.ok()) << counted.error;
+        ASSERT_EQ(counted.rows.size(), 1u);
+        EXPECT_EQ(counted.rows[0].at("count"), 20);
+
+        const auto by_label = service->run(
+            "SELECT label, count(*) FROM datasets.cached GROUP BY label;", "");
+        ASSERT_TRUE(by_label.ok()) << by_label.error;
+        EXPECT_EQ(by_label.rows.size(), 60u);
+        EXPECT_EQ(by_label.rows[0].at("count"), 1);
+
+        const auto unknown = service->run("SELECT nope FROM datasets.cached;", "");
+        EXPECT_FALSE(unknown.ok());
+        EXPECT_NE(unknown.error.find("column \"nope\" does not exist"),
+                  std::string::npos)
+            << unknown.error;
+    }
 
     b.stop();
     a.stop();

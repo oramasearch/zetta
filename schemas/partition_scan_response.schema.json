@@ -31,6 +31,13 @@
       "minimum": 0,
       "type": "integer"
     },
+    "columns_seen": {
+      "description": "every column any scanned row carried, before the WHERE (#1218)",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "from": {
       "type": "string"
     },

@@ -62,8 +62,10 @@ through the virtual-table view.
 
 `SELECT` reuses the ordinary `WHERE` + projection engine
 (`select_over_rows`), so filtering and column projection work as on any table.
-`GROUP BY` over a virtual table is not supported (it routes through the numeric
-DDF engine, which the composed rows don't feed).
+Aggregates and `GROUP BY` fold the composed rows through the same
+`GroupAccumulator` every non-columnar path uses (#1218). The declared column list
+counts as the table's columns, so a declared column no row carries yet is
+`null`, not an error; an undeclared one no row carries is.
 
 ## Naming + resolution
 

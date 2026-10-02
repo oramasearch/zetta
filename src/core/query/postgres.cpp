@@ -35,6 +35,7 @@ enum class Tok { Ident, Num, Str, Punct, End };
 struct Token {
     Tok type;
     std::string text;  // identifier/number text, string contents, or the punct char
+    std::size_t offset = 0;  // byte offset of the token's first character
 };
 
 class Parser {
@@ -57,10 +58,30 @@ public:
             result.statements.clear();
             result.error = e.message;
         }
+        if (!result.error.empty()) result.error += where_suffix();
         return result;
     }
 
 private:
+    // Where a parse error happened, as Postgres reports it (#1218): the 1-based
+    // character position of the offending token and the token itself, so a
+    // caller can point at it. A tokenizer error records its own offset; any other
+    // error is at the token the cursor stopped on.
+    std::string where_suffix() const {
+        std::size_t offset = src_.size();
+        std::string near;
+        if (error_offset_) {
+            offset = *error_offset_;
+        } else if (pos_ < tokens_.size()) {
+            offset = tokens_[pos_].offset;
+            near = tokens_[pos_].text;
+        }
+        if (offset >= src_.size()) return " (at end of input)";
+        std::string suffix = " (at position " + std::to_string(offset + 1);
+        if (!near.empty()) suffix += ", near '" + near + "'";
+        return suffix + ")";
+    }
+
     // --- tokenizer ----------------------------------------------------------
     void tokenize() {
         const std::string s(src_);
@@ -86,7 +107,7 @@ private:
             if (ident_start(c)) {
                 std::size_t j = i + 1;
                 while (j < n && ident_char(s[j])) ++j;
-                tokens_.push_back({Tok::Ident, s.substr(i, j - i)});
+                tokens_.push_back({Tok::Ident, s.substr(i, j - i), i});
                 i = j;
                 continue;
             }
@@ -96,7 +117,7 @@ private:
                                  s[j] == '.')) {
                     ++j;
                 }
-                tokens_.push_back({Tok::Num, s.substr(i, j - i)});
+                tokens_.push_back({Tok::Num, s.substr(i, j - i), i});
                 i = j;
                 continue;
             }
@@ -118,20 +139,24 @@ private:
                     lit.push_back(s[j]);
                     ++j;
                 }
-                if (!closed) throw ParseError{"unterminated string literal"};
-                tokens_.push_back({Tok::Str, lit});
+                if (!closed) {
+                    error_offset_ = i;
+                    throw ParseError{"unterminated string literal"};
+                }
+                tokens_.push_back({Tok::Str, lit, i});
                 i = j;
                 continue;
             }
             static constexpr std::string_view kPunct = "(),;*.=-<>!:";
             if (kPunct.find(c) != std::string_view::npos) {
-                tokens_.push_back({Tok::Punct, std::string(1, c)});
+                tokens_.push_back({Tok::Punct, std::string(1, c), i});
                 ++i;
                 continue;
             }
+            error_offset_ = i;
             throw ParseError{std::string("unexpected character '") + c + "'"};
         }
-        tokens_.push_back({Tok::End, ""});
+        tokens_.push_back({Tok::End, "", n});
     }
 
     // --- cursor -------------------------------------------------------------
@@ -872,19 +897,18 @@ private:
         }
 
         // Reconcile the select list with the GROUP BY into either a plain or an
-        // aggregating SELECT. An aggregate function requires GROUP BY; `SELECT *`
-        // cannot be grouped.
-        if (any_aggregate && stmt.group_by.empty()) {
-            throw ParseError{"aggregate functions require a GROUP BY clause"};
-        }
+        // aggregating SELECT. An aggregate with no GROUP BY aggregates the whole
+        // table as one group (`SELECT count(*) FROM t`, #1218); `SELECT *`
+        // cannot be grouped. Whether a bare column may sit beside an aggregate is
+        // the executor's call (it must be the GROUP BY key).
         if (stmt.all && !stmt.group_by.empty()) {
             throw ParseError{"SELECT * cannot be combined with GROUP BY"};
         }
-        if (!stmt.group_by.empty()) {
-            stmt.items = std::move(items);  // grouped: the ordered key/aggregate list
+        if (any_aggregate || !stmt.group_by.empty()) {
+            stmt.items = std::move(items);  // the ordered key/aggregate list
         } else if (!stmt.all) {
-            // Plain projection: every item is a bare column (no aggregates — the
-            // GROUP BY check above already guarantees that). AS rename is only
+            // Plain projection: every item is a bare column (an aggregate would
+            // have made this an aggregating query above). AS rename is only
             // supported on the grouped path, so reject it here rather than drop it.
             for (const GroupedItem& item : items) {
                 if (!item.alias.empty()) {
@@ -900,6 +924,9 @@ private:
     std::string_view src_;
     std::vector<Token> tokens_;
     std::size_t pos_ = 0;
+    // The source offset of a tokenizer error (set just before it throws); unset
+    // for a grammar error, which is located by the cursor instead.
+    std::optional<std::size_t> error_offset_;
     // Error message set by the non-throwing parse_create_virtual_table_or_error;
     // the caller throws it from its inline frame (the -O1 EH workaround). A
     // member, not a local, so no std::string is alive on the caller's stack at
