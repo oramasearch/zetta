@@ -211,6 +211,12 @@ message, path} }`:
 
 - Malformed JSON-RPC / unknown tool → JSON-RPC protocol errors (−32700/−32601/−32602).
 - Schema-invalid tool input → −32602 with the validator's path-qualified reason.
+  The `ApiError.path` carries the field at fault as a JSON pointer — for a
+  missing required property, the property itself (`/name`), not its parent —
+  so a schema rejection has a `path` exactly like a handler's own failure.
+  A capability may set `invalid_input_hint` to append its one-step way past
+  the error for that input (`create_study` offers `from_defaults: true`,
+  [#1217](https://github.com/oramasearch/zetta/issues/1217)).
 - **Domain failures (gate blocked, authorize denied, engine status) are NOT
   protocol errors** — they return a successful `tools/call` whose result
   carries `isError: true` + the engine's actual reason verbatim (the MCP

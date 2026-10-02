@@ -299,6 +299,9 @@ DistributedTrainResult run_train_job(
         // the trees up to a given round are identical on every node, so truncating to
         // the agreed round is safe).
         TrainHooks hooks;
+        // Why the metrics hook stopped training, when it did: train_gbdt's
+        // status names only the tree, the hook knows the reason.
+        std::string metrics_stop;
         // The root owns the Run; peers still participate in metric reductions.
         const auto metrics_enabled = round.broadcast(
             tag + ".metrics.enabled",
@@ -331,20 +334,32 @@ DistributedTrainResult run_train_job(
                 return {.ok = false,
                         .detail = "gbdt run metrics: parameters could not be logged"};
             }
-            hooks.on_metrics = [node, &run_id, &progress](
+            hooks.on_metrics = [node, &run_id, &progress, &metrics_stop](
                                    int step,
                                    const std::map<std::string, double>& values) {
-                bool keep_running = true;
                 if (!run_id.empty()) {
+                    std::string error;
+                    bool logged = false;
                     node->run_on_owner([&] {
-                        keep_running = node->log_run_metrics(
-                            run_id, static_cast<std::uint64_t>(step), values);
+                        // One batch per tree: coalesce the Run's
+                        // replicated capture (#1217).
+                        logged = node->log_run_metrics(
+                            run_id, static_cast<std::uint64_t>(step), values,
+                            {}, &error, /*coalesce=*/true);
                     });
+                    if (!logged) {
+                        metrics_stop = "run metric logging failed at tree " +
+                                       std::to_string(step) +
+                                       (error.empty() ? "" : ": " + error);
+                        return false;
+                    }
                 }
-                if (keep_running && progress) {
-                    keep_running = progress(step, values);
+                if (progress && !progress(step, values)) {
+                    metrics_stop = "training stopped by its caller after tree " +
+                                   std::to_string(step);
+                    return false;
                 }
-                return keep_running;
+                return true;
             };
         }
         if (checkpoint.store != nullptr) {
@@ -407,7 +422,10 @@ DistributedTrainResult run_train_job(
                                              fit_labels, params, allreduce, tag,
                                              hooks);
         if (!trained.ok()) {
-            return {.ok = false, .detail = "gbdt train: " + trained.status.message};
+            return {.ok = false,
+                    .detail = "gbdt train: " + (metrics_stop.empty()
+                                                    ? trained.status.message
+                                                    : metrics_stop)};
         }
         out.model = std::move(trained.model);
         out.feature_importances = std::move(trained.feature_importances);

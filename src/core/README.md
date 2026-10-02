@@ -22,6 +22,9 @@ reservations keep new batches within their cost cap (#1209).
 Automatic Run gauges allocate increasing steps per metric on the owner thread;
 caller metrics remain strict, and live batches report the stored steps. See
 [Run metrics](../../docs/ml/run-metrics.md) (#1205).
+The tick writes coalesced trainer captures once their second has passed, and
+stop writes every pending one; reconciliation leaves a Run or Study with a
+pending local change alone until it is written (#1217).
 The owner thread also resolves display names at Run/Model creation, propagates
 Project/Pipeline renames, and performs idempotent startup backfill (#1184).
 See [architecture](../../docs/architecture/README.md) and

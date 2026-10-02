@@ -856,8 +856,11 @@ Methodology make_m1_methodology() {
         {"time", false, "point-in-time cutoff column"},
     };
     methodology.outputs = {"model", "scores", "drivers", "ranked entities"};
-    methodology.metrics = {"ROC-AUC", "PR-AUC", "log loss", "Brier score",
-                           "lift", "RMSE", "MAE"};
+    // Canonical held-out metric names: the keys the run report and a Study
+    // objective use (#1217, zetta/ml/metric_names.hpp).
+    methodology.metrics = {"held_out_auc", "held_out_log_loss",
+                           "held_out_accuracy", "held_out_rmse",
+                           "held_out_mae"};
     methodology.runnable = true;
     methodology.build_shape = build_m1_shape;
     methodology.owns = m1_owns;

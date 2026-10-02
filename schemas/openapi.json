@@ -5629,12 +5629,6 @@
                         "type": "integer"
                       }
                     },
-                    "required": [
-                      "max_trials",
-                      "max_wall_time_ms",
-                      "max_parallel_trials",
-                      "cost_cap"
-                    ],
                     "type": "object"
                   },
                   "dataset": {
@@ -5644,6 +5638,7 @@
                     "type": "boolean"
                   },
                   "from_defaults": {
+                    "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default search space",
                     "type": "boolean"
                   },
                   "intent": {
@@ -5677,11 +5672,6 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "metric",
-                      "direction",
-                      "validation_split"
-                    ],
                     "type": "object"
                   },
                   "pipeline": {
@@ -5792,9 +5782,7 @@
                 },
                 "required": [
                   "name",
-                  "methodology",
-                  "objective",
-                  "budgets"
+                  "methodology"
                 ],
                 "type": "object"
               }
@@ -18646,6 +18634,16 @@
                                         ],
                                         "type": "object"
                                       },
+                                      "objective_metric_aliases": {
+                                        "additionalProperties": {
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "description": "accepted input aliases per canonical objective metric; they normalize to the canonical name",
+                                        "type": "object"
+                                      },
                                       "objective_metrics": {
                                         "items": {
                                           "type": "string"
@@ -18747,6 +18745,7 @@
                                     "required": [
                                       "parameters",
                                       "objective_metrics",
+                                      "objective_metric_aliases",
                                       "validation_splits",
                                       "dataset_path"
                                     ],
@@ -29908,19 +29907,13 @@
                       "type": "integer"
                     }
                   },
-                  "required": [
-                    "max_trials",
-                    "max_wall_time_ms",
-                    "max_parallel_trials",
-                    "cost_cap"
-                  ],
                   "type": "object"
                 }
               }
             },
             "in": "query",
             "name": "budgets",
-            "required": true
+            "required": false
           },
           {
             "in": "query",
@@ -29939,10 +29932,12 @@
             }
           },
           {
+            "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default search space",
             "in": "query",
             "name": "from_defaults",
             "required": false,
             "schema": {
+              "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default search space",
               "type": "boolean"
             }
           },
@@ -29986,18 +29981,13 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "metric",
-                    "direction",
-                    "validation_split"
-                  ],
                   "type": "object"
                 }
               }
             },
             "in": "query",
             "name": "objective",
-            "required": true
+            "required": false
           },
           {
             "in": "query",

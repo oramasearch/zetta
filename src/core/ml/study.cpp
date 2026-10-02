@@ -10,6 +10,7 @@
 #include <mutex>
 #include <numeric>
 #include <random>
+#include <ranges>
 #include <set>
 #include <thread>
 #include <utility>
@@ -25,6 +26,7 @@
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/gbdt_train_job.hpp"
+#include "zetta/ml/metric_names.hpp"
 #include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -761,8 +763,22 @@ bool Study::report_intermediate(const std::string& run, std::uint64_t step,
         return false;
     }
     trial->intermediate.push_back({step, value});
+    if (std::chrono::steady_clock::now() - last_capture_ < kCaptureInterval) {
+        value_.updated = zetta::util::now_iso8601();
+        capture_pending_ = true;
+        return true;
+    }
     capture_and_persist();
     return true;
+}
+
+void Study::flush_capture(bool force) {
+    if (!capture_pending_) return;
+    if (!force &&
+        std::chrono::steady_clock::now() - last_capture_ < kCaptureInterval) {
+        return;
+    }
+    capture_and_persist();
 }
 
 bool Study::finish_trial(const std::string& run, TrialState state,
@@ -822,10 +838,28 @@ void Study::stop(std::string reason) {
     capture_and_persist();
 }
 
-void Study::set_complete(std::string reason) {
-    value_.status = StudyStatus::Complete;
+StudyStatus Study::set_complete(std::string reason) {
+    const bool any_complete = std::ranges::any_of(
+        value_.trials, [](const StudyTrial& trial) {
+            return trial.state == TrialState::Complete;
+        });
+    const auto last_failed = std::ranges::find(
+        value_.trials | std::views::reverse, TrialState::Failed,
+        &StudyTrial::state);
     value_.stop_reason = std::move(reason);
+    if (!any_complete &&
+        last_failed != (value_.trials | std::views::reverse).end()) {
+        value_.status = StudyStatus::Failed;
+        value_.failure_reason =
+            "no trial completed; trial " +
+            std::to_string(last_failed->number) + " failed: " +
+            (last_failed->reason.empty() ? std::string{"no reason recorded"}
+                                         : last_failed->reason);
+    } else {
+        value_.status = StudyStatus::Complete;
+    }
     capture_and_persist();
+    return value_.status;
 }
 
 void Study::fail(std::string stop_reason, std::string failure_reason) {
@@ -864,6 +898,8 @@ nlohmann::json Study::metadata() const { return to_json(value_); }
 
 void Study::capture_and_persist() {
     value_.updated = zetta::util::now_iso8601();
+    capture_pending_ = false;
+    last_capture_ = std::chrono::steady_clock::now();
     if (replication_ != nullptr) {
         replication_->set(catalog::study_key(id_), metadata());
     }
@@ -1740,16 +1776,23 @@ std::optional<double> trial_objective(Node& node, const StudySpec& spec,
         error = "trial completed without a registered model";
         return std::nullopt;
     }
-    std::string metric = spec.objective.metric;
-    const std::size_t dot = metric.rfind('.');
-    if (dot != std::string::npos) metric.erase(0, dot + 1);
+    // The objective names a canonical held-out metric, which is the key the
+    // model's report stores it under (#1217). A study stored before names
+    // were canonical still says e.g. validation.auc; resolve it the same way.
+    const std::string metric =
+        canonical_metric_name(spec.objective.metric)
+            .value_or(spec.objective.metric);
     const nlohmann::json& metrics = model->metrics();
-    const std::string validation_metric = "held_out_" + metric;
-    const auto found = metrics.find(validation_metric);
+    const auto found = metrics.find(metric);
     if (found == metrics.end() || !found->is_number()) {
-        error = "trial model did not report objective metric '" +
-                spec.objective.metric + "' on validation split '" +
-                spec.objective.validation_split + "'";
+        const auto rows = metrics.find("held_out_rows");
+        error = "trial model did not report objective metric '" + metric +
+                "' on validation split '" + spec.objective.validation_split +
+                "'";
+        if (rows == metrics.end() || !rows->is_number() ||
+            rows->get<double>() <= 0.0) {
+            error += ": the validation split held no rows";
+        }
         return std::nullopt;
     }
     return found->get<double>();
@@ -1780,6 +1823,7 @@ bool deterministic_data_error(std::string_view reason) {
            reason.contains("no training rows") ||
            reason.contains("label column") ||
            reason.contains("out-of-time") ||
+           reason.contains("the validation split held no rows") ||
            reason.contains("study dataset was not supplied");
 }
 
@@ -1888,8 +1932,10 @@ bool StudyDriver::State::finish_for_budget(
             }
             publish_progress(node, *study, "trial_failed", run_id);
         }
-        study->set_complete(reason);
-        publish_progress(node, *study, "study_complete");
+        const StudyStatus ended = study->set_complete(reason);
+        publish_progress(node, *study,
+                         ended == StudyStatus::Failed ? "study_failed"
+                                                      : "study_complete");
     });
     return true;
 }
@@ -2170,8 +2216,11 @@ void StudyDriver::State::drive(
         if (pending.empty()) {
             node.run_on_owner([&] {
                 if (study->status() != StudyStatus::Running) return;
-                study->set_complete("max_trials");
-                publish_progress(node, *study, "study_complete");
+                const StudyStatus ended = study->set_complete("max_trials");
+                publish_progress(node, *study,
+                                 ended == StudyStatus::Failed
+                                     ? "study_failed"
+                                     : "study_complete");
             });
             break;
         }

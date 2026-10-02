@@ -84,6 +84,24 @@ std::vector<Json> monthly_churn_rows(bool positives_only_in_last_month) {
     return rows;
 }
 
+// Twelve rows, one per day, alternating outcomes, so both sides of the
+// out-of-time split hold both classes and the study is admitted (#1217).
+std::vector<Json> tiny_churn_rows() {
+    std::vector<Json> rows;
+    for (std::size_t index = 0; index < 12; ++index) {
+        std::string observed_at = "2026-08-";
+        if (index + 1 < 10) observed_at += "0";
+        observed_at += std::to_string(index + 1) + "T00:00:00Z";
+        rows.push_back(
+            {{"customer_id", "customer-" + std::to_string(2000 + index)},
+             {"observed_at", std::move(observed_at)},
+             {"failed_payments", static_cast<std::int64_t>((index * 7) % 5)},
+             {"logins_30d", static_cast<double>(10 + (index * 13) % 40)},
+             {"churned", index % 2 == 0 ? 1 : 0}});
+    }
+    return rows;
+}
+
 Json integer_parameter(std::string name, int minimum, int maximum,
                        int step) {
     maximum = std::max(maximum, minimum + 1);
@@ -382,10 +400,16 @@ TEST_F(StudyDriverJourney, WallAndCostBudgetsStopAdmission) {
     }));
     ASSERT_TRUE(pump_until([&] {
         const auto study = node.find_study(wall_study_id);
-        return study && study->status() == zetta::ml::StudyStatus::Complete;
+        return study && study->status() != zetta::ml::StudyStatus::Running;
     }));
     const auto wall_study = node.find_study(wall_study_id);
     ASSERT_TRUE(wall_study);
+    // Its only trial failed, so the study ended failed with that reason, not
+    // complete (#1217).
+    EXPECT_EQ(wall_study->status(), zetta::ml::StudyStatus::Failed);
+    EXPECT_NE(wall_study->value().failure_reason.find("budget"),
+              std::string::npos)
+        << wall_study->value().failure_reason;
     EXPECT_EQ(wall_study->value().stop_reason, "wall_time");
     ASSERT_EQ(wall_study->value().trials.size(), 1u);
     EXPECT_EQ(wall_study->value().trials.front().state,
@@ -657,8 +681,16 @@ TEST_F(StudyDriverJourney, PublishedStudySpaceBuildsAValidSpec) {
     EXPECT_EQ(regularization->at("aliases"),
               Json::array({"gbdt.l2_regularization"}));
     EXPECT_EQ(published.at("objective_metrics"),
-              Json::array({"validation.accuracy", "validation.auc",
-                           "validation.log_loss"}));
+              Json::array({"held_out_accuracy", "held_out_auc",
+                           "held_out_log_loss"}));
+    const Json& aliases = published.at("objective_metric_aliases");
+    EXPECT_TRUE(std::ranges::contains(aliases.at("held_out_auc"),
+                                      Json("validation.auc")));
+    EXPECT_TRUE(std::ranges::contains(aliases.at("held_out_auc"),
+                                      Json("ROC-AUC")));
+    // The methodology lists the same names the report and the study use.
+    EXPECT_TRUE(std::ranges::contains(m1->at("metrics"), Json("held_out_auc")));
+    EXPECT_FALSE(std::ranges::contains(m1->at("metrics"), Json("ROC-AUC")));
     EXPECT_EQ(published.at("validation_splits"),
               Json::array({"validation"}));
     EXPECT_EQ(published.at("dataset_path").at("format"),
@@ -687,6 +719,291 @@ TEST_F(StudyDriverJourney, PublishedStudySpaceBuildsAValidSpec) {
     EXPECT_FALSE(m2->at("studies").get<bool>());
     EXPECT_FALSE(m2->at("study_reason").get<std::string>().empty());
     EXPECT_TRUE(m2->at("study_search_space").is_null());
+}
+
+// #1217: start_study (create_study) errors carry the field at fault in
+// `path`, as validate_study's do, and the first one offers from_defaults.
+TEST_F(StudyDriverJourney, StartStudyErrorsCarryPathAndOfferDefaults) {
+    const Json minimal = {{"name", "minimal study"},
+                          {"methodology", "M-1"},
+                          {"dataset", "study_data.churn"}};
+    struct ErrorCase {
+        std::string name;
+        Json input;
+        std::string path;
+        bool offers_defaults;
+    };
+    Json missing_trials = study_input("missing trials", 1, 4, 4);
+    missing_trials["budgets"].erase("max_trials");
+    Json bad_direction = study_input("bad direction", 1, 4, 4);
+    bad_direction["objective"]["direction"] = "up";
+    Json no_name = study_input("no name", 1, 4, 4);
+    no_name.erase("name");
+    Json no_space = study_input("no space", 1, 4, 4);
+    no_space.erase("search_space");
+    Json bad_metric = study_input("bad metric", 1, 4, 4);
+    bad_metric["objective"]["metric"] = "f1";
+    const std::vector<ErrorCase> cases = {
+        {"first error of a minimal input", minimal, "/objective", true},
+        {"missing budget field", missing_trials, "/budgets/max_trials", true},
+        {"schema enum", bad_direction, "/objective/direction", true},
+        {"schema required", no_name, "/name", true},
+        {"no search space", no_space, "/search_space", true},
+        {"unknown metric", bad_metric, "/objective/metric", true},
+    };
+    for (const ErrorCase& item : cases) {
+        SCOPED_TRACE(item.name);
+        const ApiResult created = call("create_study", item.input);
+        ASSERT_FALSE(created.ok);
+        EXPECT_EQ(created.error.code, "invalid_input");
+        EXPECT_EQ(created.error.path, item.path) << created.error.message;
+        EXPECT_EQ(created.error.message.contains("from_defaults: true"),
+                  item.offers_defaults)
+            << created.error.message;
+        if (!item.input.contains("name")) continue;
+        const ApiResult validated = call("validate_study", item.input);
+        if (!validated.ok) {
+            // A schema rejection fails validate_study the same way.
+            EXPECT_EQ(validated.error.path, item.path);
+            continue;
+        }
+        EXPECT_FALSE(validated.value.at("valid").get<bool>());
+        EXPECT_EQ(validated.value.at("path"), item.path);
+        EXPECT_EQ(validated.value.at("reason"), created.error.message);
+    }
+    const ApiResult unknown = call("create_study", bad_metric);
+    EXPECT_NE(unknown.error.message.find("held_out_auc"), std::string::npos)
+        << unknown.error.message;
+
+    // Taking the offer: name, methodology and dataset are enough.
+    Json defaults = minimal;
+    defaults["from_defaults"] = true;
+    const ApiResult created = call("create_study", defaults);
+    ASSERT_TRUE(created.ok) << created.error.path << ": "
+                            << created.error.message;
+    const Json& spec = created.value.at("spec");
+    EXPECT_EQ(spec.at("objective").at("metric"), "held_out_auc");
+    EXPECT_EQ(spec.at("objective").at("direction"), "maximize");
+    EXPECT_EQ(spec.at("objective").at("validation_split"), "validation");
+    EXPECT_EQ(spec.at("budgets").at("max_trials"), 10);
+    EXPECT_EQ(spec.at("budgets").at("max_wall_time_ms"), 600000);
+    EXPECT_FALSE(spec.at("search_space").empty());
+    ASSERT_TRUE(call("stop_study", {{"study", created.value.at("id")}}).ok);
+
+    // An error from_defaults cannot fix does not offer it.
+    const ApiResult clash = call("create_study", defaults);
+    ASSERT_FALSE(clash.ok);
+    EXPECT_EQ(clash.error.path, "/name");
+    Json clash_without = study_input("minimal study", 1, 4, 4);
+    const ApiResult named = call("create_study", clash_without);
+    ASSERT_FALSE(named.ok);
+    EXPECT_EQ(named.error.path, "/name");
+    EXPECT_FALSE(named.error.message.contains("from_defaults"))
+        << named.error.message;
+}
+
+// #1217: one metric name across methodology, report and study. The canonical
+// name is the run report's key; the older spellings are input aliases.
+TEST_F(StudyDriverJourney, StudyObjectiveMetricAliasesNormalizeToTheReportName) {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"held_out_auc", "held_out_auc"},
+        {"validation.auc", "held_out_auc"},
+        {"ROC-AUC", "held_out_auc"},
+        {"roc_auc", "held_out_auc"},
+        {"auc", "held_out_auc"},
+        {"validation.log_loss", "held_out_log_loss"},
+        {"log loss", "held_out_log_loss"},
+        {"validation.accuracy", "held_out_accuracy"},
+    };
+    for (std::size_t index = 0; index < cases.size(); ++index) {
+        const auto& [given, canonical] = cases[index];
+        SCOPED_TRACE(given);
+        Json input = study_input("metric alias " + std::to_string(index), 1,
+                                 4, 4);
+        input["objective"]["metric"] = given;
+        const ApiResult validated = call("validate_study", input);
+        ASSERT_TRUE(validated.ok) << validated.error.message;
+        ASSERT_TRUE(validated.value.at("valid").get<bool>())
+            << validated.value.dump();
+        EXPECT_EQ(validated.value.at("normalized_spec")
+                      .at("objective")
+                      .at("metric"),
+                  canonical);
+    }
+
+    // A trial's objective is read from the report under that same name.
+    const ApiResult created =
+        call("create_study", study_input("metric names agree", 1, 4, 4));
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string study_id = created.value.at("id");
+    EXPECT_EQ(created.value.at("spec").at("objective").at("metric"),
+              "held_out_auc");
+    ASSERT_TRUE(pump_until([&] {
+        const auto study = node.find_study(study_id);
+        return study && study->status() != zetta::ml::StudyStatus::Running;
+    }));
+    const auto study = node.find_study(study_id);
+    ASSERT_TRUE(study);
+    ASSERT_EQ(study->status(), zetta::ml::StudyStatus::Complete)
+        << study->value().failure_reason;
+    const zetta::ml::StudyTrial& trial = study->value().trials.front();
+    ASSERT_TRUE(trial.objective.has_value()) << trial.reason;
+    const auto model = node.find_model(trial.model);
+    ASSERT_TRUE(model);
+    EXPECT_EQ(*trial.objective,
+              model->metrics().at("held_out_auc").get<double>());
+}
+
+// #1217: the 12-row Study from the UX review. Its trial ran ten minutes and
+// slowed the workspace: every boosting round captured the whole Run and Study
+// into the replicated document, whose history (and every save) grew with the
+// square of the rounds. Captures are now coalesced, so the same study finishes
+// in seconds and leaves a small document.
+TEST_F(StudyDriverJourney, TinyStudyFinishesQuicklyAndKeepsTheDocumentSmall) {
+    land_table("tiny_churn", tiny_churn_rows());
+    Json input = study_input("tiny study", 2, 200, 200);
+    input["dataset"] = "study_data.tiny_churn";
+    input["budgets"]["max_wall_time_ms"] = 600000;
+    const ApiResult created = call("create_study", input);
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string study_id = created.value.at("id");
+    const std::size_t document_before = replication.save().size();
+
+    const auto started = std::chrono::steady_clock::now();
+    ASSERT_TRUE(pump_until([&] {
+        const auto study = node.find_study(study_id);
+        return study && study->status() != zetta::ml::StudyStatus::Running;
+    }));
+    EXPECT_LT(std::chrono::steady_clock::now() - started,
+              std::chrono::seconds(30));
+
+    const auto study = node.find_study(study_id);
+    ASSERT_TRUE(study);
+    ASSERT_EQ(study->status(), zetta::ml::StudyStatus::Complete)
+        << study->value().failure_reason;
+    ASSERT_EQ(study->value().trials.size(), 2u);
+    for (const zetta::ml::StudyTrial& trial : study->value().trials) {
+        EXPECT_EQ(trial.state, zetta::ml::TrialState::Complete)
+            << trial.reason;
+        // Every round's intermediate value is kept in memory and captured
+        // (the grid samples 200 and 201 trees).
+        EXPECT_GE(trial.intermediate.size(), 200u);
+        const auto run = node.find_run(trial.run);
+        ASSERT_TRUE(run);
+        EXPECT_FALSE(run->capture_pending());
+    }
+    // 400 rounds once grew the document by ~2.6 MB; coalesced, it is a
+    // small multiple of the live values.
+    EXPECT_LT(replication.save().size() - document_before, 512u * 1024u);
+
+    // Nothing coalesced is lost: what the CRDT holds is the in-memory value.
+    for (const zetta::ml::StudyTrial& trial : study->value().trials) {
+        const auto run = node.find_run(trial.run);
+        ASSERT_TRUE(run);
+        EXPECT_EQ(replication.snapshot().at("run:" + trial.run),
+                  run->metadata());
+    }
+    EXPECT_FALSE(study->capture_pending());
+    EXPECT_EQ(replication.snapshot().at("study:" + study_id),
+              study->metadata());
+}
+
+// #1217: a trial whose training cannot produce its objective fails at once
+// with the reason, and a study whose every trial failed ends failed with that
+// reason — never complete with an empty failure_reason.
+TEST_F(StudyDriverJourney, TinyStudyWhoseTrialsFailEndsFailedWithTheReason) {
+    // No time column: the validation split is a hash of each row, and at the
+    // smallest holdout fraction none of the twelve rows lands in it.
+    std::vector<Json> rows = tiny_churn_rows();
+    for (Json& row : rows) row.erase("observed_at");
+    land_table("tiny_untimed", std::move(rows));
+    Json input = study_input("tiny failing study", 3, 200, 200);
+    input["dataset"] = "study_data.tiny_untimed";
+    input["budgets"]["max_wall_time_ms"] = 600000;
+    input["search_space"].push_back(
+        {{"name", "holdout_fraction"},
+         {"kind", "float"},
+         {"minimum", 0.01},
+         {"maximum", 0.0100001},
+         {"step", 0.0},
+         {"log", false},
+         {"choices", Json::array()},
+         {"condition_parameter", ""},
+         {"condition_values", Json::array()}});
+    const ApiResult created = call("create_study", input);
+    ASSERT_TRUE(created.ok) << created.error.path << ": "
+                            << created.error.message;
+    const std::string study_id = created.value.at("id");
+
+    const auto started = std::chrono::steady_clock::now();
+    ASSERT_TRUE(pump_until([&] {
+        const auto study = node.find_study(study_id);
+        return study && study->status() != zetta::ml::StudyStatus::Running;
+    }));
+    EXPECT_LT(std::chrono::steady_clock::now() - started,
+              std::chrono::seconds(30));
+
+    const auto study = node.find_study(study_id);
+    ASSERT_TRUE(study);
+    EXPECT_EQ(study->status(), zetta::ml::StudyStatus::Failed);
+    const std::string& failure = study->value().failure_reason;
+    EXPECT_NE(failure.find("the validation split held no rows"),
+              std::string::npos)
+        << failure;
+    // Two identical data failures stop the study before its third trial.
+    EXPECT_EQ(study->value().stop_reason, "data");
+    EXPECT_EQ(study->value().trials.size(), 2u);
+    for (const zetta::ml::StudyTrial& trial : study->value().trials) {
+        EXPECT_EQ(trial.state, zetta::ml::TrialState::Failed);
+        EXPECT_NE(trial.reason.find("held_out_auc"), std::string::npos)
+            << trial.reason;
+        const auto run = node.find_run(trial.run);
+        ASSERT_TRUE(run);
+        EXPECT_EQ(run->status(), zetta::pipeline::RunStatus::Failed);
+    }
+    const ApiResult analysis =
+        call("get_study_analysis", {{"study", study_id}});
+    ASSERT_TRUE(analysis.ok) << analysis.error.message;
+    EXPECT_TRUE(analysis.value.at("best_trial").is_null());
+}
+
+// #1217: a failed metric write stops training at once and names itself;
+// a caller's stop (wall time, pruning, cancel) is not called a logging failure.
+TEST_F(StudyDriverJourney, MetricLoggingFailureFailsTheTrialAtOnceWithItsReason) {
+    land_table("tiny_churn", tiny_churn_rows());
+    Json input = study_input("vanishing run study", 1, 200, 200);
+    input["dataset"] = "study_data.tiny_churn";
+    const ApiResult created = call("create_study", input);
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string study_id = created.value.at("id");
+    ASSERT_TRUE(pump_until([&] {
+        const auto study = node.find_study(study_id);
+        return study && !study->value().trials.empty() &&
+               !study->value().trials.front().intermediate.empty();
+    }));
+    // The trial's Run disappears mid-training, so its next metric batch has
+    // nowhere to go.
+    const std::string run_id =
+        node.find_study(study_id)->value().trials.front().run;
+    ASSERT_TRUE(node.drop_run(run_id));
+    ASSERT_TRUE(pump_until([&] {
+        const auto study = node.find_study(study_id);
+        return study && study->status() != zetta::ml::StudyStatus::Running;
+    }));
+    const auto study = node.find_study(study_id);
+    ASSERT_TRUE(study);
+    ASSERT_EQ(study->value().trials.size(), 1u);
+    const zetta::ml::StudyTrial& trial = study->value().trials.front();
+    EXPECT_EQ(trial.state, zetta::ml::TrialState::Failed);
+    EXPECT_NE(trial.reason.find("run metric logging failed at tree"),
+              std::string::npos)
+        << trial.reason;
+    EXPECT_NE(trial.reason.find("no run with id"), std::string::npos)
+        << trial.reason;
+    EXPECT_LT(trial.intermediate.size(), 200u);
+    EXPECT_EQ(study->status(), zetta::ml::StudyStatus::Failed);
+    EXPECT_NE(study->value().failure_reason.find(trial.reason),
+              std::string::npos);
 }
 
 }  // namespace

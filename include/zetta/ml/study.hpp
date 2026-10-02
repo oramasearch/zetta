@@ -147,8 +147,15 @@ public:
     const std::filesystem::path& dir() const { return dir_; }
 
     bool add_trial(StudyTrial trial, std::string* error = nullptr);
+    // Appends a running trial's intermediate value. The value changes in
+    // memory at once; its replicated capture is coalesced to at most one per
+    // kCaptureInterval (#1217), written by the next capture or flush_capture.
     bool report_intermediate(const std::string& run, std::uint64_t step,
                              double value, std::string* error = nullptr);
+    static constexpr std::chrono::milliseconds kCaptureInterval{1000};
+    bool capture_pending() const { return capture_pending_; }
+    // Write a pending capture when its interval has passed (or `force`).
+    void flush_capture(bool force = false);
     bool finish_trial(const std::string& run, TrialState state,
                       std::optional<double> objective, double cost,
                       std::string reason = {}, std::string model = {},
@@ -159,7 +166,12 @@ public:
     bool reset_trial_for_retry(const std::string& run,
                                std::string* error = nullptr);
     void stop(std::string reason);
-    void set_complete(std::string reason);
+    // Ends the study for `reason`. A study whose trials all ended without a
+    // result (at least one failed, none complete) is not complete: it ends
+    // failed, with the last failed trial's reason as its failure_reason
+    // (#1217), so a run of failures never reads as success. Returns the
+    // resulting status.
+    StudyStatus set_complete(std::string reason);
     void fail(std::string stop_reason, std::string failure_reason);
     void set_promoted_model(std::string model);
     void set_project_pipeline(std::string project, std::string pipeline);
@@ -170,6 +182,8 @@ public:
 private:
     StudyTrial* find_trial(const std::string& run);
     void capture_and_persist();
+    bool capture_pending_ = false;
+    std::chrono::steady_clock::time_point last_capture_{};
 
     std::string id_;
     StudyValue value_;

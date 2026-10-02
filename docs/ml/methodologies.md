@@ -45,6 +45,9 @@ only their existing final released report.
 The `list_methodologies` read capability exposes every entry as JSON over REST
 and MCP. Each object contains `id`, `name`, `family`, `model_kinds`, `solutions`,
 `inputs`, `outputs`, `metrics`, `runnable`, `partial`, and `issue`.
+Where a metric has a held-out report key (M-1, M-18), `metrics` lists that key —
+`held_out_auc`, not `ROC-AUC` — the same name the run report and a Study
+objective use ([held-out metrics](held-out-metrics.md#metric-names), #1217).
 It also contains `studies`, `study_reason`, and `study_search_space`. Supported
 methodologies publish typed parameter definitions, defaults, objective metrics,
 validation splits, and dataset-path rules from the definition used by Study

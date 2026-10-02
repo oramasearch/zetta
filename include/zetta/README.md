@@ -14,7 +14,10 @@ removed, and the promoted Model's producing Run is retained (#1158, #1205). See
 [AutoML studies](../../docs/ml/studies.md).
 The interface also exposes full-table split validation and a failed Study state
 with a durable data reason; the driver reserves estimated trial-seconds before
-admission (#1209).
+admission (#1209). A study whose trials all failed ends failed with the last
+trial's reason, `ml/metric_names.hpp` holds the one name per held-out metric
+with its input aliases, and Run/Study captures made every training round are
+coalesced to one per second (#1217).
 
 Run and Model values also carry denormalized Project/Pipeline names. Node
 startup backfills older records, and rename operations keep those names current
