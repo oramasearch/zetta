@@ -345,8 +345,8 @@ Methodology make_m18_methodology() {
         {"time", false, "ordered observation time"}};
     methodology.outputs = {"ensemble model", "blended scores",
                            "meta-model weights"};
-    methodology.metrics = {"held-out ROC-AUC", "log loss",
-                           "lift over best single model"};
+    methodology.metrics = {"held_out_auc", "held_out_log_loss",
+                           "held_out_auc_lift_over_best_single"};
     methodology.runnable = true;
     methodology.build_shape = build_m18_shape;
     methodology.owns = m18_owns;

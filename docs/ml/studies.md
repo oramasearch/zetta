@@ -65,12 +65,13 @@ supported entry has `studies: true`, an empty `study_reason`, and a
 
 - parameters with canonical name, kind, bounds, step, sampling mode, default,
   choices, aliases, and conditions;
-- supported objective metrics and validation splits; and
+- supported objective metrics (canonical names), each one's accepted input
+  aliases under `objective_metric_aliases`, and validation splits; and
 - the dataset-path contract.
 
 M-1 currently publishes `model_family` with the sole choice `gbdt`, the eight
 GBDT and holdout controls accepted by the real driver,
-`validation.accuracy`, `validation.auc`, and `validation.log_loss`, and the
+`held_out_accuracy`, `held_out_auc`, and `held_out_log_loss`, and the
 `validation` split. Dataset-level studies require an existing
 `database.table`; directory paths are not accepted. Methodologies without a
 study driver return `studies: false`, a reason, and a null
@@ -89,10 +90,25 @@ selection cannot consume final test data. If a project Pipeline is supplied,
 `create_study` runs the existing correctness gate before accepting it; this
 reuses methodology leakage checks.
 
-The real M-1 driver accepts the `validation` split with `validation.auc`,
-`validation.accuracy`, or `validation.log_loss`. Unsupported split and metric
-names are rejected when the Study is created. The selected metric is read from
-the registered trial model's corresponding `held_out_*` metric.
+The real M-1 driver accepts the `validation` split with `held_out_auc`,
+`held_out_accuracy`, or `held_out_log_loss`. Unsupported split and metric
+names are rejected when the Study is created, and the reason lists the
+supported metrics.
+
+### One metric name
+
+A metric has one name across the methodology (`list_methodologies` →
+`metrics`), the run report (`get_run_report` → `model`), and the Study
+(`objective.metric`, `list_studies` → `metric_summary.metric`): the run
+report's key, such as `held_out_auc`
+([#1217](https://github.com/oramasearch/zetta/issues/1217)). The spellings that
+circulated before — `validation.auc`, `ROC-AUC`, `roc_auc`, `auc`,
+`validation.log_loss`, `log loss`, `validation.accuracy` — are accepted on
+input as aliases (case, spaces, dots and hyphens ignored) and normalized to the
+canonical name, so a stored Study and `normalized_spec` always carry it. A
+trial's objective is read from its model's report under that same name. The
+table of names and aliases is `zetta::ml::metric_names()` and
+[held-out metrics](held-out-metrics.md#metric-names).
 
 Project and Pipeline refs supplied as ids are normalized to their display names
 when the Study is created. Later renames update those stored names, and startup
@@ -107,7 +123,11 @@ Search parameters are ordered and typed:
 - A parameter is conditional when `condition_parameter` names an earlier
   parameter and `condition_values` lists the parent values that activate it.
 - `from_defaults: true` supplies the selected methodology's model-family
-  defaults. M-1 defaults contain executable GBDT controls.
+  defaults. M-1 defaults contain executable GBDT controls. It also fills a
+  missing objective (`held_out_auc`, `maximize`, the `validation` split) and
+  missing budgets (10 trials, 2 in parallel, 10 minutes of wall time, no cost
+  cap), field by field, so `name`, `methodology` and `dataset` are enough to
+  start a Study. Without it each of those fields is required.
 
 Samplers are `grid`, `random`, and TPE. Pruners are `median` and ASHA, plus
 `none`. M-1 reports a normalized per-tree training-loss curve while the terminal
@@ -133,8 +153,41 @@ ExperimentsAgent should propose `cost_cap: 300` for a small five-trial Study so
 the initial conservative reservations fit in the same unit.
 
 Natural completion records status `complete` with `max_trials`, `wall_time`, or
-`budget`. An explicit `stop_study` records `stopped` and cooperatively cancels
-active Run training; `stop_trial` cancels only the named Run.
+`budget` — provided a trial completed. A study whose trials all ended without a
+result (at least one failed, none complete) records status `failed` with the
+same `stop_reason` and a `failure_reason` naming the last failed trial and why
+it failed (`no trial completed; trial 1 failed: ...`); it never reports
+`complete` with an empty `failure_reason`
+([#1217](https://github.com/oramasearch/zetta/issues/1217)). The
+`study-events.<id>` topic carries `study_failed` instead of `study_complete`.
+An explicit `stop_study` records `stopped` and cooperatively cancels active Run
+training; `stop_trial` cancels only the named Run.
+
+A trial whose training fails ends at once with the failure as its reason. A
+metric batch that cannot be written stops training at the tree it was for and
+says so (`run metric logging failed at tree N: <why>`); a stop the driver asks
+for (wall time, pruning, cancellation) is reported as that stop, never as a
+logging failure. A trial whose model has no held-out figure for the objective —
+for example a tiny table whose validation split held no rows — fails with
+`trial model did not report objective metric 'held_out_auc' ...: the
+validation split held no rows`, which counts as a deterministic data error.
+
+### Captures while a trial trains
+
+A trial reports one metric batch and one intermediate value per boosting
+round. The values change in memory at once and stream live on
+`run-metrics.<run>` and `study-events.<id>`, but the Run's and the Study's
+replicated captures are written at most once per second, and the tick writes
+the last one ([run metrics](run-metrics.md#coalesced-trainer-captures)).
+Capturing the whole Run and Study on every round kept every copy in the
+replicated document's history, so the document — and the owner thread's
+once-a-second save of it, which reads wait behind — grew with the square of
+the rounds: a 12-row Study with two 200-tree trials grew it by 2.6 MB and each
+save took 135 ms on a laptop. On a workspace whose document is already large,
+that per-second save and the three owner-thread hops each round makes are the
+explanation found for reads slowing from ~50 ms to 2–3 s while a trial ran in
+the UX review. Coalesced, the same Study adds about 150 KB and a save takes
+5 ms.
 
 `validate_study` and the background driver's first step inspect the requested
 split once before trial admission when the candidate names a dataset or its
@@ -205,7 +258,7 @@ creation, but stores nothing.
   "dataset": "warehouse.accounts_snapshot",
   "methodology": "M-1",
   "objective": {
-    "metric": "validation.auc",
+    "metric": "held_out_auc",
     "direction": "maximize",
     "validation_split": "validation"
   },
@@ -239,6 +292,19 @@ and budget defaults. An invalid candidate returns `valid: false`, a precise
 failures remain successful read responses so clients can repair the candidate
 without interpreting an action error.
 
+`create_study` (Lake's `start_study`) fails with the same `reason` as an
+`invalid_input` error whose `path` is the same field
+([#1217](https://github.com/oramasearch/zetta/issues/1217)). That includes the
+input-schema rejections the registry makes before the handler runs: a missing
+required property is reported at the property (`/name`), a wrong type or enum
+at the field (`/objective/direction`). An error under `/objective`,
+`/budgets` or `/search_space`, and any schema rejection, ends with the offer
+`set from_defaults: true to fill a missing objective (held_out_auc, maximize,
+validation split), budgets and the M-1 search space` unless the input already
+set it. The first error of a minimal `{name, methodology, dataset}` input is
+therefore `/objective: required; set from_defaults: true ...`, and taking that
+offer is the only change needed.
+
 ### `create_study`
 
 REST: `POST /v1/create_study`. MCP tool: `create_study`. Permission:
@@ -252,7 +318,7 @@ REST: `POST /v1/create_study`. MCP tool: `create_study`. Permission:
   "dataset": "warehouse.accounts_snapshot",
   "methodology": "M-1",
   "objective": {
-    "metric": "validation.auc",
+    "metric": "held_out_auc",
     "direction": "maximize",
     "validation_split": "validation"
   },
@@ -318,7 +384,7 @@ REST: `GET /v1/list_studies`. MCP tool: `list_studies`. Permission:
     "created": "2026-09-29T12:00:00.000Z",
     "updated": "2026-09-29T12:05:00.000Z",
     "metric_summary": {
-      "metric": "validation.auc",
+      "metric": "held_out_auc",
       "direction": "maximize",
       "completed_trials": 3,
       "best": 0.91

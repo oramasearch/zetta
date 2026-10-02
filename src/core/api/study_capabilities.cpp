@@ -8,6 +8,7 @@
 #include "zetta/api/registry.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/metric_names.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/gate.hpp"
@@ -29,8 +30,17 @@ const nlohmann::json& create_study_schema() {
     static const nlohmann::json schema = [] {
         nlohmann::json document =
             zetta::ml::study_value_schema().at("properties").at("spec");
-        document["required"] = {"name", "methodology", "objective", "budgets"};
-        document["properties"]["from_defaults"] = {{"type", "boolean"}};
+        // objective, budgets and search_space may be omitted with
+        // from_defaults: true, which fills what is missing (#1217); without
+        // it the handler reports each missing field with its path.
+        document["required"] = {"name", "methodology"};
+        document["properties"]["objective"].erase("required");
+        document["properties"]["budgets"].erase("required");
+        document["properties"]["from_defaults"] = {
+            {"type", "boolean"},
+            {"description",
+             "fill a missing objective (held_out_auc, maximize, validation "
+             "split), budgets and the methodology's default search space"}};
         return document;
     }();
     return schema;
@@ -310,9 +320,10 @@ const StudyMethodologyDefinition& m1_study_definition() {
         value.parameters.push_back(numeric_parameter(
             "holdout_fraction", zetta::ml::ParameterKind::Float, 0.01, 0.5,
             0.0, false, 0.2, {"gbdt.holdout_fraction"}));
+        // Canonical held-out metric names (#1217); aliases such as
+        // validation.auc or ROC-AUC normalize to these on input.
         value.objective_metrics = {
-            "validation.accuracy", "validation.auc",
-            "validation.log_loss"};
+            "held_out_accuracy", "held_out_auc", "held_out_log_loss"};
         value.validation_splits = {"validation"};
         return value;
     }();
@@ -339,6 +350,19 @@ const StudyParameterDefinition* parameter_definition(
         }
     }
     return nullptr;
+}
+
+// Each objective metric's accepted input aliases, keyed by canonical name.
+nlohmann::json objective_metric_aliases(
+    const StudyMethodologyDefinition& methodology) {
+    nlohmann::json aliases = nlohmann::json::object();
+    for (const zetta::ml::MetricName& metric : zetta::ml::metric_names()) {
+        if (std::ranges::contains(methodology.objective_metrics,
+                                  metric.canonical)) {
+            aliases[metric.canonical] = metric.aliases;
+        }
+    }
+    return aliases;
 }
 
 nlohmann::json parameter_definition_json(
@@ -394,10 +418,17 @@ bool validate_driver_spec(zetta::Node& node, zetta::ml::StudySpec& spec,
         reason = "/objective/validation_split: M-1 supports the 'validation' split";
         return false;
     }
+    if (const std::optional<std::string> canonical =
+            zetta::ml::canonical_metric_name(spec.objective.metric)) {
+        spec.objective.metric = *canonical;
+    }
     if (!std::ranges::contains(definition->objective_metrics,
                                spec.objective.metric)) {
         reason = "/objective/metric: unsupported M-1 validation metric '" +
-                 spec.objective.metric + "'";
+                 spec.objective.metric + "'; use one of";
+        for (const std::string& metric : definition->objective_metrics) {
+            reason += " " + metric;
+        }
         return false;
     }
     std::set<std::string> normalized_names;
@@ -471,6 +502,21 @@ bool validate_driver_spec(zetta::Node& node, zetta::ml::StudySpec& spec,
     return true;
 }
 
+nlohmann::json default_objective() {
+    return {{"metric", "held_out_auc"},
+            {"direction", "maximize"},
+            {"validation_split", "validation"}};
+}
+
+// Ten trials, two at a time, for at most ten minutes; cost is bounded by the
+// wall time alone (0 = no cost cap).
+nlohmann::json default_budgets() {
+    return {{"max_trials", 10},
+            {"max_wall_time_ms", 600000},
+            {"max_parallel_trials", 2},
+            {"cost_cap", 0.0}};
+}
+
 std::optional<zetta::ml::StudySpec> spec_from_input(
     const nlohmann::json& input, std::string& reason) {
     const std::string methodology_id =
@@ -484,6 +530,33 @@ std::optional<zetta::ml::StudySpec> spec_from_input(
     }
     nlohmann::json spec = input;
     spec.erase("from_defaults");
+    const bool from_defaults = input.value("from_defaults", false);
+    // objective and budgets: each missing field is either filled from the
+    // defaults or reported at its own path (#1217).
+    const auto fill = [&](const char* object, const nlohmann::json& defaults) {
+        if (!spec.contains(object)) {
+            if (!from_defaults) {
+                reason = std::string("/") + object +
+                         ": required";
+                return false;
+            }
+            spec[object] = nlohmann::json::object();
+        }
+        for (const auto& [field, value] : defaults.items()) {
+            if (spec[object].contains(field)) continue;
+            if (!from_defaults) {
+                reason = std::string("/") + object + "/" + field +
+                         ": required";
+                return false;
+            }
+            spec[object][field] = value;
+        }
+        return true;
+    };
+    if (!fill("objective", default_objective()) ||
+        !fill("budgets", default_budgets())) {
+        return std::nullopt;
+    }
     spec["project"] = input.value("project", std::string{});
     spec["pipeline"] = input.value("pipeline", std::string{});
     spec["dataset"] = input.value("dataset", std::string{});
@@ -496,7 +569,7 @@ std::optional<zetta::ml::StudySpec> spec_from_input(
         input.value("released_metrics", std::vector<std::string>{});
     if (!input.contains("search_space")) {
         if (!input.value("from_defaults", false)) {
-            reason = "/search_space: required unless from_defaults is true";
+            reason = "/search_space: required";
             return std::nullopt;
         }
         nlohmann::json parameters = nlohmann::json::array();
@@ -555,6 +628,39 @@ StudyValidation validation_failure(std::string code, std::string reason,
     }
     return {std::nullopt, std::move(code), std::move(reason),
             std::move(path)};
+}
+
+// The from_defaults offer (#1217). An input that does not already ask for
+// the defaults is told, in the error it hits, that from_defaults: true fills
+// the objective, budgets and search space — so the first rejection names the
+// one-step way through instead of revealing the rules one call at a time.
+std::string from_defaults_hint(const nlohmann::json& input) {
+    if (input.is_object()) {
+        const auto found = input.find("from_defaults");
+        if (found != input.end() && found->is_boolean() &&
+            found->get<bool>()) {
+            return {};
+        }
+    }
+    return "set from_defaults: true to fill a missing objective "
+           "(held_out_auc, maximize, validation split), budgets and the M-1 "
+           "search space";
+}
+
+// Errors under the fields from_defaults can fill carry the offer; a name
+// clash or a missing dataset does not.
+StudyValidation with_from_defaults_hint(StudyValidation failure,
+                                        const nlohmann::json& input) {
+    if (failure.spec) return failure;
+    const std::string hint = from_defaults_hint(input);
+    const bool fillable = failure.path.empty() ||
+                          failure.path.starts_with("/objective") ||
+                          failure.path.starts_with("/budgets") ||
+                          failure.path.starts_with("/search_space");
+    if (!hint.empty() && fillable) {
+        failure.reason += "; " + hint;
+    }
+    return failure;
 }
 
 nlohmann::json normalized_spec_json(const zetta::ml::StudySpec& spec) {
@@ -657,7 +763,8 @@ void publish_study_event(zetta::Node& node,
 
 ApiResult handle_create_study(const nlohmann::json& input,
                               ApiContext& context) {
-    StudyValidation validation = validate_and_normalize_study(input, context);
+    StudyValidation validation = with_from_defaults_hint(
+        validate_and_normalize_study(input, context), input);
     if (!validation.spec) {
         return ApiResult::failure(validation.code, validation.reason,
                                   validation.path);
@@ -675,7 +782,8 @@ ApiResult handle_create_study(const nlohmann::json& input,
 
 ApiResult handle_validate_study(const nlohmann::json& input,
                                 ApiContext& context) {
-    StudyValidation validation = validate_and_normalize_study(input, context);
+    StudyValidation validation = with_from_defaults_hint(
+        validate_and_normalize_study(input, context), input);
     if (!validation.spec) {
         return ApiResult::success(
             {{"valid", false},
@@ -719,7 +827,9 @@ ApiResult handle_list_studies(const nlohmann::json&, ApiContext& context) {
         item["project_name"] = study->spec().project;
         item["pipeline_name"] = study->spec().pipeline;
         item["metric_summary"] = {
-            {"metric", study->spec().objective.metric},
+            {"metric", zetta::ml::canonical_metric_name(
+                           study->spec().objective.metric)
+                           .value_or(study->spec().objective.metric)},
             {"direction", std::string(to_string(study->spec().objective.direction))},
             {"completed_trials", completed_trials},
             {"best", best ? nlohmann::json(*best) : nlohmann::json(nullptr)}};
@@ -874,6 +984,7 @@ nlohmann::json study_search_space_for_methodology(
         {"study_search_space",
          {{"parameters", std::move(parameters)},
           {"objective_metrics", definition->objective_metrics},
+          {"objective_metric_aliases", objective_metric_aliases(*definition)},
           {"validation_splits", definition->validation_splits},
           {"dataset_path",
            {{"kind", "table"},
@@ -884,18 +995,22 @@ nlohmann::json study_search_space_for_methodology(
 }
 
 void register_study_capabilities(Registry& registry) {
-    registry.add(Capability{
+    Capability validate{
         "validate_study", "Validate study",
         "Validate and normalize a proposed AutoML study without creating it or changing state.",
         create_study_schema(), validate_study_output_schema(),
         CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"}, false,
-        false, handle_validate_study});
-    registry.add(Capability{
+        false, handle_validate_study};
+    validate.invalid_input_hint = from_defaults_hint;
+    registry.add(std::move(validate));
+    Capability create{
         "create_study", "Create study",
         "Create a replicated AutoML study after validating its non-test objective and Pipeline; this mutates state.",
         create_study_schema(), study_output_schema(), CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "create_study"}, true, false,
-        handle_create_study});
+        handle_create_study};
+    create.invalid_input_hint = from_defaults_hint;
+    registry.add(std::move(create));
     registry.add(Capability{
         "get_study", "Get study",
         "Read one study's objective, search configuration, budgets and enforced usage. No side effects.",

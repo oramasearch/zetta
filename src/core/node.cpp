@@ -805,6 +805,8 @@ void Node::tick() {
     //    or self-healing its run. May capture new runs into the document.
     controller_.reconcile();
     if (study_driver_) study_driver_->reconcile();
+    // 2a. Write coalesced trainer captures whose interval has passed (#1217).
+    flush_pending_captures(false);
     // 2b. Search plane (#641): keep this node's per-partition search sub-indexes
     //     current with the (replicated) Search index entities + the placed
     //     partitions this node owns — so any node can answer a peer's
@@ -866,6 +868,16 @@ void Node::tick() {
     //    interactive submitter uses; the tick resumes when the co-run finishes.
     if (launch_listener_) launch_listener_->drain();
     report_memory(false);
+}
+
+void Node::flush_pending_captures(bool force) {
+    std::erase_if(pending_run_captures_, [&](const std::string& run_id) {
+        const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+        return !run || run->flush_capture(force);
+    });
+    for (const std::shared_ptr<zetta::ml::Study>& study : studies_) {
+        if (study) study->flush_capture(force);
+    }
 }
 
 void Node::run_on_owner(const std::function<void()>& work) {
@@ -948,6 +960,7 @@ void Node::stop() {
     if (audit_trail_) {
         audit_trail_->flush();
     }
+    flush_pending_captures(true);
     if (replication_) persist_replication();
     running_ = false;
     std::printf("zetta: node stopped\n");
@@ -1843,7 +1856,8 @@ std::map<std::string, double> run_system_sample(
 
 bool Node::log_run_metrics(const std::string& run_id, std::uint64_t step,
                            std::map<std::string, double> values,
-                           std::string time, std::string* error) {
+                           std::string time, std::string* error,
+                           bool coalesce) {
     const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
     if (!run) {
         if (error != nullptr) {
@@ -1859,9 +1873,10 @@ bool Node::log_run_metrics(const std::string& run_id, std::uint64_t step,
         time = zetta::util::now_iso8601();
     }
     if (!run->log_metrics_with_system_sample(step, values, system_values,
-                                            time, error)) {
+                                            time, error, coalesce)) {
         return false;
     }
+    if (run->capture_pending()) pending_run_captures_.insert(run_id);
     if (pubsub_ == nullptr) {
         return true;
     }
@@ -5592,8 +5607,12 @@ void Node::reconcile_runs(
         auto run = find_run(id);
         if (!run) {
             materialize_run(id, std::move(value));
-        } else if (run->metadata() != to_json(value)) {
-            run->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        } else if (!run->capture_pending() &&
+                   run->metadata() != to_json(value)) {
+            // A peer changed it (no re-capture). A Run holding a coalesced
+            // local change is newer than any capture it made, so it is left
+            // alone until that change is written (#1217).
+            run->apply_value(std::move(value));
         }
     }
 }
@@ -5622,7 +5641,8 @@ void Node::reconcile_studies(
         const auto study = find_study(id);
         if (!study) {
             materialize_study(id, std::move(value));
-        } else if (study->metadata() != zetta::ml::to_json(value)) {
+        } else if (!study->capture_pending() &&
+                   study->metadata() != zetta::ml::to_json(value)) {
             study->apply_value(std::move(value));
         }
     }

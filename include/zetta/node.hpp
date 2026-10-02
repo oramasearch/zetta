@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -382,9 +383,15 @@ public:
     // Run experiment tracking (#1137). These owner-thread entry points update
     // the replicated Run record. Metric batches also sample available host
     // gauges and publish JSON to exposed topic run-metrics.<run>.
+    //
+    // `coalesce` is for a trainer logging every round (#1217): the Run's
+    // replicated capture is written at most once per
+    // pipeline::Run::kCaptureInterval, and the tick (or stop) writes the
+    // last one. Live topic batches still publish on every call.
     bool log_run_metrics(const std::string& run, std::uint64_t step,
                          std::map<std::string, double> values,
-                         std::string time = {}, std::string* error = nullptr);
+                         std::string time = {}, std::string* error = nullptr,
+                         bool coalesce = false);
     bool log_run_params(const std::string& run, nlohmann::json params,
                         std::string* error = nullptr);
     bool log_run_artifact(const std::string& run, nlohmann::json artifact,
@@ -1320,6 +1327,10 @@ private:
     std::vector<std::shared_ptr<zetta::pipeline::Project>> projects_;        // insertion order
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
+    // Runs holding a coalesced metric capture not yet written (#1217); the
+    // tick writes each once its interval has passed, stop() writes them all.
+    std::set<std::string> pending_run_captures_;
+    void flush_pending_captures(bool force);
     std::vector<std::shared_ptr<zetta::ml::Study>> studies_;           // sorted (created, id)
     std::unique_ptr<zetta::ml::StudyDriver> study_driver_;
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
