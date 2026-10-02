@@ -31,13 +31,14 @@ void collect_features(const nlohmann::json& object, std::set<std::string>& names
     }
 }
 
-std::set<std::string> requested_features(const RunRequest& request) {
+std::set<std::string> requested_features(const ir::ExecutionGraph& graph,
+                                         const nlohmann::json& input) {
     std::set<std::string> names;
-    collect_features(request.input, names);
-    if (const auto given = request.input.find("dataset"); given != request.input.end()) {
+    collect_features(input, names);
+    if (const auto given = input.find("dataset"); given != input.end()) {
         collect_features(*given, names);
     }
-    for (const auto& step : request.graph->graph().nodes()) {
+    for (const auto& step : graph.nodes()) {
         collect_features(step->attributes, names);
         if (const auto config = step->attributes.find("segmentation");
             config != step->attributes.end()) {
@@ -47,7 +48,7 @@ std::set<std::string> requested_features(const RunRequest& request) {
     return names;
 }
 
-std::string unsafe_feature(const RunRequest& request, const data::DatasetAnalysis& analysis, const std::string& source,
+std::string unsafe_feature(const ir::ExecutionGraph& pipeline, const data::DatasetAnalysis& analysis, const std::string& source,
                            const data::FeaturePlanOptions& options) {
     ir::ExecutionGraph graph;
     // Analysis already compared sampled timestamps to the real cutoff. The
@@ -59,7 +60,7 @@ std::string unsafe_feature(const RunRequest& request, const data::DatasetAnalysi
         attributes["label"] = options.label_column;
     }
     nlohmann::json annotation = {{"name", source}};
-    for (const auto& step : request.graph->graph().nodes()) {
+    for (const auto& step : pipeline.nodes()) {
         const auto features = step->attributes.find("features");
         if (features == step->attributes.end() || !features->is_array()) {
             continue;
@@ -142,12 +143,49 @@ nlohmann::json usage_json(const data::FeaturePlan& plan) {
     return result;
 }
 
+// #1216: an empty plan names every excluded column and why; each reason says
+// how to include that column, so the failure is actionable without the plan JSON.
+std::string no_inputs_description(const data::FeaturePlan& plan,
+                                  const data::FeaturePlanOptions& options) {
+    const std::string description =
+        "The feature plan leaves no inputs this trainer can consume.";
+    std::string listed;
+    for (const auto& excluded : plan.excluded) {
+        if (excluded.source_column == options.label_column ||
+            excluded.source_column == options.entity_column) {
+            continue;
+        }
+        listed += (listed.empty() ? " Excluded columns: " : "; ") + excluded.source_column +
+                  " — " + excluded.reason;
+    }
+    if (listed.empty()) {
+        return description + " The table has no columns besides the entity '" +
+               options.entity_column + "' and the label '" + options.label_column +
+               "'; add at least one numeric column that describes each row.";
+    }
+    return description + listed + ".";
+}
+
 } // namespace
 
 data::FeaturePlan plan_run_features(RunRequest& request, const std::string& methodology,
                                     data::ResolvedDataset& dataset,
                                     data::FeaturePlanOptions options) {
+    return plan_table_features(request.context->node, request.context->cluster,
+                               request.graph->graph(), request.input, methodology, dataset,
+                               std::move(options));
+}
+
+data::FeaturePlan plan_table_features(Node& node, const zetta::cluster::Cluster* cluster,
+                                      const ir::ExecutionGraph& graph,
+                                      const nlohmann::json& input,
+                                      const std::string& methodology,
+                                      data::ResolvedDataset& dataset,
+                                      data::FeaturePlanOptions options) {
     options.methodology = methodology;
+    // Table trainers read the contract's prepared numeric columns; only native
+    // featurizers declare their own derived inputs (#1216).
+    options.numeric_inputs_only = options.native_entries.empty();
     if (options.label_column.empty()) {
         options.label_column = dataset.contract.label_column;
     }
@@ -161,14 +199,14 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
         options.as_of = std::to_string(dataset.contract.as_of);
     }
     if (!options.as_of) {
-        const auto cutoff = request.input.find("solution_snapshot_as_of");
-        if (cutoff != request.input.end() && (cutoff->is_string() || cutoff->is_number())) {
+        const auto cutoff = input.find("solution_snapshot_as_of");
+        if (cutoff != input.end() && (cutoff->is_string() || cutoff->is_number())) {
             options.as_of = cutoff->is_string() ? cutoff->get<std::string>() : cutoff->dump();
             options.time_column = "as_of";
         }
     }
     if (!options.as_of) {
-        for (const auto& source : request.graph->graph().nodes_of_kind(ir::StepKind::Connect)) {
+        for (const auto& source : graph.nodes_of_kind(ir::StepKind::Connect)) {
             if (source->attributes.value("source_kind", "") == "snapshot" &&
                 source->attributes.contains("snapshot_as_of")) {
                 options.as_of = source->attributes.at("snapshot_as_of").get<std::string>();
@@ -182,9 +220,8 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
     analysis_options.label_column = options.label_column;
     analysis_options.time_column = options.time_column;
     analysis_options.as_of = options.as_of;
-    auto analysis = data::analyze_dataset(request.context->node, path, analysis_options, {},
-                                         request.context->cluster);
-    const auto requested = requested_features(request);
+    auto analysis = data::analyze_dataset(node, path, analysis_options, {}, cluster);
+    const auto requested = requested_features(graph, input);
     // Explicit numeric feature roles resolve the high-uniqueness heuristic;
     // named keys remain excluded even when a caller requests them.
     for (auto& column : analysis.columns) {
@@ -242,7 +279,7 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
                                                               entry.source_columns[2]}))) {
                 continue;
             }
-            const std::string reason = unsafe_feature(request, analysis, source, options);
+            const std::string reason = unsafe_feature(graph, analysis, source, options);
             if (!reason.empty()) {
                 if (native || requested.contains(source)) {
                     plan.error = reason;
@@ -261,12 +298,15 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
         }
         const auto& source = entry.source_columns.front();
         if (!requested.empty() && !requested.contains(source)) {
-            add_exclusion(plan, source, "not selected by the pipeline's explicit feature roles");
+            add_exclusion(plan, source,
+                          "not selected by the pipeline's explicit feature roles; add it to the "
+                          "Model step's features to include it");
             continue;
         }
         if (!std::ranges::contains(dataset.contract.feature_columns, source)) {
             add_exclusion(plan, source,
-                          "not supported by the trainer's numeric input contract; encode in a clean step");
+                          "not supported by the trainer's numeric input contract; to include it, "
+                          "write it as a numeric column in a clean step");
             continue;
         }
         sources.push_back(source);
@@ -276,7 +316,7 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
     }
     for (const auto& excluded : plan.excluded) {
         if (requested.contains(excluded.source_column)) {
-            const auto reason = unsafe_feature(request, analysis, excluded.source_column, options);
+            const auto reason = unsafe_feature(graph, analysis, excluded.source_column, options);
             if (!reason.empty() || excluded.source_column == options.entity_column) {
                 plan.error = reason.empty() ? excluded.reason : reason;
                 return plan;
@@ -297,8 +337,8 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
     if (plan.entries.empty()) {
         plan.status = "transform_required";
         plan.transform_required = data::RequiredTransform{
-            "create_eligible_features", "The feature plan leaves no inputs this trainer can consume.",
-            {}, "Create supported features in a clean step and rerun the plan."};
+            "create_eligible_features", no_inputs_description(plan, options), {},
+            "Create supported features in a clean step and rerun the plan."};
     }
     return plan;
 }
@@ -341,6 +381,13 @@ api::ApiResult run_dataset_failure(RunRequest& request, const std::string& metho
             {}, request.context->cluster);
         if (plan.transform_required) {
             return api::ApiResult::failure("invalid_input", feature_plan_error(plan));
+        }
+        // A contract with no numeric features fails before plan_run_features;
+        // name what the plan excluded and how to include it (#1216).
+        if (plan.ok() && plan.entries.empty()) {
+            return api::ApiResult::failure(
+                "invalid_input", "transform_required: create_eligible_features: " +
+                                     no_inputs_description(plan, options));
         }
     }
     return api::ApiResult::failure("invalid_input", dataset.error);

@@ -139,6 +139,74 @@ TEST_F(FeaturizationFixture, AnalyzeDatasetInfersSemanticTypesEvidenceAndLeakage
         }));
 }
 
+// #1216: the Getting started churn columns. On a small table every measure is
+// unique or contiguous in the sample; none of that makes a numeric column a key.
+std::vector<Json> getting_started_rows(int count) {
+    const std::vector<std::string> plans = {"basic", "pro", "enterprise"};
+    std::vector<Json> rows;
+    for (int index = 0; index < count; ++index) {
+        rows.push_back({{"account_id", 1001 + index},
+                        {"support_tickets", index % 11},
+                        {"tenure_months", 1 + index},
+                        {"monthly_spend", 19.5 + index * 3.25},
+                        {"failed_payments", index % 4},
+                        {"plan", plans[(index / 2) % 3]},
+                        {"churned", index % 3 == 0 ? 1 : 0}});
+    }
+    return rows;
+}
+
+TEST_F(FeaturizationFixture, NumericMeasuresAreNotIdentifiersWithoutAKeyName) {
+    land("small_accounts", getting_started_rows(12));
+    const auto analysis = analyze("small_accounts");
+    ASSERT_TRUE(analysis.ok()) << analysis.error;
+    EXPECT_EQ(column(analysis, "account_id").semantic_type, SemanticType::Identifier);
+    for (const auto* measure : {"support_tickets", "tenure_months", "monthly_spend",
+                                "failed_payments"}) {
+        EXPECT_EQ(column(analysis, measure).semantic_type, SemanticType::Numeric) << measure;
+    }
+    // Only the named key is a candidate key, though tenure_months and
+    // monthly_spend are unique on 12 rows.
+    ASSERT_EQ(analysis.candidate_keys.size(), 1u);
+    EXPECT_EQ(analysis.candidate_keys.front().columns,
+              std::vector<std::string>{"account_id"});
+    EXPECT_EQ(analysis.grain, DatasetGrain::Entity);
+
+    FeaturePlanOptions options;
+    options.methodology = "M-1";
+    options.label_column = "churned";
+    options.entity_column = "account_id";
+    const auto planned = plan("small_accounts", options);
+    ASSERT_TRUE(planned.ok()) << planned.error;
+    ASSERT_EQ(planned.status, "ready");
+    for (const auto* measure : {"support_tickets", "tenure_months", "monthly_spend",
+                                "failed_payments"}) {
+        EXPECT_TRUE(std::ranges::any_of(planned.entries, [measure](const auto& entry) {
+            return entry.source_columns == std::vector<std::string>{measure} &&
+                   std::ranges::contains(entry.features, std::string(measure));
+        })) << measure;
+    }
+    EXPECT_FALSE(std::ranges::any_of(planned.excluded, [](const auto& exclusion) {
+        return exclusion.reason.find("identifiers are excluded") != std::string::npos &&
+               exclusion.source_column != "account_id";
+    }));
+
+    // Integer-coded counts on a larger table meet the categorical bounds; a
+    // numeric-only trainer still reads them as numbers, never as one-hot.
+    land("accounts_400", getting_started_rows(400));
+    const auto larger = plan("accounts_400", options);
+    ASSERT_TRUE(larger.ok()) << larger.error;
+    ASSERT_EQ(larger.status, "ready");
+    EXPECT_EQ(column(larger.analysis, "support_tickets").semantic_type,
+              SemanticType::Categorical);
+    for (const auto* count : {"support_tickets", "failed_payments"}) {
+        EXPECT_TRUE(std::ranges::any_of(larger.entries, [count](const auto& entry) {
+            return entry.features == std::vector<std::string>{count, std::string(count) +
+                                                                         "__missing"};
+        })) << count;
+    }
+}
+
 TEST_F(FeaturizationFixture, AnalyzeDatasetDetectsEventTimeSeriesAndSnapshotGrains) {
     land("events", event_rows());
     land("series", time_series_rows());
@@ -188,10 +256,34 @@ TEST_F(FeaturizationFixture, FeaturePlansDifferForTreesSegmentationAndForecasts)
     const auto tree = plan("accounts", tree_options);
     ASSERT_TRUE(tree.ok()) << tree.error;
     ASSERT_EQ(tree.status, "ready");
-    EXPECT_TRUE(std::ranges::any_of(tree.entries, [](const auto& entry) {
+    // M-1's trainer reads numeric columns only (#1216): text categories are
+    // excluded with how to include them, never planned as unconsumable
+    // one-hot or target-encoded features.
+    for (const auto* text : {"plan", "campaign"}) {
+        EXPECT_TRUE(std::ranges::any_of(tree.excluded, [text](const auto& exclusion) {
+            return exclusion.source_column == text &&
+                   exclusion.reason.find("reads numeric columns only") != std::string::npos &&
+                   exclusion.reason.find("0/1 column per level") != std::string::npos;
+        })) << text;
+    }
+    EXPECT_FALSE(std::ranges::any_of(tree.entries, [](const auto& entry) {
+        return std::ranges::any_of(entry.features, [](const std::string& feature) {
+            return feature.ends_with("__one_hot") || feature.ends_with("__target_mean");
+        });
+    }));
+
+    FeaturePlanOptions encoding_options = tree_options;
+    encoding_options.methodology = "label_efficiency";
+    const auto encoding = plan("accounts", encoding_options);
+    ASSERT_TRUE(encoding.ok()) << encoding.error;
+    ASSERT_EQ(encoding.status, "ready");
+    EXPECT_TRUE(std::ranges::any_of(encoding.entries, [](const auto& entry) {
         return std::ranges::contains(entry.source_columns, "campaign") &&
                entry.transform.find("out-of-fold target encode") != std::string::npos &&
                entry.transform.find("time-aware folds") != std::string::npos;
+    }));
+    EXPECT_TRUE(std::ranges::any_of(encoding.entries, [](const auto& entry) {
+        return std::ranges::contains(entry.features, "plan__one_hot");
     }));
     EXPECT_TRUE(std::ranges::any_of(tree.entries, [](const auto& entry) {
         return std::ranges::contains(entry.source_columns, "amount") &&

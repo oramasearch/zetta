@@ -69,8 +69,15 @@ std::vector<Json> monthly_churn_rows(bool positives_only_in_last_month) {
             rows.push_back(
                 {{"customer_id", "customer-" + std::to_string(customer)},
                  {"observed_at", std::move(observed_at)},
-                 {"usage", positive_customer ? 4.0 : 90.0},
-                 {"complaints", positive_customer ? 9.0 : 0.0},
+                 // Strong but imperfect signals: a feature that reproduces
+                 // the label is a leakage candidate and the shared feature
+                 // plan excludes it from trials as from runs (#1216).
+                 {"usage", positive_customer != (customer % 10 == 1)
+                               ? 4.0 + static_cast<double>(customer % 5)
+                               : 90.0 - static_cast<double>(customer % 7)},
+                 {"complaints", positive_customer != (customer % 10 == 3)
+                                    ? 9.0 - static_cast<double>(customer % 3)
+                                    : static_cast<double>(customer % 2)},
                  {"churned", positive ? 1 : 0}});
         }
     }

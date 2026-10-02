@@ -422,8 +422,12 @@ void infer_semantic_type(const ColumnSample& observed, const std::string& column
         analysis.evidence.push_back(median_length > 30
                                         ? "median string length is greater than 30 characters"
                                         : "sampled strings have high token diversity");
-    } else if (named_identifier || analysis.distinct_ratio > 0.98 || sequential ||
-               uuid_success >= 0.95) {
+    } else if (named_identifier || uuid_success >= 0.95 ||
+               (!all_numeric && analysis.distinct_ratio > 0.98)) {
+        // #1216: a numeric column is a key only when its name says so. Counts,
+        // amounts, and durations are often unique or contiguous in a sample
+        // (tenure_months on 12 rows), and calling them identifiers removed
+        // every input from the plan. Unique text still identifies rows.
         analysis.semantic_type = SemanticType::Identifier;
         if (named_identifier) {
             analysis.evidence.push_back("the column name identifies a key");
@@ -443,6 +447,11 @@ void infer_semantic_type(const ColumnSample& observed, const std::string& column
     } else if (all_numeric) {
         analysis.semantic_type = SemanticType::Numeric;
         analysis.evidence.push_back("non-sentinel sampled values are numeric");
+        if (analysis.distinct_ratio > 0.98 || sequential) {
+            analysis.evidence.push_back(
+                "values are unique or contiguous in the sample, but a numeric column is a key "
+                "only when its name says so (id, *_id, *_key) or it is the declared entity");
+        }
         if (!observed.sentinels.empty()) {
             analysis.evidence.push_back("sentinel codes were excluded from numeric summaries");
         }
@@ -809,7 +818,11 @@ DatasetAnalysis analyze_sampled_dataset(const SampledDataset& sampled,
     }
     for (const ColumnAnalysis& column : analysis.columns) {
         const double uniqueness = column.distinct_ratio;
-        if (column.null_count == 0 && uniqueness > 0.98) {
+        // Uniqueness alone does not make a key: a measurement is often unique
+        // in a small sample (#1216). Only identifier columns are candidates.
+        if (column.null_count == 0 && uniqueness > 0.98 &&
+            (column.semantic_type == SemanticType::Identifier ||
+             has_role(column, "entity_key"))) {
             analysis.candidate_keys.push_back(CandidateKey{{column.name}, uniqueness});
         }
     }

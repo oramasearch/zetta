@@ -25,6 +25,7 @@
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/gbdt_train_job.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -1558,9 +1559,25 @@ std::optional<RealTrialPlan> prepare_real_trial(
         }
         if (!error.empty()) return std::nullopt;
     }
-    const std::optional<ResolvedStudyDataset> resolved =
+    std::optional<ResolvedStudyDataset> resolved =
         resolve_study_dataset(node, spec, error);
     if (!resolved) return std::nullopt;
+    // #1216: a trial selects its inputs through the same feature plan a run
+    // of this table and Pipeline uses, so the two never disagree on which
+    // columns are features (the stored Pipeline's explicit roles included).
+    data::FeaturePlan feature_plan;
+    node.run_on_owner([&] {
+        feature_plan = plan_table_features(node, nullptr, plan.graph,
+                                           nlohmann::json::object(), "M-1",
+                                           resolved->dataset);
+    });
+    if (const std::string reason = feature_plan_error(feature_plan);
+        !reason.empty()) {
+        error = reason;
+        return std::nullopt;
+    }
+    node.run_on_owner(
+        [&] { record_run_features(node, run_id, feature_plan); });
     plan.table.table_id = resolved->dataset.table_id;
     plan.table.dataset_name = resolved->dataset.database + "." +
                               resolved->dataset.table;
