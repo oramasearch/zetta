@@ -25,3 +25,5 @@ Project graph and API tests cover denormalized name creation, rename propagation
 legacy startup backfill, page summaries, and REST/MCP list parity (#1184).
 Native M-2 coverage includes keyed projection that collapses repeated snapshot
 observations while preserving distinct text entity identifiers (#1204).
+Dataset tests refuse ragged CSV by line, check lake's name rule, and keep a
+table's source format across a restart and in the replicated `tbl:` value (#1221).

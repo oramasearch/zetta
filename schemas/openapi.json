@@ -171,6 +171,10 @@
                           },
                           "type": "array"
                         },
+                        "renamed_from": {
+                          "description": "upload_dataset with if_exists rename: the name asked for, when it was taken and `table` is the next free one",
+                          "type": "string"
+                        },
                         "rows": {
                           "type": "integer"
                         },
@@ -3186,7 +3190,49 @@
                     "type": "boolean"
                   },
                   "definition": {
-                    "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                    "additionalProperties": false,
+                    "description": "runtime: python. {source: \"zetta\", instructions, entrypoint, files: [{path, contents}]} (inline, at most 1 MiB) or {source: \"lake\", repository_id, revision, entrypoint}; entrypoint is module:function",
+                    "properties": {
+                      "entrypoint": {
+                        "description": "module:function",
+                        "type": "string"
+                      },
+                      "files": {
+                        "description": "source zetta: the agent's files, one entry per file",
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "contents": {
+                              "description": "the file's text",
+                              "type": "string"
+                            },
+                            "path": {
+                              "description": "the file's path, relative to the definition",
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "instructions": {
+                        "description": "source zetta: the agent's instructions",
+                        "type": "string"
+                      },
+                      "repository_id": {
+                        "description": "source lake: the repository",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "description": "source lake: a pinned revision of the repository",
+                        "type": "string"
+                      },
+                      "source": {
+                        "description": "zetta (inline) or lake",
+                        "type": "string"
+                      }
+                    },
                     "type": "object"
                   },
                   "description": {
@@ -10272,12 +10318,12 @@
             }
           },
           {
-            "description": "the dataset name (= the table name)",
+            "description": "the dataset name (= the table name), or database.table as analyze_dataset takes it",
             "in": "query",
             "name": "dataset",
             "required": true,
             "schema": {
-              "description": "the dataset name (= the table name)",
+              "description": "the dataset name (= the table name), or database.table as analyze_dataset takes it",
               "minLength": 1,
               "type": "string"
             }
@@ -10336,6 +10382,7 @@
                           "type": "integer"
                         },
                         "format": {
+                          "description": "how the rows are stored (jsonl); not the upload's format",
                           "type": "string"
                         },
                         "name": {
@@ -10384,6 +10431,10 @@
                         "size_bytes": {
                           "type": "integer"
                         },
+                        "source_format": {
+                          "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                          "type": "string"
+                        },
                         "table_id": {
                           "type": "string"
                         }
@@ -10393,6 +10444,7 @@
                         "database",
                         "table_id",
                         "format",
+                        "source_format",
                         "replication",
                         "rows",
                         "size_bytes",
@@ -17866,6 +17918,7 @@
                                 "type": "integer"
                               },
                               "format": {
+                                "description": "how the rows are stored (jsonl); not the upload's format",
                                 "type": "string"
                               },
                               "name": {
@@ -17914,6 +17967,10 @@
                               "size_bytes": {
                                 "type": "integer"
                               },
+                              "source_format": {
+                                "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                                "type": "string"
+                              },
                               "table_id": {
                                 "type": "string"
                               }
@@ -17923,6 +17980,7 @@
                               "database",
                               "table_id",
                               "format",
+                              "source_format",
                               "replication",
                               "rows",
                               "size_bytes",
@@ -27710,7 +27768,49 @@
                     "type": "boolean"
                   },
                   "definition": {
-                    "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                    "additionalProperties": false,
+                    "description": "runtime: python. {source: \"zetta\", instructions, entrypoint, files: [{path, contents}]} (inline, at most 1 MiB) or {source: \"lake\", repository_id, revision, entrypoint}; entrypoint is module:function",
+                    "properties": {
+                      "entrypoint": {
+                        "description": "module:function",
+                        "type": "string"
+                      },
+                      "files": {
+                        "description": "source zetta: the agent's files, one entry per file",
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "contents": {
+                              "description": "the file's text",
+                              "type": "string"
+                            },
+                            "path": {
+                              "description": "the file's path, relative to the definition",
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "instructions": {
+                        "description": "source zetta: the agent's instructions",
+                        "type": "string"
+                      },
+                      "repository_id": {
+                        "description": "source lake: the repository",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "description": "source lake: a pinned revision of the repository",
+                        "type": "string"
+                      },
+                      "source": {
+                        "description": "zetta (inline) or lake",
+                        "type": "string"
+                      }
+                    },
                     "type": "object"
                   },
                   "description": {
@@ -29734,15 +29834,23 @@
                     "type": "string"
                   },
                   "database": {
-                    "description": "target database, created if absent (default datasets)",
+                    "description": "target database, created if absent (default datasets); named by the same rule as table_name",
                     "minLength": 1,
                     "type": "string"
                   },
                   "format": {
-                    "description": "how `content` is laid out: csv (a header row, then one row per line, cells type-inferred) or jsonl (one JSON object per line)",
+                    "description": "how `content` is laid out: csv (a header row, then one row per line with as many fields as the header, cells type-inferred) or jsonl (one JSON object per line)",
                     "enum": [
                       "csv",
                       "jsonl"
+                    ],
+                    "type": "string"
+                  },
+                  "if_exists": {
+                    "description": "what to do when table_name is taken: fail (the default) refuses with conflict; rename saves under the next free name (_2, _3, ...) and the output's renamed_from names the one asked for",
+                    "enum": [
+                      "fail",
+                      "rename"
                     ],
                     "type": "string"
                   },
@@ -29756,7 +29864,7 @@
                     "type": "integer"
                   },
                   "table_name": {
-                    "description": "the new table's name. A name already taken in the database gets a numeric suffix (_2, _3, ...); the output says which name was used",
+                    "description": "the new table's name: a letter or underscore, then letters, digits and underscores, at most 63 characters, not a SQL keyword. A name already taken in the database is refused (conflict) unless if_exists is rename",
                     "minLength": 1,
                     "type": "string"
                   }
@@ -29821,6 +29929,10 @@
                             "type": "object"
                           },
                           "type": "array"
+                        },
+                        "renamed_from": {
+                          "description": "upload_dataset with if_exists rename: the name asked for, when it was taken and `table` is the next free one",
+                          "type": "string"
                         },
                         "rows": {
                           "type": "integer"

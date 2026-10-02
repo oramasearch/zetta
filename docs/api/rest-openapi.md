@@ -46,8 +46,9 @@ envelope `structuredContent` carries over MCP:
 
 Domain failures keep the engine's reason verbatim and map onto HTTP statuses
 (`rest_status`): `invalid_input` → 400 · `unauthorized` / `consent_required`
-→ 403 · `not_found` / `unknown_capability` → 404 · `engine_error` → 422 ·
-`busy` → 503.
+→ 403 · `not_found` / `unknown_capability` → 404 · `conflict` → 409 (a taken
+name, e.g. `upload_dataset` without `if_exists: "rename"`, #1221) · `engine_error`
+→ 422 · `busy` → 503.
 
 **Every request gets an answer — never silence (#1007).** Three ways a request
 used to get *no* response, each of which reads exactly like a hung node (curl: 0

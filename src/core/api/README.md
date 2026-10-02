@@ -33,6 +33,14 @@ field at fault in `path`, and a capability's `invalid_input_hint` may add a
 way past it. See
 [AutoML studies](../../../docs/ml/studies.md).
 
+`create_agent` and `update_agent` take a closed `definition` schema, and an
+unknown property is reported at the property itself, so `{path, content}` is
+refused at `/definition/files/0/content` in lake's words (#1220).
+`upload_dataset` refuses unsafe table and database names, ragged CSV, and a taken
+name (`conflict`) unless `if_exists: "rename"`, with lake's rules and wording;
+`get_dataset` accepts `database.table`, and dataset summaries carry
+`source_format` (#1221). See [add dataset](../../../docs/data/add-dataset.md).
+
 The `list_runs`, `list_models`, and `list_studies` reads expose page-ready
 display names, metrics and timestamps through one registry definition, keeping
 REST, MCP and OpenAPI output in lockstep (#1184).

@@ -33,6 +33,7 @@ database. The columns:
 | `database` | the owning database |
 | `table_id` | the table id (a bare `tbl` uuid) — joins to `system.dataset_partitions.table` |
 | `format` | the on-disk storage format of the rows (`jsonl` today — see the note below) |
+| `source_format` | what the rows were loaded from (#1221): `csv` / `jsonl` / `json` / `parquet`, a connector type (`postgres`, `snowflake`), or `rows`; empty for a table not loaded from a source (SQL, engine results) |
 | `replication` | the table's [replication strategy](replication-strategy.md) (`replicate_to_all` / `partitioned` / `partitioned_with_replicas`) |
 | `rows` | row count |
 | `size_bytes` | on-disk bytes of the row data (the JSONL chunks under the table folder) |
@@ -75,12 +76,12 @@ entries — it lives on every node — so `placement` and `owner_nodes` are empt
 the table's storage engine (`StorageEngine::name()`) — `jsonl` for every dataset
 today, since the default engine is [`JsonlStore`](storage.md) and the
 [partitioned write path](partitioned-write-path.md) also serializes its blobs as
-JSON Lines. The *original import* format (a Parquet or CSV file the
-[`datasets` shim](../pipeline/datasets-shim.md) read) is **not** reported: after a load the
-rows are JSONL, and the import format is not retained in any live source — and
-`system.datasets` is computed from the live source, never from stored provenance
-(the RULE-7 constraint). When a future slice records source-format provenance, or
-a new storage engine lands, this column will reflect it without a schema change.
+JSON Lines. The *original import* format is the separate `source_format` column
+(#1221): `add_dataset_file`, `add_dataset_content` / `upload_dataset`,
+`add_dataset_rows` and the connector ingest record it on the table at create time
+(`Table::source_format()`, in `table.json` and the replicated `tbl:` value), so it is
+part of the live table state the view reads rather than stored provenance beside it.
+`format` will reflect a new storage engine when one lands.
 
 ## Engine source: `Node::datasets()`
 
@@ -96,8 +97,8 @@ aggregates, per table:
   is schemaless, so a dataset's schema is whatever its rows carry);
 - **rows** — the storage engine's row count;
 - **size_bytes** — the size of the `.jsonl` row chunks under the table folder;
-- **format** / **replication** — the storage engine name + the table's
-  replication strategy;
+- **format** / **source_format** / **replication** — the storage engine name,
+  what the rows were loaded from (#1221) and the table's replication strategy;
 - **partitions** — a `DatasetPlacement` per matching catalog entry (its id, body
   ref, row range, and owner nodes) — the cross-cluster placement.
 
@@ -122,9 +123,8 @@ entering here, so there is nothing new to schema-validate.
 - The **GUI [Datasets panel](../gui/datasets-panel.md)** (epic #575, area 3) renders this
   same source — a thin list + detail with a partition-placement overlay on the
   cluster node boxes.
-- **Source-format provenance** (surfacing `parquet`/`csv` rather than the storage
-  format) and datasets that exist only as orphan partition-catalog entries (a
-  dropped table) are out of scope.
+- Datasets that exist only as orphan partition-catalog entries (a dropped table)
+  are out of scope. (Source format is recorded since #1221.)
 
 ## Tests
 

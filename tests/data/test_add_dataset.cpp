@@ -13,6 +13,8 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
@@ -174,6 +176,128 @@ TEST(AddDataset, RejectsCsvWithNoHeader) {
     const fs::path csv = write_file(tmp.path(), "empty.csv", "\n\n");
     const AddDatasetResult result = add_dataset_file(node, csv);
     EXPECT_FALSE(result.ok());
+}
+
+// #1221: a ragged CSV is refused with its line, never padded with nulls or cut
+// short — the same rule and words lake applies to an upload (lake PR #459).
+TEST(AddDataset, RefusesRaggedCsvNamingTheLine) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+    const auto refused = [&](const std::string& name, const std::string& content) {
+        const AddDatasetResult result =
+            add_dataset_file(node, write_file(tmp.path(), name, content));
+        EXPECT_FALSE(result.ok()) << name;
+        return result.error;
+    };
+    EXPECT_EQ(refused("short.csv", "a,b\n1,2\n3\n"),
+              "line 3: 1 fields, but the header has 2 columns");
+    EXPECT_EQ(refused("long.csv", "\na,b\n1,2,3\n"),
+              "line 3: 3 fields, but the header has 2 columns");
+    EXPECT_EQ(refused("unnamed.csv", "a,,c\n1,2,3\n"),
+              "line 1: header column 2 has no name");
+    EXPECT_EQ(refused("twice.csv", "a,b,a\n1,2,3\n"),
+              "line 1: the header names column 'a' twice");
+    EXPECT_EQ(refused("open.csv", "a,b\n\"1,2\n"),
+              "line 2: a quoted field is not closed (a row must stay on one line)");
+    EXPECT_EQ(refused("blank.csv", "\r\n\r\n"), "the file has no header row");
+    EXPECT_FALSE(node.find_database("datasets"));
+
+    // The pure check names the same problems without decoding a row.
+    EXPECT_EQ(zetta::data::csv_problem("a,b\n1,2\n3\n"),
+              "line 3: 1 fields, but the header has 2 columns");
+    EXPECT_EQ(zetta::data::csv_problem("a,b\r\n1,\"x, y\"\r\n\r\n"), "");
+}
+
+// #1221: the dataset and database names SQL can query unquoted, as lake checks
+// them, in lake's words.
+TEST(AddDataset, DatasetNameProblemMatchesLake) {
+    using zetta::data::dataset_name_problem;
+    EXPECT_EQ(dataset_name_problem("accounts"), "");
+    EXPECT_EQ(dataset_name_problem("_Accounts_2026"), "");
+    EXPECT_EQ(dataset_name_problem(std::string(63, 'a')), "");
+    EXPECT_EQ(dataset_name_problem(""), "a name is required");
+    EXPECT_EQ(dataset_name_problem(std::string(64, 'a')), "a name is at most 63 characters");
+    EXPECT_EQ(dataset_name_problem("2026_accounts"),
+              "'2026_accounts' must start with a letter or an underscore");
+    EXPECT_EQ(dataset_name_problem("my.table"),
+              "'my.table' can hold only letters, digits and underscores (not '.'), so SQL "
+              "can query it");
+    EXPECT_EQ(dataset_name_problem("ORDER"), "'ORDER' is a SQL keyword; choose another name");
+}
+
+// #1221: a table records what its rows were loaded from — the file or upload
+// format, the connector type, or `rows` — separately from the storage format,
+// in table.json and the `tbl:` value, so it survives a restart and reaches
+// every node.
+TEST(AddDataset, RecordsTheSourceFormatOnTheTable) {
+    TempDir tmp;
+    std::string csv_table;
+    {
+        Node node(config_for(tmp));
+        node.start();
+        const AddDatasetResult csv = add_dataset_file(
+            node, write_file(tmp.path(), "accounts.csv", "a,b\n1,2\n"));
+        ASSERT_TRUE(csv.ok()) << csv.error;
+        EXPECT_EQ(csv.source_format, "csv");
+        csv_table = csv.table->id();
+
+        const AddDatasetResult jsonl = zetta::data::add_dataset_content(
+            node, "{\"a\":1}\n", Format::Jsonl, {.table_name = "events"});
+        ASSERT_TRUE(jsonl.ok()) << jsonl.error;
+        EXPECT_EQ(jsonl.table->source_format(), "jsonl");
+
+        AddDatasetOptions pulled;
+        pulled.table_name = "orders";
+        pulled.source_format = "postgres";
+        const AddDatasetResult connector =
+            add_dataset_rows(node, std::vector<nlohmann::json>{{{"id", 1}}, {{"id", 2}}},
+                             pulled);
+        ASSERT_TRUE(connector.ok()) << connector.error;
+        EXPECT_EQ(connector.table->source_format(), "postgres");
+        EXPECT_EQ(connector.format, Format::Jsonl);  // the rows' shape is unchanged
+        // The audit names the connector, not the jsonl its rows are shaped as.
+        bool audited = false;
+        for (const auto& event : node.audit_events()) {
+            if (event && event->target() == connector.table->id()) {
+                audited = event->detail().ends_with(", postgres");
+            }
+        }
+        EXPECT_TRUE(audited);
+
+        const AddDatasetResult rows = add_dataset_rows(node, std::vector<nlohmann::json>{{{"id", 1}}}, {});
+        ASSERT_TRUE(rows.ok()) << rows.error;
+        EXPECT_EQ(rows.table->source_format(), "rows");
+        const auto plain = node.create_database("plain")->create_table("by_sql");
+        ASSERT_TRUE(plain);
+        EXPECT_EQ(plain->source_format(), "");
+
+        const std::vector<DatasetSummary> datasets = node.datasets();
+        const DatasetSummary* summary = find_dataset(datasets, csv_table);
+        ASSERT_NE(summary, nullptr);
+        EXPECT_EQ(summary->source_format, "csv");
+        EXPECT_EQ(summary->format, "jsonl");
+
+        if (node.replication()) {
+            const nlohmann::json document = node.replication()->snapshot();
+            bool replicated = false;
+            for (const auto& [key, value] : document.items()) {
+                if (key.ends_with(connector.table->id()) && value.is_object() &&
+                    value.value("source_format", std::string()) == "postgres") {
+                    replicated = true;
+                }
+            }
+            EXPECT_TRUE(replicated) << "the tbl: value carries source_format";
+        }
+        node.stop();
+    }
+    Node restarted(config_for(tmp));
+    restarted.start();
+    const std::vector<DatasetSummary> datasets = restarted.datasets();
+    const DatasetSummary* summary = find_dataset(datasets, csv_table);
+    ASSERT_NE(summary, nullptr);
+    EXPECT_EQ(summary->source_format, "csv");
+    restarted.stop();
 }
 
 // =====================================================================

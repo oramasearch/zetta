@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <fstream>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <chrono>
@@ -1064,6 +1065,30 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
                                                         {"database", "data"}});
     ASSERT_TRUE(qualified.ok) << qualified.error.message;
     EXPECT_EQ(qualified.value.at("rows"), 2u);
+
+    // #1221: database.table, the form analyze_dataset takes, names the same
+    // dataset; a database field that disagrees with it is refused.
+    auto dotted = call("get_dataset", nlohmann::json{{"dataset", "data.events"}});
+    ASSERT_TRUE(dotted.ok) << dotted.error.message;
+    EXPECT_EQ(dotted.value.at("database"), "data");
+    EXPECT_EQ(dotted.value.at("rows"), 2u);
+    auto staged = call("get_dataset", nlohmann::json{{"dataset", "staging.events"},
+                                                     {"database", "staging"}});
+    ASSERT_TRUE(staged.ok) << staged.error.message;
+    EXPECT_EQ(staged.value.at("database"), "staging");
+    auto disagree = call("get_dataset", nlohmann::json{{"dataset", "data.events"},
+                                                       {"database", "staging"}});
+    EXPECT_FALSE(disagree.ok);
+    EXPECT_EQ(disagree.error.code, "invalid_input");
+    EXPECT_EQ(disagree.error.path, "/database");
+    auto no_such = call("get_dataset", nlohmann::json{{"dataset", "data.nothing"}});
+    EXPECT_FALSE(no_such.ok);
+    EXPECT_EQ(no_such.error.code, "not_found");
+    // A table whose own name holds a dot is still found by that name.
+    ASSERT_TRUE(database->create_table("v1.events"));
+    auto exact = call("get_dataset", nlohmann::json{{"dataset", "v1.events"}});
+    ASSERT_TRUE(exact.ok) << exact.error.message;
+    EXPECT_EQ(exact.value.at("name"), "v1.events");
 }
 
 TEST_F(RegistryFixture, AnalyzeAndPlanFeatureReadsUseLandedDatasetRows) {
@@ -1160,13 +1185,124 @@ TEST_F(RegistryFixture, UploadDatasetLandsCsvAndJsonlAndListsThem) {
     }
     EXPECT_EQ(audited, 2u);
 
-    // A second upload under a taken name gets a suffix, and says so.
-    auto again = call("upload_dataset",
+    // A second upload under a taken name is refused (#1221) unless the caller
+    // asks for the next free name, and then the output says which it asked for.
+    auto taken = call("upload_dataset",
                       nlohmann::json{{"table_name", "accounts"},
                                      {"format", "csv"},
                                      {"content", "account\n9\n"}});
+    ASSERT_FALSE(taken.ok);
+    EXPECT_EQ(taken.error.code, "conflict");
+    EXPECT_EQ(taken.error.path, "/table_name");
+    EXPECT_EQ(taken.error.message,
+              "a dataset named 'accounts' already exists in datasets; choose another "
+              "name, or pass if_exists: \"rename\" to save it under the next free name");
+    auto again = call("upload_dataset",
+                      nlohmann::json{{"table_name", "accounts"},
+                                     {"format", "csv"},
+                                     {"if_exists", "rename"},
+                                     {"content", "account\n9\n"}});
     ASSERT_TRUE(again.ok) << again.error.message;
     EXPECT_EQ(again.value.at("table"), "accounts_2");
+    EXPECT_EQ(again.value.at("renamed_from"), "accounts");
+    EXPECT_FALSE(csv.value.contains("renamed_from"));
+}
+
+// #1221: upload_dataset applies lake's rules (lake PR #459) in lake's words: a
+// table or database name SQL can query unquoted, and a CSV whose every row has
+// the header's field count — a ragged row is refused with its line, never
+// padded with nulls or cut short. Nothing is created by a refusal.
+TEST_F(RegistryFixture, UploadDatasetRefusesUnsafeNamesAndRaggedCsv) {
+    const auto upload = [&](const std::string& table, const std::string& content,
+                            const std::string& database = "datasets") {
+        return call("upload_dataset", nlohmann::json{{"table_name", table},
+                                                     {"database", database},
+                                                     {"format", "csv"},
+                                                     {"content", content}});
+    };
+    const auto refused = [](const ApiResult& result, const std::string& path,
+                            const std::string& message) {
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, "invalid_input");
+        EXPECT_EQ(result.error.path, path);
+        EXPECT_EQ(result.error.message, message);
+    };
+    refused(upload("my-table", "a\n1\n"), "/table_name",
+            "table_name: 'my-table' can hold only letters, digits and underscores "
+            "(not '-'), so SQL can query it");
+    refused(upload("1st", "a\n1\n"), "/table_name",
+            "table_name: '1st' must start with a letter or an underscore");
+    refused(upload("Select", "a\n1\n"), "/table_name",
+            "table_name: 'Select' is a SQL keyword; choose another name");
+    refused(upload(std::string(64, 'a'), "a\n1\n"), "/table_name",
+            "table_name: a name is at most 63 characters");
+    refused(upload("fine", "a\n1\n", "my db"), "/database",
+            "database: 'my db' can hold only letters, digits and underscores "
+            "(not ' '), so SQL can query it");
+
+    refused(upload("short_row", "a,b\n1,2\n3\n"), "/content",
+            "the CSV file is malformed: line 3: 1 fields, but the header has 2 columns");
+    refused(upload("long_row", "a,b\r\n1,2\r\n\r\n3,4,5\r\n"), "/content",
+            "the CSV file is malformed: line 4: 3 fields, but the header has 2 columns");
+    refused(upload("unnamed", "a,,c\n1,2,3\n"), "/content",
+            "the CSV file is malformed: line 1: header column 2 has no name");
+    refused(upload("twice", "a,b,a\n1,2,3\n"), "/content",
+            "the CSV file is malformed: line 1: the header names column 'a' twice");
+    refused(upload("open_quote", "a,b\n\"1,2\n"), "/content",
+            "the CSV file is malformed: line 2: a quoted field is not closed (a row must "
+            "stay on one line)");
+
+    EXPECT_FALSE(node.find_database("datasets"));
+    EXPECT_FALSE(node.find_database("my db"));
+
+    // A quoted comma is one field, so this row matches its header and lands.
+    auto quoted = upload("_quoted_ok2", "a,b\n\"x, y\",2\n");
+    ASSERT_TRUE(quoted.ok) << quoted.error.message;
+    EXPECT_EQ(quoted.value.at("rows"), 1u);
+}
+
+// #1221: a table records what its rows were loaded from. The storage format
+// (`format`) is JSON rows for every table, so the upload's own format is kept
+// as `source_format` — on get_dataset, list_datasets and system.datasets.
+TEST_F(RegistryFixture, UploadedDatasetKeepsItsSourceFormat) {
+    ASSERT_TRUE(call("upload_dataset", nlohmann::json{{"table_name", "from_csv"},
+                                                      {"format", "csv"},
+                                                      {"content", "a\n1\n"}})
+                    .ok);
+    ASSERT_TRUE(call("upload_dataset", nlohmann::json{{"table_name", "from_jsonl"},
+                                                      {"format", "jsonl"},
+                                                      {"content", "{\"a\":1}\n"}})
+                    .ok);
+    node.create_database("plain")->create_table("by_sql")->add_row({{"a", 1}});
+
+    auto csv = call("get_dataset", nlohmann::json{{"dataset", "from_csv"}});
+    ASSERT_TRUE(csv.ok) << csv.error.message;
+    EXPECT_EQ(csv.value.at("source_format"), "csv");
+    EXPECT_EQ(csv.value.at("format"), "jsonl");
+    auto jsonl = call("get_dataset", nlohmann::json{{"dataset", "from_jsonl"}});
+    ASSERT_TRUE(jsonl.ok) << jsonl.error.message;
+    EXPECT_EQ(jsonl.value.at("source_format"), "jsonl");
+    auto plain = call("get_dataset", nlohmann::json{{"dataset", "by_sql"}});
+    ASSERT_TRUE(plain.ok) << plain.error.message;
+    EXPECT_EQ(plain.value.at("source_format"), "");
+
+    auto listed = call("list_datasets", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    std::map<std::string, std::string> listed_formats;
+    for (const auto& dataset : listed.value.at("datasets")) {
+        listed_formats[dataset.at("name").get<std::string>()] =
+            dataset.at("source_format").get<std::string>();
+    }
+    EXPECT_EQ(listed_formats["from_csv"], "csv");
+    EXPECT_EQ(listed_formats["from_jsonl"], "jsonl");
+
+    auto view = call("sql", nlohmann::json{{"statement",
+                                            "SELECT dataset, source_format FROM "
+                                            "system.datasets WHERE dataset = 'from_csv';"}});
+    ASSERT_TRUE(view.ok) << view.error.message;
+    ASSERT_EQ(view.value.at("rows").size(), 1u) << view.value.dump();
+    EXPECT_NE(view.value.at("rows").dump().find("\"csv\""), std::string::npos)
+        << view.value.dump();
 }
 
 TEST_F(RegistryFixture, UploadDatasetRefusesOversizeBadFormatAndMalformedContent) {

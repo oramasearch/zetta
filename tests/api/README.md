@@ -66,3 +66,8 @@ and webhook payloads. Confirmation fixtures refuse an incomplete forward window
 and single-class windows with measured counts; an unmatchable multi-source
 fixture names its missing identity columns (#957, #1204, #1214).
 See [CRUD verification](../../docs/pubsub/crud.md#verification).
+Agent API coverage refuses a definition file sent as `{path, content}` at its own
+path, on create and update, and stores nothing (#1220). Registry coverage checks
+`upload_dataset`'s conflict and `if_exists: "rename"`, unsafe names, ragged CSV,
+`source_format` on the dataset reads and `system.datasets`, and `get_dataset` by
+`database.table` (#1221).
