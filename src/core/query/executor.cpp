@@ -2084,10 +2084,140 @@ std::optional<std::string> apply_order_and_limit(const SelectStmt& statement,
     return std::nullopt;
 }
 
-QueryResult select_over_rows(const SelectStmt& statement,
-                             const std::vector<nlohmann::json>& source) {
+// --- columns, unknown columns and aggregation over rows (#1218) ---------------
+//
+// The storage is schemaless JSON, so a table has no declared column list: the
+// columns it HAS are the keys its rows carry. A column no row carries does not
+// exist, and naming it is an error rather than a column of nulls; `SELECT *`
+// reports those columns in `columns` rather than an empty list. A table with no
+// rows at all has no columns to check against, so nothing is refused there.
+
+// Every key any row of a source carries, in first-seen order.
+class ColumnCatalog {
+public:
+    void add_row(const nlohmann::json& row) {
+        if (!row.is_object()) return;
+        for (auto field = row.begin(); field != row.end(); ++field) add(field.key());
+    }
+    void add(const std::string& name) {
+        if (seen_.insert(name).second) names_.push_back(name);
+    }
+    bool has(const std::string& name) const { return seen_.contains(name); }
+    bool empty() const { return names_.empty(); }
+    const std::vector<std::string>& names() const { return names_; }
+
+private:
+    std::vector<std::string> names_;
+    std::unordered_set<std::string> seen_;
+};
+
+// Every source column a SELECT names, in the order written: the projection, the
+// WHERE, the GROUP BY key, a key passthrough and each aggregate's argument.
+// ORDER BY names a column of the RESULT and is checked against that instead.
+std::vector<std::string> source_columns_of(const SelectStmt& statement) {
+    std::vector<std::string> named;
+    if (!statement.aggregating()) {
+        named = statement.columns;
+    } else {
+        for (const GroupedItem& item : statement.items) {
+            if (item.aggregate) {
+                if (!item.aggregate->column.empty()) {
+                    named.push_back(item.aggregate->column);
+                }
+            } else {
+                named.push_back(item.column);
+            }
+        }
+        for (const std::string& key : statement.group_by) named.push_back(key);
+    }
+    if (statement.where) named.push_back(statement.where->column);
+    return named;
+}
+
+// The error for the first column the SELECT names that `known` lacks, naming
+// the column, the table and the columns it does have.
+std::optional<std::string> unknown_column_error(const SelectStmt& statement,
+                                                const ColumnCatalog& known,
+                                                const std::string& table) {
+    if (known.empty()) return std::nullopt;
+    for (const std::string& column : source_columns_of(statement)) {
+        if (known.has(column)) continue;
+        constexpr std::size_t kListed = 30;
+        std::string listed;
+        for (std::size_t i = 0; i < known.names().size() && i < kListed; ++i) {
+            if (!listed.empty()) listed += ", ";
+            listed += known.names()[i];
+        }
+        if (known.names().size() > kListed) listed += ", ...";
+        return "column \"" + column + "\" does not exist in " + table +
+               " (its columns: " + listed + ")";
+    }
+    return std::nullopt;
+}
+
+// The shape rules of an aggregating SELECT, checked the same way on every path:
+// one GROUP BY key at most, a bare column only as that key, and no two result
+// columns with one name.
+std::optional<std::string> aggregate_shape_error(const SelectStmt& statement) {
+    if (!statement.aggregating()) return std::nullopt;
+    if (statement.group_by.size() > 1) {
+        return "GROUP BY supports exactly one key column";
+    }
+    for (const GroupedItem& item : statement.items) {
+        if (item.aggregate) continue;
+        if (statement.group_by.empty() || item.column != statement.group_by.front()) {
+            return "column \"" + item.column +
+                   "\" must appear in GROUP BY or be aggregated";
+        }
+    }
+    std::unordered_set<std::string> names;
+    for (const std::string& name : aggregate_result_columns(statement)) {
+        if (!names.insert(name).second) {
+            return "duplicate output column \"" + name + "\" (use AS to rename)";
+        }
+    }
+    return std::nullopt;
+}
+
+// A finished aggregate over rows the caller has already filtered, through the
+// same accumulator and merge the scatter-gather path uses — so text keys, a
+// row missing the key (a NULL group) and a whole-table aggregate answer exactly
+// as they do over a partition-only table.
+QueryResult finish_aggregate(const SelectStmt& statement, GroupAccumulator& groups) {
+    PartitionScanResponse local;
+    local.groups = groups.take();
+    SelectOutcome merged = merge_scan_responses(statement, {}, {local});
     QueryResult result;
-    if (!statement.all) result.columns = statement.columns;
+    result.columns = std::move(merged.columns);
+    result.rows = std::move(merged.rows);
+    result.message = "SELECT " + std::to_string(result.rows.size());
+    return result;
+}
+
+// A SELECT over an in-memory row source (the system and virtual tables): the
+// WHERE, then the projection or the aggregate, with every named column checked
+// against the columns the source has. `declared` adds columns a source defines
+// even when no row carries them (a virtual table's column list).
+QueryResult select_over_rows(const SelectStmt& statement,
+                             const std::vector<nlohmann::json>& source,
+                             const std::string& table,
+                             const std::vector<std::string>& declared = {}) {
+    if (auto problem = aggregate_shape_error(statement)) return error(*problem);
+    ColumnCatalog known;
+    for (const std::string& column : declared) known.add(column);
+    for (const nlohmann::json& row : source) known.add_row(row);
+    if (auto problem = unknown_column_error(statement, known, table)) {
+        return error(*problem);
+    }
+    if (statement.aggregating()) {
+        GroupAccumulator groups(statement);
+        for (const nlohmann::json& row : source) {
+            if (row_matches(row, statement.where)) groups.add(row);
+        }
+        return finish_aggregate(statement, groups);
+    }
+    QueryResult result;
+    result.columns = statement.all ? known.names() : statement.columns;
     for (const nlohmann::json& row : source) {
         if (!row_matches(row, statement.where)) continue;
         if (statement.all) {
@@ -2107,11 +2237,14 @@ QueryResult select_over_rows(const SelectStmt& statement,
 
 // --- GROUP BY via the DDF engine --------------------------------------------
 //
-// An aggregating SELECT runs through the DDF DataFrame engine: the referenced
-// numeric columns are loaded into a DataFrame (scan), WHERE is applied via
-// ddf::filter, ddf::group_by computes the per-group aggregates, and the columnar
-// result is materialized back into query rows. The DataFrame is numeric only, so a
-// grouped query over a non-numeric column returns a clear error. This builds the
+// A grouped SELECT whose key, aggregated columns and WHERE are all dense numeric
+// runs through the DDF DataFrame engine: the referenced numeric columns are
+// loaded into a DataFrame (scan), WHERE is applied via ddf::filter,
+// ddf::group_by computes the per-group aggregates, and the columnar result is
+// materialized back into query rows. The DataFrame is numeric only, so any other
+// aggregating SELECT — a text key, a whole-table aggregate, a sparse column, a
+// string WHERE — is not this path's to answer: it returns nullopt and the
+// executor aggregates over rows instead (#1218). This builds the
 // already-validated DDF spec types directly (GroupBySpec / FilterPredicate); it
 // introduces no new JSON boundary — the SQL is validated by the parser and the DDF
 // types carry their own boundaries.
@@ -2178,18 +2311,14 @@ struct OutputColumn {
     std::string column;                     // the aggregated source column
 };
 
-QueryResult execute_grouped(const SelectStmt& s, zetta::data::Table& table) {
+std::optional<QueryResult> execute_grouped_ddf(const SelectStmt& s,
+                                               zetta::data::Table& table) {
     // The DDF engine groups by exactly one numeric key column.
-    if (s.group_by.size() != 1) {
-        return error("GROUP BY supports exactly one key column");
-    }
+    if (s.group_by.size() != 1) return std::nullopt;
     const std::string& key = s.group_by.front();
 
-    // Validate the WHERE: the DDF filter is numeric, so the predicate value must be
-    // a number (string/bool/null predicates are not supported in the grouped path).
-    if (s.where && !s.where->value.is_number()) {
-        return error("GROUP BY queries support only numeric WHERE predicates");
-    }
+    // The DDF filter is numeric, so the predicate value must be a number.
+    if (s.where && !s.where->value.is_number()) return std::nullopt;
 
     // Build the DDF group-by spec and the ordered output plan from the select list.
     // A non-aggregated select column must be the grouping key (standard SQL); a
@@ -2252,11 +2381,7 @@ QueryResult execute_grouped(const SelectStmt& s, zetta::data::Table& table) {
                 break;
             }
         }
-        if (found == nullptr) {
-            return error("column \"" + name +
-                         "\" is not a dense numeric column — GROUP BY runs over the "
-                         "DDF engine, which operates on numeric columns only");
-        }
+        if (found == nullptr) return std::nullopt;  // not dense numeric: rows
         schema.columns.push_back(*found);
         dtypes.emplace(name, found->dtype);
     }
@@ -2338,6 +2463,29 @@ QueryResult Executor::execute(const Statement& stmt,
     };
     const auto db_name = [&](const TableRef& ref) -> std::string {
         return ref.database.empty() ? current_database : ref.database;
+    };
+    // `db.table` as the caller would write it, for messages.
+    const auto table_label = [&](const TableRef& ref) -> std::string {
+        const std::string database = db_name(ref);
+        return database.empty() ? ref.table : database + "." + ref.table;
+    };
+    // Why a table reference resolved to no database (#1218). An unqualified
+    // name resolves against the default database the caller passed, so the
+    // error says which one that was — or that there was none — rather than
+    // `database "" does not exist`.
+    const auto missing_database = [&](const TableRef& ref) -> QueryResult {
+        if (!ref.database.empty()) {
+            return error("database \"" + ref.database + "\" does not exist");
+        }
+        if (current_database.empty()) {
+            return error("table \"" + ref.table +
+                         "\" is not qualified and no default database is set — "
+                         "write <database>." + ref.table +
+                         " or pass a default database");
+        }
+        return error("database \"" + current_database +
+                     "\" does not exist (it is the default database the "
+                     "unqualified table \"" + ref.table + "\" resolves against)");
     };
 
     // A virtual table (#809 slice 3) is referenced by its unqualified, global
@@ -2471,10 +2619,7 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("the \"system\" database is read-only");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 if (!db->drop_table(s.table.table)) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
@@ -2490,10 +2635,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                  "entity's own path");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
@@ -2561,10 +2703,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                  "entity's own path");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
@@ -2599,10 +2738,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                  "entity's own path");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
@@ -2628,10 +2764,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                  "entity's own path");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
@@ -2650,122 +2783,121 @@ QueryResult Executor::execute(const Statement& stmt,
                 // Virtual `system` database (computed, read-only).
                 if (const std::string sys = system_table_of(s.table);
                     !sys.empty()) {
-                    if (s.grouped()) {
-                        return error("GROUP BY is not supported over system tables");
-                    }
+                    const std::string label = "system." + sys;
                     if (sys == kTablesTable) {
-                        return select_over_rows(s, system_table_rows());
+                        return select_over_rows(s, system_table_rows(), label);
                     }
                     if (sys == kTestCasesTable) {
-                        return select_over_rows(s, test_case_rows());
+                        return select_over_rows(s, test_case_rows(), label);
                     }
                     if (sys == kDeploymentsTable) {
-                        return select_over_rows(s, deployment_rows(node_));
+                        return select_over_rows(s, deployment_rows(node_), label);
                     }
                     if (sys == kModelsTable) {
-                        return select_over_rows(s, model_rows(node_));
+                        return select_over_rows(s, model_rows(node_), label);
                     }
                     if (sys == kWorkspaceProfilesTable) {
-                        return select_over_rows(s, workspace_profile_rows(node_));
+                        return select_over_rows(s, workspace_profile_rows(node_), label);
                     }
                     if (sys == kUsageTable) {
-                        return select_over_rows(s, usage_rows(node_));
+                        return select_over_rows(s, usage_rows(node_), label);
                     }
                     if (sys == kPlansTable) {
-                        return select_over_rows(s, plan_rows(node_));
+                        return select_over_rows(s, plan_rows(node_), label);
                     }
                     if (sys == kIndexesTable) {
-                        return select_over_rows(s, index_rows(node_));
+                        return select_over_rows(s, index_rows(node_), label);
                     }
                     if (sys == kJobsTable) {
-                        return select_over_rows(s, compute_job_rows(node_));
+                        return select_over_rows(s, compute_job_rows(node_), label);
                     }
                     if (sys == kCloudProvidersTable) {
-                        return select_over_rows(s, cloud_provider_rows());
+                        return select_over_rows(s, cloud_provider_rows(), label);
                     }
                     if (sys == kCloudStatusTable) {
-                        return select_over_rows(s, cloud_status_rows(node_));
+                        return select_over_rows(s, cloud_status_rows(node_), label);
                     }
                     if (sys == kProvisionersTable) {
-                        return select_over_rows(s, provisioner_rows(node_));
+                        return select_over_rows(s, provisioner_rows(node_), label);
                     }
                     if (sys == kPubSubTopicsTable) {
                         return select_over_rows(
                             s, node_.pubsub() != nullptr
                                    ? zetta::pubsub::pubsub_topic_rows(*node_.pubsub())
-                                   : std::vector<nlohmann::json>{});
+                                   : std::vector<nlohmann::json>{},
+                            label);
                     }
                     if (sys == kConsentRequestsTable) {
-                        return select_over_rows(s, consent_request_rows(node_));
+                        return select_over_rows(s, consent_request_rows(node_), label);
                     }
                     if (sys == kRunsTable) {
-                        return select_over_rows(s, run_rows(node_));
+                        return select_over_rows(s, run_rows(node_), label);
                     }
                     if (sys == kPrincipalsTable) {
-                        return select_over_rows(s, principal_rows(node_));
+                        return select_over_rows(s, principal_rows(node_), label);
                     }
                     if (sys == kKeysTable) {
-                        return select_over_rows(s, access_key_rows(node_));
+                        return select_over_rows(s, access_key_rows(node_), label);
                     }
                     if (sys == kUsersTable) {
-                        return select_over_rows(s, user_rows(node_));
+                        return select_over_rows(s, user_rows(node_), label);
                     }
                     if (sys == kRolesTable) {
-                        return select_over_rows(s, role_rows(node_));
+                        return select_over_rows(s, role_rows(node_), label);
                     }
                     if (sys == kUserRolesTable) {
-                        return select_over_rows(s, user_role_rows(node_));
+                        return select_over_rows(s, user_role_rows(node_), label);
                     }
                     if (sys == kPoliciesTable) {
-                        return select_over_rows(s, policy_rows(node_));
+                        return select_over_rows(s, policy_rows(node_), label);
                     }
                     if (sys == kTokensTable) {
-                        return select_over_rows(s, token_rows(node_));
+                        return select_over_rows(s, token_rows(node_), label);
                     }
                     if (sys == kConnectionsTable) {
-                        return select_over_rows(s, connection_rows(node_));
+                        return select_over_rows(s, connection_rows(node_), label);
                     }
                     if (sys == kAuditTable) {
-                        return select_over_rows(s, audit_rows(node_));
+                        return select_over_rows(s, audit_rows(node_), label);
                     }
                     if (sys == kLedgerTable) {
-                        return select_over_rows(s, ledger_rows(node_));
+                        return select_over_rows(s, ledger_rows(node_), label);
                     }
                     if (sys == kActivityTable) {
-                        return select_over_rows(s, activity_rows(node_));
+                        return select_over_rows(s, activity_rows(node_), label);
                     }
                     if (sys == kPartitionsTable) {
-                        return select_over_rows(s, partition_rows(node_));
+                        return select_over_rows(s, partition_rows(node_), label);
                     }
                     if (sys == kDatasetsTable) {
-                        return select_over_rows(s, dataset_rows(node_));
+                        return select_over_rows(s, dataset_rows(node_), label);
                     }
                     if (sys == kLargeObjectsTable) {
-                        return select_over_rows(s, large_object_rows(node_));
+                        return select_over_rows(s, large_object_rows(node_), label);
                     }
                     if (sys == kCheckpointsTable) {
-                        return select_over_rows(s, checkpoint_rows(node_));
+                        return select_over_rows(s, checkpoint_rows(node_), label);
                     }
                     if (sys == kNodeMetricsTable) {
-                        return select_over_rows(s, node_metrics_rows(node_));
+                        return select_over_rows(s, node_metrics_rows(node_), label);
                     }
                     if (sys == kMemoryTable) {
-                        return select_over_rows(s, memory_rows(node_));
+                        return select_over_rows(s, memory_rows(node_), label);
                     }
                     if (sys == kPipelineJobsTable) {
-                        return select_over_rows(s, pipeline_job_rows(node_));
+                        return select_over_rows(s, pipeline_job_rows(node_), label);
                     }
                     if (sys == kCollectiveRoundsTable) {
-                        return select_over_rows(s, collective_round_rows(node_));
+                        return select_over_rows(s, collective_round_rows(node_), label);
                     }
                     if (sys == kSpansTable) {
-                        return select_over_rows(s, span_rows(node_));
+                        return select_over_rows(s, span_rows(node_), label);
                     }
                     if (sys == kTracesTable) {
-                        return select_over_rows(s, trace_rows(node_));
+                        return select_over_rows(s, trace_rows(node_), label);
                     }
                     if (sys == kCrashesTable) {
-                        return select_over_rows(s, crash_rows(node_));
+                        return select_over_rows(s, crash_rows(node_), label);
                     }
                     if (sys != kNodesTable) {
                         // Suggest the catalog itself (never drifts, unlike a
@@ -2784,25 +2916,24 @@ QueryResult Executor::execute(const Statement& stmt,
                         return error("system.nodes is unavailable here "
                                      "(no cluster)");
                     }
-                    return select_over_rows(s,
-                                            cluster_node_rows(*cluster_, node_));
+                    return select_over_rows(
+                        s, cluster_node_rows(*cluster_, node_), label);
                 }
                 // Virtual table (#809 slice 3): a user-declared read-only table
                 // over a CRDT key-family, referenced by its unqualified global
                 // name (a real table takes precedence). Its durable rows are
                 // projected from the CRDT; WHERE/projection reuse select_over_rows.
                 if (auto vtable = resolve_virtual_table(s.table)) {
-                    if (s.grouped()) {
-                        return error(
-                            "GROUP BY is not supported over virtual tables");
+                    std::vector<std::string> declared;
+                    for (const zetta::data::VirtualColumn& column : vtable->columns) {
+                        declared.push_back(column.name);
                     }
-                    return select_over_rows(s, node_.virtual_table_rows(*vtable));
+                    return select_over_rows(s, node_.virtual_table_rows(*vtable),
+                                            vtable->name, declared);
                 }
+                if (auto problem = aggregate_shape_error(s)) return error(*problem);
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
@@ -2832,10 +2963,11 @@ QueryResult Executor::execute(const Statement& stmt,
                         }
                     }
                     for (const GroupedItem& item : s.items) {
-                        if (!item.column.empty() &&
-                            !read_access.allows(item.column)) {
+                        const std::string& column =
+                            item.aggregate ? item.aggregate->column : item.column;
+                        if (!column.empty() && !read_access.allows(column)) {
                             return error("permission denied: no sql:read grant on "
-                                         "column \"" + item.column + "\"");
+                                         "column \"" + column + "\"");
                         }
                     }
                 }
@@ -2868,10 +3000,22 @@ QueryResult Executor::execute(const Statement& stmt,
                     const SelectOutcome scattered = select_over_partitions(
                         node_, node_.distributed_select(), s, table->id());
                     if (!scattered.ok()) return error(scattered.error);
+                    // The owners report the columns their rows carry; with every
+                    // owner's list in hand, a column none of them saw does not
+                    // exist (#1218).
+                    ColumnCatalog known;
+                    for (const std::string& column : scattered.table_columns) {
+                        known.add(column);
+                    }
+                    if (scattered.table_columns_complete) {
+                        if (auto problem = unknown_column_error(
+                                s, known, table_label(s.table))) {
+                            return error(*problem);
+                        }
+                    }
                     QueryResult r;
-                    r.columns = s.grouped() ? scattered.columns
-                                            : (s.all ? std::vector<std::string>{}
-                                                     : s.columns);
+                    r.columns = s.aggregating() ? scattered.columns
+                                                : (s.all ? known.names() : s.columns);
                     r.rows = scattered.rows;
                     // Column-level access stays with the coordinator: the owner
                     // filtered + projected, this node knows the caller.
@@ -2888,15 +3032,26 @@ QueryResult Executor::execute(const Statement& stmt,
                     r.message = "SELECT " + std::to_string(r.rows.size());
                     return r;
                 }
-                if (s.grouped()) {
+                if (s.aggregating()) {
                     if (!read_filter.bypass && read_filter.engaged) {
                         return error("row-level security is enabled on \"" +
                                      db_name(s.table) + "." + s.table.table +
                                      "\": GROUP BY over a policy-protected table is "
                                      "not supported — query it without aggregation");
                     }
-                    return execute_grouped(s, *table);
+                    // A dense-numeric GROUP BY runs columnar through the DDF
+                    // engine; everything else aggregates over the rows below.
+                    if (std::optional<QueryResult> columnar =
+                            execute_grouped_ddf(s, *table)) {
+                        return std::move(*columnar);
+                    }
                 }
+                // One pass: learn the table's columns from every row (so a
+                // column no row carries is an error, not a column of nulls),
+                // and project or aggregate the rows that pass the WHERE.
+                ColumnCatalog known;
+                std::optional<GroupAccumulator> groups;
+                if (s.aggregating()) groups.emplace(s);
                 QueryResult r;
                 if (!s.all) r.columns = s.columns;
                 const zetta::storage::StorageEngine& store = table->store();
@@ -2905,8 +3060,14 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (!handle) return error("row " + store.id_at(i) +
                                               " could not be read: " + handle.error());
                     const nlohmann::json& row = *handle;
-                    if (!row_matches(row, s.where)) continue;
+                    // A row the caller may not see does not vouch for a column.
                     if (!rls_row_permitted(read_filter, row, rls)) continue;
+                    known.add_row(row);
+                    if (!row_matches(row, s.where)) continue;
+                    if (groups) {
+                        groups->add(row);
+                        continue;
+                    }
                     if (s.all) {
                         if (read_access.all_columns) {
                             r.rows.push_back(row);
@@ -2932,6 +3093,12 @@ QueryResult Executor::execute(const Statement& stmt,
                         r.rows.push_back(std::move(projected));
                     }
                 }
+                if (auto problem =
+                        unknown_column_error(s, known, table_label(s.table))) {
+                    return error(*problem);
+                }
+                if (groups) return finish_aggregate(s, *groups);
+                if (s.all) r.columns = known.names();
                 r.message = "SELECT " + std::to_string(r.rows.size());
                 return r;
             },

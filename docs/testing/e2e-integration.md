@@ -42,11 +42,11 @@ node), captured rather than assumed:
   `{ok:false, error:{code,message}}`). SQL results live at **`.value.rows`** as **named objects**
   (`[{col: val, …}]`); the harness counts with `.value.rows | length` and reads fields by key (it also
   tolerates the older flat `.rows` shape so one script spans engine versions).
-- Aggregates **name their output** (`sum(price)` → `sum_price`); **no bare `count(*)`** (aggregates
-  require `GROUP BY`); **`GROUP BY` is numeric-only** (the DDF engine, zetta#756); **no `ORDER BY`**;
-  **single-predicate `WHERE` only** (`AND`/`OR`/`NOT` are unsupported). These are asserted as tracked
-  `SKIP`s. The store is **schemaless**, so a missing *column* resolves to null (not an error) — the
-  negative-path assertion is a missing *table*, which is rejected.
+- Aggregates **name their output** (`sum(price)` → `sum_price`); **single-predicate `WHERE` only**
+  (`AND`/`OR`/`NOT` are unsupported, a tracked `SKIP`). Since zetta#1218 a bare `count(*)` needs no
+  `GROUP BY`, a `GROUP BY` key may be text, and a column no row carries is an error naming it; the
+  harness asserts each, and records a tracked `SKIP` on an engine that predates it. A missing
+  *table* is rejected.
 - Run status is lowercase **`succeeded`** and `system.runs` keys on **`run_id`**.
 - The in-app suite is submitted over **`testsuite_run`** (`testsuite_list` + `system.test_cases`); an
   older image that served `testkit_run` is auto-detected from the MCP tool list.

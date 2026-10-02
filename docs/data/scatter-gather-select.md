@@ -96,7 +96,20 @@ A shard that contributed nothing to an aggregate (all-null values) carries
 
 Result columns are named exactly as the local `GROUP BY` path names them —
 `count`, `sum_x`, `min_x`, `max_x`, `mean_x` — so the same SQL reads the same
-whichever path answers it.
+whichever path answers it. The owner folds its rows through
+`zetta::query::GroupAccumulator`, the same accumulator the executor uses for a
+replicated table's text keys and whole-table aggregates (#1218).
+
+**A whole-table aggregate** (`SELECT count(*) FROM t`, no `GROUP BY`) is a scan
+request with `aggregates` and no `group_by`: every row is one group with a
+`null` key. When nothing survives anywhere, the merge still emits one row —
+`count` 0, the rest `NULL` — rather than an empty result.
+
+**Columns.** Each answer carries `columns_seen`, every column its scanned rows
+carried before the `WHERE`. The coordinator unions them: a column the query names
+that no owner saw is an error naming it, and `SELECT *` reports the union as its
+`columns`. An answer without `columns_seen` (a responder that predates it)
+switches the check off rather than refusing a real column.
 
 ## Where the work happens
 
@@ -136,7 +149,10 @@ elsewhere fails with the same unreachable-owner reason a dead peer would give.
 
 - the merge rules asserted directly on hand-built partials (the weighted `avg`,
   and count/sum adding while min/max reduce and an empty shard is ignored);
-- the wire round trip plus malformed messages rejected at the schema boundary;
+- the wire round trip plus malformed messages rejected at the schema boundary,
+  including a whole-table aggregate request and `columns_seen`;
+- a whole-table `count(*)`, a text `GROUP BY` key, an unknown column and
+  `SELECT *`'s columns over a partition-only table, on one node and across two;
 - a single node answering a partition-only table from its 8 partitions — grouped
   aggregates against a hand-computed truth, a plain `SELECT` returning every row
   exactly once, and a pushed-down `WHERE` + projection;

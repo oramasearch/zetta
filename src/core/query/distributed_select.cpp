@@ -366,7 +366,12 @@ const nlohmann::json& partition_scan_response_schema() {
                     {"properties",
                      {{"value", {{"type", "number"}}},
                       {"count", {{"type", "integer"}, {"minimum", 0}}},
-                      {"integral", {{"type", "boolean"}}}}}}}}}}}}}}}}}};
+                      {"integral", {{"type", "boolean"}}}}}}}}}}}}}}},
+          {"columns_seen",
+           {{"type", "array"},
+            {"description",
+             "every column any scanned row carried, before the WHERE (#1218)"},
+            {"items", {{"type", "string"}}}}}}}};
     return schema;
 }
 
@@ -382,8 +387,8 @@ std::string encode_partition_scan_request(const PartitionScanRequest& request) {
                              {"value", request.where->value}};
     }
     if (!request.columns.empty()) document["columns"] = request.columns;
-    if (!request.group_by.empty()) {
-        document["group_by"] = request.group_by;
+    if (request.aggregating()) {
+        if (!request.group_by.empty()) document["group_by"] = request.group_by;
         nlohmann::json aggregates = nlohmann::json::array();
         for (const ScanAggregate& aggregate : request.aggregates) {
             nlohmann::json entry{{"func", std::string(aggregate_func_name(aggregate.func))}};
@@ -478,6 +483,7 @@ std::string encode_partition_scan_response(const PartitionScanResponse& response
         }
         document["groups"] = std::move(groups);
     }
+    if (response.columns_seen) document["columns_seen"] = *response.columns_seen;
     return document.dump();
 }
 
@@ -523,20 +529,77 @@ std::optional<PartitionScanResponse> decode_partition_scan_response(
             response.groups.push_back(std::move(decoded));
         }
     }
+    if (document.contains("columns_seen")) {
+        response.columns_seen =
+            document.at("columns_seen").get<std::vector<std::string>>();
+    }
     return response;
 }
 
 // --- the local scan -----------------------------------------------------------
 
+GroupAccumulator::GroupAccumulator(std::string group_by,
+                                   std::vector<ScanAggregate> aggregates)
+    : group_by_(std::move(group_by)), aggregates_(std::move(aggregates)) {}
+
+GroupAccumulator::GroupAccumulator(const SelectStmt& statement)
+    : GroupAccumulator(statement.group_by.empty() ? std::string{}
+                                                  : statement.group_by.front(),
+                       scan_aggregates_of(statement)) {}
+
+void GroupAccumulator::add(const nlohmann::json& row) {
+    nlohmann::json key;  // null: no group key, or a row without the key column
+    if (!group_by_.empty()) {
+        const auto cell = row.find(group_by_);
+        if (cell != row.end()) key = *cell;
+    }
+    const std::string canonical = group_key_of(key);
+    auto slot = index_.find(canonical);
+    if (slot == index_.end()) {
+        GroupPartial partial;
+        partial.key = std::move(key);
+        partial.aggregates.reserve(aggregates_.size());
+        for (const ScanAggregate& aggregate : aggregates_) {
+            partial.aggregates.push_back(empty_partial(aggregate.func));
+        }
+        slot = index_.emplace(canonical, groups_.size()).first;
+        groups_.push_back(std::move(partial));
+    }
+    GroupPartial& partial = groups_[slot->second];
+    for (std::size_t i = 0; i < aggregates_.size(); ++i) {
+        accumulate(partial.aggregates[i], aggregates_[i].func, aggregates_[i].column,
+                   row);
+    }
+}
+
+std::vector<GroupPartial> GroupAccumulator::take() {
+    index_.clear();
+    return std::exchange(groups_, {});
+}
+
+std::vector<ScanAggregate> scan_aggregates_of(const SelectStmt& statement) {
+    std::vector<ScanAggregate> aggregates;
+    for (const GroupedItem& item : statement.items) {
+        if (!item.aggregate) continue;
+        aggregates.push_back(ScanAggregate{item.aggregate->func, item.aggregate->column});
+    }
+    return aggregates;
+}
+
+std::vector<std::string> aggregate_result_columns(const SelectStmt& statement) {
+    return grouped_columns(statement);
+}
+
 PartitionScanResponse scan_owned_partitions(const std::vector<OwnedPartition>& owned,
                                             const PartitionScanRequest& request) {
     PartitionScanResponse response;
-    const bool grouped = !request.group_by.empty();
+    const bool aggregating = request.aggregating();
+    GroupAccumulator groups(request.group_by, request.aggregates);
 
-    // Groups are accumulated in first-seen order; the coordinator sorts the
-    // merged result, so the wire order does not have to be canonical.
-    std::unordered_map<std::string, std::size_t> group_index;
-    const std::size_t aggregate_count = request.aggregates.size();
+    // The columns the scanned rows carry, so the coordinator can tell a column
+    // that holds only nulls from one that does not exist.
+    std::vector<std::string> columns_seen;
+    std::unordered_set<std::string> seen;
 
     std::unordered_map<std::string, const OwnedPartition*> by_id;
     for (const OwnedPartition& partition : owned) by_id.emplace(partition.id, &partition);
@@ -571,44 +634,29 @@ PartitionScanResponse scan_owned_partitions(const std::vector<OwnedPartition>& o
             ++response.rows_scanned;
             const nlohmann::json& row = stored.doc;
             if (!row.is_object()) continue;
+            for (auto field = row.begin(); field != row.end(); ++field) {
+                if (seen.insert(field.key()).second) columns_seen.push_back(field.key());
+            }
             if (!row_matches(row, request.where)) continue;
-            if (!grouped) {
-                if (request.columns.empty()) {
-                    block.rows.push_back(row);
-                } else {
-                    nlohmann::json projected = nlohmann::json::object();
-                    for (const std::string& column : request.columns) {
-                        const auto cell = row.find(column);
-                        projected[column] =
-                            cell == row.end() ? nlohmann::json() : *cell;
-                    }
-                    block.rows.push_back(std::move(projected));
-                }
+            if (aggregating) {
+                groups.add(row);
                 continue;
             }
-            const auto key_cell = row.find(request.group_by);
-            const nlohmann::json key =
-                key_cell == row.end() ? nlohmann::json() : *key_cell;
-            const std::string canonical = group_key_of(key);
-            auto slot = group_index.find(canonical);
-            if (slot == group_index.end()) {
-                GroupPartial partial;
-                partial.key = key;
-                partial.aggregates.reserve(aggregate_count);
-                for (const ScanAggregate& aggregate : request.aggregates) {
-                    partial.aggregates.push_back(empty_partial(aggregate.func));
+            if (request.columns.empty()) {
+                block.rows.push_back(row);
+            } else {
+                nlohmann::json projected = nlohmann::json::object();
+                for (const std::string& column : request.columns) {
+                    const auto cell = row.find(column);
+                    projected[column] = cell == row.end() ? nlohmann::json() : *cell;
                 }
-                slot = group_index.emplace(canonical, response.groups.size()).first;
-                response.groups.push_back(std::move(partial));
-            }
-            GroupPartial& partial = response.groups[slot->second];
-            for (std::size_t i = 0; i < aggregate_count; ++i) {
-                accumulate(partial.aggregates[i], request.aggregates[i].func,
-                           request.aggregates[i].column, row);
+                block.rows.push_back(std::move(projected));
             }
         }
-        if (!grouped) response.blocks.push_back(std::move(block));
+        if (!aggregating) response.blocks.push_back(std::move(block));
     }
+    if (aggregating) response.groups = groups.take();
+    response.columns_seen = std::move(columns_seen);
     return response;
 }
 
@@ -683,13 +731,9 @@ PartitionScanRequest scan_request_for(const SelectStmt& statement,
     PartitionScanRequest request;
     request.table = table_id;
     request.where = statement.where;
-    if (statement.grouped()) {
-        request.group_by = statement.group_by.front();
-        for (const GroupedItem& item : statement.items) {
-            if (!item.aggregate) continue;
-            request.aggregates.push_back(
-                ScanAggregate{item.aggregate->func, item.aggregate->column});
-        }
+    if (statement.aggregating()) {
+        if (!statement.group_by.empty()) request.group_by = statement.group_by.front();
+        request.aggregates = scan_aggregates_of(statement);
     } else if (!statement.all) {
         request.columns = statement.columns;
     }
@@ -837,8 +881,21 @@ SelectOutcome merge_scan_responses(const SelectStmt& statement,
                                    const std::vector<std::string>& partition_order,
                                    const std::vector<PartitionScanResponse>& answers) {
     SelectOutcome outcome;
-    if (statement.grouped()) outcome.columns = grouped_columns(statement);
-    if (!statement.grouped()) {
+    // The table's columns: the union of what every responder saw, complete only
+    // when every responder said.
+    std::unordered_set<std::string> seen;
+    outcome.table_columns_complete = !answers.empty();
+    for (const PartitionScanResponse& answer : answers) {
+        if (!answer.columns_seen) {
+            outcome.table_columns_complete = false;
+            continue;
+        }
+        for (const std::string& column : *answer.columns_seen) {
+            if (seen.insert(column).second) outcome.table_columns.push_back(column);
+        }
+    }
+    if (statement.aggregating()) outcome.columns = grouped_columns(statement);
+    if (!statement.aggregating()) {
         std::unordered_map<std::string, const std::vector<nlohmann::json>*> blocks;
         for (const PartitionScanResponse& answer : answers) {
             for (const ScanBlock& block : answer.blocks) {
@@ -887,6 +944,16 @@ SelectOutcome merge_scan_responses(const SelectStmt& statement,
               [](const GroupPartial& a, const GroupPartial& b) {
                   return key_less(a.key, b.key);
               });
+    // A whole-table aggregate answers one row even when no row survived:
+    // `SELECT count(*) FROM t WHERE …` over nothing is 0, not an empty result
+    // (the SUM/MIN/MAX/AVG beside it are NULL), as in Postgres.
+    if (statement.group_by.empty() && merged.empty()) {
+        GroupPartial empty;
+        for (const AggregateFunc func : functions) {
+            empty.aggregates.push_back(empty_partial(func));
+        }
+        merged.push_back(std::move(empty));
+    }
 
     for (const GroupPartial& group : merged) {
         nlohmann::json row = nlohmann::json::object();
@@ -917,6 +984,8 @@ void merge_into(SelectOutcome& outcome, const SelectStmt& statement,
     SelectOutcome merged = merge_scan_responses(statement, order, answers);
     outcome.columns = std::move(merged.columns);
     outcome.rows = std::move(merged.rows);
+    outcome.table_columns = std::move(merged.table_columns);
+    outcome.table_columns_complete = merged.table_columns_complete;
 }
 
 }  // namespace
@@ -925,8 +994,8 @@ SelectOutcome DistributedSelect::execute(const SelectStmt& statement,
                                          const std::string& table_id,
                                          std::chrono::milliseconds timeout) {
     SelectOutcome outcome;
-    if (statement.grouped()) {
-        if (statement.group_by.size() != 1) {
+    if (statement.aggregating()) {
+        if (statement.group_by.size() > 1) {
             outcome.error = "GROUP BY supports exactly one key column";
             return outcome;
         }
@@ -945,7 +1014,10 @@ SelectOutcome DistributedSelect::execute(const SelectStmt& statement,
         outcome.error = std::move(reason);
         return outcome;
     }
-    if (planned.empty()) return outcome;  // no placed partitions: an empty dataset
+    if (planned.empty()) {  // no placed partitions: an empty dataset
+        merge_into(outcome, statement, planned, {});
+        return outcome;
+    }
 
     const std::string& self = cluster_.node_id();
     std::unordered_set<std::string> reachable{self};
@@ -1037,8 +1109,8 @@ SelectOutcome select_over_partitions(Node& node, DistributedSelect* plane,
     // Standalone: the same plan, with this node as the only reachable owner. A
     // partition placed elsewhere fails exactly as an unreachable peer would.
     SelectOutcome outcome;
-    if (statement.grouped()) {
-        if (statement.group_by.size() != 1) {
+    if (statement.aggregating()) {
+        if (statement.group_by.size() > 1) {
             outcome.error = "GROUP BY supports exactly one key column";
             return outcome;
         }
@@ -1054,7 +1126,10 @@ SelectOutcome select_over_partitions(Node& node, DistributedSelect* plane,
         outcome.error = std::move(reason);
         return outcome;
     }
-    if (planned.empty()) return outcome;
+    if (planned.empty()) {
+        merge_into(outcome, statement, planned, {});
+        return outcome;
+    }
 
     const std::string& self = node.node_id();
     std::map<std::string, std::vector<std::string>> by_node;

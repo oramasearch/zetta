@@ -436,9 +436,10 @@ before a connection is opened, which is the other claim a security reviewer will
   laptop Postgres on local `trust` auth cannot be connected until a password is set on the
   role.
 - **The node's SQL is a Postgres *subset*, and it is not the query you just sent to
-  Postgres.** `LIMIT` is not supported (`expected ';' after statement, got 'LIMIT'`), and a
-  bare `count(*)` is refused with `aggregate functions require a GROUP BY clause`.
-  Projection and `WHERE` work. The full `SELECT` inside `create_dataset_from_query` runs on
+  Postgres.** At the time of this delivery `LIMIT` was not supported (`expected ';' after
+  statement, got 'LIMIT'`) and a bare `count(*)` was refused with `aggregate functions require
+  a GROUP BY clause`; both work now (`ORDER BY`/`LIMIT`/`OFFSET`, and whole-table aggregates
+  since zetta#1218 — see [the query layer](../data/query.md)). Projection and `WHERE` work. The full `SELECT` inside `create_dataset_from_query` runs on
   **Postgres** and can use anything Postgres understands; only the read *back out of the
   node* goes through the subset. Worth saying explicitly, because hitting the subset right
   after a rich source query reads as the product being broken.

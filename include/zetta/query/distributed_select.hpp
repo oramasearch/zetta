@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -81,8 +82,13 @@ struct PartitionScanRequest {
     std::vector<std::string> partitions;      // catalog entry ids (`part:` uuids)
     std::optional<WhereClause> where;         // applied at the owner (near the data)
     std::vector<std::string> columns;         // projection; empty = the whole row
-    std::string group_by;                     // empty = not an aggregating scan
-    std::vector<ScanAggregate> aggregates;    // only when group_by is set
+    std::string group_by;                     // the group key; empty = one group
+    std::vector<ScanAggregate> aggregates;    // the aggregates, in select order
+
+    // An aggregating scan returns per-group partials instead of rows: it has a
+    // group key, an aggregate, or both. With aggregates and no key, the whole
+    // scan is one group (`SELECT count(*) FROM t`, #1218).
+    bool aggregating() const { return !group_by.empty() || !aggregates.empty(); }
 };
 
 // One partition's surviving rows, kept separate so the coordinator can emit rows
@@ -116,6 +122,11 @@ struct PartitionScanResponse {
     std::uint64_t bytes_read = 0;        // partition-body bytes read from local disk
     std::vector<ScanBlock> blocks;       // non-aggregating scans
     std::vector<GroupPartial> groups;    // aggregating scans
+    // Every column any scanned row carried (before the WHERE), in first-seen
+    // order — what the coordinator checks a named column against, since a
+    // schemaless table has no declared columns (#1218). Unset when the responder
+    // predates it, and then the coordinator does not check.
+    std::optional<std::vector<std::string>> columns_seen;
     std::string error;                   // empty on success
 
     bool ok() const { return error.empty(); }
@@ -149,6 +160,11 @@ struct SelectContribution {
 struct SelectOutcome {
     std::vector<std::string> columns;
     std::vector<nlohmann::json> rows;
+    // The columns the scanned partitions hold (the union of every responder's
+    // `columns_seen`), and whether every responder reported them — only then is
+    // a column missing from the list known not to exist.
+    std::vector<std::string> table_columns;
+    bool table_columns_complete = false;
     std::uint64_t partitions_read = 0;
     std::uint64_t rows_scanned = 0;
     std::vector<SelectContribution> contributions;
@@ -164,6 +180,39 @@ struct OwnedPartition {
     std::uint64_t row_start = 0;     // orders the merged rows
     std::filesystem::path body;      // the large object's body file
 };
+
+// Folds rows, one at a time, into per-group aggregate partials. The one place
+// SQL aggregation semantics live: the partition owner's scan, the executor's
+// replicated-table path (text keys, whole-table aggregates) and the system and
+// virtual tables all aggregate through it, so the same query answers the same
+// way whichever path serves it (#1218). Group keys are JSON values — numbers,
+// strings, booleans or null (a row without the key column) — and a row adds
+// to every aggregate of its group. With no group key every row is one group.
+class GroupAccumulator {
+public:
+    GroupAccumulator(std::string group_by, std::vector<ScanAggregate> aggregates);
+    // The accumulator for a SELECT's aggregating select list.
+    explicit GroupAccumulator(const SelectStmt& statement);
+
+    void add(const nlohmann::json& row);
+
+    // The partials, in first-seen group order; leaves the accumulator empty.
+    std::vector<GroupPartial> take();
+
+private:
+    std::string group_by_;
+    std::vector<ScanAggregate> aggregates_;
+    std::unordered_map<std::string, std::size_t> index_;
+    std::vector<GroupPartial> groups_;
+};
+
+// The aggregates an aggregating SELECT computes, in select order.
+std::vector<ScanAggregate> scan_aggregates_of(const SelectStmt& statement);
+
+// The result column names of an aggregating SELECT, in select order: a key's
+// own name (or its alias), and an aggregate's alias or default name (`count`,
+// `sum_x`, `min_x`, `max_x`, `mean_x`).
+std::vector<std::string> aggregate_result_columns(const SelectStmt& statement);
 
 // Scan `request` against `owned` (the responder's own partitions) and produce the
 // partial. Pure apart from reading the body files; used by the RPC handler, by a
