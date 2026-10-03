@@ -141,7 +141,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 |---|---|---|---|
 | `server_info` | read | api:query | node identity, version, entity counts, membership |
 | `node_memory` | read | api:query | process RSS, allocator truth, and subsystem ownership |
-| `sql` | read | api:query | one governed SQL statement — every `system.*` view; answers `{messages, columns, rows}` with `columns` always filled, and an error for an unknown column ([query.md](../data/query.md)). Each data-changing statement is authorized on its own (`sql:write` / `sql:ddl` / `users:manage` / `tokens:manage`) and audited as `data_changed` ([per-statement enforcement](../governance/access-control.md#per-statement-enforcement), #1229) |
+| `sql` | read | api:query | one governed SQL statement — every `system.*` view; answers `{messages, columns, rows}` with `columns` always filled, and an error for an unknown column ([query.md](../data/query.md)). Each data-changing statement is authorized on its own (`sql:write` / `sql:ddl` / `users:manage` / `tokens:manage`) and audited as `data_changed` ([per-statement enforcement](../governance/access-control.md#per-statement-enforcement), #1229); also a JSON-body POST, so a statement is not bound by the ~4 KiB request line (#1231) |
+| `get_record` | read | data:records_read (`records:read`, scopable `ON COLLECTION`) | one keyed record by `(collection, key)`; also POST ([record-store.md](../data/record-store.md)) |
+| `list_records` | read | data:records_read | one index value's records ordered by `order` then key, paged by `next_after`; also POST |
+| `query_metric` | read | data:metrics_read (`metrics:read`) | sum a counter or aggregate a gauge over a range, filtered, grouped and stepped; also POST ([time-series.md](../data/time-series.md)) |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
@@ -176,6 +179,11 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
+| `create_collection` | action | orchestration:create_collection (`records:manage`) | declare a record collection, its indexes and retention; idempotent for an identical definition |
+| `put_record` | action | data:records_write (`records:write`) | conditional (`if_absent` / `if_revision`, 409 otherwise) keyed write, durable and on every live node before it returns |
+| `delete_record` | action | data:records_write | conditional delete |
+| `create_metric` | action | orchestration:create_metric (`metrics:write`) | declare a labelled counter or gauge |
+| `record_metric` | action | data:metrics_write (`metrics:write`) | append up to 1000 labelled points, all validated first |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `record_action` | action | orchestration:record_action | append score, decision, action, actor, versions, experiment cell, cost, and timestamps to the solutions audit ledger |
 | `record_outcome` | action | orchestration:record_outcome | append a connector or manual outcome referencing an existing action entry |

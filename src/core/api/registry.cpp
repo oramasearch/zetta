@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <stdexcept>
 #include <utility>
 
 #include <nlohmann/json-schema.hpp>
@@ -107,17 +108,52 @@ private:
     std::string path_;
 };
 
+// `contentEncoding` (#1231): base64 is checked; any other encoding is refused,
+// so a schema never claims a check it does not get. A throw here is collected by
+// the validator as an error at the field.
+void check_content(const std::string& encoding, const std::string& /*media_type*/,
+                   const nlohmann::json& instance) {
+    if (encoding.empty()) return;
+    if (encoding != "base64") {
+        throw std::invalid_argument("contentEncoding '" + encoding + "' is not supported");
+    }
+    if (!instance.is_string()) throw std::invalid_argument("want a base64 string");
+    const std::string& text = instance.get_ref<const std::string&>();
+    std::size_t padding = 0;
+    bool valid = text.size() % 4 == 0;
+    for (const char character : text) {
+        if (!valid) break;
+        if (character == '=') {
+            ++padding;
+            continue;
+        }
+        valid = padding == 0 &&
+                ((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                 (character >= '0' && character <= '9') || character == '+' || character == '/');
+    }
+    if (!valid || padding > 2) throw std::invalid_argument("not valid base64");
+}
+
 // Validates `input`; on failure fills the reason and the JSON pointer of the
 // field at fault, so a schema rejection carries `path` like a handler's own.
+// Never throws: a schema the validator cannot compile (an unsupported keyword, a
+// bad pattern) is an invalid_input refusal naming the problem, not an exception
+// escaping Registry::call.
 bool validate_input(const nlohmann::json& schema, const nlohmann::json& input,
                     std::string* reason, std::string* path) {
-    nlohmann::json_schema::json_validator validator;
-    validator.set_root_schema(schema);
-    collecting_error_handler handler;
-    validator.validate(input, handler);
-    if (handler.failed() && reason) *reason = handler.reason();
-    if (handler.failed() && path) *path = handler.path();
-    return !handler.failed();
+    try {
+        nlohmann::json_schema::json_validator validator(nullptr, nullptr, check_content);
+        validator.set_root_schema(schema);
+        collecting_error_handler handler;
+        validator.validate(input, handler);
+        if (handler.failed() && reason) *reason = handler.reason();
+        if (handler.failed() && path) *path = handler.path();
+        return !handler.failed();
+    } catch (const std::exception& error) {
+        if (reason) *reason = std::string("the input could not be checked against its schema: ") + error.what();
+        if (path) path->clear();
+        return false;
+    }
 }
 
 void audit_call(Node& node, const Capability& capability,

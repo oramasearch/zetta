@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -30,6 +32,20 @@ struct ReplicationMemoryUsage {
     std::uint64_t audit_bytes = 0;
     std::uint64_t audit_items = 0;
 };
+
+// One write of an atomic ReplicationManager::update(): set `key` to `value`, or
+// remove it (a tombstone, exactly like remove()) when `value` is empty.
+struct ReplicationWrite {
+    std::string key;
+    std::optional<nlohmann::json> value;
+};
+
+// Decides an update from the key's current live value (null when absent or
+// removed). It runs under the replication mutex, so it must be cheap and must not
+// call back into the manager. Return nullopt to write nothing.
+using ReplicationUpdateDecision =
+    std::function<std::optional<std::vector<ReplicationWrite>>(
+        const nlohmann::json* current)>;
 
 // What/whom to replicate. The first (and currently only) policy is
 // ReplicateToAllNodes: every node holds a full copy of all replicated state.
@@ -90,6 +106,14 @@ public:
     // is the standard CRDT trade and it is already what `row:` deletes do.
     void remove(const std::string& key);
 
+    // Atomic read-check-write (#1231): read `key`'s live value, let `decide`
+    // choose the writes, and apply them as ONE local change, all under the
+    // replication mutex, so no other local write can interleave between the read
+    // and the writes. Record collections and metrics are declared with it (an
+    // existing definition is compared, never overwritten). Returns whether
+    // anything was written.
+    bool update(const std::string& key, const ReplicationUpdateDecision& decide);
+
     // The merged document as JSON — live entries only, tombstoned keys omitted.
     // This compatibility accessor copies the writer-maintained parsed cache.
     nlohmann::json snapshot() const;
@@ -147,9 +171,11 @@ public:
 private:
     struct State;
 
-    // Whether any concurrent value at `key` is a tombstone. Caller holds the
-    // state mutex.
-    bool removed_locked(const std::string& key) const;
+    // The effective encoded value of `key` given the document's winner: the
+    // removal marker when any concurrent value is a tombstone, else the winner.
+    // Caller holds the state mutex.
+    std::string effective_locked(const std::string& key,
+                                 const std::string& winner) const;
 
     std::unique_ptr<State> state_;
     std::string node_id_;  // this node's UUID (its Automerge actor id)

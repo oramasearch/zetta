@@ -40,6 +40,14 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"topics:write", {{CapabilityDomain::Orchestration, "pubsub_create"},
                            {CapabilityDomain::Orchestration, "pubsub_manage"}}},
         {"events:write", {{CapabilityDomain::Data, "pubsub_publish"}}},
+        // The keyed record store and labelled time series (#1231). records:* are
+        // object-scopable by collection name prefix (ON COLLECTION <prefix>).
+        {"records:read", {{CapabilityDomain::Data, "records_read"}}},
+        {"records:write", {{CapabilityDomain::Data, "records_write"}}},
+        {"records:manage", {{CapabilityDomain::Orchestration, "create_collection"}}},
+        {"metrics:read", {{CapabilityDomain::Data, "metrics_read"}}},
+        {"metrics:write", {{CapabilityDomain::Data, "metrics_write"},
+                           {CapabilityDomain::Orchestration, "create_metric"}}},
         // Orchestration — the pipeline authoring/deploy/run + serving + cloud
         // control surface. The capability model is exact-match (no wildcards), so
         // every registry Orchestration op must appear here or NO role can grant it.

@@ -153,10 +153,25 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     EXPECT_EQ(permission_operations("pubsub:manage"),
               (std::vector<Operation>{{CapabilityDomain::Orchestration, "pubsub_manage"}}));
 
+    // The record store and time series (#1231): records:* are object-scopable
+    // by collection prefix; metrics:write also declares metrics.
+    EXPECT_EQ(permission_operations("records:read"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "records_read"}}));
+    EXPECT_EQ(permission_operations("records:write"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "records_write"}}));
+    EXPECT_EQ(permission_operations("records:manage"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration, "create_collection"}}));
+    EXPECT_EQ(permission_operations("metrics:read"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "metrics_read"}}));
+    EXPECT_EQ(permission_operations("metrics:write"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "metrics_write"},
+                                      {CapabilityDomain::Orchestration, "create_metric"}}));
+
     // The canonical list carries the #746 atoms, blob:read (#747), six
     // orchestration atoms, eight pub/sub atoms (#1029/#1136), study promotion
-    // (#1138), and study deletion (#1158).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 24u);
+    // (#1138), study deletion (#1158), and five record-store and time-series
+    // atoms (#1231).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 29u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "The payload of a record-store signal (#1231). `put`/`delete` forward a write to the key's owner (record.put); `apply` installs a committed record or a collection definition on a replica (record.apply); `digest`, `keys` and `fetch` are anti-entropy: a peer's bucket digests (record.digest), the versions in some buckets of one collection (record.keys), and some records by key (record.fetch).",
+  "properties": {
+    "buckets": {
+      "items": {
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "collection": {
+      "type": "string"
+    },
+    "condition": {
+      "enum": [
+        "none",
+        "if_absent",
+        "if_revision"
+      ]
+    },
+    "definition": {
+      "type": "object"
+    },
+    "index": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "key": {
+      "type": "string"
+    },
+    "keys": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "op": {
+      "enum": [
+        "put",
+        "delete",
+        "apply",
+        "digest",
+        "keys",
+        "fetch"
+      ]
+    },
+    "order": {
+      "type": "string"
+    },
+    "record": {
+      "type": "object"
+    },
+    "revision": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "value": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "op"
+  ],
+  "title": "zetta.RecordSignal",
+  "type": "object"
+}

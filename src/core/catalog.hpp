@@ -143,6 +143,13 @@
 //                          by the node that completed the write, so the key has
 //                          exactly one writer — see data/dataset_manifest.hpp /
 //                          docs/data/partition-manifest.md)
+//   record_collection:<name> -> { name, indexes, retention_ms?, created }  (a keyed
+//                          record collection's definition — #1231; the records
+//                          themselves live in each node's record log, never here,
+//                          see data/record_store.hpp)
+//   metric:<name>      -> { name, kind, resolution_ms, retention_ms?, created }
+//                          (a labelled counter or gauge — #1231; its buckets live in
+//                          the record log, see data/metric_store.hpp)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -185,6 +192,8 @@ inline constexpr std::string_view kPolicyPrefix = "policy:";
 inline constexpr std::string_view kDecisionPolicyPrefix = "decision_policy:";
 inline constexpr std::string_view kDecisionPrefix = "decision:";
 inline constexpr std::string_view kVirtualTablePrefix = "vtable:";
+inline constexpr std::string_view kRecordCollectionPrefix = "record_collection:";
+inline constexpr std::string_view kMetricPrefix = "metric:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;

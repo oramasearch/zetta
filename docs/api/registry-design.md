@@ -211,6 +211,10 @@ message, path} }`:
 
 - Malformed JSON-RPC / unknown tool → JSON-RPC protocol errors (−32700/−32601/−32602).
 - Schema-invalid tool input → −32602 with the validator's path-qualified reason.
+  The check itself never throws (#1231): `contentEncoding: base64` is validated,
+  any other encoding is refused at its field, and a schema the validator cannot
+  compile answers `invalid_input` naming the problem instead of escaping
+  `Registry::call`.
   The `ApiError.path` carries the field at fault as a JSON pointer — for a
   missing required property, the property itself (`/name`), not its parent —
   so a schema rejection has a `path` exactly like a handler's own failure.

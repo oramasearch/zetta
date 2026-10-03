@@ -11,7 +11,11 @@ renderings, zero drift**. Realizes the rendering the design settled in
 Read capabilities may declare `post_alias` to also accept a JSON-body
 `POST /v1/<name>` without changing read classification or removing GET.
 The router and OpenAPI derive both from that registry flag. Pub/sub get/list/browse
-declare it (#1136); aliases use `<name>_post` as their distinct OpenAPI operation id.
+declare it (#1136), and so do `sql`, `get_record`, `list_records` and `query_metric`
+(#1231); aliases use `<name>_post` as their distinct OpenAPI operation id. A `sql`
+statement in a body is not bound by the ~4 KiB request line the GET form travels in;
+whichever form it arrives in, the executor authorizes each statement and audits a
+data-changing one as `data_changed` (#1229).
 Revision conflicts use HTTP 409. See [pub/sub CRUD](../pubsub/crud.md).
 
 `zetta::api` (`include/zetta/api/rest.hpp`, `src/core/api/rest.cpp` — HTTP-free

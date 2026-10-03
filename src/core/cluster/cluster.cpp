@@ -1815,6 +1815,46 @@ SignalResponse Cluster::request(const std::string& node_id,
     return future.get();
 }
 
+std::vector<SignalResponse> Cluster::request_each(
+    const std::vector<std::string>& node_ids, const std::string& method,
+    const std::string& payload, std::chrono::milliseconds timeout) {
+    struct Pending {
+        std::string id;
+        std::future<SignalResponse> future;
+    };
+    std::vector<SignalResponse> responses(node_ids.size());
+    std::vector<std::optional<Pending>> pending(node_ids.size());
+    for (std::size_t index = 0; index < node_ids.size(); ++index) {
+        if (!is_connected(*state_, node_ids[index])) {
+            responses[index] = SignalResponse{.ok = false, .error = "peer not connected"};
+            continue;
+        }
+        Signal request;
+        request.kind = SignalKind::Request;
+        request.id = zetta::util::new_uuid();
+        request.method = method;
+        request.payload = payload;
+        // Register the waiter BEFORE queuing, as request() does.
+        std::future<SignalResponse> future =
+            state_->add_pending(request.id, node_ids[index]);
+        state_->queue_outbound(node_ids[index], signal_line(request));
+        pending[index] = Pending{request.id, std::move(future)};
+    }
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (std::size_t index = 0; index < node_ids.size(); ++index) {
+        if (!pending[index]) continue;
+        Pending& waiting = *pending[index];
+        if (waiting.future.wait_until(deadline) == std::future_status::ready) {
+            responses[index] = waiting.future.get();
+        } else if (state_->take_pending(waiting.id)) {
+            responses[index] = SignalResponse{.ok = false, .error = "request timed out"};
+        } else {
+            responses[index] = waiting.future.get();
+        }
+    }
+    return responses;
+}
+
 bool Cluster::send_event(const std::string& node_id, const std::string& method,
                          const std::string& payload) {
     if (!is_connected(*state_, node_id)) return false;

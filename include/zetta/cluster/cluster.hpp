@@ -314,6 +314,16 @@ public:
         const std::string& payload,
         std::chrono::milliseconds timeout = std::chrono::seconds(5));
 
+    // Send the same RPC request to several peers at once and block until every
+    // one has answered, failed or the shared `timeout` has elapsed. Responses are
+    // in `node_ids` order. One round trip instead of one per peer: the requests
+    // leave together on each link's next outbox flush (#1231, the record store's
+    // synchronous replication). Same threading rule as request().
+    std::vector<SignalResponse> request_each(
+        const std::vector<std::string>& node_ids, const std::string& method,
+        const std::string& payload,
+        std::chrono::milliseconds timeout = std::chrono::seconds(5));
+
     // Fire-and-forget an event to one peer (by node id). Returns false if not
     // currently connected to that peer (best-effort: delivery is not
     // guaranteed). Thread-safe.

@@ -40,6 +40,7 @@ add_executable(zetta-tests
   api/test_getting_started_churn.cpp
   api/test_serving.cpp
   api/test_scoped_grants_api.cpp
+  api/test_record_capabilities.cpp
   api/test_row_security_api.cpp
   api/test_web_ui_forms.cpp
   api/test_web_ui_studio.cpp
@@ -62,6 +63,9 @@ add_executable(zetta-tests
   data/test_rendezvous_placement.cpp
   data/test_database.cpp
   data/test_replication_strategy.cpp
+  data/test_record_store.cpp
+  data/test_metric_store.cpp
+  data/test_record_soak.cpp
   pipeline/test_project.cpp
   pipeline/test_project_input.cpp
   pipeline/test_project_graph.cpp

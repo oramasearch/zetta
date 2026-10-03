@@ -13,3 +13,8 @@ Explicit audit purge propagates through the same range exchange (#1169). See
 The secret file keeps up to four retired join tokens when `--join-token`
 re-keys a node, so the connector-credential key derived from an earlier token
 still opens (#1230). See [transport security](../../../docs/cluster/security.md).
+
+`ReplicationManager::update` is an atomic read-check-write under the replication
+mutex. `Cluster::request_each` sends one request to several peers in one round
+(#1231). Continuously written state stays out of the document; see
+[replication](../../../docs/cluster/replication.md#what-does-not-belong-in-the-document-1231).

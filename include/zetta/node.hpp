@@ -28,6 +28,8 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/metric_store.hpp"
+#include "zetta/data/record_store.hpp"
 #include "zetta/data/virtual_table.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_controller.hpp"
@@ -484,6 +486,27 @@ public:
     // its keys via `agent::AgentStore` without a bespoke method per verb here. Prefer
     // a typed accessor above where one exists; a served node always has one (main.cpp).
     zetta::cluster::ReplicationManager* replication() { return replication_; }
+
+    // The keyed record store and the labelled time series (#1231,
+    // docs/data/record-store.md, docs/data/time-series.md). Both live in the
+    // replicated catalogue, so both are null on a standalone node. Thread-safe:
+    // the registry calls them from its blocking pool.
+    zetta::data::RecordStore* record_store() { return record_store_.get(); }
+
+    // How the replicated catalogue's once-a-second save is behaving: how many
+    // saves ran, the last one's duration and size, and whether one is running
+    // now (readable from any thread). The record-store soak uses it to time
+    // reads that overlap a save (#1231).
+    struct ReplicationPersistStats {
+        std::uint64_t saves = 0;
+        double last_ms = 0.0;
+        std::uint64_t last_bytes = 0;
+    };
+    ReplicationPersistStats replication_persist_stats() const { return persist_stats_; }
+    bool persisting_replication() const {
+        return persisting_.load(std::memory_order_acquire);
+    }
+    zetta::data::MetricStore* metric_store() { return metric_store_.get(); }
 
     // CRUD for indexes (a registered index over a table — search / vector /
     // feature; ENT-39 / ENT-40, see index/index.hpp / docs/indexing/index-backend.md). Like
@@ -1342,6 +1365,15 @@ private:
     std::uint64_t last_replication_change_token_ = 0;
     Clock::time_point last_replication_persist_{};
     bool replication_persist_pending_ = false;
+    std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
+    std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
+    Clock::time_point last_record_sweep_{};
+    // The record anti-entropy round in flight on the pool, if any (#1231).
+    struct RecordAntiEntropyRound;
+    std::shared_ptr<RecordAntiEntropyRound> record_anti_entropy_;
+    Clock::time_point last_record_anti_entropy_{};
+    ReplicationPersistStats persist_stats_;
+    std::atomic<bool> persisting_{false};
     std::vector<std::string> last_membership_;  // node:<id> set last seen (#517)
     IntegrityReport integrity_;        // last preflight result
     bool running_ = false;

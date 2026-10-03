@@ -49,6 +49,11 @@ relay it to a person.
   redacted audit extract. Without measured holdout outcomes it explicitly
   refuses an incrementality or ROI claim
   ([roi-readout.md](../../solutions/roi-readout.md), #1108).
+- **Records an agent can retry against**: `put_record` and `delete_record` take
+  `if_absent` / `if_revision`; a failed condition is a `conflict` (HTTP 409) whose
+  details carry the live revision, so the next attempt needs no extra read, and
+  ownership moving between nodes is a `busy` that says to retry
+  ([record-store.md](../../data/record-store.md), #1231).
 - **Errors an agent can act on**: domain failures return the engine's
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key

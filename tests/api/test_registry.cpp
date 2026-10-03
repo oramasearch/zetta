@@ -66,15 +66,56 @@ struct RegistryFixture : ::testing::Test {
     }
 };
 
+// The input check never throws past Registry::call (#1231). A schema with
+// contentEncoding made the validator throw "content checker was not set" out of
+// the call; base64 is now checked, and a schema the validator cannot compile is
+// an invalid_input refusal.
+TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
+    const auto echo = [](const nlohmann::json& input, zetta::api::ApiContext&) {
+        return ApiResult::success(input);
+    };
+    Capability encoded{"echo_encoded", "Echo", "Echo base64. No side effects.",
+                       {{"type", "object"},
+                        {"properties",
+                         {{"bytes", {{"type", "string"}, {"contentEncoding", "base64"}}}}}},
+                       {{"type", "object"}}, CapabilityKind::Read,
+                       zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                       false, false, echo};
+    ASSERT_TRUE(registry.add(std::move(encoded)));
+    Capability broken{"echo_broken", "Echo", "Echo with a bad pattern. No side effects.",
+                      {{"type", "object"},
+                       {"properties", {{"text", {{"type", "string"}, {"pattern", "(unclosed"}}}}}},
+                      {{"type", "object"}}, CapabilityKind::Read,
+                      zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                      false, false, echo};
+    ASSERT_TRUE(registry.add(std::move(broken)));
+
+    ApiResult result;
+    ASSERT_NO_THROW(result = call("echo_encoded", {{"bytes", "aGVsbG8="}}));
+    EXPECT_TRUE(result.ok) << result.error.message;
+    ASSERT_NO_THROW(result = call("echo_encoded", {{"bytes", "not base64!"}}));
+    EXPECT_EQ(result.error.code, "invalid_input");
+    EXPECT_EQ(result.error.path, "/bytes");
+    ASSERT_NO_THROW(result = call("echo_broken", {{"text", "x"}}));
+    EXPECT_EQ(result.error.code, "invalid_input");
+    EXPECT_NE(result.error.message.find("could not be checked"), std::string::npos)
+        << result.error.message;
+}
+
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        130u); // +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        138u); // +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
               // +upload_dataset (#1008), +delete_project (#1009),
               // +list_methodologies (#1061)
+    for (const char* name :
+         {"create_collection", "put_record", "get_record", "delete_record", "list_records",
+          "create_metric", "record_metric", "query_metric"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
     for (const char* name :
          {"get_topic", "update_topic", "browse_topic", "update_event", "delete_events"}) {
         EXPECT_TRUE(registry.find(name)) << name;

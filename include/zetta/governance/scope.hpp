@@ -17,7 +17,8 @@ namespace zetta::governance {
 // The extra tiers add optional fields to `Resource` (below) without changing the
 // Scope shape; see docs/governance/access-control.md.
 // `Topic` (#1029) names a pub/sub topic by name or name prefix, like `Blob`.
-enum class ResourceKind { Database, Project, Table, Column, Blob, Tool, Topic };
+// `Collection` (#1231) names a keyed record collection by name or name prefix.
+enum class ResourceKind { Database, Project, Table, Column, Blob, Tool, Topic, Collection };
 
 // Canonical lowercase name of a resource kind ("database" / "project" / "table"
 // / "column" / "blob" / "tool"). This is BOTH the display label AND the stored
@@ -61,6 +62,7 @@ struct Resource {
     static Resource blob(std::string id_or_prefix);
     static Resource tool(std::string name);
     static Resource topic(std::string name_or_prefix);
+    static Resource collection(std::string name_or_prefix);
 };
 
 // Does a granted object cover a requested `target`? The deny-by-default object
