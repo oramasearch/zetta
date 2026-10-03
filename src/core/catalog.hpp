@@ -150,6 +150,11 @@
 //   metric:<name>      -> { name, kind, resolution_ms, retention_ms?, created }
 //                          (a labelled counter or gauge — #1231; its buckets live in
 //                          the record log, see data/metric_store.hpp)
+//   object_bucket:<name> -> { name, quota_bytes?, rf?, created }  (an object bucket's
+//                          definition — #1005; the object bytes live in each owner's
+//                          node-local object log, never here, see data/object_store.hpp)
+//   object_lease:<name> -> { holder, fence, expires, version }  (the bucket's owner
+//                          lease; its fence guards every mutation — #1005)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -194,6 +199,8 @@ inline constexpr std::string_view kDecisionPrefix = "decision:";
 inline constexpr std::string_view kVirtualTablePrefix = "vtable:";
 inline constexpr std::string_view kRecordCollectionPrefix = "record_collection:";
 inline constexpr std::string_view kMetricPrefix = "metric:";
+inline constexpr std::string_view kObjectBucketPrefix = "object_bucket:";
+inline constexpr std::string_view kObjectLeasePrefix = "object_lease:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;

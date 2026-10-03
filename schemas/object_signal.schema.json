@@ -1,0 +1,112 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "The JSON header of an object-store signal (#1005); for the methods that move bytes, the raw bytes follow the header after one newline. object.write forwards a mutation to the key's primary owner (`op` append, put, commit or remove); object.apply installs a decided version on another owner; object.stage and object.abort carry an upload's parts; object.barrier fsyncs a bucket; object.read, object.stat and object.list read; object.usage counts a bucket's objects; object.digest and object.keys are anti-entropy (for the owner named in `for`); object.lease forwards a lease decision (`op` acquire, renew or release) and object.lease_apply installs one; object.define installs a bucket definition.",
+  "properties": {
+    "after": {
+      "maxLength": 1024,
+      "type": "string"
+    },
+    "bucket": {
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+      "type": "string"
+    },
+    "buckets": {
+      "items": {
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "definition": {
+      "type": "object"
+    },
+    "durable": {
+      "type": "boolean"
+    },
+    "fence": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "for": {
+      "maxLength": 128,
+      "type": "string"
+    },
+    "generation": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "holder": {
+      "maxLength": 256,
+      "type": "string"
+    },
+    "if_absent": {
+      "type": "boolean"
+    },
+    "key": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "keys": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "lease": {
+      "type": "object"
+    },
+    "length": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "limit": {
+      "maximum": 1001,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "offset": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "op": {
+      "enum": [
+        "append",
+        "put",
+        "commit",
+        "remove",
+        "acquire",
+        "renew",
+        "release"
+      ]
+    },
+    "prefix": {
+      "maxLength": 1024,
+      "type": "string"
+    },
+    "probe": {
+      "type": "boolean"
+    },
+    "size": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ttl_ms": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "updated": {
+      "type": "integer"
+    },
+    "upload": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "title": "zetta.ObjectSignal",
+  "type": "object"
+}

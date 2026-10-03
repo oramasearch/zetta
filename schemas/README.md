@@ -38,3 +38,10 @@ credential, `cluster_secret` gains the optional `retired_join_tokens`, and
 `create_connection` descriptions and the saved-connection `credential` field are
 regenerated into OpenAPI. See
 [connector query](../docs/data/connector-query.md#saved-connections).
+
+`object_bucket`, `object_lease` and `object_signal` are the object capability's
+contracts: a bucket definition and its owner lease in the replicated catalogue,
+and the JSON header of every `object.*` signal (#1005). The role and access-key
+schemas list the `bucket` resource kind; OpenAPI carries the object byte routes
+and the bucket and lease capabilities. See
+[the object capability](../docs/data/object-store.md).

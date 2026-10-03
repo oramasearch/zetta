@@ -19,3 +19,7 @@ governance (#1229).
 collection name prefix (`ResourceKind::Collection`); `metrics:read` and
 `metrics:write` cover labelled time series (#1231). The role and access-key
 schemas now list the `topic` and `collection` resource kinds the parser accepts.
+
+`objects:read`, `objects:write` and `objects:manage` are object-scopable by
+bucket name prefix (`ResourceKind::Bucket`, #1005); the role and access-key schemas
+list the `bucket` kind.

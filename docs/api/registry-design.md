@@ -24,7 +24,8 @@ Capability {
   mutates         // fires the activity hook; tells GUIs to refresh
   requires_consent     // cloud-touching: returns a consent challenge
   handler         // std::function<ApiResult(const json&, ApiContext&)>
-  awaitable_read  // optional REST event wait between at most two registry calls
+  awaitable_read  // optional REST/MCP event wait between at most two registry
+                  // calls, or (retry_within) one call per wake until wait_for
 }
 ```
 
@@ -82,6 +83,13 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   holds no thread and makes at most two authorized registry calls. Those reads
   share an audit session and contribute to its five-minute totals (#1076,
   #1136, #1154).
+- **A retrying await** (#1005): an `AwaitableRead` with `retry_within` keeps
+  waiting until `wait_for` passes — each wake, the event or `retry_within(result)`
+  elapsing, makes one more whole governed call with a fresh event. Such an entry
+  may be a blocking action that mutates (`Registry::add` still refuses it
+  offloadable or consent-gated); its calls run on the blocking pool.
+  `acquire_object_lease` waits out another holder's lease this way: the event is
+  a lease change, `retry_within` the holder's expiry.
 - **Object-scoped operation grants** (#1136): an entry may declare an
   `authorize_scoped` owner-thread fallback when there is no global operation
   grant. The per-tool gate still runs first. Pub/sub resolves concrete topic

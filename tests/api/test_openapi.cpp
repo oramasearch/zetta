@@ -187,8 +187,18 @@ TEST(OpenApi, DocumentMatchesTheRegistry) {
 
     const nlohmann::json& paths = document.at("paths");
     // One path per registry entry, plus the two path-templated serving routes
-    // (#648) the registry rendering cannot express.
-    EXPECT_EQ(paths.size(), registry.size() + 2);
+    // (#648) and the object capability's seven (#1005: the byte routes and the
+    // bucket aliases) that the registry rendering cannot express.
+    EXPECT_EQ(paths.size(), registry.size() + 2 + 7);
+    for (const char* path : {"/v1/objects/{bucket}/{key}", "/v1/objects/{bucket}",
+                             "/v1/objects/{bucket}:usage", "/v1/objects/{bucket}:barrier",
+                             "/v1/objects/{bucket}:acquire", "/v1/objects/{bucket}:renew",
+                             "/v1/objects/{bucket}:release"}) {
+        EXPECT_TRUE(paths.contains(path)) << path;
+    }
+    for (const char* method : {"put", "patch", "get", "delete"}) {
+        EXPECT_TRUE(paths.at("/v1/objects/{bucket}/{key}").contains(method)) << method;
+    }
     for (const auto& capability : registry.list()) {
         const std::string path = zetta::api::rest_path(*capability);
         ASSERT_TRUE(paths.contains(path)) << path;

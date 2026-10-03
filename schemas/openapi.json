@@ -9,7 +9,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "invalid_input (400) · unauthorized / consent_required (403) · not_found / unknown_capability (404) · engine_error (422) · busy (503)",
+                "description": "invalid_input (400) · unauthorized / consent_required (403) · not_found / unknown_capability (404) · conflict / fenced / held (409) · range_not_satisfiable (416) · engine_error (422) · busy (503) · quota_exceeded (507)",
                 "type": "string"
               },
               "details": {
@@ -64,6 +64,144 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/acquire_object_lease": {
+      "post": {
+        "description": "Take the bucket's owner lease for ttl_ms, waiting up to wait_ms for the holder to release it or for it to expire; returns the fence every mutation must then carry (409 held otherwise). Mutates replicated state. Requires data:objects_write.",
+        "operationId": "acquire_object_lease",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "description": "the bucket's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "holder": {
+                    "description": "who holds the lease, e.g. a process identity",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "ttl_ms": {
+                    "description": "how long the lease lasts without a renewal, in ms",
+                    "maximum": 86400000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "wait_ms": {
+                    "description": "wait this long for the current holder to release, or for its lease to expire (0: answer at once)",
+                    "maximum": 600000,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "bucket",
+                  "holder",
+                  "ttl_ms"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "fence": {
+                          "description": "send this as Zetta-Fence on every mutation of the bucket",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "holder": {
+                          "description": "empty once released",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "holder",
+                        "fence",
+                        "expires_ms"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Acquire a bucket's owner lease",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/add_dataset": {
       "post": {
         "description": "Load a local parquet/jsonl/json/csv file into a new partitioned table placed across the cluster (audited as dataset_added; visible in system.datasets). Requires orchestration:add_dataset.",
@@ -3565,6 +3703,144 @@
           }
         },
         "summary": "Create an agent",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/create_bucket": {
+      "post": {
+        "description": "Declare an object bucket with an optional byte quota and replication factor; idempotent for an identical definition, a conflict for a different one. Mutates replicated state. Requires orchestration:objects_manage.",
+        "operationId": "create_bucket",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "description": "the bucket's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "quota_bytes": {
+                    "description": "the most object bytes the bucket may hold; a write past it is refused (507)",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "rf": {
+                    "description": "how many nodes hold each object on a multi-node cluster; default min(3, nodes)",
+                    "maximum": 16,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "bucket"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "created_ms": {
+                              "type": "integer"
+                            },
+                            "name": {
+                              "description": "the bucket's name",
+                              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                              "type": "string"
+                            },
+                            "quota_bytes": {
+                              "type": "integer"
+                            },
+                            "rf": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "created_ms"
+                          ],
+                          "type": "object"
+                        },
+                        "created": {
+                          "description": "false when an identical bucket already existed",
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "created"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create an object bucket",
         "tags": [
           "action"
         ]
@@ -7930,6 +8206,165 @@
           }
         },
         "summary": "Delete events",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_object": {
+      "post": {
+        "description": "Remove one object (with the bucket lease's fence once it has a holder); on every owner before it returns. Mutates the bucket. Requires data:objects_write.",
+        "operationId": "delete_object",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "description": "the bucket's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "durable": {
+                    "description": "fsync before answering",
+                    "type": "boolean"
+                  },
+                  "fence": {
+                    "description": "the bucket lease's current fence (the Zetta-Fence header on the byte routes); required once the bucket has had a lease holder",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bucket",
+                  "key"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "generation": {
+                          "description": "rises with every new version of the key",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "key": {
+                          "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
+                          "maxLength": 1024,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "description": "the node that ordered the write",
+                          "type": "string"
+                        },
+                        "replicas": {
+                          "description": "owners that hold the write",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "replicas_expected": {
+                          "description": "the owners it was placed on",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "size": {
+                          "description": "the object's size now",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "unchanged": {
+                          "description": "a retried append whose bytes were already there",
+                          "type": "boolean"
+                        },
+                        "updated_ms": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "owner",
+                        "replicas",
+                        "replicas_expected"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete an object",
         "tags": [
           "action"
         ]
@@ -19829,6 +20264,306 @@
         ]
       }
     },
+    "/v1/list_objects": {
+      "get": {
+        "description": "List a bucket's objects by key with their sizes, optionally under a prefix, a page at a time. No side effects. Requires data:objects_read.",
+        "operationId": "list_objects",
+        "parameters": [
+          {
+            "description": "the next_after a previous page returned",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "description": "the next_after a previous page returned",
+              "maxLength": 1024,
+              "type": "string"
+            }
+          },
+          {
+            "description": "the bucket's name",
+            "in": "query",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "description": "the bucket's name",
+              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "list only keys that start with this",
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "description": "list only keys that start with this",
+              "maxLength": 1024,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "next_after": {
+                          "description": "pass as `after` for the next page; absent when the listing is complete",
+                          "type": "string"
+                        },
+                        "objects": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "key": {
+                                "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
+                                "maxLength": 1024,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "size": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "updated_ms": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "size",
+                              "updated_ms"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "objects"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List objects",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "List a bucket's objects by key with their sizes, optionally under a prefix, a page at a time. No side effects. Requires data:objects_read.",
+        "operationId": "list_objects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "after": {
+                    "description": "the next_after a previous page returned",
+                    "maxLength": 1024,
+                    "type": "string"
+                  },
+                  "bucket": {
+                    "description": "the bucket's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "prefix": {
+                    "description": "list only keys that start with this",
+                    "maxLength": 1024,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bucket"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "next_after": {
+                          "description": "pass as `after` for the next page; absent when the listing is complete",
+                          "type": "string"
+                        },
+                        "objects": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "key": {
+                                "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
+                                "maxLength": 1024,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "size": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "updated_ms": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "size",
+                              "updated_ms"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "objects"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List objects",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_projects": {
       "get": {
         "description": "Read the names of every AI project on this node. No side effects. Requires api:query.",
@@ -23852,6 +24587,1581 @@
         ]
       }
     },
+    "/v1/object_barrier": {
+      "post": {
+        "description": "Fsync every write to the bucket acknowledged before this call, on every live node; the durability point for writes made without durable. No other side effects. Requires data:objects_write.",
+        "operationId": "object_barrier",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "description": "the bucket's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bucket"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "nodes": {
+                          "description": "the nodes that synced the bucket",
+                          "minimum": 1,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "nodes"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Object barrier",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/object_usage": {
+      "get": {
+        "description": "Count a bucket's objects and bytes and report its quota. No side effects. Requires data:objects_read.",
+        "operationId": "object_usage",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "query",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "description": "the bucket's name",
+              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "objects": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "quota_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "objects",
+                        "bytes"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Bucket usage",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/objects/{bucket}": {
+      "get": {
+        "description": "The list_objects capability at the bucket's route. Requires data:objects_read.",
+        "operationId": "objects_list",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "keys that start with this",
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the previous page's next_after",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 to 1000 (default 1000)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "next_after": {
+                          "description": "pass as `after` for the next page; absent when the listing is complete",
+                          "type": "string"
+                        },
+                        "objects": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "key": {
+                                "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
+                                "maxLength": 1024,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "size": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "updated_ms": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "size",
+                              "updated_ms"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "objects"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "one page"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault"
+          }
+        },
+        "summary": "List objects",
+        "tags": [
+          "objects"
+        ]
+      }
+    },
+    "/v1/objects/{bucket}/{key}": {
+      "delete": {
+        "description": "The delete_object capability at the object's route. Requires data:objects_write.",
+        "operationId": "objects_delete",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the object's key; its `/` separators may be sent literally or percent-encoded",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the bucket lease's current fence; required once the bucket has had a lease holder (409 `fenced` otherwise)",
+            "in": "header",
+            "name": "Zetta-Fence",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "fsync before answering (otherwise the barrier is the durability point)",
+            "in": "query",
+            "name": "durable",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "generation": {
+                          "description": "rises with every new version of the key",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "key": {
+                          "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
+                          "maxLength": 1024,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "description": "the node that ordered the write",
+                          "type": "string"
+                        },
+                        "replicas": {
+                          "description": "owners that hold the write",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "replicas_expected": {
+                          "description": "the owners it was placed on",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "size": {
+                          "description": "the object's size now",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "unchanged": {
+                          "description": "a retried append whose bytes were already there",
+                          "type": "boolean"
+                        },
+                        "updated_ms": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "owner",
+                        "replicas",
+                        "replicas_expected"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "every owner holds the write"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "`fenced`: a stale or missing Zetta-Fence"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault, or no such bucket"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "an owner did not answer, or not every owner holds the write (`busy`): retry"
+          },
+          "507": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the write would take the bucket past its quota (`quota_exceeded`)"
+          }
+        },
+        "summary": "Remove an object",
+        "tags": [
+          "objects"
+        ]
+      },
+      "get": {
+        "description": "Stream the object, or exactly the range a `Range: bytes=a-b` header names (206). Requires data:objects_read.",
+        "operationId": "objects_get",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the object's key; its `/` separators may be sent literally or percent-encoded",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`bytes=a-b`, `bytes=a-` or `bytes=-n`; one range",
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "the whole object"
+          },
+          "206": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "the range asked for"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "no such object or bucket"
+          },
+          "416": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the range lies outside the object (details.size)"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault"
+          }
+        },
+        "summary": "Get an object or a range of it",
+        "tags": [
+          "objects"
+        ]
+      },
+      "patch": {
+        "description": "Create, or extend, the object at exactly `offset` with the request body. `offset` equal to the size appends; a range inside the object equal to the bytes already there succeeds and changes nothing, so an append can be retried. Requires data:objects_write.",
+        "operationId": "objects_put_range",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the object's key; its `/` separators may be sent literally or percent-encoded",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the bucket lease's current fence; required once the bucket has had a lease holder (409 `fenced` otherwise)",
+            "in": "header",
+            "name": "Zetta-Fence",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "fsync before answering (otherwise the barrier is the durability point)",
+            "in": "query",
+            "name": "durable",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "where the bytes go: the object's size to append",
+            "in": "query",
+            "name": "offset",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "generation": {
+                          "description": "rises with every new version of the key",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "key": {
+                          "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
+                          "maxLength": 1024,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "description": "the node that ordered the write",
+                          "type": "string"
+                        },
+                        "replicas": {
+                          "description": "owners that hold the write",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "replicas_expected": {
+                          "description": "the owners it was placed on",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "size": {
+                          "description": "the object's size now",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "unchanged": {
+                          "description": "a retried append whose bytes were already there",
+                          "type": "boolean"
+                        },
+                        "updated_ms": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "owner",
+                        "replicas",
+                        "replicas_expected"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "every owner holds the write"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "`conflict`: any other range (details.size is the object's size); `fenced`: a stale or missing Zetta-Fence"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault, or no such bucket"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "an owner did not answer, or not every owner holds the write (`busy`): retry"
+          },
+          "507": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the write would take the bucket past its quota (`quota_exceeded`)"
+          }
+        },
+        "summary": "Put a range of an object",
+        "tags": [
+          "objects"
+        ]
+      },
+      "put": {
+        "description": "Atomically replace the whole object with the request body, streamed: readers see the old bytes or the new ones, never a mix. `if_absent=true` creates it only when the key is absent (409 conflict otherwise). Requires data:objects_write (objects:write, object-scopable ON BUCKET).",
+        "operationId": "objects_put",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the object's key; its `/` separators may be sent literally or percent-encoded",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the bucket lease's current fence; required once the bucket has had a lease holder (409 `fenced` otherwise)",
+            "in": "header",
+            "name": "Zetta-Fence",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "fsync before answering (otherwise the barrier is the durability point)",
+            "in": "query",
+            "name": "durable",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "create only when the key is absent",
+            "in": "query",
+            "name": "if_absent",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "generation": {
+                          "description": "rises with every new version of the key",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "key": {
+                          "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
+                          "maxLength": 1024,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "description": "the node that ordered the write",
+                          "type": "string"
+                        },
+                        "replicas": {
+                          "description": "owners that hold the write",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "replicas_expected": {
+                          "description": "the owners it was placed on",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "size": {
+                          "description": "the object's size now",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "unchanged": {
+                          "description": "a retried append whose bytes were already there",
+                          "type": "boolean"
+                        },
+                        "updated_ms": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "owner",
+                        "replicas",
+                        "replicas_expected"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "every owner holds the write"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "`conflict`: the key exists (if_absent); `fenced`: a stale or missing Zetta-Fence (details.fence)"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault, or no such bucket"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "an owner did not answer, or not every owner holds the write (`busy`): retry"
+          },
+          "507": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the write would take the bucket past its quota (`quota_exceeded`)"
+          }
+        },
+        "summary": "Put an object",
+        "tags": [
+          "objects"
+        ]
+      }
+    },
+    "/v1/objects/{bucket}:acquire": {
+      "post": {
+        "description": "The acquire_object_lease capability at the bucket's route; the body is its input without `bucket`. Requires data:objects_write.",
+        "operationId": "objects_acquire",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "holder": {
+                    "description": "who holds the lease, e.g. a process identity",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "ttl_ms": {
+                    "description": "how long the lease lasts without a renewal, in ms",
+                    "maximum": 86400000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "wait_ms": {
+                    "description": "wait this long for the current holder to release, or for its lease to expire (0: answer at once)",
+                    "maximum": 600000,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "holder",
+                  "ttl_ms"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "fence": {
+                          "description": "send this as Zetta-Fence on every mutation of the bucket",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "holder": {
+                          "description": "empty once released",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "holder",
+                        "fence",
+                        "expires_ms"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the lease"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "`held`: another holder has the lease (details name it); `fenced`: not the current lease"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault"
+          }
+        },
+        "summary": "Acquire the bucket's owner lease",
+        "tags": [
+          "objects"
+        ]
+      }
+    },
+    "/v1/objects/{bucket}:barrier": {
+      "post": {
+        "description": "The object_barrier capability at the bucket's route. Requires data:objects_write.",
+        "operationId": "objects_barrier",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "nodes": {
+                          "description": "the nodes that synced the bucket",
+                          "minimum": 1,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "nodes"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "every live node synced the bucket"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "a node did not confirm the barrier: retry"
+          }
+        },
+        "summary": "Barrier: make acknowledged writes durable",
+        "tags": [
+          "objects"
+        ]
+      }
+    },
+    "/v1/objects/{bucket}:release": {
+      "post": {
+        "description": "The release_object_lease capability at the bucket's route; the body is its input without `bucket`. Requires data:objects_write.",
+        "operationId": "objects_release",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "fence": {
+                    "description": "the bucket lease's current fence (the Zetta-Fence header on the byte routes); required once the bucket has had a lease holder",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "holder": {
+                    "description": "who holds the lease, e.g. a process identity",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "holder",
+                  "fence"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "fence": {
+                          "description": "send this as Zetta-Fence on every mutation of the bucket",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "holder": {
+                          "description": "empty once released",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "holder",
+                        "fence",
+                        "expires_ms"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the lease"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "`held`: another holder has the lease (details name it); `fenced`: not the current lease"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault"
+          }
+        },
+        "summary": "Release the owner lease",
+        "tags": [
+          "objects"
+        ]
+      }
+    },
+    "/v1/objects/{bucket}:renew": {
+      "post": {
+        "description": "The renew_object_lease capability at the bucket's route; the body is its input without `bucket`. Requires data:objects_write.",
+        "operationId": "objects_renew",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "fence": {
+                    "description": "the bucket lease's current fence (the Zetta-Fence header on the byte routes); required once the bucket has had a lease holder",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "holder": {
+                    "description": "who holds the lease, e.g. a process identity",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "ttl_ms": {
+                    "description": "how long the lease lasts without a renewal, in ms",
+                    "maximum": 86400000,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "holder",
+                  "fence",
+                  "ttl_ms"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "fence": {
+                          "description": "send this as Zetta-Fence on every mutation of the bucket",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "holder": {
+                          "description": "empty once released",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "holder",
+                        "fence",
+                        "expires_ms"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the lease"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "`held`: another holder has the lease (details name it); `fenced`: not the current lease"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault"
+          }
+        },
+        "summary": "Renew the owner lease",
+        "tags": [
+          "objects"
+        ]
+      }
+    },
+    "/v1/objects/{bucket}:usage": {
+      "get": {
+        "description": "The object_usage capability at the bucket's route. Requires data:objects_read.",
+        "operationId": "objects_usage",
+        "parameters": [
+          {
+            "description": "the bucket's name",
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "objects": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "quota_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "objects",
+                        "bytes"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "objects, bytes and the quota"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input or authorization is at fault"
+          }
+        },
+        "summary": "A bucket's usage",
+        "tags": [
+          "objects"
+        ]
+      }
+    },
     "/v1/plan_features": {
       "get": {
         "description": "Read a methodology-specific feature and exclusion plan from dataset analysis, or an explicit transform_required proposal. No side effects and no transform is applied. Requires api:query.",
@@ -26770,6 +29080,275 @@
           }
         },
         "summary": "Record an action outcome",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/release_object_lease": {
+      "post": {
+        "description": "Give the lease up so a waiting acquirer gets it at once; the fence stays until the next holder raises it. Mutates replicated state. Requires data:objects_write.",
+        "operationId": "release_object_lease",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "description": "the bucket's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "fence": {
+                    "description": "the bucket lease's current fence (the Zetta-Fence header on the byte routes); required once the bucket has had a lease holder",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "holder": {
+                    "description": "who holds the lease, e.g. a process identity",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bucket",
+                  "holder",
+                  "fence"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "fence": {
+                          "description": "send this as Zetta-Fence on every mutation of the bucket",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "holder": {
+                          "description": "empty once released",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "holder",
+                        "fence",
+                        "expires_ms"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Release a bucket's owner lease",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/renew_object_lease": {
+      "post": {
+        "description": "Extend the caller's lease by ttl_ms; 409 fenced when the fence is no longer the bucket's current one. Mutates replicated state. Requires data:objects_write.",
+        "operationId": "renew_object_lease",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "description": "the bucket's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "fence": {
+                    "description": "the bucket lease's current fence (the Zetta-Fence header on the byte routes); required once the bucket has had a lease holder",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "holder": {
+                    "description": "who holds the lease, e.g. a process identity",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "ttl_ms": {
+                    "description": "how long the lease lasts without a renewal, in ms",
+                    "maximum": 86400000,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "bucket",
+                  "holder",
+                  "fence",
+                  "ttl_ms"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bucket": {
+                          "description": "the bucket's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "fence": {
+                          "description": "send this as Zetta-Fence on every mutation of the bucket",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "holder": {
+                          "description": "empty once released",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "bucket",
+                        "holder",
+                        "fence",
+                        "expires_ms"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Renew a bucket's owner lease",
         "tags": [
           "action"
         ]

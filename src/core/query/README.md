@@ -34,3 +34,6 @@ statement records a `data_changed` audit row. SQL never reaches the reserved
 [access control](../../../docs/governance/access-control.md#per-statement-enforcement).
 `GRANT … ON COLLECTION <prefix>` scopes record-store rights to a collection name
 prefix (#1231).
+
+`GRANT … ON BUCKET <prefix>` scopes the object capability's rights to a bucket
+name prefix (#1005).

@@ -37,3 +37,9 @@ seals and opens a credential, and `connect::reseal_connections` re-seals legacy
 and old-key entries on start (#1230). `QueryService::acting_as` runs SQL as a
 per-call identity (#1229). See
 [connector query](../../docs/data/connector-query.md#saved-connections).
+
+`data/object_store.hpp` is the object capability (#1005): `ObjectStore` keeps byte
+objects by `(bucket, key)` in node-local logs, placed on `rf` owners, with put, put
+range, ranged reads, list, barrier, usage, a quota and an owner lease whose fence
+every mutation carries. `Node::object_store()` is null on a standalone node, like
+the record store. See [the object capability](../../docs/data/object-store.md).

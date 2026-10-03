@@ -36,6 +36,7 @@
 #include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/metric_store.hpp"
+#include "zetta/data/object_store.hpp"
 #include "zetta/data/record_store.hpp"
 #include "zetta/data/partition_scheduler.hpp"
 #include "zetta/data/partitioner.hpp"
@@ -217,6 +218,12 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::data::metric_definition_schema},
         {"metric_bucket", "metric_bucket.schema.json",
          &zetta::data::metric_bucket_schema},
+        {"object_bucket", "object_bucket.schema.json",
+         &zetta::data::object_bucket_schema},
+        {"object_lease", "object_lease.schema.json",
+         &zetta::data::object_lease_schema},
+        {"object_signal", "object_signal.schema.json",
+         &zetta::data::object_signal_schema},
         // ddf
         {"parquet_data_frame", "parquet_data_frame.schema.json",
          &zetta::ddf::parquet_data_frame_schema},

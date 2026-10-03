@@ -105,7 +105,7 @@ TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        138u); // +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        146u); // +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -114,6 +114,11 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     for (const char* name :
          {"create_collection", "put_record", "get_record", "delete_record", "list_records",
           "create_metric", "record_metric", "query_metric"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
+    for (const char* name :
+         {"create_bucket", "list_objects", "object_usage", "object_barrier", "delete_object",
+          "acquire_object_lease", "renew_object_lease", "release_object_lease"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
     for (const char* name :
@@ -560,6 +565,33 @@ TEST_F(RegistryFixture, RefusesAnInvalidAwaitableRead) {
         },
         [](const ApiResult&) { return true; }};
     EXPECT_FALSE(registry.add(std::move(entry)));
+}
+
+// A retrying awaitable (#1005, acquire_object_lease) may be a blocking action
+// that mutates: each wake makes a whole governed call. It still may not be
+// offloadable or consent-gated.
+TEST_F(RegistryFixture, AcceptsARetryingAwaitableActionThatBlocks) {
+    const auto entry = [](std::string name) {
+        Capability capability{std::move(name), "", "", nlohmann::json{{"type", "object"}}, {},
+                              CapabilityKind::Action, {}, /*mutates=*/true, false,
+                              [](const nlohmann::json&, ApiContext&) {
+                                  return ApiResult::success({});
+                              }};
+        capability.blocks = true;
+        capability.awaitable_read = zetta::api::AwaitableRead{
+            [](const nlohmann::json&) { return std::chrono::milliseconds(1); },
+            [](const ApiResult&) { return true; },
+            [](const ApiResult&) { return std::chrono::milliseconds(1); }};
+        return capability;
+    };
+    EXPECT_TRUE(registry.add(entry("retrying_action")));
+    Capability without_retry = entry("waiting_action");
+    without_retry.awaitable_read->retry_within = nullptr;
+    EXPECT_FALSE(registry.add(std::move(without_retry)));
+    Capability consent = entry("consent_action");
+    consent.blocks = false;
+    consent.requires_consent = true;
+    EXPECT_FALSE(registry.add(std::move(consent)));
 }
 
 TEST_F(RegistryFixture, RefusesReadSummariesOnStateChangingCapabilities) {

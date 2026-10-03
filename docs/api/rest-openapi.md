@@ -18,6 +18,17 @@ whichever form it arrives in, the executor authorizes each statement and audits 
 data-changing one as `data_changed` (#1229).
 Revision conflicts use HTTP 409. See [pub/sub CRUD](../pubsub/crud.md).
 
+The object capability (#1005) adds the routes the registry rendering cannot
+express: `PUT`, `PATCH` and `GET /v1/objects/<bucket>/<key>` move raw bodies
+(`application/octet-stream`, streamed a slice at a time), and the bucket routes
+`GET /v1/objects/<bucket>`, `GET …:usage`, `POST …:barrier`, `POST
+…:acquire|:renew|:release` and `DELETE …/<key>` are aliases of the
+`list_objects`, `object_usage`, `object_barrier`, lease and `delete_object`
+capabilities. Their OpenAPI operations come from `object_route_paths()`, beside
+the capabilities. The error codes they add map to HTTP as `fenced` and `held`
+409, `range_not_satisfiable` 416 and `quota_exceeded` 507. See
+[the object capability](../data/object-store.md).
+
 `zetta::api` (`include/zetta/api/rest.hpp`, `src/core/api/rest.cpp` — HTTP-free
 zetta-core) derives everything mechanically from each registry entry:
 

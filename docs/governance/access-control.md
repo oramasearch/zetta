@@ -233,8 +233,9 @@ thereby audited, not just the boundary itself; **approval gates** for risky acti
 are their own slice, as is **granting a capability** as a first-class
 command/event (ENT-22 → `GrantCapability` / `CapabilityGranted`). The finer
 access **tiers** (team / partner / per-dataset) extend `ResourceKind` (which already
-has `Topic` for pub/sub, a name-prefix grant like `Blob`, #1029, and `Collection`
-for keyed record collections, also a name prefix, #1231) and
+has `Topic` for pub/sub, a name-prefix grant like `Blob`, #1029, `Collection`
+for keyed record collections, also a name prefix, #1231, and `Bucket` for object
+buckets, a name prefix too, #1005) and
 `Scope`, and new rights extend `CapabilityDomain` / the open action taxonomy,
 without changing this interface. Principals + keys + their scope/capability grants are
 now surfaced read-only in the headed [Admin & Settings panel](../gui/admin-panel.md)
@@ -462,6 +463,7 @@ can never disagree:
 | `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
 | `records:read` / `records:write` / `records:manage` | `data:records_read` / `data:records_write` / `orchestration:create_collection` | read, write and declare keyed record collections; object-scopable by collection name prefix, `ON COLLECTION <prefix>` (#1231, [../data/record-store.md](../data/record-store.md)) |
 | `metrics:read` / `metrics:write` | `data:metrics_read` / `data:metrics_write`, `orchestration:create_metric` | query, record and declare labelled time series (#1231, [../data/time-series.md](../data/time-series.md)) |
+| `objects:read` / `objects:write` / `objects:manage` | `data:objects_read` / `data:objects_write` / `orchestration:objects_manage` | read, write (and hold the owner lease of) and declare object buckets; object-scopable by bucket name prefix, `ON BUCKET <prefix>`; only `admin` holds them by default (#1005, [../data/object-store.md](../data/object-store.md#rights)) |
 | `pipelines:manage` | all pipeline, dataset/connector, snapshot, graph, agent/profile/plan, solution, decision-policy, experiment, and run-metric write operations in `permission.cpp` | drive the authoring → gate → deploy → run → governed-action control surface over MCP/REST, including run parameters, metric series, and typed artifacts (#1102, #1103, #1104, #1105, #1137) |
 | `studies:promote`  | `orchestration:promote_trial` | register a complete trial's Model as the Study's promoted project version (#1138) |
 | `studies:delete`   | `orchestration:delete_study` | delete a stopped or complete Study and its non-promoted trial Runs while retaining promoted lineage (#1158) |
@@ -589,6 +591,7 @@ GRANT sql:write ON sales.customers(status)    TO ROLE editor;   -- writable colu
 GRANT mcp:call  ON TOOL search                TO ROLE reader;   -- one MCP tool
 GRANT blob:read ON BLOB 2026/                 TO ROLE archivist;-- a blob prefix
 GRANT records:write ON COLLECTION lake_       TO ROLE lake;     -- a record collection prefix
+GRANT objects:write ON BUCKET lake_           TO ROLE lake;     -- an object bucket prefix
 REVOKE sql:read ON sales.customers(email)     FROM ROLE reader;
 ```
 

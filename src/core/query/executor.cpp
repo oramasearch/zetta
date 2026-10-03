@@ -429,6 +429,8 @@ zetta::governance::Resource resource_of_object(const GrantObject& object) {
             return zetta::governance::Resource::tool(object.name);
         case GrantObjectKind::Collection:
             return zetta::governance::Resource::collection(object.name);
+        case GrantObjectKind::Bucket:
+            return zetta::governance::Resource::bucket(object.name);
         case GrantObjectKind::RoleWide:
             break;
     }
@@ -1040,6 +1042,7 @@ std::string render_scoped_grant(const zetta::governance::ScopedGrant& grant) {
         case RK::Tool: object = "tool:" + r.name; break;
         case RK::Topic: object = "topic:" + r.name; break;
         case RK::Collection: object = "collection:" + r.name; break;
+        case RK::Bucket: object = "bucket:" + r.name; break;
     }
     return permission_name_of(grant.operation) + " ON " + object;
 }

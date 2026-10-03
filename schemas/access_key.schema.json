@@ -53,7 +53,8 @@
             "blob",
             "tool",
             "topic",
-            "collection"
+            "collection",
+            "bucket"
           ],
           "type": "string"
         },

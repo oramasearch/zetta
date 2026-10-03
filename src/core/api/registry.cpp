@@ -31,16 +31,18 @@ bool Registry::add(Capability capability) {
     if (capability.offloadable && (capability.requires_consent || capability.mutates)) {
         return false;
     }
+    // A retrying awaitable (#1005) may be a blocking, mutating action: each of
+    // its calls is a whole governed call, made on the pool.
+    const bool retrying = capability.awaitable_read && capability.awaitable_read->retry_within;
     if (capability.blocks &&
-        (capability.offloadable || capability.awaitable_read ||
+        (capability.offloadable || (capability.awaitable_read && !retrying) ||
          capability.requires_consent)) {
         return false;
     }
     if (capability.awaitable_read &&
-        (capability.kind != CapabilityKind::Read || capability.offloadable ||
-         capability.requires_consent || capability.mutates ||
-         !capability.awaitable_read->wait_for ||
-         !capability.awaitable_read->should_wait)) {
+        (capability.offloadable || capability.requires_consent ||
+         !capability.awaitable_read->wait_for || !capability.awaitable_read->should_wait ||
+         (!retrying && (capability.kind != CapabilityKind::Read || capability.mutates)))) {
         return false;
     }
     if (capability.audit_policy == AuditPolicy::SummarizeAuthorizedReads &&

@@ -63,6 +63,16 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Workspace object storage for lake (#1005):** the object capability — buckets
+  (`create_bucket` with a quota and `rf`), raw byte routes `PUT`/`PATCH`/`GET
+  /v1/objects/<bucket>/<key>` (atomic put, put-if-absent, append at an exact offset
+  that a retry cannot double, streamed ranged reads), list, barrier, usage, and an
+  owner lease whose fence every mutation carries (`acquire_object_lease` waits for a
+  release or expiry). Bytes live in node-local segmented logs placed on `rf` owners
+  with anti-entropy repair, never in the replicated document; the six latency
+  budgets are failing tests. Lake's liquid `store_backend` for workspace stores
+  (liquid-bridge decision 54) calls it. See [data/object-store.md](data/object-store.md).
+
 - **Workspace records for lake (#1231):** a keyed record store
   (`create_collection`, `put_record` with `if_absent`/`if_revision`, `get_record`,
   `delete_record`, `list_records` over a declared index) whose writes are ordered by
