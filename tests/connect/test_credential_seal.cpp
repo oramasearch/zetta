@@ -1,0 +1,121 @@
+// Sealed connector credentials (#1230, connect/credential_seal.hpp): AES-256-GCM
+// under a key derived from a root secret held outside the replicated catalogue.
+#include <gtest/gtest.h>
+
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+#include <nlohmann/json.hpp>
+
+#include "temp_dir.hpp"
+#include "zetta/connect/credential_seal.hpp"
+
+using zetta::connect::CredentialKeyring;
+using zetta::connect::is_sealed_credential;
+using zetta::connect::seal_credential;
+using zetta::connect::sealed_key_id;
+using zetta::connect::unseal_credential;
+
+namespace {
+
+CredentialKeyring keyring_of(const std::string& secret,
+                             const std::vector<std::string>& retired = {}) {
+    auto keyring = CredentialKeyring::from_root_secrets(secret, retired);
+    EXPECT_TRUE(keyring.has_value());
+    return keyring ? *keyring : CredentialKeyring{};
+}
+
+}  // namespace
+
+TEST(CredentialSeal, SealsAndOpensWithoutCarryingThePlaintext) {
+    const CredentialKeyring keyring = keyring_of("root-secret-a");
+    const auto sealed = seal_credential(keyring, "hunter2-password", "warehouse");
+    ASSERT_TRUE(sealed.has_value());
+    EXPECT_TRUE(is_sealed_credential(*sealed));
+    EXPECT_EQ(sealed->dump().find("hunter2"), std::string::npos) << sealed->dump();
+    EXPECT_EQ(sealed_key_id(*sealed), keyring.current()->id);
+
+    const auto opened = unseal_credential(keyring, *sealed, "warehouse");
+    ASSERT_TRUE(opened.has_value());
+    EXPECT_EQ(*opened, "hunter2-password");
+}
+
+TEST(CredentialSeal, EverySealUsesAFreshNonce) {
+    const CredentialKeyring keyring = keyring_of("root-secret-a");
+    const auto first = seal_credential(keyring, "same", "c");
+    const auto second = seal_credential(keyring, "same", "c");
+    ASSERT_TRUE(first && second);
+    EXPECT_NE(first->at("nonce"), second->at("nonce"));
+    EXPECT_NE(first->at("ciphertext"), second->at("ciphertext"));
+}
+
+TEST(CredentialSeal, TheSameRootSecretDerivesTheSameKeyOnEveryNode) {
+    // Two members holding the same join token open each other's seals.
+    const auto sealed = seal_credential(keyring_of("join-token"), "token", "c");
+    ASSERT_TRUE(sealed);
+    EXPECT_EQ(unseal_credential(keyring_of("join-token"), *sealed, "c"), "token");
+}
+
+TEST(CredentialSeal, AnotherKeyAnotherConnectionOrATamperedValueDoesNotOpen) {
+    const CredentialKeyring keyring = keyring_of("root-secret-a");
+    const auto sealed = seal_credential(keyring, "secret-value", "warehouse");
+    ASSERT_TRUE(sealed);
+
+    std::string reason;
+    EXPECT_FALSE(unseal_credential(keyring_of("root-secret-b"), *sealed, "warehouse",
+                                   &reason));
+    EXPECT_NE(reason.find("does not hold"), std::string::npos) << reason;
+    // Bound to the connection name: copied onto another row, it does not open.
+    EXPECT_FALSE(unseal_credential(keyring, *sealed, "other", &reason));
+    nlohmann::json tampered = *sealed;
+    std::string ciphertext = tampered["ciphertext"].get<std::string>();
+    ciphertext[0] = ciphertext[0] == 'a' ? 'b' : 'a';
+    tampered["ciphertext"] = ciphertext;
+    EXPECT_FALSE(unseal_credential(keyring, tampered, "warehouse", &reason));
+    // Not the sealed shape at all.
+    EXPECT_FALSE(unseal_credential(keyring, nlohmann::json{{"v", 1}}, "warehouse"));
+    EXPECT_FALSE(is_sealed_credential(nlohmann::json("secret-value")));
+}
+
+TEST(CredentialSeal, ARetiredKeyStillOpensButNeverSeals) {
+    const auto old_seal = seal_credential(keyring_of("old"), "value", "c");
+    ASSERT_TRUE(old_seal);
+    const CredentialKeyring rotated = keyring_of("new", {"old"});
+    EXPECT_EQ(unseal_credential(rotated, *old_seal, "c"), "value");
+    const auto new_seal = seal_credential(rotated, "value", "c");
+    ASSERT_TRUE(new_seal);
+    EXPECT_EQ(sealed_key_id(*new_seal), rotated.current()->id);
+    EXPECT_NE(sealed_key_id(*new_seal), sealed_key_id(*old_seal));
+}
+
+TEST(CredentialSeal, AnEmptyKeyringSealsNothing) {
+    std::string reason;
+    EXPECT_FALSE(CredentialKeyring::from_root_secrets("", {}, &reason));
+    EXPECT_FALSE(seal_credential(CredentialKeyring{}, "value", "c", &reason));
+    EXPECT_FALSE(reason.empty());
+}
+
+TEST(CredentialSeal, TheLocalRootSecretIsCreatedPrivateAndReused) {
+    zetta::test::TempDir dir;
+    const auto first = zetta::connect::load_or_create_local_keyring(dir.path().string());
+    ASSERT_TRUE(first);
+    const std::filesystem::path file =
+        dir.path() / "security" / "connection-root-secret";
+    ASSERT_TRUE(std::filesystem::exists(file));
+    const auto permissions = std::filesystem::status(file).permissions();
+    EXPECT_EQ(permissions & (std::filesystem::perms::group_all |
+                             std::filesystem::perms::others_all),
+              std::filesystem::perms::none);
+    const auto second = zetta::connect::load_or_create_local_keyring(dir.path().string());
+    ASSERT_TRUE(second);
+    EXPECT_EQ(first->current()->id, second->current()->id);
+
+    // A damaged file is a failure, never silently replaced (that would orphan
+    // every credential sealed under it).
+    std::ofstream(file, std::ios::trunc) << "not-hex";
+    std::string reason;
+    EXPECT_FALSE(zetta::connect::load_or_create_local_keyring(dir.path().string(),
+                                                              &reason));
+    EXPECT_FALSE(reason.empty());
+}

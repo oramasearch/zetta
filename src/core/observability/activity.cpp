@@ -59,6 +59,7 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::PubSubEventUpdated: return "event updated";
         case AuditAction::PubSubEventDeleted: return "event deleted";
         case AuditAction::AuditPurged:        return "audit purged";
+        case AuditAction::DataChanged:        return "data changed";
     }
     return "data access";
 }

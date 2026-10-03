@@ -63,6 +63,11 @@ struct LoopbackCluster::Entry {
 LoopbackCluster::LoopbackCluster(std::size_t node_count, const LoopbackOptions& options) {
     const std::uint16_t base = reserve_cluster_base();
     std::vector<std::string> seeds;  // actual bound addresses of earlier nodes
+    // One root secret for the whole loopback cluster, as main() passes every
+    // member the cluster join token: saved connector credentials are sealed
+    // under a key derived from it, so each member opens what another sealed
+    // (#1230).
+    const std::string connection_root_secret = zetta::cluster::generate_join_token();
 
     for (std::size_t index = 0; index < node_count; ++index) {
         auto entry = std::make_unique<Entry>();
@@ -71,6 +76,7 @@ LoopbackCluster::LoopbackCluster(std::size_t node_count, const LoopbackOptions& 
         NodeConfig node_config;
         node_config.data_dir = entry->dir.path().string();
         node_config.preflight = false;  // fresh scratch dir; nothing to check
+        node_config.connection_root_secret = connection_root_secret;
         if (options.replicated || options.attached) {
             // The live-process wiring: the CRDT document behind the Node, the
             // blob store behind the cluster link (bodies transfer peer-to-peer).

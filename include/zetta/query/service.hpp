@@ -32,7 +32,17 @@ class QueryService {
 public:
     explicit QueryService(Node& node, const zetta::cluster::Cluster* cluster = nullptr,
                           std::string acting_key = {}, bool acting_is_user = false)
-        : executor_(node, cluster, std::move(acting_key), acting_is_user) {}
+        : node_(node),
+          cluster_(cluster),
+          executor_(node, cluster, std::move(acting_key), acting_is_user) {}
+
+    // The same node and cluster, executing as another identity — for a surface
+    // that resolves its caller per call (the governed console's key session),
+    // so every statement is authorized as that caller, not as the trusted
+    // local session (#1229).
+    QueryService acting_as(std::string acting_key, bool acting_is_user) const {
+        return QueryService(node_, cluster_, std::move(acting_key), acting_is_user);
+    }
 
     struct Outcome {
         std::vector<std::string> messages;  // one status per executed statement
@@ -47,6 +57,8 @@ public:
     Outcome run(std::string_view sql, const std::string& current_database);
 
 private:
+    Node& node_;
+    const zetta::cluster::Cluster* cluster_;
     PostgresDialect dialect_;
     Executor executor_;
 };

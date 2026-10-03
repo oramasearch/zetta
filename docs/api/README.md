@@ -141,7 +141,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 |---|---|---|---|
 | `server_info` | read | api:query | node identity, version, entity counts, membership |
 | `node_memory` | read | api:query | process RSS, allocator truth, and subsystem ownership |
-| `sql` | read | api:query | one governed SQL statement — every `system.*` view; answers `{messages, columns, rows}` with `columns` always filled, and an error for an unknown column ([query.md](../data/query.md)) |
+| `sql` | read | api:query | one governed SQL statement — every `system.*` view; answers `{messages, columns, rows}` with `columns` always filled, and an error for an unknown column ([query.md](../data/query.md)). Each data-changing statement is authorized on its own (`sql:write` / `sql:ddl` / `users:manage` / `tokens:manage`) and audited as `data_changed` ([per-statement enforcement](../governance/access-control.md#per-statement-enforcement), #1229) |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |

@@ -96,12 +96,21 @@ per-cloud secret store rather than a describe-able tag / literal.)
 
 | File | What | Mode |
 |---|---|---|
-| `cluster-secret.json` | `{"version": 1, "join_token": "<64 hex>"}` — schema-validated on load (`cluster_secret_schema()`, generated `schemas/cluster_secret.schema.json`); a malformed file **fails the start with a reason**, it is never silently clobbered | 0600 |
+| `cluster-secret.json` | `{"version": 1, "join_token": "<64 hex>", "retired_join_tokens"?: ["<64 hex>", …]}` — schema-validated on load (`cluster_secret_schema()`, generated `schemas/cluster_secret.schema.json`); a malformed file **fails the start with a reason**, it is never silently clobbered. A `--join-token` that replaces the stored token moves it to `retired_join_tokens` (newest first, at most four) | 0600 |
+| `connection-root-secret` | only on a node embedded **without** a join token (the library, a test): the 64-hex root secret its saved connector credentials are sealed under (#1230) | 0600 |
 | `node-cert.pem` | this node's CA-signed identity certificate (`CN` = node id) | 0600 |
 | `node-key.pem` | this node's Ed25519 private key | 0600 |
 
 The stored identity is reused while it still verifies against the derived CA
 and carries this node's id; a token change or a node-id mismatch re-mints it.
+
+The join token is also the root secret of the **connector-credential sealing
+key** (#1230): `main` passes it as `NodeConfig::connection_root_secret`, and saved
+connections' credentials are sealed under an HKDF-SHA256 key derived from it, so
+every member opens what another sealed and the key is never in the replicated
+catalogue. The retired tokens let a re-keyed node open what was sealed under the
+previous one; its next start re-seals those entries under the current token. See
+[connector query](../data/connector-query.md#the-credential-is-sealed-at-rest-1230).
 
 ## Code map
 
@@ -139,7 +148,9 @@ fallback path).
   member signs) + certificate pinning — the natural V2 on top of this wire
   format, requiring an upstream peer-cert accessor (#669).
 - **No revocation.** Removing a node's trust today means rotating the token
-  (re-key every node). Token rotation is manual (`--join-token` on each node).
+  (re-key every node). Token rotation is manual (`--join-token` on each node);
+  each node re-seals the saved connector credentials on its first start under
+  the new token.
 - **Burst nodes** (cloud provisioners) now **consume** `ZETTA_CLUSTER_TOKEN`
   (and `ZETTA_SEED_PEER`) from the environment on boot — the binary maps them to
   `--join-token` / `--peer` as defaults beneath explicit flags, so a provisioned

@@ -28,3 +28,12 @@ for list consumers (#1184).
 `data/add_dataset.hpp` exposes `dataset_name_problem` and `csv_problem`, the
 upload rules lake also applies (#1221). See
 [add dataset](../../docs/data/add-dataset.md).
+
+`NodeConfig::connection_root_secret` (main passes the cluster join token) and
+`retired_connection_root_secrets` key the sealing of saved connector
+credentials; `Node::connection_keyring()` builds the keyring on first use, from
+a node-local secret when no root secret is given. `connect/credential_seal.hpp`
+seals and opens a credential, and `connect::reseal_connections` re-seals legacy
+and old-key entries on start (#1230). `QueryService::acting_as` runs SQL as a
+per-call identity (#1229). See
+[connector query](../../docs/data/connector-query.md#saved-connections).

@@ -678,6 +678,7 @@ add_library(zetta-core STATIC
   src/core/data/featurize_plan.cpp
   src/core/ml/run_features.cpp
   src/core/connect/connection_store.cpp
+  src/core/connect/credential_seal.cpp
   src/core/connect/connector.cpp
   src/core/connect/postgres_runner.cpp
   src/core/connect/distributed_fetch.cpp

@@ -139,7 +139,10 @@ curl -s -X POST http://127.0.0.1:4800/mcp \
 ```
 
 The connection is replicated to every node — which is what lets each node fetch its own stripe of a
-distributed query straight from the source.
+distributed query straight from the source. The token travels in it only **sealed** (AES-256-GCM
+under a key derived from the cluster join token, which never enters the replicated catalogue), and
+`list_connections` / `system.connections` report `credential: "set"` rather than the value (#1230;
+[connector query](connector-query.md#the-credential-is-sealed-at-rest-1230)).
 
 **The token is never returned by any read surface.** Verify that rather than trusting it:
 

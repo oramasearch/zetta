@@ -375,13 +375,38 @@ overloaded(Ts...) -> overloaded<Ts...>;
 const zetta::governance::Operation kManageRoles{
     zetta::governance::CapabilityDomain::Api, "manage_roles"};
 
-// The data operations the executor enforces object scoping against (#747): a
-// SELECT reads, an INSERT writes. These are the `sql:read` / `sql:write`
-// operations from the permission vocabulary (governance/permission.hpp).
+// The data operations the executor enforces object scoping against (#747,
+// #1229): a SELECT reads; INSERT, UPDATE, DELETE and TRUNCATE write; CREATE and
+// DROP of a database, table or virtual table change the schema. These are the
+// `sql:read` / `sql:write` / `sql:ddl` operations from the permission vocabulary
+// (governance/permission.hpp).
 const zetta::governance::Operation kSqlRead{
     zetta::governance::CapabilityDomain::Data, "read"};
 const zetta::governance::Operation kSqlWrite{
     zetta::governance::CapabilityDomain::Data, "write"};
+const zetta::governance::Operation kSqlDdl{
+    zetta::governance::CapabilityDomain::Data, "ddl"};
+// CREATE USER mints an identity and CREATE TOKEN a bearer credential for one
+// (#1229): `users:manage` and `tokens:manage`.
+const zetta::governance::Operation kManageUsers{
+    zetta::governance::CapabilityDomain::Api, "manage_users"};
+const zetta::governance::Operation kManageTokens{
+    zetta::governance::CapabilityDomain::Api, "manage_tokens"};
+
+// The reserved database that holds saved connector connections (#827). SQL never
+// reaches it, for read or write (#1230): its rows carry sealed credentials, and
+// the governed surfaces over it are system.connections and the connection
+// capabilities.
+bool is_connection_store(const std::string& database) {
+    return database == zetta::connect::kConnectionDatabase;
+}
+std::string connection_store_refusal() {
+    return std::string("permission denied: \"") +
+           zetta::connect::kConnectionDatabase +
+           "\" is the reserved connection store and is not reachable through "
+           "SQL — read system.connections, or use the create_connection / "
+           "list_connections / delete_connection capabilities";
+}
 
 // Translate the AST's dialect-neutral GrantObject into the governance Resource
 // the scoped-grant store + enforcement use (#747). RoleWide has no object (the
@@ -1378,10 +1403,22 @@ RlsContext rls_context(const Node& node, const std::string& acting_id,
     return ctx;
 }
 
-bool policy_command_covers(const std::string& command, bool write) {
+// Which rows a row-security filter is deciding (#748, #1229):
+//   Read     — rows a SELECT returns, and the rows UPDATE / DELETE may see at all
+//              (SELECT/ALL policies, USING);
+//   NewRow   — a row an INSERT adds or an UPDATE produces (INSERT/UPDATE/ALL
+//              policies, WITH CHECK falling back to USING);
+//   Existing — a stored row an UPDATE changes or a DELETE removes (the same
+//              write-class policies, USING falling back to WITH CHECK). There is
+//              no FOR DELETE command, so the write-class policies govern DELETE:
+//              a row the caller could not have written, it cannot change or
+//              remove.
+enum class RlsAccess { Read, NewRow, Existing };
+
+bool policy_command_covers(const std::string& command, RlsAccess access) {
     if (command == "all") return true;
-    return write ? (command == "insert" || command == "update")
-                 : (command == "select");
+    return access == RlsAccess::Read ? (command == "select")
+                                     : (command == "insert" || command == "update");
 }
 
 // Whether a policy applies to the acting identity: its role set intersects the
@@ -1409,22 +1446,26 @@ struct RlsFilter {
 
 RlsFilter build_rls_filter(const Node& node, const RlsContext& ctx,
                            const std::string& database, const std::string& table,
-                           bool write) {
+                           RlsAccess access) {
     RlsFilter filter;
     filter.bypass = ctx.bypass;
     if (ctx.bypass) return filter;
     for (const auto& policy : node.policies()) {
         const zetta::governance::PolicyValue& v = policy->value();
         if (v.database != database || v.table != table) continue;
-        if (!policy_command_covers(v.command, write)) continue;
+        if (!policy_command_covers(v.command, access)) continue;
         filter.engaged = true;  // a policy governs this table+class -> RLS is on
         if (!policy_applies_to_roles(v, ctx.roles)) continue;  // not this caller
-        // read -> USING; write -> WITH CHECK, falling back to USING when a write
-        // policy carries no explicit WITH CHECK (Postgres-like).
-        const nlohmann::json& source =
-            write ? (!v.check_predicate.is_null() ? v.check_predicate
-                                                  : v.using_predicate)
-                  : v.using_predicate;
+        // read -> USING; a new row -> WITH CHECK, falling back to USING when a
+        // write policy carries no explicit WITH CHECK (Postgres-like); an
+        // existing row -> USING, falling back to WITH CHECK.
+        const nlohmann::json* chosen = &v.using_predicate;
+        if (access == RlsAccess::NewRow && !v.check_predicate.is_null()) {
+            chosen = &v.check_predicate;
+        } else if (access == RlsAccess::Existing && v.using_predicate.is_null()) {
+            chosen = &v.check_predicate;
+        }
+        const nlohmann::json& source = *chosen;
         if (source.is_null()) {
             PolicyPredicate always;  // an applicable, predicate-less policy admits its rows
             always.always_true = true;
@@ -1454,10 +1495,10 @@ bool rls_row_permitted(const RlsFilter& filter, const nlohmann::json& row,
 
 // One JSON row per saved source connection for the connections system table
 // (#827). Sourced from connect::list_connections(). Like system.tokens this view
-// deliberately exposes NO credential: the token lives only in the replicated
-// store row that lets every node present it, and every read surface renders it
-// through SavedConnection::to_redacted_json(), which is built from
-// ConnectorConfig::to_json() — a serialization that cannot emit the token.
+// deliberately exposes NO credential: the token lives only sealed in the
+// replicated store row that lets every node present it (#1230), and this view
+// is built from the connector metadata plus `credential` — whether one is set
+// ("set" / "none" / "unreadable" / "plaintext"), never its value.
 std::vector<nlohmann::json> connection_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const zetta::connect::SavedConnection& saved :
@@ -1472,6 +1513,7 @@ std::vector<nlohmann::json> connection_rows(const Node& node) {
         row["schema"] = saved.config.schema;
         row["warehouse"] = saved.config.warehouse;
         row["role"] = saved.config.role;
+        row["credential"] = std::string(zetta::connect::to_string(saved.credential));
         row["created"] = saved.created;
         rows.push_back(std::move(row));
     }
@@ -2502,11 +2544,82 @@ QueryResult Executor::execute(const Statement& stmt,
         return node_.find_virtual_table(ref.table);
     };
 
+    // ----- authorization of data-changing statements (#1229) -----------------
+    // Every statement that changes data or schema checks its right here, the
+    // way INSERT always has: sql:write for INSERT / UPDATE / DELETE / TRUNCATE,
+    // sql:ddl for CREATE / DROP, at table or database scope. `denied` marks a
+    // refusal so the audit row recorded below says so.
+    bool denied = false;
+    const auto deny = [&](std::string reason) -> QueryResult {
+        denied = true;
+        return error(std::move(reason));
+    };
+    // The column access the acting identity has to db.table for a
+    // data-changing operation. A user folds its flat and object-scoped grants
+    // (Node::column_scope). A legacy AccessKey has no object tier, so it must
+    // hold the operation as a flat capability — it used to skip the check
+    // entirely. The trusted local session (empty acting key) is allowed.
+    const auto change_scope = [&](const zetta::governance::Operation& operation,
+                                  const std::string& database,
+                                  const std::string& table)
+        -> zetta::governance::ColumnAccess {
+        if (!acting_is_user_ && !acting_key_.empty()) {
+            zetta::governance::ColumnAccess access;
+            if (node_.authorize(acting_key_, operation)) {
+                access.table_allowed = true;
+                access.all_columns = true;
+            }
+            return access;
+        }
+        return node_.column_scope(acting_key_, acting_is_user_, operation,
+                                  database, table);
+    };
+    // The same decision for a whole database (CREATE / DROP DATABASE): a flat
+    // grant or a grant ON <database>.* admits it.
+    const auto may_change_database =
+        [&](const zetta::governance::Operation& operation,
+            const std::string& database) -> bool {
+        if (!acting_is_user_ && !acting_key_.empty()) {
+            return static_cast<bool>(node_.authorize(acting_key_, operation));
+        }
+        return node_.authorize_object(
+            acting_key_, acting_is_user_, operation,
+            zetta::governance::Resource{zetta::governance::ResourceKind::Database,
+                                        database});
+    };
+    // A statement that drops, creates or empties a whole table needs the right
+    // on the whole table: a grant on some of its columns is not enough.
+    const auto require_whole_table =
+        [&](const zetta::governance::Operation& operation,
+            std::string_view permission, std::string_view verb,
+            const std::string& database,
+            const std::string& table) -> std::optional<QueryResult> {
+        const zetta::governance::ColumnAccess access =
+            change_scope(operation, database, table);
+        if (!access.table_allowed) {
+            return deny("permission denied: no " + std::string(permission) +
+                        " grant on \"" + database + "." + table + "\"");
+        }
+        if (!access.all_columns) {
+            return deny("permission denied: " + std::string(verb) + " needs " +
+                        std::string(permission) + " on the whole table \"" +
+                        database + "." + table + "\", not only some columns");
+        }
+        return std::nullopt;
+    };
+
     QueryResult result = std::visit(
         overloaded{
             [&](const CreateDatabaseStmt& s) -> QueryResult {
                 if (s.name == kSystemDatabase) {
                     return error("\"system\" is a reserved (virtual) database");
+                }
+                if (is_connection_store(s.name)) {
+                    return deny(connection_store_refusal());
+                }
+                if (!may_change_database(kSqlDdl, s.name)) {
+                    return deny("permission denied: no sql:ddl grant on database \"" +
+                                s.name + "\"");
                 }
                 if (!node_.create_database(s.name)) {
                     return error("database \"" + s.name +
@@ -2517,6 +2630,13 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const DropDatabaseStmt& s) -> QueryResult {
                 if (s.name == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
+                }
+                if (is_connection_store(s.name)) {
+                    return deny(connection_store_refusal());
+                }
+                if (!may_change_database(kSqlDdl, s.name)) {
+                    return deny("permission denied: no sql:ddl grant on database \"" +
+                                s.name + "\"");
                 }
                 if (!node_.drop_database(s.name)) {
                     return error("database \"" + s.name + "\" does not exist");
@@ -2532,6 +2652,14 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("no database selected — qualify as db.table or "
                                  "select a database");
                 }
+                if (is_connection_store(name)) {
+                    return deny(connection_store_refusal());
+                }
+                if (auto refused = require_whole_table(kSqlDdl, "sql:ddl",
+                                                       "CREATE TABLE", name,
+                                                       s.table.table)) {
+                    return std::move(*refused);
+                }
                 auto db = node_.find_database(name);
                 if (!db) return error("database \"" + name + "\" does not exist");
                 // Column definitions are parsed but not yet stored (the engine
@@ -2543,6 +2671,13 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE TABLE"};
             },
             [&](const CreateVirtualTableStmt& s) -> QueryResult {
+                // A virtual table is a global name over a replicated key family,
+                // not an object inside one database, so it needs sql:ddl as a
+                // flat right — a grant scoped to one database does not reach it.
+                if (auto why = require_permission(kSqlDdl)) {
+                    return deny("permission denied: CREATE VIRTUAL TABLE needs a "
+                                "sql:ddl grant on every database (" + *why + ")");
+                }
                 // OVER CRDT is required (the must-extend-a-CRDT invariant). The
                 // grammar can't reach here without it, but a bare '' is possible.
                 if (s.crdt_prefix.empty()) {
@@ -2619,6 +2754,16 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
+                if (!db_name(s.table).empty()) {
+                    if (auto refused = require_whole_table(
+                            kSqlDdl, "sql:ddl", "DROP TABLE", db_name(s.table),
+                            s.table.table)) {
+                        return std::move(*refused);
+                    }
+                }
                 auto db = resolve_db(s.table);
                 if (!db) return missing_database(s.table);
                 if (!db->drop_table(s.table.table)) {
@@ -2629,6 +2774,9 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const InsertStmt& s) -> QueryResult {
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
+                }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
                 }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
@@ -2648,19 +2796,18 @@ QueryResult Executor::execute(const Statement& stmt,
                 // Object-scoped write enforcement (#747): the acting identity must
                 // be able to write this table, and every target column.
                 const zetta::governance::ColumnAccess write_access =
-                    node_.column_scope(acting_key_, acting_is_user_, kSqlWrite,
-                                       db_name(s.table), s.table.table);
+                    change_scope(kSqlWrite, db_name(s.table), s.table.table);
                 if (!write_access.table_allowed) {
-                    return error("permission denied: no sql:write grant on \"" +
-                                 db_name(s.table) + "." + s.table.table + "\"");
+                    return deny("permission denied: no sql:write grant on \"" +
+                                db_name(s.table) + "." + s.table.table + "\"");
                 }
                 if (!write_access.all_columns) {
                     for (const std::string& col : s.columns) {
                         if (!write_access.allows(col)) {
-                            return error("permission denied: no sql:write grant on "
-                                         "column \"" + col + "\" of \"" +
-                                         db_name(s.table) + "." + s.table.table +
-                                         "\"");
+                            return deny("permission denied: no sql:write grant on "
+                                        "column \"" + col + "\" of \"" +
+                                        db_name(s.table) + "." + s.table.table +
+                                        "\"");
                         }
                     }
                 }
@@ -2671,7 +2818,7 @@ QueryResult Executor::execute(const Statement& stmt,
                 const RlsContext rls = rls_context(node_, acting_key_,
                                                     acting_is_user_);
                 const RlsFilter write_filter = build_rls_filter(
-                    node_, rls, db_name(s.table), s.table.table, /*write=*/true);
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::NewRow);
                 std::size_t inserted = 0;
                 for (const auto& tuple : s.rows) {
                     if (tuple.size() != s.columns.size()) {
@@ -2685,9 +2832,9 @@ QueryResult Executor::execute(const Statement& stmt,
                         row[s.columns[i]] = tuple[i];
                     }
                     if (!rls_row_permitted(write_filter, row, rls)) {
-                        return error("permission denied: row violates the "
-                                     "row-security WITH CHECK policy on \"" +
-                                     db_name(s.table) + "." + s.table.table + "\"");
+                        return deny("permission denied: row violates the "
+                                    "row-security WITH CHECK policy on \"" +
+                                    db_name(s.table) + "." + s.table.table + "\"");
                     }
                     table->add_row(std::move(row));
                     ++inserted;
@@ -2697,6 +2844,9 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const UpdateStmt& s) -> QueryResult {
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
+                }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
                 }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
@@ -2709,6 +2859,47 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
+                const std::string label = db_name(s.table) + "." + s.table.table;
+                // Object-scoped write enforcement (#1229), as INSERT: the caller
+                // must be able to write this table and every assigned column.
+                const zetta::governance::ColumnAccess write_access =
+                    change_scope(kSqlWrite, db_name(s.table), s.table.table);
+                if (!write_access.table_allowed) {
+                    return deny("permission denied: no sql:write grant on \"" +
+                                label + "\"");
+                }
+                for (const Assignment& a : s.assignments) {
+                    if (!write_access.allows(a.column)) {
+                        return deny("permission denied: no sql:write grant on "
+                                    "column \"" + a.column + "\" of \"" + label +
+                                    "\"");
+                    }
+                }
+                // The WHERE column is read to choose the rows; a caller that may
+                // not read it could learn its values from the row count.
+                if (s.where) {
+                    const zetta::governance::ColumnAccess read_access =
+                        node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
+                                           db_name(s.table), s.table.table);
+                    if (!read_access.allows(s.where->column)) {
+                        return deny("permission denied: no sql:read grant on "
+                                    "column \"" + s.where->column +
+                                    "\" used in WHERE");
+                    }
+                }
+                // Row-level security (#748, #1229): UPDATE changes only rows the
+                // caller can see (USING of the read policies) and could have
+                // written (USING of the write policies); every row it produces
+                // must pass WITH CHECK, or the whole statement is refused.
+                const RlsContext rls = rls_context(node_, acting_key_,
+                                                    acting_is_user_);
+                const RlsFilter read_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::Read);
+                const RlsFilter existing_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table,
+                    RlsAccess::Existing);
+                const RlsFilter new_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::NewRow);
                 // Collect the matches (id + the updated row) BEFORE applying —
                 // update_row rewrites the store, which would invalidate indices.
                 std::vector<std::pair<std::string, nlohmann::json>> edits;
@@ -2717,10 +2908,19 @@ QueryResult Executor::execute(const Statement& stmt,
                     const zetta::storage::ParquetLazyPtr row = store.at(i);
                     if (!row) return error("row " + store.id_at(i) +
                                            " could not be read: " + row.error());
+                    if (!rls_row_permitted(read_filter, *row, rls) ||
+                        !rls_row_permitted(existing_filter, *row, rls)) {
+                        continue;
+                    }
                     if (!row_matches(*row, s.where)) continue;
                     nlohmann::json updated = *row;
                     for (const Assignment& a : s.assignments) {
                         updated[a.column] = a.value;
+                    }
+                    if (!rls_row_permitted(new_filter, updated, rls)) {
+                        return deny("permission denied: updated row violates the "
+                                    "row-security WITH CHECK policy on \"" +
+                                    label + "\"");
                     }
                     edits.emplace_back(store.id_at(i), std::move(updated));
                 }
@@ -2733,6 +2933,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
                                  "\" is read-only — durable writes go to the base "
@@ -2744,12 +2947,43 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
+                // DELETE removes whole rows, so it needs sql:write on the whole
+                // table (#1229), and read access to the WHERE column.
+                if (auto refused = require_whole_table(kSqlWrite, "sql:write",
+                                                       "DELETE", db_name(s.table),
+                                                       s.table.table)) {
+                    return std::move(*refused);
+                }
+                if (s.where) {
+                    const zetta::governance::ColumnAccess read_access =
+                        node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
+                                           db_name(s.table), s.table.table);
+                    if (!read_access.allows(s.where->column)) {
+                        return deny("permission denied: no sql:read grant on "
+                                    "column \"" + s.where->column +
+                                    "\" used in WHERE");
+                    }
+                }
+                // Row-level security (#748, #1229): DELETE removes only rows the
+                // caller can see and could have written; the rest are untouched
+                // and uncounted.
+                const RlsContext rls = rls_context(node_, acting_key_,
+                                                    acting_is_user_);
+                const RlsFilter read_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::Read);
+                const RlsFilter existing_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table,
+                    RlsAccess::Existing);
                 std::vector<std::string> ids;
                 const zetta::storage::StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
                     const zetta::storage::ParquetLazyPtr row = store.at(i);
                     if (!row) return error("row " + store.id_at(i) +
                                            " could not be read: " + row.error());
+                    if (!rls_row_permitted(read_filter, *row, rls) ||
+                        !rls_row_permitted(existing_filter, *row, rls)) {
+                        continue;
+                    }
                     if (row_matches(*row, s.where)) ids.push_back(store.id_at(i));
                 }
                 for (const std::string& id : ids) table->delete_row(id);
@@ -2759,6 +2993,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
                                  "\" is read-only — durable writes go to the base "
@@ -2769,6 +3006,28 @@ QueryResult Executor::execute(const Statement& stmt,
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
+                }
+                if (auto refused = require_whole_table(kSqlWrite, "sql:write",
+                                                       "TRUNCATE",
+                                                       db_name(s.table),
+                                                       s.table.table)) {
+                    return std::move(*refused);
+                }
+                // TRUNCATE removes every row regardless of who may see it, so on
+                // a table under row security a non-bypass caller is refused; a
+                // DELETE removes exactly the rows it may.
+                const RlsContext rls = rls_context(node_, acting_key_,
+                                                    acting_is_user_);
+                const RlsFilter read_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::Read);
+                const RlsFilter existing_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table,
+                    RlsAccess::Existing);
+                if (!rls.bypass && (read_filter.engaged || existing_filter.engaged)) {
+                    return deny("permission denied: row-level security is enabled "
+                                "on \"" + db_name(s.table) + "." + s.table.table +
+                                "\" — TRUNCATE would remove rows hidden from you; "
+                                "use DELETE");
                 }
                 // Remove every row — each as a tombstone, so the truncation
                 // replicates (same path as DELETE with no WHERE).
@@ -2932,6 +3191,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     return select_over_rows(s, node_.virtual_table_rows(*vtable),
                                             vtable->name, declared);
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
                 if (auto problem = aggregate_shape_error(s)) return error(*problem);
                 auto db = resolve_db(s.table);
                 if (!db) return missing_database(s.table);
@@ -2980,7 +3242,7 @@ QueryResult Executor::execute(const Statement& stmt,
                 const RlsContext rls = rls_context(node_, acting_key_,
                                                    acting_is_user_);
                 const RlsFilter read_filter = build_rls_filter(
-                    node_, rls, db_name(s.table), s.table.table, /*write=*/false);
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::Read);
                 // An aggregating SELECT (GROUP BY) runs through the DDF engine,
                 // which filters numerically and can't apply a row-security
                 // predicate — refuse it on a policy-protected table (for a
@@ -3104,6 +3366,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 return r;
             },
             [&](const CreateUserStmt& s) -> QueryResult {
+                if (auto why = require_permission(kManageUsers)) {
+                    return deny(*why);
+                }
                 if (!node_.create_user(s.name)) {
                     return error("user \"" + s.name +
                                  "\" already exists or the name is invalid");
@@ -3111,6 +3376,12 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE USER"};
             },
             [&](const CreateTokenStmt& s) -> QueryResult {
+                // Minting a bearer credential for any user is the
+                // tokens:manage right (#1229) — without it a caller could mint
+                // a token for the owner and act as admin.
+                if (auto why = require_permission(kManageTokens)) {
+                    return deny(*why);
+                }
                 auto user = node_.find_user(s.user);
                 if (!user) {
                     return error("user \"" + s.user + "\" does not exist");
@@ -3139,8 +3410,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return r;
             },
             [&](const CreateRoleStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (!node_.create_role(s.name)) {
                     return error("role \"" + s.name +
@@ -3149,8 +3420,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE ROLE"};
             },
             [&](const DropRoleStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (!node_.drop_role(s.name)) {
                     return error("role \"" + s.name + "\" does not exist");
@@ -3158,8 +3429,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "DROP ROLE"};
             },
             [&](const GrantPermissionStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (auto bad = first_unknown_permission(s.permissions)) {
                     return error("unknown permission \"" + *bad +
@@ -3178,8 +3449,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "GRANT"};
             },
             [&](const RevokePermissionStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (auto bad = first_unknown_permission(s.permissions)) {
                     return error("unknown permission \"" + *bad +
@@ -3196,8 +3467,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "REVOKE"};
             },
             [&](const GrantRoleStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 auto user = node_.find_user(s.user);
                 if (!user) {
@@ -3214,8 +3485,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "GRANT ROLE"};
             },
             [&](const RevokeRoleStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 auto user = node_.find_user(s.user);
                 if (!user) {
@@ -3232,8 +3503,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "REVOKE ROLE"};
             },
             [&](const CreatePolicyStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 const std::string database = db_name(s.table);
                 if (database.empty()) {
@@ -3295,8 +3566,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE POLICY"};
             },
             [&](const DropPolicyStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (!node_.drop_policy(s.name)) {
                     return error("policy \"" + s.name + "\" does not exist");
@@ -3308,6 +3579,47 @@ QueryResult Executor::execute(const Statement& stmt,
     // ORDER BY / LIMIT / OFFSET apply to whichever path answered the SELECT.
     if (const auto* select = std::get_if<SelectStmt>(&stmt); select && result.ok()) {
         if (auto problem = apply_order_and_limit(*select, result)) return error(*problem);
+    }
+
+    // Every statement that changes data, schema or governance is audited as an
+    // action (#1229) — `data_changed`, naming who, what object, and whether it
+    // was refused — whatever surface ran it (the sql capability, the consoles,
+    // the library). The detail is the statement's own status line or its
+    // error, never a value it wrote (CREATE TOKEN's secret stays in the result).
+    const std::string target = std::visit(
+        overloaded{
+            [&](const CreateDatabaseStmt& s) { return "database:" + s.name; },
+            [&](const DropDatabaseStmt& s) { return "database:" + s.name; },
+            [&](const CreateTableStmt& s) { return "table:" + table_label(s.table); },
+            [&](const DropTableStmt& s) { return "table:" + table_label(s.table); },
+            [&](const InsertStmt& s) { return "table:" + table_label(s.table); },
+            [&](const UpdateStmt& s) { return "table:" + table_label(s.table); },
+            [&](const DeleteStmt& s) { return "table:" + table_label(s.table); },
+            [&](const TruncateStmt& s) { return "table:" + table_label(s.table); },
+            [&](const CreateVirtualTableStmt& s) { return "virtual_table:" + s.name; },
+            [&](const CreateUserStmt& s) { return "user:" + s.name; },
+            [&](const CreateTokenStmt& s) { return "token:" + s.user; },
+            [&](const CreateRoleStmt& s) { return "role:" + s.name; },
+            [&](const DropRoleStmt& s) { return "role:" + s.name; },
+            [&](const GrantPermissionStmt& s) { return "role:" + s.role; },
+            [&](const RevokePermissionStmt& s) { return "role:" + s.role; },
+            [&](const GrantRoleStmt& s) { return "user:" + s.user; },
+            [&](const RevokeRoleStmt& s) { return "user:" + s.user; },
+            [&](const CreatePolicyStmt& s) { return "policy:" + s.name; },
+            [&](const DropPolicyStmt& s) { return "policy:" + s.name; },
+            [&](const SelectStmt&) { return std::string{}; },
+        },
+        stmt);
+    if (!target.empty()) {
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::DataChanged;
+        event.actor = acting_key_.empty() ? "local" : acting_key_;
+        event.target = "sql:" + target;
+        event.allowed = !denied;
+        event.detail = result.ok() ? result.message
+                                   : (denied ? result.error
+                                             : "failed: " + result.error);
+        node_.record_audit_event(std::move(event));
     }
     return result;
 }

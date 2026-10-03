@@ -24,6 +24,7 @@
 #include "zetta/cloud/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/connect/credential_seal.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
@@ -107,6 +108,15 @@ struct NodeConfig {
     // Linux-only, opt-in allocator release. Zero disables it. A periodic memory
     // sample calls malloc_trim(0) when allocator-held free bytes reach this.
     std::uint64_t malloc_trim_threshold_bytes = 0;
+    // The root secret saved connector credentials are sealed under (#1230). main
+    // passes the cluster join token, so every member of one cluster derives the
+    // same sealing key and can open what another sealed — and the key is never
+    // in the replicated catalogue. Empty (a library / test node): the node
+    // creates a node-local root secret under <data_dir>/security/ on first use.
+    std::string connection_root_secret;
+    // Root secrets of earlier join tokens. Credentials sealed under them still
+    // open, and start() re-seals them under the current secret.
+    std::vector<std::string> retired_connection_root_secrets;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -1052,6 +1062,14 @@ public:
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
 
+    // The keyring saved connector credentials are sealed and opened with
+    // (#1230; connect/credential_seal.hpp). Built on first use from
+    // NodeConfig::connection_root_secret, or the node-local root secret when
+    // that is empty. Null, with the reason in `*reason`, when neither can be had
+    // (an unwritable data_dir): nothing is sealed or opened then.
+    const zetta::connect::CredentialKeyring* connection_keyring(
+        std::string* reason = nullptr) const;
+
     // Seconds since start(); 0 when stopped.
     double uptime_seconds() const;
 
@@ -1069,6 +1087,10 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
+
+    // connection_keyring()'s lazily built value, or the reason it failed.
+    mutable std::optional<zetta::connect::CredentialKeyring> connection_keyring_;
+    mutable std::string connection_keyring_error_;
 
     // Rebuild databases_ by scanning config_.data_dir. Called from start().
     void load_databases();

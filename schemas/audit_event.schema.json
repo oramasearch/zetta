@@ -49,7 +49,8 @@
         "pubsub_topic_updated",
         "pubsub_event_updated",
         "pubsub_event_deleted",
-        "audit_purged"
+        "audit_purged",
+        "data_changed"
       ],
       "type": "string"
     },

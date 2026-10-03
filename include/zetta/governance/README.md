@@ -13,3 +13,6 @@ separate the indexes, segment cache, recent window, and pending persistence for 
 Its origin/watermark/range interface ships audit independently of the catalog;
 ordinary and summary low-water marks prevent expired rows from returning, and
 reserved `legacy` records never ship (#1164).
+`data_changed` records every SQL statement that changes data, schema or
+governance — its actor, object and outcome, refused or not (#1229). See
+[access control](../../../docs/governance/access-control.md#per-statement-enforcement).

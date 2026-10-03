@@ -63,6 +63,7 @@ enum class AuditAction {
     PubSubEventUpdated,
     PubSubEventDeleted,
     AuditPurged,
+    DataChanged,  // a SQL statement changed data, schema or governance (#1229)
 };
 
 // Completeness metadata for an authorised high-frequency read window (#1154).

@@ -2,6 +2,7 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -285,9 +286,15 @@ public:
     std::string reason;
 };
 
-// Parse + schema-validate the secret file's JSON; the join token on success.
-std::optional<std::string> parse_secret_file(const std::string& contents,
-                                             std::string* reason) {
+// The secret file's contents: the join token, and the earlier ones.
+struct SecretFile {
+    std::string join_token;
+    std::vector<std::string> retired_join_tokens;
+};
+
+// Parse + schema-validate the secret file's JSON.
+std::optional<SecretFile> parse_secret_file(const std::string& contents,
+                                            std::string* reason) {
     const nlohmann::json document =
         nlohmann::json::parse(contents, nullptr, /*allow_exceptions=*/false);
     if (document.is_discarded()) {
@@ -300,7 +307,14 @@ std::optional<std::string> parse_secret_file(const std::string& contents,
         set_reason(reason, "cluster-secret.json: " + errors.reason);
         return std::nullopt;
     }
-    return document["join_token"].get<std::string>();
+    SecretFile file;
+    file.join_token = document["join_token"].get<std::string>();
+    if (document.contains("retired_join_tokens")) {
+        for (const nlohmann::json& token : document["retired_join_tokens"]) {
+            file.retired_join_tokens.push_back(token.get<std::string>());
+        }
+    }
+    return file;
 }
 
 }  // namespace
@@ -312,7 +326,12 @@ const nlohmann::json& cluster_secret_schema() {
       "type": "object",
       "properties": {
         "version":    { "type": "integer", "const": 1 },
-        "join_token": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        "join_token": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "retired_join_tokens": {
+          "type": "array",
+          "maxItems": 4,
+          "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
       },
       "required": ["version", "join_token"],
       "additionalProperties": false
@@ -414,10 +433,29 @@ std::optional<ClusterSecurity> load_or_create_cluster_security(
     // fresh one (this node founds a cluster).
     std::string join_token = join_token_override;
     const std::optional<std::string> stored = read_file(secret_path);
-    if (join_token.empty() && stored) {
-        std::optional<std::string> parsed = parse_secret_file(*stored, reason);
-        if (!parsed) return std::nullopt;  // malformed file: fail, don't clobber
-        join_token = *parsed;
+    std::optional<SecretFile> stored_secret;
+    if (stored) {
+        stored_secret = parse_secret_file(*stored, reason);
+        if (!stored_secret) return std::nullopt;  // malformed file: fail, don't clobber
+    }
+    if (join_token.empty() && stored_secret) join_token = stored_secret->join_token;
+    // The earlier tokens, newest first: an override that replaces the stored
+    // token retires it, so what was derived from it (the connector-credential
+    // sealing key, #1230) can still be opened and re-sealed.
+    std::vector<std::string> retired;
+    if (stored_secret) {
+        if (stored_secret->join_token != join_token) {
+            retired.push_back(stored_secret->join_token);
+        }
+        for (const std::string& token : stored_secret->retired_join_tokens) {
+            if (token != join_token &&
+                std::find(retired.begin(), retired.end(), token) == retired.end()) {
+                retired.push_back(token);
+            }
+        }
+        if (retired.size() > kMaxRetiredJoinTokens) {
+            retired.resize(kMaxRetiredJoinTokens);
+        }
     }
     if (join_token.empty()) {
         join_token = generate_join_token();
@@ -458,9 +496,11 @@ std::optional<ClusterSecurity> load_or_create_cluster_security(
         if (!security) return std::nullopt;
     }
 
+    security->retired_join_tokens = retired;
     // Persist: the secret file (when new or overridden) and the identity.
-    const nlohmann::json secret_document = {{"version", 1},
-                                            {"join_token", join_token}};
+    nlohmann::json secret_document = {{"version", 1},
+                                      {"join_token", join_token}};
+    if (!retired.empty()) secret_document["retired_join_tokens"] = retired;
     if (!stored || !join_token_override.empty()) {
         if (!write_private_file(secret_path, secret_document.dump(2) + "\n")) {
             set_reason(reason, "cannot write " + secret_path.string());

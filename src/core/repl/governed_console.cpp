@@ -207,7 +207,14 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
     // ----- 2) execute, governed per frontend -----------------------------------
     switch (frontend) {
         case Frontend::Sql: {
-            Result result = sql_result(query_.run(source, database_));
+            // A key session runs its statements as that key, so each one is
+            // authorized on its own (sql:write / sql:ddl, #1229) — the gate
+            // above only proves the key may query at all.
+            Result result = sql_result(
+                session_key_.empty()
+                    ? query_.run(source, database_)
+                    : query_.acting_as(session_key_, /*acting_is_user=*/false)
+                          .run(source, database_));
             record(true, "console sql · " + summary +
                              (result.ok() ? "" : " · error: " + result.error));
             return result;

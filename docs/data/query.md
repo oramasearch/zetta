@@ -149,6 +149,14 @@ use, so one query answers the same way on every path.
   concatenated, and an unreachable owner failing the query. The SQL is identical
   and the result columns are named identically — only the path differs.
 - Statements run in order; the first failure stops the batch and is reported.
+- **Every statement that changes data or schema is authorized on its own**
+  (#1229): `INSERT`, `UPDATE`, `DELETE` and `TRUNCATE` need `sql:write`, `CREATE`
+  and `DROP` need `sql:ddl`, at table or database scope; column grants and row
+  security apply to `UPDATE` and `DELETE` as to `SELECT` and `INSERT`. A refusal
+  reads `permission denied: …` and changes nothing, and every such statement is
+  audited as `data_changed`. The reserved `zetta_connect` database is not
+  reachable through SQL. See
+  [per-statement enforcement](../governance/access-control.md#per-statement-enforcement).
 
 ## The `system` database
 

@@ -6054,6 +6054,14 @@ const nlohmann::json& saved_connection_schema() {
             {"description",
              "the saved connector settings WITHOUT the credential — the token "
              "is never returned by any surface"}}},
+          {"credential",
+           {{"type", "string"},
+            {"enum", {"set", "none", "unreadable", "plaintext"}},
+            {"description",
+             "whether a credential is stored — set (sealed, and this node opens "
+             "it), none, unreadable (sealed under a key this node does not "
+             "hold), or plaintext (a legacy entry not yet re-sealed). Never the "
+             "credential itself."}}},
           {"created",
            {{"type", "string"},
             {"description", "when the connection was last saved (ISO-8601 UTC)"}}}}}};
@@ -6294,6 +6302,12 @@ std::optional<zetta::connect::ConnectorConfig> resolve_query_connector(
         if (!saved) {
             reason = "connection: no saved connection named '" + name +
                      "' (list them with list_connections)";
+            return std::nullopt;
+        }
+        if (saved->credential == zetta::connect::CredentialState::Unreadable) {
+            reason = "connection '" + name +
+                     "': its credential does not open on this node (" +
+                     saved->credential_error + ") — save it again";
             return std::nullopt;
         }
         return saved->config;
@@ -8918,7 +8932,12 @@ void register_core_capabilities(Registry& registry) {
         "sql",
         "Run SQL",
         "Run one governed SQL statement (Postgres subset). Every system.* "
-        "observability view is readable here. DDL/INSERT mutate the database.",
+        "observability view is readable here. Each statement is authorized on "
+        "its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE "
+        "need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at "
+        "table or database scope); CREATE USER needs users:manage, CREATE TOKEN "
+        "tokens:manage, role and policy statements roles:manage. Every "
+        "data-changing statement is audited as a data_changed action.",
         sql_schema(),
         sql_output_schema(),
         CapabilityKind::Read,
@@ -9863,8 +9882,11 @@ void register_core_capabilities(Registry& registry) {
         "token in every request. The connection is stored replicate-to-all — "
         "every node holds it, which is what lets each node fetch its own "
         "stripe of a distributed query straight from the source. Saving an "
-        "existing name replaces it. The token is never returned by any "
-        "surface (list_connections and system.connections omit it).",
+        "existing name replaces it, re-sealing the new credential. The token "
+        "is stored sealed (AES-256-GCM under a key derived from the cluster "
+        "join token, never in the replicated catalogue) and is never returned "
+        "by any surface (list_connections and system.connections report only "
+        "whether one is set).",
         create_connection_schema(),
         create_connection_output_schema(),
         CapabilityKind::Action,

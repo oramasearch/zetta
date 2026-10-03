@@ -31,3 +31,10 @@ The generated `entity_resolution_launch` contract carries the selected fuzzy or
 keyed mode and, for keyed runs, the entity column and source table used to retain
 the dataset's original identifiers. See
 [entity resolution](../docs/ml/entity_resolution.md).
+
+`sealed_credential` is the generated contract of a saved connection's sealed
+credential, `cluster_secret` gains the optional `retired_join_tokens`, and
+`data_changed` joins the audit-event action enum (#1229, #1230). The `sql` and
+`create_connection` descriptions and the saved-connection `credential` field are
+regenerated into OpenAPI. See
+[connector query](../docs/data/connector-query.md#saved-connections).

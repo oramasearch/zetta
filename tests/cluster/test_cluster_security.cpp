@@ -129,6 +129,41 @@ TEST(ClusterSecurity, LoadOrCreatePersistsTokenAndIdentity) {
     EXPECT_EQ(after->certificate_pem, rekeyed->certificate_pem);
 }
 
+// A re-keyed node keeps the tokens it ran under before (newest first, bounded),
+// so a secret derived from the old token — the connector-credential sealing
+// key (#1230) — can still open what was sealed under it and re-seal it.
+TEST(ClusterSecurity, ReKeyingRetiresTheEarlierToken) {
+    zetta::test::TempDir dir;
+    const std::string node_id = zetta::util::new_uuid();
+    std::string reason;
+    auto first = zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, {}, &reason);
+    ASSERT_TRUE(first) << reason;
+    EXPECT_TRUE(first->retired_join_tokens.empty());
+
+    // The same token again retires nothing.
+    auto same = zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, first->join_token, &reason);
+    ASSERT_TRUE(same) << reason;
+    EXPECT_TRUE(same->retired_join_tokens.empty());
+
+    std::vector<std::string> tokens{first->join_token};
+    for (int round = 0; round < 6; ++round) {
+        tokens.push_back(zetta::cluster::generate_join_token());
+        auto rekeyed = zetta::cluster::load_or_create_cluster_security(
+            dir.path().string(), node_id, tokens.back(), &reason);
+        ASSERT_TRUE(rekeyed) << reason;
+    }
+    auto after = zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, {}, &reason);
+    ASSERT_TRUE(after) << reason;
+    EXPECT_EQ(after->join_token, tokens.back());
+    ASSERT_EQ(after->retired_join_tokens.size(),
+              zetta::cluster::kMaxRetiredJoinTokens);
+    // Newest first: the token before the current one leads.
+    EXPECT_EQ(after->retired_join_tokens.front(), tokens[tokens.size() - 2]);
+}
+
 TEST(ClusterSecurity, SecretFileIsSchemaValidated) {
     zetta::test::TempDir dir;
     const std::string node_id = zetta::util::new_uuid();

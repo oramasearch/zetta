@@ -21,3 +21,14 @@ report theirs as `columns_seen`. Parse errors carry the token's position
 `system.datasets` has a `source_format` column: what the rows were loaded from,
 recorded on the table at create time (#1221). See
 [system.datasets](../../../docs/data/system-datasets.md).
+
+Every data-changing statement checks its right in the executor (#1229): INSERT,
+UPDATE, DELETE and TRUNCATE need `sql:write`, CREATE/DROP DATABASE and TABLE
+`sql:ddl`, at table or database scope (DELETE, TRUNCATE and table DDL need the
+whole table); CREATE VIRTUAL TABLE needs flat `sql:ddl`; CREATE USER and CREATE
+TOKEN need `users:manage` / `tokens:manage`. A legacy AccessKey needs the flat
+right. Column grants and row-level security apply to UPDATE and DELETE; TRUNCATE
+of a policy-protected table is refused for a non-bypass caller. Each such
+statement records a `data_changed` audit row. SQL never reaches the reserved
+`zetta_connect` database (#1230). See
+[access control](../../../docs/governance/access-control.md#per-statement-enforcement).

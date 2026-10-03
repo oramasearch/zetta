@@ -221,9 +221,9 @@ TestResult run_connections(const TestOptions& options, TestContext& context) {
         if (found->config.to_json().dump().find(secret) != std::string::npos) {
             return TestResult::fail(where + "ConnectorConfig::to_json leaked the token");
         }
-        // …and the one serialization that DOES carry it is the store's own.
-        if (found->config.to_storage_json().dump().find(secret) == std::string::npos) {
-            return TestResult::fail(where + "the store's own serialization lost the token");
+        // …while the node itself still opens the sealed credential (#1230).
+        if (found->config.token != secret) {
+            return TestResult::fail(where + "the sealed credential did not open");
         }
 
         zetta::query::QueryService service(node);
