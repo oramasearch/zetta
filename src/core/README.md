@@ -34,3 +34,6 @@ it, and the CSV decoder refuses ragged rows with their line (#1221). See
 See [architecture](../../docs/architecture/README.md) and
 [pub/sub dispatch](../../docs/pubsub/dispatch.md), plus the
 [memory operations guide](../../docs/ops/memory.md).
+Node startup re-seals saved connector credentials that are plaintext (pre-#1230)
+or sealed under a retired join token, and builds the sealing keyring from the
+join token main passes, or from a node-local secret (#1230).

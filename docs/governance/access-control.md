@@ -607,7 +607,8 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
   grant is denied; columns the caller lacks `sql:read` on are **masked** to null in
   the output (both `SELECT *` and a projected list), and a `WHERE`/`GROUP BY` over a
   masked column is refused (no inference). An `INSERT` to a table or column with no
-  `sql:write` grant is **rejected**.
+  `sql:write` grant is **rejected**, and so is every other data-changing statement
+  without its right — see [per-statement enforcement](#per-statement-enforcement).
 - **MCP / REST** (`src/core/api/registry.cpp`): the invoke right for the capability
   surface is `mcp:call`, now scopable per tool. `tools/call` (and the REST
   `/v1/<capability>`, the same `Registry::call` choke point) checks
@@ -620,6 +621,59 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
 
 `system.roles` gains a **`scoped_grants`** column rendering each grant as
 `<perm> ON <object>` (e.g. `sql:read ON sales.customers(id, email)`).
+
+### Per-statement enforcement
+
+Until [#1229](https://github.com/oramasearch/zetta/issues/1229) only `INSERT`
+checked `sql:write`; `UPDATE`, `DELETE`, `TRUNCATE` and the DDL ran for any caller
+that could reach the `sql` capability, so a reader could change or destroy data.
+Every statement that changes data, schema or governance now checks its right in
+the executor before it touches anything:
+
+| Statement | Right | Scope |
+|---|---|---|
+| `INSERT`, `UPDATE` | `sql:write` | the table; a column grant admits only those columns (target / `SET` columns) |
+| `DELETE`, `TRUNCATE` | `sql:write` | the **whole** table (they remove whole rows) |
+| `CREATE TABLE`, `DROP TABLE` | `sql:ddl` | the whole table (a grant `ON db.*` or `ON db.t`) |
+| `CREATE DATABASE`, `DROP DATABASE` | `sql:ddl` | the database (`ON db.*` / `ON DATABASE db`) or flat |
+| `CREATE VIRTUAL TABLE` | `sql:ddl` | flat only: it is a global name over a replicated key family |
+| `CREATE USER` | `users:manage` | flat |
+| `CREATE TOKEN` | `tokens:manage` | flat — without it a caller could mint a token for the owner |
+| `CREATE/DROP ROLE`, `GRANT`/`REVOKE`, `CREATE/DROP POLICY` | `roles:manage` | flat (unchanged, #746) |
+
+A `WHERE` in `UPDATE` or `DELETE` over a column the caller may not read is
+refused, as for `SELECT` — the row count would otherwise reveal its values.
+
+Who is checked: a token-resolved user against its flat and object-scoped grants;
+a **legacy AccessKey** against its own flat capabilities (`data:write`,
+`data:ddl` — it used to skip the check because it has no object tier); the
+trusted local session (empty acting key: the library, the desktop app, internal
+engine queries) is allowed. The governed console runs a key session's SQL as
+that key (`QueryService::acting_as`), not as the local session.
+
+Row-level security applies to `UPDATE` and `DELETE` — see
+[Enforcement](#enforcement-deny-by-default-admin--unrestricted--local-bypass) below.
+
+The reserved `zetta_connect` database (saved connector credentials, #1230) is
+not reachable through SQL for anyone, the local session included; its governed
+surfaces are `system.connections` and the connection capabilities.
+
+**Audit.** The `sql` capability stays a read on the wire (`GET /v1/sql`), and the
+registry still records its per-call `data_access` row. In addition every
+data-changing statement records a **`data_changed`** action: the actor (`local`
+for the trusted session), the target (`sql:table:<db>.<table>`,
+`sql:database:<db>`, `sql:user:<name>`, `sql:token:<user>`, `sql:role:<name>`,
+`sql:policy:<name>`, `sql:virtual_table:<name>`), `allowed` (false for a
+refusal), and the statement's status line or error — never a value it wrote.
+See [audit trail](audit-trail.md).
+
+**Callers.** Every automated writer authenticates as the bootstrap `owner`
+(admin): the operator's schema Job and state sync, the e2e script's setup, and
+lake's control-plane writes. Lake's `workspace_sql` is `SELECT`/`WITH` only, and
+the agents reach Zetta through lake's proxy, which does not expose `sql`. A
+principal that wrote without `sql:write`/`sql:ddl` — a `reader`, a Clerk user
+auto-provisioned with no role, a custom role with only `sql:read` — is now
+refused and needs a grant (the built-in `writer` role carries both).
 
 ## Row-level security (FEAT-9 / #748 — closes epic #743)
 
@@ -697,6 +751,18 @@ column grants on:
   applicable policies are **permissive** (OR-ed), as in Postgres.
 - On **`INSERT`**, each new row must satisfy an applicable `WITH CHECK` — a violating
   row **rejects** the statement.
+- On **`UPDATE`** (#1229), only rows the caller can see (the `SELECT`/`ALL`
+  policies' `USING`) **and** could have written (the `INSERT`/`UPDATE`/`ALL`
+  policies' `USING`, falling back to `WITH CHECK`) are matched — the rest are
+  untouched and uncounted — and every updated row must still satisfy `WITH CHECK`,
+  or the whole statement is refused. A caller can neither change a row it cannot
+  see nor hand its own row to someone else.
+- On **`DELETE`** (#1229), the same visibility and write-class filter decides
+  which rows are removed. There is no `FOR DELETE` command: the write-class
+  policies govern it.
+- **`TRUNCATE`** of a table with any read or write policy is refused for a
+  non-bypass caller — it would remove rows hidden from them; `DELETE` removes
+  exactly the rows they may.
 - **Deny-by-default**: RLS is *engaged* for a table as soon as any policy governs
   that table+command. On an engaged table, a caller with **no applicable policy**
   (its role set doesn't intersect any policy's `roles`) sees **no rows** / can write
@@ -724,6 +790,7 @@ user via `find_user_by_id` + `roles_for_user`.
 - `include/zetta/governance/grant.hpp` — scoped grants (#747): `ScopedGrant` (`{operation, object}`), `object_covers`, `column_access_for`, `object_permitted`, and `ColumnAccess`.
 - `include/zetta/node.hpp` — object decisions (#747): `Node::authorize_object` / `column_scope` / `may_call_tool` / `authorize_blob`, and `grant_scoped_permissions` / `revoke_scoped_permissions`.
 - `src/core/query/executor.cpp` — the SQL choke point that denies ungranted tables, masks ungranted columns on read, and rejects writes to ungranted columns (#747); `src/core/api/registry.cpp` (per-tool `mcp:call`), `src/core/api/http_server.cpp` (`tools/list` filter), `src/core/api/serving.cpp` (`serve_blob`).
+- `tests/query/test_sql_write_permissions.cpp` — per-statement enforcement (#1229): a reader refused and a writer allowed for every statement kind, object and column scope on `UPDATE`/`DELETE`, row security on `UPDATE`/`DELETE`/`TRUNCATE`, `users:manage`/`tokens:manage`, the legacy-AccessKey flat right, the `data_changed` audit, and the unreachable connection store.
 - `tests/governance/test_scoped_grants.cpp` + `tests/api/test_scoped_grants_api.cpp` — the scoped-grants coverage (#747): covering decision, column masking, table denial, write rejection, per-tool `mcp:call` + `tools/list` filter, blob-prefix serve, admin/local bypass.
 - `include/zetta/governance/policy.hpp` — row-level security (#748): `zetta::governance::Policy` / `PolicyValue` / `policy_value_from_json` / `policy_schema` (the `policy:<uuid>` entity + its trust boundary).
 - `include/zetta/query/ast.hpp` — the RLS predicate AST (#748): `PolicyPredicate` / `PolicyTerm` / `PolicyCommand` + `CreatePolicyStmt` / `DropPolicyStmt` (the dialect-neutral parsed form the executor evaluates with `compare_cell`).

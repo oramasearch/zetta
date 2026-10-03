@@ -27,3 +27,8 @@ Native M-2 coverage includes keyed projection that collapses repeated snapshot
 observations while preserving distinct text entity identifiers (#1204).
 Dataset tests refuse ragged CSV by line, check lake's name rule, and keep a
 table's source format across a restart and in the replicated `tbl:` value (#1221).
+`query/test_sql_write_permissions.cpp` proves a reader is refused and a writer
+allowed for every data-changing statement, object and column scope, row
+security on UPDATE/DELETE, and the `data_changed` audit (#1229).
+`connect/test_credential_seal.cpp` and `connect/test_connection_store.cpp` cover
+sealed storage, every read surface, legacy re-sealing and key rotation (#1230).

@@ -666,6 +666,12 @@ int main(int argc, char** argv) {
                          reason.c_str());
             return 1;
         }
+        // Saved connector credentials are sealed under a key derived from the
+        // join token (#1230): every member holds the token outside the
+        // replicated catalogue, so every member opens what another sealed.
+        // The retired tokens let a rotated node re-seal what the old one sealed.
+        opts.node.connection_root_secret = security->join_token;
+        opts.node.retired_connection_root_secrets = security->retired_join_tokens;
         opts.cluster.security = std::move(*security);
     }
 

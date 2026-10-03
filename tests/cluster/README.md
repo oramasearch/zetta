@@ -6,3 +6,5 @@ while audit delivery and legacy-history compaction are tested in governance
 (#1164). See [the proof runbook](../../docs/testing/audit-replication.md).
 The incremental-reconcile load case migrates 100,000 legacy audit records, then
 checks ordinary catalog ticks while new audit records append outside the catalog.
+`ReKeyingRetiresTheEarlierToken` covers the bounded retired-token list a
+`--join-token` re-key keeps for the connector-credential key (#1230).

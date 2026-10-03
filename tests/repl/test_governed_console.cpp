@@ -55,6 +55,17 @@ const char* kSqlSelect = "SELECT * FROM shop.items;";
 // passes the baseline gate by construction.
 const char* kPython = "ds = load_dataset(\"orders\")\nmodel = train(ds)";
 
+// How many audit events of one action the node holds — the console records a
+// data_access row per run, and the executor a data_changed row per statement
+// that changes data or schema (#1229).
+std::size_t count_action(const Node& node, AuditAction action) {
+    std::size_t count = 0;
+    for (const auto& event : node.audit_events()) {
+        if (event->action() == action) ++count;
+    }
+    return count;
+}
+
 // The last audit event the node recorded.
 std::shared_ptr<zetta::governance::AuditEvent> last_event(const Node& node) {
     auto events = node.audit_events();
@@ -82,7 +93,9 @@ TEST(GovernedConsole, SqlRunsReturnsGridAndAudits) {
     // Build the table (one run -> one audit event), then read it back.
     const Result setup = console.run(Frontend::Sql, kSqlSetup);
     EXPECT_TRUE(setup.ok()) << setup.error;
-    ASSERT_EQ(node.audit_event_count(), 1u);
+    ASSERT_EQ(count_action(node, AuditAction::DataAccess), 1u);
+    // …and each of its three statements is an audited action (#1229).
+    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 3u);
 
     const Result select = console.run(Frontend::Sql, kSqlSelect);
     ASSERT_TRUE(select.ok()) << select.error;
@@ -102,7 +115,8 @@ TEST(GovernedConsole, SqlRunsReturnsGridAndAudits) {
 
     // The action is recorded in the audit trail (an unauthenticated local
     // session is allowed but still audited).
-    ASSERT_EQ(node.audit_event_count(), 2u);
+    ASSERT_EQ(count_action(node, AuditAction::DataAccess), 2u);
+    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 3u);
     auto event = last_event(node);
     ASSERT_TRUE(event);
     EXPECT_EQ(event->action(), AuditAction::DataAccess);
@@ -298,8 +312,12 @@ TEST(GovernedConsole, CapabilityGrantAllowsTheRun) {
     auto principal = node.create_principal("operator", PrincipalKind::Service);
     ASSERT_TRUE(principal);
     CapabilitySet caps;
+    // The setup creates a database and a table and inserts: the key needs the
+    // schema and write rights, not only the query right (#1229).
     caps.grant(CapabilityDomain::Api, "query")
-        .grant(CapabilityDomain::Orchestration, "start_run");
+        .grant(CapabilityDomain::Orchestration, "start_run")
+        .grant(CapabilityDomain::Data, "ddl")
+        .grant(CapabilityDomain::Data, "write");
     auto key = principal->create_key(Scope{}, caps);
     ASSERT_TRUE(key);
     console.set_session_key(key->id());
@@ -310,13 +328,61 @@ TEST(GovernedConsole, CapabilityGrantAllowsTheRun) {
     EXPECT_TRUE(py.ok()) << py.error;
     EXPECT_EQ(node.run_count(), 1u);
 
-    // Both ran + are audited as allowed against the key.
-    ASSERT_EQ(node.audit_event_count(), 2u);
+    // Both ran + are audited as allowed against the key: one data_access per
+    // run, and one data_changed per setup statement.
+    ASSERT_EQ(count_action(node, AuditAction::DataAccess), 2u);
+    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 3u);
     for (const auto& event : node.audit_events()) {
         EXPECT_TRUE(event->allowed());
         EXPECT_EQ(event->actor(), key->id());
     }
 
+    node.stop();
+}
+
+// A key that may query but not write: the console lets it in, and the engine
+// refuses each data-changing statement as that key (#1229). It used to run as
+// the trusted local session once past the query check.
+TEST(GovernedConsole, QueryOnlyKeyCannotChangeData) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    zetta::query::QueryService service{node};
+    GovernedConsole console{node, service};
+    // The table exists (built by the trusted local session).
+    ASSERT_TRUE(console.run(Frontend::Sql, kSqlSetup).ok());
+
+    auto principal = node.create_principal("viewer", PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    CapabilitySet caps;
+    caps.grant(CapabilityDomain::Api, "query");
+    auto key = principal->create_key(Scope{}, caps);
+    ASSERT_TRUE(key);
+    console.set_session_key(key->id());
+
+    for (const char* statement :
+         {"INSERT INTO shop.items (sku, qty) VALUES ('C3', 1);",
+          "UPDATE shop.items SET qty = 0;", "DELETE FROM shop.items;",
+          "TRUNCATE shop.items;", "CREATE TABLE shop.more (a int);",
+          "DROP TABLE shop.items;", "DROP DATABASE shop;"}) {
+        const Result refused = console.run(Frontend::Sql, statement);
+        EXPECT_FALSE(refused.ok()) << statement;
+        EXPECT_NE(refused.error.find("permission denied"), std::string::npos)
+            << statement << ": " << refused.error;
+    }
+    // Reading is still allowed, and nothing changed.
+    const Result select = console.run(Frontend::Sql, kSqlSelect);
+    ASSERT_TRUE(select.ok()) << select.error;
+    EXPECT_EQ(select.rows.size(), 2u);
+
+    std::size_t refused_changes = 0;
+    for (const auto& event : node.audit_events()) {
+        if (event->action() == AuditAction::DataChanged && !event->allowed()) {
+            EXPECT_EQ(event->actor(), key->id());
+            ++refused_changes;
+        }
+    }
+    EXPECT_EQ(refused_changes, 7u);
     node.stop();
 }
 

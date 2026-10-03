@@ -302,6 +302,11 @@ LaunchOutcome run_connector_fetch_launch(
         return decline("no saved connection named '" + connection +
                        "' on this node");
     }
+    if (saved->credential == CredentialState::Unreadable) {
+        return decline("the credential of connection '" + connection +
+                       "' does not open on this node (" + saved->credential_error +
+                       ")");
+    }
 
     std::shared_ptr<data::Table> table = node.adopt_replicated_table(
         payload.at("database").get<std::string>(),

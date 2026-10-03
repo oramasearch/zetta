@@ -1,5 +1,7 @@
 #include "zetta/node.hpp"
 
+#include "zetta/connect/connection_store.hpp"
+
 #include "zetta/pubsub/node_integration.hpp"
 #include "zetta/pubsub/pubsub.hpp"
 
@@ -704,6 +706,22 @@ bool Node::start() {
                 integrity_.dangling_rows, integrity_.dangling_large_objects,
                 integrity_.dangling_inputs, integrity_.dangling_graphs,
                 integrity_.dangling_access_keys);
+        }
+    }
+    // Saved connector credentials (#1230): seal any legacy plaintext entry and
+    // re-seal any sealed under a retired root secret, so a rotated join token
+    // takes effect on the stored credentials the first time a node starts with
+    // it.
+    {
+        const zetta::connect::ResealReport resealed =
+            zetta::connect::reseal_connections(*this);
+        if (resealed.resealed > 0 || !resealed.unreadable.empty() ||
+            !resealed.error.empty()) {
+            std::printf(
+                "zetta: connection credentials: %zu re-sealed, %zu not openable "
+                "on this node%s%s\n",
+                resealed.resealed, resealed.unreadable.size(),
+                resealed.error.empty() ? "" : " — ", resealed.error.c_str());
         }
     }
     // Pub/sub (#1024): governed by this node's users and roles, tables reachable
@@ -4147,6 +4165,30 @@ std::vector<nlohmann::json> Node::virtual_table_rows(
         rows.push_back(std::move(row));
     }
     return rows;
+}
+
+const zetta::connect::CredentialKeyring* Node::connection_keyring(
+    std::string* reason) const {
+    if (!connection_keyring_ && connection_keyring_error_.empty()) {
+        std::string why;
+        std::optional<zetta::connect::CredentialKeyring> keyring =
+            config_.connection_root_secret.empty()
+                ? zetta::connect::load_or_create_local_keyring(config_.data_dir, &why)
+                : zetta::connect::CredentialKeyring::from_root_secrets(
+                      config_.connection_root_secret,
+                      config_.retired_connection_root_secrets, &why);
+        if (keyring) {
+            connection_keyring_ = std::move(*keyring);
+        } else {
+            connection_keyring_error_ =
+                why.empty() ? std::string("no sealing key") : why;
+        }
+    }
+    if (!connection_keyring_) {
+        if (reason) *reason = connection_keyring_error_;
+        return nullptr;
+    }
+    return &*connection_keyring_;
 }
 
 bool Node::bypasses_row_security(const std::string& acting_id,

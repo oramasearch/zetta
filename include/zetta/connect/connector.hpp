@@ -61,13 +61,6 @@ struct ConnectorConfig {
     // line may carry.
     nlohmann::json to_json() const;
 
-    // The INTERNAL storage form — **includes the token**. Deliberately distinct
-    // from `to_json()`: the saved-connection store
-    // ([connection_store.hpp](connection_store.hpp)) must persist the credential
-    // so every node can present it, and that is the only thing this is for.
-    // Never hand its output to a caller, a log, an audit detail, or a
-    // `system.*` view. Round-trips through `from_json`.
-    nlohmann::json to_storage_json() const;
 
     // Parse + validate at the boundary. Returns std::nullopt (never throws)
     // unless `value` is an object with a known non-empty `type`, a non-empty

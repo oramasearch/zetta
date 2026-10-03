@@ -3572,7 +3572,7 @@
     },
     "/v1/create_connection": {
       "post": {
-        "description": "Save a named connector configuration (credential included) so a connector query can reference it by name instead of carrying the token in every request. The connection is stored replicate-to-all — every node holds it, which is what lets each node fetch its own stripe of a distributed query straight from the source. Saving an existing name replaces it. The token is never returned by any surface (list_connections and system.connections omit it). Requires orchestration:create_connection.",
+        "description": "Save a named connector configuration (credential included) so a connector query can reference it by name instead of carrying the token in every request. The connection is stored replicate-to-all — every node holds it, which is what lets each node fetch its own stripe of a distributed query straight from the source. Saving an existing name replaces it, re-sealing the new credential. The token is stored sealed (AES-256-GCM under a key derived from the cluster join token, never in the replicated catalogue) and is never returned by any surface (list_connections and system.connections report only whether one is set). Requires orchestration:create_connection.",
         "operationId": "create_connection",
         "requestBody": {
           "content": {
@@ -3697,6 +3697,16 @@
                         },
                         "created": {
                           "description": "when the connection was last saved (ISO-8601 UTC)",
+                          "type": "string"
+                        },
+                        "credential": {
+                          "description": "whether a credential is stored — set (sealed, and this node opens it), none, unreadable (sealed under a key this node does not hold), or plaintext (a legacy entry not yet re-sealed). Never the credential itself.",
+                          "enum": [
+                            "set",
+                            "none",
+                            "unreadable",
+                            "plaintext"
+                          ],
                           "type": "string"
                         },
                         "name": {
@@ -17519,6 +17529,16 @@
                                 "description": "when the connection was last saved (ISO-8601 UTC)",
                                 "type": "string"
                               },
+                              "credential": {
+                                "description": "whether a credential is stored — set (sealed, and this node opens it), none, unreadable (sealed under a key this node does not hold), or plaintext (a legacy entry not yet re-sealed). Never the credential itself.",
+                                "enum": [
+                                  "set",
+                                  "none",
+                                  "unreadable",
+                                  "plaintext"
+                                ],
+                                "type": "string"
+                              },
                               "name": {
                                 "type": "string"
                               }
@@ -26776,7 +26796,7 @@
     },
     "/v1/sql": {
       "get": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. DDL/INSERT mutate the database. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. Requires api:query.",
         "operationId": "sql",
         "parameters": [
           {

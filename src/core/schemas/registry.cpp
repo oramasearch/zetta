@@ -31,6 +31,7 @@
 #include "zetta/compute/distributed_scheduler.hpp"
 #include "zetta/compute/job_autoscaler.hpp"
 #include "zetta/compute/scaling_policy.hpp"
+#include "zetta/connect/credential_seal.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
@@ -278,6 +279,9 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         // connect (the distributed connector ingest, #833)
         {"connector_fetch_launch", "connector_fetch_launch.schema.json",
          &zetta::connect::connector_fetch_launch_schema},
+        // connect (a saved connection's sealed credential, #1230)
+        {"sealed_credential", "sealed_credential.schema.json",
+         &zetta::connect::sealed_credential_schema},
         // usecases/churn
         {"churn_coordinated_run", "churn_coordinated_run.schema.json",
          &zetta::usecases::churn::churn_coordinated_run_schema},

@@ -669,7 +669,7 @@ if want_level 3; then
         # deployed engine parses cleanly (scoped GRANT ... ON <object> is omitted:
         # it faults the current build via an escaping ParseError — see notes).
         sql_as "$ADMIN" "CREATE DATABASE $DB" >/dev/null 2>&1
-        RTBL="authz_${RUN}"       # the reader may write here (the #759 write tests)
+        RTBL="authz_${RUN}"       # the reader's write attempts target this one (#759, #1229)
         RLSTBL="authz_rls_${RUN}" # PRISTINE: admin-only rows, the reader only reads it
         sql_as "$ADMIN" "CREATE TABLE $RTBL (id, owner, amount)" >/dev/null 2>&1
         sql_as "$ADMIN" "CREATE TABLE $RLSTBL (id, owner, amount)" >/dev/null 2>&1
@@ -708,6 +708,21 @@ if want_level 3; then
             authz_privileged "CREATE USER"  "CREATE USER e2e_escalate_${RUN}"        "#759"
             authz_privileged "CREATE TOKEN FOR owner" "CREATE TOKEN FOR owner TYPE access" "#759"
             authz_privileged "CREATE TABLE (DDL)" "CREATE TABLE e2e_reader_ddl_${RUN} (x)" "#759"
+            # Every other data-changing statement checks sql:write / sql:ddl the
+            # way INSERT does (#1229) — enforced, so an allowed one FAILS.
+            authz_denied() { # DESC STMT FINDING
+                if sql_as "$RTOK" "$2"; then fail "$1 was ALLOWED for a reader [$3]"
+                else pass "$1 denied for a reader [$3]"; fi
+            }
+            authz_denied "UPDATE" "UPDATE $RTBL SET amount = '0'" "#1229"
+            authz_denied "DELETE" "DELETE FROM $RTBL WHERE id = 1" "#1229"
+            authz_denied "TRUNCATE" "TRUNCATE $RTBL" "#1229"
+            authz_denied "DROP TABLE" "DROP TABLE $RTBL" "#1229"
+            authz_denied "DROP DATABASE" "DROP DATABASE $DB" "#1229"
+            # The connection store is not reachable through SQL at all (#1230).
+            if sql_as "$ADMIN" "SELECT * FROM zetta_connect.connections"; then
+                fail "the connection store answered a SELECT [#1230]"
+            else pass "the connection store refuses SQL, even for the admin [#1230]"; fi
             # RLS: a SELECT policy limits a non-admin to rows current_user() owns;
             # admin bypasses [#748/#762]. RLS and column masking ride the SAME
             # per-statement executor gate as sql:write, so a build where writes are

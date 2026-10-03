@@ -18,9 +18,11 @@
 // id in its HELLO. CTL-2's boundary (TB-3, outsiders) is closed; member-vs-
 // member impersonation needs the CSR-enrollment upgrade.
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -34,12 +36,21 @@ struct ClusterSecurity {
     std::string ca_certificate_pem;  // the derived cluster CA (trust anchor)
     std::string certificate_pem;     // this node's identity cert (CN = node id)
     std::string private_key_pem;     // this node's private key (keep on disk 0600)
+    // Earlier join tokens this node ran under, newest first (at most
+    // kMaxRetiredJoinTokens). Kept so secrets derived from a token — the
+    // connector-credential sealing key (#1230) — can still open what was sealed
+    // under the previous one and re-seal it. Not used for transport trust.
+    std::vector<std::string> retired_join_tokens;
 
     bool enabled() const {
         return !join_token.empty() && !ca_certificate_pem.empty() &&
                !certificate_pem.empty() && !private_key_pem.empty();
     }
 };
+
+// How many earlier join tokens the secret file keeps (ClusterSecurity::
+// retired_join_tokens).
+inline constexpr std::size_t kMaxRetiredJoinTokens = 4;
 
 // A fresh join token: 32 bytes from the OS CSPRNG, lowercase hex.
 std::string generate_join_token();
@@ -58,7 +69,8 @@ std::optional<ClusterSecurity> derive_cluster_security(
 // Load this node's security material from `<data_dir>/security/`, creating
 // whatever is missing: the secret file (schema-validated JSON holding the join
 // token; generated on a first start, or taken from `join_token_override` when
-// the operator passed `--join-token`), and the node's key + certificate (reused
+// the operator passed `--join-token` — a different token moves the stored one
+// to `retired_join_tokens`), and the node's key + certificate (reused
 // while they still verify against the derived CA and carry this node id,
 // regenerated otherwise). Empty optional with a reason on a malformed secret
 // file, a bad override token, or an I/O / OpenSSL failure.

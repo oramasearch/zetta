@@ -52,3 +52,9 @@ the dataset contract (#957).
 `mcp_docs.cpp` also renders `/cli.md`. Its pub/sub and audit sections document
 the dispatch-pool and class-specific retention flags with their environment
 variables; the CLI parity test keeps that page synchronized with `src/main.cpp`.
+
+`sql` is still a read capability on the wire (GET `/v1/sql`), but each statement
+is authorized inside the executor and every data-changing one is audited as a
+`data_changed` action (#1229). Saved connections report `credential`
+(set / none / unreadable / plaintext), never the credential (#1230). See
+[access control](../../../docs/governance/access-control.md#per-statement-enforcement).

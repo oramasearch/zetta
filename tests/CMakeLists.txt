@@ -123,6 +123,7 @@ add_executable(zetta-tests
   index/test_oramacore_fulltext_index.cpp
   index/test_distributed_fulltext.cpp
   query/test_distributed_select.cpp
+  query/test_sql_write_permissions.cpp
   index/test_node_search.cpp
   compute/test_compute_job.cpp
   compute/test_checkpoint.cpp
@@ -226,6 +227,7 @@ add_executable(zetta-tests
   connect/test_connector.cpp
   connect/test_postgres_connector.cpp
   connect/test_connection_store.cpp
+  connect/test_credential_seal.cpp
   connect/test_distributed_fetch.cpp
   connect/test_distributed_ingest.cpp
   connect/test_native_http_transport.cpp

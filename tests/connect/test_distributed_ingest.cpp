@@ -197,6 +197,9 @@ struct Member {
         NodeConfig config;
         config.data_dir = dir.path().string();
         config.preflight = false;
+        // Every member shares the root secret, as main() passes each the cluster
+        // join token: a credential one member sealed, every member opens (#1230).
+        config.connection_root_secret = "distributed-ingest-test-cluster-secret";
         return config;
     }
     static ClusterConfig cluster_config(std::uint16_t port,

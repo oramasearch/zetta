@@ -10,3 +10,6 @@ counters from the current encoded-value cache; probe subtraction is clamped so
 removed catalog history cannot wrap bytes or items (#1167).
 Explicit audit purge propagates through the same range exchange (#1169). See
 [audit replication](../../../docs/governance/audit-trail.md).
+The secret file keeps up to four retired join tokens when `--join-token`
+re-keys a node, so the connector-credential key derived from an earlier token
+still opens (#1230). See [transport security](../../../docs/cluster/security.md).
