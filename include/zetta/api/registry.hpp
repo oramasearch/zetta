@@ -184,6 +184,13 @@ using ConsentDescriber = std::function<std::optional<governance::ConsentAction>(
 struct AwaitableRead {
     std::function<std::chrono::milliseconds(const nlohmann::json& input)> wait_for;
     std::function<bool(const ApiResult& result)> should_wait;
+    // Optional (#1005): a call whose answer changes with time as well as with
+    // the event. When set, the route keeps waiting until wait_for elapses — each
+    // wake (the event, or retry_within(result) passing) makes one more governed
+    // call with a fresh event — instead of making one final call. Such an entry
+    // may be an action that mutates and blocks (acquire_object_lease waits out
+    // another holder's lease this way); offloadable and consent-gated ones may not.
+    std::function<std::chrono::milliseconds(const ApiResult& result)> retry_within;
 };
 
 // One entry on the control surface. `input_schema` is draft-07 JSON Schema

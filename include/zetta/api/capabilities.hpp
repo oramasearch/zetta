@@ -80,6 +80,23 @@ void register_pubsub_capabilities(Registry& registry);
 //   query_metric       read    sum / aggregate over a range, grouped and stepped
 void register_record_capabilities(Registry& registry);
 
+// The object capability (#1005, docs/data/object-store.md):
+//
+//   create_bucket         action  declare a bucket, its quota and replication factor
+//   list_objects          read    keys and sizes by key, paged
+//   object_usage          read    objects, bytes and the quota
+//   object_barrier        action  fsync every acknowledged write on every live node
+//   delete_object         action  remove one object (fenced)
+//   acquire_object_lease  action  take the owner lease, waiting up to wait_ms
+//   renew_object_lease    action  extend it
+//   release_object_lease  action  give it up
+//
+// The byte operations — PUT / PATCH / GET /v1/objects/<bucket>/<key> — are REST
+// routes with raw bodies served by the HTTP adapter; object_route_paths() is
+// their OpenAPI rendering, with the bucket-route aliases of the entries above.
+void register_object_capabilities(Registry& registry);
+nlohmann::json object_route_paths();
+
 // Run experiment tracking (#1137): three writes and two reads. Live metric
 // batches use the existing receive_events long poll on run-metrics.<run>.
 void register_run_metrics_capabilities(Registry& registry);

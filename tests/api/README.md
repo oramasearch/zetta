@@ -71,3 +71,10 @@ path, on create and update, and stores nothing (#1220). Registry coverage checks
 `upload_dataset`'s conflict and `if_exists: "rename"`, unsafe names, ragged CSV,
 `source_format` on the dataset reads and `system.datasets`, and `get_dataset` by
 `database.table` (#1221).
+
+`test_object_routes.cpp` drives the object capability over loopback HTTP with a
+keep-alive client and an owner loop on its own thread: raw bodies and their
+statuses, the bucket aliases, the fence and the waiting acquire over REST and MCP,
+`ON BUCKET` grants and their audit rows, `507`, OpenAPI, and the latency budgets
+(#1005). Registry coverage accepts a retrying awaitable action and the OpenAPI
+check counts the object paths.

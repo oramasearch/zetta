@@ -192,7 +192,7 @@ const nlohmann::json& role_schema() {
         "kind": {
           "description": "The kind of object.",
           "type": "string",
-          "enum": ["database", "project", "table", "column", "blob", "tool", "topic", "collection"]
+          "enum": ["database", "project", "table", "column", "blob", "tool", "topic", "collection", "bucket"]
         },
         "name": {
           "description": "The object's handle: database/project name, table name (table/column), blob id-or-prefix, or MCP tool name.",

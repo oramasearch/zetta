@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
+#include <limits>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -16,6 +18,7 @@
 #include <utility>
 
 #include <boost/beast2/http_worker.hpp>
+#include <boost/capy/error.hpp>
 #include <boost/capy/io/push_to.hpp>
 #include <boost/capy/write.hpp>
 #include <boost/corosio/io_context.hpp>
@@ -48,7 +51,9 @@
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
 #include "zetta/agent/agent_store.hpp"
+#include "object_routes.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/data/object_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
@@ -605,8 +610,10 @@ boost::http::status http_status_of(int status_code) {
         case 403: return boost::http::status::forbidden;
         case 404: return boost::http::status::not_found;
         case 409: return boost::http::status::conflict;
+        case 416: return boost::http::status::range_not_satisfiable;
         case 422: return boost::http::status::unprocessable_entity;
         case 503: return boost::http::status::service_unavailable;
+        case 507: return boost::http::status::insufficient_storage;
         default: return boost::http::status::internal_server_error;
     }
 }
@@ -642,20 +649,30 @@ struct ApiServer::Impl {
     // consent-gated add_nodes capability. Empty = no targets wired.
     ProvisionerResolver provisioners;
 
+    // Each connection's request parser, by the route parameters it serves, so a
+    // route can lift the body limit for its own request (#1005: an object body has
+    // no cap but the bucket's quota). Touched only on the IO thread, and at
+    // teardown after it has stopped.
+    std::map<const boost::http::route_params*, boost::http::request_parser*> parsers;
+
     struct Connection : boost::beast2::http_worker {
+        Impl& owner;
         boost::corosio::tcp_socket socket;
 
-        Connection(boost::corosio::tcp_socket accepted,
+        Connection(Impl& server, boost::corosio::tcp_socket accepted,
                    boost::http::router<boost::http::route_params> router,
                    boost::http::shared_parser_config parser_config,
                    boost::http::shared_serializer_config serializer_config)
             : http_worker(std::move(router), std::move(parser_config),
                           std::move(serializer_config)),
+              owner(server),
               socket(std::move(accepted)) {
             rp.req_body = boost::capy::any_buffer_source(parser.source_for(socket));
             rp.res_body = boost::capy::any_buffer_sink(serializer.sink_for(socket));
             stream = boost::capy::any_read_stream(&socket);
+            owner.parsers[&rp] = &parser;
         }
+        ~Connection() { owner.parsers.erase(&rp); }
     };
 
     boost::corosio::io_context io_context;
@@ -782,7 +799,7 @@ struct ApiServer::Impl {
             std::shared_ptr<Connection> connection;
             if (idle_connections.empty()) {
                 connection = std::make_shared<Connection>(
-                    std::move(accepted), *router, parser_config, serializer_config);
+                    *this, std::move(accepted), *router, parser_config, serializer_config);
             } else {
                 connection = std::move(idle_connections.back());
                 idle_connections.pop_back();
@@ -1063,92 +1080,582 @@ struct ApiServer::Impl {
             }
         }
 
-        if (response_body.empty()) {
-            std::string traceparent;
-            if (route.req.count("traceparent") != 0) {
-                traceparent = std::string(route.req.at("traceparent"));
-            }
-            const auto trace =
-                zetta::observability::parse_traceparent(traceparent)
-                    .value_or(zetta::observability::make_root_trace());
-            ApiResult call_result;
-            if (capability->awaitable_read) {
-                auto wait_event =
-                    std::make_shared<zetta::runtime::async_event>();
-                std::erase_if(poll_events, [](const auto& event) {
-                    return event.expired();
-                });
-                poll_events.push_back(wait_event);
-                poll_waiter_count.store(poll_events.size(),
-                                        std::memory_order_relaxed);
-                co_await bridge.run_on_owner([&] {
-                    ApiContext context{node, cluster, identity.acting_key, trace,
-                                       &node.span_recorder(), &background};
-                    context.acting_is_user = identity.is_user;
-                    context.wait_event = wait_event;
-                    call_result = capability_registry.call(
-                        capability->name, input, context);
-                });
-                if (capability->awaitable_read->should_wait(call_result)) {
-                    const auto wait_for =
-                        capability->awaitable_read->wait_for(input);
-                    if (wait_for.count() > 0 && is_running.load()) {
-                        [[maybe_unused]] auto wait_result =
-                            co_await zetta::runtime::timeout(
-                                wait_event->wait(), wait_for);
-                        co_await bridge.run_on_owner([&] {
-                            ApiContext context{
-                                node, cluster, identity.acting_key, trace,
-                                &node.span_recorder(), &background};
-                            context.acting_is_user = identity.is_user;
-                            call_result = capability_registry.call(
-                                capability->name, input, context);
-                        });
-                    }
-                }
-                std::erase_if(poll_events, [&wait_event](const auto& event) {
-                    return event.expired() || event.lock() == wait_event;
-                });
-                poll_waiter_count.store(poll_events.size(),
-                                        std::memory_order_relaxed);
-            } else if (capability->offloadable || capability->blocks) {
-                // Offloadable handlers (chat) touch only thread-safe state and
-                // run on the pool so generation never pins the owner loop.
-                auto call = [&]() -> ApiResult {
-                    ApiContext context{node, cluster, identity.acting_key, trace,
-                                       &node.span_recorder(), &background};
-                    context.acting_is_user = identity.is_user;
-                    return capability_registry.call(capability->name, input, context);
-                };
-                if (capability->blocks) {
-                    call_result = co_await zetta::runtime::offload_blocking(call);
-                } else {
-                    call_result = co_await zetta::runtime::offload(call);
-                }
-                // offload resumes us on a pool worker; hop back onto the owning
-                // loop before touching the connection. route.send below is a
-                // Corosio op bound to that loop's executor — resuming it on a pool
-                // thread never completes and the response hangs (the decode itself
-                // already ran off-thread, so the tick loop stayed free).
-                co_await bridge.run_on_owner([] {});
-            } else {
-                co_await bridge.run_on_owner([&] {
-                    ApiContext context{node, cluster, identity.acting_key, trace,
-                                       &node.span_recorder(), &background};
-                    context.acting_is_user = identity.is_user;
-                    call_result =
-                        capability_registry.call(capability->name, input, context);
-                });
-            }
-            status = http_status_of(rest_status(call_result));
-            response_body = wire_dump(rest_envelope(call_result));
+        if (!response_body.empty()) {
+            route.status(status);
+            route.res.set(http::field::content_type, "application/json");
+            stamp_response_headers(route, response_body);
+            auto [send_error] = co_await route.send(response_body);
+            if (send_error) co_return http::route_error(send_error);
+            co_return http::route_done;
         }
+        co_return co_await answer_capability(route, std::move(capability), std::move(input),
+                                             identity);
+    }
 
+    // One governed registry call on the right executor: the blocking pool for a
+    // `blocks` entry, a pool worker for an offloadable one, the owning loop for
+    // the rest. Every hop off the loop comes back onto it before the caller
+    // touches the connection.
+    runtime::task<ApiResult> call_capability(std::shared_ptr<const Capability> capability,
+                                             nlohmann::json input, RequestIdentity identity,
+                                             zetta::observability::TraceContext trace,
+                                             std::shared_ptr<runtime::async_event> wait_event) {
+        auto call = [&]() -> ApiResult {
+            ApiContext context{node, cluster, identity.acting_key, trace,
+                               &node.span_recorder(), &background};
+            context.acting_is_user = identity.is_user;
+            context.wait_event = wait_event;
+            return capability_registry.call(capability->name, input, context);
+        };
+        ApiResult result;
+        if (capability->blocks) {
+            result = co_await zetta::runtime::offload_blocking(call);
+            co_await bridge.run_on_owner([] {});
+        } else if (capability->offloadable) {
+            // Offloadable handlers (chat) touch only thread-safe state and run on
+            // the pool so generation never pins the owner loop. offload resumes us
+            // on a pool worker; hop back onto the owning loop before touching the
+            // connection: route.send is a Corosio op bound to that loop's executor.
+            result = co_await zetta::runtime::offload(call);
+            co_await bridge.run_on_owner([] {});
+        } else {
+            co_await bridge.run_on_owner([&] { result = call(); });
+        }
+        co_return result;
+    }
+
+    std::shared_ptr<runtime::async_event> new_poll_event() {
+        auto event = std::make_shared<zetta::runtime::async_event>();
+        std::erase_if(poll_events, [](const auto& waiting) { return waiting.expired(); });
+        poll_events.push_back(event);
+        poll_waiter_count.store(poll_events.size(), std::memory_order_relaxed);
+        return event;
+    }
+
+    void forget_poll_event(const std::shared_ptr<runtime::async_event>& event) {
+        std::erase_if(poll_events, [&event](const auto& waiting) {
+            return waiting.expired() || waiting.lock() == event;
+        });
+        poll_waiter_count.store(poll_events.size(), std::memory_order_relaxed);
+    }
+
+    // Make one capability call from an already-parsed input and answer it — the
+    // REST rendering's second half, shared by /v1/<name> and the object
+    // capability's bucket-route aliases (#1005).
+    boost::http::route_task answer_capability(boost::http::route_params& route,
+                                              std::shared_ptr<const Capability> capability,
+                                              nlohmann::json input, RequestIdentity identity) {
+        namespace http = boost::http;
+        RequestLifetime request_lifetime(requests_in_flight);
+        std::string traceparent;
+        if (route.req.count("traceparent") != 0) {
+            traceparent = std::string(route.req.at("traceparent"));
+        }
+        const auto trace = zetta::observability::parse_traceparent(traceparent)
+                               .value_or(zetta::observability::make_root_trace());
+        ApiResult call_result;
+        if (capability->awaitable_read) {
+            const AwaitableRead& awaitable = *capability->awaitable_read;
+            auto wait_event = new_poll_event();
+            call_result = co_await call_capability(capability, input, identity, trace, wait_event);
+            const auto wait_for = awaitable.wait_for(input);
+            const auto deadline = std::chrono::steady_clock::now() + wait_for;
+            if (!awaitable.retry_within) {
+                // One wait, then one final call (#1076).
+                if (awaitable.should_wait(call_result) && wait_for.count() > 0 &&
+                    is_running.load()) {
+                    [[maybe_unused]] auto wait_result =
+                        co_await zetta::runtime::timeout(wait_event->wait(), wait_for);
+                    call_result = co_await call_capability(capability, input, identity, trace, {});
+                }
+            } else {
+                // Keep waiting until wait_for elapses (#1005): every wake — the
+                // event, or retry_within passing — makes one more governed call.
+                while (awaitable.should_wait(call_result) && is_running.load()) {
+                    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        deadline - std::chrono::steady_clock::now());
+                    if (remaining.count() <= 0) break;
+                    const auto wait = std::min(remaining, awaitable.retry_within(call_result));
+                    [[maybe_unused]] auto wait_result =
+                        co_await zetta::runtime::timeout(wait_event->wait(), wait);
+                    forget_poll_event(wait_event);
+                    wait_event = new_poll_event();
+                    call_result =
+                        co_await call_capability(capability, input, identity, trace, wait_event);
+                }
+            }
+            forget_poll_event(wait_event);
+        } else {
+            call_result = co_await call_capability(capability, input, identity, trace, {});
+        }
+        const http::status status = http_status_of(rest_status(call_result));
+        const std::string response_body = wire_dump(rest_envelope(call_result));
         route.status(status);
         route.res.set(http::field::content_type, "application/json");
         stamp_response_headers(route, response_body);
         auto [send_error] = co_await route.send(response_body);
         if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // ---- the object capability's routes (#1005, docs/data/object-store.md) ----
+    //
+    // PUT / PATCH / GET /v1/objects/<bucket>/<key> move raw bodies, streamed a
+    // slice (≤ 4 MiB) at a time in both directions; no request buffers a whole
+    // object. Each is authorized and audited like a capability call
+    // (authorize_object_route), and every store call runs on the blocking pool.
+    // The bucket-level routes and DELETE are aliases of registry capabilities.
+
+    // The worker reuses one response object for every request on a connection and
+    // does not clear its headers (#700), so the headers only these routes set are
+    // removed once their response has gone.
+    static void clear_object_headers(boost::http::route_params& route) {
+        route.res.erase(boost::http::field::content_range);
+        route.res.erase(boost::http::field::allow);
+        route.res.erase("Zetta-Generation");
+    }
+
+    // Send a JSON envelope for a finished object call.
+    boost::http::route_task send_object_result(boost::http::route_params& route,
+                                               const ApiResult& result,
+                                               bool body_unread = false) {
+        namespace http = boost::http;
+        if (body_unread) {
+            // A request body this route did not read would be parsed as the next
+            // request: read and drop what is left of it, so the client's
+            // connection stays in step, or past a bound close the connection.
+            constexpr std::uint64_t kDrainBytes = 64ull * 1024 * 1024;
+            std::uint64_t drained = 0;
+            bool eof = false;
+            while (!eof && drained <= kDrainBytes) {
+                boost::capy::const_buffer chunk[16];
+                auto [pull_error, buffers] = co_await route.req_body.pull(chunk);
+                if (pull_error == boost::capy::error::eof) {
+                    eof = true;
+                    break;
+                }
+                if (pull_error) break;
+                std::size_t consumed = 0;
+                for (const boost::capy::const_buffer& buffer : buffers) consumed += buffer.size();
+                route.req_body.consume(consumed);
+                drained += consumed;
+            }
+            if (!eof) route.res.set_keep_alive(false);
+        }
+        const std::string body = wire_dump(rest_envelope(result));
+        route.status(http_status_of(rest_status(result)));
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        clear_object_headers(route);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // Append up to `limit` bytes of the request body to `out`. `eof` is set once
+    // the body is exhausted.
+    runtime::task<boost::system::error_code> read_body_slice(boost::http::route_params& route,
+                                                             std::string& out, std::size_t limit,
+                                                             bool& eof) {
+        while (out.size() < limit && !eof) {
+            boost::capy::const_buffer chunk[16];
+            auto [pull_error, buffers] = co_await route.req_body.pull(chunk);
+            if (pull_error == boost::capy::error::eof) {
+                eof = true;
+                break;
+            }
+            if (pull_error) co_return pull_error;
+            std::size_t consumed = 0;
+            for (const boost::capy::const_buffer& buffer : buffers) {
+                const std::size_t take = std::min(buffer.size(), limit - out.size());
+                out.append(static_cast<const char*>(buffer.data()), take);
+                consumed += take;
+                if (out.size() == limit) break;
+            }
+            route.req_body.consume(consumed);
+        }
+        co_return boost::system::error_code{};
+    }
+
+    // Run a store call on the blocking pool. The completion event resumes this
+    // coroutine on the executor it awaited from, the IO thread, so no owner-loop
+    // hop follows (a byte route makes several calls per request, and each hop
+    // costs a wake of the owner loop); were it ever resumed elsewhere, one hop
+    // brings it back before the connection is touched.
+    template <class Callable>
+    runtime::task<std::invoke_result_t<Callable>> on_pool(Callable callable) {
+        const auto io_thread = std::this_thread::get_id();
+        auto result = co_await zetta::runtime::offload_blocking(std::move(callable));
+        if (std::this_thread::get_id() != io_thread) co_await bridge.run_on_owner([] {});
+        co_return result;
+    }
+
+    static std::optional<std::uint64_t> parse_unsigned(std::string_view text) {
+        std::uint64_t value = 0;
+        if (text.empty()) return std::nullopt;
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (error != std::errc{} || end != text.data() + text.size()) return std::nullopt;
+        return value;
+    }
+
+    static std::string query_value(const boost::http::route_params& route, std::string_view name) {
+        for (const auto& parameter : route.url.params()) {
+            if (parameter.key == name) return std::string(parameter.value);
+        }
+        return {};
+    }
+
+    static bool query_flag(const boost::http::route_params& route, std::string_view name) {
+        const std::string value = query_value(route, name);
+        return value == "true" || value == "1";
+    }
+
+    // The mutation options a request carries: Zetta-Fence and ?durable.
+    static std::optional<zetta::data::ObjectWrite> write_options(
+        const boost::http::route_params& route, std::string& reason) {
+        zetta::data::ObjectWrite options;
+        options.durable = query_flag(route, "durable");
+        if (route.req.count("Zetta-Fence") != 0) {
+            const auto fence = parse_unsigned(route.req.at("Zetta-Fence"));
+            if (!fence) {
+                reason = "Zetta-Fence must be a non-negative integer";
+                return std::nullopt;
+            }
+            options.fence = *fence;
+        }
+        return options;
+    }
+
+    boost::http::route_task serve_objects(boost::http::route_params& route) {
+        namespace http = boost::http;
+        RequestLifetime request_lifetime(requests_in_flight);
+        const RequestIdentity identity = identity_of(route);
+        constexpr std::string_view kPrefix = "/v1/objects/";
+        const std::string path(route.url.path());
+        const std::string rest = path.size() > kPrefix.size() ? path.substr(kPrefix.size()) : "";
+        const http::method method = route.req.method();
+        const bool has_body = method == http::method::put || method == http::method::patch ||
+                              method == http::method::post;
+        const auto refuse = [&](std::string code, std::string message, std::string at = {}) {
+            return send_object_result(route, ApiResult::failure(std::move(code), std::move(message),
+                                                               std::move(at)),
+                                      has_body);
+        };
+        const std::size_t slash = rest.find('/');
+        if (slash == std::string::npos) {
+            // The bucket-level aliases: GET <bucket>, GET <bucket>:usage,
+            // POST <bucket>:barrier|:acquire|:renew|:release.
+            const std::size_t colon = rest.find(':');
+            const std::string bucket = rest.substr(0, colon);
+            const std::string verb = colon == std::string::npos ? "" : rest.substr(colon + 1);
+            if (!zetta::data::valid_bucket_name(bucket)) {
+                co_return co_await refuse("invalid_input", "want a bucket name", "/bucket");
+            }
+            std::string name;
+            if (method == http::method::get && verb.empty()) name = "list_objects";
+            if (method == http::method::get && verb == "usage") name = "object_usage";
+            if (method == http::method::post && verb == "barrier") name = "object_barrier";
+            if (method == http::method::post && verb == "acquire") name = "acquire_object_lease";
+            if (method == http::method::post && verb == "renew") name = "renew_object_lease";
+            if (method == http::method::post && verb == "release") name = "release_object_lease";
+            const std::shared_ptr<const Capability> capability =
+                name.empty() ? nullptr : capability_registry.find(name);
+            if (!capability) {
+                co_return co_await send_object_result(
+                    route,
+                    ApiResult::failure("not_found",
+                                       "no object route " + std::string(route.req.method_text()) +
+                                           " " + path),
+                    has_body);
+            }
+            nlohmann::json input = nlohmann::json::object();
+            if (name == "list_objects") {
+                std::vector<std::pair<std::string, std::string>> query;
+                for (const auto& parameter : route.url.params()) {
+                    query.emplace_back(parameter.key, parameter.value);
+                }
+                input = rest_input_from_query(*capability, query);
+            } else if (name != "object_usage" && name != "object_barrier") {
+                http::json_sink body_sink;
+                auto [read_error, bytes_read] =
+                    co_await boost::capy::push_to(route.req_body, body_sink);
+                if (read_error) {
+                    co_return co_await refuse("invalid_input", "could not read the request body as JSON");
+                }
+                if (bytes_read > 0) input = to_nlohmann(body_sink.release());
+                if (!input.is_object()) {
+                    co_return co_await send_object_result(
+                        route, ApiResult::failure("invalid_input", "the request body is not a JSON object"));
+                }
+            } else if (has_body) {
+                StringBodySink ignored;  // a barrier carries no body; drain whatever came
+                auto [read_error, bytes_read] = co_await boost::capy::push_to(route.req_body, ignored);
+                (void)bytes_read;
+                if (read_error) co_return http::route_error(read_error);
+            }
+            input["bucket"] = bucket;
+            co_return co_await answer_capability(route, capability, std::move(input), identity);
+        }
+
+        const std::string bucket = rest.substr(0, slash);
+        const std::string key = rest.substr(slash + 1);
+        if (!zetta::data::valid_bucket_name(bucket)) {
+            co_return co_await refuse("invalid_input", "want a bucket name", "/bucket");
+        }
+        if (!zetta::data::valid_object_key(key)) {
+            co_return co_await refuse("invalid_input",
+                                      "want a key of 1 to 1024 bytes with no control characters",
+                                      "/key");
+        }
+        std::string reason;
+        const std::optional<zetta::data::ObjectWrite> options = write_options(route, reason);
+        if (!options) co_return co_await refuse("invalid_input", reason, "/fence");
+        if (method == http::method::delete_) {
+            nlohmann::json input{{"bucket", bucket}, {"key", key}};
+            if (options->fence) input["fence"] = *options->fence;
+            if (options->durable) input["durable"] = true;
+            co_return co_await answer_capability(route, capability_registry.find("delete_object"),
+                                                 std::move(input), identity);
+        }
+        if (method != http::method::put && method != http::method::patch &&
+            method != http::method::get) {
+            route.res.set(http::field::allow, "GET, PUT, PATCH, DELETE");
+            co_return co_await send_object_result(
+                route,
+                ApiResult::failure("not_found", "an object takes GET, PUT, PATCH or DELETE"),
+                has_body);
+        }
+        zetta::data::ObjectStore* store = node.object_store();
+        if (!store) {
+            co_return co_await refuse("engine_error",
+                                      "this node has no replicated catalogue to keep buckets in");
+        }
+        const std::string_view route_name = method == http::method::get     ? "get_object"
+                                            : method == http::method::patch ? "put_object_range"
+                                                                            : "put_object";
+        std::optional<ApiResult> denied;
+        co_await bridge.run_on_owner([&] {
+            denied = authorize_object_route(node, identity.acting_key, identity.is_user, route_name,
+                                            method == http::method::get ? kObjectsRead : kObjectsWrite,
+                                            bucket);
+        });
+        if (denied) co_return co_await send_object_result(route, *denied, has_body);
+        if (method == http::method::get) co_return co_await serve_object_get(route, *store, bucket, key);
+        co_return co_await serve_object_write(route, *store, bucket, key, *options,
+                                              method == http::method::patch);
+    }
+
+    boost::http::route_task serve_object_write(boost::http::route_params& route,
+                                               zetta::data::ObjectStore& store, std::string bucket,
+                                               std::string key, zetta::data::ObjectWrite options,
+                                               bool range) {
+        namespace http = boost::http;
+        constexpr std::size_t kSlice = zetta::data::ObjectStore::kSliceBytes;
+        std::optional<std::uint64_t> offset;
+        if (range) {
+            offset = parse_unsigned(query_value(route, "offset"));
+            if (!offset) {
+                co_return co_await send_object_result(
+                    route,
+                    ApiResult::failure("invalid_input", "want ?offset=<n>: where the bytes go",
+                                       "/offset"),
+                    true);
+            }
+        }
+        const bool if_absent = !range && query_flag(route, "if_absent");
+        std::optional<std::uint64_t> declared;
+        if (route.req.count(http::field::content_length) != 0) {
+            declared = parse_unsigned(route.req.at(http::field::content_length));
+        }
+        // No cap but the bucket's quota, which the store enforces as bytes arrive.
+        if (const auto parser = parsers.find(&route); parser != parsers.end()) {
+            parser->second->set_body_limit(std::numeric_limits<std::uint64_t>::max());
+        }
+
+        std::string slice;
+        slice.reserve(std::min<std::size_t>(declared.value_or(kSlice), kSlice));
+        bool eof = false;
+        if (auto error = co_await read_body_slice(route, slice, kSlice, eof); error) {
+            co_return http::route_error(error);
+        }
+        zetta::data::ObjectOutcome outcome;
+        if (range) {
+            // Each slice is one conditional append at the offset the previous left.
+            std::uint64_t at = *offset;
+            bool unchanged = true;
+            for (;;) {
+                outcome = co_await on_pool(
+                    [&] { return store.put_range(bucket, key, at, slice, options); });
+                if (!outcome.ok()) break;
+                unchanged = unchanged && outcome.unchanged;
+                at += slice.size();
+                if (eof) break;
+                slice.clear();
+                if (auto error = co_await read_body_slice(route, slice, kSlice, eof); error) {
+                    co_return http::route_error(error);
+                }
+                if (slice.empty() && eof) break;
+            }
+            if (outcome.ok()) outcome.unchanged = unchanged;
+        } else if (eof) {
+            // The whole body fit in one slice: one frame, one round.
+            outcome = co_await on_pool(
+                [&] { return store.put(bucket, key, slice, options, if_absent); });
+        } else {
+            // A larger body is staged on every owner a slice at a time, then
+            // committed atomically.
+            zetta::data::ObjectUpload upload;
+            outcome = co_await on_pool([&] {
+                return store.begin_upload(bucket, key, options, declared, upload);
+            });
+            while (outcome.ok()) {
+                outcome = co_await on_pool([&] { return store.upload_part(upload, slice); });
+                if (!outcome.ok() || eof) break;
+                slice.clear();
+                if (auto error = co_await read_body_slice(route, slice, kSlice, eof); error) {
+                    co_await on_pool([&] {
+                        store.abort_upload(upload);
+                        return true;
+                    });
+                    co_return http::route_error(error);
+                }
+                if (slice.empty() && eof) break;
+            }
+            if (outcome.ok()) {
+                outcome = co_await on_pool([&] { return store.commit_upload(upload, if_absent); });
+            } else {
+                co_await on_pool([&] {
+                    store.abort_upload(upload);
+                    return true;
+                });
+            }
+        }
+        if (!outcome.ok()) co_return co_await send_object_result(route, object_failure(outcome), !eof);
+        co_return co_await send_object_result(route,
+                                              ApiResult::success(object_write_value(bucket, outcome)));
+    }
+
+    boost::http::route_task serve_object_get(boost::http::route_params& route,
+                                             zetta::data::ObjectStore& store, std::string bucket,
+                                             std::string key) {
+        namespace http = boost::http;
+        // One range: bytes=a-b, bytes=a- or bytes=-n.
+        std::uint64_t offset = 0;
+        std::optional<std::uint64_t> length;
+        std::optional<std::uint64_t> suffix;
+        const bool ranged = route.req.count(http::field::range) != 0;
+        if (ranged) {
+            const std::string header(route.req.at(http::field::range));
+            const std::size_t dash = header.find('-');
+            if (!header.starts_with("bytes=") || dash == std::string::npos ||
+                header.find(',') != std::string::npos) {
+                co_return co_await send_object_result(
+                    route, ApiResult::failure("invalid_input",
+                                              "want one Range: bytes=a-b, bytes=a- or bytes=-n",
+                                              "/range"));
+            }
+            const std::string first = header.substr(6, dash - 6);
+            const std::string last = header.substr(dash + 1);
+            const auto from = parse_unsigned(first);
+            const auto to = parse_unsigned(last);
+            if (first.empty() && to) {
+                suffix = *to;
+            } else if (from && last.empty()) {
+                offset = *from;
+            } else if (from && to && *to >= *from) {
+                offset = *from;
+                length = *to - *from + 1;
+            } else {
+                co_return co_await send_object_result(
+                    route, ApiResult::failure("range_not_satisfiable",
+                                              "the Range header names no bytes", "/range"));
+            }
+        }
+        constexpr std::uint64_t kChunk = 1024 * 1024;
+        std::shared_ptr<zetta::data::ObjectReader> reader;
+        // The first chunk is read in the same pool call as the open, so a small
+        // range costs one round trip. A suffix range needs the size first.
+        std::string chunk;
+        bool prefetched = false;
+        const auto open_and_read = [&](std::uint64_t from, std::optional<std::uint64_t> span) {
+            zetta::data::ObjectOutcome opened = store.open_read(bucket, key, from, span, reader);
+            if (opened.ok()) {
+                prefetched = reader->read(0, std::min(kChunk, reader->length()), chunk);
+            }
+            return opened;
+        };
+        // A copy this node holds is resolved and its first chunk read right here:
+        // a directory lookup and a pread from the page cache, like the asset
+        // routes' small local reads. Only a read that needs a peer goes to the pool.
+        zetta::data::ObjectOutcome outcome;
+        bool needs_peer = false;
+        if (!suffix) {
+            outcome = store.open_read(bucket, key, offset, length, reader, &needs_peer);
+            if (outcome.ok()) {
+                prefetched = reader->read(0, std::min(kChunk, reader->length()), chunk);
+            }
+        }
+        if (suffix || needs_peer) {
+            outcome = co_await on_pool([&] {
+                return suffix ? store.open_read(bucket, key, 0, std::nullopt, reader)
+                              : open_and_read(offset, length);
+            });
+        }
+        if (outcome.ok() && suffix) {
+            const std::uint64_t size = outcome.object->size;
+            if (*suffix == 0) {  // the last zero bytes: no bytes at all
+                outcome = zetta::data::ObjectOutcome{};
+                outcome.status = zetta::data::ObjectStatus::OutOfRange;
+                outcome.message = "the range names no bytes of object '" + key + "'";
+                outcome.path = "/range";
+                outcome.object = zetta::data::ObjectInfo{key, size, 0, 0};
+            } else {
+                offset = size - std::min(size, *suffix);
+                length = size - offset;
+                outcome = co_await on_pool([&] { return open_and_read(offset, length); });
+            }
+        }
+        if (!outcome.ok()) {
+            if (outcome.status == zetta::data::ObjectStatus::OutOfRange && outcome.object) {
+                route.res.set(http::field::content_range,
+                              "bytes */" + std::to_string(outcome.object->size));
+            }
+            co_return co_await send_object_result(route, object_failure(outcome));
+        }
+        const std::uint64_t total = reader->info().size;
+        const std::uint64_t count = reader->length();
+        route.status(ranged ? http::status::partial_content : http::status::ok);
+        route.res.set(http::field::content_type, "application/octet-stream");
+        route.res.set("Zetta-Generation", std::to_string(reader->info().generation));
+        if (ranged) {
+            route.res.set(http::field::content_range,
+                          count == 0 ? "bytes */" + std::to_string(total)
+                                     : "bytes " + std::to_string(reader->offset()) + "-" +
+                                           std::to_string(reader->offset() + count - 1) + "/" +
+                                           std::to_string(total));
+        }
+        route.res.erase(http::field::etag);
+        route.res.erase(http::field::content_length);
+        route.res.set_payload_size(count);
+        // Stream a slice at a time: memory stays flat whatever the object's size.
+        for (std::uint64_t from = 0; from < count; from += kChunk) {
+            const std::uint64_t take = std::min(kChunk, count - from);
+            const bool read = from == 0 ? prefetched
+                                        : co_await on_pool([&] { return reader->read(from, take, chunk); });
+            if (!read) {
+                // The headers are gone already: all that is left is to cut the stream.
+                co_return http::route_error(
+                    boost::system::error_code(EIO, boost::system::generic_category()));
+            }
+            auto [write_error, written] =
+                co_await route.res_body.write(boost::capy::const_buffer(chunk.data(), chunk.size()));
+            (void)written;
+            if (write_error) co_return http::route_error(write_error);
+        }
+        auto [eof_error] = co_await route.res_body.write_eof();
+        clear_object_headers(route);
+        route.res.erase(http::field::content_type);
+        if (eof_error) co_return http::route_error(eof_error);
         co_return http::route_done;
     }
 
@@ -3951,7 +4458,44 @@ bool ApiServer::start() {
                             traceparent, wait_event, &observed);
                     });
                 }
-                if (observed.ok && request.is_object() &&
+                const auto awaited =
+                    request.is_object() &&
+                            request.value("method", std::string{}) == "tools/call" &&
+                            request.contains("params") && request.at("params").is_object() &&
+                            request.at("params").contains("name") &&
+                            request.at("params").at("name").is_string()
+                        ? impl.capability_registry.find(
+                              request.at("params").at("name").get<std::string>())
+                        : nullptr;
+                if (awaited && awaited->awaitable_read && awaited->awaitable_read->retry_within) {
+                    // Keep waiting until wait_for elapses (#1005), one governed
+                    // call per wake, exactly as the REST rendering does.
+                    const AwaitableRead& awaitable = *awaited->awaitable_read;
+                    const auto deadline =
+                        std::chrono::steady_clock::now() +
+                        awaitable.wait_for(request.at("params").value(
+                            "arguments", nlohmann::json::object()));
+                    auto event = wait_event;
+                    while (awaitable.should_wait(observed) && impl.is_running.load()) {
+                        const auto remaining =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                deadline - std::chrono::steady_clock::now());
+                        if (remaining.count() <= 0) break;
+                        [[maybe_unused]] auto wait_result = co_await zetta::runtime::timeout(
+                            event->wait(), std::min(remaining, awaitable.retry_within(observed)));
+                        event = std::make_shared<zetta::runtime::async_event>();
+                        auto again = [&] {
+                            return impl.dispatch(request, identity.acting_key, identity.is_user,
+                                                 traceparent, event, &observed);
+                        };
+                        if (awaited->blocks) {
+                            response_body = co_await zetta::runtime::offload_blocking(again);
+                            co_await impl.bridge.run_on_owner([] {});
+                        } else {
+                            co_await impl.bridge.run_on_owner([&] { response_body = again(); });
+                        }
+                    }
+                } else if (observed.ok && request.is_object() &&
                     request.value("method", std::string{}) == "tools/call") {
                     const auto& params = request.at("params");
                     const auto capability = impl.capability_registry.find(
@@ -4027,6 +4571,16 @@ bool ApiServer::start() {
                     return impl.serve_rest_capability(route, capability);
                 });
         }
+    }
+
+    // The object capability's routes (#1005): the byte routes and the bucket
+    // aliases, one handler that parses /v1/objects/<bucket>[/<key>|:<verb>].
+    for (const http::method method : {http::method::get, http::method::put, http::method::patch,
+                                      http::method::delete_, http::method::post}) {
+        router.add(method, "/v1/objects/*rest",
+                   [&impl](http::route_params& route) -> http::route_task {
+                       return impl.serve_objects(route);
+                   });
     }
 
     // The governed serving routes (#648, docs/api/serving.md): per-entity

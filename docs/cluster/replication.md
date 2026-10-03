@@ -222,8 +222,11 @@ So high-churn data lives beside the document, not in it. The
 [record store](../data/record-store.md) keeps records (and the time series its buckets) in a
 node-local log under `<data_dir>/records/`, replicated by its own synchronous fan-out and
 anti-entropy over the signal plane. The document holds only their definitions
-(`record_collection:`, `metric:`). Put a new kind of state in the document when its writes are
-rare (definitions, entities, membership); put it in a log when it is written continuously.
+(`record_collection:`, `metric:`). The [object capability](../data/object-store.md) does the same
+for byte objects (#1005): node-local segmented logs under `<data_dir>/objects/`, placed on `rf`
+owners and repaired by anti-entropy, with only `object_bucket:` and `object_lease:` in the
+document. Put a new kind of state in the document when its writes are rare (definitions,
+entities, membership); put it in a log when it is written continuously.
 
 ## Removal replicates as a tombstone
 

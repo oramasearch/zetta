@@ -66,3 +66,16 @@ authorization. The input check never throws: `contentEncoding: base64` is
 checked, and a schema the validator cannot compile is an `invalid_input` refusal
 (`registry.cpp`, #1231). See [the record store](../../../docs/data/record-store.md) and
 [time series](../../../docs/data/time-series.md).
+
+The object capability (`object_capabilities.cpp`, #1005) registers the bucket and
+lease operations as `blocks` capabilities scoped `ON BUCKET`, and
+`object_route_paths()` documents the byte routes in OpenAPI. `http_server.cpp`
+serves `/v1/objects/<bucket>/<key>`: PUT, PATCH and GET stream raw bodies a slice
+at a time through `ObjectStore` on the blocking pool, lift the per-request body
+limit through the connection's parser, and are authorized and audited by
+`authorize_object_route` (`object_routes.hpp`); a refusal drains a bounded unread
+body so the connection stays usable. The bucket routes (`GET <bucket>`,
+`:usage`, `:barrier`, `:acquire`, `:renew`, `:release`) and `DELETE` call the
+registry capabilities through `answer_capability`, the second half of the REST
+rendering. A retrying `AwaitableRead` waits on REST and MCP without holding a
+thread. See [the object capability](../../../docs/data/object-store.md).

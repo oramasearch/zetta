@@ -32,3 +32,11 @@ allowed for every data-changing statement, object and column scope, row
 security on UPDATE/DELETE, and the `data_changed` audit (#1229).
 `connect/test_credential_seal.cpp` and `connect/test_connection_store.cpp` cover
 sealed storage, every read surface, legacy re-sealing and key rotation (#1230).
+
+`data/test_object_store.cpp` covers the object capability's contracts, a
+conditional-create race, fencing, torn tails after a kill, compaction and restart,
+the quota, and rf = 2 on three real nodes with a node lost, repaired and replaced;
+`data/test_object_soak.cpp` holds disk and memory to the live set under a
+liquid-shaped load (`ZETTA_OBJECT_SOAK_BYTES`); `api/test_object_routes.cpp`
+runs the raw byte routes over loopback HTTP, with the six latency budgets as
+failing benchmarks (#1005). See [the object capability](../docs/data/object-store.md).

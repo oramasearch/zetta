@@ -145,6 +145,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_record` | read | data:records_read (`records:read`, scopable `ON COLLECTION`) | one keyed record by `(collection, key)`; also POST ([record-store.md](../data/record-store.md)) |
 | `list_records` | read | data:records_read | one index value's records ordered by `order` then key, paged by `next_after`; also POST |
 | `query_metric` | read | data:metrics_read (`metrics:read`) | sum a counter or aggregate a gauge over a range, filtered, grouped and stepped; also POST ([time-series.md](../data/time-series.md)) |
+| `list_objects` | read | data:objects_read (`objects:read`, scopable `ON BUCKET`) | a bucket's keys and sizes by key, paged; also POST and `GET /v1/objects/<bucket>` ([object-store.md](../data/object-store.md)) |
+| `object_usage` | read | data:objects_read | a bucket's objects, bytes and quota; also `GET /v1/objects/<bucket>:usage` |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
@@ -184,6 +186,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `delete_record` | action | data:records_write | conditional delete |
 | `create_metric` | action | orchestration:create_metric (`metrics:write`) | declare a labelled counter or gauge |
 | `record_metric` | action | data:metrics_write (`metrics:write`) | append up to 1000 labelled points, all validated first |
+| `create_bucket` | action | orchestration:objects_manage (`objects:manage`, scopable `ON BUCKET`) | declare an object bucket, its quota and replication factor; idempotent for an identical definition |
+| `object_barrier` | action | data:objects_write (`objects:write`) | fsync every write to the bucket acknowledged before the call, on every live node; also `POST /v1/objects/<bucket>:barrier` |
+| `delete_object` | action | data:objects_write | remove one object, fenced once the bucket has a lease holder; also `DELETE /v1/objects/<bucket>/<key>` |
+| `acquire_object_lease` / `renew_object_lease` / `release_object_lease` | action | data:objects_write | the bucket's owner lease: `acquire` waits up to `wait_ms` without holding a thread and returns the fence (409 `held` otherwise); also `POST /v1/objects/<bucket>:acquire` / `:renew` / `:release` |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `record_action` | action | orchestration:record_action | append score, decision, action, actor, versions, experiment cell, cost, and timestamps to the solutions audit ledger |
 | `record_outcome` | action | orchestration:record_outcome | append a connector or manual outcome referencing an existing action entry |

@@ -668,6 +668,17 @@ bool Node::start() {
         }
         metric_store_ = std::make_unique<zetta::data::MetricStore>(
             *replication_, *record_store_, replication_->node_id());
+        // The object logs (#1005): node-local, one per bucket, never in the catalogue.
+        object_store_ = std::make_unique<zetta::data::ObjectStore>(
+            *replication_, replication_->node_id(),
+            std::filesystem::path(config_.data_dir) / "objects");
+        std::string object_log_error;
+        if (!object_store_->open(&object_log_error)) {
+            std::fprintf(stderr, "zetta: cannot open the object logs: %s\n",
+                         object_log_error.c_str());
+            running_ = false;
+            return false;
+        }
         migrate_to_replication();   // capture any local-only data into it
         const zetta::cluster::ReplicationChanges changes =
             replication_->changes_since(0);
@@ -802,6 +813,26 @@ struct Node::RecordAntiEntropyRound {
     std::atomic<bool> finished{false};
 };
 
+struct Node::ObjectUpkeepRound {
+    zetta::runtime::async_event done;
+    std::atomic<bool> finished{false};
+};
+
+namespace {
+
+// One object-store upkeep round, off the owner loop: maintenance does disk I/O
+// and anti-entropy waits on the signal plane (#1005).
+zetta::runtime::task<> run_object_upkeep(zetta::data::ObjectStore* store, bool anti_entropy) {
+    [[maybe_unused]] const std::size_t moved = co_await zetta::runtime::offload([store, anti_entropy] {
+        store->maintain(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count());
+        return anti_entropy ? store->anti_entropy() : std::size_t{0};
+    });
+}
+
+}  // namespace
+
 void Node::tick() {
     // 0. The owner-thread gate (#624): the loop that ticks IS the owner —
     //    adopt this thread, then execute any node-tree work queued by
@@ -931,6 +962,28 @@ void Node::tick() {
             record_anti_entropy_.reset();
         }
     }
+    // The object logs (#1005): a maintenance step every 100 ms (tombstone grace,
+    // idle uploads, flushing rolled segments, a bounded compaction step) and
+    // anti-entropy every five seconds, on the pool, one round at a time.
+    if (object_store_) {
+        if (object_upkeep_ && object_upkeep_->finished.load(std::memory_order_acquire)) {
+            object_upkeep_.reset();
+        }
+        constexpr auto kObjectMaintenanceInterval = std::chrono::milliseconds(100);
+        constexpr auto kObjectAntiEntropyInterval = std::chrono::seconds(5);
+        if (!object_upkeep_ && Clock::now() - last_object_maintenance_ >= kObjectMaintenanceInterval) {
+            last_object_maintenance_ = Clock::now();
+            const bool anti_entropy =
+                cluster_ && Clock::now() - last_object_anti_entropy_ >= kObjectAntiEntropyInterval;
+            if (anti_entropy) last_object_anti_entropy_ = Clock::now();
+            object_upkeep_ = std::make_shared<ObjectUpkeepRound>();
+            zetta::runtime::spawn(run_object_upkeep(object_store_.get(), anti_entropy),
+                                  [round = object_upkeep_] {
+                                      round->finished.store(true, std::memory_order_release);
+                                      round->done.set();
+                                  });
+        }
+    }
     flush_due_audit_summaries();
     sync_audit_log();
     constexpr auto kAuditRetentionCheckInterval = std::chrono::hours(1);
@@ -1029,6 +1082,14 @@ void Node::stop() {
                 [[maybe_unused]] auto finished = co_await round->done.wait();
             }(record_anti_entropy_));
         record_anti_entropy_.reset();
+    }
+    // The object store's upkeep round likewise (#1005).
+    if (object_upkeep_) {
+        zetta::runtime::block_on(
+            [](std::shared_ptr<ObjectUpkeepRound> round) -> zetta::runtime::task<> {
+                [[maybe_unused]] auto finished = co_await round->done.wait();
+            }(object_upkeep_));
+        object_upkeep_.reset();
     }
     if (study_driver_) {
         study_driver_->stop();
@@ -1152,12 +1213,17 @@ void Node::start_coordinator() {
     // The record store (#1231) chains over the SELECT plane: `record.put` and
     // `record.apply` are served here, everything else routes on.
     if (record_store_) record_store_->attach(*cluster_);
+    // The object store (#1005) chains over the record store: `object.*` is served
+    // here, everything else routes on.
+    if (object_store_) object_store_->attach(*cluster_);
 }
 
 void Node::stop_coordinator() {
-    // Unwind in reverse wiring order: the record store restores the SELECT
-    // plane's handler, the SELECT plane the search plane's, the search plane the
-    // compute plane's, then the coordinator restores its own fallback.
+    // Unwind in reverse wiring order: the object store restores the record
+    // store's handler, the record store the SELECT plane's, the SELECT plane the
+    // search plane's, the search plane the compute plane's, then the coordinator
+    // restores its own fallback.
+    if (object_store_) object_store_->detach();
     if (record_store_) record_store_->detach();
     distributed_select_.reset();
     distributed_fulltext_.reset();

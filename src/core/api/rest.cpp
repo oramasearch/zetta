@@ -10,6 +10,7 @@
 #include <charconv>
 #include <string_view>
 
+#include "zetta/api/capabilities.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/version.hpp"
 
@@ -101,6 +102,9 @@ int rest_status(const ApiResult& result) {
     if (code == "consent_required") return 403;
     if (code == "not_found") return 404;
     if (code == "conflict") return 409;
+    if (code == "fenced" || code == "held") return 409;  // the object lease (#1005)
+    if (code == "range_not_satisfiable") return 416;
+    if (code == "quota_exceeded") return 507;
     if (code == "unknown_capability") return 404;
     if (code == "engine_error") return 422;
     if (code == "busy") return 503;
@@ -230,7 +234,8 @@ nlohmann::json error_envelope_schema() {
                 {"description",
                  "invalid_input (400) · unauthorized / consent_required "
                  "(403) · not_found / unknown_capability (404) · "
-                 "engine_error (422) · busy (503)"}}},
+                 "conflict / fenced / held (409) · range_not_satisfiable (416) · "
+                 "engine_error (422) · busy (503) · quota_exceeded (507)"}}},
               {"message",
                {{"type", "string"},
                 {"description", "the engine's reason, verbatim"}}},
@@ -424,6 +429,11 @@ nlohmann::json openapi_document(const Registry& registry) {
     serve_search_operation["responses"] =
         serving_responses(search_response_schema());
     paths["/v1/indexes/{name}/search"]["get"] = std::move(serve_search_operation);
+
+    // The object capability's byte routes and bucket-route aliases (#1005):
+    // path-templated with raw bodies, declared beside the capabilities they
+    // render (object_capabilities.cpp).
+    for (auto& [path, item] : object_route_paths().items()) paths[path] = std::move(item);
 
     document["paths"] = std::move(paths);
     return document;

@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "An object bucket's owner lease (#1005): the replicated `object_lease:<name>` value. `fence` rises every time a new holder acquires the lease, and every mutation of a bucket that has had a holder must carry it; `holder` is empty once released; `expires` is milliseconds since the Unix epoch; `version` orders lease states (the higher one wins).",
+  "properties": {
+    "expires": {
+      "type": "integer"
+    },
+    "fence": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "holder": {
+      "maxLength": 256,
+      "type": "string"
+    },
+    "version": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "holder",
+    "fence",
+    "expires",
+    "version"
+  ],
+  "title": "zetta.ObjectLease",
+  "type": "object"
+}

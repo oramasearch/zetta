@@ -48,6 +48,11 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"metrics:read", {{CapabilityDomain::Data, "metrics_read"}}},
         {"metrics:write", {{CapabilityDomain::Data, "metrics_write"},
                            {CapabilityDomain::Orchestration, "create_metric"}}},
+        // The object capability (#1005). objects:* are object-scopable by bucket
+        // name prefix (ON BUCKET <prefix>); objects:write covers the owner lease.
+        {"objects:read", {{CapabilityDomain::Data, "objects_read"}}},
+        {"objects:write", {{CapabilityDomain::Data, "objects_write"}}},
+        {"objects:manage", {{CapabilityDomain::Orchestration, "objects_manage"}}},
         // Orchestration — the pipeline authoring/deploy/run + serving + cloud
         // control surface. The capability model is exact-match (no wildcards), so
         // every registry Orchestration op must appear here or NO role can grant it.

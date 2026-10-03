@@ -46,3 +46,11 @@ step per tick, and starts an anti-entropy round on the pool every five seconds;
 stop waits for a round in flight. The record store joins the signal plane last
 and leaves it first. `replication_persist_stats()` reports the catalogue saves.
 See [the record store](../../docs/data/record-store.md).
+
+The node owns the object capability when it has a replicated catalogue (#1005).
+Start opens one log per bucket under `<data_dir>/objects/` (`data/object_log.cpp`);
+object bytes never enter the catalogue. The tick runs an upkeep round on the pool
+every 100 ms — tombstone grace, idle uploads, flushing rolled segments, a compaction
+step — with anti-entropy every five seconds; stop waits for a round in flight. The
+object store joins the signal plane after the record store and leaves it first.
+See [the object capability](../../docs/data/object-store.md).

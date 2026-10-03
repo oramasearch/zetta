@@ -29,6 +29,7 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/metric_store.hpp"
+#include "zetta/data/object_store.hpp"
 #include "zetta/data/record_store.hpp"
 #include "zetta/data/virtual_table.hpp"
 #include "zetta/pipeline/deployment.hpp"
@@ -507,6 +508,11 @@ public:
         return persisting_.load(std::memory_order_acquire);
     }
     zetta::data::MetricStore* metric_store() { return metric_store_.get(); }
+
+    // The object capability (#1005, docs/data/object-store.md): buckets of byte
+    // objects in node-local logs, placed on rf owners. Null on a standalone node,
+    // like the record store. Thread-safe: the API calls it from its blocking pool.
+    zetta::data::ObjectStore* object_store() { return object_store_.get(); }
 
     // CRUD for indexes (a registered index over a table — search / vector /
     // feature; ENT-39 / ENT-40, see index/index.hpp / docs/indexing/index-backend.md). Like
@@ -1367,6 +1373,13 @@ private:
     bool replication_persist_pending_ = false;
     std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
     std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
+    std::unique_ptr<zetta::data::ObjectStore> object_store_;  // null when standalone
+    // The object store's upkeep (maintenance, and anti-entropy every five
+    // seconds) runs on the pool, one round at a time (#1005).
+    struct ObjectUpkeepRound;
+    std::shared_ptr<ObjectUpkeepRound> object_upkeep_;
+    Clock::time_point last_object_maintenance_{};
+    Clock::time_point last_object_anti_entropy_{};
     Clock::time_point last_record_sweep_{};
     // The record anti-entropy round in flight on the pool, if any (#1231).
     struct RecordAntiEntropyRound;
