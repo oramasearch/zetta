@@ -99,6 +99,26 @@ Alongside them go prefixed keys that **name** what each figure was measured on:
 that is the one. When it is absent no holdout was asked for, and the only numbers
 available are the flattering ones.
 
+### When a held-out figure is not a result (#1224)
+
+A held-out figure can be present and still not be one to quote. Two checks decide
+it, and both live in one function, `held_out_caveats()`
+(`src/core/api/capabilities.cpp`):
+
+| Check | Fires when | Why |
+|---|---|---|
+| `small_holdout` | `0 < held_out_rows < 30` (not for a `rank` model) | one row changing side moves AUC visibly, so the figure describes the split |
+| `perfect_auc` | `held_out_auc >= 0.999` | on real data this is a separable demo set or a leaked feature |
+
+`get_run_report` lists each as a `caveats` entry on `held_out_auc`. `model_health`
+sets `trustworthy: false` and adds a finding naming the check
+(`Held-out AUC caveat (small_holdout): …`). Before #1224 `model_health` only
+distrusted a missing holdout or an in-sample/held-out gap above 0.1, so the demo
+dataset's 1.000 AUC on four held-out rows was caveated by the report and called
+trustworthy by `model_health`. One function means the two cannot disagree again.
+Test: `ServingFixture.ModelHealthSharesTheRunReportsHeldOutCaveats`
+(`tests/api/test_serving.cpp`).
+
 ### Every value must be a number
 
 `model_schema()` declares `metrics` as `additionalProperties: {"type": "number"}`.

@@ -31,6 +31,12 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   re-capture a dropped entity from a stale disk projection — asks `knows_key()`.
   `row:` keeps its own `{tbl, deleted:true}` shape, because reconcile has to see
   that entry to route the delete to a table.
+- **Read the replicated catalogue in place, never by copying it** (#1227).
+  `ReplicationManager::snapshot()` deep-copies every key under the replication
+  mutex; a read path takes `shared_snapshot()` and does a direct `find(<key>)`
+  or walks one key range with `catalog::for_each_with_prefix`. Release the view
+  before calling `set()`/`remove()` — a writer copies the whole catalogue while
+  any reader holds it. See `docs/cluster/replication.md`.
 - **Flat CRDT keys, one entity per UUID key** (`src/core/catalog.hpp` is the
   internal scheme): `node:` `db:` `tbl:` `row:` `lo:` `project:` `input:`
   `graph:` `deployment:` `run:` `model:` `profile:` `plan:` `experiment:`

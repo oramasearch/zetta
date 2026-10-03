@@ -140,6 +140,8 @@ public:
 private:
     struct DecisionBatchState {
         DecisionPolicy policy;
+        // The `decision:` entries the batch reads, copied once when it begins
+        // (#1227) — never the whole replicated catalogue.
         nlohmann::json baseline = nlohmann::json::object();
         double committed_spend = 0.0;
         std::map<std::string, std::size_t> contacts;

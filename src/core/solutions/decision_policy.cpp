@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <string_view>
 #include <utility>
 
@@ -232,19 +233,19 @@ double committed_spend(
     const std::string& policy_id,
     std::uint64_t version) {
     double spend = 0.0;
-    for (const auto& [key, value] : snapshot.items()) {
-        if (!key.starts_with(std::string(zetta::catalog::kDecisionPrefix))) {
-            continue;
-        }
-        const auto decision = parse_decision_record(value);
-        if (!decision || decision->policy_id != policy_id || decision->policy_version != version) {
-            continue;
-        }
-        if (decision->status == "allowed" || decision->status == "pending_approval" ||
-            decision->status == "approved") {
-            spend += decision->cost;
-        }
-    }
+    zetta::catalog::for_each_with_prefix(
+        snapshot, zetta::catalog::kDecisionPrefix,
+        [&](const std::string&, const Json& value) {
+            const auto decision = parse_decision_record(value);
+            if (!decision || decision->policy_id != policy_id ||
+                decision->policy_version != version) {
+                return;
+            }
+            if (decision->status == "allowed" || decision->status == "pending_approval" ||
+                decision->status == "approved") {
+                spend += decision->cost;
+            }
+        });
     return spend;
 }
 
@@ -341,18 +342,17 @@ Json select_action(const Json& config, const Json& entity, DecisionRecord& decis
 std::size_t recorded_contacts(const Json& snapshot, const DecisionRecord& decision,
                               const std::string& since) {
     std::size_t count = 0;
-    for (const auto& [key, value] : snapshot.items()) {
-        if (!key.starts_with(std::string(zetta::catalog::kDecisionPrefix))) {
-            continue;
-        }
-        const auto prior = parse_decision_record(value);
-        if (prior && prior->policy_id == decision.policy_id &&
-            prior->entity_id == decision.entity_id && prior->created >= since &&
-            (prior->status == "allowed" || prior->status == "approved" ||
-             prior->status == "pending_approval") && !prior->holdout) {
-            ++count;
-        }
-    }
+    zetta::catalog::for_each_with_prefix(
+        snapshot, zetta::catalog::kDecisionPrefix,
+        [&](const std::string&, const Json& value) {
+            const auto prior = parse_decision_record(value);
+            if (prior && prior->policy_id == decision.policy_id &&
+                prior->entity_id == decision.entity_id && prior->created >= since &&
+                (prior->status == "allowed" || prior->status == "approved" ||
+                 prior->status == "pending_approval") && !prior->holdout) {
+                ++count;
+            }
+        });
     return count;
 }
 
@@ -818,18 +818,24 @@ std::optional<DecisionPolicy> DecisionPolicyStore::create(
     if (!validate_policy_config(config, error)) {
         return std::nullopt;
     }
-    const Json snapshot = replication_.snapshot();
-    for (const auto& [key, value] : snapshot.items()) {
-        if (!key.starts_with(std::string(zetta::catalog::kDecisionPolicyPrefix))) {
-            continue;
+    // The shared immutable view and the `decision_policy:` key range, never a
+    // deep copy of the catalogue (#1227). The view is released before the write
+    // below: a writer copies the catalogue when a reader still holds it.
+    bool duplicate = false;
+    {
+        const std::shared_ptr<const Json> snapshot = replication_.shared_snapshot();
+        zetta::catalog::for_each_with_prefix(
+            *snapshot, zetta::catalog::kDecisionPolicyPrefix,
+            [&](const std::string&, const Json& value) {
+                const auto existing = parse_decision_policy(value);
+                duplicate = duplicate || (existing && existing->name == name);
+            });
+    }
+    if (duplicate) {
+        if (error != nullptr) {
+            *error = "/name: a decision policy with this name already exists";
         }
-        const auto existing = parse_decision_policy(value);
-        if (existing && existing->name == name) {
-            if (error != nullptr) {
-                *error = "/name: a decision policy with this name already exists";
-            }
-            return std::nullopt;
-        }
+        return std::nullopt;
     }
     const std::string now = zetta::util::now_iso8601();
     DecisionPolicy policy;
@@ -845,9 +851,9 @@ std::optional<DecisionPolicy> DecisionPolicyStore::create(
 }
 
 std::optional<DecisionPolicy> DecisionPolicyStore::get(const std::string& id) const {
-    const Json snapshot = replication_.snapshot();
-    const auto found = snapshot.find(zetta::catalog::decision_policy_key(id));
-    if (found == snapshot.end()) {
+    const std::shared_ptr<const Json> snapshot = replication_.shared_snapshot();
+    const auto found = snapshot->find(zetta::catalog::decision_policy_key(id));
+    if (found == snapshot->end()) {
         return std::nullopt;
     }
     return parse_decision_policy(*found);
@@ -899,19 +905,32 @@ bool DecisionPolicyStore::begin_decision_batch(
         }
         return false;
     }
-    Json baseline = replication_.snapshot();
-    const auto found =
-        baseline.find(zetta::catalog::decision_policy_key(policy_id));
-    if (found == baseline.end()) {
-        if (error != nullptr) {
-            *error = "no decision policy with id '" + policy_id + "'";
+    // Every decision in the batch reads the same baseline. The batch keeps only
+    // the `decision:` range it reads (spend and contact history), copied out of
+    // the shared immutable view without the replication mutex (#1227). It does
+    // not pin the view itself: the batch writes decisions, and a writer copies
+    // the whole catalogue while any reader still holds the view.
+    std::optional<DecisionPolicy> policy;
+    Json baseline = Json::object();
+    {
+        const std::shared_ptr<const Json> snapshot = replication_.shared_snapshot();
+        const auto found =
+            snapshot->find(zetta::catalog::decision_policy_key(policy_id));
+        if (found == snapshot->end()) {
+            if (error != nullptr) {
+                *error = "no decision policy with id '" + policy_id + "'";
+            }
+            return false;
         }
-        return false;
-    }
-    const std::optional<DecisionPolicy> policy =
-        parse_decision_policy(*found, error);
-    if (!policy) {
-        return false;
+        policy = parse_decision_policy(*found, error);
+        if (!policy) {
+            return false;
+        }
+        zetta::catalog::for_each_with_prefix(
+            *snapshot, zetta::catalog::kDecisionPrefix,
+            [&baseline](const std::string& key, const Json& value) {
+                baseline.emplace(key, value);
+            });
     }
     const std::uint64_t version = policy->current()->version;
     decision_batch_ = DecisionBatchState{
@@ -990,7 +1009,7 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
         }
         return std::nullopt;
     }
-    Json standalone_snapshot;
+    std::shared_ptr<const Json> standalone_snapshot;
     const Json* snapshot = nullptr;
     double spend = 0.0;
     std::size_t batch_contacts = 0;
@@ -999,8 +1018,8 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
         spend = decision_batch_->committed_spend;
         batch_contacts = decision_batch_->contacts[json_text(entity.at("entity_id"))];
     } else {
-        standalone_snapshot = replication_.snapshot();
-        snapshot = &standalone_snapshot;
+        standalone_snapshot = replication_.shared_snapshot();
+        snapshot = standalone_snapshot.get();
         if (policy->current()->config.contains("budget")) {
             spend = committed_spend(
                 *snapshot, policy_id, policy->current()->version);
@@ -1008,6 +1027,8 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
     }
     DecisionRecord decision = evaluate(
         *policy, entity, spend, *snapshot, batch_contacts);
+    // Release the view before this decision is written (see begin_decision_batch).
+    standalone_snapshot.reset();
     if (entity.contains("experiment")) {
         if (experiment_manager_ == nullptr) {
             if (error != nullptr) {
@@ -1061,9 +1082,9 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
 
 std::optional<DecisionRecord> DecisionPolicyStore::get_decision(
     const std::string& decision_id) const {
-    const Json snapshot = replication_.snapshot();
-    const auto found = snapshot.find(zetta::catalog::decision_key(decision_id));
-    if (found == snapshot.end()) {
+    const std::shared_ptr<const Json> snapshot = replication_.shared_snapshot();
+    const auto found = snapshot->find(zetta::catalog::decision_key(decision_id));
+    if (found == snapshot->end()) {
         return std::nullopt;
     }
     return parse_decision_record(*found);
@@ -1071,15 +1092,14 @@ std::optional<DecisionRecord> DecisionPolicyStore::get_decision(
 
 std::vector<DecisionRecord> DecisionPolicyStore::decisions() const {
     std::vector<DecisionRecord> records;
-    const Json snapshot = replication_.snapshot();
-    for (const auto& [key, value] : snapshot.items()) {
-        if (!key.starts_with(std::string(zetta::catalog::kDecisionPrefix))) {
-            continue;
-        }
-        if (const auto record = parse_decision_record(value)) {
-            records.push_back(*record);
-        }
-    }
+    const std::shared_ptr<const Json> snapshot = replication_.shared_snapshot();
+    zetta::catalog::for_each_with_prefix(
+        *snapshot, zetta::catalog::kDecisionPrefix,
+        [&records](const std::string&, const Json& value) {
+            if (const auto record = parse_decision_record(value)) {
+                records.push_back(*record);
+            }
+        });
     std::ranges::sort(
         records,
         [](const DecisionRecord& left, const DecisionRecord& right) {

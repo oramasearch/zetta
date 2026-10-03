@@ -3,6 +3,8 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json.hpp>
+
 // Internal (not a public header): the flat-key scheme that encodes the database
 // catalog into the replicated CRDT document. The CRDT is the source of truth;
 // the on-disk store + in-memory Node tree are a projection of these keys.
@@ -303,6 +305,26 @@ inline std::string id_after(std::string_view key, std::string_view prefix) {
         return {};
     }
     return std::string(key.substr(prefix.size()));
+}
+
+// Visit every entry of a replicated snapshot whose key starts with `prefix`, in
+// key order, as `visit(key, value)`. The snapshot is a JSON object backed by an
+// ordered map, so this seeks to the first matching key and stops at the first
+// key past the prefix: the cost is the matching range, not the whole catalogue
+// (#1227 — `list_agents` copied every key, `row:` keys included, and then scanned
+// all of them to find a handful of `agent:` keys). Pair it with
+// ReplicationManager::shared_snapshot(), which hands back the immutable view
+// without copying it.
+template <typename Visitor>
+void for_each_with_prefix(const nlohmann::json& snapshot, std::string_view prefix,
+                          Visitor&& visit) {
+    if (!snapshot.is_object()) return;
+    const auto& entries = snapshot.get_ref<const nlohmann::json::object_t&>();
+    for (auto entry = entries.lower_bound(prefix);
+         entry != entries.end() && std::string_view(entry->first).starts_with(prefix);
+         ++entry) {
+        visit(entry->first, entry->second);
+    }
 }
 
 }  // namespace zetta::catalog

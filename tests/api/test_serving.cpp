@@ -462,6 +462,78 @@ TEST_F(ServingFixture, ModelHealthReadsWhetherAModelCanStillBeTrusted) {
     EXPECT_TRUE(warned_about_calibration);
 }
 
+// #1224: model_health applies the run report's held-out caveats — the same function — so the
+// report cannot tell a reader not to quote a figure that model_health calls trustworthy.
+TEST_F(ServingFixture, ModelHealthSharesTheRunReportsHeldOutCaveats) {
+    const auto install = [this](const nlohmann::json& metrics, const std::string& name,
+                                const std::string& kind) {
+        zetta::ml::ModelValue value;
+        value.kind = kind;
+        value.name = name;
+        value.metrics = metrics;
+        auto model = node.create_model(std::move(value));
+        return model ? model->id() : std::string{};
+    };
+    const auto finding_naming = [](const nlohmann::json& findings, const std::string& check) {
+        for (const auto& finding : findings) {
+            if (finding.get<std::string>().find("(" + check + ")") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // Fewer than 30 held-out rows: the figure describes the split, not the model. The gap is
+    // small, so the old checks alone would have trusted it.
+    const std::string small = install(
+        {{"in_sample_auc", 0.80}, {"held_out_auc", 0.78}, {"held_out_rows", 12}}, "small",
+        "classifier");
+    ASSERT_FALSE(small.empty());
+    auto result = call("model_health", {{"model_id", small}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("trustworthy").get<bool>());
+    EXPECT_TRUE(finding_naming(result.value.at("findings"), "small_holdout"))
+        << result.value.dump();
+    EXPECT_FALSE(finding_naming(result.value.at("findings"), "perfect_auc"));
+
+    // A held-out AUC at or above 0.999: a separable demo set or a leaked feature.
+    const std::string perfect = install(
+        {{"in_sample_auc", 1.0}, {"held_out_auc", 0.999}, {"held_out_rows", 500}}, "perfect",
+        "classifier");
+    result = call("model_health", {{"model_id", perfect}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("trustworthy").get<bool>());
+    EXPECT_TRUE(finding_naming(result.value.at("findings"), "perfect_auc"))
+        << result.value.dump();
+    EXPECT_FALSE(finding_naming(result.value.at("findings"), "small_holdout"));
+
+    // The demo dataset's case: both at once, and each is named.
+    const std::string demo = install(
+        {{"in_sample_auc", 1.0}, {"held_out_auc", 1.0}, {"held_out_rows", 4}}, "demo",
+        "classifier");
+    result = call("model_health", {{"model_id", demo}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("trustworthy").get<bool>());
+    EXPECT_TRUE(finding_naming(result.value.at("findings"), "small_holdout"));
+    EXPECT_TRUE(finding_naming(result.value.at("findings"), "perfect_auc"));
+
+    // The boundaries the report uses: 30 rows and an AUC below 0.999 raise neither.
+    const std::string boundary = install(
+        {{"in_sample_auc", 0.80}, {"held_out_auc", 0.998}, {"held_out_rows", 30}}, "boundary",
+        "classifier");
+    result = call("model_health", {{"model_id", boundary}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_TRUE(result.value.at("trustworthy").get<bool>()) << result.value.dump();
+
+    // As in the report, the row-count check does not apply to a `rank` model.
+    const std::string ranked = install(
+        {{"in_sample_auc", 0.80}, {"held_out_auc", 0.78}, {"held_out_rows", 12}}, "ranked",
+        "rank");
+    result = call("model_health", {{"model_id", ranked}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(finding_naming(result.value.at("findings"), "small_holdout"));
+}
+
 // --- propose_improvement (#983, the Improve verb) --------------------------------------------
 //
 // The property that makes Improve gradeable: a proposal MUST carry its predicted effect. Kernel
