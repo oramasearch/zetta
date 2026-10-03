@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -150,16 +151,21 @@ std::shared_ptr<zetta::pipeline::Project> resolve_project(
     if (auto project = node.find_project(reference)) {
         return project;
     }
-    const Json snapshot = replication.snapshot();
-    const auto found = snapshot.find(zetta::catalog::project_key(reference));
-    if (found == snapshot.end() || !found->is_object()) {
-        return nullptr;
+    // One lookup in the shared immutable view, not a deep copy (#1227).
+    std::string name;
+    {
+        const std::shared_ptr<const Json> snapshot = replication.shared_snapshot();
+        const auto found = snapshot->find(zetta::catalog::project_key(reference));
+        if (found == snapshot->end() || !found->is_object()) {
+            return nullptr;
+        }
+        const auto field = found->find("name");
+        if (field == found->end() || !field->is_string()) {
+            return nullptr;
+        }
+        name = field->get<std::string>();
     }
-    const auto name = found->find("name");
-    if (name == found->end() || !name->is_string()) {
-        return nullptr;
-    }
-    return node.find_project(name->get<std::string>());
+    return node.find_project(name);
 }
 
 std::shared_ptr<zetta::pipeline::ProjectGraph> resolve_graph(
@@ -708,16 +714,16 @@ RoiReadoutStore::RoiReadoutStore(
 std::vector<RoiReadoutDefinition> RoiReadoutStore::versions(
     std::string_view solution) const {
     std::vector<RoiReadoutDefinition> found;
-    const Json snapshot = replication_.snapshot();
-    for (const auto& [key, value] : snapshot.items()) {
-        if (!key.starts_with(std::string(zetta::catalog::kRoiReadoutPrefix))) {
-            continue;
-        }
-        const auto definition = parse_roi_readout_definition(value);
-        if (definition && definition->spec.solution == solution) {
-            found.push_back(*definition);
-        }
-    }
+    // The `roi_readout:` key range of the shared immutable view (#1227).
+    const std::shared_ptr<const Json> snapshot = replication_.shared_snapshot();
+    zetta::catalog::for_each_with_prefix(
+        *snapshot, zetta::catalog::kRoiReadoutPrefix,
+        [&](const std::string&, const Json& value) {
+            const auto definition = parse_roi_readout_definition(value);
+            if (definition && definition->spec.solution == solution) {
+                found.push_back(*definition);
+            }
+        });
     std::ranges::sort(
         found,
         [](const RoiReadoutDefinition& left,
@@ -763,11 +769,13 @@ std::optional<RoiReadoutDefinition> RoiReadoutStore::configure(
 std::optional<RoiReadoutDefinition> RoiReadoutStore::get(
     std::string_view solution_or_id,
     std::string* error) const {
-    const Json snapshot = replication_.snapshot();
-    const auto by_id = snapshot.find(
-        zetta::catalog::roi_readout_key(std::string(solution_or_id)));
-    if (by_id != snapshot.end()) {
-        return parse_roi_readout_definition(*by_id, error);
+    {
+        const std::shared_ptr<const Json> snapshot = replication_.shared_snapshot();
+        const auto by_id = snapshot->find(
+            zetta::catalog::roi_readout_key(std::string(solution_or_id)));
+        if (by_id != snapshot->end()) {
+            return parse_roi_readout_definition(*by_id, error);
+        }
     }
     const std::vector<RoiReadoutDefinition> found = versions(solution_or_id);
     if (found.empty()) {

@@ -905,6 +905,53 @@ std::string fixed_rows(double value) {
     return std::to_string(static_cast<long long>(value));
 }
 
+// A held-out figure that is PRESENT but must not be read as a result (#948 step 8).
+// `check` names the test that fired; `why` is the sentence a reader is shown.
+struct HeldOutCaveat {
+    std::string check;
+    std::string why;
+};
+
+// The one set of held-out checks. The run report lists these as `caveats` and
+// model_health turns each into a finding that makes the model untrustworthy (#1224), so
+// the two answers about the same model cannot disagree.
+//
+// The case that forced them: the built-in demo dataset produces a held-out AUC of 1.000
+// on FOUR rows. Nothing was wrong — the pipeline worked and the data is trivially
+// separable — but a perfect score presented without objection is a number that invites
+// a false conclusion, which is worse than a missing one.
+//
+// `ranking` is a `rank` model; the row-count check has never applied to one (its
+// report measures ranking quality per query group, not AUC on held-out rows).
+std::vector<HeldOutCaveat> held_out_caveats(std::optional<double> held_out_rows,
+                                            std::optional<double> held_out_auc,
+                                            bool ranking) {
+    std::vector<HeldOutCaveat> caveats;
+    if (!ranking && held_out_rows) {
+        // Below this, a ranking metric is noise: one row changing side moves AUC by
+        // a visible amount, so the figure says more about the split than the model.
+        constexpr double kMeaningfulHoldout = 30.0;
+        if (*held_out_rows > 0.0 && *held_out_rows < kMeaningfulHoldout) {
+            caveats.push_back(
+                {"small_holdout",
+                 "measured on only " + fixed_rows(*held_out_rows) +
+                     " held-out rows. Below about 30 a ranking metric is "
+                     "noise — one row changing side moves it visibly — so "
+                     "this figure describes the split more than the model. "
+                     "Do not quote it as a result"});
+        }
+    }
+    if (held_out_auc && *held_out_auc >= 0.999) {
+        caveats.push_back(
+            {"perfect_auc",
+             "a perfect score. On real data this is almost always a "
+             "trivially separable demo set or a leaked feature, not a "
+             "model that solved the problem. Check what the top driver "
+             "is before showing this to anyone"});
+    }
+    return caveats;
+}
+
 nlohmann::json next_best_action_report(Node& node,
                                        const zetta::pipeline::Run& run,
                                        const zetta::ml::Model& model,
@@ -1972,38 +2019,12 @@ ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) 
 
     // Figures that are PRESENT but must not be read as results (#948 step 8's rule,
     // applied to the report itself). `missing` says what the run cannot tell you;
-    // this says what it can tell you and you should not believe.
-    //
-    // The case that forced it: the built-in demo dataset produces a held-out AUC of
-    // 1.000 on FOUR rows. Nothing was wrong — the pipeline worked and the data is
-    // trivially separable — but a perfect score presented without objection is a
-    // number that invites a false conclusion, which is worse than a missing one.
+    // this says what it can tell you and you should not believe. The checks are
+    // held_out_caveats(), shared with model_health (#1224).
     nlohmann::json caveats = nlohmann::json::array();
-    if (!ranking) {
-        if (const std::optional<double> rows = number("held_out_rows")) {
-            // Below this, a ranking metric is noise: one row changing side moves AUC by
-            // a visible amount, so the figure says more about the split than the model.
-            constexpr double kMeaningfulHoldout = 30.0;
-            if (*rows > 0.0 && *rows < kMeaningfulHoldout) {
-                caveats.push_back(
-                    {{"field", "held_out_auc"},
-                     {"why", "measured on only " + fixed_rows(*rows) +
-                                 " held-out rows. Below about 30 a ranking metric is "
-                                 "noise — one row changing side moves it visibly — so "
-                                 "this figure describes the split more than the model. "
-                                 "Do not quote it as a result"}});
-            }
-        }
-    }
-    if (const std::optional<double> auc = number("held_out_auc")) {
-        if (*auc >= 0.999) {
-            caveats.push_back(
-                {{"field", "held_out_auc"},
-                 {"why", "a perfect score. On real data this is almost always a "
-                         "trivially separable demo set or a leaked feature, not a "
-                         "model that solved the problem. Check what the top driver "
-                         "is before showing this to anyone"}});
-        }
+    for (const HeldOutCaveat& caveat :
+         held_out_caveats(number("held_out_rows"), number("held_out_auc"), ranking)) {
+        caveats.push_back({{"field", "held_out_auc"}, {"why", caveat.why}});
     }
     if (!caveats.empty()) report["caveats"] = std::move(caveats);
     if (!missing.empty()) report["missing"] = std::move(missing);
@@ -2163,6 +2184,14 @@ ApiResult handle_model_health(const nlohmann::json& input, ApiContext& context) 
                 ". The model has memorized rather than generalized; the held-out figure is the "
                 "only one that describes new accounts.");
         }
+    }
+
+    // The run report's held-out caveats, from the same function (#1224): a figure the
+    // report tells a reader not to quote cannot come from a model this calls trustworthy.
+    for (const HeldOutCaveat& caveat : held_out_caveats(
+             number("held_out_rows"), held_out, model->kind() == "rank")) {
+        trustworthy = false;
+        findings.push_back("Held-out AUC caveat (" + caveat.check + "): " + caveat.why + ".");
     }
 
     const auto calibrated = metadata.find("calibrated");

@@ -217,6 +217,12 @@ than left blank:
 A blank field invites the writer to substitute its own number, which is the one thing
 [the report rule](run-report-prompt.md) forbids. A stated absence does not.
 
+`caveats` is the other half: figures that are present but must not be read as
+results — a held-out AUC on fewer than 30 rows, or at or above 0.999. The checks
+are `held_out_caveats()`, the same function `model_health` uses to set
+`trustworthy: false`, so the report and the health check agree about one model
+([held-out metrics](../ml/held-out-metrics.md#when-a-held-out-figure-is-not-a-result-1224), #1224).
+
 ## Where it is rendered
 
 Both Studio surfaces read this capability — **one behavior path**, so the GUI, the web

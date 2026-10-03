@@ -120,7 +120,9 @@ of zetta stays decoupled from the backend.
 - `set(key, json)` — a local change (any JSON value, stored as JSON text in the CRDT).
 - `remove(key)` — a local removal. Writes a **tombstone**, see below.
 - `snapshot()` — a compatibility copy of the merged document as JSON, **live
-  entries only**.
+  entries only**. It deep-copies the whole catalogue while holding the
+  replication mutex; a read path must not use it (see
+  [Reading the catalogue](#reading-the-catalogue-without-copying-it-1227)).
 - `shared_snapshot()` — a shared immutable view of the same parsed cache. A
   writer updates the cache in place when no reader holds it and uses
   copy-on-write otherwise.
@@ -162,6 +164,46 @@ when Automerge's selected scalar is unchanged.
 
 This adds no JSON or wire format. Gossip and the persisted Automerge bytes keep
 their existing representation.
+
+## Reading the catalogue without copying it (#1227)
+
+`list_agents`, `get_agent` and `agent_training_status` took 380–690 ms on dev with
+one agent (lake#446). Every read called `snapshot()`, which deep-copies the whole
+document — `row:` keys included — under the replication mutex, then scanned every
+key for the few it wanted. Concurrent reads queued behind each other's copies.
+
+A read takes the view and reads it in place:
+
+- `shared_snapshot()` costs one reference count under the mutex; the copy-free
+  view is immutable for as long as the reader holds it.
+- One entity: `view->find(catalog::agent_key(id))` — a single ordered-map lookup.
+- A kind of entity: `catalog::for_each_with_prefix(*view, catalog::kAgentPrefix,
+  visit)` (`src/core/catalog.hpp`). The snapshot is a JSON object over an ordered
+  map, so this seeks to the first `agent:` key and stops at the first key past the
+  range; it never visits a `row:` key.
+- **Release the view before writing.** A writer copies the catalogue when a reader
+  still holds the view (copy-on-write), so a function that reads and then calls
+  `set()` scopes its view to the read. A long-lived pin (a decision batch's
+  baseline) copies out only the key range it needs.
+
+Converted in #1227: `AgentStore::get`/`list`, `DecisionPolicyStore`
+(`create`, `get`, `get_decision`, `decisions`, `decide`, and the decision batch,
+which now keeps only the `decision:` range), `RoiReadoutStore` and
+`resolve_project` in `roi_readout.cpp`, and `ReplicatedBlobStore`
+(`missing_blobs`, `read_blob`, `store_blob`). Other `snapshot()` callers in
+`node.cpp` and `cluster.cpp` remain; `Node::datasets()` is #1195.
+
+`AgentStoreBenchmark.*` (`tests/agent/test_agent_store.cpp`) holds the line on a
+102,065-key catalogue (100,000 rows, 2,000 decisions, 25 agents): median `list`
+and `get` under 10 ms, four concurrent readers each under 50 ms worst case, and a
+read leaves the shared view's reference count where it found it. Measured on an
+Apple M3 Max, the same benchmark against the old reads:
+
+| Read | Before | After |
+|---|---|---|
+| `list` (median) | 129 ms | 28 µs |
+| `get` (median) | 126 ms | 1 µs |
+| worst `list`+`get`, four concurrent readers | 692 ms | 63 µs |
 
 ## Removal replicates as a tombstone
 

@@ -80,6 +80,9 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   `agent_schema()` are the boundary.
 - **`AgentStore`** (`agent_store.hpp`) — CRUD over the `agent:` entities (put/get/list/remove
   capture into / read the CRDT document, so agents replicate + persist like every other entity).
+  Reads take the shared immutable view: `get` is one key lookup and `list` walks only the
+  `agent:` key range, never a copy of the catalogue (#1227,
+  [replication](../cluster/replication.md#reading-the-catalogue-without-copying-it-1227)).
 - **The CRUD surface** — `create_agent` / `list_agents` / `get_agent` / `update_agent` /
   `delete_agent` capabilities (`api/capabilities.cpp`), exposed on **both MCP and REST** by the
   capability registry. The GUI/web chat panels build on these (chat + tool-calling in flight).
