@@ -39,9 +39,10 @@ or sealed under a retired join token, and builds the sealing keyring from the
 join token main passes, or from a node-local secret (#1230).
 
 The node owns the keyed record store and the labelled time series when it has a
-replicated catalogue (#1231). Startup replays `records.journal` after restoring
-the document; the persist takes the journal's size, fsyncs the saved document and
-only then trims the journal. The tick leaves record and metric keys out of
-reconcile work and sweeps retention every ten seconds. The record store joins the
-signal plane last and leaves it first. See
-[the record store](../../docs/data/record-store.md).
+replicated catalogue (#1231). Start opens the node-local record log under
+`<data_dir>/records/` (`data/record_log.cpp`); records never enter the catalogue.
+The tick sweeps retention every second, flushes and compacts the log a bounded
+step per tick, and starts an anti-entropy round on the pool every five seconds;
+stop waits for a round in flight. The record store joins the signal plane last
+and leaves it first. `replication_persist_stats()` reports the catalogue saves.
+See [the record store](../../docs/data/record-store.md).

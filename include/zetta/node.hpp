@@ -492,6 +492,20 @@ public:
     // replicated catalogue, so both are null on a standalone node. Thread-safe:
     // the registry calls them from its blocking pool.
     zetta::data::RecordStore* record_store() { return record_store_.get(); }
+
+    // How the replicated catalogue's once-a-second save is behaving: how many
+    // saves ran, the last one's duration and size, and whether one is running
+    // now (readable from any thread). The record-store soak uses it to time
+    // reads that overlap a save (#1231).
+    struct ReplicationPersistStats {
+        std::uint64_t saves = 0;
+        double last_ms = 0.0;
+        std::uint64_t last_bytes = 0;
+    };
+    ReplicationPersistStats replication_persist_stats() const { return persist_stats_; }
+    bool persisting_replication() const {
+        return persisting_.load(std::memory_order_acquire);
+    }
     zetta::data::MetricStore* metric_store() { return metric_store_.get(); }
 
     // CRUD for indexes (a registered index over a table — search / vector /
@@ -1354,6 +1368,12 @@ private:
     std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
     std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
     Clock::time_point last_record_sweep_{};
+    // The record anti-entropy round in flight on the pool, if any (#1231).
+    struct RecordAntiEntropyRound;
+    std::shared_ptr<RecordAntiEntropyRound> record_anti_entropy_;
+    Clock::time_point last_record_anti_entropy_{};
+    ReplicationPersistStats persist_stats_;
+    std::atomic<bool> persisting_{false};
     std::vector<std::string> last_membership_;  // node:<id> set last seen (#517)
     IntegrityReport integrity_;        // last preflight result
     bool running_ = false;

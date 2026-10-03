@@ -272,13 +272,6 @@ Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
       replication_(replication),
       experiment_manager_(config_.data_dir, replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
-    if (replication_) {
-        record_store_ = std::make_unique<zetta::data::RecordStore>(
-            *replication_, replication_->node_id(),
-            std::filesystem::path(config_.data_dir) / "records.journal");
-        metric_store_ = std::make_unique<zetta::data::MetricStore>(
-            *replication_, replication_->node_id());
-    }
     register_memory_probes();
     // The owner thread is adopted LAZILY, at the first tick() (#624) — never
     // here. A constructed-but-never-ticked node has no owner loop to drain
@@ -661,8 +654,20 @@ bool Node::start() {
             running_ = false;
             return false;
         }
-        // Records acknowledged after the last save are in the journal (#1231).
-        if (record_store_) record_store_->replay_journal();
+        // The record log (#1231): node-local, beside the catalogue, never in it.
+        metric_store_.reset();
+        record_store_ = std::make_unique<zetta::data::RecordStore>(
+            *replication_, replication_->node_id(),
+            std::filesystem::path(config_.data_dir) / "records");
+        std::string record_log_error;
+        if (!record_store_->open(&record_log_error)) {
+            std::fprintf(stderr, "zetta: cannot open the record log: %s\n",
+                         record_log_error.c_str());
+            running_ = false;
+            return false;
+        }
+        metric_store_ = std::make_unique<zetta::data::MetricStore>(
+            *replication_, *record_store_, replication_->node_id());
         migrate_to_replication();   // capture any local-only data into it
         const zetta::cluster::ReplicationChanges changes =
             replication_->changes_since(0);
@@ -782,6 +787,21 @@ void Node::flush_stores() {
     }
 }
 
+namespace {
+
+// One record anti-entropy round, off the owner loop: it waits on the signal plane.
+zetta::runtime::task<> run_record_anti_entropy(zetta::data::RecordStore* store) {
+    [[maybe_unused]] const std::size_t pulled =
+        co_await zetta::runtime::offload([store] { return store->anti_entropy(); });
+}
+
+}  // namespace
+
+struct Node::RecordAntiEntropyRound {
+    zetta::runtime::async_event done;
+    std::atomic<bool> finished{false};
+};
+
 void Node::tick() {
     // 0. The owner-thread gate (#624): the loop that ticks IS the owner —
     //    adopt this thread, then execute any node-tree work queued by
@@ -810,13 +830,8 @@ void Node::tick() {
     const std::string version_at_pull =
         replication_ ? replication_->version() : std::string{};
     if (replication_ && version_at_pull != last_seen_version_) {
-        zetta::cluster::ReplicationChanges changes =
+        const zetta::cluster::ReplicationChanges changes =
             replication_->changes_since(last_replication_change_token_);
-        // Records and metric buckets have no on-disk projection (#1231): a burst
-        // of record writes must not push the tick into a full reconcile.
-        std::erase_if(changes.keys, [](const std::string& key) {
-            return catalog::is_record_store_key(key);
-        });
         const std::size_t full_reconcile_threshold =
             std::max<std::size_t>(1, changes.snapshot->size() / 4);
         const bool full_reconcile =
@@ -888,17 +903,33 @@ void Node::tick() {
                 encode_node_metrics(metrics, node_id()));
         }
     }
-    // Record and metric retention (#1231): each node removes only the keys it
-    // owns, so a sweep never races another node's write of the same key.
-    constexpr auto kRecordSweepInterval = std::chrono::seconds(10);
-    if (record_store_ && Clock::now() - last_record_sweep_ >= kRecordSweepInterval) {
-        last_record_sweep_ = Clock::now();
-        const std::int64_t now_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        record_store_->sweep(now_ms);
-        metric_store_->sweep(now_ms);
+    // The record log (#1231): retention every second, a flush and a bounded
+    // compaction step every tick, and anti-entropy with the live peers every five
+    // seconds on the blocking pool (it waits on the signal plane).
+    if (record_store_) {
+        constexpr auto kRecordSweepInterval = std::chrono::seconds(1);
+        if (Clock::now() - last_record_sweep_ >= kRecordSweepInterval) {
+            last_record_sweep_ = Clock::now();
+            record_store_->sweep(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count());
+        }
+        record_store_->maintain();
+        constexpr auto kAntiEntropyInterval = std::chrono::seconds(5);
+        if (cluster_ && !record_anti_entropy_ &&
+            Clock::now() - last_record_anti_entropy_ >= kAntiEntropyInterval) {
+            last_record_anti_entropy_ = Clock::now();
+            record_anti_entropy_ = std::make_shared<RecordAntiEntropyRound>();
+            zetta::runtime::spawn(run_record_anti_entropy(record_store_.get()),
+                                  [round = record_anti_entropy_] {
+                                      round->finished.store(true, std::memory_order_release);
+                                      round->done.set();
+                                  });
+        }
+        if (record_anti_entropy_ &&
+            record_anti_entropy_->finished.load(std::memory_order_acquire)) {
+            record_anti_entropy_.reset();
+        }
     }
     flush_due_audit_summaries();
     sync_audit_log();
@@ -990,6 +1021,15 @@ void Node::drain_owner_work() {
 
 void Node::stop() {
     if (!running_) return;
+    // A record anti-entropy round runs on the pool against the record store and
+    // the cluster; let it finish before either goes away (#1231).
+    if (record_anti_entropy_) {
+        zetta::runtime::block_on(
+            [](std::shared_ptr<RecordAntiEntropyRound> round) -> zetta::runtime::task<> {
+                [[maybe_unused]] auto finished = co_await round->done.wait();
+            }(record_anti_entropy_));
+        record_anti_entropy_.reset();
+    }
     if (study_driver_) {
         study_driver_->stop();
         study_driver_.reset();
@@ -4908,30 +4948,24 @@ bool Node::load_replication() {
 }
 
 void Node::persist_replication() {
-    // Everything journaled before this mark is in the document saved below, so
-    // the journal can drop it once the save is on disk (#1231).
-    const std::uint64_t journal_mark = record_store_ ? record_store_->journal_mark() : 0;
+    persisting_.store(true, std::memory_order_release);
+    const auto started = std::chrono::steady_clock::now();
     const std::vector<std::byte> bytes = replication_->save();
     const fs::path path = replication_path();
     const fs::path tmp = path.string() + ".tmp";
-    bool written = false;
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char*>(bytes.data()),
                   static_cast<std::streamsize>(bytes.size()));
-        out.flush();
-        written = static_cast<bool>(out);
-    }
-    // The journal is trimmed only after the document is synced, so a crash
-    // between the two leaves the records in the journal, never in neither.
-    if (written && journal_mark > 0) {
-        const int descriptor = ::open(tmp.c_str(), O_RDWR);
-        written = descriptor >= 0 && ::fsync(descriptor) == 0;
-        if (descriptor >= 0) ::close(descriptor);
     }
     std::error_code ec;
     fs::rename(tmp, path, ec);  // atomic replace
-    if (written && !ec && journal_mark > 0) record_store_->journal_truncate(journal_mark);
+    ++persist_stats_.saves;
+    persist_stats_.last_bytes = bytes.size();
+    persist_stats_.last_ms = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count();
+    persisting_.store(false, std::memory_order_release);
     last_replication_persist_ = Clock::now();
     replication_persist_pending_ = false;
 }

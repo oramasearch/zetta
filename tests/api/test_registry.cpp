@@ -66,6 +66,42 @@ struct RegistryFixture : ::testing::Test {
     }
 };
 
+// The input check never throws past Registry::call (#1231). A schema with
+// contentEncoding made the validator throw "content checker was not set" out of
+// the call; base64 is now checked, and a schema the validator cannot compile is
+// an invalid_input refusal.
+TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
+    const auto echo = [](const nlohmann::json& input, zetta::api::ApiContext&) {
+        return ApiResult::success(input);
+    };
+    Capability encoded{"echo_encoded", "Echo", "Echo base64. No side effects.",
+                       {{"type", "object"},
+                        {"properties",
+                         {{"bytes", {{"type", "string"}, {"contentEncoding", "base64"}}}}}},
+                       {{"type", "object"}}, CapabilityKind::Read,
+                       zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                       false, false, echo};
+    ASSERT_TRUE(registry.add(std::move(encoded)));
+    Capability broken{"echo_broken", "Echo", "Echo with a bad pattern. No side effects.",
+                      {{"type", "object"},
+                       {"properties", {{"text", {{"type", "string"}, {"pattern", "(unclosed"}}}}}},
+                      {{"type", "object"}}, CapabilityKind::Read,
+                      zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                      false, false, echo};
+    ASSERT_TRUE(registry.add(std::move(broken)));
+
+    ApiResult result;
+    ASSERT_NO_THROW(result = call("echo_encoded", {{"bytes", "aGVsbG8="}}));
+    EXPECT_TRUE(result.ok) << result.error.message;
+    ASSERT_NO_THROW(result = call("echo_encoded", {{"bytes", "not base64!"}}));
+    EXPECT_EQ(result.error.code, "invalid_input");
+    EXPECT_EQ(result.error.path, "/bytes");
+    ASSERT_NO_THROW(result = call("echo_broken", {{"text", "x"}}));
+    EXPECT_EQ(result.error.code, "invalid_input");
+    EXPECT_NE(result.error.message.find("could not be checked"), std::string::npos)
+        << result.error.message;
+}
+
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),

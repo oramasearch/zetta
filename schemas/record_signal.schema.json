@@ -1,8 +1,17 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
-  "description": "The payload of a record-store signal (#1231) and of one journal line. `put`/`delete` forward a write to the key's owner (record.put); `apply` installs a committed record or a collection definition on a replica (record.apply) and is what the journal replays.",
+  "description": "The payload of a record-store signal (#1231). `put`/`delete` forward a write to the key's owner (record.put); `apply` installs a committed record or a collection definition on a replica (record.apply); `digest`, `keys` and `fetch` are anti-entropy: a peer's bucket digests (record.digest), the versions in some buckets of one collection (record.keys), and some records by key (record.fetch).",
   "properties": {
+    "buckets": {
+      "items": {
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
     "collection": {
       "type": "string"
     },
@@ -25,11 +34,21 @@
     "key": {
       "type": "string"
     },
+    "keys": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
     "op": {
       "enum": [
         "put",
         "delete",
-        "apply"
+        "apply",
+        "digest",
+        "keys",
+        "fetch"
       ]
     },
     "order": {

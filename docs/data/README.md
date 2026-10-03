@@ -17,8 +17,8 @@ views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) 
   `columns` always filled, parse errors located by position (#1218), and the
   virtual `system` tables, including live pub/sub dispatch sizing in
   `system.node_metrics`.
-- [record-store.md](record-store.md) — the keyed record store: opaque records by `(collection, key)`, `if_absent`/`if_revision` writes linearizable per key through the key's owner, synchronous fan-out to live peers, a fsynced journal, secondary-index lists and retention (`zetta::data::RecordStore`, #1231).
-- [time-series.md](time-series.md) — labelled counters and gauges: per-node bucket keys that never conflict, range queries summed across nodes, grouped and stepped (`zetta::data::MetricStore`, #1231).
+- [record-store.md](record-store.md) — the keyed record store: opaque records by `(collection, key)`, `if_absent`/`if_revision` writes linearizable per key through the key's owner, synchronous fan-out to live peers, a node-local fsynced log (not the replicated document — the soak shows why) with anti-entropy catch-up, secondary-index lists and retention (`zetta::data::RecordStore`, #1231).
+- [time-series.md](time-series.md) — labelled counters and gauges: per-node bucket records in the record log that never conflict, range queries summed across nodes, grouped and stepped (`zetta::data::MetricStore`, #1231).
 - [virtual-tables.md](virtual-tables.md) — `CREATE VIRTUAL TABLE <name> OVER CRDT '<prefix>' (…)`: a user-declared, read-only table over any CRDT key-family (durable/ephemeral tiers), stored as durable `vtable:` catalog metadata (`zetta::data::VirtualTable`, #809 slice 3).
 - [replication-strategy.md](replication-strategy.md) — the per-table/db strategy: `ReplicateToAll` | `Partitioned` | `PartitionedWithReplicas(rf)`, recorded + replicated (`zetta::data::ReplicationStrategy`, ENT-35).
 - [partitioner.md](partitioner.md) — the `Partitioner` boundary: record→partition (Hash/RoundRobin) + partition→node (`RendezvousPlacement` HRW) over a fixed P >> nodes (ADR-31 / #512–#514).

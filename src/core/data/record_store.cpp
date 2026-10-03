@@ -19,6 +19,7 @@
 #include "zetta/cluster/replication.hpp"
 
 #include "../catalog.hpp"
+#include "record_log.hpp"
 
 // The keyed record store (#1231). See include/zetta/data/record_store.hpp for the
 // design and docs/data/record-store.md for the contract.
@@ -27,8 +28,6 @@ namespace {
 
 using zetta::cluster::ReplicationWrite;
 
-static_assert(catalog::kRecordPrefix == zetta::cluster::kRevisionRegisterPrefix,
-              "record keys are the replicated document's revision registers");
 
 constexpr std::size_t kMaxKeyBytes = 512;
 constexpr std::size_t kMaxIndexValueBytes = 512;
@@ -88,70 +87,6 @@ std::string collection_key(std::string_view collection) {
     return std::string(catalog::kRecordCollectionPrefix) + std::string(collection);
 }
 
-std::string record_prefix(std::string_view collection) {
-    return std::string(catalog::kRecordPrefix) + std::string(collection) + ":";
-}
-
-std::string record_key(std::string_view collection, std::string_view key) {
-    return record_prefix(collection) + std::string(key);
-}
-
-// record_index:<collection>:<index>:<hex value>:<hex order>.<hex key>.<revision>
-// Hex keeps every byte ordered as the original string orders it, and '.' sorts
-// below every hex digit, so a shorter order or key sorts first, exactly as in a
-// byte comparison. One entry per (record, revision): a newer revision writes a new
-// entry and removes the old one, so an entry is never re-set after its removal.
-std::string index_prefix(std::string_view collection, std::string_view index,
-                         std::string_view value) {
-    return std::string(catalog::kRecordIndexPrefix) + std::string(collection) + ":" +
-           std::string(index) + ":" + to_hex(value) + ":";
-}
-
-std::string padded_revision(std::uint64_t revision) {
-    std::string digits = std::to_string(revision);
-    return std::string(20 - std::min<std::size_t>(20, digits.size()), '0') + digits;
-}
-
-std::string index_position(std::string_view order, std::string_view key) {
-    return to_hex(order) + "." + to_hex(key);
-}
-
-std::string index_entry_key(std::string_view collection, std::string_view index,
-                            std::string_view value, std::string_view order,
-                            std::string_view key, std::uint64_t revision) {
-    return index_prefix(collection, index, value) + index_position(order, key) + "." +
-           padded_revision(revision);
-}
-
-struct IndexEntry {
-    std::string collection;
-    std::string key;
-    std::uint64_t revision = 0;
-};
-
-std::optional<IndexEntry> parse_index_entry_key(std::string_view entry) {
-    if (!entry.starts_with(catalog::kRecordIndexPrefix)) return std::nullopt;
-    entry.remove_prefix(catalog::kRecordIndexPrefix.size());
-    IndexEntry parsed;
-    const std::size_t collection_end = entry.find(':');
-    if (collection_end == std::string_view::npos) return std::nullopt;
-    parsed.collection = std::string(entry.substr(0, collection_end));
-    const std::size_t tail = entry.rfind(':');
-    if (tail == std::string_view::npos || tail <= collection_end) return std::nullopt;
-    const std::string_view position = entry.substr(tail + 1);
-    const std::size_t first_dot = position.find('.');
-    const std::size_t last_dot = position.rfind('.');
-    if (first_dot == std::string_view::npos || last_dot == first_dot) return std::nullopt;
-    const auto key = from_hex(position.substr(first_dot + 1, last_dot - first_dot - 1));
-    if (!key) return std::nullopt;
-    parsed.key = *key;
-    const std::string_view digits = position.substr(last_dot + 1);
-    const auto result =
-        std::from_chars(digits.data(), digits.data() + digits.size(), parsed.revision);
-    if (result.ec != std::errc{}) return std::nullopt;
-    return parsed;
-}
-
 // ---- validation --------------------------------------------------------------
 
 bool valid_name(std::string_view name, std::size_t max_size, bool allow_dot) {
@@ -199,87 +134,8 @@ bool valid_base64(std::string_view text) {
 
 // ---- values ------------------------------------------------------------------
 
-nlohmann::json stored_value(const StoredRecord& record) {
-    nlohmann::json value{{"rev", record.revision}, {"updated", record.updated_ms}};
-    if (record.deleted) {
-        value["deleted"] = true;
-        return value;
-    }
-    value["value"] = record.value;
-    value["index"] = record.index;
-    value["order"] = record.order;
-    if (record.expires_ms) value["expires"] = *record.expires_ms;
-    return value;
-}
-
-// The hand-written, non-throwing parse of a record value read from the
-// replicated document, mirroring stored_record_schema().
-std::optional<StoredRecord> parse_stored(std::string collection, std::string key,
-                                         const nlohmann::json& value) {
-    if (!value.is_object()) return std::nullopt;
-    const auto revision = value.find("rev");
-    const auto updated = value.find("updated");
-    if (revision == value.end() || !revision->is_number_unsigned() ||
-        updated == value.end() || !updated->is_number_integer()) {
-        return std::nullopt;
-    }
-    StoredRecord record;
-    record.collection = std::move(collection);
-    record.key = std::move(key);
-    record.revision = revision->get<std::uint64_t>();
-    record.updated_ms = updated->get<std::int64_t>();
-    if (const auto deleted = value.find("deleted"); deleted != value.end()) {
-        if (!deleted->is_boolean()) return std::nullopt;
-        record.deleted = deleted->get<bool>();
-    }
-    if (const auto text = value.find("value"); text != value.end()) {
-        if (!text->is_string()) return std::nullopt;
-        record.value = text->get<std::string>();
-    }
-    if (const auto order = value.find("order"); order != value.end()) {
-        if (!order->is_string()) return std::nullopt;
-        record.order = order->get<std::string>();
-    }
-    if (const auto index = value.find("index"); index != value.end()) {
-        if (!index->is_object()) return std::nullopt;
-        for (const auto& [name, indexed] : index->items()) {
-            if (!indexed.is_string()) return std::nullopt;
-            record.index[name] = indexed.get<std::string>();
-        }
-    }
-    if (const auto expires = value.find("expires"); expires != value.end()) {
-        if (!expires->is_number_integer()) return std::nullopt;
-        record.expires_ms = expires->get<std::int64_t>();
-    }
-    return record;
-}
-
 bool visible(const StoredRecord& record, std::int64_t now) {
     return !record.deleted && !(record.expires_ms && *record.expires_ms <= now);
-}
-
-// The writes that move a key from `existing` to `next`: drop the old index
-// entries, write the record, add the new entries.
-std::vector<ReplicationWrite> record_writes(const std::optional<StoredRecord>& existing,
-                                            const StoredRecord& next) {
-    std::vector<ReplicationWrite> writes;
-    if (existing && !existing->deleted) {
-        for (const auto& [index, value] : existing->index) {
-            writes.push_back({index_entry_key(existing->collection, index, value,
-                                              existing->order, existing->key,
-                                              existing->revision),
-                              std::nullopt});
-        }
-    }
-    writes.push_back({record_key(next.collection, next.key), stored_value(next)});
-    if (!next.deleted) {
-        for (const auto& [index, value] : next.index) {
-            writes.push_back({index_entry_key(next.collection, index, value, next.order,
-                                              next.key, next.revision),
-                              nlohmann::json{{"rev", next.revision}}});
-        }
-    }
-    return writes;
 }
 
 // ---- schema boundary ---------------------------------------------------------
@@ -443,93 +299,6 @@ std::uint64_t rendezvous_weight(std::string_view node, std::string_view collecti
 
 }  // namespace
 
-// ---- the journal ---------------------------------------------------------------
-
-// The write-ahead journal: one line per committed write, fsynced before the write
-// is acknowledged. The mutex is the lowest-level handoff inside this file adapter
-// (API pool workers, the network thread and the owner loop all append or trim).
-class RecordStore::Journal {
-public:
-    explicit Journal(std::filesystem::path path) : path_(std::move(path)) {}
-    ~Journal() { close_locked(); }
-
-    bool append(const std::string& line) {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        if (!open_locked()) return false;
-        const std::string framed = line + "\n";
-        std::size_t written = 0;
-        while (written < framed.size()) {
-            const ssize_t result =
-                ::write(descriptor_, framed.data() + written, framed.size() - written);
-            if (result <= 0) return false;
-            written += static_cast<std::size_t>(result);
-        }
-        return ::fsync(descriptor_) == 0;
-    }
-
-    std::uint64_t size() const {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        std::error_code error;
-        const auto bytes = std::filesystem::file_size(path_, error);
-        return error ? 0 : bytes;
-    }
-
-    std::vector<std::string> lines() const {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        std::vector<std::string> result;
-        std::ifstream input(path_);
-        std::string line;
-        while (std::getline(input, line)) {
-            if (!line.empty()) result.push_back(std::move(line));
-        }
-        return result;
-    }
-
-    // Drop the first `mark` bytes: everything appended before the document save
-    // that preceded this call. Later appends are kept.
-    void truncate(std::uint64_t mark) {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        if (mark == 0) return;
-        std::string tail;
-        {
-            std::ifstream input(path_, std::ios::binary);
-            if (!input) return;
-            input.seekg(static_cast<std::streamoff>(mark));
-            std::ostringstream rest;
-            rest << input.rdbuf();
-            tail = rest.str();
-        }
-        close_locked();
-        const std::filesystem::path temporary = path_.string() + ".tmp";
-        {
-            std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-            output.write(tail.data(), static_cast<std::streamsize>(tail.size()));
-        }
-        const int descriptor = ::open(temporary.c_str(), O_RDWR);
-        if (descriptor >= 0) {
-            ::fsync(descriptor);
-            ::close(descriptor);
-        }
-        std::error_code error;
-        std::filesystem::rename(temporary, path_, error);
-    }
-
-private:
-    bool open_locked() {
-        if (descriptor_ >= 0) return true;
-        descriptor_ = ::open(path_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
-        return descriptor_ >= 0;
-    }
-    void close_locked() {
-        if (descriptor_ >= 0) ::close(descriptor_);
-        descriptor_ = -1;
-    }
-
-    std::filesystem::path path_;
-    int descriptor_ = -1;
-    mutable std::mutex mutex_;
-};
-
 // ---- public helpers ------------------------------------------------------------
 
 std::string_view to_string(RecordStatus status) {
@@ -571,7 +340,7 @@ const nlohmann::json& stored_record_schema() {
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "zetta.StoredRecord",
-  "description": "One keyed record (#1231): the replicated `record:<collection>:<key>` value, a revision register — concurrent values resolve to the highest `rev`. `value` is the caller's opaque bytes as base64; `index` maps a declared index to the record's value in it; `order` orders records within an index value; `updated` and `expires` are milliseconds since the Unix epoch. A deletion keeps `rev`, `updated` and `deleted: true` until the owner purges it.",
+  "description": "One keyed record (#1231), as a record-log frame holds it and a record.* signal carries it. `rev` is the record's revision: a copy is kept only when it is newer. `value` is the caller's opaque bytes as base64 (an engine-internal collection keeps its own text); `index` maps a declared index to the record's value in it; `order` orders records within an index value; `updated` and `expires` are milliseconds since the Unix epoch. A deletion keeps `rev`, `updated` and `deleted: true` until its grace period ends.",
   "type": "object",
   "required": ["rev", "updated"],
   "additionalProperties": false,
@@ -594,12 +363,14 @@ const nlohmann::json& record_signal_schema() {
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "zetta.RecordSignal",
-  "description": "The payload of a record-store signal (#1231) and of one journal line. `put`/`delete` forward a write to the key's owner (record.put); `apply` installs a committed record or a collection definition on a replica (record.apply) and is what the journal replays.",
+  "description": "The payload of a record-store signal (#1231). `put`/`delete` forward a write to the key's owner (record.put); `apply` installs a committed record or a collection definition on a replica (record.apply); `digest`, `keys` and `fetch` are anti-entropy: a peer's bucket digests (record.digest), the versions in some buckets of one collection (record.keys), and some records by key (record.fetch).",
   "type": "object",
   "required": ["op"],
   "additionalProperties": false,
   "properties": {
-    "op": {"enum": ["put", "delete", "apply"]},
+    "op": {"enum": ["put", "delete", "apply", "digest", "keys", "fetch"]},
+    "buckets": {"type": "array", "maxItems": 256, "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+    "keys": {"type": "array", "maxItems": 256, "items": {"type": "string"}},
     "collection": {"type": "string"},
     "key": {"type": "string"},
     "value": {"type": "string"},
@@ -683,15 +454,47 @@ std::optional<RecordCollection> record_collection_from_json(const nlohmann::json
     return collection;
 }
 
+
 // ---- the store -----------------------------------------------------------------
 
-RecordStore::RecordStore(zetta::cluster::ReplicationManager& replication,
-                         std::string node_id, std::filesystem::path journal_path)
-    : replication_(replication), node_id_(std::move(node_id)) {
-    if (!journal_path.empty()) journal_ = std::make_unique<Journal>(std::move(journal_path));
+namespace {
+
+constexpr std::size_t kBucketsPerRequest = 32;
+constexpr std::size_t kKeysPerFetch = 256;
+constexpr auto kAntiEntropyTimeout = std::chrono::seconds(10);
+
+// Engine-internal collections (the time series' buckets) start with '_', which
+// no API collection name can.
+bool valid_stored_collection(std::string_view name) {
+    return valid_collection_name(name) ||
+           (name.size() > 1 && name.front() == '_' && valid_name(name.substr(1), 160, true));
 }
 
+// Whether a peer's version of a key is worth pulling: newer than ours, and not
+// already expired, and not a deletion past its grace (both would only be swept
+// again, and a purged key must not come back).
+bool worth_pulling(const RecordVersion& theirs, const std::optional<StoredRecord>& ours,
+                   std::int64_t now) {
+    if (ours && ours->revision >= theirs.revision) return false;
+    if (theirs.expires_ms && *theirs.expires_ms <= now) return false;
+    if (theirs.deleted && now - theirs.updated_ms >= RecordStore::kTombstoneGraceMs) return false;
+    return true;
+}
+
+}  // namespace
+
+RecordStore::RecordStore(zetta::cluster::ReplicationManager& replication,
+                         std::string node_id, std::filesystem::path directory,
+                         std::uint64_t segment_bytes)
+    : replication_(replication),
+      node_id_(std::move(node_id)),
+      log_(std::make_unique<RecordLog>(std::move(directory), kTombstoneGraceMs,
+                                       segment_bytes == 0 ? RecordLog::kSegmentBytes
+                                                          : segment_bytes)) {}
+
 RecordStore::~RecordStore() { detach(); }
+
+bool RecordStore::open(std::string* reason) { return log_->open(reason); }
 
 void RecordStore::attach(zetta::cluster::Cluster& cluster) {
     detach();
@@ -801,11 +604,6 @@ RecordOutcome RecordStore::create_collection(const RecordCollection& requested) 
     }
     outcome.created = created;
     outcome.collection = created ? collection : existing;
-    if (created && journal_ && !journal_->append(definition_payload(collection).dump())) {
-        return failure(RecordStatus::Unavailable,
-                       "the collection was created in memory but the journal could not "
-                       "be synced to disk");
-    }
     replicate(definition_payload(*outcome.collection), {}, outcome);
     return outcome;
 }
@@ -825,20 +623,16 @@ RecordOutcome RecordStore::commit(const RecordWrite& write, std::int64_t now) {
         }
     }
     RecordOutcome outcome;
-    outcome.owner = node_id_;
-    std::optional<StoredRecord> committed;
-    replication_.update(
-        record_key(write.collection, write.key),
-        [&](const nlohmann::json* current) -> std::optional<std::vector<ReplicationWrite>> {
-            std::optional<StoredRecord> existing;
-            if (current) existing = parse_stored(write.collection, write.key, *current);
+    const RecordLog::Written written = log_->update(
+        write.collection, write.key,
+        [&](const StoredRecord* existing) -> std::optional<StoredRecord> {
             const bool live = existing && visible(*existing, now);
             if (write.condition == RecordCondition::IfAbsent && live) {
                 outcome = failure(RecordStatus::Conflict,
                                   "record '" + write.key + "' already exists at revision " +
                                       std::to_string(existing->revision),
                                   "/if_absent");
-                outcome.record = existing;
+                outcome.record = *existing;
                 return std::nullopt;
             }
             if (write.condition == RecordCondition::IfRevision &&
@@ -850,7 +644,7 @@ RecordOutcome RecordStore::commit(const RecordWrite& write, std::int64_t now) {
                                std::to_string(write.revision)
                          : "record '" + write.key + "' does not exist",
                     "/if_revision");
-                if (live) outcome.record = existing;
+                if (live) outcome.record = *existing;
                 return std::nullopt;
             }
             if (write.remove && !live) {
@@ -860,8 +654,6 @@ RecordOutcome RecordStore::commit(const RecordWrite& write, std::int64_t now) {
                 return std::nullopt;
             }
             StoredRecord next;
-            next.collection = write.collection;
-            next.key = write.key;
             // Revisions keep rising across a deletion and a purge: never below the
             // previous one + 1, and never below the clock in microseconds, so a
             // re-created key never reuses a revision a caller still holds.
@@ -874,31 +666,34 @@ RecordOutcome RecordStore::commit(const RecordWrite& write, std::int64_t now) {
                 next.order = write.order;
                 if (definition->retention_ms) next.expires_ms = now + *definition->retention_ms;
             }
-            committed = next;
-            return record_writes(existing, next);
-        });
-    if (!committed) {
-        outcome.owner = node_id_;
+            return next;
+        },
+        /*with_value=*/false, /*sync=*/true);
+    outcome.owner = node_id_;
+    if (!written.record) {
+        if (outcome.ok()) {
+            return failure(RecordStatus::Unavailable,
+                           "the record log could not be written on " + node_id_);
+        }
         return outcome;
     }
-    if (journal_ && !journal_->append(apply_payload(*committed).dump())) {
+    if (!written.durable) {
         return failure(RecordStatus::Unavailable,
-                       "the write was applied in memory but the journal could not be synced "
-                       "to disk");
+                       "the write was applied but could not be synced to disk on " + node_id_);
     }
-    outcome.record = committed;
+    outcome.record = written.record;
     return outcome;
 }
 
-bool RecordStore::install(const StoredRecord& record) {
-    return replication_.update(
-        record_key(record.collection, record.key),
-        [&](const nlohmann::json* current) -> std::optional<std::vector<ReplicationWrite>> {
-            std::optional<StoredRecord> existing;
-            if (current) existing = parse_stored(record.collection, record.key, *current);
-            if (existing && existing->revision >= record.revision) return std::nullopt;
-            return record_writes(existing, record);
-        });
+bool RecordStore::install(const StoredRecord& record, std::int64_t now) {
+    if (record.expires_ms && *record.expires_ms <= now) return false;
+    return log_->update(record.collection, record.key,
+                        [&](const StoredRecord* existing) -> std::optional<StoredRecord> {
+                            if (existing && existing->revision >= record.revision) return std::nullopt;
+                            return record;
+                        },
+                        /*with_value=*/false, /*sync=*/false)
+        .record.has_value();
 }
 
 void RecordStore::replicate(const nlohmann::json& payload, const std::string& except,
@@ -963,7 +758,7 @@ RecordOutcome RecordStore::write(const RecordWrite& write) {
     }
     if (!outcome->ok()) return *outcome;
     outcome->owner = owner;
-    install(*outcome->record);
+    install(*outcome->record, now_ms());
     outcome->replicas = 1;  // the owner holds it
     replicate(apply_payload(*outcome->record), owner, *outcome);
     return *outcome;
@@ -973,14 +768,11 @@ RecordOutcome RecordStore::get(const std::string& collection, const std::string&
     if (!valid_collection_name(collection)) {
         return failure(RecordStatus::InvalidInput, "want a collection name", "/collection");
     }
-    const auto view = replication_.shared_snapshot();
-    if (!view->contains(collection_key(collection))) {
+    if (!find_collection(collection)) {
         return failure(RecordStatus::NotFound,
                        "no record collection '" + collection + "'", "/collection");
     }
-    const auto found = view->find(record_key(collection, key));
-    std::optional<StoredRecord> record;
-    if (found != view->end()) record = parse_stored(collection, key, *found);
+    std::optional<StoredRecord> record = log_->get(collection, key, /*with_value=*/true);
     if (!record || !visible(*record, now_ms())) {
         return failure(RecordStatus::NotFound,
                        "no record '" + key + "' in '" + collection + "'", "/key");
@@ -1003,219 +795,198 @@ RecordPage RecordStore::list(const RecordListRequest& request) const {
     }
     const std::size_t limit = std::clamp<std::size_t>(request.limit, 1, kMaxListLimit);
     const std::int64_t now = now_ms();
-    const auto view = replication_.shared_snapshot();
-    const auto definition_entry = view->find(collection_key(request.collection));
-    if (definition_entry == view->end()) {
+    const auto definition = find_collection(request.collection);
+    if (!definition) {
         return fail(RecordStatus::NotFound,
                     "no record collection '" + request.collection + "'", "/collection");
     }
-    const auto& entries = view->get_ref<const nlohmann::json::object_t&>();
-
-    std::string prefix;
-    std::string start;  // the first key a page may return (ascending), or the bound below it
-    if (request.index.empty()) {
-        prefix = record_prefix(request.collection);
-        if (!request.after.empty()) {
-            const auto after = from_hex(request.after);
-            if (!after) return fail(RecordStatus::InvalidInput, "not a cursor", "/after");
-            start = prefix + *after;
+    // The cursor is the last record's position: hex(order) "." hex(key) in an
+    // index listing, hex(key) in a key listing.
+    std::string last_position;
+    bool more = false;
+    const auto take = [&](StoredRecord&& record, std::string position) {
+        if (!visible(record, now)) return true;
+        if (page.records.size() == limit) {
+            more = true;
+            return false;
         }
+        last_position = std::move(position);
+        page.records.push_back(std::move(record));
+        return true;
+    };
+    if (request.index.empty()) {
+        std::optional<std::string> after;
+        if (!request.after.empty()) {
+            after = from_hex(request.after);
+            if (!after) return fail(RecordStatus::InvalidInput, "not a cursor", "/after");
+        }
+        log_->scan_keys(request.collection, after, /*inclusive=*/false, request.descending,
+                        [&](StoredRecord&& record) {
+                            std::string position = to_hex(record.key);
+                            return take(std::move(record), std::move(position));
+                        });
     } else {
-        const auto definition = record_collection_from_json(*definition_entry);
-        if (!definition || std::ranges::find(definition->indexes, request.index) ==
-                               definition->indexes.end()) {
+        if (std::ranges::find(definition->indexes, request.index) == definition->indexes.end()) {
             return fail(RecordStatus::InvalidInput,
                         "collection '" + request.collection + "' declares no index '" +
                             request.index + "'",
                         "/index");
         }
-        prefix = index_prefix(request.collection, request.index, request.value);
+        std::optional<std::pair<std::string, std::string>> after;
         if (!request.after.empty()) {
-            if (request.after.find_first_not_of("0123456789abcdef.") != std::string::npos) {
-                return fail(RecordStatus::InvalidInput, "not a cursor", "/after");
-            }
-            start = prefix + request.after;
+            const std::size_t dot = request.after.find('.');
+            const auto order = dot == std::string::npos ? std::nullopt
+                                                        : from_hex(request.after.substr(0, dot));
+            const auto key = dot == std::string::npos ? std::nullopt
+                                                      : from_hex(request.after.substr(dot + 1));
+            if (!order || !key) return fail(RecordStatus::InvalidInput, "not a cursor", "/after");
+            after = std::pair{*order, *key};
         }
-    }
-
-    // Resolve one entry to its record (index entries must match the record's
-    // current revision; anything else is stale and skipped).
-    const auto resolve = [&](const std::string& entry_key,
-                             const nlohmann::json& entry_value)
-        -> std::optional<std::pair<StoredRecord, std::string>> {
-        if (request.index.empty()) {
-            std::string key = entry_key.substr(prefix.size());
-            auto record = parse_stored(request.collection, key, entry_value);
-            if (!record || !visible(*record, now)) return std::nullopt;
-            return std::pair{std::move(*record), to_hex(key)};
-        }
-        const auto parsed = parse_index_entry_key(entry_key);
-        if (!parsed) return std::nullopt;
-        const auto found = view->find(record_key(request.collection, parsed->key));
-        if (found == view->end()) return std::nullopt;
-        auto record = parse_stored(request.collection, parsed->key, *found);
-        if (!record || record->revision != parsed->revision || !visible(*record, now)) {
-            return std::nullopt;
-        }
-        const std::string tail = entry_key.substr(prefix.size());
-        return std::pair{std::move(*record), tail.substr(0, tail.rfind('.'))};
-    };
-
-    std::string last_position;
-    bool more = false;
-    const auto take = [&](const std::string& entry_key, const nlohmann::json& entry_value) {
-        auto resolved = resolve(entry_key, entry_value);
-        if (!resolved) return true;
-        if (resolved->second == last_position) return true;  // a stale duplicate
-        if (page.records.size() == limit) {
-            more = true;
-            return false;
-        }
-        last_position = resolved->second;
-        page.records.push_back(std::move(resolved->first));
-        return true;
-    };
-
-    if (!request.descending) {
-        // Strictly after the cursor: past every entry at the cursor's position.
-        auto entry = start.empty() ? entries.lower_bound(prefix)
-                                   : entries.upper_bound(start + (request.index.empty()
-                                                                      ? std::string()
-                                                                      : std::string(".\x7f")));
-        for (; entry != entries.end() && std::string_view(entry->first).starts_with(prefix);
-             ++entry) {
-            if (!take(entry->first, entry->second)) break;
-        }
-    } else {
-        // Strictly before the cursor, walking down from the end of the range.
-        std::string prefix_end = prefix;  // the first key past the prefix range
-        ++prefix_end.back();
-        auto bound = start.empty() ? entries.lower_bound(prefix_end)
-                                   : entries.lower_bound(start + (request.index.empty()
-                                                                      ? std::string()
-                                                                      : std::string(".")));
-        while (bound != entries.begin()) {
-            --bound;
-            if (!std::string_view(bound->first).starts_with(prefix)) break;
-            if (!take(bound->first, bound->second)) break;
-        }
+        log_->scan_index(request.collection, request.index, request.value, after,
+                         request.descending, [&](StoredRecord&& record) {
+                             std::string position = to_hex(record.order) + "." + to_hex(record.key);
+                             return take(std::move(record), std::move(position));
+                         });
     }
     if (more) page.next_after = last_position;
     return page;
 }
 
 void RecordStore::sweep(std::int64_t now) {
-    struct Candidate {
-        std::string key;
-        std::string collection;
-        std::string record;
-        std::uint64_t revision = 0;
+    // Expiry and the deletion grace are properties of the record, the same on
+    // every node, so each node removes its own copies; the revision check makes a
+    // removal lose to a write that landed since the key was queued.
+    for (;;) {
+        const std::vector<RecordLog::Due> due = log_->take_due(now, 4096);
+        for (const RecordLog::Due& entry : due) log_->purge(entry.collection, entry.key, entry.revision);
+        if (due.size() < 4096) break;
+    }
+}
+
+void RecordStore::maintain() { log_->maintain(); }
+
+RecordStorageStats RecordStore::storage_stats() const { return log_->stats(); }
+
+bool RecordStore::fold(const std::string& collection, const std::string& key,
+                       const std::function<std::optional<std::string>(const std::string*)>& fold,
+                       std::optional<std::int64_t> expires_ms) {
+    const std::int64_t now = now_ms();
+    return log_->update(collection, key,
+                        [&](const StoredRecord* existing) -> std::optional<StoredRecord> {
+                            std::optional<std::string> value =
+                                fold(existing && !existing->deleted ? &existing->value : nullptr);
+                            if (!value) return std::nullopt;
+                            StoredRecord next;
+                            next.revision = std::max(existing ? existing->revision + 1 : 1, now_micros());
+                            next.updated_ms = now;
+                            next.value = std::move(*value);
+                            next.expires_ms = expires_ms;
+                            return next;
+                        },
+                        /*with_value=*/true, /*sync=*/false)
+        .record.has_value();
+}
+
+void RecordStore::scan(const std::string& collection, const std::string& from_key,
+                       const std::function<bool(const std::string&, const std::string&)>& visit) const {
+    const std::int64_t now = now_ms();
+    log_->scan_keys(collection, from_key, /*inclusive=*/true, /*descending=*/false,
+                    [&](StoredRecord&& record) {
+                        if (!visible(record, now)) return true;
+                        return visit(record.key, record.value);
+                    });
+}
+
+std::size_t RecordStore::pull_from(const std::string& peer) {
+    zetta::cluster::Cluster* cluster = cluster_.load();
+    if (!cluster) return 0;
+    const auto ask = [&](std::string_view method, const nlohmann::json& payload)
+        -> std::optional<nlohmann::json> {
+        const zetta::cluster::SignalResponse response =
+            cluster->request(peer, std::string(method), payload.dump(), kAntiEntropyTimeout);
+        if (!response.ok) return std::nullopt;
+        nlohmann::json document = nlohmann::json::parse(response.payload, nullptr, false);
+        if (document.is_discarded()) return std::nullopt;
+        return document;
     };
-    std::vector<Candidate> records;
-    std::vector<std::string> stale_entries;
-    {
-        const auto view = replication_.shared_snapshot();
-        catalog::for_each_with_prefix(
-            *view, catalog::kRecordPrefix,
-            [&](const std::string& key, const nlohmann::json& value) {
-                const std::string_view rest =
-                    std::string_view(key).substr(catalog::kRecordPrefix.size());
-                const std::size_t colon = rest.find(':');
-                if (colon == std::string_view::npos) return;
-                std::string collection(rest.substr(0, colon));
-                std::string record(rest.substr(colon + 1));
-                const auto parsed = parse_stored(collection, record, value);
-                if (!parsed) return;
-                const bool expired = parsed->expires_ms && *parsed->expires_ms <= now;
-                const bool purgeable =
-                    parsed->deleted && now - parsed->updated_ms >= kTombstoneGraceMs;
-                if (!expired && !purgeable) return;
-                records.push_back({key, std::move(collection), std::move(record),
-                                   parsed->revision});
-            });
-        catalog::for_each_with_prefix(
-            *view, catalog::kRecordIndexPrefix,
-            [&](const std::string& key, const nlohmann::json&) {
-                const auto entry = parse_index_entry_key(key);
-                if (!entry) return;
-                const auto found = view->find(record_key(entry->collection, entry->key));
-                std::optional<StoredRecord> record;
-                if (found != view->end()) {
-                    record = parse_stored(entry->collection, entry->key, *found);
-                }
-                if (record && record->revision == entry->revision && !record->deleted) return;
-                // Revisions are at least the commit time in microseconds, so the
-                // entry's age is readable from its revision.
-                const auto written_ms = static_cast<std::int64_t>(entry->revision / 1000);
-                if (now - written_ms < kTombstoneGraceMs) return;
-                if (owner_of(entry->collection, entry->key) != node_id_) return;
-                stale_entries.push_back(key);
-            });
-    }  // release the view before writing (#1227)
-
-    for (const Candidate& candidate : records) {
-        if (owner_of(candidate.collection, candidate.record) != node_id_) continue;
-        replication_.update(
-            candidate.key,
-            [&](const nlohmann::json* current) -> std::optional<std::vector<ReplicationWrite>> {
-                if (!current) return std::nullopt;
-                const auto record =
-                    parse_stored(candidate.collection, candidate.record, *current);
-                if (!record || record->revision != candidate.revision) return std::nullopt;
-                std::vector<ReplicationWrite> writes{{candidate.key, std::nullopt}};
-                if (!record->deleted) {
-                    for (const auto& [index, value] : record->index) {
-                        writes.push_back({index_entry_key(candidate.collection, index, value,
-                                                          record->order, candidate.record,
-                                                          record->revision),
-                                          std::nullopt});
-                    }
-                }
-                return writes;
-            });
-    }
-    for (const std::string& key : stale_entries) replication_.remove(key);
-}
-
-std::size_t RecordStore::replay_journal() {
-    if (!journal_) return 0;
-    std::size_t applied = 0;
-    for (const std::string& line : journal_->lines()) {
-        std::string reason;
-        const auto payload = decode_signal_payload(line, &reason);
-        if (!payload || payload->value("op", std::string()) != "apply") {
-            std::fprintf(stderr, "zetta: skipping an unreadable record journal line: %s\n",
-                         reason.c_str());
+    const auto theirs = ask(kDigestMethod, {{"op", "digest"}});
+    if (!theirs || !theirs->is_object()) return 0;
+    const auto ours = log_->digests();
+    const std::int64_t now = now_ms();
+    std::size_t pulled = 0;
+    for (const auto& [collection, digests] : theirs->items()) {
+        if (!valid_stored_collection(collection) || !digests.is_array() ||
+            digests.size() != RecordLog::kBuckets) {
             continue;
         }
-        if (payload->contains("definition")) {
-            if (auto collection = record_collection_from_json(payload->at("definition"))) {
-                applied += install_collection(*collection) ? 1 : 0;
+        const auto mine = ours.find(collection);
+        std::vector<std::size_t> differing;
+        for (std::size_t bucket = 0; bucket < RecordLog::kBuckets; ++bucket) {
+            if (!digests[bucket].is_number_unsigned()) continue;
+            const std::uint64_t mine_digest = mine == ours.end() ? 0 : mine->second[bucket];
+            if (digests[bucket].get<std::uint64_t>() != mine_digest) differing.push_back(bucket);
+        }
+        for (std::size_t start = 0; start < differing.size(); start += kBucketsPerRequest) {
+            const std::vector<std::size_t> buckets(
+                differing.begin() + static_cast<std::ptrdiff_t>(start),
+                differing.begin() + static_cast<std::ptrdiff_t>(
+                                        std::min(differing.size(), start + kBucketsPerRequest)));
+            const auto versions =
+                ask(kKeysMethod, {{"op", "keys"}, {"collection", collection}, {"buckets", buckets}});
+            if (!versions || !versions->is_array()) continue;
+            std::vector<std::string> wanted;
+            for (const nlohmann::json& version : *versions) {
+                if (!version.is_object() || !version.contains("k") || !version["k"].is_string() ||
+                    !version.contains("r") || !version["r"].is_number_unsigned()) {
+                    continue;
+                }
+                RecordVersion parsed;
+                parsed.key = version["k"].get<std::string>();
+                parsed.revision = version["r"].get<std::uint64_t>();
+                parsed.deleted = version.value("d", false);
+                parsed.updated_ms = version.value("u", std::int64_t{0});
+                if (version.contains("e") && version["e"].is_number_integer()) {
+                    parsed.expires_ms = version["e"].get<std::int64_t>();
+                }
+                if (!valid_key(parsed.key)) continue;
+                if (worth_pulling(parsed, log_->get(collection, parsed.key, false), now)) {
+                    wanted.push_back(parsed.key);
+                }
             }
-            continue;
-        }
-        if (!payload->contains("collection") || !payload->contains("key") ||
-            !payload->contains("record")) {
-            continue;
-        }
-        if (auto record = parse_stored(payload->at("collection").get<std::string>(),
-                                       payload->at("key").get<std::string>(),
-                                       payload->at("record"))) {
-            applied += install(*record) ? 1 : 0;
+            for (std::size_t from = 0; from < wanted.size(); from += kKeysPerFetch) {
+                const std::vector<std::string> keys(
+                    wanted.begin() + static_cast<std::ptrdiff_t>(from),
+                    wanted.begin() + static_cast<std::ptrdiff_t>(
+                                         std::min(wanted.size(), from + kKeysPerFetch)));
+                const auto records =
+                    ask(kFetchMethod, {{"op", "fetch"}, {"collection", collection}, {"keys", keys}});
+                if (!records || !records->is_array()) continue;
+                for (const nlohmann::json& entry : *records) {
+                    if (!entry.is_object() || !entry.contains("k") || !entry["k"].is_string() ||
+                        !entry.contains("r")) {
+                        continue;
+                    }
+                    const auto record = parse_stored(collection, entry["k"].get<std::string>(), entry["r"]);
+                    if (record && valid_key(record->key) && install(*record, now)) ++pulled;
+                }
+            }
         }
     }
-    return applied;
+    return pulled;
 }
 
-std::uint64_t RecordStore::journal_mark() const { return journal_ ? journal_->size() : 0; }
-
-void RecordStore::journal_truncate(std::uint64_t mark) {
-    if (journal_) journal_->truncate(mark);
+std::size_t RecordStore::anti_entropy() {
+    std::size_t pulled = 0;
+    for (const std::string& peer : live_peers()) pulled += pull_from(peer);
+    return pulled;
 }
 
 zetta::cluster::SignalResponse RecordStore::on_request(
     const zetta::cluster::Signal& request) {
-    if (request.method != kPutMethod && request.method != kApplyMethod) {
+    const bool ours = request.method == kPutMethod || request.method == kApplyMethod ||
+                      request.method == kDigestMethod || request.method == kKeysMethod ||
+                      request.method == kFetchMethod;
+    if (!ours) {
         if (auto* delegate = delegate_.load()) return delegate->on_request(request);
         return {.ok = false, .payload = {}, .error = "no handler"};
     }
@@ -1225,32 +996,67 @@ zetta::cluster::SignalResponse RecordStore::on_request(
         return {.ok = false, .payload = {}, .error = std::string(request.method) + ": " + reason};
     }
     const std::string op = payload->at("op").get<std::string>();
+    const auto refuse = [&](std::string why) {
+        return zetta::cluster::SignalResponse{
+            .ok = false, .payload = {}, .error = std::string(request.method) + ": " + why};
+    };
+    const auto answer = [](const nlohmann::json& body) {
+        return zetta::cluster::SignalResponse{.ok = true, .payload = body.dump(), .error = {}};
+    };
+    const std::string collection = payload->value("collection", std::string());
+
+    if (request.method == kDigestMethod) {
+        nlohmann::json digests = nlohmann::json::object();
+        for (const auto& [name, buckets] : log_->digests()) digests[name] = buckets;
+        return answer(digests);
+    }
+    if (request.method == kKeysMethod) {
+        if (op != "keys" || !valid_stored_collection(collection) || !payload->contains("buckets")) {
+            return refuse("want a collection and buckets");
+        }
+        nlohmann::json versions = nlohmann::json::array();
+        for (const RecordVersion& version :
+             log_->versions(collection, payload->at("buckets").get<std::vector<std::size_t>>())) {
+            nlohmann::json entry{{"k", version.key}, {"r", version.revision}, {"u", version.updated_ms}};
+            if (version.deleted) entry["d"] = true;
+            if (version.expires_ms) entry["e"] = *version.expires_ms;
+            versions.push_back(std::move(entry));
+        }
+        return answer(versions);
+    }
+    if (request.method == kFetchMethod) {
+        if (op != "fetch" || !valid_stored_collection(collection) || !payload->contains("keys")) {
+            return refuse("want a collection and keys");
+        }
+        nlohmann::json records = nlohmann::json::array();
+        for (const std::string& key : payload->at("keys").get<std::vector<std::string>>()) {
+            if (auto record = log_->get(collection, key, /*with_value=*/true)) {
+                records.push_back({{"k", key}, {"r", stored_value(*record)}});
+            }
+        }
+        return answer(records);
+    }
     if (request.method == kApplyMethod) {
-        if (op != "apply") return {.ok = false, .payload = {}, .error = "record.apply: want op apply"};
+        if (op != "apply") return refuse("want op apply");
         if (payload->contains("definition")) {
             std::string why;
-            const auto collection = record_collection_from_json(payload->at("definition"), &why);
-            if (!collection) return {.ok = false, .payload = {}, .error = "record.apply: " + why};
-            install_collection(*collection);
+            const auto definition = record_collection_from_json(payload->at("definition"), &why);
+            if (!definition) return refuse(why);
+            install_collection(*definition);
             return {.ok = true, .payload = {}, .error = {}};
         }
-        if (!payload->contains("collection") || !payload->contains("key") ||
-            !payload->contains("record")) {
-            return {.ok = false, .payload = {}, .error = "record.apply: want a record"};
-        }
-        const std::string collection = payload->at("collection").get<std::string>();
-        const std::string key = payload->at("key").get<std::string>();
-        if (!valid_collection_name(collection) || !valid_key(key)) {
-            return {.ok = false, .payload = {}, .error = "record.apply: bad collection or key"};
+        const std::string key = payload->value("key", std::string());
+        if (!valid_stored_collection(collection) || !valid_key(key) || !payload->contains("record")) {
+            return refuse("want a collection, a key and a record");
         }
         const auto record = parse_stored(collection, key, payload->at("record"));
-        if (!record) return {.ok = false, .payload = {}, .error = "record.apply: bad record"};
-        install(*record);
+        if (!record) return refuse("bad record");
+        install(*record, now_ms());
         return {.ok = true, .payload = {}, .error = {}};
     }
-    if (op == "apply") return {.ok = false, .payload = {}, .error = "record.put: want put or delete"};
+    if (op != "put" && op != "delete") return refuse("want put or delete");
     const auto write = write_from_payload(*payload);
-    if (!write) return {.ok = false, .payload = {}, .error = "record.put: want a collection and key"};
+    if (!write) return refuse("want a collection and key");
     RecordOutcome outcome;
     if (!valid_collection_name(write->collection) || !valid_key(write->key)) {
         outcome = failure(RecordStatus::InvalidInput, "bad collection or key");
@@ -1264,7 +1070,7 @@ zetta::cluster::SignalResponse RecordStore::on_request(
         outcome = commit(*write, now_ms());
     }
     outcome.owner = node_id_;
-    return {.ok = true, .payload = outcome_payload(outcome).dump(), .error = {}};
+    return answer(outcome_payload(outcome));
 }
 
 void RecordStore::on_event(const zetta::cluster::Signal& event) {

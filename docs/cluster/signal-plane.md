@@ -197,8 +197,9 @@ gauges, and the **`run.launch`** Task â€” the first consumer of the Task kind â€
 that the [coordinated cross-process SPMD launch](../compute/coordinated-launch.md)
 fans out so every member co-runs an interactive run against its own shard
 (#601), and the [record store's](../data/record-store.md) `record.put` (a write
-forwarded to the key's owner) and `record.apply` (a committed record installed on
-every live peer before the write is acknowledged, #1231). Each rides a schema-validated payload (the
+forwarded to the key's owner), `record.apply` (a committed record installed on
+every live peer before the write is acknowledged), and the anti-entropy requests
+`record.digest`, `record.keys` and `record.fetch` (#1231). Each rides a schema-validated payload (the
 [collective message](collectives.md) / telemetry boundary pattern); none adds a new
 wire verb beyond `ZETTA/1 SIGNAL`.
 

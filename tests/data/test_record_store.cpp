@@ -1,6 +1,7 @@
 // The keyed record store (#1231, docs/data/record-store.md): conditional writes,
-// secondary-index lists, retention, the journal, the revision register, the
-// two-node linearizable path, and the latency budget.
+// secondary-index lists, retention, the node-local log (restart, torn tail,
+// compaction), the two-node linearizable path, anti-entropy catch-up, and the
+// latency budget.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -19,6 +21,7 @@
 #include "temp_dir.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/data/metric_store.hpp"
 #include "zetta/data/record_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/util/uuid.hpp"
@@ -110,8 +113,16 @@ std::vector<std::string> keys_of(const zetta::data::RecordPage& page) {
 struct StoreFixture : ::testing::Test {
     TempDir dir;
     ReplicationManager replication{zetta::util::new_uuid()};
-    RecordStore store{replication, replication.node_id(), dir.path() / "records.journal"};
+    RecordStore store{replication, replication.node_id(), dir.path() / "records"};
+
+    void SetUp() override { ASSERT_TRUE(store.open()); }
 };
+
+std::int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
 
 }  // namespace
 
@@ -288,14 +299,12 @@ TEST_F(StoreFixture, RetentionHidesThenSweepRemovesExpiredRecords) {
     again.condition = RecordCondition::IfAbsent;
     ASSERT_TRUE(store.write(again).ok());
 
-    const std::int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::system_clock::now().time_since_epoch())
-                                 .count();
-    store.sweep(now + 1000);
-    const auto view = replication.shared_snapshot();
-    for (const auto& [key, value] : view->items()) {
-        EXPECT_FALSE(key.starts_with("record:codes:")) << key;
-        EXPECT_FALSE(key.starts_with("record_index:codes:")) << key;
+    EXPECT_EQ(store.storage_stats().records, 2u);
+    store.sweep(now_ms() + 1000);
+    EXPECT_EQ(store.storage_stats().records, 0u);
+    // Records never enter the replicated catalogue: only the definition does.
+    for (const auto& [key, value] : replication.shared_snapshot()->items()) {
+        EXPECT_FALSE(key.starts_with("record:")) << key;
     }
 }
 
@@ -307,14 +316,18 @@ TEST_F(StoreFixture, DeletionTombstonesArePurgedAfterTheGracePeriod) {
     remove.key = "t";
     remove.remove = true;
     ASSERT_TRUE(store.write(remove).ok());
-    EXPECT_TRUE(replication.shared_snapshot()->contains("record:things:t"));
-    const std::int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::system_clock::now().time_since_epoch())
-                                 .count();
-    store.sweep(now);  // inside the grace period: kept
-    EXPECT_TRUE(replication.shared_snapshot()->contains("record:things:t"));
-    store.sweep(now + RecordStore::kTombstoneGraceMs + 1000);
-    EXPECT_FALSE(replication.shared_snapshot()->contains("record:things:t"));
+    EXPECT_EQ(store.storage_stats().records, 1u);  // the tombstone
+    store.sweep(now_ms());  // inside the grace period: kept
+    EXPECT_EQ(store.storage_stats().records, 1u);
+    store.sweep(now_ms() + RecordStore::kTombstoneGraceMs + 1000);
+    EXPECT_EQ(store.storage_stats().records, 0u);
+
+    // A restart neither revives the record nor its tombstone: the purge left a
+    // marker in the log.
+    RecordStore restarted{replication, replication.node_id(), dir.path() / "records"};
+    ASSERT_TRUE(restarted.open());
+    EXPECT_EQ(restarted.storage_stats().records, 0u);
+    EXPECT_EQ(restarted.get("things", "t").status, RecordStatus::NotFound);
 }
 
 TEST_F(StoreFixture, ConcurrentConditionalIncrementsNeverLoseAnUpdate) {
@@ -359,38 +372,82 @@ TEST_F(StoreFixture, ConcurrentConditionalIncrementsNeverLoseAnUpdate) {
                 kThreads * kIncrements, conflicts.load());
 }
 
-TEST_F(StoreFixture, TheJournalRestoresAcknowledgedWritesAfterACrash) {
+TEST_F(StoreFixture, TheLogRestoresAcknowledgedWritesAfterARestartAndATornTail) {
     ASSERT_TRUE(store.create_collection(collection("sessions", {"user"})).ok());
     ASSERT_TRUE(store.write(put("sessions", "s-1", "one", {{"user", "u"}})).ok());
     ASSERT_TRUE(store.write(put("sessions", "s-2", "two", {{"user", "u"}})).ok());
-    const std::uint64_t mark = store.journal_mark();
-    EXPECT_GT(mark, 0u);
+    ASSERT_TRUE(store.write(put("sessions", "s-1", "uno", {{"user", "u"}})).ok());
 
-    // A crash before the document was saved: a fresh document, the same journal.
-    ReplicationManager restarted{replication.node_id()};
-    RecordStore recovered{restarted, restarted.node_id(), dir.path() / "records.journal"};
-    EXPECT_EQ(recovered.replay_journal(), 3u);  // the collection and two records
-    const RecordOutcome read = recovered.get("sessions", "s-2");
-    ASSERT_TRUE(read.ok()) << read.message;
-    EXPECT_EQ(unbase64(read.record->value), "two");
+    // A crash mid-append leaves a torn frame at the end of the active segment.
+    std::filesystem::path segment;
+    for (const auto& file : std::filesystem::directory_iterator(dir.path() / "records")) {
+        segment = std::max(segment, file.path());
+    }
+    {
+        std::ofstream torn(segment, std::ios::binary | std::ios::app);
+        torn << "\x40\x00\x00\x00garbage";
+    }
+    RecordStore restarted{replication, replication.node_id(), dir.path() / "records"};
+    ASSERT_TRUE(restarted.open());
+    const RecordOutcome first = restarted.get("sessions", "s-1");
+    ASSERT_TRUE(first.ok()) << first.message;
+    EXPECT_EQ(unbase64(first.record->value), "uno");
     RecordListRequest request;
     request.collection = "sessions";
     request.index = "user";
     request.value = "u";
-    EXPECT_EQ(keys_of(recovered.list(request)), (std::vector<std::string>{"s-1", "s-2"}));
-    // Replaying twice changes nothing.
-    EXPECT_EQ(recovered.replay_journal(), 0u);
-
-    // Once the document holding them is saved, the journal drops those entries
-    // and keeps anything appended after the mark.
-    ASSERT_TRUE(store.write(put("sessions", "s-3", "three")).ok());
-    store.journal_truncate(mark);
-    ReplicationManager later{replication.node_id()};
-    RecordStore tail{later, later.node_id(), dir.path() / "records.journal"};
-    EXPECT_EQ(tail.replay_journal(), 1u);
+    EXPECT_EQ(keys_of(restarted.list(request)), (std::vector<std::string>{"s-1", "s-2"}));
+    // The torn tail was cut, so new writes land on a clean frame boundary.
+    ASSERT_TRUE(restarted.write(put("sessions", "s-3", "three", {{"user", "u"}})).ok());
+    RecordStore again{replication, replication.node_id(), dir.path() / "records"};
+    ASSERT_TRUE(again.open());
+    EXPECT_EQ(keys_of(again.list(request)), (std::vector<std::string>{"s-1", "s-2", "s-3"}));
 }
 
-TEST(RecordStoreNode, PersistingTheDocumentEmptiesTheJournalAndSurvivesRestart) {
+// Disk follows the live set: dead sealed segments are deleted, and the live
+// frames of a mostly-dead oldest segment move forward.
+TEST(RecordStoreCompaction, DiskFollowsTheLiveSet) {
+    TempDir dir;
+    ReplicationManager replication{zetta::util::new_uuid()};
+    RecordStore store{replication, replication.node_id(), dir.path() / "records",
+                      /*segment_bytes=*/64 * 1024};
+    ASSERT_TRUE(store.open());
+    ASSERT_TRUE(store.create_collection(collection("keep")).ok());
+    ASSERT_TRUE(store.create_collection(collection("churn", {}, 1)).ok());
+    const std::string body(700, 'x');
+    for (int index = 0; index < 20; ++index) {
+        ASSERT_TRUE(store.write(put("keep", "k-" + std::to_string(index), body)).ok());
+    }
+    for (int index = 0; index < 2'000; ++index) {
+        ASSERT_TRUE(store.write(put("churn", "c-" + std::to_string(index), body)).ok());
+    }
+    const auto before = store.storage_stats();
+    EXPECT_GT(before.segments, 20u);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    store.sweep(now_ms());
+    for (int step = 0; step < 400; ++step) store.maintain();
+    const auto after = store.storage_stats();
+    EXPECT_EQ(after.records, 20u);
+    EXPECT_LE(after.segments, 3u);
+    EXPECT_LT(after.disk_bytes, before.disk_bytes / 10);
+    std::printf("[record store] compaction: %llu segments %llu bytes -> %llu segments %llu bytes\n",
+                static_cast<unsigned long long>(before.segments),
+                static_cast<unsigned long long>(before.disk_bytes),
+                static_cast<unsigned long long>(after.segments),
+                static_cast<unsigned long long>(after.disk_bytes));
+    // The moved records still read, and survive a restart.
+    RecordStore restarted{replication, replication.node_id(), dir.path() / "records",
+                          64 * 1024};
+    ASSERT_TRUE(restarted.open());
+    for (int index = 0; index < 20; ++index) {
+        const RecordOutcome read = restarted.get("keep", "k-" + std::to_string(index));
+        ASSERT_TRUE(read.ok()) << index;
+        EXPECT_EQ(unbase64(read.record->value), body);
+    }
+    EXPECT_EQ(restarted.storage_stats().records, 20u);
+}
+
+TEST(RecordStoreNode, RecordsSurviveANodeRestartOutsideTheCatalogue) {
     TempDir dir;
     const std::string node_id = zetta::util::new_uuid();
     {
@@ -400,47 +457,22 @@ TEST(RecordStoreNode, PersistingTheDocumentEmptiesTheJournalAndSurvivesRestart) 
         ASSERT_TRUE(node.start());
         ASSERT_NE(node.record_store(), nullptr);
         ASSERT_TRUE(node.record_store()->create_collection(collection("sessions")).ok());
-        ASSERT_TRUE(node.record_store()->write(put("sessions", "s", "kept")).ok());
-        EXPECT_GT(std::filesystem::file_size(dir.path() / "records.journal"), 0u);
-        node.stop();  // persists the document, then trims the journal
-        EXPECT_EQ(std::filesystem::file_size(dir.path() / "records.journal"), 0u);
+        ASSERT_TRUE(node.record_store()->write(put("sessions", "s", std::string(4096, 'k'))).ok());
+        node.stop();
     }
+    // The 4 KiB value is in the record log, not in the catalogue file.
+    EXPECT_LT(std::filesystem::file_size(dir.path() / "replication.automerge"), 4096u);
     ReplicationManager replication{node_id};
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false},
                      &replication};
     ASSERT_TRUE(node.start());
     const RecordOutcome read = node.record_store()->get("sessions", "s");
     ASSERT_TRUE(read.ok()) << read.message;
-    EXPECT_EQ(unbase64(read.record->value), "kept");
+    EXPECT_EQ(unbase64(read.record->value), std::string(4096, 'k'));
     node.stop();
 }
 
-// The revision register: whichever value the CRDT would pick, every replica
-// resolves concurrent copies of a record to the highest revision.
-TEST(RecordRevisionRegister, ConcurrentCopiesResolveToTheHighestRevision) {
-    for (const bool first_is_newer : {false, true}) {
-        ReplicationManager left{zetta::util::new_uuid()};
-        ReplicationManager right{zetta::util::new_uuid()};
-        const nlohmann::json older{{"rev", 5}, {"updated", 1}, {"value", "b2xk"}};
-        const nlohmann::json newer{{"rev", 9}, {"updated", 2}, {"value", "bmV3"}};
-        left.set("record:c:k", first_is_newer ? newer : older);
-        right.set("record:c:k", first_is_newer ? older : newer);
-        // An unrelated key keeps the CRDT's own winner rule.
-        left.set("other:k", nlohmann::json{{"rev", 9}});
-        right.set("other:k", nlohmann::json{{"rev", 5}});
-        left.merge(right.save());
-        right.merge(left.save());
-        EXPECT_EQ(left.shared_snapshot()->at("record:c:k").at("rev"), 9);
-        EXPECT_EQ(right.shared_snapshot()->at("record:c:k").at("rev"), 9);
-        EXPECT_EQ(left.shared_snapshot()->at("other:k"), right.shared_snapshot()->at("other:k"));
-        // After a restore from the saved bytes, too.
-        ReplicationManager restored{left.node_id()};
-        ASSERT_TRUE(restored.restore(left.save()));
-        EXPECT_EQ(restored.shared_snapshot()->at("record:c:k").at("rev"), 9);
-    }
-}
-
-TEST(RecordRevisionRegister, UpdateIsAtomicAgainstConcurrentWriters) {
+TEST(ReplicationUpdate, IsAtomicAgainstConcurrentWriters) {
     ReplicationManager replication{zetta::util::new_uuid()};
     replication.set("counter", nlohmann::json{{"n", 0}});
     constexpr int kThreads = 8;
@@ -584,6 +616,80 @@ TEST(RecordStoreCluster, ConditionalWritesAreLinearizableAcrossTwoNodes) {
     first.reset();
 }
 
+// A node that was not there for the writes catches up by anti-entropy: every
+// record, the deletion, and the other node's metric buckets.
+TEST(RecordStoreCluster, ANodeThatJoinsLaterCatchesUpByAntiEntropy) {
+    auto first = std::make_unique<RecordClusterNode>(48741, std::vector<std::string>{});
+    first->cluster.start();
+    first->node.attach_cluster(first->cluster, /*worker_count=*/1);
+    ASSERT_TRUE(first->store().create_collection(collection("events", {"source"})).ok());
+    for (int index = 0; index < 600; ++index) {
+        ASSERT_TRUE(first->store()
+                        .write(put("events", "e-" + std::to_string(index), "payload",
+                                   {{"source", "s-" + std::to_string(index % 3)}}))
+                        .ok());
+    }
+    RecordWrite remove;
+    remove.collection = "events";
+    remove.key = "e-7";
+    remove.remove = true;
+    ASSERT_TRUE(first->store().write(remove).ok());
+    zetta::data::MetricDefinition usage;
+    usage.name = "usage";
+    usage.kind = zetta::data::MetricKind::Counter;
+    ASSERT_TRUE(first->node.metric_store()->create(usage).ok());
+    zetta::data::MetricPoint point;
+    point.value = 5;
+    point.at_ms = 1'700'000'040'000;
+    ASSERT_TRUE(first->node.metric_store()->record("usage", {point}).ok());
+
+    auto second = std::make_unique<RecordClusterNode>(
+        48742, std::vector<std::string>{"127.0.0.1:48741"});
+    second->cluster.start();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while ((second->cluster.peer_count() != 1 || !second->store().find_collection("events") ||
+            !second->node.metric_store()->find("usage")) &&
+           std::chrono::steady_clock::now() < deadline) {
+        second->node.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    ASSERT_TRUE(second->store().find_collection("events"));
+    second->node.attach_cluster(second->cluster, /*worker_count=*/1);
+    ASSERT_TRUE(second->node.metric_store()->record("usage", {point}).ok());
+
+    const std::size_t pulled = second->store().anti_entropy();
+    EXPECT_GE(pulled, 600u);  // 599 records, a tombstone and a metric bucket
+    EXPECT_EQ(second->store().anti_entropy(), 0u);  // nothing left to pull
+    for (int index = 0; index < 600; ++index) {
+        const RecordOutcome read = second->store().get("events", "e-" + std::to_string(index));
+        if (index == 7) {
+            EXPECT_EQ(read.status, RecordStatus::NotFound);
+        } else {
+            ASSERT_TRUE(read.ok()) << index << ": " << read.message;
+        }
+    }
+    RecordListRequest request;
+    request.collection = "events";
+    request.index = "source";
+    request.value = "s-1";
+    request.limit = 1000;
+    EXPECT_EQ(second->store().list(request).records.size(), 199u);  // e-7 was deleted
+    // The first node pulls the second node's bucket back, and both sum both.
+    first->store().anti_entropy();
+    for (RecordClusterNode* node : {first.get(), second.get()}) {
+        zetta::data::MetricQuery query;
+        query.metric = "usage";
+        query.from_ms = 1'700'000'000'000;
+        query.to_ms = 1'700'000'100'000;
+        const auto total = node->node.metric_store()->query(query);
+        ASSERT_TRUE(total.ok()) << total.message;
+        ASSERT_EQ(total.series.size(), 1u);
+        EXPECT_DOUBLE_EQ(total.series[0].total, 10.0);
+    }
+    second.reset();
+    first.reset();
+}
+
 // The latency budget (#1231: get_record and list_records within 10 ms at
 // realistic size). A workspace's message log: 500 conversations of 100 messages,
 // each a ~1 KiB sealed body — 50,000 records and 50,000 index entries in the
@@ -591,6 +697,7 @@ TEST(RecordStoreCluster, ConditionalWritesAreLinearizableAcrossTwoNodes) {
 TEST(RecordStoreBenchmark, GetAndListStayInsideTheTenMillisecondBudget) {
     ReplicationManager replication{zetta::util::new_uuid()};
     RecordStore store{replication, replication.node_id(), {}};
+    ASSERT_TRUE(store.open());
     ASSERT_TRUE(store.create_collection(collection("ask_messages", {"conversation"})).ok());
     constexpr int kConversations = 500;
     constexpr int kMessages = 100;

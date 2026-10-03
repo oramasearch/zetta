@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "zetta/cluster/replication.hpp"
+#include "zetta/data/record_store.hpp"
 
 #include "../catalog.hpp"
 
@@ -52,8 +53,8 @@ std::string definition_key(std::string_view name) {
     return std::string(catalog::kMetricPrefix) + std::string(name);
 }
 
-std::string point_prefix(std::string_view name) {
-    return std::string(catalog::kMetricPointPrefix) + std::string(name) + ":";
+std::string bucket_collection(std::string_view name) {
+    return "_metric." + std::string(name);
 }
 
 // 16 zero-padded decimal digits: lexicographic order is time order.
@@ -84,9 +85,7 @@ struct PointKey {
     std::string node;
 };
 
-std::optional<PointKey> parse_point_key(std::string_view key, std::string_view prefix) {
-    if (!key.starts_with(prefix)) return std::nullopt;
-    key.remove_prefix(prefix.size());
+std::optional<PointKey> parse_point_key(std::string_view key) {
     const std::size_t first = key.find(':');
     if (first == std::string_view::npos) return std::nullopt;
     const std::size_t second = key.find(':', first + 1);
@@ -193,7 +192,7 @@ const nlohmann::json& metric_bucket_schema() {
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "zetta.MetricBucket",
-  "description": "One node's fold of one series over one bucket (#1231): the replicated `metric_point:<metric>:<bucket start>:<series>:<node>` value, written only by that node. `sum`, `count`, `min` and `max` cover every point in the bucket; `last` is the latest reading and `last_at` its time in milliseconds since the Unix epoch.",
+  "description": "One node's fold of one series over one bucket (#1231): the value of key `<bucket start>:<series>:<node>` in the record store's `_metric.<metric>` collection, written only by that node. `sum`, `count`, `min` and `max` cover every point in the bucket; `last` is the latest reading and `last_at` its time in milliseconds since the Unix epoch.",
   "type": "object",
   "required": ["labels", "sum", "count", "min", "max", "last", "last_at"],
   "additionalProperties": false,
@@ -268,8 +267,8 @@ std::optional<MetricDefinition> metric_definition_from_json(const nlohmann::json
 }
 
 MetricStore::MetricStore(zetta::cluster::ReplicationManager& replication,
-                         std::string node_id)
-    : replication_(replication), node_id_(std::move(node_id)) {}
+                         RecordStore& records, std::string node_id)
+    : replication_(replication), records_(records), node_id_(std::move(node_id)) {}
 
 std::optional<MetricDefinition> MetricStore::find(const std::string& name) const {
     const auto view = replication_.shared_snapshot();
@@ -354,13 +353,20 @@ MetricOutcome MetricStore::record(const std::string& metric,
     for (const MetricPoint& point : points) {
         const std::int64_t at = point.at_ms.value_or(now);
         const std::int64_t bucket = at - at % definition->resolution_ms;
-        const std::string key = point_prefix(metric) + padded_bucket(bucket) + ":" +
-                                series_id(point.labels) + ":" + node_id_;
-        replication_.update(
-            key,
-            [&](const nlohmann::json* current) -> std::optional<std::vector<ReplicationWrite>> {
+        const std::string key =
+            padded_bucket(bucket) + ":" + series_id(point.labels) + ":" + node_id_;
+        std::optional<std::int64_t> expires;
+        if (definition->retention_ms) {
+            expires = bucket + definition->resolution_ms + *definition->retention_ms;
+        }
+        records_.fold(
+            bucket_collection(metric), key,
+            [&](const std::string* current) -> std::optional<std::string> {
                 Bucket folded;
-                std::optional<Bucket> existing = current ? parse_bucket(*current) : std::nullopt;
+                std::optional<Bucket> existing;
+                if (current) {
+                    existing = parse_bucket(nlohmann::json::parse(*current, nullptr, false));
+                }
                 if (existing) {
                     folded = *existing;
                     folded.minimum = std::min(folded.minimum, point.value);
@@ -377,8 +383,9 @@ MetricOutcome MetricStore::record(const std::string& metric,
                     folded.last = point.value;
                     folded.last_at = at;
                 }
-                return std::vector<ReplicationWrite>{{key, bucket_value(folded)}};
-            });
+                return bucket_value(folded).dump();
+            },
+            expires);
     }
     MetricOutcome outcome;
     outcome.definition = definition;
@@ -439,35 +446,32 @@ MetricOutcome MetricStore::query(const MetricQuery& query) const {
         }
     };
 
-    const std::string prefix = point_prefix(query.metric);
-    {
-        const auto view = replication_.shared_snapshot();
-        const auto& entries = view->get_ref<const nlohmann::json::object_t&>();
-        for (auto entry = entries.lower_bound(prefix + padded_bucket(from));
-             entry != entries.end() && std::string_view(entry->first).starts_with(prefix);
-             ++entry) {
-            const auto key = parse_point_key(entry->first, prefix);
-            if (!key) continue;
-            if (key->bucket >= query.to_ms) break;
-            const auto bucket = parse_bucket(entry->second);
-            if (!bucket) continue;
-            const bool matches = std::ranges::all_of(query.labels, [&](const auto& wanted) {
-                const auto found = bucket->labels.find(wanted.first);
-                return found != bucket->labels.end() && found->second == wanted.second;
-            });
-            if (!matches) continue;
-            std::map<std::string, std::string> group;
-            for (const std::string& name : query.group_by) {
-                if (const auto found = bucket->labels.find(name); found != bucket->labels.end()) {
-                    group[name] = found->second;
-                }
-            }
-            auto& steps = groups[group];
-            const std::int64_t step_start = from + (key->bucket - from) / step * step;
-            fold_into(steps[step_start], key->series, *bucket);
-            fold_into(steps[-1], key->series, *bucket);
-        }
-    }  // release the view
+    records_.scan(bucket_collection(query.metric), padded_bucket(from),
+                  [&](const std::string& entry_key, const std::string& entry_value) {
+                      const auto key = parse_point_key(entry_key);
+                      if (!key) return true;
+                      if (key->bucket >= query.to_ms) return false;
+                      const auto bucket =
+                          parse_bucket(nlohmann::json::parse(entry_value, nullptr, false));
+                      if (!bucket) return true;
+                      const bool matches = std::ranges::all_of(query.labels, [&](const auto& wanted) {
+                          const auto found = bucket->labels.find(wanted.first);
+                          return found != bucket->labels.end() && found->second == wanted.second;
+                      });
+                      if (!matches) return true;
+                      std::map<std::string, std::string> group;
+                      for (const std::string& name : query.group_by) {
+                          if (const auto found = bucket->labels.find(name);
+                              found != bucket->labels.end()) {
+                              group[name] = found->second;
+                          }
+                      }
+                      auto& steps = groups[group];
+                      const std::int64_t step_start = from + (key->bucket - from) / step * step;
+                      fold_into(steps[step_start], key->series, *bucket);
+                      fold_into(steps[-1], key->series, *bucket);
+                      return true;
+                  });
 
     const auto value_of = [&](const Fold& fold) {
         if (aggregate == "sum") return fold.sum;
@@ -493,36 +497,6 @@ MetricOutcome MetricStore::query(const MetricQuery& query) const {
         outcome.series.push_back(std::move(result));
     }
     return outcome;
-}
-
-void MetricStore::sweep(std::int64_t now) {
-    std::vector<std::string> expired;
-    {
-        const auto view = replication_.shared_snapshot();
-        std::vector<MetricDefinition> definitions;
-        catalog::for_each_with_prefix(
-            *view, catalog::kMetricPrefix,
-            [&](const std::string&, const nlohmann::json& value) {
-                if (auto definition = metric_definition_from_json(value);
-                    definition && definition->retention_ms) {
-                    definitions.push_back(std::move(*definition));
-                }
-            });
-        const auto& entries = view->get_ref<const nlohmann::json::object_t&>();
-        for (const MetricDefinition& definition : definitions) {
-            const std::string prefix = point_prefix(definition.name);
-            const std::int64_t cutoff = now - *definition.retention_ms;
-            for (auto entry = entries.lower_bound(prefix);
-                 entry != entries.end() && std::string_view(entry->first).starts_with(prefix);
-                 ++entry) {
-                const auto key = parse_point_key(entry->first, prefix);
-                if (!key) continue;
-                if (key->bucket + definition.resolution_ms > cutoff) break;
-                if (key->node == node_id_) expired.push_back(entry->first);
-            }
-        }
-    }  // release the view before writing (#1227)
-    for (const std::string& key : expired) replication_.remove(key);
 }
 
 }  // namespace zetta::data

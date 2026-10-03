@@ -121,8 +121,8 @@ of zetta stays decoupled from the backend.
 - `remove(key)` — a local removal. Writes a **tombstone**, see below.
 - `update(key, decide)` — an atomic read-check-write (#1231): under the replication
   mutex, read the key's live value, let `decide` return the writes to make, and
-  apply them as one Automerge change. The keyed record store's conditional writes
-  are built on it; see [Revision registers](#revision-registers-1231).
+  apply them as one Automerge change. Record collections and metrics are declared
+  with it, so an existing definition is compared, never overwritten.
 - `snapshot()` — a compatibility copy of the merged document as JSON, **live
   entries only**. It deep-copies the whole catalogue while holding the
   replication mutex; a read path must not use it (see
@@ -209,27 +209,21 @@ Apple M3 Max, the same benchmark against the old reads:
 | `get` (median) | 126 ms | 1 µs |
 | worst `list`+`get`, four concurrent readers | 692 ms | 63 µs |
 
-## Revision registers (#1231)
+## What does not belong in the document (#1231)
 
-Keys under `record:` (`kRevisionRegisterPrefix`, `replication.hpp`) are **revision
-registers**. Their value is an object with an unsigned `rev`, and when concurrent
-writes leave several values at the key, the live value is the one with the highest
-`rev` (ties: the greater encoded text) rather than Automerge's winner, which is
-deterministic but unrelated to the data. `merge()` and `restore()` already inspect
-every concurrent value of a key to make removal win; the register rule is applied in
-the same pass (`effective_locked`), so it costs nothing extra.
+The document keeps **every write in its history**, and a removal is one more write. State with a
+steady stream of writes, updates and purges therefore grows the document without bound, however
+small its live set, and the once-a-second whole-document save grows with it. The keyed record
+store measured this before it shipped: after 200,000 puts with a three-second retention, three
+keys were live, but the saved document was 141 MiB and growing linearly, the process held 5.2 GB,
+saves took 1.5 s at the median and 7.6 s at p99, and reads overlapping a save waited up to 437 ms.
 
-The [record store](../data/record-store.md) needs it because every live node installs
-a committed record itself (a synchronous fan-out before the write is acknowledged),
-so one write can sit at a key as several concurrent copies, and a replica that missed
-a write can hold an older one. Whatever order the merges happen in, every node reads
-the newest. Removal still wins over a concurrent register write.
-
-Linearizability does not come from the register: one node orders all writes of a
-key and checks their conditions with `update()`. The register only makes the copies
-agree. The durability journal for acknowledged records (`records.journal`) is trimmed
-by `Node::persist_replication` once the saved document holding them is fsynced.
-`RecordRevisionRegister.*` (`tests/data/test_record_store.cpp`) covers both rules.
+So high-churn data lives beside the document, not in it. The
+[record store](../data/record-store.md) keeps records (and the time series its buckets) in a
+node-local log under `<data_dir>/records/`, replicated by its own synchronous fan-out and
+anti-entropy over the signal plane. The document holds only their definitions
+(`record_collection:`, `metric:`). Put a new kind of state in the document when its writes are
+rare (definitions, entities, membership); put it in a log when it is written continuously.
 
 ## Removal replicates as a tombstone
 

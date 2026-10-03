@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -26,30 +27,30 @@ class ReplicationManager;
 // retention. Records are opaque bytes (base64 on the wire); lake seals them
 // before they arrive.
 //
-// It is built on the replicated catalogue, in the catalogue's idiom: every
-// record, index entry and collection definition is a key of the Automerge
-// document, so it replicates, persists and reconciles like everything else.
-// Three things are added on top:
+// Storage. The replicated Automerge catalogue holds only each collection's
+// definition (`record_collection:<name>`). Records live in a node-local
+// append-only log under `<data_dir>/records/` (src/core/data/record_log.hpp):
+// the Automerge document keeps every write in its history and saves itself whole,
+// which a soak measured growing without bound under steady writes.
 //
 //   * ORDERING. Every write of a key is ordered by one node, the key's OWNER: a
 //     rendezvous hash of (collection, key) over this node and its live peers. The
-//     owner checks the condition and writes with ReplicationManager::update, an
-//     atomic read-check-write under the replication mutex. A write arriving at
-//     another node is forwarded to the owner over the signal plane (`record.put`).
+//     owner checks the condition and writes under the log's lock. A write arriving
+//     at another node is forwarded to the owner over the signal plane (`record.put`).
+//   * DURABILITY. The owner fsyncs the frame before the write is acknowledged.
 //   * SYNCHRONOUS REPLICATION. Before a write is acknowledged, the committed
-//     record is sent to every live peer (`record.apply`) and installed there, so a
-//     read on any live node after the acknowledgement returns it. A record key is a
-//     revision register (replication.hpp): concurrent copies resolve to the highest
-//     revision on every node.
-//   * DURABILITY. The owner appends the committed record to a write-ahead journal
-//     (`records.journal`) and fsyncs it before acknowledging. Startup replays the
-//     journal into the document; a successful persist of the document truncates
-//     what it now contains.
+//     record is installed on every live peer (`record.apply`), which keeps it only
+//     when it is newer, so a read on any live node after the acknowledgement
+//     returns it.
+//   * ANTI-ENTROPY. A node that was down or partitioned catches up with
+//     `anti_entropy()`: per collection, 256 bucket digests are compared with each
+//     peer (`record.digest`), the versions in differing buckets are listed
+//     (`record.keys`), and newer records are pulled (`record.fetch`).
 //
-// Thread safety: every method may be called from any thread. Reads use the shared
-// snapshot (#1227: one find, or one key range — never a copy of the catalogue).
-// Writes may block on the signal plane, so they must not run on the cluster's
-// network thread or inside a tick; the registry runs them on the blocking pool.
+// Thread safety: every method may be called from any thread. Writes and
+// anti_entropy may block on the signal plane, so they must not run on the
+// cluster's network thread or inside a tick; the registry runs them on the
+// blocking pool.
 namespace zetta::data {
 
 struct RecordCollection {
@@ -120,32 +121,50 @@ struct RecordPage {
     bool ok() const { return status == RecordStatus::Ok; }
 };
 
+// What the node-local record log holds.
+struct RecordStorageStats {
+    std::uint64_t records = 0;       // keys held, deletion tombstones included
+    std::uint64_t segments = 0;
+    std::uint64_t disk_bytes = 0;    // every segment's size
+    std::uint64_t live_bytes = 0;    // frames the key directory points at
+    std::uint64_t memory_bytes = 0;  // estimate: key directory, indexes, expiry queue
+};
+
 // Wire names: "ok", "invalid_input", "not_found", "conflict", "unavailable".
 std::string_view to_string(RecordStatus status);
 
 // The boundary schemas (schema as code; schemas/*.json are generated).
 const nlohmann::json& record_collection_schema();  // record_collection:<name>
-const nlohmann::json& stored_record_schema();      // record:<collection>:<key>
-const nlohmann::json& record_signal_schema();      // record.put / record.apply payloads
+const nlohmann::json& stored_record_schema();      // one record in the log and on the wire
+const nlohmann::json& record_signal_schema();      // record.* signal payloads
 
 nlohmann::json to_json(const RecordCollection& collection);
 nlohmann::json to_json(const StoredRecord& record);  // the API shape, with collection + key
 std::optional<RecordCollection> record_collection_from_json(const nlohmann::json& value,
                                                             std::string* reason = nullptr);
 
+class RecordLog;
+
 class RecordStore : public zetta::cluster::SignalHandler {
 public:
     static constexpr std::string_view kPutMethod = "record.put";
     static constexpr std::string_view kApplyMethod = "record.apply";
+    static constexpr std::string_view kDigestMethod = "record.digest";
+    static constexpr std::string_view kKeysMethod = "record.keys";
+    static constexpr std::string_view kFetchMethod = "record.fetch";
 
-    // `journal_path` is the write-ahead journal; empty disables it (tests that
-    // need no durability).
+    // `directory` holds the record log; empty keeps it in memory (tests and
+    // benchmarks that need no durability). `segment_bytes` 0 is the default
+    // segment size (tests shrink it to exercise compaction). Call open() first.
     RecordStore(zetta::cluster::ReplicationManager& replication, std::string node_id,
-                std::filesystem::path journal_path);
+                std::filesystem::path directory, std::uint64_t segment_bytes = 0);
     ~RecordStore() override;
 
     RecordStore(const RecordStore&) = delete;
     RecordStore& operator=(const RecordStore&) = delete;
+
+    // Scan the log and rebuild the key directory.
+    bool open(std::string* reason = nullptr);
 
     // Join the signal plane, chained over the cluster's current handler; detach
     // restores it. Node wires these into its coordinator lifecycle.
@@ -161,18 +180,25 @@ public:
     RecordOutcome get(const std::string& collection, const std::string& key) const;
     RecordPage list(const RecordListRequest& request) const;
 
-    // Retention and cleanup for the keys this node owns: removes expired records,
-    // deletion tombstones and stale index entries older than the grace period.
-    // Local writes only (they replicate by gossip). Call from the owner loop.
+    // Retention: removes this node's copies of expired records and of deletion
+    // tombstones older than the grace period. Call from the owner loop.
     void sweep(std::int64_t now_ms);
+    // Flush replica installs and run a bounded step of log compaction.
+    void maintain();
+    // Pull every record a live peer holds newer than this node does. Blocks on
+    // the signal plane; run it off the owner loop.
+    std::size_t anti_entropy();
 
-    // The journal (durability before acknowledgement). replay_journal runs once
-    // at startup, after the persisted document is restored. journal_mark is taken
-    // just before the document is saved and journal_truncate(mark) after the save
-    // is on disk, dropping the entries the saved document already holds.
-    std::size_t replay_journal();
-    std::uint64_t journal_mark() const;
-    void journal_truncate(std::uint64_t mark);
+    RecordStorageStats storage_stats() const;
+
+    // Engine-internal collections (names starting `_`, which the API refuses):
+    // the time series keeps its buckets here. `fold` rewrites one key on this node
+    // only — its caller is the key's one writer — and replicates by anti-entropy.
+    bool fold(const std::string& collection, const std::string& key,
+              const std::function<std::optional<std::string>(const std::string* current)>& fold,
+              std::optional<std::int64_t> expires_ms);
+    void scan(const std::string& collection, const std::string& from_key,
+              const std::function<bool(const std::string& key, const std::string& value)>& visit) const;
 
     // The node that orders writes of (collection, key) in this node's view.
     std::string owner_of(const std::string& collection, const std::string& key) const;
@@ -181,23 +207,22 @@ public:
     void on_event(const zetta::cluster::Signal& event) override;
     void on_task(const zetta::cluster::Signal& task) override;
 
-    // How long a deletion tombstone or a stale index entry is kept before the
-    // owner removes it: longer than any write can be in flight.
-    static constexpr std::int64_t kTombstoneGraceMs = 10 * 60 * 1000;
+    // How long a deletion tombstone is kept. A node away for longer than this
+    // can bring a deleted record back when it rejoins.
+    static constexpr std::int64_t kTombstoneGraceMs = 24ll * 60 * 60 * 1000;
 
 private:
-    class Journal;
-
     RecordOutcome commit(const RecordWrite& write, std::int64_t now_ms);
-    bool install(const StoredRecord& record);
+    bool install(const StoredRecord& record, std::int64_t now_ms);
     bool install_collection(const RecordCollection& collection);
     void replicate(const nlohmann::json& payload, const std::string& except,
                    RecordOutcome& outcome);
+    std::size_t pull_from(const std::string& peer);
     std::vector<std::string> live_peers() const;
 
     zetta::cluster::ReplicationManager& replication_;
     std::string node_id_;
-    std::unique_ptr<Journal> journal_;
+    std::unique_ptr<RecordLog> log_;
     std::atomic<zetta::cluster::Cluster*> cluster_{nullptr};
     std::atomic<zetta::cluster::SignalHandler*> delegate_{nullptr};
 };

@@ -65,6 +65,7 @@ add_executable(zetta-tests
   data/test_replication_strategy.cpp
   data/test_record_store.cpp
   data/test_metric_store.cpp
+  data/test_record_soak.cpp
   pipeline/test_project.cpp
   pipeline/test_project_input.cpp
   pipeline/test_project_graph.cpp

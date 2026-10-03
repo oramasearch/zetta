@@ -144,20 +144,12 @@
 //                          exactly one writer — see data/dataset_manifest.hpp /
 //                          docs/data/partition-manifest.md)
 //   record_collection:<name> -> { name, indexes, retention_ms?, created }  (a keyed
-//                          record collection — #1231, data/record_store.hpp)
-//   record:<collection>:<key> -> { rev, updated, value?, index?, order?, expires?,
-//                          deleted? }  (one keyed record: a REVISION REGISTER —
-//                          concurrent values resolve to the highest `rev`, see
-//                          cluster/replication.hpp; the value is opaque base64)
-//   record_index:<collection>:<index>:<hex value>:<hex order>.<hex key>.<rev>
-//                       -> { rev }  (one secondary-index entry of one record
-//                          revision; a list walks one value's key range)
+//                          record collection's definition — #1231; the records
+//                          themselves live in each node's record log, never here,
+//                          see data/record_store.hpp)
 //   metric:<name>      -> { name, kind, resolution_ms, retention_ms?, created }
-//                          (a labelled counter or gauge — #1231, data/metric_store.hpp)
-//   metric_point:<name>:<bucket>:<series>:<node>
-//                       -> { labels, sum, count, min, max, last, last_at }  (one
-//                          node's fold of one series over one bucket; only that
-//                          node writes the key, so recording never conflicts)
+//                          (a labelled counter or gauge — #1231; its buckets live in
+//                          the record log, see data/metric_store.hpp)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -201,18 +193,7 @@ inline constexpr std::string_view kDecisionPolicyPrefix = "decision_policy:";
 inline constexpr std::string_view kDecisionPrefix = "decision:";
 inline constexpr std::string_view kVirtualTablePrefix = "vtable:";
 inline constexpr std::string_view kRecordCollectionPrefix = "record_collection:";
-inline constexpr std::string_view kRecordPrefix = "record:";
-inline constexpr std::string_view kRecordIndexPrefix = "record_index:";
 inline constexpr std::string_view kMetricPrefix = "metric:";
-inline constexpr std::string_view kMetricPointPrefix = "metric_point:";
-
-// The record store's and the time series' keys (#1231). None of them has an
-// on-disk projection, so Node::tick leaves them out of its reconcile work.
-inline bool is_record_store_key(std::string_view key) {
-    return key.starts_with(kRecordPrefix) || key.starts_with(kRecordIndexPrefix) ||
-           key.starts_with(kRecordCollectionPrefix) || key.starts_with(kMetricPrefix) ||
-           key.starts_with(kMetricPointPrefix);
-}
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;

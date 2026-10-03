@@ -1,6 +1,6 @@
 // Labelled time series (#1231, docs/data/time-series.md): counters summed over a
-// range, gauges aggregated, label filters and grouping, steps, retention, and
-// buckets from several nodes summed after they merge.
+// range, gauges aggregated, label filters and grouping, steps, and retention.
+// Buckets from several nodes: RecordStoreCluster.ANodeThatJoinsLaterCatchesUpByAntiEntropy.
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -9,6 +9,7 @@
 
 #include "zetta/cluster/replication.hpp"
 #include "zetta/data/metric_store.hpp"
+#include "zetta/data/record_store.hpp"
 #include "zetta/util/uuid.hpp"
 
 namespace {
@@ -34,6 +35,14 @@ MetricDefinition definition(std::string name, MetricKind kind,
     return value;
 }
 
+// A node's catalogue, record log (in memory) and metric store.
+struct Stores {
+    ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::data::RecordStore records{replication, replication.node_id(), {}};
+    MetricStore metrics{replication, records, replication.node_id()};
+    Stores() { records.open(); }
+};
+
 MetricPoint point(double value, std::int64_t at, std::map<std::string, std::string> labels) {
     MetricPoint result;
     result.value = value;
@@ -45,8 +54,8 @@ MetricPoint point(double value, std::int64_t at, std::map<std::string, std::stri
 }  // namespace
 
 TEST(MetricStore, CountersSumOverARangeByLabelAndStep) {
-    ReplicationManager replication{zetta::util::new_uuid()};
-    MetricStore store{replication, replication.node_id()};
+    Stores stores;
+    MetricStore& store = stores.metrics;
     ASSERT_TRUE(store.create(definition("requests", MetricKind::Counter)).ok());
     const auto again = store.create(definition("requests", MetricKind::Counter));
     ASSERT_TRUE(again.ok());
@@ -106,8 +115,8 @@ TEST(MetricStore, CountersSumOverARangeByLabelAndStep) {
 }
 
 TEST(MetricStore, GaugesAggregateLastAverageMinimumAndMaximum) {
-    ReplicationManager replication{zetta::util::new_uuid()};
-    MetricStore store{replication, replication.node_id()};
+    Stores stores;
+    MetricStore& store = stores.metrics;
     ASSERT_TRUE(store.create(definition("sessions", MetricKind::Gauge)).ok());
     ASSERT_TRUE(store.record("sessions", {point(10, kStart + 1, {{"pod", "a"}}),
                                           point(14, kStart + 9, {{"pod", "a"}}),
@@ -132,42 +141,22 @@ TEST(MetricStore, GaugesAggregateLastAverageMinimumAndMaximum) {
     EXPECT_EQ(store.query(query).status, MetricStatus::InvalidInput);
 }
 
-TEST(MetricStore, EachNodeWritesItsOwnBucketsAndAQuerySumsThemAfterMerging) {
-    ReplicationManager left{zetta::util::new_uuid()};
-    ReplicationManager right{zetta::util::new_uuid()};
-    MetricStore left_store{left, left.node_id()};
-    MetricStore right_store{right, right.node_id()};
-    ASSERT_TRUE(left_store.create(definition("usage", MetricKind::Counter)).ok());
-    right.merge(left.save());
-    // The same series and bucket on both nodes, concurrently.
-    ASSERT_TRUE(left_store.record("usage", {point(5, kStart, {{"workspace", "w"}})}).ok());
-    ASSERT_TRUE(right_store.record("usage", {point(7, kStart, {{"workspace", "w"}})}).ok());
-    left.merge(right.save());
-    right.merge(left.save());
+TEST(MetricStore, RetentionExpiresOldBucketsAndTheSweepRemovesThem) {
+    Stores stores;
+    ASSERT_TRUE(stores.metrics.create(definition("usage", MetricKind::Counter, 2 * kMinute)).ok());
+    const std::int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch())
+                                 .count();
+    ASSERT_TRUE(stores.metrics.record("usage", {point(1, now - 10 * kMinute, {}),
+                                                point(2, now, {})})
+                    .ok());
     MetricQuery query;
     query.metric = "usage";
-    query.from_ms = kStart;
-    query.to_ms = kStart + kMinute;
-    EXPECT_DOUBLE_EQ(left_store.query(query).series.at(0).total, 12);
-    EXPECT_DOUBLE_EQ(right_store.query(query).series.at(0).total, 12);
-}
-
-TEST(MetricStore, RetentionRemovesOnlyThisNodesOldBuckets) {
-    ReplicationManager left{zetta::util::new_uuid()};
-    ReplicationManager right{zetta::util::new_uuid()};
-    MetricStore left_store{left, left.node_id()};
-    MetricStore right_store{right, right.node_id()};
-    ASSERT_TRUE(left_store.create(definition("usage", MetricKind::Counter, 2 * kMinute)).ok());
-    right.merge(left.save());
-    ASSERT_TRUE(left_store.record("usage", {point(1, kStart, {}), point(1, kStart + 5 * kMinute, {})}).ok());
-    ASSERT_TRUE(right_store.record("usage", {point(1, kStart, {})}).ok());
-    left.merge(right.save());
-    left_store.sweep(kStart + 5 * kMinute);
-    MetricQuery query;
-    query.metric = "usage";
-    query.from_ms = kStart;
-    query.to_ms = kStart + 6 * kMinute;
-    // The left node removed its own old bucket; the right node's stays until the
-    // right node sweeps it.
-    EXPECT_DOUBLE_EQ(left_store.query(query).series.at(0).total, 2);
+    query.from_ms = now - 20 * kMinute;
+    query.to_ms = now + kMinute;
+    // The old bucket is past its retention: invisible at once, removed by the sweep.
+    EXPECT_DOUBLE_EQ(stores.metrics.query(query).series.at(0).total, 2);
+    EXPECT_EQ(stores.records.storage_stats().records, 2u);
+    stores.records.sweep(now + 1);
+    EXPECT_EQ(stores.records.storage_stats().records, 1u);
 }

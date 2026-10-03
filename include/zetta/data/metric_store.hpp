@@ -13,21 +13,25 @@
 namespace zetta::cluster {
 class ReplicationManager;
 }
+namespace zetta::data {
+class RecordStore;
+}
 
 // Labelled time series (#1231, docs/data/time-series.md): counters and gauges,
 // appended with labels and read back summed over a time range. Built for lake's
 // metering (lake#348) and request metrics (lake#384).
 //
-// A metric is declared once (`metric:<name>`). Each node folds the points it
-// receives into fixed-width buckets under keys only IT writes —
-// `metric_point:<name>:<bucket start>:<series>:<node>` — so concurrent recording
-// on several nodes never conflicts and a query sums every node's buckets from the
-// replicated catalogue. A bucket key orders by time first, so a range query walks
-// exactly the buckets in its range (#1227: one key range of the shared snapshot).
+// A metric is declared once in the replicated catalogue (`metric:<name>`). Its
+// buckets live in the record store's node-local log, in the engine-internal
+// collection `_metric.<name>`: each node folds the points it receives into keys
+// only IT writes — `<bucket start>:<series>:<node>` — so recording never
+// conflicts, and anti-entropy brings every node's buckets to every other node. A
+// key orders by time first, so a range query walks exactly its buckets. Retention
+// is the bucket record's expiry.
 //
-// Points are not journaled: a crash may lose the buckets written in the last
-// second before the catalogue was saved, and another node's points become visible
-// within one gossip interval. Records that must be exact belong in the record store.
+// A bucket is not fsynced per point (the log flushes every tick), and another
+// node's points become visible within one anti-entropy round. Records that must
+// be exact belong in the record store.
 namespace zetta::data {
 
 enum class MetricKind { Counter, Gauge };
@@ -80,27 +84,27 @@ struct MetricOutcome {
 };
 
 const nlohmann::json& metric_definition_schema();  // metric:<name>
-const nlohmann::json& metric_bucket_schema();      // metric_point:...
+const nlohmann::json& metric_bucket_schema();      // one bucket in `_metric.<name>`
 
 nlohmann::json to_json(const MetricDefinition& definition);
 std::optional<MetricDefinition> metric_definition_from_json(const nlohmann::json& value,
                                                             std::string* reason = nullptr);
 
-// Thread-safe: every method works on the replicated catalogue only.
+// Thread-safe: definitions are in the replicated catalogue, buckets in the
+// record store's log.
 class MetricStore {
 public:
-    MetricStore(zetta::cluster::ReplicationManager& replication, std::string node_id);
+    MetricStore(zetta::cluster::ReplicationManager& replication, RecordStore& records,
+                std::string node_id);
 
     MetricOutcome create(const MetricDefinition& definition);
     std::optional<MetricDefinition> find(const std::string& name) const;
     MetricOutcome record(const std::string& metric, const std::vector<MetricPoint>& points);
     MetricOutcome query(const MetricQuery& query) const;
 
-    // Remove this node's buckets older than each metric's retention.
-    void sweep(std::int64_t now_ms);
-
 private:
     zetta::cluster::ReplicationManager& replication_;
+    RecordStore& records_;
     std::string node_id_;
 };
 

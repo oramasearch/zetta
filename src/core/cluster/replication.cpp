@@ -298,16 +298,6 @@ const std::string& removed_value() {
     return encoded;
 }
 
-// A revision register's `rev`, or zero for anything else (#1231).
-std::uint64_t revision_of(const std::string& encoded) {
-    const nlohmann::json value =
-        nlohmann::json::parse(encoded, nullptr, /*allow_exceptions=*/false);
-    if (!value.is_object()) return 0;
-    const auto found = value.find("rev");
-    if (found == value.end() || !found->is_number_unsigned()) return 0;
-    return found->get<std::uint64_t>();
-}
-
 }  // namespace
 
 bool ReplicationManager::update(const std::string& key,
@@ -352,31 +342,18 @@ bool ReplicationManager::update(const std::string& key,
 // the winner, which is deterministic but arbitrary. Asking all of them makes
 // removal win — the property a cleanup path needs, since a half-removed entity is
 // exactly what #838 produced.
-// A revision register (#1231) looks at the same concurrent values and keeps the
-// one with the highest `rev`, so every replica of a record agrees on the newest.
 std::string ReplicationManager::effective_locked(const std::string& key,
                                                  const std::string& winner) const {
     if (is_tombstone(winner)) return removed_value();
-    const bool register_key = key.starts_with(kRevisionRegisterPrefix);
-    const std::vector<am::Value> values = state_->document.get_all(am::root, key);
-    std::string best = winner;
-    std::uint64_t best_revision =
-        register_key && values.size() > 1 ? revision_of(winner) : 0;
-    for (const am::Value& value : values) {
+    for (const am::Value& value : state_->document.get_all(am::root, key)) {
         const auto* scalar = std::get_if<am::ScalarValue>(&value);
         if (!scalar) continue;
-        const auto* text = std::get_if<std::string>(scalar);
-        if (!text) continue;
-        if (is_tombstone(*text)) return removed_value();
-        if (!register_key || values.size() < 2) continue;
-        const std::uint64_t revision = revision_of(*text);
-        if (revision > best_revision ||
-            (revision == best_revision && *text > best)) {
-            best = *text;
-            best_revision = revision;
+        if (const auto* text = std::get_if<std::string>(scalar);
+            text && is_tombstone(*text)) {
+            return removed_value();
         }
     }
-    return best;
+    return winner;
 }
 
 nlohmann::json ReplicationManager::snapshot() const {

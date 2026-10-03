@@ -47,15 +47,6 @@ using ReplicationUpdateDecision =
     std::function<std::optional<std::vector<ReplicationWrite>>(
         const nlohmann::json* current)>;
 
-// Keys under this prefix are REVISION REGISTERS (#1231, the keyed record store):
-// their value is a JSON object with an unsigned integer `rev`, and when concurrent
-// writes leave several values at the key, the live value is the one with the
-// highest `rev` (ties: the greater encoded text), instead of the CRDT's arbitrary
-// winner. Every replica of a record writes the record it was sent, so the same
-// write can sit at a key as several concurrent values; this rule makes all of them
-// agree on the newest. Removal still wins over a concurrent write.
-inline constexpr std::string_view kRevisionRegisterPrefix = "record:";
-
 // What/whom to replicate. The first (and currently only) policy is
 // ReplicateToAllNodes: every node holds a full copy of all replicated state.
 // More policies (sharded, quorum, ...) will be added through this policy enum.
@@ -118,10 +109,9 @@ public:
     // Atomic read-check-write (#1231): read `key`'s live value, let `decide`
     // choose the writes, and apply them as ONE local change, all under the
     // replication mutex, so no other local write can interleave between the read
-    // and the writes. This is the per-node compare-and-set the keyed record store
-    // builds its conditional writes on; linearizability across nodes comes from
-    // routing every write of a key to one node (docs/data/record-store.md).
-    // Returns whether anything was written.
+    // and the writes. Record collections and metrics are declared with it (an
+    // existing definition is compared, never overwritten). Returns whether
+    // anything was written.
     bool update(const std::string& key, const ReplicationUpdateDecision& decide);
 
     // The merged document as JSON — live entries only, tombstoned keys omitted.
@@ -182,9 +172,8 @@ private:
     struct State;
 
     // The effective encoded value of `key` given the document's winner: the
-    // removal marker when any concurrent value is a tombstone, the highest-`rev`
-    // concurrent value for a revision register, else the winner. Caller holds the
-    // state mutex.
+    // removal marker when any concurrent value is a tombstone, else the winner.
+    // Caller holds the state mutex.
     std::string effective_locked(const std::string& key,
                                  const std::string& winner) const;
 
