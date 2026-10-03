@@ -2,6 +2,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <array>
 
 #include <chrono>
 #include <cstdint>
@@ -2345,6 +2346,7 @@ nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) 
                           {"database", dataset.database},
                           {"table_id", dataset.table_id},
                           {"format", dataset.format},
+                          {"source_format", dataset.source_format},
                           {"replication", dataset.replication},
                           {"rows", dataset.rows},
                           {"size_bytes", dataset.size_bytes},
@@ -2365,7 +2367,7 @@ const nlohmann::json& dataset_summary_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required",
-         {"name", "database", "table_id", "format", "replication", "rows",
+         {"name", "database", "table_id", "format", "source_format", "replication", "rows",
           "size_bytes", "columns", "partitions", "degraded", "degraded_reason",
           "expected_partitions", "expected_rows"}},
         {"additionalProperties", false},
@@ -2373,7 +2375,15 @@ const nlohmann::json& dataset_summary_schema() {
          {{"name", {{"type", "string"}}},
           {"database", {{"type", "string"}}},
           {"table_id", {{"type", "string"}}},
-          {"format", {{"type", "string"}}},
+          {"format",
+           {{"type", "string"},
+            {"description", "how the rows are stored (jsonl); not the upload's format"}}},
+          {"source_format",
+           {{"type", "string"},
+            {"description",
+             "what the rows were loaded from: csv, jsonl, json, parquet, a connector "
+             "type (postgres, snowflake) or rows; empty for a table not loaded from a "
+             "source (SQL, engine results)"}}},
           {"replication", {{"type", "integer"}}},
           {"rows", {{"type", "integer"}}},
           {"size_bytes", {{"type", "integer"}}},
@@ -2410,7 +2420,9 @@ const nlohmann::json& get_dataset_schema() {
          {{"dataset",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "the dataset name (= the table name)"}}},
+            {"description",
+             "the dataset name (= the table name), or database.table as "
+             "analyze_dataset takes it"}}},
           {"database",
            {{"type", "string"},
             {"description", "the owning database — required only when the "
@@ -2419,8 +2431,30 @@ const nlohmann::json& get_dataset_schema() {
 }
 
 ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
-    const std::string name = input.at("dataset").get<std::string>();
-    const std::string database = input.value("database", "");
+    std::string name = input.at("dataset").get<std::string>();
+    std::string database = input.value("database", "");
+    // `database.table`, the form analyze_dataset and run's dataset_path take
+    // (#1221). An exact name is tried first, so a table whose own name holds a
+    // dot is still found by it.
+    if (const std::size_t dot = name.find('.'); dot != std::string::npos) {
+        const bool exact = std::ranges::any_of(
+            context.node.database_names(), [&](const std::string& each) {
+                const auto found = context.node.find_database(each);
+                return found && found->find_table(name);
+            });
+        if (!exact) {
+            const std::string named_database = name.substr(0, dot);
+            if (!database.empty() && database != named_database) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "dataset '" + name + "' names database '" + named_database +
+                        "', but database is '" + database + "'",
+                    "/database");
+            }
+            database = named_database;
+            name = name.substr(dot + 1);
+        }
+    }
     std::vector<zetta::data::DatasetSummary> matches;
     for (zetta::data::DatasetSummary& dataset : context.node.datasets()) {
         if (dataset.name != name) continue;
@@ -5722,6 +5756,11 @@ const nlohmann::json& add_dataset_output_schema() {
         {"properties",
          {{"database", {{"type", "string"}}},
           {"table", {{"type", "string"}}},
+          {"renamed_from",
+           {{"type", "string"},
+            {"description",
+             "upload_dataset with if_exists rename: the name asked for, when it was "
+             "taken and `table` is the next free one"}}},
           {"format", {{"type", "string"}}},
           {"rows", {{"type", "integer"}}},
           {"partitions",
@@ -5834,14 +5873,23 @@ const nlohmann::json& upload_dataset_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description",
-             "the new table's name. A name already taken in the database gets a "
-             "numeric suffix (_2, _3, ...); the output says which name was used"}}},
+             "the new table's name: a letter or underscore, then letters, digits and "
+             "underscores, at most 63 characters, not a SQL keyword. A name already "
+             "taken in the database is refused (conflict) unless if_exists is rename"}}},
+          {"if_exists",
+           {{"type", "string"},
+            {"enum", {"fail", "rename"}},
+            {"description",
+             "what to do when table_name is taken: fail (the default) refuses with "
+             "conflict; rename saves under the next free name (_2, _3, ...) and the "
+             "output's renamed_from names the one asked for"}}},
           {"format",
            {{"type", "string"},
             {"enum", {"csv", "jsonl"}},
             {"description",
-             "how `content` is laid out: csv (a header row, then one row per line, "
-             "cells type-inferred) or jsonl (one JSON object per line)"}}},
+             "how `content` is laid out: csv (a header row, then one row per line with "
+             "as many fields as the header, cells type-inferred) or jsonl (one JSON "
+             "object per line)"}}},
           {"content",
            {{"type", "string"},
             {"minLength", 1},
@@ -5852,7 +5900,9 @@ const nlohmann::json& upload_dataset_schema() {
           {"database",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "target database, created if absent (default datasets)"}}},
+            {"description",
+             "target database, created if absent (default datasets); named by the "
+             "same rule as table_name"}}},
           {"replication_factor",
            {{"type", "integer"},
             {"minimum", 1},
@@ -5883,6 +5933,37 @@ ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context
     zetta::data::AddDatasetOptions options;
     options.database = input.value("database", options.database);
     options.table_name = input.at("table_name").get<std::string>();
+
+    // The rules lake applies in front of the workspace (#1221, lake PR #459), in
+    // the same words, so a direct caller gets the same answer: names SQL can
+    // query unquoted, a CSV whose rows match its header, and no silent rename.
+    for (const auto& [field, value] :
+         {std::pair<std::string, const std::string*>{"table_name", &options.table_name},
+          std::pair<std::string, const std::string*>{"database", &options.database}}) {
+        if (const std::string problem = zetta::data::dataset_name_problem(*value);
+            !problem.empty()) {
+            return ApiResult::failure("invalid_input", field + ": " + problem, "/" + field);
+        }
+    }
+    if (format == zetta::data::dataset_file::Format::Csv) {
+        if (const std::string problem = zetta::data::csv_problem(content); !problem.empty()) {
+            return ApiResult::failure("invalid_input",
+                                      "the CSV file is malformed: " + problem, "/content");
+        }
+    }
+    const bool rename = input.value("if_exists", std::string("fail")) == "rename";
+    if (!rename) {
+        const auto database = context.node.find_database(options.database);
+        if (database && database->find_table(options.table_name)) {
+            return ApiResult::failure(
+                "conflict",
+                "a dataset named '" + options.table_name + "' already exists in " +
+                    options.database +
+                    "; choose another name, or pass if_exists: \"rename\" to save it "
+                    "under the next free name",
+                "/table_name");
+        }
+    }
     options.replication_factor =
         input.value("replication_factor", options.replication_factor);
     options.approx_bytes = content.size();
@@ -5905,6 +5986,11 @@ ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context
     output["format"] = zetta::data::dataset_file::format_name(added.format);
     output["rows"] = added.rows;
     output["partitions"] = std::move(partitions);
+    // Saved under the next free name because the caller asked (if_exists:
+    // rename): say which name it asked for, as lake does.
+    if (added.table && added.table->name() != options.table_name) {
+        output["renamed_from"] = options.table_name;
+    }
     return ApiResult::success(std::move(output));
 }
 
@@ -7008,6 +7094,107 @@ const nlohmann::json& agent_fields_schema() {
     return schema;
 }
 
+// A Python agent's `definition` as create_agent / update_agent take it (#1220). Closed at both
+// levels: `apply_agent_fields` reads only these keys, so an unknown one (a file sent as
+// `{path, content}`) used to be stored as an empty file without a word. Refused here instead,
+// with the field's path, and with the same wording lake gives in front of the workspace.
+const nlohmann::json& agent_definition_input_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"description",
+         "runtime: python. {source: \"zetta\", instructions, entrypoint, files: [{path, "
+         "contents}]} (inline, at most 1 MiB) or {source: \"lake\", repository_id, revision, "
+         "entrypoint}; entrypoint is module:function"},
+        {"properties",
+         {{"source", {{"type", "string"}, {"description", "zetta (inline) or lake"}}},
+          {"instructions", {{"type", "string"}, {"description", "source zetta: the agent's instructions"}}},
+          {"entrypoint", {{"type", "string"}, {"description", "module:function"}}},
+          {"repository_id", {{"type", "string"}, {"description", "source lake: the repository"}}},
+          {"revision",
+           {{"type", "string"}, {"description", "source lake: a pinned revision of the repository"}}},
+          {"files",
+           {{"type", "array"},
+            {"description", "source zetta: the agent's files, one entry per file"},
+            {"items",
+             {{"type", "object"},
+              // `path` and `contents` are not `required` here: the validator reports a
+              // missing required key before an unknown one, so {path, content} would be
+              // refused as "no contents" rather than at the misspelt key. Presence is
+              // checked by definition_file_refusal once the shape has passed.
+              {"additionalProperties", false},
+              {"properties",
+               {{"path",
+                 {{"type", "string"},
+                  {"minLength", 1},
+                  {"description", "the file's path, relative to the definition"}}},
+                {"contents",
+                 {{"type", "string"}, {"description", "the file's text"}}}}}}}}}}}};
+    return schema;
+}
+
+// The plain statement of the definition's shape, appended to a schema rejection under
+// `definition` — the same words lake's agent_definition_refusal answers with (lake PR #457), so
+// a caller reads one answer from either layer. Empty when the definition is not at fault.
+std::string agent_definition_hint(const nlohmann::json& input) {
+    if (!input.is_object()) return {};
+    const auto definition = input.find("definition");
+    if (definition == input.end()) return {};
+    const std::string shape =
+        "definition is {source: \"zetta\", instructions, entrypoint, files: [{path, contents}]} "
+        "or {source: \"lake\", repository_id, revision, entrypoint}";
+    if (!definition->is_object()) return shape;
+    constexpr std::array<std::string_view, 6> fields = {
+        "source", "instructions", "files", "entrypoint", "repository_id", "revision"};
+    for (const auto& [key, value] : definition->items()) {
+        if (std::ranges::find(fields, key) == fields.end()) {
+            return "definition has no field '" + key + "'; " + shape;
+        }
+        if (key != "files" && !value.is_string()) return "definition." + key + " is a string";
+    }
+    const auto files = definition->find("files");
+    if (files == definition->end()) return {};
+    if (!files->is_array()) {
+        return "definition.files is a list of {path, contents}, one entry per file";
+    }
+    for (const nlohmann::json& file : *files) {
+        if (!file.is_object()) {
+            return "each file is {path, contents}: the path and the file's text";
+        }
+        for (const auto& [key, value] : file.items()) {
+            if (key != "path" && key != "contents") {
+                return "a file has no field '" + key +
+                       "'; each file is {path, contents}, and contents holds the file's text";
+            }
+            if (!value.is_string()) return key + " is a string";
+        }
+        if (file.value("path", std::string()).empty()) return "each file names its path";
+        if (!file.contains("contents")) return "each file carries its text in contents";
+    }
+    return {};
+}
+
+// Each inline file names its path and carries its text (lake's words, lake PR #457). Runs after
+// the closed schema has passed, so `files` is already a list of {path?, contents?} strings.
+std::optional<ApiResult> definition_file_refusal(const nlohmann::json& input) {
+    const auto definition = input.find("definition");
+    if (definition == input.end() || !definition->is_object()) return std::nullopt;
+    const auto files = definition->find("files");
+    if (files == definition->end() || !files->is_array()) return std::nullopt;
+    for (std::size_t index = 0; index < files->size(); ++index) {
+        const nlohmann::json& file = (*files)[index];
+        const std::string here = "/definition/files/" + std::to_string(index);
+        if (!file.contains("path")) {
+            return ApiResult::failure("invalid_input", "each file names its path", here + "/path");
+        }
+        if (!file.contains("contents")) {
+            return ApiResult::failure("invalid_input", "each file carries its text in contents",
+                                      here + "/contents");
+        }
+    }
+    return std::nullopt;
+}
+
 const nlohmann::json& create_agent_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
@@ -7056,11 +7243,7 @@ const nlohmann::json& create_agent_schema() {
                {{"project", {{"type", "string"}}},
                 {"graph", {{"type", "string"}}},
                 {"version", {{"type", "string"}}}}}}}}},
-          {"definition",
-           {{"type", "object"},
-            {"description",
-             "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or "
-             "lake (repository_id + revision); entrypoint is module:function"}}},
+          {"definition", agent_definition_input_schema()},
           {"endpoint", {{"type", "string"}, {"description", "runtime: service"}}},
 
           {"system_prompt", {{"type", "string"}}},
@@ -7118,11 +7301,7 @@ const nlohmann::json& update_agent_schema() {
                {{"project", {{"type", "string"}}},
                 {"graph", {{"type", "string"}}},
                 {"version", {{"type", "string"}}}}}}}}},
-          {"definition",
-           {{"type", "object"},
-            {"description",
-             "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or "
-             "lake (repository_id + revision); entrypoint is module:function"}}},
+          {"definition", agent_definition_input_schema()},
           {"endpoint", {{"type", "string"}, {"description", "runtime: service"}}},
 
           {"system_prompt", {{"type", "string"}}},
@@ -7241,6 +7420,7 @@ ApiResult handle_create_agent(const nlohmann::json& input, ApiContext& context) 
     agent.id = zetta::util::new_uuid();
     agent.created_at = zetta::util::now_iso8601();
     agent.updated_at = agent.created_at;
+    if (std::optional<ApiResult> refused = definition_file_refusal(input)) return *refused;
     agent = agent_from_input(input, std::move(agent));
     if (std::optional<std::string> reason = apply_agent_input(input, agent, context)) {
         return ApiResult::failure("invalid_argument", *reason);
@@ -7319,6 +7499,7 @@ ApiResult handle_update_agent(const nlohmann::json& input, ApiContext& context) 
     zetta::agent::AgentStore store(*context.node.replication());
     const std::optional<zetta::agent::AgentRecord> existing = store.get(id);
     if (!existing) return ApiResult::failure("not_found", "no agent '" + id + "'");
+    if (std::optional<ApiResult> refused = definition_file_refusal(input)) return *refused;
     zetta::agent::AgentRecord updated = agent_from_input(input, *existing);
     if (std::optional<std::string> reason = apply_agent_input(input, updated, context)) {
         return ApiResult::failure("invalid_argument", *reason);
@@ -9205,7 +9386,7 @@ void register_core_capabilities(Registry& registry) {
         handle_delete_project});
 
     // --- agents (#849): CRUD for the served, selectable agent entity ----------
-    registry.add(Capability{
+    Capability create_agent_capability{
         "create_agent",
         "Create an agent",
         "Create a served, selectable agent — a model (checkpoint dir, model:<uuid>, or a "
@@ -9217,7 +9398,9 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Orchestration, "create_agent"},
         /*mutates=*/true,
         /*requires_consent=*/false,
-        handle_create_agent});
+        handle_create_agent};
+    create_agent_capability.invalid_input_hint = agent_definition_hint;
+    registry.add(std::move(create_agent_capability));
     registry.add(Capability{
         "list_agents",
         "List agents",
@@ -9240,7 +9423,7 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_agent});
-    registry.add(Capability{
+    Capability update_agent_capability{
         "update_agent",
         "Update an agent",
         "Update the provided fields of an agent (name, description, model, system prompt, "
@@ -9251,7 +9434,9 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Orchestration, "update_agent"},
         /*mutates=*/true,
         /*requires_consent=*/false,
-        handle_update_agent});
+        handle_update_agent};
+    update_agent_capability.invalid_input_hint = agent_definition_hint;
+    registry.add(std::move(update_agent_capability));
     registry.add(Capability{
         "agent_training_status",
         "Should this agent be retrained?",

@@ -105,6 +105,17 @@ list behind lake's Train → Agents and Ask Orama's selector
 the pinned version, gates it, and runs it (`dataset`, `holdout`, `model_name` pass through). Verify:
 `AgentApiFixture.AGrantedPipelineRunsAsTheAgentsToolOnlyAtItsApprovedVersion`.
 
+**The `definition` input is closed (#1220).** `create_agent` / `update_agent` take only
+`source`, `instructions`, `entrypoint`, `repository_id`, `revision` and
+`files: [{path, contents}]` (`contents` is the file's text), with `additionalProperties: false`
+at both levels. Any other key is refused `invalid_input` at its own path, with lake's wording
+(lake PR #457) appended — `{path, content}` answers at `/definition/files/0/content`: *a file has
+no field 'content'; each file is {path, contents}, and contents holds the file's text* — where
+it used to be stored as an empty file without a word. A file without `path` or `contents` is
+refused at that field (*each file names its path*, *each file carries its text in contents*).
+The schema registry now reports an unknown property at the property itself, not its parent.
+Verify: `AgentApiFixture.KindsRuntimesStudioShapeAndPipelineGrants`.
+
 Validation: a `native` agent needs `model`; a `python` agent a valid `definition`; a `service`
 agent an `endpoint`. `chat` and `agent_run` refuse non-native agents and say where they run.
 `agent_training_status` reports a non-native agent as *not trained by Zetta* rather than

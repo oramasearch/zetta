@@ -27,6 +27,10 @@ stop writes every pending one; reconciliation leaves a Run or Study with a
 pending local change alone until it is written (#1217).
 The owner thread also resolves display names at Run/Model creation, propagates
 Project/Pipeline renames, and performs idempotent startup backfill (#1184).
+Tables record their source format in `table.json` and the replicated `tbl:`
+value; reconciliation, migration and the connector ingest's table adoption carry
+it, and the CSV decoder refuses ragged rows with their line (#1221). See
+[add dataset](../../docs/data/add-dataset.md).
 See [architecture](../../docs/architecture/README.md) and
 [pub/sub dispatch](../../docs/pubsub/dispatch.md), plus the
 [memory operations guide](../../docs/ops/memory.md).

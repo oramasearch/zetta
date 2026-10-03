@@ -517,6 +517,7 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
             dataset.table_id = table->id();
             const zetta::storage::StorageEngine& store = table->store();
             dataset.format = store.name();
+            dataset.source_format = table->source_format();
             dataset.replication =
                 std::string(to_string(table->replication_strategy().kind()));
 
@@ -1396,7 +1397,7 @@ std::shared_ptr<zetta::data::Database> Node::materialize_database(
 std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
     const std::string& database_id, const std::string& database_name,
     const std::string& table_id, const std::string& table_name,
-    bool partition_only) {
+    bool partition_only, const std::string& source_format) {
     // The keys are **captured**, not merely materialized — under the initiator's
     // ids, with the value `create_database`/`create_table` would have written.
     //
@@ -1419,6 +1420,7 @@ std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
         if (!snapshot.contains(table_key)) {
             nlohmann::json value{{"db", database_id}, {"name", table_name}};
             if (partition_only) value["partition_only"] = true;
+            if (!source_format.empty()) value["source_format"] = source_format;
             replication_->set(table_key, value);
         }
     }
@@ -1429,7 +1431,7 @@ std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
     if (auto existing = database->find_table_by_id(table_id)) return existing;
     return database->materialize_table(table_id, table_name,
                                        database->replication_strategy(),
-                                       partition_only);
+                                       partition_only, source_format);
 }
 
 std::shared_ptr<zetta::data::Database> Node::find_database(const std::string& name) const {
@@ -4876,6 +4878,9 @@ void Node::migrate_to_replication() {
                         table->replication_strategy().to_json();
                 }
                 if (table->partition_only()) value["partition_only"] = true;
+                if (!table->source_format().empty()) {
+                    value["source_format"] = table->source_format();
+                }
                 replication_->set(catalog::table_key(table->id()), value);
             }
             // The partition manifest (#837) migrates with the table. Without
@@ -5178,6 +5183,7 @@ void Node::reconcile_databases(
         std::string name;
         zetta::data::ReplicationStrategy strategy;
         bool partition_only = false;  // #833; rows are never captured
+        std::string source_format;    // #1221; what the rows were loaded from
     };
     std::map<std::string, TableEntry> tables;                 // id -> entry
     struct RowEntry { std::string table_id; nlohmann::json data; bool tombstone = false; };
@@ -5206,7 +5212,8 @@ void Node::reconcile_databases(
                            TableEntry{value["db"].get<std::string>(),
                                       value["name"].get<std::string>(),
                                       zetta::data::replication_strategy_from_meta(value),
-                                      value.value("partition_only", false)});
+                                      value.value("partition_only", false),
+                                      value.value("source_format", std::string())});
         } else if (std::string row_id =
                        catalog::id_after(key, catalog::kRowPrefix);
                    !row_id.empty() && value.is_object() &&
@@ -5294,7 +5301,7 @@ void Node::reconcile_databases(
         auto db = find_database_by_id(entry.database_id);
         if (db && !db->find_table_by_id(id)) {
             db->materialize_table(id, entry.name, entry.strategy,
-                                  entry.partition_only);
+                                  entry.partition_only, entry.source_format);
         }
     }
     // Partition manifests (#837): the document is the source of truth, so a table

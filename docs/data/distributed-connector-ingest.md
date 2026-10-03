@@ -197,6 +197,12 @@ nothing to reconcile. The same reasoning applies in reverse on failure: a peer
 that captured `tbl:<id>` must also capture its removal, because the initiator's
 `remove` is *concurrent with* the peer's `set`, not causally after it.
 
+The table's `source_format` (#1221) is the connector type (`postgres`,
+`snowflake`). The initiator writes it into `tbl:<id>`, and each participant
+writes the same value from the type of its own copy of the saved connection, so
+the identical-value rule above still holds without the launch carrying it. The
+single-shot path sets it through `AddDatasetOptions::source_format`.
+
 ## Row ranges are per node
 
 A partition's `row_range` is its cumulative slice **in the writing node's own

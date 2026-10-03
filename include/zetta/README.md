@@ -22,3 +22,9 @@ coalesced to one per second (#1217).
 Run and Model values also carry denormalized Project/Pipeline names. Node
 startup backfills older records, and rename operations keep those names current
 for list consumers (#1184).
+
+`Table::source_format()`, `AddDatasetOptions::source_format` and
+`DatasetSummary::source_format` record what a dataset was loaded from;
+`data/add_dataset.hpp` exposes `dataset_name_problem` and `csv_problem`, the
+upload rules lake also applies (#1221). See
+[add dataset](../../docs/data/add-dataset.md).

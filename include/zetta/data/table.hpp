@@ -32,7 +32,8 @@ public:
           zetta::cluster::ReplicationManager* replication = nullptr,
           ReplicationStrategy replication_strategy = {},
           bool partition_only = false,
-          std::optional<DatasetManifestValue> partition_manifest = std::nullopt);
+          std::optional<DatasetManifestValue> partition_manifest = std::nullopt,
+          std::string source_format = {});
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
@@ -74,6 +75,15 @@ public:
     // on how the table must be read. Fixed at create time; there is no update
     // path (flipping it would strand rows on one side or the other).
     bool partition_only() const { return partition_only_; }
+
+    // **What the rows were loaded from** (#1221): `csv`, `jsonl`, `json` or
+    // `parquet` for a file or an upload, the connector type (`postgres`,
+    // `snowflake`) for a connector pull, `rows` for in-memory rows. Empty for a
+    // table made any other way (SQL `CREATE TABLE`, an engine result). The
+    // storage format is a different thing — every table stores JSON rows — so
+    // without this the upload's own format was lost the moment it landed.
+    // Recorded in table.json and in the `tbl:` CRDT value; fixed at create time.
+    const std::string& source_format() const { return source_format_; }
 
     // The **partition manifest** (#837): how many partitions this dataset has,
     // recorded once when the write that produced it completed. Empty when the
@@ -156,6 +166,7 @@ private:
     std::shared_ptr<Partitioner> partitioner_;  // null = not partitioned
     ReplicationStrategy replication_strategy_;  // ENT-35; default ReplicateToAll
     bool partition_only_ = false;               // #833; rows never captured
+    std::string source_format_;                 // #1221; empty = not recorded
     std::optional<DatasetManifestValue> partition_manifest_;  // #837
 };
 

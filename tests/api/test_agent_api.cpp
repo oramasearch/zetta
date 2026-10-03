@@ -237,6 +237,46 @@ TEST_F(AgentApiFixture, KindsRuntimesStudioShapeAndPipelineGrants) {
     nlohmann::json escape = python_agent;
     escape["definition"]["files"][0]["path"] = "../etc/passwd";
     EXPECT_FALSE(call("create_agent", escape).ok);
+    // #1220: the definition schema is closed at both levels. A file sent as {path, content} (for
+    // `contents`) used to be stored as an empty file without a word; it is refused with its path,
+    // in the words lake uses, and nothing is stored.
+    const std::size_t agents_before = call("list_agents", nlohmann::json::object())
+                                          .value.at("agents")
+                                          .size();
+    nlohmann::json misspelt = python_agent;
+    misspelt["definition"]["files"] = {{{"path", "agent/main.py"}, {"content", "def run(ctx): ..."}}};
+    ApiResult content = call("create_agent", misspelt);
+    ASSERT_FALSE(content.ok);
+    EXPECT_EQ(content.error.code, "invalid_input");
+    EXPECT_EQ(content.error.path, "/definition/files/0/content");
+    EXPECT_NE(content.error.message.find("a file has no field 'content'; each file is {path, "
+                                         "contents}, and contents holds the file's text"),
+              std::string::npos)
+        << content.error.message;
+    nlohmann::json stray = python_agent;
+    stray["definition"]["language"] = "python";
+    ApiResult unknown = call("create_agent", stray);
+    ASSERT_FALSE(unknown.ok);
+    EXPECT_EQ(unknown.error.path, "/definition/language");
+    EXPECT_NE(unknown.error.message.find("definition has no field 'language'"), std::string::npos)
+        << unknown.error.message;
+    nlohmann::json pathless = python_agent;
+    pathless["definition"]["files"] = {{{"contents", "x = 1\n"}}};
+    ApiResult no_path = call("create_agent", pathless);
+    ASSERT_FALSE(no_path.ok);
+    EXPECT_EQ(no_path.error.path, "/definition/files/0/path");
+    EXPECT_EQ(call("list_agents", nlohmann::json::object()).value.at("agents").size(),
+              agents_before);
+    // update_agent takes the same closed shape.
+    ApiResult update_content = call(
+        "update_agent", {{"id", python_id}, {"definition", misspelt["definition"]}});
+    ASSERT_FALSE(update_content.ok);
+    EXPECT_EQ(update_content.error.path, "/definition/files/0/content");
+    ApiResult kept = call("get_agent", {{"id", python_id}});
+    ASSERT_TRUE(kept.ok) << kept.error.message;
+    EXPECT_EQ(kept.value.at("definition").at("files").at(0).at("contents"),
+              "def run(ctx):\n    return 1\n");
+
     nlohmann::json bad_skill = python_agent;
     bad_skill["skills"] = {"launch-missiles"};
     EXPECT_FALSE(call("create_agent", bad_skill).ok);

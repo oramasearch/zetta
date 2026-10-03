@@ -1656,6 +1656,7 @@ std::vector<nlohmann::json> dataset_rows(const Node& node) {
         row["database"] = dataset.database;
         row["table_id"] = dataset.table_id;
         row["format"] = dataset.format;
+        row["source_format"] = dataset.source_format;
         row["replication"] = dataset.replication;
         row["rows"] = dataset.rows;
         row["columns"] = join_comma(dataset.columns);

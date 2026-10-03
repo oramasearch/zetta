@@ -12,3 +12,5 @@ authorised polling reads use data-bearing window summaries. A blocking marker
 offloads the internally synchronized `purge_audit` segment rewrite without
 moving authorization off the owner thread (#1169).
 See [registry design](../../../docs/api/registry-design.md).
+`ApiError` documents the `conflict` code (HTTP 409), which `upload_dataset`
+returns for a taken name (#1221).

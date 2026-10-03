@@ -17,3 +17,7 @@ table's columns are the keys its rows carry (`ColumnCatalog` in `executor.cpp`):
 naming another is an error, and `SELECT *` reports them as `columns`. Owners
 report theirs as `columns_seen`. Parse errors carry the token's position
 (`postgres.cpp`). See [the query layer](../../../docs/data/query.md).
+
+`system.datasets` has a `source_format` column: what the rows were loaded from,
+recorded on the table at create time (#1221). See
+[system.datasets](../../../docs/data/system-datasets.md).

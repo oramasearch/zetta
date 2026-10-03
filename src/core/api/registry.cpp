@@ -83,11 +83,16 @@ public:
             // A missing required property is reported at its parent; the
             // field at fault is the property itself (#1217).
             constexpr std::string_view kRequired = "required property '";
-            if (message.starts_with(kRequired)) {
-                const std::size_t end = message.find('\'', kRequired.size());
+            // So is a property the schema does not allow (#1220): the
+            // validator reports it at the object that holds it.
+            constexpr std::string_view kAdditional =
+                "validation failed for additional property '";
+            for (const std::string_view prefix : {kRequired, kAdditional}) {
+                if (!message.starts_with(prefix)) continue;
+                const std::size_t end = message.find('\'', prefix.size());
                 if (end != std::string::npos) {
-                    path_ += "/" + message.substr(kRequired.size(),
-                                                  end - kRequired.size());
+                    path_ += "/" + message.substr(prefix.size(),
+                                                  end - prefix.size());
                 }
             }
         }

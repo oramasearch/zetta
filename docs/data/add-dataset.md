@@ -71,9 +71,35 @@ CSV has no types, so each cell is inferred into a JSON scalar:
 - otherwise the **string** verbatim.
 
 Quoted fields are honored (a doubled `""` inside quotes is a literal quote; a comma
-inside quotes is literal). The header is the first non-empty line; unnamed header
-columns are skipped; a row with fewer cells than the header leaves the missing
-columns `null`.
+inside quotes is literal). The header is the first non-empty line; blank lines
+carry no row.
+
+**A CSV that would not load row for row is refused, naming its 1-based line
+(#1221)** — it used to be padded with nulls or cut short without a word. The
+decoder (`scan_csv`, shared by the file, async and upload paths) and the pure check
+`zetta::data::csv_problem(content)` refuse, in the same words lake uses (lake PR
+#459):
+
+| Problem | Error |
+|---|---|
+| a row with more or fewer fields than the header | `line 3: 1 fields, but the header has 2 columns` |
+| a header column with no name | `line 1: header column 2 has no name` |
+| a header naming a column twice | `line 1: the header names column 'a' twice` |
+| a quoted field still open at the end of its line | `line 2: a quoted field is not closed (a row must stay on one line)` |
+| no non-blank line at all | `the file has no header row` |
+
+### Source format (#1221)
+
+`AddDatasetResult::source_format`, recorded on the table (`Table::source_format()`,
+in `table.json` and in the replicated `tbl:` value), says what the rows were loaded
+from: `csv` / `jsonl` / `json` / `parquet` for a file or an upload, the connector type
+(`postgres`, `snowflake`) for a connector pull, `rows` for `add_dataset_rows` with no
+`AddDatasetOptions::source_format`. It is fixed at create time and surfaces as
+`source_format` on `get_dataset`, `list_datasets` and
+[`system.datasets`](system-datasets.md); `format` there stays the storage format
+(`jsonl`). The `dataset_added` audit note names the source format, so a connector pull
+no longer reads as `jsonl`. A table made any other way (SQL `CREATE TABLE`, an engine
+result) has none.
 
 ### Partitioning (placed across the cluster)
 
@@ -189,13 +215,15 @@ Its control-surface entry is the **`upload_dataset`** action (REST
 
 | Input | | |
 |---|---|---|
-| `table_name` | string, required | the new table's name; a clash gets `_2`, `_3`, … like a re-added file |
-| `format` | `"csv"` \| `"jsonl"`, required | how `content` is laid out (csv: a header row, cells type-inferred) |
+| `table_name` | string, required | the new table's name: a letter or `_`, then letters, digits and `_`, at most 63 characters, not a SQL keyword |
+| `if_exists` | `"fail"` (default) \| `"rename"` | a taken `table_name` is refused with `conflict` (409); `rename` saves under the next free name (`_2`, `_3`, …) and the output's `renamed_from` names the one asked for |
+| `format` | `"csv"` \| `"jsonl"`, required | how `content` is laid out (csv: a header row, then rows with as many fields as the header, cells type-inferred) |
 | `content` | string, required | the file's text, at most **16 MiB** (16 777 216 bytes) |
-| `database` | string | target database, created if absent (default `datasets`) |
+| `database` | string | target database, created if absent (default `datasets`); named by the same rule as `table_name` |
 | `replication_factor` | integer ≥ 1 | owners per partition (default 3, clamped to the node count) |
 
-The output is `add_dataset`'s: `{database, table, format, rows, partitions[]}`. It is
+The output is `add_dataset`'s: `{database, table, format, rows, partitions[]}`, plus
+`renamed_from` when `if_exists: "rename"` moved it to a free name. It is
 **authorized exactly like `add_dataset`** (`orchestration:add_dataset`: whoever may add
 a dataset from a file may add the same rows from a request) and audited as
 `dataset_added`; the table then appears in `list_datasets` / `system.datasets` and can
@@ -214,9 +242,32 @@ other than csv/jsonl (schema), malformed jsonl (the line is named), a csv with a
 and no rows — create nothing. Parquet is not accepted: it is binary and has no text
 form.
 
+**The rules lake applies in front of the workspace, in lake's words (#1221; lake PR
+#459)**, so a direct caller gets the same answer from either layer. Each creates
+nothing:
+
+- `table_name` / `database` must be a name SQL reads unquoted
+  (`zetta::data::dataset_name_problem`): `invalid_input` at `/table_name` or
+  `/database`, e.g. `table_name: 'my-table' can hold only letters, digits and
+  underscores (not '-'), so SQL can query it`, `… must start with a letter or an
+  underscore`, `… is a SQL keyword; choose another name`, `a name is at most 63
+  characters`.
+- A CSV is checked with `csv_problem` before it decodes: `invalid_input` at
+  `/content`, `the CSV file is malformed: line 3: 1 fields, but the header has 2
+  columns` (the table above).
+- A taken name is **refused, not silently renamed**: `conflict` (409) at
+  `/table_name`, `a dataset named 'accounts' already exists in datasets; choose
+  another name, or pass if_exists: "rename" to save it under the next free name`.
+  This changed the default for every caller; `if_exists: "rename"` keeps the old
+  `_2` behaviour on request. `add_dataset` (a file on the node) and the GUI still take
+  the next free name.
+
 Tests: `tests/api/test_registry.cpp` (`UploadDataset*`: csv + jsonl land and list,
-type inference and quoted cells match the file path, the audit, the name suffix, and
-every refusal) and `tests/api/test_rest_server.cpp`
+type inference and quoted cells match the file path, the audit, the conflict and the
+`if_exists: "rename"` opt-in, unsafe names, ragged CSV, and every other refusal;
+`UploadedDatasetKeepsItsSourceFormat`), `tests/data/test_add_dataset.cpp`
+(`RefusesRaggedCsvNamingTheLine`, `DatasetNameProblemMatchesLake`,
+`RecordsTheSourceFormatOnTheTable`) and `tests/api/test_rest_server.cpp`
 (`UploadDatasetOverRestAcceptsALargeBody`: ~1 MiB over loopback HTTP).
 
 ## The headed affordance
@@ -282,5 +333,5 @@ catalog entries.
 
 Natural next slices: a partition-count / replication-factor control in the UI,
 streaming large files rather than reading them whole, a Hub-name resolver behind the
-`datasets`-shim seam, and retaining the original import format on the dataset
-summary (today the summary reports the live on-disk format, `jsonl`).
+`datasets`-shim extension point. The original import format is now retained as
+`source_format` (#1221).
