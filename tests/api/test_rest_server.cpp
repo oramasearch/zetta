@@ -2031,4 +2031,88 @@ TEST_F(RestServerFixture, ServedModelAndIndexEndpointsOverHttp) {
     EXPECT_EQ(search_after.status, 404) << search_after.body;
 }
 
+// `sql` takes a JSON body (#1231): a statement far beyond the ~4 KiB request
+// line that the GET form is limited to, audited as data_changed like any write
+// (#1229).
+TEST_F(RestServerFixture, SqlAcceptsAJsonBodyBeyondTheRequestLineLimit) {
+    const auto openapi = json_of(request("GET", "/v1/openapi.json"));
+    ASSERT_TRUE(openapi.at("paths").at("/v1/sql").contains("get"));
+    ASSERT_TRUE(openapi.at("paths").at("/v1/sql").contains("post"));
+
+    ASSERT_EQ(request("POST", "/v1/sql",
+                      nlohmann::json{{"statement", "CREATE DATABASE bodies"}}.dump())
+                  .status,
+              200);
+    ASSERT_EQ(request("POST", "/v1/sql",
+                      nlohmann::json{{"statement",
+                                      "CREATE TABLE bodies.parts (id TEXT, body TEXT)"}}
+                          .dump())
+                  .status,
+              200);
+    const std::string body(20'000, 'z');
+    const std::string statement =
+        "INSERT INTO bodies.parts (id, body) VALUES ('p1', '" + body + "')";
+    const auto changes = [&] {
+        std::size_t count = 0;
+        for (const auto& event : node.audit_events()) {
+            if (event->action() == zetta::governance::AuditAction::DataChanged) ++count;
+        }
+        return count;
+    };
+    const std::size_t before = changes();
+    const auto inserted =
+        request("POST", "/v1/sql", nlohmann::json{{"statement", statement}}.dump());
+    ASSERT_EQ(inserted.status, 200) << inserted.body;
+    EXPECT_EQ(changes(), before + 1);
+
+    const auto selected = request(
+        "POST", "/v1/sql",
+        nlohmann::json{{"statement", "SELECT body FROM bodies.parts WHERE id = 'p1'"}}.dump());
+    ASSERT_EQ(selected.status, 200) << selected.body;
+    const auto rows = json_of(selected).at("value").at("rows");
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].at("body").get<std::string>().size(), body.size());
+}
+
+// The record store over REST and MCP (#1231): one registry, both renderings,
+// conflicts as HTTP 409 with the live revision.
+TEST_F(ReplicatedRestServerFixture, RecordCapabilitiesWorkOverRestAndMcp) {
+    auto created = request("POST", "/v1/create_collection",
+                           R"({"collection":"lake_sessions","indexes":["user"]})");
+    ASSERT_EQ(created.status, 200) << created.body;
+    auto put = request("POST", "/v1/put_record",
+                       R"({"collection":"lake_sessions","key":"s-1","value":"c2VhbGVk",)"
+                       R"("index":{"user":"u-1"},"if_absent":true})");
+    ASSERT_EQ(put.status, 200) << put.body;
+    const auto revision = json_of(put).at("value").at("revision").get<std::uint64_t>();
+
+    auto again = request("POST", "/v1/put_record",
+                         R"({"collection":"lake_sessions","key":"s-1","value":"eA==","if_absent":true})");
+    EXPECT_EQ(again.status, 409) << again.body;
+    EXPECT_EQ(json_of(again).at("error").at("details").at("revision"), revision);
+
+    auto got = request("GET", "/v1/get_record?collection=lake_sessions&key=s-1");
+    ASSERT_EQ(got.status, 200) << got.body;
+    EXPECT_EQ(json_of(got).at("value").at("record").at("value"), "c2VhbGVk");
+    auto listed = request("POST", "/v1/list_records",
+                          R"({"collection":"lake_sessions","index":"user","value":"u-1"})");
+    ASSERT_EQ(listed.status, 200) << listed.body;
+    EXPECT_EQ(json_of(listed).at("value").at("records").size(), 1u);
+
+    const nlohmann::json mcp_call = {
+        {"jsonrpc", "2.0"},
+        {"id", 1231},
+        {"method", "tools/call"},
+        {"params",
+         {{"name", "put_record"},
+          {"arguments",
+           {{"collection", "lake_sessions"}, {"key", "s-1"}, {"value", "bmV4dA=="},
+            {"if_revision", revision}}}}}};
+    const auto mcp = request("POST", "/mcp", mcp_call.dump());
+    ASSERT_EQ(mcp.status, 200) << mcp.body;
+    const auto envelope = json_of(mcp).at("result").at("structuredContent");
+    ASSERT_TRUE(envelope.at("ok").get<bool>()) << mcp.body;
+    EXPECT_GT(envelope.at("value").at("revision").get<std::uint64_t>(), revision);
+}
+
 }  // namespace

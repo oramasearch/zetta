@@ -98,14 +98,14 @@ struct DropRoleStmt {
 // executor translates it into a governance::Resource, keeping the AST free of the
 // governance types. `RoleWide` (the default, no ON clause) is the pre-#747 flat
 // grant — the permission on every object.
-enum class GrantObjectKind { RoleWide, Database, Table, Columns, Blob, Tool };
+enum class GrantObjectKind { RoleWide, Database, Table, Columns, Blob, Tool, Collection };
 
 struct GrantObject {
     GrantObjectKind kind = GrantObjectKind::RoleWide;
     std::string database;              // Database / Table / Columns
     std::string table;                 // Table / Columns
     std::vector<std::string> columns;  // Columns
-    std::string name;                  // Blob id-or-prefix / Tool name
+    std::string name;                  // Blob id-or-prefix / Tool name / Collection prefix
 };
 
 // GRANT <perm>[, <perm>]* [ON <object>] TO ROLE <name> — add permissions from the

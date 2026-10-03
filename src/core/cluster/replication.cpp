@@ -290,22 +290,93 @@ void ReplicationManager::remove(const std::string& key) {
     record_change(*state_, key);
 }
 
+namespace {
+
+const std::string& removed_value() {
+    static const std::string encoded =
+        nlohmann::json{{std::string(kRemovedMarker), true}}.dump();
+    return encoded;
+}
+
+// A revision register's `rev`, or zero for anything else (#1231).
+std::uint64_t revision_of(const std::string& encoded) {
+    const nlohmann::json value =
+        nlohmann::json::parse(encoded, nullptr, /*allow_exceptions=*/false);
+    if (!value.is_object()) return 0;
+    const auto found = value.find("rev");
+    if (found == value.end() || !found->is_number_unsigned()) return 0;
+    return found->get<std::uint64_t>();
+}
+
+}  // namespace
+
+bool ReplicationManager::update(const std::string& key,
+                                const ReplicationUpdateDecision& decide) {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    const auto found = state_->snapshot->find(key);
+    const nlohmann::json* current =
+        found == state_->snapshot->end() ? nullptr : &*found;
+    std::optional<std::vector<ReplicationWrite>> writes = decide(current);
+    if (!writes || writes->empty()) return false;
+    std::vector<std::pair<const ReplicationWrite*, std::string>> encoded;
+    encoded.reserve(writes->size());
+    for (const ReplicationWrite& write : *writes) {
+        if (state_->audit_retired && write.key.starts_with("audit:")) continue;
+        encoded.emplace_back(&write, write.value ? write.value->dump()
+                                                 : removed_value());
+    }
+    if (encoded.empty()) return false;
+    // One transaction, so a peer merges the whole decision or none of it.
+    state_->document.transact([&](am::Transaction& transaction) {
+        for (const auto& [write, text] : encoded) {
+            transaction.put(am::root, write->key, text);
+        }
+    });
+    make_snapshot_mutable(*state_);
+    for (const auto& [write, text] : encoded) {
+        if (write->value) {
+            cache_live_value(*state_, write->key, text);
+        } else {
+            account_encoded_value(*state_, write->key, &text);
+            state_->encoded_values[write->key] = text;
+            state_->snapshot->erase(write->key);
+        }
+        record_change(*state_, write->key);
+    }
+    return true;
+}
+
 // Is the key tombstoned in ANY of its concurrent values? Two nodes that
 // concurrently remove and rewrite a key both survive the merge as conflicting
 // values at that key; asking `get` would return whichever one automerge picks as
 // the winner, which is deterministic but arbitrary. Asking all of them makes
 // removal win — the property a cleanup path needs, since a half-removed entity is
 // exactly what #838 produced.
-bool ReplicationManager::removed_locked(const std::string& key) const {
-    for (const am::Value& value : state_->document.get_all(am::root, key)) {
+// A revision register (#1231) looks at the same concurrent values and keeps the
+// one with the highest `rev`, so every replica of a record agrees on the newest.
+std::string ReplicationManager::effective_locked(const std::string& key,
+                                                 const std::string& winner) const {
+    if (is_tombstone(winner)) return removed_value();
+    const bool register_key = key.starts_with(kRevisionRegisterPrefix);
+    const std::vector<am::Value> values = state_->document.get_all(am::root, key);
+    std::string best = winner;
+    std::uint64_t best_revision =
+        register_key && values.size() > 1 ? revision_of(winner) : 0;
+    for (const am::Value& value : values) {
         const auto* scalar = std::get_if<am::ScalarValue>(&value);
         if (!scalar) continue;
-        if (const auto* text = std::get_if<std::string>(scalar);
-            text && is_tombstone(*text)) {
-            return true;
+        const auto* text = std::get_if<std::string>(scalar);
+        if (!text) continue;
+        if (is_tombstone(*text)) return removed_value();
+        if (!register_key || values.size() < 2) continue;
+        const std::uint64_t revision = revision_of(*text);
+        if (revision > best_revision ||
+            (revision == best_revision && *text > best)) {
+            best = *text;
+            best_revision = revision;
         }
     }
-    return false;
+    return best;
 }
 
 nlohmann::json ReplicationManager::snapshot() const {
@@ -421,11 +492,7 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
             state_->document.get<std::string>(am::root, key);
         if (!encoded) continue;
         document_keys.insert(key);
-        const bool removed = is_tombstone(*encoded) || removed_locked(key);
-        const std::string effective =
-            removed
-                ? nlohmann::json{{std::string(kRemovedMarker), true}}.dump()
-                : *encoded;
+        const std::string effective = effective_locked(key, *encoded);
         const auto cached = state_->encoded_values.find(key);
         if (cached != state_->encoded_values.end() &&
             cached->second == effective) {
@@ -449,15 +516,13 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
             record_change(*state_, key);
             continue;
         }
-        const bool removed = is_tombstone(*encoded) || removed_locked(key);
-        if (removed) {
-            const std::string tombstone =
-                nlohmann::json{{std::string(kRemovedMarker), true}}.dump();
-            account_encoded_value(*state_, key, &tombstone);
-            state_->encoded_values[key] = tombstone;
+        const std::string effective = effective_locked(key, *encoded);
+        if (effective == removed_value()) {
+            account_encoded_value(*state_, key, &effective);
+            state_->encoded_values[key] = effective;
             state_->snapshot->erase(key);
         } else {
-            cache_live_value(*state_, key, *encoded);
+            cache_live_value(*state_, key, effective);
         }
         record_change(*state_, key);
     }
@@ -479,10 +544,11 @@ bool ReplicationManager::restore(std::span<const std::byte> blob) {
         if (!encoded) {
             continue;
         }
-        if (removed_locked(key)) {
-            state_->encoded_values[key] = R"({"_removed":true})";
+        const std::string effective = effective_locked(key, *encoded);
+        if (effective == removed_value()) {
+            state_->encoded_values[key] = effective;
         } else {
-            cache_live_value(*state_, key, *encoded);
+            cache_live_value(*state_, key, effective);
         }
     }
     rebaseline_memory_counters(*state_);

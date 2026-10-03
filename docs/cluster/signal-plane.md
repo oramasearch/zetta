@@ -64,6 +64,11 @@ if (response.ok) use(response.payload);
 cluster.send_event(peer_node_id, "heartbeat", payload);   // unicast
 cluster.broadcast_event("epoch-start", payload);          // to every peer
 cluster.send_task(peer_node_id, "map-shard", payload);    // a work envelope
+
+// The same request to several peers at once (#1231): all leave on the next
+// outbox flush, and the call returns when every one answered, failed or timed out.
+std::vector<zetta::cluster::SignalResponse> answers =
+    cluster.request_each(peer_ids, "record.apply", payload, std::chrono::seconds(2));
 ```
 
 `SignalHandler` has a safe default for each method, so a handler overrides only
@@ -191,7 +196,9 @@ broadcasts (#584) so the headed cluster view can animate every node's resource
 gauges, and the **`run.launch`** Task — the first consumer of the Task kind —
 that the [coordinated cross-process SPMD launch](../compute/coordinated-launch.md)
 fans out so every member co-runs an interactive run against its own shard
-(#601). Each rides a schema-validated payload (the
+(#601), and the [record store's](../data/record-store.md) `record.put` (a write
+forwarded to the key's owner) and `record.apply` (a committed record installed on
+every live peer before the write is acknowledged, #1231). Each rides a schema-validated payload (the
 [collective message](collectives.md) / telemetry boundary pattern); none adds a new
 wire verb beyond `ZETTA/1 SIGNAL`.
 

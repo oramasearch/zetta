@@ -3570,6 +3570,154 @@
         ]
       }
     },
+    "/v1/create_collection": {
+      "post": {
+        "description": "Declare a keyed record collection with its secondary indexes and optional retention; idempotent for an identical definition, a conflict for a different one. Mutates replicated state. Requires orchestration:create_collection.",
+        "operationId": "create_collection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "collection": {
+                    "description": "the record collection's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "indexes": {
+                    "description": "secondary indexes a record may carry a value for; list_records lists one index value",
+                    "items": {
+                      "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                      "type": "string"
+                    },
+                    "maxItems": 8,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "retention_ms": {
+                    "description": "expire a record this long after its last write",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "collection"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "collection": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "created_ms": {
+                              "type": "integer"
+                            },
+                            "indexes": {
+                              "items": {
+                                "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "name": {
+                              "description": "the record collection's name",
+                              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                              "type": "string"
+                            },
+                            "retention_ms": {
+                              "minimum": 1,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "indexes",
+                            "created_ms"
+                          ],
+                          "type": "object"
+                        },
+                        "created": {
+                          "description": "false when an identical collection already existed",
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "collection",
+                        "created"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a record collection",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_connection": {
       "post": {
         "description": "Save a named connector configuration (credential included) so a connector query can reference it by name instead of carrying the token in every request. The connection is stored replicate-to-all — every node holds it, which is what lets each node fetch its own stripe of a distributed query straight from the source. Saving an existing name replaces it, re-sealing the new credential. The token is stored sealed (AES-256-GCM under a key derived from the cluster join token, never in the replicated catalogue) and is never returned by any surface (list_connections and system.connections report only whether one is set). Requires orchestration:create_connection.",
@@ -4353,6 +4501,159 @@
           }
         },
         "summary": "Create index",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/create_metric": {
+      "post": {
+        "description": "Declare a labelled counter or gauge with its bucket resolution and optional retention; idempotent for an identical definition. Mutates replicated state. Requires orchestration:create_metric.",
+        "operationId": "create_metric",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "counter: non-negative increments, summed; gauge: readings",
+                    "enum": [
+                      "counter",
+                      "gauge"
+                    ]
+                  },
+                  "metric": {
+                    "description": "the metric's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+                    "type": "string"
+                  },
+                  "resolution_ms": {
+                    "description": "bucket width (default 60000)",
+                    "maximum": 86400000,
+                    "minimum": 1000,
+                    "type": "integer"
+                  },
+                  "retention_ms": {
+                    "description": "remove buckets older than this",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "metric",
+                  "kind"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "boolean"
+                        },
+                        "metric": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "created_ms": {
+                              "type": "integer"
+                            },
+                            "kind": {
+                              "enum": [
+                                "counter",
+                                "gauge"
+                              ]
+                            },
+                            "metric": {
+                              "description": "the metric's name",
+                              "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+                              "type": "string"
+                            },
+                            "resolution_ms": {
+                              "type": "integer"
+                            },
+                            "retention_ms": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "metric",
+                            "kind",
+                            "resolution_ms",
+                            "created_ms"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "created"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a metric",
         "tags": [
           "action"
         ]
@@ -7771,6 +8072,158 @@
           }
         },
         "summary": "Delete project",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_record": {
+      "post": {
+        "description": "Delete one record, optionally only at a revision (409 conflict otherwise); durable and on every live node before it returns. Mutates replicated state. Requires data:records_write.",
+        "operationId": "delete_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "collection": {
+                    "description": "the record collection's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "if_revision": {
+                    "description": "delete only when the live record is at this revision",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "the record's key: 1 to 512 bytes, no control characters",
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "collection",
+                  "key"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "collection": {
+                          "description": "the record collection's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "key": {
+                          "description": "the record's key: 1 to 512 bytes, no control characters",
+                          "maxLength": 512,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "description": "the node that ordered this write",
+                          "type": "string"
+                        },
+                        "replicas": {
+                          "description": "live peers that installed the write before it was acknowledged",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "replicas_expected": {
+                          "description": "live peers when it was written",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "revision": {
+                          "description": "the revision this write created",
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "updated_ms": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "collection",
+                        "key",
+                        "revision",
+                        "updated_ms",
+                        "owner",
+                        "replicas",
+                        "replicas_expected"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete a record",
         "tags": [
           "action"
         ]
@@ -12527,6 +12980,330 @@
           }
         },
         "summary": "Get one project",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_record": {
+      "get": {
+        "description": "Read one record's value and revision by (collection, key) from this node. No side effects. Requires data:records_read.",
+        "operationId": "get_record",
+        "parameters": [
+          {
+            "description": "the record collection's name",
+            "in": "query",
+            "name": "collection",
+            "required": true,
+            "schema": {
+              "description": "the record collection's name",
+              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the record's key: 1 to 512 bytes, no control characters",
+            "in": "query",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "description": "the record's key: 1 to 512 bytes, no control characters",
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "record": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "collection": {
+                              "description": "the record collection's name",
+                              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                              "type": "string"
+                            },
+                            "expires_ms": {
+                              "type": "integer"
+                            },
+                            "index": {
+                              "additionalProperties": {
+                                "maxLength": 512,
+                                "type": "string"
+                              },
+                              "description": "this record's value in each declared index it belongs to",
+                              "maxProperties": 8,
+                              "propertyNames": {
+                                "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                                "type": "string"
+                              },
+                              "type": "object"
+                            },
+                            "key": {
+                              "description": "the record's key: 1 to 512 bytes, no control characters",
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "order": {
+                              "type": "string"
+                            },
+                            "revision": {
+                              "description": "the record's revision; pass it as if_revision",
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "updated_ms": {
+                              "type": "integer"
+                            },
+                            "value": {
+                              "description": "the record's bytes, base64",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "collection",
+                            "key",
+                            "revision",
+                            "index",
+                            "order",
+                            "updated_ms",
+                            "value"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "record"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a record",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "Read one record's value and revision by (collection, key) from this node. No side effects. Requires data:records_read.",
+        "operationId": "get_record_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "collection": {
+                    "description": "the record collection's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "the record's key: 1 to 512 bytes, no control characters",
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "collection",
+                  "key"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "record": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "collection": {
+                              "description": "the record collection's name",
+                              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                              "type": "string"
+                            },
+                            "expires_ms": {
+                              "type": "integer"
+                            },
+                            "index": {
+                              "additionalProperties": {
+                                "maxLength": 512,
+                                "type": "string"
+                              },
+                              "description": "this record's value in each declared index it belongs to",
+                              "maxProperties": 8,
+                              "propertyNames": {
+                                "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                                "type": "string"
+                              },
+                              "type": "object"
+                            },
+                            "key": {
+                              "description": "the record's key: 1 to 512 bytes, no control characters",
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "order": {
+                              "type": "string"
+                            },
+                            "revision": {
+                              "description": "the record's revision; pass it as if_revision",
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "updated_ms": {
+                              "type": "integer"
+                            },
+                            "value": {
+                              "description": "the record's bytes, base64",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "collection",
+                            "key",
+                            "revision",
+                            "index",
+                            "order",
+                            "updated_ms",
+                            "value"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "record"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a record",
         "tags": [
           "read"
         ]
@@ -19142,6 +19919,413 @@
         ]
       }
     },
+    "/v1/list_records": {
+      "get": {
+        "description": "List one collection's records with one value of a declared index, ordered by the record's order then key, a page at a time; without an index, every record by key. No side effects. Requires data:records_read.",
+        "operationId": "list_records",
+        "parameters": [
+          {
+            "description": "the next_after a previous page returned",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "description": "the next_after a previous page returned",
+              "maxLength": 4096,
+              "type": "string"
+            }
+          },
+          {
+            "description": "the record collection's name",
+            "in": "query",
+            "name": "collection",
+            "required": true,
+            "schema": {
+              "description": "the record collection's name",
+              "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          },
+          {
+            "description": "a declared index; omit to list every record by key",
+            "in": "query",
+            "name": "index",
+            "required": false,
+            "schema": {
+              "description": "a declared index; omit to list every record by key",
+              "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the indexed value to list (required with index)",
+            "in": "query",
+            "name": "value",
+            "required": false,
+            "schema": {
+              "description": "the indexed value to list (required with index)",
+              "maxLength": 512,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "next_after": {
+                          "description": "pass as `after` for the next page; absent when the listing is complete",
+                          "type": "string"
+                        },
+                        "records": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "collection": {
+                                "description": "the record collection's name",
+                                "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                                "type": "string"
+                              },
+                              "expires_ms": {
+                                "type": "integer"
+                              },
+                              "index": {
+                                "additionalProperties": {
+                                  "maxLength": 512,
+                                  "type": "string"
+                                },
+                                "description": "this record's value in each declared index it belongs to",
+                                "maxProperties": 8,
+                                "propertyNames": {
+                                  "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                                  "type": "string"
+                                },
+                                "type": "object"
+                              },
+                              "key": {
+                                "description": "the record's key: 1 to 512 bytes, no control characters",
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "order": {
+                                "type": "string"
+                              },
+                              "revision": {
+                                "description": "the record's revision; pass it as if_revision",
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "updated_ms": {
+                                "type": "integer"
+                              },
+                              "value": {
+                                "description": "the record's bytes, base64",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "collection",
+                              "key",
+                              "revision",
+                              "index",
+                              "order",
+                              "updated_ms",
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "records"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List records",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "List one collection's records with one value of a declared index, ordered by the record's order then key, a page at a time; without an index, every record by key. No side effects. Requires data:records_read.",
+        "operationId": "list_records_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "dependencies": {
+                  "index": [
+                    "value"
+                  ],
+                  "value": [
+                    "index"
+                  ]
+                },
+                "properties": {
+                  "after": {
+                    "description": "the next_after a previous page returned",
+                    "maxLength": 4096,
+                    "type": "string"
+                  },
+                  "collection": {
+                    "description": "the record collection's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "direction": {
+                    "enum": [
+                      "asc",
+                      "desc"
+                    ]
+                  },
+                  "index": {
+                    "description": "a declared index; omit to list every record by key",
+                    "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "value": {
+                    "description": "the indexed value to list (required with index)",
+                    "maxLength": 512,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "collection"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "next_after": {
+                          "description": "pass as `after` for the next page; absent when the listing is complete",
+                          "type": "string"
+                        },
+                        "records": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "collection": {
+                                "description": "the record collection's name",
+                                "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                                "type": "string"
+                              },
+                              "expires_ms": {
+                                "type": "integer"
+                              },
+                              "index": {
+                                "additionalProperties": {
+                                  "maxLength": 512,
+                                  "type": "string"
+                                },
+                                "description": "this record's value in each declared index it belongs to",
+                                "maxProperties": 8,
+                                "propertyNames": {
+                                  "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                                  "type": "string"
+                                },
+                                "type": "object"
+                              },
+                              "key": {
+                                "description": "the record's key: 1 to 512 bytes, no control characters",
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "order": {
+                                "type": "string"
+                              },
+                              "revision": {
+                                "description": "the record's revision; pass it as if_revision",
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "updated_ms": {
+                                "type": "integer"
+                              },
+                              "value": {
+                                "description": "the record's bytes, base64",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "collection",
+                              "key",
+                              "revision",
+                              "index",
+                              "order",
+                              "updated_ms",
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "records"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List records",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_runs": {
       "get": {
         "description": "Read every run with Project/Pipeline display names, status, stored metric summary, stamps and log/output counts. No side effects. Requires api:query.",
@@ -23993,6 +25177,689 @@
         ]
       }
     },
+    "/v1/put_record": {
+      "post": {
+        "description": "Write one record's opaque base64 value under (collection, key), optionally only if absent or only at a revision (409 conflict otherwise); durable and on every live node before it returns. Mutates replicated state. Requires data:records_write.",
+        "operationId": "put_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "not": {
+                  "required": [
+                    "if_absent",
+                    "if_revision"
+                  ]
+                },
+                "properties": {
+                  "collection": {
+                    "description": "the record collection's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "if_absent": {
+                    "description": "write only when the key has no live record",
+                    "type": "boolean"
+                  },
+                  "if_revision": {
+                    "description": "write only when the live record is at this revision",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "index": {
+                    "additionalProperties": {
+                      "maxLength": 512,
+                      "type": "string"
+                    },
+                    "description": "this record's value in each declared index it belongs to",
+                    "maxProperties": 8,
+                    "propertyNames": {
+                      "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "the record's key: 1 to 512 bytes, no control characters",
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "order": {
+                    "description": "orders records within an index value (then by key); for example a zero-padded creation time",
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  "value": {
+                    "description": "the record's bytes, base64; the engine never reads them",
+                    "maxLength": 1048576,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "collection",
+                  "key",
+                  "value"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "collection": {
+                          "description": "the record collection's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                          "type": "string"
+                        },
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "key": {
+                          "description": "the record's key: 1 to 512 bytes, no control characters",
+                          "maxLength": 512,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "description": "the node that ordered this write",
+                          "type": "string"
+                        },
+                        "replicas": {
+                          "description": "live peers that installed the write before it was acknowledged",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "replicas_expected": {
+                          "description": "live peers when it was written",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "revision": {
+                          "description": "the revision this write created",
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "updated_ms": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "collection",
+                        "key",
+                        "revision",
+                        "updated_ms",
+                        "owner",
+                        "replicas",
+                        "replicas_expected"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Put a record",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/query_metric": {
+      "get": {
+        "description": "Sum a counter, or aggregate a gauge, over a time range, filtered by labels, grouped by labels and split into steps. No side effects. Requires data:metrics_read.",
+        "operationId": "query_metric",
+        "parameters": [
+          {
+            "description": "counter: sum; gauge: last (default), sum, avg, min or max",
+            "in": "query",
+            "name": "aggregate",
+            "required": false,
+            "schema": {
+              "description": "counter: sum; gauge: last (default), sum, avg, min or max",
+              "enum": [
+                "sum",
+                "last",
+                "avg",
+                "min",
+                "max"
+              ]
+            }
+          },
+          {
+            "description": "inclusive; rounded down to a bucket",
+            "in": "query",
+            "name": "from_ms",
+            "required": true,
+            "schema": {
+              "description": "inclusive; rounded down to a bucket",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "pattern": "^[a-z_][a-z0-9_]{0,63}$",
+                    "type": "string"
+                  },
+                  "maxItems": 16,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              }
+            },
+            "in": "query",
+            "name": "group_by",
+            "required": false
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  "maxProperties": 16,
+                  "propertyNames": {
+                    "pattern": "^[a-z_][a-z0-9_]{0,63}$",
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "in": "query",
+            "name": "labels",
+            "required": false
+          },
+          {
+            "description": "the metric's name",
+            "in": "query",
+            "name": "metric",
+            "required": true,
+            "schema": {
+              "description": "the metric's name",
+              "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "a multiple of the resolution; default: one step for the range",
+            "in": "query",
+            "name": "step_ms",
+            "required": false,
+            "schema": {
+              "description": "a multiple of the resolution; default: one step for the range",
+              "minimum": 1000,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "exclusive",
+            "in": "query",
+            "name": "to_ms",
+            "required": true,
+            "schema": {
+              "description": "exclusive",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "aggregate": {
+                          "type": "string"
+                        },
+                        "metric": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "created_ms": {
+                              "type": "integer"
+                            },
+                            "kind": {
+                              "enum": [
+                                "counter",
+                                "gauge"
+                              ]
+                            },
+                            "metric": {
+                              "description": "the metric's name",
+                              "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+                              "type": "string"
+                            },
+                            "resolution_ms": {
+                              "type": "integer"
+                            },
+                            "retention_ms": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "metric",
+                            "kind",
+                            "resolution_ms",
+                            "created_ms"
+                          ],
+                          "type": "object"
+                        },
+                        "series": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "labels": {
+                                "additionalProperties": {
+                                  "maxLength": 256,
+                                  "type": "string"
+                                },
+                                "maxProperties": 16,
+                                "propertyNames": {
+                                  "pattern": "^[a-z_][a-z0-9_]{0,63}$",
+                                  "type": "string"
+                                },
+                                "type": "object"
+                              },
+                              "points": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "at_ms": {
+                                      "type": "integer"
+                                    },
+                                    "value": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "at_ms",
+                                    "value"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "total": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "labels",
+                              "total",
+                              "points"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "aggregate",
+                        "series"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Query a metric",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "Sum a counter, or aggregate a gauge, over a time range, filtered by labels, grouped by labels and split into steps. No side effects. Requires data:metrics_read.",
+        "operationId": "query_metric_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "aggregate": {
+                    "description": "counter: sum; gauge: last (default), sum, avg, min or max",
+                    "enum": [
+                      "sum",
+                      "last",
+                      "avg",
+                      "min",
+                      "max"
+                    ]
+                  },
+                  "from_ms": {
+                    "description": "inclusive; rounded down to a bucket",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "group_by": {
+                    "items": {
+                      "pattern": "^[a-z_][a-z0-9_]{0,63}$",
+                      "type": "string"
+                    },
+                    "maxItems": 16,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "labels": {
+                    "additionalProperties": {
+                      "maxLength": 256,
+                      "type": "string"
+                    },
+                    "maxProperties": 16,
+                    "propertyNames": {
+                      "pattern": "^[a-z_][a-z0-9_]{0,63}$",
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "metric": {
+                    "description": "the metric's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+                    "type": "string"
+                  },
+                  "step_ms": {
+                    "description": "a multiple of the resolution; default: one step for the range",
+                    "minimum": 1000,
+                    "type": "integer"
+                  },
+                  "to_ms": {
+                    "description": "exclusive",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "metric",
+                  "from_ms",
+                  "to_ms"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "aggregate": {
+                          "type": "string"
+                        },
+                        "metric": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "created_ms": {
+                              "type": "integer"
+                            },
+                            "kind": {
+                              "enum": [
+                                "counter",
+                                "gauge"
+                              ]
+                            },
+                            "metric": {
+                              "description": "the metric's name",
+                              "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+                              "type": "string"
+                            },
+                            "resolution_ms": {
+                              "type": "integer"
+                            },
+                            "retention_ms": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "metric",
+                            "kind",
+                            "resolution_ms",
+                            "created_ms"
+                          ],
+                          "type": "object"
+                        },
+                        "series": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "labels": {
+                                "additionalProperties": {
+                                  "maxLength": 256,
+                                  "type": "string"
+                                },
+                                "maxProperties": 16,
+                                "propertyNames": {
+                                  "pattern": "^[a-z_][a-z0-9_]{0,63}$",
+                                  "type": "string"
+                                },
+                                "type": "object"
+                              },
+                              "points": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "at_ms": {
+                                      "type": "integer"
+                                    },
+                                    "value": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "at_ms",
+                                    "value"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "total": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "labels",
+                              "total",
+                              "points"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "aggregate",
+                        "series"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Query a metric",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/receive_events": {
       "get": {
         "description": "Read an exposed topic's held events from a sequence number, oldest first; with wait_ms, wait for new ones (long poll). Stateless: pass the returned next_sequence to continue. Requires data:pubsub_subscribe.",
@@ -24482,6 +26349,149 @@
           }
         },
         "summary": "Record a decision and action",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/record_metric": {
+      "post": {
+        "description": "Append up to 1000 labelled points to a counter or gauge; all are validated before any is written. Mutates replicated state. Requires data:metrics_write.",
+        "operationId": "record_metric",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "metric": {
+                    "description": "the metric's name",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "at_ms": {
+                          "description": "default: now",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "labels": {
+                          "additionalProperties": {
+                            "maxLength": 256,
+                            "type": "string"
+                          },
+                          "maxProperties": 16,
+                          "propertyNames": {
+                            "pattern": "^[a-z_][a-z0-9_]{0,63}$",
+                            "type": "string"
+                          },
+                          "type": "object"
+                        },
+                        "value": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 1000,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "metric",
+                  "points"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "metric": {
+                          "description": "the metric's name",
+                          "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+                          "type": "string"
+                        },
+                        "recorded": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "metric",
+                        "recorded"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Record metric points",
         "tags": [
           "action"
         ]
@@ -26830,6 +28840,127 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "columns": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "messages": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "rows": {
+                          "items": {
+                            "description": "one result row keyed by column name",
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "messages",
+                        "columns",
+                        "rows"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Run SQL",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. Requires api:query.",
+        "operationId": "sql_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "database": {
+                    "description": "default database for unqualified table names (optional)",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "statement": {
+                    "description": "one SQL statement (Postgres subset; the system.* views are all readable here)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "statement"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

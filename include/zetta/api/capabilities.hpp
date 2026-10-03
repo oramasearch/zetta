@@ -67,6 +67,19 @@ void register_cloud_capabilities(Registry& registry);
 //   receive_events  read    long-poll an exposed topic from a sequence number
 void register_pubsub_capabilities(Registry& registry);
 
+// The keyed record store and labelled time series (#1231,
+// docs/data/record-store.md, docs/data/time-series.md):
+//
+//   create_collection  action  declare a collection, its indexes and retention
+//   put_record         action  conditional (if_absent / if_revision) keyed write
+//   get_record         read    one record by key
+//   delete_record      action  conditional delete
+//   list_records       read    one index value's records, paged
+//   create_metric      action  declare a labelled counter or gauge
+//   record_metric      action  append labelled points
+//   query_metric       read    sum / aggregate over a range, grouped and stepped
+void register_record_capabilities(Registry& registry);
+
 // Run experiment tracking (#1137): three writes and two reads. Live metric
 // batches use the existing receive_events long poll on run-metrics.<run>.
 void register_run_metrics_capabilities(Registry& registry);

@@ -8928,7 +8928,7 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_get_experiment});
 
-    registry.add(Capability{
+    Capability sql{
         "sql",
         "Run SQL",
         "Run one governed SQL statement (Postgres subset). Every system.* "
@@ -8944,7 +8944,11 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        handle_sql});
+        handle_sql};
+    // A statement of any length travels as a JSON body (#1231): the GET form
+    // carries it in the request line, which the parser caps near 4 KiB.
+    sql.post_alias = true;
+    registry.add(std::move(sql));
 
     registry.add(Capability{
         "search",
@@ -10060,6 +10064,7 @@ void register_core_capabilities(Registry& registry) {
     // Pub/sub (#1033), in its own TU (pubsub_capabilities.cpp).
     register_pubsub_capabilities(registry);
     register_run_metrics_capabilities(registry);
+    register_record_capabilities(registry);
     register_study_capabilities(registry);
     register_solution_capabilities(registry);
 

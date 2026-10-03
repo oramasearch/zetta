@@ -37,3 +37,11 @@ See [architecture](../../docs/architecture/README.md) and
 Node startup re-seals saved connector credentials that are plaintext (pre-#1230)
 or sealed under a retired join token, and builds the sealing keyring from the
 join token main passes, or from a node-local secret (#1230).
+
+The node owns the keyed record store and the labelled time series when it has a
+replicated catalogue (#1231). Startup replays `records.journal` after restoring
+the document; the persist takes the journal's size, fsyncs the saved document and
+only then trims the journal. The tick leaves record and metric keys out of
+reconcile work and sweeps retention every ten seconds. The record store joins the
+signal plane last and leaves it first. See
+[the record store](../../docs/data/record-store.md).

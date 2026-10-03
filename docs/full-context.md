@@ -63,6 +63,15 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Workspace records for lake (#1231):** a keyed record store
+  (`create_collection`, `put_record` with `if_absent`/`if_revision`, `get_record`,
+  `delete_record`, `list_records` over a declared index) whose writes are ordered by
+  each key's owner, installed on every live peer and fsynced to a journal before
+  they are acknowledged; labelled counters and gauges (`create_metric`,
+  `record_metric`, `query_metric`); and `sql` over a JSON-body POST. See
+  [data/record-store.md](data/record-store.md) and
+  [data/time-series.md](data/time-series.md).
+
 - **Audit replication (#1164):** segment logs carry per-origin sequences and
   watermarks, not per-event CRDT entries. Legacy catalog history migrates locally
   and is compacted; upgrades are all-nodes-together. Native two-process memory

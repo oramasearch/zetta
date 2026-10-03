@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "One node's fold of one series over one bucket (#1231): the replicated `metric_point:<metric>:<bucket start>:<series>:<node>` value, written only by that node. `sum`, `count`, `min` and `max` cover every point in the bucket; `last` is the latest reading and `last_at` its time in milliseconds since the Unix epoch.",
+  "properties": {
+    "count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "labels": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "last": {
+      "type": "number"
+    },
+    "last_at": {
+      "type": "integer"
+    },
+    "max": {
+      "type": "number"
+    },
+    "min": {
+      "type": "number"
+    },
+    "sum": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "labels",
+    "sum",
+    "count",
+    "min",
+    "max",
+    "last",
+    "last_at"
+  ],
+  "title": "zetta.MetricBucket",
+  "type": "object"
+}

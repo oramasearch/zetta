@@ -32,3 +32,5 @@ of a policy-protected table is refused for a non-bypass caller. Each such
 statement records a `data_changed` audit row. SQL never reaches the reserved
 `zetta_connect` database (#1230). See
 [access control](../../../docs/governance/access-control.md#per-statement-enforcement).
+`GRANT … ON COLLECTION <prefix>` scopes record-store rights to a collection name
+prefix (#1231).

@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "The payload of a record-store signal (#1231) and of one journal line. `put`/`delete` forward a write to the key's owner (record.put); `apply` installs a committed record or a collection definition on a replica (record.apply) and is what the journal replays.",
+  "properties": {
+    "collection": {
+      "type": "string"
+    },
+    "condition": {
+      "enum": [
+        "none",
+        "if_absent",
+        "if_revision"
+      ]
+    },
+    "definition": {
+      "type": "object"
+    },
+    "index": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "key": {
+      "type": "string"
+    },
+    "op": {
+      "enum": [
+        "put",
+        "delete",
+        "apply"
+      ]
+    },
+    "order": {
+      "type": "string"
+    },
+    "record": {
+      "type": "object"
+    },
+    "revision": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "value": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "op"
+  ],
+  "title": "zetta.RecordSignal",
+  "type": "object"
+}

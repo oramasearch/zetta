@@ -35,6 +35,8 @@
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/metric_store.hpp"
+#include "zetta/data/record_store.hpp"
 #include "zetta/data/partition_scheduler.hpp"
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/replication_strategy.hpp"
@@ -205,6 +207,16 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::data::partitioner_schema},
         {"replication_strategy", "replication_strategy.schema.json",
          &zetta::data::replication_strategy_schema},
+        {"record_collection", "record_collection.schema.json",
+         &zetta::data::record_collection_schema},
+        {"stored_record", "stored_record.schema.json",
+         &zetta::data::stored_record_schema},
+        {"record_signal", "record_signal.schema.json",
+         &zetta::data::record_signal_schema},
+        {"metric_definition", "metric_definition.schema.json",
+         &zetta::data::metric_definition_schema},
+        {"metric_bucket", "metric_bucket.schema.json",
+         &zetta::data::metric_bucket_schema},
         // ddf
         {"parquet_data_frame", "parquet_data_frame.schema.json",
          &zetta::ddf::parquet_data_frame_schema},

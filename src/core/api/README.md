@@ -58,3 +58,9 @@ is authorized inside the executor and every data-changing one is audited as a
 `data_changed` action (#1229). Saved connections report `credential`
 (set / none / unreadable / plaintext), never the credential (#1230). See
 [access control](../../../docs/governance/access-control.md#per-statement-enforcement).
+`sql` also accepts a JSON-body POST, so a statement is not bound by the ~4 KiB
+request line; its data-changing statements are audited as `data_changed` by the
+executor (#1229, #1231). The record store and time-series capabilities
+(`record_capabilities.cpp`) are `blocks` entries with `ON COLLECTION` scoped
+authorization. See [the record store](../../../docs/data/record-store.md) and
+[time series](../../../docs/data/time-series.md).

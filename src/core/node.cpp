@@ -1,5 +1,8 @@
 #include "zetta/node.hpp"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "zetta/connect/connection_store.hpp"
 
 #include "zetta/pubsub/node_integration.hpp"
@@ -269,6 +272,13 @@ Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
       replication_(replication),
       experiment_manager_(config_.data_dir, replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
+    if (replication_) {
+        record_store_ = std::make_unique<zetta::data::RecordStore>(
+            *replication_, replication_->node_id(),
+            std::filesystem::path(config_.data_dir) / "records.journal");
+        metric_store_ = std::make_unique<zetta::data::MetricStore>(
+            *replication_, replication_->node_id());
+    }
     register_memory_probes();
     // The owner thread is adopted LAZILY, at the first tick() (#624) — never
     // here. A constructed-but-never-ticked node has no owner loop to drain
@@ -651,6 +661,8 @@ bool Node::start() {
             running_ = false;
             return false;
         }
+        // Records acknowledged after the last save are in the journal (#1231).
+        if (record_store_) record_store_->replay_journal();
         migrate_to_replication();   // capture any local-only data into it
         const zetta::cluster::ReplicationChanges changes =
             replication_->changes_since(0);
@@ -798,8 +810,13 @@ void Node::tick() {
     const std::string version_at_pull =
         replication_ ? replication_->version() : std::string{};
     if (replication_ && version_at_pull != last_seen_version_) {
-        const zetta::cluster::ReplicationChanges changes =
+        zetta::cluster::ReplicationChanges changes =
             replication_->changes_since(last_replication_change_token_);
+        // Records and metric buckets have no on-disk projection (#1231): a burst
+        // of record writes must not push the tick into a full reconcile.
+        std::erase_if(changes.keys, [](const std::string& key) {
+            return catalog::is_record_store_key(key);
+        });
         const std::size_t full_reconcile_threshold =
             std::max<std::size_t>(1, changes.snapshot->size() / 4);
         const bool full_reconcile =
@@ -870,6 +887,18 @@ void Node::tick() {
                 std::string(zetta::cluster::NodeTelemetryExchange::kMethod),
                 encode_node_metrics(metrics, node_id()));
         }
+    }
+    // Record and metric retention (#1231): each node removes only the keys it
+    // owns, so a sweep never races another node's write of the same key.
+    constexpr auto kRecordSweepInterval = std::chrono::seconds(10);
+    if (record_store_ && Clock::now() - last_record_sweep_ >= kRecordSweepInterval) {
+        last_record_sweep_ = Clock::now();
+        const std::int64_t now_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        record_store_->sweep(now_ms);
+        metric_store_->sweep(now_ms);
     }
     flush_due_audit_summaries();
     sync_audit_log();
@@ -1079,12 +1108,17 @@ void Node::start_coordinator() {
     distributed_select_ = std::make_unique<zetta::query::DistributedSelect>(
         *this, *cluster_, cluster_->signal_handler());
     distributed_select_->refresh();
+
+    // The record store (#1231) chains over the SELECT plane: `record.put` and
+    // `record.apply` are served here, everything else routes on.
+    if (record_store_) record_store_->attach(*cluster_);
 }
 
 void Node::stop_coordinator() {
-    // Unwind in reverse wiring order: the SELECT plane restores the search
-    // plane's handler, the search plane the compute plane's, then the
-    // coordinator restores its own fallback.
+    // Unwind in reverse wiring order: the record store restores the SELECT
+    // plane's handler, the SELECT plane the search plane's, the search plane the
+    // compute plane's, then the coordinator restores its own fallback.
+    if (record_store_) record_store_->detach();
     distributed_select_.reset();
     distributed_fulltext_.reset();
     search_build_fingerprints_.clear();
@@ -4874,16 +4908,30 @@ bool Node::load_replication() {
 }
 
 void Node::persist_replication() {
+    // Everything journaled before this mark is in the document saved below, so
+    // the journal can drop it once the save is on disk (#1231).
+    const std::uint64_t journal_mark = record_store_ ? record_store_->journal_mark() : 0;
     const std::vector<std::byte> bytes = replication_->save();
     const fs::path path = replication_path();
     const fs::path tmp = path.string() + ".tmp";
+    bool written = false;
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char*>(bytes.data()),
                   static_cast<std::streamsize>(bytes.size()));
+        out.flush();
+        written = static_cast<bool>(out);
+    }
+    // The journal is trimmed only after the document is synced, so a crash
+    // between the two leaves the records in the journal, never in neither.
+    if (written && journal_mark > 0) {
+        const int descriptor = ::open(tmp.c_str(), O_RDWR);
+        written = descriptor >= 0 && ::fsync(descriptor) == 0;
+        if (descriptor >= 0) ::close(descriptor);
     }
     std::error_code ec;
     fs::rename(tmp, path, ec);  // atomic replace
+    if (written && !ec && journal_mark > 0) record_store_->journal_truncate(journal_mark);
     last_replication_persist_ = Clock::now();
     replication_persist_pending_ = false;
 }

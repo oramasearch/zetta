@@ -575,6 +575,7 @@ private:
     //   ON [TABLE] <db>.<table>(col[, col]*)   — a column set
     //   ON TOOL <name>                         — an MCP tool
     //   ON BLOB <prefix>                       — a blob id / id prefix
+    //   ON COLLECTION <prefix>                 — a record collection name prefix
     // Out-of-line to keep the string-heavy cleanup out of the caller's frame
     // (the toolchain EH workaround; see parse_create_token / ast.hpp).
     [[gnu::noinline]] GrantObject parse_grant_object() {
@@ -586,6 +587,11 @@ private:
         }
         if (accept_keyword("blob")) {
             object.kind = GrantObjectKind::Blob;
+            object.name = parse_object_name();
+            return object;
+        }
+        if (accept_keyword("collection")) {  // a record collection name prefix (#1231)
+            object.kind = GrantObjectKind::Collection;
             object.name = parse_object_name();
             return object;
         }
