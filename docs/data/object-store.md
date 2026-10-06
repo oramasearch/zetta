@@ -128,17 +128,37 @@ an earlier one, whatever the keys are. The prefix always reaches the last write 
   each, the throughput was 1,010 to 1,280 MiB/s with the rule and 890 to 1,340 MiB/s without it.
   The append p50 was 0.14 ms in both, so the difference is within the noise. The soak, the push
   budget and the read budgets did not move either.
-- **Startup truncates the newest segment at its first torn frame.** Startup verifies the frame
-  checksums of the last two segments. Only the newest can be torn; a log written before #1235 can
-  hold unsynced bytes in two. Within the newest segment, nothing after a tear survives. Startup
-  also fsyncs those two segments, because a process that crashed can leave bytes in the page
-  cache that a later power loss would drop.
-- **Compaction deletes a dead segment only after an fsync** of the segment that holds the newer
-  frames. Without it, a power loss could lose the old frames and the newer ones together.
+- **Startup ends the log at its first torn frame.** Startup verifies the frame checksums of the
+  last two segments. Only the newest can be torn; a log written before #1235 can hold unsynced
+  bytes in two. The first torn frame in them is where the log ends: that segment is truncated
+  there and, if it is the second-to-last, the last segment is deleted. Nothing after a tear
+  survives, whatever pages the disk kept. Startup also fsyncs those two segments, because a
+  process that crashed can leave bytes in the page cache that a later power loss would drop. It
+  also fsyncs the parent of every directory it creates.
+- **Compaction deletes a dead segment only after an fsync** of the active segment, which holds
+  the frames that replaced it. Without it, a power loss could lose the old frames and the newer
+  ones together. Dead segments are unlinked oldest first, and then the bucket's directory is
+  fsynced.
 
 `durable=true` fsyncs the write's own segment. Every earlier segment was fsynced at its roll, so a
-durable write makes the whole log up to it durable. The barrier fsyncs every segment written since
-the last barrier.
+durable write makes the whole log up to it durable. The barrier fsyncs every segment that holds
+bytes no completed fsync covered. Each segment records how many of its bytes the last completed
+fsync covered (the size read before that fsync began), and one fsync of a segment runs at a time.
+A barrier that arrives while a durable write, a roll or compaction is fsyncing the same segment
+waits for that fsync. It then fsyncs again unless that fsync covered its bytes. So a barrier
+never answers before what it covers is on disk.
+
+**A failed fsync fails the log.** After an fsync error, Linux can drop the dirty pages and mark
+them clean, so a retried fsync can succeed without them. The log therefore does not retry. It
+refuses every write (`Io`, answered `503 busy`), fails durable writes and barriers, and on
+its next maintenance step reopens itself from disk the way a restart would: replay, truncation at
+the first torn frame, and the startup fsyncs. Uploads in progress are dropped. This is the stance
+PostgreSQL took after the same finding.
+
+**What `fsync` reaches.** On Linux (every deployment), `fsync` flushes the device's write cache
+too, so an fsynced byte survives a power loss of the disk. On macOS it does not (`F_FULLFSYNC`
+would), so the guarantee on a Mac is against a process or kernel crash, not a loss of the drive's
+power. The log does not use `F_FULLFSYNC`.
 
 **Scope: one node's copy of one bucket.** Each bucket has its own log, so there is no order across
 buckets. With `rf > 1` there is no cross-key order at all. Each key has its own primary, which
@@ -314,7 +334,7 @@ catalogue did not grow. Two changes the soak forced:
 | `ObjectStoreFixture.FencingRefusesAStaleHolderAfterATakeover` | fences, held, release, renewal keeping the lease, expiry, the fence across a restart |
 | `ObjectStoreFixture.ObjectsSurviveARestartAndStayOutOfTheCatalogue` | restart, appends continuing a version, nothing in the catalogue |
 | `ObjectStoreFixture.ATornTailLeavesAppendsWholeUpToTheBarrierAndPutsNeverPartial` | 28 torn tails (some with garbage): appends absent or whole and never short of the barrier; a put old or new, never partial |
-| `ObjectLogCrash.*` (`tests/data/test_object_log_crash.cpp`) | the prefix guarantee. The log reports each fsync to a sync observer, and a copy of its files loses the bytes no fsync covered: in the newest segment alone, in each older segment alone, or in all of them, cut off or zeroed in place. Replay must give the state after some prefix of the writes, at least up to the last durable write or barrier. Three cases: puts, overwrites and removes across ten or more rolls; a process crash, a restart and more rolls before the power loss; and compaction deleting a segment whose replacing frames were still unsynced |
+| `ObjectLogCrash.*` (`tests/data/test_object_log_crash.cpp`) | the prefix guarantee and the fsync discipline. The log reports each fsync to a sync observer, and a copy of its files loses the bytes no fsync covered: in the newest segment alone, in each older segment alone, or in all of them. The loss is cut off, zeroed in place, or decided per 512-byte block at random (a middle block lost and a later one kept, the size cut or kept). Replay must give the state after some prefix of the writes (puts, removes, appends, and staged puts with their commit), at least up to the last durable write or barrier. The cases: ten or more rolls; a writer with barriers running beside it; a process crash, a restart and more rolls before the power loss; a log from before #1235 torn in its second-to-last segment; compaction deleting a segment whose replacing frames were unsynced, and the directory fsync after the unlink; the directory fsyncs at `open`. An injected fsync checks two more rules. A barrier waits for an fsync already running in a durable write, in compaction and in a roll. A failed fsync fails the log, refusing writes and barriers, until maintenance reopens it |
 | `ObjectStoreFixture.CompactionKeepsDiskNearTheLiveSet` | segment retirement and moves, tombstone purge across a restart |
 | `ObjectStoreCluster.RfTwoOnThreeNodesSurvivesALossAndAReplacement` | rf = 2 on three real nodes: exactly two copies, reads from any node, a node killed and repaired, a replacement joining with objects moved and old copies dropped, no acknowledged write lost; the fence across nodes |
 | `ObjectStoreSoak.*` | the soak above |

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -38,14 +39,16 @@
 //     sees the old version until the commit is in the directory, then the new
 //     one; a crash before the commit frame is on disk leaves the old version.
 //   * DURABILITY. A write is acknowledged after write(2); `sync` (the barrier)
-//     fsyncs every segment written since the last one. A roll fsyncs the segment
-//     rolled past before the next one takes its first byte (#1235), and a dead
-//     segment's file is removed only after the frames that replaced it are
+//     fsyncs every segment holding bytes no completed fsync covered, waiting
+//     for any fsync of it already running. A roll fsyncs the segment rolled
+//     past before the next one takes its first byte (#1235), and a dead
+//     segment's file is unlinked only after the frames that replaced it are
 //     fsynced, so only the newest segment can hold bytes never fsynced. Startup
 //     verifies the payload checksums of the last two (logs from before #1235 can
-//     have two) and truncates the last at the first torn frame. Together: after
-//     any crash, power loss included, what replays is a PREFIX of the log, the
-//     frames in the order they were appended.
+//     have two) and truncates the log at the first torn frame in them. Together:
+//     after any crash, power loss included, what replays is a PREFIX of the log,
+//     the frames in the order they were appended. A failed fsync FAILS the log:
+//     writes and barriers are refused until maintain() reopens it from disk.
 //   * COMPACTION. `compact_step` retires dead segments oldest-first and moves the
 //     live frames of mostly-dead oldest segments forward, within a byte budget a
 //     call, taking the lock once per batch.
@@ -118,6 +121,14 @@ public:
     // durable. Set it before `open`.
     using SyncObserver = std::function<void(std::uint32_t segment, std::uint64_t durable_bytes)>;
     void set_sync_observer(SyncObserver observer) { sync_observer_ = std::move(observer); }
+    // An injection point for fault tests: performs every fsync, of a segment or
+    // of a directory, in place of ::fsync (same return convention). Set it
+    // before `open`.
+    using Fsync = std::function<int(const std::filesystem::path& file, int descriptor)>;
+    void set_fsync(Fsync fsync) { fsync_ = std::move(fsync); }
+    // An fsync failed and the log has not been reopened yet: writes answer Io,
+    // durable writes and barriers fail.
+    bool failed() const { return failed_.load(); }
     ~ObjectLog();
 
     ObjectLog(const ObjectLog&) = delete;
@@ -255,8 +266,12 @@ private:
     // With `lock`, the directory is unlocked for the disk work (the caller holds
     // write_mutex_, so no writer moves meanwhile).
     bool roll_locked(std::unique_lock<std::shared_mutex>* lock = nullptr);
-    // fsync one segment and clear its dirty mark (restored on failure).
+    // fsync one segment unless a completed fsync already covers its bytes;
+    // waits for an fsync of it already running. A failure fails the log.
     bool flush(Segment& segment);
+    bool sync_directory(const std::filesystem::path& directory);
+    int fsync_descriptor(const std::filesystem::path& path, int descriptor);
+    void fail(const std::filesystem::path& path);
     // Append a frame at the active segment's end (rolling it when full). Called
     // holding write_mutex_ and `lock`; releases `lock` for the write itself.
     bool append_locked(std::unique_lock<std::shared_mutex>& lock, const Frame& frame,
@@ -302,6 +317,8 @@ private:
     std::uint64_t compaction_offset_ = 0;
     std::mutex maintenance_;  // one maintain() at a time
     SyncObserver sync_observer_;
+    Fsync fsync_;
+    std::atomic<bool> failed_{false};
 };
 
 }  // namespace zetta::data
