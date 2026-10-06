@@ -438,6 +438,18 @@ std::optional<ObjectLease> object_lease_from_json(const std::string& bucket,
 
 // ---- the store -------------------------------------------------------------------------
 
+namespace {
+
+// What a bucket whose log has failed an fsync answers (#1235): not "absent",
+// not empty, but unavailable until the log is reopened from disk.
+ObjectOutcome failed_log(const std::string& bucket, const std::string& node) {
+    return failure(ObjectStatus::Unavailable,
+                   "the object log of bucket '" + bucket + "' on " + node +
+                       " failed an fsync and is being reopened from disk; retry");
+}
+
+}  // namespace
+
 // One bucket's node-local state.
 struct ObjectStore::Bucket {
     std::unique_ptr<ObjectLog> log;
@@ -648,6 +660,7 @@ bool ObjectStore::open(std::string* reason) {
         if (!entry.is_directory() || !valid_bucket_name(name)) continue;
         auto state = std::make_unique<Bucket>();
         state->log = std::make_unique<ObjectLog>(entry.path(), kTombstoneGraceMs, segment_bytes_);
+        if (fsync_) state->log->set_fsync(fsync_);
         if (!state->log->open(reason)) return false;
         const std::unique_lock lock(buckets_mutex_);
         buckets_[name] = std::move(state);
@@ -683,6 +696,7 @@ ObjectStore::Bucket* ObjectStore::bucket_state(const std::string& name, bool cre
     state->log = std::make_unique<ObjectLog>(
         directory_.empty() ? std::filesystem::path{} : directory_ / name, kTombstoneGraceMs,
         segment_bytes_);
+    if (fsync_) state->log->set_fsync(fsync_);
     std::string reason;
     if (!state->log->open(&reason)) {
         std::fprintf(stderr, "zetta: cannot open object bucket %s: %s\n", name.c_str(),
@@ -1070,6 +1084,7 @@ ObjectOutcome ObjectStore::decide(const Mutation& mutation, std::string_view byt
         return failure(ObjectStatus::Unavailable,
                        "the bucket's object log could not be opened on " + node_id_);
     }
+    if (state->log->failed()) return failed_log(mutation.bucket, node_id_);
     const std::shared_lock fenced(state->fence_mutex);
     // The fence: once the bucket has had a holder, every mutation carries the
     // current fence. Read through lease() so a restart sees the catalogue's.
@@ -1172,6 +1187,7 @@ ObjectOutcome ObjectStore::install(const Mutation& mutation, std::string_view by
         return failure(ObjectStatus::Unavailable,
                        "the bucket's object log could not be opened on " + node_id_);
     }
+    if (state->log->failed()) return failed_log(mutation.bucket, node_id_);
     const bool sync = mutation.options.durable;
     ObjectLog::Written written;
     switch (mutation.op) {
@@ -1365,6 +1381,7 @@ ObjectOutcome ObjectStore::begin_upload(const std::string& bucket, const std::st
         return failure(ObjectStatus::Unavailable,
                        "the bucket's object log could not be opened on " + node_id_);
     }
+    if (state->log->failed()) return failed_log(bucket, node_id_);
     // Early refusals, before any byte moves: a stale fence and a body the quota
     // cannot take. The primary checks both again at the commit.
     if (const std::optional<ObjectLease> held = lease(bucket); held && held->fence != 0) {
@@ -1523,7 +1540,13 @@ ObjectOutcome ObjectStore::open_read(const std::string& bucket, const std::strin
     };
     const std::vector<std::string> owners = owners_of(bucket, key);
     const bool owner = std::ranges::find(owners, node_id_) != owners.end();
-    if (Bucket* state = bucket_state(bucket, /*create=*/false); state && owner) {
+    Bucket* local = bucket_state(bucket, /*create=*/false);
+    if (local && owner && local->log->failed()) {
+        // This copy cannot be trusted; another owner's can.
+        if (owners.size() == 1) return failed_log(bucket, node_id_);
+        local = nullptr;
+    }
+    if (Bucket* state = local; state && owner) {
         ObjectLog::ReadSnapshot snapshot;
         switch (state->log->snapshot(key, offset, length, snapshot)) {
             case ObjectLog::ReadStatus::Ok: {
@@ -1617,6 +1640,10 @@ ObjectPage ObjectStore::list(const std::string& bucket, const std::string& prefi
         if (!horizon || last < *horizon) horizon = last;
     };
     if (Bucket* state = bucket_state(bucket, /*create=*/false)) {
+        if (state->log->failed()) {
+            const ObjectOutcome failed = failed_log(bucket, node_id_);
+            return fail(failed.status, failed.message, "");
+        }
         std::size_t count = 0;
         std::string last;
         state->log->list(
@@ -1713,6 +1740,12 @@ ObjectUsage ObjectStore::usage(const std::string& bucket) {
     usage.quota_bytes = definition->quota_bytes;
     const std::vector<std::string> peers = live_peers();
     Bucket* state = bucket_state(bucket, /*create=*/false);
+    if (state && state->log->failed()) {
+        const ObjectOutcome failed = failed_log(bucket, node_id_);
+        usage.status = failed.status;
+        usage.message = failed.message;
+        return usage;
+    }
     if (peers.empty()) {
         if (state) {
             usage.objects = state->log->object_count();
@@ -1769,11 +1802,30 @@ void ObjectStore::maintain(std::int64_t now) {
     }
 }
 
+std::vector<ObjectLogFailure> ObjectStore::failed_logs() const {
+    std::vector<ObjectLogFailure> failures;
+    const std::shared_lock lock(buckets_mutex_);
+    for (const auto& [name, state] : buckets_) {
+        const ObjectLog::Health health = state->log->health();
+        if (health.failed) failures.push_back({name, health.stopped, health.reopen_attempts});
+    }
+    return failures;
+}
+
+void ObjectStore::set_fsync(Fsync fsync) {
+    fsync_ = std::move(fsync);
+    const std::shared_lock lock(buckets_mutex_);
+    for (const auto& [name, state] : buckets_) state->log->set_fsync(fsync_);
+}
+
 ObjectStorageStats ObjectStore::storage_stats() const {
     ObjectStorageStats stats;
     const std::shared_lock lock(buckets_mutex_);
     stats.buckets = buckets_.size();
     for (const auto& [name, state] : buckets_) {
+        const ObjectLog::Health health = state->log->health();
+        if (health.failed) ++stats.failed_logs;
+        if (health.stopped) ++stats.stopped_logs;
         const ObjectLog::Stats log = state->log->stats();
         stats.objects += log.objects;
         stats.object_bytes += state->log->object_bytes();
@@ -1807,7 +1859,7 @@ std::size_t ObjectStore::pull_from(const std::string& peer) {
     for (const auto& [bucket, summary] : theirs->items()) {
         if (!valid_bucket_name(bucket) || !summary.is_object()) continue;
         Bucket* state = bucket_state(bucket, /*create=*/true);
-        if (!state) continue;
+        if (!state || state->log->failed()) continue;
         if (const auto held = summary.find("held"); held != summary.end() && held->is_number_unsigned()) {
             const std::lock_guard lock(state->peers_mutex);
             state->peer_held[peer] = held->get<std::uint64_t>();
@@ -1926,6 +1978,7 @@ std::size_t ObjectStore::evict_unowned() {
     }
     std::size_t evicted = 0;
     for (const auto& [bucket, state] : states) {
+        if (state->log->failed()) continue;
         // The copies this node holds but no longer owns, grouped by owner set.
         std::map<std::vector<std::string>, std::vector<ObjectVersion>> unowned;
         const Placement view = placement(bucket);
@@ -2037,6 +2090,7 @@ zetta::cluster::SignalResponse ObjectStore::on_request(const zetta::cluster::Sig
             for (const auto& [name, state] : buckets_) states.emplace_back(name, state.get());
         }
         for (const auto& [name, state] : states) {
+            if (state->log->failed()) continue;  // it serves nothing until reopened
             const Placement view = placement(name);
             const auto digests = state->log->digests([&](const std::string& key) {
                 return view.owns(requester, name, key);
@@ -2086,6 +2140,9 @@ zetta::cluster::SignalResponse ObjectStore::on_request(const zetta::cluster::Sig
         if (method == kBarrierMethod || method == kAbortMethod) return answer({{"status", "ok"}});
         if (method == kReadMethod) return answer({{"status", "not_found"}});
         return refuse("no bucket '" + bucket + "' on this node");
+    }
+    if (state->log->failed() && method != kAbortMethod) {
+        return refuse("the object log of bucket '" + bucket + "' failed an fsync; retry");
     }
     if (method == kStageMethod) {
         const std::string key = header.value("key", std::string());
