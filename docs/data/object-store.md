@@ -124,10 +124,11 @@ an earlier one, whatever the keys are. The prefix always reaches the last write 
 - **A roll fsyncs the segment it leaves** before the next segment takes its first byte, and then
   fsyncs the bucket's directory so the new file survives too. Only the newest segment can then
   hold bytes never fsynced. A roll happens once per 64 MiB, so the cost is one fsync per 64 MiB,
-  and writers wait for it only at the roll. Measured with 1 GiB of 256 KiB appends, three runs
-  each, the throughput was 1,010 to 1,280 MiB/s with the rule and 890 to 1,340 MiB/s without it.
-  The append p50 was 0.14 ms in both, so the difference is within the noise. The soak, the push
-  budget and the read budgets did not move either.
+  and writers wait for it only at the roll. Measured on an Apple M3 Max with 1 GiB of 256 KiB
+  appends, six runs of each build interleaved, the throughput was 864 to 1,312 MiB/s with these
+  rules and 935 to 1,193 MiB/s without them. The append p50 was 0.14 ms in both, so the
+  difference is within the noise. The soak (1,063 MiB/s with them, 978 without), the push budget
+  and the read budgets did not move either.
 - **Startup ends the log at its first torn frame.** Startup verifies the frame checksums of the
   last two segments, truncates the newest at its first torn frame, and fsyncs both, because a
   process that crashed can leave bytes in the page cache that a later power loss would drop. It
