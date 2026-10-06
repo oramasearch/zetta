@@ -52,6 +52,7 @@
 #include "zetta/ml/streaming.hpp"
 #include "zetta/ml/score_table.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
+#include "zetta/data/object_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/pipeline/deployment.hpp"
@@ -118,7 +119,7 @@ const nlohmann::json& server_info_output_schema() {
         {"type", "object"},
         {"required",
          {"version", "node_id", "cluster_members", "databases", "projects",
-          "runs", "models", "jobs"}},
+          "runs", "models", "jobs", "failed_object_logs"}},
         {"additionalProperties", false},
         {"properties",
          {{"version", {{"type", "string"}}},
@@ -128,7 +129,20 @@ const nlohmann::json& server_info_output_schema() {
           {"projects", {{"type", "integer"}}},
           {"runs", {{"type", "integer"}}},
           {"models", {{"type", "integer"}}},
-          {"jobs", {{"type", "integer"}}}}}};
+          {"jobs", {{"type", "integer"}}},
+          {"failed_object_logs",
+           {{"type", "array"},
+            {"description",
+             "buckets whose object log failed an fsync on this node and serve nothing until it "
+             "is reopened from disk; `stopped`: reopening gave up, restart the node"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"bucket", "stopped", "reopen_attempts"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"bucket", {{"type", "string"}}},
+                {"stopped", {{"type", "boolean"}}},
+                {"reopen_attempts", {{"type", "integer"}, {"minimum", 0}}}}}}}}}}}};
     return schema;
 }
 
@@ -142,6 +156,15 @@ ApiResult handle_server_info(const nlohmann::json&, ApiContext& context) {
     output["runs"] = context.node.runs().size();
     output["models"] = context.node.models().size();
     output["jobs"] = context.node.jobs().size();
+    nlohmann::json failed_object_logs = nlohmann::json::array();
+    if (auto* objects = context.node.object_store()) {
+        for (const auto& failure : objects->failed_logs()) {
+            failed_object_logs.push_back({{"bucket", failure.bucket},
+                                          {"stopped", failure.stopped},
+                                          {"reopen_attempts", failure.reopen_attempts}});
+        }
+    }
+    output["failed_object_logs"] = std::move(failed_object_logs);
     return ApiResult::success(std::move(output));
 }
 

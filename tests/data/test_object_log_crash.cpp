@@ -23,6 +23,7 @@
 #include <fstream>
 #include <functional>
 #include <future>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -509,6 +510,8 @@ TEST(ObjectLogCrash, ALogFromBeforeTheFixEndsAtItsFirstTornFrame) {
         }
         log.set_sync_observer(nullptr);
     }
+    // A build from before #1235 wrote no format marker.
+    ASSERT_TRUE(std::filesystem::remove(live / "format"));
     const std::vector<std::uint32_t> ids = segment_ids(live);
     ASSERT_GE(ids.size(), 3u);
     // The old build never fsynced the last two; only the second-to-last loses
@@ -685,12 +688,15 @@ TEST(ObjectLogCrash, AFailedFsyncFailsTheLogUntilItIsReopened) {
         std::string reason;
         ASSERT_TRUE(log.open(&reason)) << reason;
         std::uint64_t fresh = 0;
-        ASSERT_EQ(log.put("before", "kept", ++fresh, false, false).result, ObjectLog::Result::Ok);
+        // Durable, so the reopen (which cuts back to the last fsync) keeps it.
+        ASSERT_TRUE(log.put("before", "kept", ++fresh, false, true).durable);
         fault = true;
         if (how == "durable write") {
             const auto written = log.put("durable", "maybe lost", ++fresh, false, true);
             EXPECT_FALSE(written.durable) << "a durable write whose fsync failed must not be acknowledged";
         } else if (how == "barrier") {
+            ASSERT_EQ(log.put("unsynced", "for the barrier", ++fresh, false, false).result,
+                      ObjectLog::Result::Ok);
             EXPECT_FALSE(log.sync());
         } else {
             ObjectLog::Result result = ObjectLog::Result::Ok;
@@ -713,4 +719,185 @@ TEST(ObjectLogCrash, AFailedFsyncFailsTheLogUntilItIsReopened) {
         EXPECT_TRUE(log.sync());
         EXPECT_EQ(recover_copy(live).at("after"), "accepted");
     }
+}
+
+namespace {
+
+std::map<std::string, std::string> file_contents(const std::filesystem::path& directory) {
+    std::map<std::string, std::string> files;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        std::ifstream in(entry.path(), std::ios::binary);
+        files[entry.path().filename().string()] =
+            std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    return files;
+}
+
+// An fsync that fails with EIO while `failing` is set.
+struct Faults {
+    std::atomic<bool> failing{false};
+    std::atomic<int> failures{0};
+    void install(ObjectLog& log) {
+        log.set_fsync([this](const std::filesystem::path&, int descriptor) {
+            if (failing.load()) {
+                ++failures;
+                errno = EIO;
+                return -1;
+            }
+            return ::fsync(descriptor);
+        });
+    }
+};
+
+}  // namespace
+
+// A log written under #1235 carries the format marker, so every segment before
+// the last was fsynced before the next took a byte. A torn frame there is
+// damage to durable data: open refuses with `corrupt` and changes no file.
+TEST(ObjectLogCrash, AMarkedLogWithATornSegmentBeforeTheLastRefusesToOpen) {
+    const TempDir dir;
+    const std::filesystem::path live = dir.path() / "bucket";
+    {
+        ObjectLog log(live, kGraceMs, kSegmentBytes);
+        std::string reason;
+        ASSERT_TRUE(log.open(&reason)) << reason;
+        const std::vector<Write> writes = mixed_writes(43, 60);
+        const std::vector<State> states = prefixes(writes);
+        std::uint64_t fresh = 0;
+        for (std::size_t index = 0; index < writes.size(); ++index) {
+            apply(log, writes[index], states[index], false, fresh);
+        }
+    }
+    ASSERT_TRUE(std::filesystem::exists(live / "format"));
+    const std::vector<std::uint32_t> ids = segment_ids(live);
+    ASSERT_GE(ids.size(), 3u);
+    {
+        // Damage the middle of the second-to-last segment.
+        const std::filesystem::path damaged = segment_file(live, ids[ids.size() - 2]);
+        std::fstream out(damaged, std::ios::binary | std::ios::in | std::ios::out);
+        out.seekp(static_cast<std::streamoff>(std::filesystem::file_size(damaged) / 2));
+        const std::string zeros(64, '\0');
+        out.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    }
+    const auto before = file_contents(live);
+    ObjectLog log(live, kGraceMs, kSegmentBytes);
+    std::string reason;
+    EXPECT_FALSE(log.open(&reason));
+    EXPECT_TRUE(reason.starts_with("corrupt:")) << reason;
+    EXPECT_EQ(file_contents(live), before) << "a corrupt log's files must be left as they are";
+}
+
+// After an fsync error the failed pages may sit in the page cache, clean but
+// never written. The reopen cuts the segment back to what its last completed
+// fsync covered, so it does not replay them, and a later barrier cannot claim
+// them as durable.
+TEST(ObjectLogCrash, AReopenCutsTheFailedSegmentBackToItsLastFsync) {
+    const TempDir dir;
+    const std::filesystem::path live = dir.path() / "bucket";
+    ObjectLog log(live, kGraceMs, kSegmentBytes);
+    Synced synced;
+    synced.observe(log);
+    Faults faults;
+    faults.install(log);
+    std::string reason;
+    ASSERT_TRUE(log.open(&reason)) << reason;
+    std::uint64_t fresh = 0;
+    ASSERT_TRUE(log.put("a", "synced", ++fresh, false, true).durable);
+    ASSERT_EQ(log.put("b", "written, never synced", ++fresh, false, false).result, ObjectLog::Result::Ok);
+    faults.failing = true;
+    EXPECT_FALSE(log.put("c", "its fsync failed", ++fresh, false, true).durable);
+    ASSERT_TRUE(log.failed());
+    // The page cache still holds b and c: the files do.
+    ASSERT_EQ(recover_copy(live).count("c"), 1u);
+    faults.failing = false;
+    log.maintain(now_ms());
+    ASSERT_FALSE(log.failed());
+    EXPECT_TRUE(log.stat("a").has_value());
+    EXPECT_FALSE(log.stat("b").has_value()) << "the reopened log must end at the last fsync";
+    EXPECT_FALSE(log.stat("c").has_value()) << "the reopened log must end at the last fsync";
+    ASSERT_TRUE(log.sync());
+    const State recovered = recover_copy(live);
+    EXPECT_EQ(recovered, (State{{"a", "synced"}})) << "a barrier claimed bytes the failed fsync dropped";
+    // And the log goes on from there.
+    ASSERT_TRUE(log.put("d", "after", ++fresh, false, true).durable);
+    EXPECT_EQ(recover_copy(live), (State{{"a", "synced"}, {"d", "after"}}));
+}
+
+// A reopen that fails part way changes nothing: the old index stays (the store
+// serves none of it while the log has failed), and the next attempt can still
+// succeed.
+TEST(ObjectLogCrash, AFailedReopenLeavesTheIndexAsItWas) {
+    const TempDir dir;
+    const std::filesystem::path live = dir.path() / "bucket";
+    ObjectLog log(live, kGraceMs, kSegmentBytes);
+    Faults faults;
+    faults.install(log);
+    std::string reason;
+    ASSERT_TRUE(log.open(&reason)) << reason;
+    std::uint64_t fresh = 0;
+    for (int index = 0; index < 20; ++index) {
+        ASSERT_TRUE(log.put("k" + std::to_string(index), value_of(index, 400), ++fresh, false, true).durable);
+    }
+    faults.failing = true;
+    EXPECT_FALSE(log.put("x", "y", ++fresh, false, true).durable);
+    ASSERT_TRUE(log.failed());
+    const std::uint64_t objects = log.object_count();
+    // The reopen reads every segment, then its startup fsync fails.
+    const int failures = faults.failures.load();
+    log.maintain(now_ms());
+    EXPECT_GT(faults.failures.load(), failures) << "the reopen should have been attempted";
+    ASSERT_TRUE(log.failed());
+    EXPECT_EQ(log.object_count(), objects) << "a failed reopen must not empty the index";
+    EXPECT_TRUE(log.stat("k3").has_value());
+    faults.failing = false;
+    log.maintain(log.health().next_reopen_ms);
+    ASSERT_FALSE(log.failed());
+    // The write whose fsync failed is cut away; the rest is as it was.
+    EXPECT_EQ(log.object_count(), objects - 1);
+    EXPECT_FALSE(log.stat("x").has_value());
+}
+
+// Persistent EIO: reopen attempts back off exponentially from 100 ms to a 30 s
+// cap, and after kReopenAttempts they stop; the log stays failed (health says
+// `stopped`) until the node restarts.
+TEST(ObjectLogCrash, ReopeningBacksOffAndStopsAfterItsBound) {
+    const TempDir dir;
+    const std::filesystem::path live = dir.path() / "bucket";
+    ObjectLog log(live, kGraceMs, kSegmentBytes);
+    Faults faults;
+    faults.install(log);
+    std::string reason;
+    ASSERT_TRUE(log.open(&reason)) << reason;
+    std::uint64_t fresh = 0;
+    ASSERT_TRUE(log.put("a", "b", ++fresh, false, true).durable);
+    faults.failing = true;
+    ASSERT_FALSE(log.put("c", "d", ++fresh, false, true).durable);
+    ASSERT_TRUE(log.failed());
+
+    std::vector<std::int64_t> attempts;  // when each attempt ran
+    std::uint32_t seen = 0;
+    const std::int64_t start = 1'000'000;
+    for (std::int64_t now = start; now < start + 10ll * 60 * 1000; now += 10) {
+        log.maintain(now);
+        const ObjectLog::Health health = log.health();
+        if (health.reopen_attempts != seen) {
+            seen = health.reopen_attempts;
+            attempts.push_back(now);
+        }
+    }
+    ASSERT_EQ(attempts.size(), ObjectLog::kReopenAttempts);
+    std::int64_t expected = 100;
+    for (std::size_t index = 1; index < attempts.size(); ++index) {
+        EXPECT_EQ(attempts[index] - attempts[index - 1], expected) << "attempt " << index;
+        expected = std::min<std::int64_t>(expected * 2, 30'000);
+    }
+    const ObjectLog::Health health = log.health();
+    EXPECT_TRUE(health.failed);
+    EXPECT_TRUE(health.stopped);
+    // Even with the disk healthy again, it stays failed until a restart.
+    faults.failing = false;
+    log.maintain(start + 24ll * 60 * 60 * 1000);
+    EXPECT_TRUE(log.failed());
+    EXPECT_EQ(log.health().reopen_attempts, ObjectLog::kReopenAttempts);
+    EXPECT_EQ(log.put("e", "f", ++fresh, false, false).result, ObjectLog::Result::Io);
 }

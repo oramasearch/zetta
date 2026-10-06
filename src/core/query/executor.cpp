@@ -36,6 +36,7 @@
 #include "zetta/observability/activity.hpp"
 #include "zetta/observability/crash.hpp"
 #include "zetta/pipeline/deployment.hpp"
+#include "zetta/data/object_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/distributed_select.hpp"
 #include "zetta/query/predicate.hpp"
@@ -1816,6 +1817,17 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
     row["audit_protocol_version"] = zetta::governance::kAuditProtocolVersion;
     row["audit_watermarks"] = node.audit_watermarks().dump();
     row["audit_memory_bytes"] = node.audit_memory_bytes();
+    // Object logs that failed an fsync (#1235): reopening, or stopped until a restart.
+    std::uint64_t object_logs_failed = 0;
+    std::uint64_t object_logs_stopped = 0;
+    if (auto* objects = node.object_store()) {
+        for (const auto& failure : objects->failed_logs()) {
+            ++object_logs_failed;
+            if (failure.stopped) ++object_logs_stopped;
+        }
+    }
+    row["object_logs_failed"] = object_logs_failed;
+    row["object_logs_stopped"] = object_logs_stopped;
     if (const auto* pubsub = node.pubsub()) {
         row["pubsub_dispatch_mode"] =
             std::string(zetta::pubsub::to_string(pubsub->dispatch_mode()));

@@ -129,12 +129,18 @@ an earlier one, whatever the keys are. The prefix always reaches the last write 
   The append p50 was 0.14 ms in both, so the difference is within the noise. The soak, the push
   budget and the read budgets did not move either.
 - **Startup ends the log at its first torn frame.** Startup verifies the frame checksums of the
-  last two segments. Only the newest can be torn; a log written before #1235 can hold unsynced
-  bytes in two. The first torn frame in them is where the log ends: that segment is truncated
-  there and, if it is the second-to-last, the last segment is deleted. Nothing after a tear
-  survives, whatever pages the disk kept. Startup also fsyncs those two segments, because a
+  last two segments, truncates the newest at its first torn frame, and fsyncs both, because a
   process that crashed can leave bytes in the page cache that a later power loss would drop. It
-  also fsyncs the parent of every directory it creates.
+  also fsyncs the parent of every directory it creates. A torn frame in the second-to-last
+  segment depends on the log's age:
+  - **A log written under these rules** carries a `format` file in the bucket's directory,
+    written (and fsynced) at its first roll under them. Its second-to-last segment was fsynced
+    before the newest took a byte, so a tear there is damage to durable data, and the newest
+    holds acknowledged writes. Startup refuses with `corrupt`, changes no file, and the node does
+    not start (see [Repairing a corrupt log](#repairing-a-corrupt-log)).
+  - **A log from before #1235** has no `format` file and can hold unsynced bytes in its last two
+    segments. Its first torn frame ends the log: that segment is truncated there and the newest
+    deleted, so nothing after a tear survives, whatever pages the disk kept.
 - **Compaction deletes a dead segment only after an fsync** of the active segment, which holds
   the frames that replaced it. Without it, a power loss could lose the old frames and the newer
   ones together. Dead segments are unlinked oldest first, and then the bucket's directory is
@@ -149,11 +155,25 @@ waits for that fsync. It then fsyncs again unless that fsync covered its bytes. 
 never answers before what it covers is on disk.
 
 **A failed fsync fails the log.** After an fsync error, Linux can drop the dirty pages and mark
-them clean, so a retried fsync can succeed without them. The log therefore does not retry. It
-refuses every write (`Io`, answered `503 busy`), fails durable writes and barriers, and on
-its next maintenance step reopens itself from disk the way a restart would: replay, truncation at
-the first torn frame, and the startup fsyncs. Uploads in progress are dropped. This is the stance
-PostgreSQL took after the same finding.
+them clean, so a retried fsync can succeed without them. The log therefore does not retry:
+
+- **It serves nothing.** Every write, durable write and barrier on the bucket fails, and so does
+  every read, listing and usage count this node would answer from it: they all answer
+  `503 busy`, never `404`, an empty list or zero. With `rf > 1` a read goes to another owner
+  instead. Anti-entropy neither pulls into nor offers from the failed log.
+- **It reopens from disk, cut back to the last fsync.** The failed fsync's pages may be in the
+  page cache and nowhere on disk, and replay would read them back. So the reopen first truncates
+  the segment whose fsync failed to the bytes its last completed fsync covered, which also drops
+  those pages, and deletes any later segment. It then replays as a restart would. The new state
+  is built apart and swapped in only when it opened whole, so a reopen that fails part way
+  changes nothing. Uploads in progress are dropped.
+- **It backs off, then stops.** Attempts run on the maintenance tick, 100 ms after the first
+  failed one, doubling to at most 30 s. After 12 attempts (about two minutes) the log stops trying
+  and stays failed until the node restarts. `server_info.failed_object_logs` names each failed
+  bucket with its attempts and whether it has `stopped`, and `system.node_metrics` counts them in
+  `object_logs_failed` and `object_logs_stopped`.
+
+This is the stance PostgreSQL took after the same finding.
 
 **What `fsync` reaches.** On Linux (every deployment), `fsync` flushes the device's write cache
 too, so an fsynced byte survives a power loss of the disk. On macOS it does not (`F_FULLFSYNC`
@@ -168,6 +188,25 @@ order. This holds even at `rf = 1` on several nodes, because the keys are spread
 guarantee across keys therefore needs a one-node cluster, which every workspace is today. On a
 larger cluster, a caller that needs that order must enforce it itself. For example, it can issue
 a write only once the write before it is durable.
+
+### Repairing a corrupt log
+
+Startup refuses a bucket whose second-to-last segment has a torn frame when the bucket has a
+`format` file. The message names the segment, the byte offset of the first unreadable frame, and
+how many later segments hold acknowledged writes. Nothing was changed on disk. To repair it:
+
+1. Stop the node and copy `<data_dir>/objects/<bucket>/` aside, so every choice stays reversible.
+2. On a multi-node cluster with `rf > 1`, the other owners hold the objects. Move the bucket's
+   directory out of `<data_dir>/objects/` and start the node: it starts with an empty copy, and
+   anti-entropy pulls back what this node owns.
+3. On one node, or with `rf = 1`, the copy is the only one. Either restore the volume from its
+   last snapshot (orama-operator#260), or accept losing everything from the tear on. To accept
+   the loss, truncate the named segment to the reported offset (`truncate -s <offset> <segment>`),
+   move every later segment out of the directory, and start the node. The bucket then holds a
+   prefix of its log that ends before the damage. Writes acknowledged after it are lost, and the
+   caller (lake) must reconcile against its own record.
+4. Check the disk (`dmesg`, SMART) before trusting the volume again: a tear in a segment that was
+   fsynced means the device lost or corrupted data it had acknowledged.
 
 ## Placement and replication
 
@@ -334,7 +373,8 @@ catalogue did not grow. Two changes the soak forced:
 | `ObjectStoreFixture.FencingRefusesAStaleHolderAfterATakeover` | fences, held, release, renewal keeping the lease, expiry, the fence across a restart |
 | `ObjectStoreFixture.ObjectsSurviveARestartAndStayOutOfTheCatalogue` | restart, appends continuing a version, nothing in the catalogue |
 | `ObjectStoreFixture.ATornTailLeavesAppendsWholeUpToTheBarrierAndPutsNeverPartial` | 28 torn tails (some with garbage): appends absent or whole and never short of the barrier; a put old or new, never partial |
-| `ObjectLogCrash.*` (`tests/data/test_object_log_crash.cpp`) | the prefix guarantee and the fsync discipline. The log reports each fsync to a sync observer, and a copy of its files loses the bytes no fsync covered: in the newest segment alone, in each older segment alone, or in all of them. The loss is cut off, zeroed in place, or decided per 512-byte block at random (a middle block lost and a later one kept, the size cut or kept). Replay must give the state after some prefix of the writes (puts, removes, appends, and staged puts with their commit), at least up to the last durable write or barrier. The cases: ten or more rolls; a writer with barriers running beside it; a process crash, a restart and more rolls before the power loss; a log from before #1235 torn in its second-to-last segment; compaction deleting a segment whose replacing frames were unsynced, and the directory fsync after the unlink; the directory fsyncs at `open`. An injected fsync checks two more rules. A barrier waits for an fsync already running in a durable write, in compaction and in a roll. A failed fsync fails the log, refusing writes and barriers, until maintenance reopens it |
+| `ObjectLogCrash.*` (`tests/data/test_object_log_crash.cpp`) | the prefix guarantee and the fsync discipline. The log reports each fsync to a sync observer, and a copy of its files loses the bytes no fsync covered: in the newest segment alone, in each older segment alone, or in all of them. The loss is cut off, zeroed in place, or decided per 512-byte block at random (a middle block lost and a later one kept, the size cut or kept). Replay must give the state after some prefix of the writes (puts, removes, appends, and staged puts with their commit), at least up to the last durable write or barrier. The cases: ten or more rolls; a writer with barriers running beside it; a process crash, a restart and more rolls before the power loss; a log from before #1235 torn in its second-to-last segment, and a marked log torn there refusing to open with `corrupt` and its files unchanged; compaction deleting a segment whose replacing frames were unsynced, and the directory fsync after the unlink; the directory fsyncs at `open`. An injected fsync checks the rest. A barrier waits for an fsync already running in a durable write, in compaction and in a roll. A failed fsync fails the log, refusing writes and barriers, until maintenance reopens it. The reopen cuts the failed segment back to its last fsync, so neither the reopened log nor a later barrier has the dropped writes. A reopen failing part way leaves the index as it was. Reopening backs off from 100 ms to 30 s and stops after 12 attempts |
+| `ObjectStoreFixture.AFailedLogAnswersUnavailableUntilItIsReopened` | a bucket whose log failed an fsync answers reads, listings, usage, barriers and writes `Unavailable` (not absent, empty or zero), also after a reopen fails part way; `failed_logs()` and the storage stats report it; the next reopen restores it |
 | `ObjectStoreFixture.CompactionKeepsDiskNearTheLiveSet` | segment retirement and moves, tombstone purge across a restart |
 | `ObjectStoreCluster.RfTwoOnThreeNodesSurvivesALossAndAReplacement` | rf = 2 on three real nodes: exactly two copies, reads from any node, a node killed and repaired, a replacement joining with objects moved and old copies dropped, no acknowledged write lost; the fence across nodes |
 | `ObjectStoreSoak.*` | the soak above |

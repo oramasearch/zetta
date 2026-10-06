@@ -106,6 +106,14 @@ std::int64_t wall_ms() {
         .count();
 }
 
+// The format marker (#1235): present once the log has rolled under the rule
+// that fsyncs a segment before the next one takes a byte. With it, a torn frame
+// in any segment but the last is corruption, not an unsynced tail.
+constexpr const char* kFormatFile = "format";
+constexpr std::string_view kFormatContent = "zetta-object-log 2: a roll fsyncs the segment it leaves\n";
+constexpr std::int64_t kReopenFirstDelayMs = 100;
+constexpr std::int64_t kReopenMaxDelayMs = 30'000;
+
 std::filesystem::path segment_path(const std::filesystem::path& directory, std::uint32_t id) {
     char name[32];
     std::snprintf(name, sizeof(name), "segment-%08u.log", id);
@@ -321,11 +329,20 @@ int ObjectLog::fsync_descriptor(const std::filesystem::path& path, int descripto
     return fsync_ ? fsync_(path, descriptor) : ::fsync(descriptor);
 }
 
-void ObjectLog::fail(const std::filesystem::path& path) {
+void ObjectLog::fail(const std::filesystem::path& path, std::optional<Rollback> rollback) {
     // After a failed fsync the kernel may have dropped the dirty pages and marked
     // them clean (Linux does), so a later fsync can succeed without them. Nothing
     // the log holds can be trusted to be durable any more: refuse every write
-    // and barrier until maintain() has reopened the log from disk.
+    // and barrier until maintain() has reopened the log from disk. The reopen
+    // first cuts the segment back to what its last completed fsync covered:
+    // its later pages may be in the page cache and nowhere else.
+    if (rollback) {
+        const std::lock_guard failing(failure_mutex_);
+        if (!rollback_ || rollback->segment < rollback_->segment ||
+            (rollback->segment == rollback_->segment && rollback->bytes < rollback_->bytes)) {
+            rollback_ = rollback;
+        }
+    }
     if (!failed_.exchange(true)) {
         std::fprintf(stderr, "zetta: object log %s: fsync of %s failed; refusing writes until it is reopened\n",
                      directory_.c_str(), path.c_str());
@@ -339,7 +356,7 @@ bool ObjectLog::flush(Segment& segment) {
     const std::uint64_t written = segment.size.load();
     if (segment.synced.load(std::memory_order_acquire) >= written) return true;
     if (fsync_descriptor(segment.path, segment.descriptor) != 0) {
-        fail(segment.path);
+        fail(segment.path, Rollback{segment.id, segment.synced.load(std::memory_order_acquire)});
         return false;
     }
     segment.synced.store(written, std::memory_order_release);
@@ -352,7 +369,7 @@ bool ObjectLog::sync_directory(const std::filesystem::path& directory) {
     if (descriptor < 0) return false;
     const bool synced = fsync_descriptor(directory, descriptor) == 0;
     ::close(descriptor);
-    if (!synced) fail(directory);
+    if (!synced) fail(directory, std::nullopt);
     return synced;
 }
 
@@ -371,6 +388,23 @@ bool ObjectLog::roll_locked(std::unique_lock<std::shared_mutex>* lock) {
     segment->id = active_ + 1;
     if (lock) lock->unlock();
     bool ok = !sealing || flush(*sealing);
+    if (ok && !directory_.empty() && !marked_) {
+        // Every segment before the new one is now fsynced: from here on a torn
+        // frame before the last segment is corruption (the directory fsync
+        // below makes the marker's entry durable with the new segment's).
+        const std::filesystem::path marker = directory_ / kFormatFile;
+        const int descriptor = ::open(marker.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        ok = descriptor >= 0 &&
+             ::write(descriptor, kFormatContent.data(), kFormatContent.size()) ==
+                 static_cast<ssize_t>(kFormatContent.size()) &&
+             fsync_descriptor(marker, descriptor) == 0;
+        if (descriptor >= 0) ::close(descriptor);
+        if (ok) {
+            marked_ = true;
+        } else {
+            fail(marker, std::nullopt);
+        }
+    }
     if (ok && !directory_.empty()) {
         segment->path = segment_path(directory_, segment->id);
         segment->descriptor = ::open(segment->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0600);
@@ -418,6 +452,7 @@ bool ObjectLog::open(std::string* reason) {
             return false;
         }
     }
+    marked_ = std::filesystem::exists(directory_ / kFormatFile, error);
     std::vector<std::uint32_t> ids;
     for (const auto& file : std::filesystem::directory_iterator(directory_, error)) {
         const std::string name = file.path().filename().string();
@@ -509,6 +544,21 @@ bool ObjectLog::open(std::string* reason) {
             offset += at.frame_length;
         }
         const bool cut = (torn || offset < file_size) && verify;
+        if (cut && marked_ && position + 1 < ids.size()) {
+            // This segment was fsynced before the next one took a byte, so the
+            // tear is damage to durable data, and the segments after it hold
+            // acknowledged writes. Change nothing; an operator decides
+            // (docs/data/object-store.md, "Repairing a corrupt log").
+            if (reason) {
+                *reason = "corrupt: " + segment->path.string() + " has an unreadable frame at byte " +
+                          std::to_string(offset) + " of " + std::to_string(file_size) +
+                          ", and it was fsynced before " + std::to_string(ids.size() - position - 1) +
+                          " later segment(s) were written; the files are left as they are";
+            }
+            std::fprintf(stderr, "zetta: object log %s: %s\n", directory_.c_str(),
+                         reason ? reason->c_str() : "corrupt");
+            return false;
+        }
         if (torn || offset < file_size) {
             std::fprintf(stderr, "zetta: object log %s: unreadable frame at %llu of %llu%s\n",
                          segment->path.c_str(), static_cast<unsigned long long>(offset),
@@ -1382,18 +1432,7 @@ void ObjectLog::maintain(std::int64_t now_ms) {
     const std::unique_lock maintenance(maintenance_, std::try_to_lock);
     if (!maintenance.owns_lock()) return;
     if (failed_.load()) {
-        // An fsync failed. Rebuild the log from what is on disk, as a restart
-        // would; writes and barriers fail until this succeeds.
-        const std::lock_guard writing(write_mutex_);
-        std::string reason;
-        if (open(&reason)) {
-            failed_.store(false);
-            std::fprintf(stderr, "zetta: object log %s: reopened after an fsync failure\n",
-                         directory_.c_str());
-        } else {
-            std::fprintf(stderr, "zetta: object log %s: reopen failed: %s\n", directory_.c_str(),
-                         reason.c_str());
-        }
+        reopen(now_ms);
         return;
     }
     // Tombstones past their grace go: a node away longer than the grace can bring
@@ -1409,6 +1448,97 @@ void ObjectLog::maintain(std::int64_t now_ms) {
     }
     for (const auto& [key, generation] : expired) purge(key, generation);
     compact_step();
+}
+
+ObjectLog::Health ObjectLog::health() const {
+    const std::lock_guard failing(failure_mutex_);
+    return Health{failed_.load(), reopen_stopped_, reopen_attempts_, next_reopen_ms_};
+}
+
+bool ObjectLog::reopen(std::int64_t now_ms) {
+    std::optional<Rollback> rollback;
+    {
+        const std::lock_guard failing(failure_mutex_);
+        if (reopen_stopped_ || now_ms < next_reopen_ms_) return false;
+        ++reopen_attempts_;
+        rollback = rollback_;
+    }
+    // A writer that passed its check before the failure finishes its write(2)
+    // here; every later one sees failed_ and writes nothing.
+    { const std::lock_guard fence(write_mutex_); }
+    std::string reason;
+    bool ok = true;
+    if (rollback && !directory_.empty()) {
+        // The failed fsync's pages may be in the page cache and not on disk:
+        // cut the segment back to what its last completed fsync covered (which
+        // drops those pages) and delete any segment after it.
+        std::error_code error;
+        const std::filesystem::path cut = segment_path(directory_, rollback->segment);
+        if (std::filesystem::exists(cut, error)) std::filesystem::resize_file(cut, rollback->bytes, error);
+        if (error) {
+            ok = false;
+            reason = "cannot truncate " + cut.string() + ": " + error.message();
+        }
+        for (const auto& file : std::filesystem::directory_iterator(directory_, error)) {
+            const std::string name = file.path().filename().string();
+            std::uint32_t id = 0;
+            if (ok && name.size() == 20 && name.starts_with("segment-") && name.ends_with(".log") &&
+                std::from_chars(name.data() + 8, name.data() + 16, id).ec == std::errc{} &&
+                id > rollback->segment) {
+                std::filesystem::remove(file.path(), error);
+            }
+        }
+    }
+    // Build the new state apart, without this log's locks; swap it in only
+    // when it opened whole, so a failed attempt leaves the old index (which the
+    // store does not serve while the log has failed).
+    auto fresh = std::make_unique<ObjectLog>(directory_, tombstone_grace_ms_, segment_bytes_);
+    fresh->fsync_ = fsync_;
+    fresh->sync_observer_ = sync_observer_;
+    if (ok) ok = fresh->open(&reason);
+    if (ok) {
+        const std::lock_guard writing(write_mutex_);
+        const std::unique_lock lock(mutex_);
+        std::swap(entries_, fresh->entries_);
+        std::swap(digests_, fresh->digests_);
+        std::swap(uploads_, fresh->uploads_);
+        std::swap(segments_, fresh->segments_);
+        std::swap(active_, fresh->active_);
+        std::swap(live_objects_, fresh->live_objects_);
+        std::swap(live_object_bytes_, fresh->live_object_bytes_);
+        std::swap(staged_bytes_, fresh->staged_bytes_);
+        std::swap(extent_count_, fresh->extent_count_);
+        std::swap(compaction_offset_, fresh->compaction_offset_);
+        std::swap(marked_, fresh->marked_);
+    }
+    // `fresh` now holds the old segments, or a failed attempt's: never flush them.
+    fresh->sync_observer_ = nullptr;
+    fresh->failed_.store(true);
+    const std::lock_guard failing(failure_mutex_);
+    if (ok) {
+        rollback_.reset();
+        reopen_attempts_ = 0;
+        reopen_delay_ms_ = 0;
+        next_reopen_ms_ = 0;
+        failed_.store(false);
+        std::fprintf(stderr, "zetta: object log %s: reopened from disk after an fsync failure\n",
+                     directory_.c_str());
+        return true;
+    }
+    reopen_delay_ms_ = reopen_delay_ms_ == 0 ? kReopenFirstDelayMs
+                                             : std::min(reopen_delay_ms_ * 2, kReopenMaxDelayMs);
+    next_reopen_ms_ = now_ms + reopen_delay_ms_;
+    if (reopen_attempts_ >= kReopenAttempts) {
+        reopen_stopped_ = true;
+        std::fprintf(stderr,
+                     "zetta: object log %s: reopen failed %u times (%s); giving up until the node "
+                     "is restarted\n",
+                     directory_.c_str(), reopen_attempts_, reason.c_str());
+    } else {
+        std::fprintf(stderr, "zetta: object log %s: reopen failed (%s); next attempt in %lld ms\n",
+                     directory_.c_str(), reason.c_str(), static_cast<long long>(reopen_delay_ms_));
+    }
+    return false;
 }
 
 // The extent or marker a frame at `at` backs, or none when the frame is dead.

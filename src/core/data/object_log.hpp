@@ -48,7 +48,10 @@
 //     have two) and truncates the log at the first torn frame in them. Together:
 //     after any crash, power loss included, what replays is a PREFIX of the log,
 //     the frames in the order they were appended. A failed fsync FAILS the log:
-//     writes and barriers are refused until maintain() reopens it from disk.
+//     writes and barriers are refused until maintain() reopens it from disk,
+//     cut back to what the last completed fsync covered, with backoff. A
+//     `format` file marks a log written under these rules; in it, a torn
+//     frame before the last segment is corruption and open() refuses.
 //   * COMPACTION. `compact_step` retires dead segments oldest-first and moves the
 //     live frames of mostly-dead oldest segments forward, within a byte budget a
 //     call, taking the lock once per batch.
@@ -127,8 +130,20 @@ public:
     using Fsync = std::function<int(const std::filesystem::path& file, int descriptor)>;
     void set_fsync(Fsync fsync) { fsync_ = std::move(fsync); }
     // An fsync failed and the log has not been reopened yet: writes answer Io,
-    // durable writes and barriers fail.
+    // durable writes and barriers fail, and the store serves no reads from it.
     bool failed() const { return failed_.load(); }
+
+    // maintain() reopens a failed log from disk, backing off from 100 ms to
+    // 30 s between attempts; after kReopenAttempts it stops, and the log stays
+    // failed until the node restarts.
+    static constexpr std::uint32_t kReopenAttempts = 12;
+    struct Health {
+        bool failed = false;
+        bool stopped = false;  // reopening gave up: an operator must restart
+        std::uint32_t reopen_attempts = 0;
+        std::int64_t next_reopen_ms = 0;
+    };
+    Health health() const;
     ~ObjectLog();
 
     ObjectLog(const ObjectLog&) = delete;
@@ -271,7 +286,16 @@ private:
     bool flush(Segment& segment);
     bool sync_directory(const std::filesystem::path& directory);
     int fsync_descriptor(const std::filesystem::path& path, int descriptor);
-    void fail(const std::filesystem::path& path);
+    // Where a reopen cuts the log back to: the segment whose fsync failed and
+    // the bytes its last completed fsync covered.
+    struct Rollback {
+        std::uint32_t segment = 0;
+        std::uint64_t bytes = 0;
+    };
+    void fail(const std::filesystem::path& path, std::optional<Rollback> rollback);
+    // One attempt to rebuild a failed log from disk (backed off); true when it
+    // reopened.
+    bool reopen(std::int64_t now_ms);
     // Append a frame at the active segment's end (rolling it when full). Called
     // holding write_mutex_ and `lock`; releases `lock` for the write itself.
     bool append_locked(std::unique_lock<std::shared_mutex>& lock, const Frame& frame,
@@ -319,6 +343,13 @@ private:
     SyncObserver sync_observer_;
     Fsync fsync_;
     std::atomic<bool> failed_{false};
+    bool marked_ = false;  // the format marker is present (guarded like segments_)
+    mutable std::mutex failure_mutex_;  // guards the reopen bookkeeping below
+    std::optional<Rollback> rollback_;
+    std::uint32_t reopen_attempts_ = 0;
+    std::int64_t reopen_delay_ms_ = 0;
+    std::int64_t next_reopen_ms_ = 0;
+    bool reopen_stopped_ = false;
 };
 
 }  // namespace zetta::data

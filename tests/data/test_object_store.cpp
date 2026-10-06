@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -18,6 +19,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <unistd.h>
 
 #include "temp_dir.hpp"
 #include "zetta/cluster/cluster.hpp"
@@ -459,6 +462,61 @@ TEST_F(ObjectStoreFixture, ATornTailLeavesAppendsWholeUpToTheBarrierAndPutsNever
         // The log keeps working after a torn tail.
         EXPECT_TRUE(after.put_range("store", "packs/1", pack.bytes.size(), "z", {}).ok());
     }
+}
+
+// A bucket whose log failed an fsync serves nothing from it (#1235): reads,
+// listings, usage and barriers answer Unavailable (503 busy), not "absent",
+// empty or zero, even while a reopen keeps failing part way. Health and the
+// storage stats report it, and once the disk works the next reopen restores it.
+TEST_F(ObjectStoreFixture, AFailedLogAnswersUnavailableUntilItIsReopened) {
+    std::atomic<bool> failing{false};
+    store->set_fsync([&](const std::filesystem::path&, int descriptor) {
+        if (failing.load()) {
+            errno = EIO;
+            return -1;
+        }
+        return ::fsync(descriptor);
+    });
+    ASSERT_TRUE(store->create_bucket(bucket("store")).ok());
+    ObjectWrite durable;
+    durable.durable = true;
+    for (int index = 0; index < 5; ++index) {
+        ASSERT_TRUE(store->put("store", "k" + std::to_string(index), "value", durable).ok());
+    }
+    failing = true;
+    const ObjectOutcome failed = store->put("store", "k9", "lost", durable);
+    EXPECT_EQ(failed.status, ObjectStatus::Unavailable);
+    const auto expect_unavailable = [&](const std::string& when) {
+        EXPECT_EQ(read(*store, "store", "k1").status, ObjectStatus::Unavailable) << when;
+        EXPECT_EQ(read(*store, "store", "absent").status, ObjectStatus::Unavailable) << when;
+        EXPECT_EQ(store->list("store", "", "", 100).status, ObjectStatus::Unavailable) << when;
+        EXPECT_EQ(store->usage("store").status, ObjectStatus::Unavailable) << when;
+        EXPECT_EQ(store->barrier("store").status, ObjectStatus::Unavailable) << when;
+        EXPECT_EQ(store->put("store", "k1", "new", {}).status, ObjectStatus::Unavailable) << when;
+        EXPECT_EQ(store->put("store", "k1", "new", {}, /*if_absent=*/true).status,
+                  ObjectStatus::Unavailable)
+            << when;
+        const auto failures = store->failed_logs();
+        ASSERT_EQ(failures.size(), 1u) << when;
+        EXPECT_EQ(failures.front().bucket, "store");
+        EXPECT_EQ(store->storage_stats().failed_logs, 1u) << when;
+    };
+    expect_unavailable("after the failed fsync");
+    // The reopen fails part way (its startup fsync); nothing changes.
+    const std::int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch())
+                                 .count();
+    store->maintain(now);
+    ASSERT_EQ(store->failed_logs().front().reopen_attempts, 1u);
+    expect_unavailable("after a failed reopen");
+    failing = false;
+    store->maintain(now + 60'000);
+    EXPECT_TRUE(store->failed_logs().empty());
+    EXPECT_EQ(store->storage_stats().failed_logs, 0u);
+    EXPECT_EQ(read(*store, "store", "k1").bytes, "value");
+    EXPECT_EQ(read(*store, "store", "k9").status, ObjectStatus::NotFound);
+    EXPECT_EQ(store->usage("store").objects, 5u);
+    EXPECT_TRUE(store->put("store", "k9", "kept", durable).ok());
 }
 
 // Disk follows the live set: dead segments are deleted, live frames of a

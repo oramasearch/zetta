@@ -72,6 +72,8 @@ answer depended on whether the steady clock advanced between two adjacent statem
 | `audit_protocol_version` | this node's segment-log protocol version (#1164, #1169) |
 | `audit_watermarks` | JSON text keyed by origin, with durable high, ordinary low, and summary low sequences |
 | `audit_memory_bytes` | estimated flat fingerprint index, chunked seek index, cached segment and recent-window memory |
+| `object_logs_failed` | object buckets whose node-local log failed an fsync and serve nothing here until it is reopened from disk ([object store](../data/object-store.md#durability)) |
+| `object_logs_stopped` | of those, the ones whose reopening gave up after 12 attempts: restart the node once the disk is fixed |
 
 The pub/sub columns are live engine state rather than OS counters. They are
 `null` when pub/sub is disabled. A resize updates `pubsub_dispatch_threads` on

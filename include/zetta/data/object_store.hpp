@@ -176,6 +176,8 @@ struct ObjectUpload {
 // What the node-local object logs hold.
 struct ObjectStorageStats {
     std::uint64_t buckets = 0;
+    std::uint64_t failed_logs = 0;   // buckets whose log failed an fsync and is not reopened
+    std::uint64_t stopped_logs = 0;  // of those, the ones whose reopening gave up
     std::uint64_t objects = 0;      // live objects held on this node
     std::uint64_t object_bytes = 0; // their bytes
     std::uint64_t tombstones = 0;
@@ -183,6 +185,15 @@ struct ObjectStorageStats {
     std::uint64_t disk_bytes = 0;   // every segment's size
     std::uint64_t live_bytes = 0;   // frames the directories point at
     std::uint64_t memory_bytes = 0; // estimate: directories and uploads
+};
+
+// A bucket whose node-local log failed an fsync (#1235): it serves nothing on
+// this node until maintenance reopens it from disk, or, once `stopped`, until
+// the node restarts.
+struct ObjectLogFailure {
+    std::string bucket;
+    bool stopped = false;
+    std::uint32_t reopen_attempts = 0;
 };
 
 // The boundary schemas (schema as code; schemas/*.json are generated).
@@ -304,6 +315,14 @@ public:
     // no longer owns once their owners hold them. Blocks on the signal plane.
     std::size_t anti_entropy();
     ObjectStorageStats storage_stats() const;
+    // The buckets whose log has failed on this node (health).
+    std::vector<ObjectLogFailure> failed_logs() const;
+
+    // An injection point for fault tests: performs every fsync of every bucket
+    // log (segment files and directories) in place of ::fsync. Set it before
+    // the store opens or writes.
+    using Fsync = std::function<int(const std::filesystem::path& file, int descriptor)>;
+    void set_fsync(Fsync fsync);
 
     zetta::cluster::SignalResponse on_request(const zetta::cluster::Signal& request) override;
     void on_event(const zetta::cluster::Signal& event) override;
@@ -338,6 +357,7 @@ private:
     std::string node_id_;
     std::filesystem::path directory_;
     std::uint64_t segment_bytes_;
+    Fsync fsync_;  // tests only (set_fsync)
     mutable std::shared_mutex buckets_mutex_;
     std::map<std::string, std::unique_ptr<Bucket>> buckets_;
     std::mutex lease_mutex_;  // lease decisions on this node, one at a time

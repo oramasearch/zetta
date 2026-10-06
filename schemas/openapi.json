@@ -30882,6 +30882,31 @@
                         "databases": {
                           "type": "integer"
                         },
+                        "failed_object_logs": {
+                          "description": "buckets whose object log failed an fsync on this node and serve nothing until it is reopened from disk; `stopped`: reopening gave up, restart the node",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bucket": {
+                                "type": "string"
+                              },
+                              "reopen_attempts": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "stopped": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "bucket",
+                              "stopped",
+                              "reopen_attempts"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "jobs": {
                           "type": "integer"
                         },
@@ -30909,7 +30934,8 @@
                         "projects",
                         "runs",
                         "models",
-                        "jobs"
+                        "jobs",
+                        "failed_object_logs"
                       ],
                       "type": "object"
                     }
