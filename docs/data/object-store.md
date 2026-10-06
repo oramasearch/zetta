@@ -113,9 +113,41 @@ live node. `durable=true` makes one write fsync before its answer.
 Crash safety comes from the log's format. A put is staged and then committed by one commit frame,
 so after a kill the object is the old version or the new, never part of either. An append is one
 checksummed frame: after a kill it is absent or whole, and everything acknowledged before a
-barrier is there. Startup verifies the checksums of the last two segments (the only ones that can
-hold bytes never fsynced; a rolled segment is fsynced by the next maintenance step and by any
-barrier) and truncates at the first torn frame.
+barrier is there.
+
+**The prefix guarantee** ([#1235](https://github.com/oramasearch/zetta/issues/1235)). On one
+node, after any crash, power loss included, a bucket's objects are the state after some prefix
+of the writes its log holds, in the order the log took them. A later write is never kept without
+an earlier one, whatever the keys are. The prefix always reaches the last write that answered
+`durable=true` and the last barrier. Three rules hold it:
+
+- **A roll fsyncs the segment it leaves** before the next segment takes its first byte, and then
+  fsyncs the bucket's directory so the new file survives too. Only the newest segment can then
+  hold bytes never fsynced. A roll happens once per 64 MiB, so the cost is one fsync per 64 MiB,
+  and writers wait for it only at the roll. Measured with 1 GiB of 256 KiB appends, three runs
+  each, the throughput was 1,010 to 1,280 MiB/s with the rule and 890 to 1,340 MiB/s without it.
+  The append p50 was 0.14 ms in both, so the difference is within the noise. The soak, the push
+  budget and the read budgets did not move either.
+- **Startup truncates the newest segment at its first torn frame.** Startup verifies the frame
+  checksums of the last two segments. Only the newest can be torn; a log written before #1235 can
+  hold unsynced bytes in two. Within the newest segment, nothing after a tear survives. Startup
+  also fsyncs those two segments, because a process that crashed can leave bytes in the page
+  cache that a later power loss would drop.
+- **Compaction deletes a dead segment only after an fsync** of the segment that holds the newer
+  frames. Without it, a power loss could lose the old frames and the newer ones together.
+
+`durable=true` fsyncs the write's own segment. Every earlier segment was fsynced at its roll, so a
+durable write makes the whole log up to it durable. The barrier fsyncs every segment written since
+the last barrier.
+
+**Scope: one node's copy of one bucket.** Each bucket has its own log, so there is no order across
+buckets. With `rf > 1` there is no cross-key order at all. Each key has its own primary, which
+orders that key's mutations, and different keys have different primaries. Every owner's copy is
+a prefix of its own log, but writes to two keys can survive a crash of several nodes in either
+order. This holds even at `rf = 1` on several nodes, because the keys are spread over the nodes. The
+guarantee across keys therefore needs a one-node cluster, which every workspace is today. On a
+larger cluster, a caller that needs that order must enforce it itself. For example, it can issue
+a write only once the write before it is durable.
 
 ## Placement and replication
 
@@ -282,6 +314,7 @@ catalogue did not grow. Two changes the soak forced:
 | `ObjectStoreFixture.FencingRefusesAStaleHolderAfterATakeover` | fences, held, release, renewal keeping the lease, expiry, the fence across a restart |
 | `ObjectStoreFixture.ObjectsSurviveARestartAndStayOutOfTheCatalogue` | restart, appends continuing a version, nothing in the catalogue |
 | `ObjectStoreFixture.ATornTailLeavesAppendsWholeUpToTheBarrierAndPutsNeverPartial` | 28 torn tails (some with garbage): appends absent or whole and never short of the barrier; a put old or new, never partial |
+| `ObjectLogCrash.*` (`tests/data/test_object_log_crash.cpp`) | the prefix guarantee. The log reports each fsync to a sync observer, and a copy of its files loses the bytes no fsync covered: in the newest segment alone, in each older segment alone, or in all of them, cut off or zeroed in place. Replay must give the state after some prefix of the writes, at least up to the last durable write or barrier. Three cases: puts, overwrites and removes across ten or more rolls; a process crash, a restart and more rolls before the power loss; and compaction deleting a segment whose replacing frames were still unsynced |
 | `ObjectStoreFixture.CompactionKeepsDiskNearTheLiveSet` | segment retirement and moves, tombstone purge across a restart |
 | `ObjectStoreCluster.RfTwoOnThreeNodesSurvivesALossAndAReplacement` | rf = 2 on three real nodes: exactly two copies, reads from any node, a node killed and repaired, a replacement joining with objects moved and old copies dropped, no acknowledged write lost; the fence across nodes |
 | `ObjectStoreSoak.*` | the soak above |

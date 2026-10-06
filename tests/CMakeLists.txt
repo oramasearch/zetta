@@ -68,6 +68,7 @@ add_executable(zetta-tests
   data/test_metric_store.cpp
   data/test_record_soak.cpp
   data/test_object_store.cpp
+  data/test_object_log_crash.cpp
   data/test_object_soak.cpp
   pipeline/test_project.cpp
   pipeline/test_project_input.cpp

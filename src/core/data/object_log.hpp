@@ -38,10 +38,14 @@
 //     sees the old version until the commit is in the directory, then the new
 //     one; a crash before the commit frame is on disk leaves the old version.
 //   * DURABILITY. A write is acknowledged after write(2); `sync` (the barrier)
-//     fsyncs every segment written since the last one, and `maintain` fsyncs a
-//     segment the log has rolled past, so only the last two can hold bytes never
-//     fsynced. Startup verifies their payload checksums and truncates the last at
-//     the first torn frame.
+//     fsyncs every segment written since the last one. A roll fsyncs the segment
+//     rolled past before the next one takes its first byte (#1235), and a dead
+//     segment's file is removed only after the frames that replaced it are
+//     fsynced, so only the newest segment can hold bytes never fsynced. Startup
+//     verifies the payload checksums of the last two (logs from before #1235 can
+//     have two) and truncates the last at the first torn frame. Together: after
+//     any crash, power loss included, what replays is a PREFIX of the log, the
+//     frames in the order they were appended.
 //   * COMPACTION. `compact_step` retires dead segments oldest-first and moves the
 //     live frames of mostly-dead oldest segments forward, within a byte budget a
 //     call, taking the lock once per batch.
@@ -108,6 +112,12 @@ public:
     // `directory` empty keeps the segments in memory (tests and benchmarks).
     ObjectLog(std::filesystem::path directory, std::int64_t tombstone_grace_ms,
               std::uint64_t segment_bytes = kSegmentBytes);
+
+    // An injection point for crash-simulation tests: called after each fsync
+    // that succeeded, with the segment and how many of its bytes it made
+    // durable. Set it before `open`.
+    using SyncObserver = std::function<void(std::uint32_t segment, std::uint64_t durable_bytes)>;
+    void set_sync_observer(SyncObserver observer) { sync_observer_ = std::move(observer); }
     ~ObjectLog();
 
     ObjectLog(const ObjectLog&) = delete;
@@ -240,7 +250,13 @@ private:
     };
     struct Frame;
 
-    bool roll_locked();
+    // Start the next segment. The one rolled past is fsynced first, so no byte
+    // of a later segment reaches the disk before every byte of an earlier one.
+    // With `lock`, the directory is unlocked for the disk work (the caller holds
+    // write_mutex_, so no writer moves meanwhile).
+    bool roll_locked(std::unique_lock<std::shared_mutex>* lock = nullptr);
+    // fsync one segment and clear its dirty mark (restored on failure).
+    bool flush(Segment& segment);
     // Append a frame at the active segment's end (rolling it when full). Called
     // holding write_mutex_ and `lock`; releases `lock` for the write itself.
     bool append_locked(std::unique_lock<std::shared_mutex>& lock, const Frame& frame,
@@ -263,6 +279,9 @@ private:
     };
     Backing backing_locked(const Frame& frame, const Location& at);
     void compact_step();
+    // One compaction step; the segments it retires go to `retired`, whose files
+    // compact_step() removes only once an fsync has made what replaced them durable.
+    void compact_pass(std::vector<std::shared_ptr<Segment>>& retired);
 
     std::filesystem::path directory_;
     std::int64_t tombstone_grace_ms_;
@@ -282,6 +301,7 @@ private:
     std::uint64_t extent_count_ = 0;
     std::uint64_t compaction_offset_ = 0;
     std::mutex maintenance_;  // one maintain() at a time
+    SyncObserver sync_observer_;
 };
 
 }  // namespace zetta::data

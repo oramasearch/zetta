@@ -112,6 +112,15 @@ std::filesystem::path segment_path(const std::filesystem::path& directory, std::
     return directory / name;
 }
 
+// fsync a directory, so a segment file created in it survives a power loss.
+bool sync_directory(const std::filesystem::path& directory) {
+    const int descriptor = ::open(directory.c_str(), O_RDONLY);
+    if (descriptor < 0) return false;
+    const bool synced = ::fsync(descriptor) == 0;
+    ::close(descriptor);
+    return synced;
+}
+
 }  // namespace
 
 std::uint32_t crc32c(std::string_view bytes, std::uint32_t crc) {
@@ -318,14 +327,42 @@ std::size_t ObjectLog::bucket_of(const std::string& key) {
     return static_cast<std::size_t>(fnv64(key) % kBuckets);
 }
 
-bool ObjectLog::roll_locked() {
+bool ObjectLog::flush(Segment& segment) {
+    // Cleared first: a write landing during the fsync marks the segment again.
+    segment.dirty.store(false, std::memory_order_release);
+    const std::uint64_t written = segment.size.load();
+    if (!segment.sync()) {
+        segment.dirty.store(true, std::memory_order_release);
+        return false;
+    }
+    if (sync_observer_) sync_observer_(segment.id, written);
+    return true;
+}
+
+bool ObjectLog::roll_locked(std::unique_lock<std::shared_mutex>* lock) {
+    // The prefix guarantee (#1235): the segment rolled past is fsynced before the
+    // next one takes its first byte, so a power loss can lose only a suffix of
+    // the log. Without it, the next segment's pages could reach the disk while
+    // this one's tail did not, and replay (which collects every frame per key)
+    // would keep a later write without an earlier one. The fsync is
+    // unconditional: a barrier or a durable write may have cleared the dirty
+    // mark and still be inside its own fsync. Once per segment (64 MiB).
+    const auto previous = segments_.find(active_);
+    const std::shared_ptr<Segment> sealing =
+        previous == segments_.end() ? nullptr : previous->second;
     auto segment = std::make_shared<Segment>();
     segment->id = active_ + 1;
-    if (!directory_.empty()) {
+    if (lock) lock->unlock();
+    bool ok = !sealing || flush(*sealing);
+    if (ok && !directory_.empty()) {
         segment->path = segment_path(directory_, segment->id);
         segment->descriptor = ::open(segment->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0600);
-        if (segment->descriptor < 0) return false;
+        // The new file's directory entry is fsynced too, so a durable write to
+        // it means what it says.
+        ok = segment->descriptor >= 0 && sync_directory(directory_);
     }
+    if (lock) lock->lock();
+    if (!ok) return false;
     active_ = segment->id;
     segments_[segment->id] = std::move(segment);
     return true;
@@ -378,9 +415,11 @@ bool ObjectLog::open(std::string* reason) {
     std::map<std::uint64_t, std::map<std::uint64_t, Extent>> stages;  // upload -> offset -> extent
 
     for (std::size_t position = 0; position < ids.size(); ++position) {
-        // Only the last two segments can hold bytes that were never fsynced
-        // (a segment is fsynced right after the log rolls past it), so only they
-        // have their payloads verified.
+        // Only the last segment can hold bytes that were never fsynced (a roll
+        // fsyncs the segment it leaves, #1235); a log written before that rule
+        // can have two. So only the last two have their payloads verified, and
+        // only the last is truncated at a torn frame: everything before the tear
+        // stays, nothing after it does, and the log replays as a prefix.
         const bool last = position + 1 == ids.size();
         const bool verify = position + 2 >= ids.size();
         auto segment = std::make_shared<Segment>();
@@ -452,6 +491,17 @@ bool ObjectLog::open(std::string* reason) {
         segment->size = last ? offset : file_size;
         segments_[segment->id] = segment;
         active_ = segment->id;
+        // A process that crashed can leave bytes in the page cache that were
+        // never fsynced; make them durable before anything is appended after
+        // them, or a power loss later could keep the new bytes without these.
+        if (verify && !flush(*segment)) {
+            if (reason) *reason = "cannot fsync " + segment->path.string();
+            return false;
+        }
+    }
+    if (!ids.empty() && !sync_directory(directory_)) {
+        if (reason) *reason = "cannot fsync " + directory_.string();
+        return false;
     }
 
     // Resolve: each key's highest generation that is whole.
@@ -563,10 +613,9 @@ bool ObjectLog::append_locked(std::unique_lock<std::shared_mutex>& lock, const F
                               std::uint64_t& payload_offset,
                               std::shared_ptr<Segment>& written_to) {
     if (segments_[active_]->size >= segment_bytes_) {
-        // The segment rolled past is fsynced so only the newest can be torn. It
-        // is marked dirty already; the barrier and maintain() flush it, and
-        // startup verifies the payloads of the last two segments.
-        if (!roll_locked()) return false;
+        // The roll fsyncs the segment rolled past before this frame is written,
+        // so only the newest segment can be torn (#1235).
+        if (!roll_locked(&lock)) return false;
     }
     written_to = segments_[active_];
     const std::string prefix = frame.encode();
@@ -618,7 +667,9 @@ bool ObjectLog::covering(const std::vector<Extent>& extents, std::uint64_t size)
 ObjectLog::Written ObjectLog::finish(Written written, std::shared_ptr<Segment> segment,
                                      bool sync) {
     // Flushed outside the lock: readers never wait for the disk.
-    if (sync && segment) written.durable = segment->sync();
+    // Every earlier segment was fsynced when the log rolled past it, so a
+    // durable write makes the whole log up to it durable.
+    if (sync && segment) written.durable = flush(*segment);
     return written;
 }
 
@@ -1275,13 +1326,7 @@ bool ObjectLog::sync() {
         }
     }
     bool ok = true;
-    for (const auto& segment : dirty) {
-        segment->dirty.store(false, std::memory_order_release);
-        if (!segment->sync()) {
-            segment->dirty.store(true, std::memory_order_release);
-            ok = false;
-        }
-    }
+    for (const auto& segment : dirty) ok = flush(*segment) && ok;
     return ok;
 }
 
@@ -1300,7 +1345,8 @@ void ObjectLog::maintain(std::int64_t now_ms) {
         }
     }
     for (const auto& [key, generation] : expired) purge(key, generation);
-    // Segments the log rolled past are flushed here as well as by the barrier.
+    // A roll fsyncs the segment it leaves, so a sealed segment is dirty here
+    // only when that fsync failed (and the roll with it); retry it.
     {
         std::vector<std::shared_ptr<Segment>> sealed;
         {
@@ -1311,10 +1357,7 @@ void ObjectLog::maintain(std::int64_t now_ms) {
                 }
             }
         }
-        for (const auto& segment : sealed) {
-            segment->dirty.store(false, std::memory_order_release);
-            if (!segment->sync()) segment->dirty.store(true, std::memory_order_release);
-        }
+        for (const auto& segment : sealed) flush(*segment);
     }
     compact_step();
 }
@@ -1356,6 +1399,29 @@ ObjectLog::Backing ObjectLog::backing_locked(const Frame& frame, const Location&
 }
 
 void ObjectLog::compact_step() {
+    std::vector<std::shared_ptr<Segment>> retired;
+    compact_pass(retired);
+    if (retired.empty()) return;
+    // A segment is dead because newer frames replaced every frame in it (or
+    // compaction moved them forward). Its file may go only once those frames are
+    // durable, or a power loss could keep neither the old frames nor the new
+    // ones (#1235). Every segment before the active one was fsynced when the log
+    // rolled past it (a roll changes active_ only after its fsync), so the active
+    // segment is the only one to fsync, unconditionally: a concurrent barrier may
+    // have cleared its dirty mark and still be inside its own fsync.
+    std::shared_ptr<Segment> active;
+    {
+        const std::shared_lock lock(mutex_);
+        active = segments_[active_];
+    }
+    if (!flush(*active)) {
+        // Keep the files: the next start replays them, and they are retired again.
+        for (const auto& segment : retired) segment->retired = false;
+    }
+    // `retired` goes out of scope: each file is removed when no reader holds it.
+}
+
+void ObjectLog::compact_pass(std::vector<std::shared_ptr<Segment>>& retired) {
     // One step moves at most kCompactionChunk bytes of live frames, and sweeps as
     // many oldest segments as that allows: a dead frame costs one header read, so
     // a store whose old data is mostly dead is reclaimed as fast as it is written.
@@ -1387,6 +1453,7 @@ void ObjectLog::compact_step() {
                 });
                 if (staged) break;
                 first->second->retired = true;
+                retired.push_back(first->second);
                 segments_.erase(first);
                 compaction_offset_ = 0;
             }
@@ -1447,7 +1514,7 @@ void ObjectLog::compact_step() {
             for (auto& [candidate, bytes] : group) {
                 const Backing backing = backing_locked(candidate->frame, candidate->at);
                 if (!backing.extent && !backing.marker) continue;  // gone meanwhile
-                if (segments_[active_]->size >= segment_bytes_ && !roll_locked()) return;
+                if (segments_[active_]->size >= segment_bytes_ && !roll_locked(&lock)) return;
                 const std::shared_ptr<Segment> target = segments_[active_];
                 const Location to{active_, target->size, candidate->at.frame_length};
                 const std::string_view frame(bytes);
