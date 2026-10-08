@@ -711,6 +711,37 @@ TEST_F(ObjectStoreFixture, ALeaseSurvivesACrashThatLosesTheCatalogue) {
     store.reset();
 }
 
+// lake#543: a bucket definition is on the creating node's disk before
+// create_bucket answers. A crash that loses the catalogue's last second used to
+// lose it, and a switched workspace's bucket then answered "no bucket" for
+// good; open() now registers it again, with its objects and lease reachable.
+TEST_F(ObjectStoreFixture, ABucketDefinitionSurvivesACrashThatLosesTheCatalogue) {
+    ASSERT_TRUE(store->create_bucket(bucket("lake_store", 1u << 30)).ok());
+    const ObjectOutcome lease = store->acquire("lake_store", "lake-a", 60'000);
+    ASSERT_TRUE(lease.ok()) << lease.message;
+    ObjectWrite durable = fenced(lease.lease->fence);
+    durable.durable = true;
+    ASSERT_TRUE(store->put("lake_store", "keys/workspace-v1.wrapped", "data key", durable).ok());
+    // The crash: a new process whose catalogue lost the bucket and the lease.
+    store.reset();
+    ReplicationManager lost{zetta::util::new_uuid()};
+    store = std::make_unique<ObjectStore>(lost, lost.node_id(), dir.path() / "objects");
+    ASSERT_TRUE(store->open());
+    const std::optional<ObjectBucket> definition = store->find_bucket("lake_store");
+    ASSERT_TRUE(definition) << "the bucket was not registered again";
+    EXPECT_EQ(definition->quota_bytes, std::optional<std::uint64_t>(1u << 30));
+    EXPECT_EQ(read(*store, "lake_store", "keys/workspace-v1.wrapped").bytes, "data key");
+    const std::optional<zetta::data::ObjectLease> restored = store->lease("lake_store");
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(restored->holder, "lake-a");
+    EXPECT_EQ(restored->fence, lease.lease->fence);
+    // The holder carries on; another holder is refused while the lease lasts.
+    EXPECT_TRUE(store->put("lake_store", "objects/after", "x", fenced(lease.lease->fence)).ok());
+    EXPECT_EQ(store->acquire("lake_store", "lake-b", 60'000).status, ObjectStatus::Held);
+    // A re-creation with the same definition is idempotent.
+    EXPECT_TRUE(store->create_bucket(bucket("lake_store", 1u << 30)).ok());
+}
+
 // Disk follows the live set: dead segments are deleted, live frames of a
 // mostly-dead segment move forward, and everything reads back after a restart.
 TEST_F(ObjectStoreFixture, CompactionKeepsDiskNearTheLiveSet) {

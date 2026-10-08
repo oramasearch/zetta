@@ -196,14 +196,15 @@ public:
     // either finished swapping the log's state or not begun (lake#543).
     std::uint64_t reopens() const;
 
-    // The bucket's lease as its deciding node last recorded it (lake#543): a
-    // small file beside the segments, written to a temporary name, fsynced,
-    // renamed and its directory fsynced before this returns true, so a lease
-    // decision survives a crash that loses the replicated catalogue's last
-    // second. A log kept in memory keeps it in memory. A failure here does not
-    // fail the log.
-    bool write_lease(const std::string& document);
-    std::optional<std::string> read_lease() const;
+    // A small record beside the segments (lake#543): the bucket's lease as its
+    // deciding node last recorded it (`lease`) and the bucket's definition
+    // (`bucket`). It is written to a temporary name, fsynced, renamed and its
+    // directory fsynced before this returns true, so it survives a crash that
+    // loses the replicated catalogue's last second. A log kept in memory keeps
+    // it in memory. Records have their own lock, never the writers', and a
+    // failure here does not fail the log.
+    bool write_record(const std::string& name, const std::string& document);
+    std::optional<std::string> read_record(const std::string& name) const;
 
     // ---- uploads ---------------------------------------------------------------
 
@@ -383,7 +384,8 @@ private:
     bool reopen_stopped_ = false;
     // Changed only under write_mutex_, while a reopen swaps the log's state.
     std::atomic<std::uint64_t> reopens_{0};
-    std::optional<std::string> lease_in_memory_;  // a log kept in memory (guarded by write_mutex_)
+    mutable std::mutex records_mutex_;  // write_record / read_record, one at a time
+    std::map<std::string, std::string> records_in_memory_;  // a log kept in memory
 };
 
 }  // namespace zetta::data

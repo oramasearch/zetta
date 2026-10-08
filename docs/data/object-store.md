@@ -349,8 +349,22 @@ let it check that guarantee instead of trusting the deploy order:
   before a restart. It would not help when the catalogue comes back with an older holder's lease,
   whose fence is then current again. One fsync per acquire and release is cheap: lake acquires once
   per store open.
-  - A bucket definition created less than a second before a crash can still be lost; it is not a
-    lease.
+- **The bucket definition is on disk before `create_bucket` answers**, in a `bucket` record in the
+  bucket's directory, written the same way. At start, a definition found on disk that the
+  catalogue lacks is registered again. Without it, a crash in the catalogue's last second left the
+  bucket's objects and lease on disk but the bucket answering "no bucket", and a lake workspace
+  switched to it was down for good. A definition never changes once created (a different one is a
+  conflict), so there is no newer quota that the record could hide. The record is written by the
+  node that answers `create_bucket`; peers learn the definition from it as before.
+- The records (`lease`, `bucket`) have their own lock in `ObjectLog`, not the writers' lock, so
+  their fsyncs never hold up a write.
+- **What the records do not cover.** Restoring a volume snapshot rolls the records back together
+  with the catalogue and the logs: fences handed out after the snapshot can be handed out again,
+  and the incarnation after the restore is a new one, so a lake process holding the old fence is
+  refused only if the fence moved past it. A volume restore needs every lake holder of its buckets
+  stopped first. A Zetta downgraded to an image without #1237 does not read `Zetta-Incarnation` at
+  all, so it cannot enforce the precondition. Its answers carry no incarnation, and lake fails the
+  store on the first one, after that write has landed.
 
 - The anti-entropy digest compares `(key, generation, size)`. A version's bytes never change
   within a generation (appends only add, and a retry must match), so no content hash is computed;
@@ -445,6 +459,7 @@ catalogue did not grow. Two changes the soak forced:
 | `ObjectStoreFixture.AFailedLogAnswersUnavailableUntilItIsReopened` | a bucket whose log failed an fsync answers reads, listings, usage, barriers and writes `Unavailable` (not absent, empty or zero), also after a reopen fails part way; `failed_logs()` and the storage stats report it; the next reopen restores it, and only a reopen that succeeds raises the bucket's incarnation suffix (lake#543) |
 | `ObjectStoreFixture.AReopenBetweenThePreconditionAndTheWriteRefusesIt` | lake#543: a reopen forced (failed fsync, then maintenance) between a write's checks and its log write refuses a put, an append, a removal and an upload's commit with `IncarnationChanged`, applying nothing; the current incarnation is accepted and answered; another start's incarnation is refused |
 | `ObjectStoreFixture.ABarrierAcrossAReopenIsRefused` | lake#543: a reopen forced between a barrier's first incarnation read and its sync refuses the barrier with the incarnation read after it |
+| `ObjectStoreFixture.ABucketDefinitionSurvivesACrashThatLosesTheCatalogue` | lake#543: a bucket with a quota, its data-key object and its lease survive a crash whose catalogue lost all three: the definition is registered again at open, the object reads back, the lease and its holder are back, and an identical re-creation is idempotent |
 | `ObjectStoreFixture.ALeaseSurvivesACrashThatLosesTheCatalogue` | lake#543: an acquire and a release survive a crash whose catalogue lost them: the old holder's lease comes back, the next acquirer gets a higher fence, and the old holder's write and renewal are fenced |
 | `ObjectStoreFixture.CompactionKeepsDiskNearTheLiveSet` | segment retirement and moves, tombstone purge across a restart |
 | `ObjectStoreCluster.RfTwoOnThreeNodesSurvivesALossAndAReplacement` | rf = 2 on three real nodes: exactly two copies, reads from any node, a node killed and repaired, a replacement joining with objects moved and old copies dropped, no acknowledged write lost; the fence across nodes |

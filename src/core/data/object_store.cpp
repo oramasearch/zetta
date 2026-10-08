@@ -697,9 +697,24 @@ bool ObjectStore::open(std::string* reason) {
         if (!state->log->open(reason)) return false;
         // The lease this node last decided (lake#543): lease() takes it over the
         // catalogue's when the catalogue lost it in a crash.
-        if (const std::optional<std::string> recorded = state->log->read_lease()) {
+        if (const std::optional<std::string> recorded = state->log->read_record("lease")) {
             const nlohmann::json document = nlohmann::json::parse(*recorded, nullptr, false);
             state->lease = object_lease_from_json(name, document);
+        }
+        // The bucket's definition (lake#543): registered again when the
+        // catalogue lost it in a crash, so the bucket's objects and lease are
+        // reachable again rather than answering "no bucket".
+        if (const std::optional<std::string> recorded = state->log->read_record("bucket")) {
+            const nlohmann::json document = nlohmann::json::parse(*recorded, nullptr, false);
+            if (const std::optional<ObjectBucket> definition = object_bucket_from_json(document);
+                definition && definition->name == name) {
+                replication_.update(
+                    bucket_key(name),
+                    [&](const nlohmann::json* current) -> std::optional<std::vector<ReplicationWrite>> {
+                        if (current) return std::nullopt;
+                        return std::vector<ReplicationWrite>{{bucket_key(name), to_json(*definition)}};
+                    });
+            }
         }
         const std::unique_lock lock(buckets_mutex_);
         buckets_[name] = std::move(state);
@@ -894,9 +909,19 @@ ObjectOutcome ObjectStore::create_bucket(const ObjectBucket& requested) {
     }
     outcome.created = created;
     outcome.bucket = created ? bucket : existing;
-    if (!bucket_state(bucket.name, /*create=*/true)) {
+    Bucket* state = bucket_state(bucket.name, /*create=*/true);
+    if (!state) {
         return failure(ObjectStatus::Unavailable,
                        "the bucket's object log could not be opened on " + node_id_);
+    }
+    // lake#543: the definition is on this node's disk before the call answers.
+    // The catalogue reaches disk up to a second later, and a crash in that
+    // second would leave the bucket's objects and lease unreachable ("no
+    // bucket"); open() registers it again from this record.
+    if (!state->log->write_record("bucket", to_json(*outcome.bucket).dump())) {
+        return failure(ObjectStatus::Unavailable,
+                       "bucket '" + bucket.name + "''s definition could not be recorded on " +
+                           node_id_ + "'s disk; retry");
     }
     // Every live peer learns the definition before this answers.
     const std::vector<std::string> peers = live_peers();
@@ -1027,7 +1052,7 @@ ObjectOutcome ObjectStore::lease_decide(const nlohmann::json& request) {
     // one makes the lease end sooner, which is safe, so it is not synced.
     if (op != "renew") {
         Bucket* state = bucket_state(bucket, /*create=*/true);
-        if (!state || !state->log->write_lease(to_json(next).dump())) {
+        if (!state || !state->log->write_record("lease", to_json(next).dump())) {
             return failure(ObjectStatus::Unavailable,
                            "bucket '" + bucket + "''s lease could not be recorded on " + node_id_ +
                                "'s disk; retry");

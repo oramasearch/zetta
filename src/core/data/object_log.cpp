@@ -1437,18 +1437,13 @@ std::uint64_t ObjectLog::reopens() const {
     return reopens_.load();
 }
 
-namespace {
-constexpr const char* kLeaseFile = "lease";
-constexpr const char* kLeaseScratch = "lease.tmp";
-}  // namespace
-
-bool ObjectLog::write_lease(const std::string& document) {
-    const std::lock_guard writing(write_mutex_);
+bool ObjectLog::write_record(const std::string& name, const std::string& document) {
+    const std::lock_guard recording(records_mutex_);
     if (directory_.empty()) {
-        lease_in_memory_ = document;
+        records_in_memory_[name] = document;
         return true;
     }
-    const std::filesystem::path scratch = directory_ / kLeaseScratch;
+    const std::filesystem::path scratch = directory_ / (name + ".tmp");
     const int descriptor = ::open(scratch.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (descriptor < 0) return false;
     bool ok = ::write(descriptor, document.data(), document.size()) ==
@@ -1456,7 +1451,7 @@ bool ObjectLog::write_lease(const std::string& document) {
               fsync_descriptor(scratch, descriptor) == 0;
     ::close(descriptor);
     std::error_code error;
-    if (ok) std::filesystem::rename(scratch, directory_ / kLeaseFile, error);
+    if (ok) std::filesystem::rename(scratch, directory_ / name, error);
     ok = ok && !error;
     if (ok) {
         const int directory = ::open(directory_.c_str(), O_RDONLY);
@@ -1466,10 +1461,14 @@ bool ObjectLog::write_lease(const std::string& document) {
     return ok;
 }
 
-std::optional<std::string> ObjectLog::read_lease() const {
-    const std::lock_guard writing(write_mutex_);
-    if (directory_.empty()) return lease_in_memory_;
-    std::ifstream file(directory_ / kLeaseFile, std::ios::binary);
+std::optional<std::string> ObjectLog::read_record(const std::string& name) const {
+    const std::lock_guard recording(records_mutex_);
+    if (directory_.empty()) {
+        const auto found = records_in_memory_.find(name);
+        if (found == records_in_memory_.end()) return std::nullopt;
+        return found->second;
+    }
+    std::ifstream file(directory_ / name, std::ios::binary);
     if (!file) return std::nullopt;
     return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
 }
