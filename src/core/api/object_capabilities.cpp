@@ -40,6 +40,7 @@ std::string object_error_code(ObjectStatus status) {
         case ObjectStatus::OutOfRange: return "range_not_satisfiable";
         case ObjectStatus::QuotaExceeded: return "quota_exceeded";
         case ObjectStatus::Unavailable: return "busy";
+        case ObjectStatus::IncarnationChanged: return "incarnation_changed";
     }
     return "engine_error";
 }
@@ -69,6 +70,7 @@ ApiResult object_failure(const ObjectOutcome& outcome) {
             if (outcome.bucket) details["bucket"] = to_json(*outcome.bucket);
             break;
         case ObjectStatus::Fenced: details["fence"] = outcome.fence; break;
+        case ObjectStatus::IncarnationChanged: details["incarnation"] = outcome.incarnation; break;
         case ObjectStatus::Held:
             if (outcome.lease) {
                 details = {{"bucket", outcome.lease->bucket},
@@ -83,10 +85,9 @@ ApiResult object_failure(const ObjectOutcome& outcome) {
     return result;
 }
 
-nlohmann::json object_write_value(const std::string& bucket, const ObjectOutcome& outcome,
-                                  const std::string& incarnation) {
+nlohmann::json object_write_value(const std::string& bucket, const ObjectOutcome& outcome) {
     nlohmann::json value{{"bucket", bucket},
-                         {"incarnation", incarnation},
+                         {"incarnation", outcome.incarnation},
                          {"owner", outcome.owner},
                          {"replicas", outcome.replicas},
                          {"replicas_expected", outcome.replicas_expected}};
@@ -98,19 +99,6 @@ nlohmann::json object_write_value(const std::string& bucket, const ObjectOutcome
     }
     if (outcome.unchanged) value["unchanged"] = true;
     return value;
-}
-
-std::optional<ApiResult> incarnation_refusal(const std::string& expected,
-                                             const std::string& current) {
-    if (expected.empty() || expected == current) return std::nullopt;
-    ApiResult result = ApiResult::failure(
-        "incarnation_changed",
-        "the bucket's incarnation is " + current + ", not " + expected +
-            ": the node restarted, or reopened the bucket's log, since that answer, and writes it "
-            "acknowledged without durability may be gone; nothing was applied",
-        "/incarnation");
-    result.error.details = {{"incarnation", current}};
-    return result;
 }
 
 std::optional<ApiResult> authorize_object_route(Node& node, const std::string& acting_key,
@@ -427,15 +415,12 @@ ApiResult handle_object_barrier(const nlohmann::json& input, ApiContext& context
     zetta::data::ObjectStore* store = context.node.object_store();
     if (!store) return no_store();
     const std::string bucket = input.at("bucket").get<std::string>();
-    const std::string incarnation = store->incarnation(bucket);
-    if (auto refusal = incarnation_refusal(input.value("incarnation", std::string()), incarnation)) {
-        return *refusal;
-    }
-    const ObjectOutcome outcome = store->barrier(bucket);
+    const ObjectOutcome outcome =
+        store->barrier(bucket, input.value("incarnation", std::string()));
     if (!outcome.ok()) return object_failure(outcome);
     return ApiResult::success({{"bucket", bucket},
                                {"nodes", outcome.nodes},
-                               {"incarnation", incarnation},
+                               {"incarnation", outcome.incarnation},
                                {"object_log_prefix_durability",
                                 zetta::data::ObjectStore::kPrefixDurability}});
 }
@@ -458,13 +443,10 @@ ApiResult handle_delete_object(const nlohmann::json& input, ApiContext& context)
     zetta::data::ObjectWrite options;
     if (input.contains("fence")) options.fence = input.at("fence").get<std::uint64_t>();
     options.durable = input.value("durable", false);
-    const std::string incarnation = store->incarnation(bucket);
-    if (auto refusal = incarnation_refusal(input.value("incarnation", std::string()), incarnation)) {
-        return *refusal;
-    }
+    options.incarnation = input.value("incarnation", std::string());
     const ObjectOutcome outcome = store->remove(bucket, input.at("key").get<std::string>(), options);
     if (!outcome.ok()) return object_failure(outcome);
-    return ApiResult::success(object_write_value(bucket, outcome, incarnation));
+    return ApiResult::success(object_write_value(bucket, outcome));
 }
 
 // ---- the owner lease -------------------------------------------------------------

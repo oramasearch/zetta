@@ -12,12 +12,14 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <random>
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -531,6 +533,182 @@ TEST_F(ObjectStoreFixture, AFailedLogAnswersUnavailableUntilItIsReopened) {
     EXPECT_EQ(read(*store, "store", "k9").status, ObjectStatus::NotFound);
     EXPECT_EQ(store->usage("store").objects, 5u);
     EXPECT_TRUE(store->put("store", "k9", "kept", durable).ok());
+}
+
+// lake#543: the Zetta-Incarnation precondition and the write are one step. A
+// reopen of the bucket's log (after a failed fsync) that lands after the
+// precondition was read and before the write must refuse the write, which
+// would otherwise land after the reopen dropped a write it depends on. The
+// injection point runs between the store's checks and its log write.
+TEST_F(ObjectStoreFixture, AReopenBetweenThePreconditionAndTheWriteRefusesIt) {
+    std::atomic<bool> failing{false};
+    store->set_fsync([&](const std::filesystem::path&, int descriptor) {
+        if (failing.load()) {
+            errno = EIO;
+            return -1;
+        }
+        return ::fsync(descriptor);
+    });
+    ASSERT_TRUE(store->create_bucket(bucket("store")).ok());
+    ObjectWrite durable;
+    durable.durable = true;
+    ASSERT_TRUE(store->put("store", "kept", "durable", durable).ok());
+    ASSERT_TRUE(store->put_range("store", "pack", 0, "abc", durable).ok());
+    const std::int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch())
+                                 .count();
+    std::int64_t later = now;
+    // A failed fsync (the barrier's) fails the log; maintenance reopens it,
+    // cut back to the last fsync, which drops the unsynced write.
+    const auto force_reopen = [&] {
+        failing = true;
+        EXPECT_FALSE(store->barrier("store").ok());
+        failing = false;
+        later += 60'000;
+        store->maintain(later);
+        EXPECT_TRUE(store->failed_logs().empty());
+    };
+    struct Case {
+        std::string name;
+        std::function<ObjectOutcome(const ObjectWrite&)> write;
+        std::function<void()> unchanged;
+    };
+    const std::vector<Case> cases{
+        {"put", [&](const ObjectWrite& options) { return store->put("store", "late", "x", options); },
+         [&] { EXPECT_EQ(read(*store, "store", "late").status, ObjectStatus::NotFound); }},
+        {"put range",
+         [&](const ObjectWrite& options) { return store->put_range("store", "pack", 3, "def", options); },
+         [&] { EXPECT_EQ(read(*store, "store", "pack").bytes, "abc"); }},
+        {"remove", [&](const ObjectWrite& options) { return store->remove("store", "kept", options); },
+         [&] { EXPECT_EQ(read(*store, "store", "kept").bytes, "durable"); }},
+        {"upload",
+         [&](const ObjectWrite& options) {
+             return store->put("store", "large", std::string(ObjectStore::kSliceBytes + 10, 'l'), options);
+         },
+         [&] { EXPECT_EQ(read(*store, "store", "large").status, ObjectStatus::NotFound); }},
+    };
+    for (const Case& each : cases) {
+        // Acknowledged without durability, then lost to the reopen.
+        ASSERT_TRUE(store->put("store", "acknowledged", "unsynced", {}).ok()) << each.name;
+        ObjectWrite options;
+        options.incarnation = store->incarnation("store");
+        bool fired = false;
+        store->set_before_log_write([&] {
+            if (std::exchange(fired, true)) return;
+            force_reopen();
+        });
+        const ObjectOutcome refused = each.write(options);
+        store->set_before_log_write({});
+        ASSERT_TRUE(fired) << each.name;
+        EXPECT_EQ(refused.status, ObjectStatus::IncarnationChanged) << each.name << ": " << refused.message;
+        EXPECT_EQ(refused.incarnation, store->incarnation("store")) << each.name;
+        EXPECT_NE(refused.incarnation, options.incarnation) << each.name;
+        EXPECT_EQ(read(*store, "store", "acknowledged").status, ObjectStatus::NotFound) << each.name;
+        each.unchanged();
+        // With the current incarnation it goes through, and answers it.
+        options.incarnation = store->incarnation("store");
+        const ObjectOutcome accepted = each.write(options);
+        EXPECT_TRUE(accepted.ok()) << each.name << ": " << accepted.message;
+        EXPECT_EQ(accepted.incarnation, options.incarnation) << each.name;
+        if (each.name == "remove") ASSERT_TRUE(store->put("store", "kept", "durable", durable).ok());
+        if (each.name == "put range") ASSERT_TRUE(store->remove("store", "pack", durable).ok());
+        if (each.name == "put range") ASSERT_TRUE(store->put_range("store", "pack", 0, "abc", durable).ok());
+    }
+    // Another start of the node is refused without touching the log.
+    ObjectWrite other;
+    other.incarnation = std::string(32, '0') + ".0";
+    const ObjectOutcome restarted = store->put("store", "late2", "x", other);
+    EXPECT_EQ(restarted.status, ObjectStatus::IncarnationChanged);
+    EXPECT_EQ(restarted.incarnation, store->incarnation("store"));
+    EXPECT_EQ(read(*store, "store", "late2").status, ObjectStatus::NotFound);
+}
+
+// lake#543: a barrier answers the incarnation read after its sync, and refuses
+// when the bucket's log was reopened while it synced: the reopen may have
+// dropped writes acknowledged before the barrier, which the sync of the
+// reopened log never covered.
+TEST_F(ObjectStoreFixture, ABarrierAcrossAReopenIsRefused) {
+    std::atomic<bool> failing{false};
+    store->set_fsync([&](const std::filesystem::path&, int descriptor) {
+        if (failing.load()) {
+            errno = EIO;
+            return -1;
+        }
+        return ::fsync(descriptor);
+    });
+    ASSERT_TRUE(store->create_bucket(bucket("store")).ok());
+    ASSERT_TRUE(store->put("store", "acknowledged", "unsynced", {}).ok());
+    const std::string seen = store->incarnation("store");
+    ObjectWrite durable;
+    durable.durable = true;
+    bool fired = false;
+    store->set_before_barrier_sync([&] {
+        if (std::exchange(fired, true)) return;
+        failing = true;
+        EXPECT_FALSE(store->put("store", "trigger", "x", durable).ok());  // fails the log
+        failing = false;
+        store->maintain(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count() +
+                        60'000);
+        EXPECT_TRUE(store->failed_logs().empty());
+    });
+    const ObjectOutcome refused = store->barrier("store", seen);
+    store->set_before_barrier_sync({});
+    ASSERT_TRUE(fired);
+    EXPECT_EQ(refused.status, ObjectStatus::IncarnationChanged) << refused.message;
+    EXPECT_EQ(refused.incarnation, store->incarnation("store"));
+    EXPECT_NE(refused.incarnation, seen);
+    EXPECT_EQ(read(*store, "store", "acknowledged").status, ObjectStatus::NotFound);
+    // The precondition alone refuses the old incarnation; the new one passes,
+    // and the answer carries it.
+    EXPECT_EQ(store->barrier("store", seen).status, ObjectStatus::IncarnationChanged);
+    const ObjectOutcome synced = store->barrier("store", store->incarnation("store"));
+    EXPECT_TRUE(synced.ok()) << synced.message;
+    EXPECT_EQ(synced.incarnation, store->incarnation("store"));
+}
+
+// lake#543: a lease decision is on the deciding node's disk before it is
+// answered. A crash can lose the replicated catalogue's last second; without
+// the record, the lease would come back as it was before the acquire, the next
+// acquirer would get the fence already handed out, and both holders could
+// write. The bucket definition is restored here (it is not what is tested).
+TEST_F(ObjectStoreFixture, ALeaseSurvivesACrashThatLosesTheCatalogue) {
+    ASSERT_TRUE(store->create_bucket(bucket("lake_ws")).ok());
+    const ObjectOutcome first = store->acquire("lake_ws", "lake-a", 50);
+    ASSERT_TRUE(first.ok()) << first.message;
+    ASSERT_TRUE(store->put("lake_ws", "k", "from a", fenced(first.lease->fence)).ok());
+    // The crash: a new process whose catalogue lost the lease.
+    store.reset();
+    ReplicationManager lost{zetta::util::new_uuid()};
+    store = std::make_unique<ObjectStore>(lost, lost.node_id(), dir.path() / "objects");
+    ASSERT_TRUE(store->open());
+    ASSERT_TRUE(store->create_bucket(bucket("lake_ws")).ok());
+    const std::optional<zetta::data::ObjectLease> restored = store->lease("lake_ws");
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(restored->holder, "lake-a");
+    EXPECT_EQ(restored->fence, first.lease->fence);
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));  // a's lease runs out
+    const ObjectOutcome second = store->acquire("lake_ws", "lake-b", 60'000);
+    ASSERT_TRUE(second.ok()) << second.message;
+    EXPECT_GT(second.lease->fence, first.lease->fence);
+    // The old holder never lands a write again.
+    const ObjectOutcome stale = store->put("lake_ws", "k", "from a again", fenced(first.lease->fence));
+    EXPECT_EQ(stale.status, ObjectStatus::Fenced);
+    EXPECT_EQ(store->renew("lake_ws", "lake-a", first.lease->fence, 60'000).status, ObjectStatus::Fenced);
+    EXPECT_TRUE(store->put("lake_ws", "k", "from b", fenced(second.lease->fence)).ok());
+    EXPECT_EQ(read(*store, "lake_ws", "k").bytes, "from b");
+    // A release is recorded too: after another crash the lease is free.
+    ASSERT_TRUE(store->release("lake_ws", "lake-b", second.lease->fence).ok());
+    store.reset();
+    ReplicationManager lost_again{zetta::util::new_uuid()};
+    store = std::make_unique<ObjectStore>(lost_again, lost_again.node_id(), dir.path() / "objects");
+    ASSERT_TRUE(store->open());
+    ASSERT_TRUE(store->create_bucket(bucket("lake_ws")).ok());
+    const ObjectOutcome third = store->acquire("lake_ws", "lake-c", 60'000);
+    ASSERT_TRUE(third.ok()) << third.message;
+    EXPECT_GT(third.lease->fence, second.lease->fence);
+    store.reset();
 }
 
 // Disk follows the live set: dead segments are deleted, live frames of a

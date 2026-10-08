@@ -1310,11 +1310,13 @@ struct ApiServer::Impl {
         return value == "true" || value == "1";
     }
 
-    // The mutation options a request carries: Zetta-Fence and ?durable.
+    // The mutation options a request carries: Zetta-Fence, Zetta-Incarnation
+    // (checked by the store in the same step as the write, lake#543) and ?durable.
     static std::optional<zetta::data::ObjectWrite> write_options(
         const boost::http::route_params& route, std::string& reason) {
         zetta::data::ObjectWrite options;
         options.durable = query_flag(route, "durable");
+        options.incarnation = expected_incarnation(route);
         if (route.req.count("Zetta-Fence") != 0) {
             const auto fence = parse_unsigned(route.req.at("Zetta-Fence"));
             if (!fence) {
@@ -1426,9 +1428,7 @@ struct ApiServer::Impl {
             nlohmann::json input{{"bucket", bucket}, {"key", key}};
             if (options->fence) input["fence"] = *options->fence;
             if (options->durable) input["durable"] = true;
-            if (std::string expected = expected_incarnation(route); !expected.empty()) {
-                input["incarnation"] = std::move(expected);
-            }
+            if (!options->incarnation.empty()) input["incarnation"] = options->incarnation;
             co_return co_await answer_capability(route, capability_registry.find("delete_object"),
                                                  std::move(input), identity);
         }
@@ -1493,12 +1493,6 @@ struct ApiServer::Impl {
         if (auto error = co_await read_body_slice(route, slice, kSlice, eof); error) {
             co_return http::route_error(error);
         }
-        // Read before the write, so a reopen of the bucket's log while it runs
-        // shows in the next answer rather than hiding in this one (lake#543).
-        const std::string incarnation = store.incarnation(bucket);
-        if (auto refusal = incarnation_refusal(expected_incarnation(route), incarnation)) {
-            co_return co_await send_object_result(route, *refusal, !eof);
-        }
         zetta::data::ObjectOutcome outcome;
         if (range) {
             // Each slice is one conditional append at the offset the previous left.
@@ -1553,7 +1547,7 @@ struct ApiServer::Impl {
         }
         if (!outcome.ok()) co_return co_await send_object_result(route, object_failure(outcome), !eof);
         co_return co_await send_object_result(
-            route, ApiResult::success(object_write_value(bucket, outcome, incarnation)));
+            route, ApiResult::success(object_write_value(bucket, outcome)));
     }
 
     boost::http::route_task serve_object_get(boost::http::route_params& route,
