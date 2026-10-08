@@ -32,7 +32,9 @@ reached only through cookie-authenticated web routes.
 
 The byte operations take and return raw bodies, never base64 JSON, and stream in both directions a
 slice (at most 4 MiB) at a time; no request holds a whole object in memory. Every mutation takes
-the bucket lease's fence as the `Zetta-Fence` header and `?durable=true` to fsync before answering.
+the bucket lease's fence as the `Zetta-Fence` header and `?durable=true` to fsync before answering,
+and every mutation and barrier an optional `Zetta-Incarnation` precondition
+([Durability format and incarnation](#durability-format-and-incarnation)).
 
 | Operation | Route | Contract |
 |---|---|---|
@@ -44,11 +46,12 @@ the bucket lease's fence as the `Zetta-Fence` header and `?durable=true` to fsyn
 | list | `GET /v1/objects/<bucket>?prefix=&after=&limit=` | Keys, sizes and update times ordered by key, `limit` 1 to 1000, `next_after` while there is more (`list_objects`). |
 | barrier | `POST /v1/objects/<bucket>:barrier` | Answers once every write acknowledged before the call is fsynced on every live node (`object_barrier`). |
 | usage | `GET /v1/objects/<bucket>:usage` | `{objects, bytes, quota_bytes}` (`object_usage`). |
-| owner lease | `POST /v1/objects/<bucket>:acquire` `{holder, ttl_ms, wait_ms}`, `:renew` `{holder, fence, ttl_ms}`, `:release` `{holder, fence}` | `{bucket, holder, fence, expires_ms}`, or `409 held` naming the holder once the wait ends (`acquire_object_lease`, `renew_object_lease`, `release_object_lease`). |
+| owner lease | `POST /v1/objects/<bucket>:acquire` `{holder, ttl_ms, wait_ms}`, `:renew` `{holder, fence, ttl_ms}`, `:release` `{holder, fence}` | `{bucket, holder, fence, expires_ms, incarnation, object_log_prefix_durability}`, or `409 held` naming the holder once the wait ends (`acquire_object_lease`, `renew_object_lease`, `release_object_lease`). |
 
-A write answers `{bucket, key, size, generation, updated_ms, owner, replicas, replicas_expected}`
-in the REST envelope. Errors use the registry's envelope and codes: `invalid_input` 400,
-`unauthorized` 403, `not_found` 404, `conflict` / `fenced` / `held` 409,
+A write answers `{bucket, key, size, generation, updated_ms, incarnation, owner, replicas,
+replicas_expected}` in the REST envelope, and a barrier `{bucket, nodes, incarnation,
+object_log_prefix_durability}` ([Durability format and incarnation](#durability-format-and-incarnation)). Errors use the registry's envelope and codes: `invalid_input` 400,
+`unauthorized` 403, `not_found` 404, `conflict` / `fenced` / `held` / `incarnation_changed` 409,
 `range_not_satisfiable` 416, `quota_exceeded` 507, `busy` 503 (retry). A refused upload's
 unread body is drained (up to 64 MiB) so the client's connection stays usable; past that the
 connection closes.
@@ -287,6 +290,82 @@ What it does not promise, stated so a caller can plan for it:
   its primary. Every write checked after the new fence is installed is refused.
 - **A node away longer than the tombstone grace** (24 hours) can bring back an object removed
   meanwhile when it rejoins.
+### Durability format and incarnation
+
+Refs [lake#543](https://github.com/oramasearch/lake/issues/543). Lake makes each operation on a
+workspace store durable with one barrier, so it relies on the prefix guarantee above. Two fields
+let it check that guarantee instead of trusting the deploy order:
+
+- **`object_log_prefix_durability`** is the durability format of this build's bucket logs
+  (`ObjectStore::kPrefixDurability`). `1` is the prefix guarantee of #1235. It is in the lease
+  answers (`:acquire`, `:renew`, `:release`), in the barrier's answer and in `server_info`. A node
+  from before #1235 reports nothing, and lake refuses to open a workspace store on it. The value
+  rises only for a stronger guarantee, and a caller accepts its own minimum or higher.
+- **`incarnation`** tells the caller whether the bucket's log could have lost acknowledged,
+  unsynced writes since an earlier answer. A random id of 32 hex digits is chosen when the node's
+  object store is constructed, so it differs after every start (`server_info.incarnation`). Each
+  bucket's answers append `.` and how many times this node reopened that bucket's log after a
+  failed fsync, because a reopen also cuts the log back to its last fsync. Every write, lease and
+  barrier answer carries it. A write's answer carries the incarnation it was decided under, read
+  in the same step as the write. A barrier's answer carries the incarnation read after its sync.
+- **`Zetta-Incarnation`**, a request header on `PUT`, `PATCH`, `DELETE` and `:barrier` (the
+  `incarnation` input of `delete_object` and `object_barrier`), is a precondition. When the
+  bucket's incarnation is another, the call answers `409 incarnation_changed` with
+  `details.incarnation` (the current one) and applies nothing. Detection after the fact is not
+  enough: if a restart lost a put and the next write, a removal, landed, the bucket would hold a
+  later write without an earlier one. For example, a checkpoint's removal of liquid's journal
+  would land without the checkpoint. With the precondition the removal is refused, so the bucket
+  stays a prefix of what the caller sent.
+
+  **The check and the write are one step.** Another start of the node is refused before the
+  write. The log's reopen count is compared by `ObjectLog` under its writers' lock
+  (`write_mutex_`), the lock a reopen holds while it swaps the log's state and raises the count.
+  So no reopen falls between the check and the write. A large `PUT` is checked at its commit, and
+  a reopen during its upload drops the staged parts, so the commit fails.
+
+  **A barrier spans its sync.** It reads the reopen count under that lock before the sync and
+  again after it. If the precondition does not match the first, or the two differ, it answers
+  `409 incarnation_changed` with the count read after. A reopen during the sync may have dropped
+  writes acknowledged before the barrier that the sync of the reopened log never covered, so the
+  barrier must not answer `200`.
+
+  `ObjectStore::set_before_log_write` and `set_before_barrier_sync` are injection points for fault
+  tests. They run between the checks and the log write, and between the first read and the sync.
+
+  The incarnation is the deciding node's: the key's primary for a write, which checks the
+  precondition (it travels in the `object.write` signal), and the answering node for a barrier. On
+  a one-node cluster, which every workspace is today, that node holds every write. With `rf > 1`,
+  the other owners' restarts do not show, and lake refuses such a workspace Zetta.
+- **The lease is on disk before it is answered.** The replicated catalogue reaches disk once a
+  second (`Node::tick`). A crash in that second used to bring back an older lease. The next
+  acquirer could then be handed a fence already handed out, or an old holder's fence could become
+  current again, and two holders could write. The deciding node therefore writes an acquire or a
+  release to a small file in the bucket's directory (`lease`) and fsyncs it, by temporary name,
+  rename and directory fsync, before it answers. At start the file's lease is taken when it is
+  newer than the catalogue's.
+
+  A renewal is not synced: it moves only the expiry, and losing one makes the lease end sooner,
+  which is safe. The cheaper alternative was to seed fences from the clock past anything issued
+  before a restart. It would not help when the catalogue comes back with an older holder's lease,
+  whose fence is then current again. One fsync per acquire and release is cheap: lake acquires once
+  per store open.
+- **The bucket definition is on disk before `create_bucket` answers**, in a `bucket` record in the
+  bucket's directory, written the same way. At start, a definition found on disk that the
+  catalogue lacks is registered again. Without it, a crash in the catalogue's last second left the
+  bucket's objects and lease on disk but the bucket answering "no bucket", and a lake workspace
+  switched to it was down for good. A definition never changes once created (a different one is a
+  conflict), so there is no newer quota that the record could hide. The record is written by the
+  node that answers `create_bucket`; peers learn the definition from it as before.
+- The records (`lease`, `bucket`) have their own lock in `ObjectLog`, not the writers' lock, so
+  their fsyncs never hold up a write.
+- **What the records do not cover.** Restoring a volume snapshot rolls the records back together
+  with the catalogue and the logs: fences handed out after the snapshot can be handed out again,
+  and the incarnation after the restore is a new one, so a lake process holding the old fence is
+  refused only if the fence moved past it. A volume restore needs every lake holder of its buckets
+  stopped first. A Zetta downgraded to an image without #1237 does not read `Zetta-Incarnation` at
+  all, so it cannot enforce the precondition. Its answers carry no incarnation, and lake fails the
+  store on the first one, after that write has landed.
+
 - The anti-entropy digest compares `(key, generation, size)`. A version's bytes never change
   within a generation (appends only add, and a retry must match), so no content hash is computed;
   every frame's payload is checksummed instead.
@@ -306,7 +385,9 @@ What it does not promise, stated so a caller can plan for it:
 | storage measurement | `GET …:usage` | |
 
 `401`/`403` map to `errc::unauthorized` and an unreachable node or `503 busy` to
-`errc::unavailable` (retry). Lake creates the bucket once per workspace with `create_bucket
+`errc::unavailable` (retry). Since lake#543 lake checks `object_log_prefix_durability` in the
+`:acquire` answer before it opens a store, and sends `Zetta-Incarnation` on every write and
+barrier ([Durability format and incarnation](#durability-format-and-incarnation)). Lake creates the bucket once per workspace with `create_bucket
 {bucket, quota_bytes}` and holds `objects:*` `ON BUCKET` its prefix.
 
 **One liquid write the contract refuses.** Liquid's packs only ever append, and its index flush
@@ -372,13 +453,18 @@ catalogue did not grow. Two changes the soak forced:
 | `ObjectStoreFixture.ConditionalCreateUnderARaceHasExactlyOneWinner` | 8 threads, 20 rounds, one winner each |
 | `ObjectStoreFixture.LargePutsAreAtomicForReaders` | a reader beside 10 MiB replacements never sees a mix; an aborted upload leaves the old object |
 | `ObjectStoreFixture.FencingRefusesAStaleHolderAfterATakeover` | fences, held, release, renewal keeping the lease, expiry, the fence across a restart |
-| `ObjectStoreFixture.ObjectsSurviveARestartAndStayOutOfTheCatalogue` | restart, appends continuing a version, nothing in the catalogue |
+| `ObjectStoreFixture.ObjectsSurviveARestartAndStayOutOfTheCatalogue` | restart, appends continuing a version, nothing in the catalogue; a restart is a new incarnation (lake#543) |
 | `ObjectStoreFixture.ATornTailLeavesAppendsWholeUpToTheBarrierAndPutsNeverPartial` | 28 torn tails (some with garbage): appends absent or whole and never short of the barrier; a put old or new, never partial |
 | `ObjectLogCrash.*` (`tests/data/test_object_log_crash.cpp`) | the prefix guarantee and the fsync discipline. The log reports each fsync to a sync observer, and a copy of its files loses the bytes no fsync covered: in the newest segment alone, in each older segment alone, or in all of them. The loss is cut off, zeroed in place, or decided per 512-byte block at random (a middle block lost and a later one kept, the size cut or kept). Replay must give the state after some prefix of the writes (puts, removes, appends, and staged puts with their commit), at least up to the last durable write or barrier. The cases: ten or more rolls; a writer with barriers running beside it; a process crash, a restart and more rolls before the power loss; a log from before #1235 torn in its second-to-last segment, and a marked log torn there refusing to open with `corrupt` and its files unchanged; compaction deleting a segment whose replacing frames were unsynced, and the directory fsync after the unlink; the directory fsyncs at `open`. An injected fsync checks the rest. A barrier waits for an fsync already running in a durable write, in compaction and in a roll. A failed fsync fails the log, refusing writes and barriers, until maintenance reopens it. The reopen cuts the failed segment back to its last fsync, so neither the reopened log nor a later barrier has the dropped writes. A reopen failing part way leaves the index as it was. Reopening backs off from 100 ms to 30 s and stops after 12 attempts |
-| `ObjectStoreFixture.AFailedLogAnswersUnavailableUntilItIsReopened` | a bucket whose log failed an fsync answers reads, listings, usage, barriers and writes `Unavailable` (not absent, empty or zero), also after a reopen fails part way; `failed_logs()` and the storage stats report it; the next reopen restores it |
+| `ObjectStoreFixture.AFailedLogAnswersUnavailableUntilItIsReopened` | a bucket whose log failed an fsync answers reads, listings, usage, barriers and writes `Unavailable` (not absent, empty or zero), also after a reopen fails part way; `failed_logs()` and the storage stats report it; the next reopen restores it, and only a reopen that succeeds raises the bucket's incarnation suffix (lake#543) |
+| `ObjectStoreFixture.AReopenBetweenThePreconditionAndTheWriteRefusesIt` | lake#543: a reopen forced (failed fsync, then maintenance) between a write's checks and its log write refuses a put, an append, a removal and an upload's commit with `IncarnationChanged`, applying nothing; the current incarnation is accepted and answered; another start's incarnation is refused |
+| `ObjectStoreFixture.ABarrierAcrossAReopenIsRefused` | lake#543: a reopen forced between a barrier's first incarnation read and its sync refuses the barrier with the incarnation read after it |
+| `ObjectStoreFixture.ABucketDefinitionSurvivesACrashThatLosesTheCatalogue` | lake#543: a bucket with a quota, its data-key object and its lease survive a crash whose catalogue lost all three: the definition is registered again at open, the object reads back, the lease and its holder are back, and an identical re-creation is idempotent |
+| `ObjectStoreFixture.ALeaseSurvivesACrashThatLosesTheCatalogue` | lake#543: an acquire and a release survive a crash whose catalogue lost them: the old holder's lease comes back, the next acquirer gets a higher fence, and the old holder's write and renewal are fenced |
 | `ObjectStoreFixture.CompactionKeepsDiskNearTheLiveSet` | segment retirement and moves, tombstone purge across a restart |
 | `ObjectStoreCluster.RfTwoOnThreeNodesSurvivesALossAndAReplacement` | rf = 2 on three real nodes: exactly two copies, reads from any node, a node killed and repaired, a replacement joining with objects moved and old copies dropped, no acknowledged write lost; the fence across nodes |
 | `ObjectStoreSoak.*` | the soak above |
+| `ObjectRoutes.AnswersCarryTheDurabilityFormatAndTheIncarnation` | lake#543: the lease and barrier answers and `server_info` report `object_log_prefix_durability: 1`; every write (one frame and an upload), lease and barrier answer carries the bucket's incarnation, `server_info.incarnation` then `.0`; a `PUT` (one frame and an upload), `PATCH`, `DELETE` or `:barrier` with another `Zetta-Incarnation` answers `409 incarnation_changed` naming the current one and applies nothing |
 | `ObjectRoutes.*` | the raw routes and statuses, the aliases, fencing and the waiting acquire over REST and MCP, the `ON BUCKET` grant and its audit rows, `507`, MCP and OpenAPI, and the six latency budgets |
 
 ## Later

@@ -108,11 +108,16 @@ public:
         Stale,      // a replica install older than what is held: nothing to do
         NotFound,   // the key has no live version
         Io,         // the segment could not be written
+        IncarnationChanged,  // the log was reopened since the caller's expected reopen count
     };
     struct Written {
         Result result = Result::Ok;
         std::optional<ObjectVersion> version;  // after the write; on Conflict the live one
         bool durable = true;                   // with `sync`: the fsync succeeded
+        // The log's reopen count the write was decided under, read under the
+        // writers' lock, which a reopen holds while it swaps the log's state
+        // (lake#543).
+        std::uint64_t reopens = 0;
     };
 
     // `directory` empty keeps the segments in memory (tests and benchmarks).
@@ -142,6 +147,10 @@ public:
         bool stopped = false;  // reopening gave up: an operator must restart
         std::uint32_t reopen_attempts = 0;
         std::int64_t next_reopen_ms = 0;
+        // Reopens that succeeded since the log was opened. Each one may have
+        // dropped writes acknowledged without durability, so it is part of
+        // the bucket's incarnation (ObjectStore::incarnation, lake#543).
+        std::uint64_t reopens = 0;
     };
     Health health() const;
     ~ObjectLog();
@@ -162,17 +171,40 @@ public:
     // offset + bytes inside the object and equal to the bytes there: Unchanged.
     // Absent and offset 0: a new generation, at least `fresh`. Anything else:
     // Conflict carrying the live version (size 0 when absent).
+    //
+    // `expected_reopens` (lake#543), when given, is compared with the log's
+    // reopen count under the writers' lock, the lock a reopen holds while it
+    // swaps the log's state: a different count answers IncarnationChanged and
+    // writes nothing. The check and the write are one step, so no reopen can
+    // fall between them.
     Written append(const std::string& key, std::uint64_t offset, std::string_view bytes,
-                   std::uint64_t fresh, bool sync);
+                   std::uint64_t fresh, bool sync,
+                   std::optional<std::uint64_t> expected_reopens = std::nullopt);
     // A whole object in one frame (at most kSliceBytes). `if_absent`: Conflict when live.
     Written put(const std::string& key, std::string_view bytes, std::uint64_t fresh,
-                bool if_absent, bool sync);
+                bool if_absent, bool sync,
+                std::optional<std::uint64_t> expected_reopens = std::nullopt);
     // Commit a staged upload as the new version: Conflict when `if_absent` and live,
     // NotFound when the upload's bytes are not all here.
     Written commit(const std::string& key, std::uint64_t upload, std::uint64_t size,
-                   std::uint64_t fresh, bool if_absent, bool sync);
+                   std::uint64_t fresh, bool if_absent, bool sync,
+                   std::optional<std::uint64_t> expected_reopens = std::nullopt);
     // Tombstone the live version; NotFound when there is none.
-    Written remove(const std::string& key, std::uint64_t fresh, bool sync);
+    Written remove(const std::string& key, std::uint64_t fresh, bool sync,
+                   std::optional<std::uint64_t> expected_reopens = std::nullopt);
+    // The reopen count, read under the writers' lock: a reopen in progress has
+    // either finished swapping the log's state or not begun (lake#543).
+    std::uint64_t reopens() const;
+
+    // A small record beside the segments (lake#543): the bucket's lease as its
+    // deciding node last recorded it (`lease`) and the bucket's definition
+    // (`bucket`). It is written to a temporary name, fsynced, renamed and its
+    // directory fsynced before this returns true, so it survives a crash that
+    // loses the replicated catalogue's last second. A log kept in memory keeps
+    // it in memory. Records have their own lock, never the writers', and a
+    // failure here does not fail the log.
+    bool write_record(const std::string& name, const std::string& document);
+    std::optional<std::string> read_record(const std::string& name) const;
 
     // ---- uploads ---------------------------------------------------------------
 
@@ -328,7 +360,7 @@ private:
     mutable std::shared_mutex mutex_;
     // Writers, one at a time, for the whole of a write (decision, append,
     // directory change); `mutex_` is held only for the decision and the change.
-    std::mutex write_mutex_;
+    mutable std::mutex write_mutex_;
     std::map<std::string, Entry> entries_;
     std::array<std::uint64_t, kBuckets> digests_{};
     std::map<std::uint64_t, Upload> uploads_;
@@ -350,6 +382,10 @@ private:
     std::int64_t reopen_delay_ms_ = 0;
     std::int64_t next_reopen_ms_ = 0;
     bool reopen_stopped_ = false;
+    // Changed only under write_mutex_, while a reopen swaps the log's state.
+    std::atomic<std::uint64_t> reopens_{0};
+    mutable std::mutex records_mutex_;  // write_record / read_record, one at a time
+    std::map<std::string, std::string> records_in_memory_;  // a log kept in memory
 };
 
 }  // namespace zetta::data

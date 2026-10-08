@@ -28,6 +28,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -446,6 +447,76 @@ TEST_F(ObjectRoutes, TheLeaseFencesWritesAndAcquireWaitsForReleaseAndExpiry) {
     ASSERT_EQ(over_mcp.status, 200);
     EXPECT_EQ(over_mcp.json()["result"]["structuredContent"]["error"]["code"], "held");
     EXPECT_GE(since_ms(started), 150.0);
+}
+
+// lake#543: the lease and barrier answers report the durability format lake
+// checks before it opens a store, every write, lease and barrier answer carries
+// the bucket's incarnation (server_info reports the node's), and a write or
+// barrier sent with another incarnation in Zetta-Incarnation is refused
+// `incarnation_changed` without being applied.
+TEST_F(ObjectRoutes, AnswersCarryTheDurabilityFormatAndTheIncarnation) {
+    run_loop();
+    HttpClient http = client();
+    auto info = http.request("GET", "/v1/server_info");
+    ASSERT_EQ(info.status, 200) << info.body;
+    EXPECT_EQ(info.json()["value"]["object_log_prefix_durability"], 1);
+    const std::string node_incarnation = info.json()["value"]["incarnation"].get<std::string>();
+    ASSERT_EQ(node_incarnation.size(), 32u);
+    const std::string incarnation = node_incarnation + ".0";
+
+    ASSERT_EQ(http.request("POST", "/v1/create_bucket", R"({"bucket":"lake_ws"})").status, 200);
+    auto acquired = http.request("POST", "/v1/objects/lake_ws:acquire", R"({"holder":"lake-1","ttl_ms":60000})");
+    ASSERT_EQ(acquired.status, 200) << acquired.body;
+    EXPECT_EQ(acquired.json()["value"]["object_log_prefix_durability"], 1);
+    EXPECT_EQ(acquired.json()["value"]["incarnation"], incarnation);
+    const Headers with_fence{{"Zetta-Fence", std::to_string(acquired.json()["value"]["fence"].get<std::uint64_t>())}};
+    auto put = http.request("PUT", "/v1/objects/lake_ws/k", "x", with_fence);
+    ASSERT_EQ(put.status, 200) << put.body;
+    EXPECT_EQ(put.json()["value"]["incarnation"], incarnation);
+    // A body larger than a slice goes through an upload; its answer carries it too.
+    auto large = http.request("PUT", "/v1/objects/lake_ws/large", std::string(5 * 1024 * 1024, 'l'), with_fence);
+    ASSERT_EQ(large.status, 200) << large.body;
+    EXPECT_EQ(large.json()["value"]["incarnation"], incarnation);
+    auto patched = http.request("PATCH", "/v1/objects/lake_ws/k?offset=1", "y", with_fence);
+    ASSERT_EQ(patched.status, 200) << patched.body;
+    EXPECT_EQ(patched.json()["value"]["incarnation"], incarnation);
+    auto removed = http.request("DELETE", "/v1/objects/lake_ws/large", {}, with_fence);
+    ASSERT_EQ(removed.status, 200) << removed.body;
+    EXPECT_EQ(removed.json()["value"]["incarnation"], incarnation);
+    auto barrier = http.request("POST", "/v1/objects/lake_ws:barrier");
+    ASSERT_EQ(barrier.status, 200) << barrier.body;
+    EXPECT_EQ(barrier.json()["value"]["incarnation"], incarnation);
+    EXPECT_EQ(barrier.json()["value"]["object_log_prefix_durability"], 1);
+    auto renewed = http.request("POST", "/v1/objects/lake_ws:renew",
+                                R"({"holder":"lake-1","fence":1,"ttl_ms":60000})");
+    ASSERT_EQ(renewed.status, 200) << renewed.body;
+    EXPECT_EQ(renewed.json()["value"]["incarnation"], incarnation);
+
+    // Zetta-Incarnation is a precondition: another incarnation is refused and nothing applied.
+    Headers expecting = with_fence;
+    expecting.emplace_back("Zetta-Incarnation", incarnation);
+    Headers stale = with_fence;
+    stale.emplace_back("Zetta-Incarnation", std::string(32, '0') + ".0");
+    EXPECT_EQ(http.request("PUT", "/v1/objects/lake_ws/k", "same", expecting).status, 200);
+    for (const auto& [method, target, body] :
+         std::vector<std::tuple<std::string, std::string, std::string>>{
+             {"PUT", "/v1/objects/lake_ws/k", "other"},
+             {"PUT", "/v1/objects/lake_ws/k2", std::string(5 * 1024 * 1024, 'u')},
+             {"PATCH", "/v1/objects/lake_ws/k?offset=4", "more"},
+             {"DELETE", "/v1/objects/lake_ws/k", ""},
+             {"POST", "/v1/objects/lake_ws:barrier", ""}}) {
+        auto refused = http.request(method, target, body, stale);
+        EXPECT_EQ(refused.status, 409) << method << " " << target << ": " << refused.body;
+        EXPECT_EQ(refused.json()["error"]["code"], "incarnation_changed") << method << " " << target;
+        EXPECT_EQ(refused.json()["error"]["details"]["incarnation"], incarnation) << method << " " << target;
+    }
+    EXPECT_EQ(http.request("GET", "/v1/objects/lake_ws/k").body, "same");
+    EXPECT_EQ(http.request("GET", "/v1/objects/lake_ws/k2").status, 404);
+    EXPECT_EQ(http.request("POST", "/v1/objects/lake_ws:barrier", {}, expecting).status, 200);
+
+    auto released = http.request("POST", "/v1/objects/lake_ws:release", R"({"holder":"lake-1","fence":1})");
+    ASSERT_EQ(released.status, 200) << released.body;
+    EXPECT_EQ(released.json()["value"]["incarnation"], incarnation);
 }
 
 // `GRANT objects:read, objects:write ON BUCKET lake_`: the holder reaches the

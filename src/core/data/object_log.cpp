@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <set>
 #include <system_error>
 #include <utility>
@@ -775,12 +776,18 @@ std::optional<ObjectVersion> ObjectLog::stat(const std::string& key) const {
 // ---- the ordering node ----------------------------------------------------------------
 
 ObjectLog::Written ObjectLog::append(const std::string& key, std::uint64_t offset,
-                                     std::string_view bytes, std::uint64_t fresh, bool sync) {
+                                     std::string_view bytes, std::uint64_t fresh, bool sync,
+                                     std::optional<std::uint64_t> expected_reopens) {
     const std::uint32_t payload_crc = crc32c(bytes);  // computed before any lock
     Written written;
     std::shared_ptr<Segment> segment;
     {
         const std::lock_guard writing(write_mutex_);
+        written.reopens = reopens_.load();
+        if (expected_reopens && *expected_reopens != written.reopens) {
+            written.result = Result::IncarnationChanged;
+            return written;
+        }
         std::unique_lock lock(mutex_);
         const auto found = entries_.find(key);
         const bool live = found != entries_.end() && !found->second.deleted;
@@ -871,12 +878,18 @@ ObjectLog::Written ObjectLog::append(const std::string& key, std::uint64_t offse
 }
 
 ObjectLog::Written ObjectLog::put(const std::string& key, std::string_view bytes,
-                                  std::uint64_t fresh, bool if_absent, bool sync) {
+                                  std::uint64_t fresh, bool if_absent, bool sync,
+                                  std::optional<std::uint64_t> expected_reopens) {
     const std::uint32_t payload_crc = crc32c(bytes);  // computed before any lock
     Written written;
     std::shared_ptr<Segment> segment;
     {
         const std::lock_guard writing(write_mutex_);
+        written.reopens = reopens_.load();
+        if (expected_reopens && *expected_reopens != written.reopens) {
+            written.result = Result::IncarnationChanged;
+            return written;
+        }
         std::unique_lock lock(mutex_);
         const auto found = entries_.find(key);
         const bool live = found != entries_.end() && !found->second.deleted;
@@ -918,11 +931,16 @@ ObjectLog::Written ObjectLog::put(const std::string& key, std::string_view bytes
 
 ObjectLog::Written ObjectLog::commit(const std::string& key, std::uint64_t upload,
                                      std::uint64_t size, std::uint64_t fresh, bool if_absent,
-                                     bool sync) {
+                                     bool sync, std::optional<std::uint64_t> expected_reopens) {
     Written written;
     std::shared_ptr<Segment> segment;
     {
         const std::lock_guard writing(write_mutex_);
+        written.reopens = reopens_.load();
+        if (expected_reopens && *expected_reopens != written.reopens) {
+            written.result = Result::IncarnationChanged;
+            return written;
+        }
         std::unique_lock lock(mutex_);
         const auto staged = uploads_.find(upload);
         if (staged == uploads_.end() || staged->second.key != key || staged->second.size != size ||
@@ -967,11 +985,17 @@ ObjectLog::Written ObjectLog::commit(const std::string& key, std::uint64_t uploa
     return finish(std::move(written), std::move(segment), sync);
 }
 
-ObjectLog::Written ObjectLog::remove(const std::string& key, std::uint64_t fresh, bool sync) {
+ObjectLog::Written ObjectLog::remove(const std::string& key, std::uint64_t fresh, bool sync,
+                                     std::optional<std::uint64_t> expected_reopens) {
     Written written;
     std::shared_ptr<Segment> segment;
     {
         const std::lock_guard writing(write_mutex_);
+        written.reopens = reopens_.load();
+        if (expected_reopens && *expected_reopens != written.reopens) {
+            written.result = Result::IncarnationChanged;
+            return written;
+        }
         std::unique_lock lock(mutex_);
         const auto found = entries_.find(key);
         if (found == entries_.end() || found->second.deleted) {
@@ -1408,6 +1432,47 @@ std::uint64_t ObjectLog::object_bytes() const {
     return live_object_bytes_;
 }
 
+std::uint64_t ObjectLog::reopens() const {
+    const std::lock_guard writing(write_mutex_);
+    return reopens_.load();
+}
+
+bool ObjectLog::write_record(const std::string& name, const std::string& document) {
+    const std::lock_guard recording(records_mutex_);
+    if (directory_.empty()) {
+        records_in_memory_[name] = document;
+        return true;
+    }
+    const std::filesystem::path scratch = directory_ / (name + ".tmp");
+    const int descriptor = ::open(scratch.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (descriptor < 0) return false;
+    bool ok = ::write(descriptor, document.data(), document.size()) ==
+                  static_cast<ssize_t>(document.size()) &&
+              fsync_descriptor(scratch, descriptor) == 0;
+    ::close(descriptor);
+    std::error_code error;
+    if (ok) std::filesystem::rename(scratch, directory_ / name, error);
+    ok = ok && !error;
+    if (ok) {
+        const int directory = ::open(directory_.c_str(), O_RDONLY);
+        ok = directory >= 0 && fsync_descriptor(directory_, directory) == 0;
+        if (directory >= 0) ::close(directory);
+    }
+    return ok;
+}
+
+std::optional<std::string> ObjectLog::read_record(const std::string& name) const {
+    const std::lock_guard recording(records_mutex_);
+    if (directory_.empty()) {
+        const auto found = records_in_memory_.find(name);
+        if (found == records_in_memory_.end()) return std::nullopt;
+        return found->second;
+    }
+    std::ifstream file(directory_ / name, std::ios::binary);
+    if (!file) return std::nullopt;
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
 bool ObjectLog::sync() {
     // Every segment holding bytes no completed fsync covered. flush() waits for
     // an fsync of the segment already running (a durable write's, a roll's,
@@ -1452,7 +1517,8 @@ void ObjectLog::maintain(std::int64_t now_ms) {
 
 ObjectLog::Health ObjectLog::health() const {
     const std::lock_guard failing(failure_mutex_);
-    return Health{failed_.load(), reopen_stopped_, reopen_attempts_, next_reopen_ms_};
+    return Health{failed_.load(), reopen_stopped_, reopen_attempts_, next_reopen_ms_,
+                  reopens_.load()};
 }
 
 bool ObjectLog::reopen(std::int64_t now_ms) {
@@ -1510,6 +1576,10 @@ bool ObjectLog::reopen(std::int64_t now_ms) {
         std::swap(extent_count_, fresh->extent_count_);
         std::swap(compaction_offset_, fresh->compaction_offset_);
         std::swap(marked_, fresh->marked_);
+        // Under the writers' lock, with the new state: a write checked against
+        // the old count can no longer land, and one decided from here on sees
+        // the new count (lake#543).
+        reopens_.fetch_add(1);
     }
     // `fresh` now holds the old segments, or a failed attempt's: never flush them.
     fresh->sync_observer_ = nullptr;

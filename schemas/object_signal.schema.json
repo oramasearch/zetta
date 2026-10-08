@@ -45,6 +45,10 @@
     "if_absent": {
       "type": "boolean"
     },
+    "incarnation": {
+      "maxLength": 128,
+      "type": "string"
+    },
     "key": {
       "maxLength": 1024,
       "minLength": 1,

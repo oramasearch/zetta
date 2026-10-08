@@ -37,7 +37,8 @@ std::string object_error_code(zetta::data::ObjectStatus status);
 // current `fence` when fenced, the holder's lease when held.
 ApiResult object_failure(const zetta::data::ObjectOutcome& outcome);
 
-// The success value of a write (put, put range, remove).
+// The success value of a write (put, put range, remove), with the incarnation
+// the write was decided under (ObjectOutcome::incarnation, lake#543).
 nlohmann::json object_write_value(const std::string& bucket,
                                   const zetta::data::ObjectOutcome& outcome);
 

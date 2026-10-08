@@ -151,13 +151,24 @@
                         "holder": {
                           "description": "empty once released",
                           "type": "string"
+                        },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this node's bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a node from before it",
+                          "minimum": 1,
+                          "type": "integer"
                         }
                       },
                       "required": [
                         "bucket",
                         "holder",
                         "fence",
-                        "expires_ms"
+                        "expires_ms",
+                        "incarnation",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }
@@ -8235,6 +8246,12 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "incarnation": {
+                    "description": "a precondition (the Zetta-Incarnation header on the routes): the bucket's incarnation the caller last saw; when it differs the call is refused `incarnation_changed` (409) and nothing is applied (lake#543)",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
@@ -8288,6 +8305,10 @@
                           "minimum": 0,
                           "type": "integer"
                         },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
                         "key": {
                           "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
                           "maxLength": 1024,
@@ -8323,6 +8344,7 @@
                       },
                       "required": [
                         "bucket",
+                        "incarnation",
                         "owner",
                         "replicas",
                         "replicas_expected"
@@ -24602,6 +24624,12 @@
                     "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
                     "type": "string"
                   },
+                  "incarnation": {
+                    "description": "a precondition (the Zetta-Incarnation header on the routes): the bucket's incarnation the caller last saw; when it differs the call is refused `incarnation_changed` (409) and nothing is applied (lake#543)",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
@@ -24643,15 +24671,26 @@
                           "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
                           "type": "string"
                         },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
                         "nodes": {
                           "description": "the nodes that synced the bucket",
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this node's bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a node from before it",
                           "minimum": 1,
                           "type": "integer"
                         }
                       },
                       "required": [
                         "bucket",
-                        "nodes"
+                        "nodes",
+                        "incarnation",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }
@@ -24969,6 +25008,15 @@
             }
           },
           {
+            "description": "the bucket's incarnation the caller last saw; when the bucket's is another, 409 `incarnation_changed` (details.incarnation) and nothing is applied (lake#543)",
+            "in": "header",
+            "name": "Zetta-Incarnation",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "fsync before answering (otherwise the barrier is the durability point)",
             "in": "query",
             "name": "durable",
@@ -25010,6 +25058,10 @@
                           "minimum": 0,
                           "type": "integer"
                         },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
                         "key": {
                           "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
                           "maxLength": 1024,
@@ -25045,6 +25097,7 @@
                       },
                       "required": [
                         "bucket",
+                        "incarnation",
                         "owner",
                         "replicas",
                         "replicas_expected"
@@ -25070,7 +25123,7 @@
                 }
               }
             },
-            "description": "`fenced`: a stale or missing Zetta-Fence"
+            "description": "`fenced`: a stale or missing Zetta-Fence; `incarnation_changed`: see Zetta-Incarnation"
           },
           "4XX": {
             "content": {
@@ -25232,6 +25285,15 @@
             }
           },
           {
+            "description": "the bucket's incarnation the caller last saw; when the bucket's is another, 409 `incarnation_changed` (details.incarnation) and nothing is applied (lake#543)",
+            "in": "header",
+            "name": "Zetta-Incarnation",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "fsync before answering (otherwise the barrier is the durability point)",
             "in": "query",
             "name": "durable",
@@ -25294,6 +25356,10 @@
                           "minimum": 0,
                           "type": "integer"
                         },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
                         "key": {
                           "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
                           "maxLength": 1024,
@@ -25329,6 +25395,7 @@
                       },
                       "required": [
                         "bucket",
+                        "incarnation",
                         "owner",
                         "replicas",
                         "replicas_expected"
@@ -25354,7 +25421,7 @@
                 }
               }
             },
-            "description": "`conflict`: any other range (details.size is the object's size); `fenced`: a stale or missing Zetta-Fence"
+            "description": "`conflict`: any other range (details.size is the object's size); `fenced`: a stale or missing Zetta-Fence; `incarnation_changed`: see Zetta-Incarnation"
           },
           "4XX": {
             "content": {
@@ -25425,6 +25492,15 @@
             }
           },
           {
+            "description": "the bucket's incarnation the caller last saw; when the bucket's is another, 409 `incarnation_changed` (details.incarnation) and nothing is applied (lake#543)",
+            "in": "header",
+            "name": "Zetta-Incarnation",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "fsync before answering (otherwise the barrier is the durability point)",
             "in": "query",
             "name": "durable",
@@ -25486,6 +25562,10 @@
                           "minimum": 0,
                           "type": "integer"
                         },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
                         "key": {
                           "description": "the object's key: 1 to 1024 bytes, `/` as separator, no control characters",
                           "maxLength": 1024,
@@ -25521,6 +25601,7 @@
                       },
                       "required": [
                         "bucket",
+                        "incarnation",
                         "owner",
                         "replicas",
                         "replicas_expected"
@@ -25546,7 +25627,7 @@
                 }
               }
             },
-            "description": "`conflict`: the key exists (if_absent); `fenced`: a stale or missing Zetta-Fence (details.fence)"
+            "description": "`conflict`: the key exists (if_absent); `fenced`: a stale or missing Zetta-Fence (details.fence); `incarnation_changed`: see Zetta-Incarnation"
           },
           "4XX": {
             "content": {
@@ -25673,13 +25754,24 @@
                         "holder": {
                           "description": "empty once released",
                           "type": "string"
+                        },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this node's bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a node from before it",
+                          "minimum": 1,
+                          "type": "integer"
                         }
                       },
                       "required": [
                         "bucket",
                         "holder",
                         "fence",
-                        "expires_ms"
+                        "expires_ms",
+                        "incarnation",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }
@@ -25734,6 +25826,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "the bucket's incarnation the caller last saw; when the bucket's is another, 409 `incarnation_changed` (details.incarnation) and nothing is applied (lake#543)",
+            "in": "header",
+            "name": "Zetta-Incarnation",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -25763,15 +25864,26 @@
                           "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
                           "type": "string"
                         },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
                         "nodes": {
                           "description": "the nodes that synced the bucket",
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this node's bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a node from before it",
                           "minimum": 1,
                           "type": "integer"
                         }
                       },
                       "required": [
                         "bucket",
-                        "nodes"
+                        "nodes",
+                        "incarnation",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }
@@ -25785,6 +25897,16 @@
               }
             },
             "description": "every live node synced the bucket"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "`incarnation_changed`: see Zetta-Incarnation"
           },
           "4XX": {
             "content": {
@@ -25894,13 +26016,24 @@
                         "holder": {
                           "description": "empty once released",
                           "type": "string"
+                        },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this node's bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a node from before it",
+                          "minimum": 1,
+                          "type": "integer"
                         }
                       },
                       "required": [
                         "bucket",
                         "holder",
                         "fence",
-                        "expires_ms"
+                        "expires_ms",
+                        "incarnation",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }
@@ -26030,13 +26163,24 @@
                         "holder": {
                           "description": "empty once released",
                           "type": "string"
+                        },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this node's bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a node from before it",
+                          "minimum": 1,
+                          "type": "integer"
                         }
                       },
                       "required": [
                         "bucket",
                         "holder",
                         "fence",
-                        "expires_ms"
+                        "expires_ms",
+                        "incarnation",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }
@@ -29165,13 +29309,24 @@
                         "holder": {
                           "description": "empty once released",
                           "type": "string"
+                        },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this node's bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a node from before it",
+                          "minimum": 1,
+                          "type": "integer"
                         }
                       },
                       "required": [
                         "bucket",
                         "holder",
                         "fence",
-                        "expires_ms"
+                        "expires_ms",
+                        "incarnation",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }
@@ -29303,13 +29458,24 @@
                         "holder": {
                           "description": "empty once released",
                           "type": "string"
+                        },
+                        "incarnation": {
+                          "description": "the answering node's incarnation for this bucket: a random id chosen at the node's start, then `.` and how many times its log for the bucket was reopened after a failed fsync. A change between a write's answer and a barrier's means the write may be gone (lake#543)",
+                          "type": "string"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this node's bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a node from before it",
+                          "minimum": 1,
+                          "type": "integer"
                         }
                       },
                       "required": [
                         "bucket",
                         "holder",
                         "fence",
-                        "expires_ms"
+                        "expires_ms",
+                        "incarnation",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }
@@ -30907,6 +31073,10 @@
                           },
                           "type": "array"
                         },
+                        "incarnation": {
+                          "description": "a random id chosen when this node's object store started; it changes at every start. The object answers carry it per bucket (lake#543). Absent on a node without an object store",
+                          "type": "string"
+                        },
                         "jobs": {
                           "type": "integer"
                         },
@@ -30915,6 +31085,11 @@
                         },
                         "node_id": {
                           "type": "string"
+                        },
+                        "object_log_prefix_durability": {
+                          "description": "the durability format of this build's object bucket logs: 1 keeps a prefix of a bucket's writes, up to the last barrier, after any crash, power loss included (#1235). Absent on a build from before it; the object lease and barrier answers carry it too (lake#543)",
+                          "minimum": 1,
+                          "type": "integer"
                         },
                         "projects": {
                           "type": "integer"
@@ -30935,7 +31110,8 @@
                         "runs",
                         "models",
                         "jobs",
-                        "failed_object_logs"
+                        "failed_object_logs",
+                        "object_log_prefix_durability"
                       ],
                       "type": "object"
                     }

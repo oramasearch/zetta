@@ -40,17 +40,20 @@ std::string object_error_code(ObjectStatus status) {
         case ObjectStatus::OutOfRange: return "range_not_satisfiable";
         case ObjectStatus::QuotaExceeded: return "quota_exceeded";
         case ObjectStatus::Unavailable: return "busy";
+        case ObjectStatus::IncarnationChanged: return "incarnation_changed";
     }
     return "engine_error";
 }
 
 namespace {
 
-nlohmann::json lease_value(const zetta::data::ObjectLease& lease) {
+nlohmann::json lease_value(const zetta::data::ObjectLease& lease, const std::string& incarnation) {
     return {{"bucket", lease.bucket},
             {"holder", lease.holder},
             {"fence", lease.fence},
-            {"expires_ms", lease.expires_ms}};
+            {"expires_ms", lease.expires_ms},
+            {"incarnation", incarnation},
+            {"object_log_prefix_durability", zetta::data::ObjectStore::kPrefixDurability}};
 }
 
 }  // namespace
@@ -67,8 +70,14 @@ ApiResult object_failure(const ObjectOutcome& outcome) {
             if (outcome.bucket) details["bucket"] = to_json(*outcome.bucket);
             break;
         case ObjectStatus::Fenced: details["fence"] = outcome.fence; break;
+        case ObjectStatus::IncarnationChanged: details["incarnation"] = outcome.incarnation; break;
         case ObjectStatus::Held:
-            if (outcome.lease) details = lease_value(*outcome.lease);
+            if (outcome.lease) {
+                details = {{"bucket", outcome.lease->bucket},
+                           {"holder", outcome.lease->holder},
+                           {"fence", outcome.lease->fence},
+                           {"expires_ms", outcome.lease->expires_ms}};
+            }
             break;
         default: break;
     }
@@ -78,6 +87,7 @@ ApiResult object_failure(const ObjectOutcome& outcome) {
 
 nlohmann::json object_write_value(const std::string& bucket, const ObjectOutcome& outcome) {
     nlohmann::json value{{"bucket", bucket},
+                         {"incarnation", outcome.incarnation},
                          {"owner", outcome.owner},
                          {"replicas", outcome.replicas},
                          {"replicas_expected", outcome.replicas_expected}};
@@ -172,6 +182,34 @@ nlohmann::json ttl_property() {
             {"description", "how long the lease lasts without a renewal, in ms"}};
 }
 
+nlohmann::json incarnation_property() {
+    return {{"type", "string"},
+            {"description",
+             "the answering node's incarnation for this bucket: a random id chosen at the "
+             "node's start, then `.` and how many times its log for the bucket was reopened "
+             "after a failed fsync. A change between a write's answer and a barrier's means "
+             "the write may be gone (lake#543)"}};
+}
+
+nlohmann::json expected_incarnation_property() {
+    return {{"type", "string"},
+            {"minLength", 1},
+            {"maxLength", 128},
+            {"description",
+             "a precondition (the Zetta-Incarnation header on the routes): the bucket's "
+             "incarnation the caller last saw; when it differs the call is refused "
+             "`incarnation_changed` (409) and nothing is applied (lake#543)"}};
+}
+
+nlohmann::json prefix_durability_property() {
+    return {{"type", "integer"},
+            {"minimum", 1},
+            {"description",
+             "the durability format of this node's bucket logs: 1 keeps a prefix of a "
+             "bucket's writes, up to the last barrier, after any crash, power loss included "
+             "(#1235). Absent on a node from before it"}};
+}
+
 nlohmann::json lease_output_schema() {
     return object_schema(
         {{"bucket", bucket_property()},
@@ -180,8 +218,11 @@ nlohmann::json lease_output_schema() {
           {{"type", "integer"},
            {"minimum", 0},
            {"description", "send this as Zetta-Fence on every mutation of the bucket"}}},
-         {"expires_ms", {{"type", "integer"}}}},
-        {"bucket", "holder", "fence", "expires_ms"});
+         {"expires_ms", {{"type", "integer"}}},
+         {"incarnation", incarnation_property()},
+         {"object_log_prefix_durability", prefix_durability_property()}},
+        {"bucket", "holder", "fence", "expires_ms", "incarnation",
+         "object_log_prefix_durability"});
 }
 
 nlohmann::json write_output_schema() {
@@ -194,6 +235,7 @@ nlohmann::json write_output_schema() {
            {"minimum", 0},
            {"description", "rises with every new version of the key"}}},
          {"updated_ms", {{"type", "integer"}}},
+         {"incarnation", incarnation_property()},
          {"unchanged",
           {{"type", "boolean"},
            {"description", "a retried append whose bytes were already there"}}},
@@ -202,7 +244,7 @@ nlohmann::json write_output_schema() {
           {{"type", "integer"}, {"minimum", 0}, {"description", "owners that hold the write"}}},
          {"replicas_expected",
           {{"type", "integer"}, {"minimum", 0}, {"description", "the owners it was placed on"}}}},
-        {"bucket", "owner", "replicas", "replicas_expected"});
+        {"bucket", "incarnation", "owner", "replicas", "replicas_expected"});
 }
 
 // A capability scoped by bucket: the flat right, or ON BUCKET <prefix>.
@@ -351,12 +393,21 @@ ApiResult handle_object_usage(const nlohmann::json& input, ApiContext& context) 
     return ApiResult::success(std::move(output));
 }
 
+const nlohmann::json& barrier_schema() {
+    static const nlohmann::json schema = object_schema(
+        {{"bucket", bucket_property()}, {"incarnation", expected_incarnation_property()}},
+        {"bucket"});
+    return schema;
+}
+
 const nlohmann::json& barrier_output_schema() {
     static const nlohmann::json schema = object_schema(
         {{"bucket", bucket_property()},
          {"nodes", {{"type", "integer"}, {"minimum", 1},
-                    {"description", "the nodes that synced the bucket"}}}},
-        {"bucket", "nodes"});
+                    {"description", "the nodes that synced the bucket"}}},
+         {"incarnation", incarnation_property()},
+         {"object_log_prefix_durability", prefix_durability_property()}},
+        {"bucket", "nodes", "incarnation", "object_log_prefix_durability"});
     return schema;
 }
 
@@ -364,9 +415,14 @@ ApiResult handle_object_barrier(const nlohmann::json& input, ApiContext& context
     zetta::data::ObjectStore* store = context.node.object_store();
     if (!store) return no_store();
     const std::string bucket = input.at("bucket").get<std::string>();
-    const ObjectOutcome outcome = store->barrier(bucket);
+    const ObjectOutcome outcome =
+        store->barrier(bucket, input.value("incarnation", std::string()));
     if (!outcome.ok()) return object_failure(outcome);
-    return ApiResult::success({{"bucket", bucket}, {"nodes", outcome.nodes}});
+    return ApiResult::success({{"bucket", bucket},
+                               {"nodes", outcome.nodes},
+                               {"incarnation", outcome.incarnation},
+                               {"object_log_prefix_durability",
+                                zetta::data::ObjectStore::kPrefixDurability}});
 }
 
 const nlohmann::json& delete_object_schema() {
@@ -374,7 +430,8 @@ const nlohmann::json& delete_object_schema() {
         {{"bucket", bucket_property()},
          {"key", key_property()},
          {"fence", fence_property()},
-         {"durable", {{"type", "boolean"}, {"description", "fsync before answering"}}}},
+         {"durable", {{"type", "boolean"}, {"description", "fsync before answering"}}},
+         {"incarnation", expected_incarnation_property()}},
         {"bucket", "key"});
     return schema;
 }
@@ -386,6 +443,7 @@ ApiResult handle_delete_object(const nlohmann::json& input, ApiContext& context)
     zetta::data::ObjectWrite options;
     if (input.contains("fence")) options.fence = input.at("fence").get<std::uint64_t>();
     options.durable = input.value("durable", false);
+    options.incarnation = input.value("incarnation", std::string());
     const ObjectOutcome outcome = store->remove(bucket, input.at("key").get<std::string>(), options);
     if (!outcome.ok()) return object_failure(outcome);
     return ApiResult::success(object_write_value(bucket, outcome));
@@ -417,10 +475,11 @@ ApiResult handle_acquire(const nlohmann::json& input, ApiContext& context) {
     if (const std::shared_ptr<runtime::async_event> wake = context.wait_event) {
         store->watch_lease(bucket, [wake] { wake->set(); });
     }
+    const std::string incarnation = store->incarnation(bucket);
     const ObjectOutcome outcome = store->acquire(bucket, input.at("holder").get<std::string>(),
                                                  input.at("ttl_ms").get<std::int64_t>());
     if (!outcome.ok()) return object_failure(outcome);
-    return ApiResult::success(lease_value(*outcome.lease));
+    return ApiResult::success(lease_value(*outcome.lease, incarnation));
 }
 
 const nlohmann::json& renew_schema() {
@@ -436,11 +495,13 @@ const nlohmann::json& renew_schema() {
 ApiResult handle_renew(const nlohmann::json& input, ApiContext& context) {
     zetta::data::ObjectStore* store = context.node.object_store();
     if (!store) return no_store();
+    const std::string bucket = input.at("bucket").get<std::string>();
+    const std::string incarnation = store->incarnation(bucket);
     const ObjectOutcome outcome =
-        store->renew(input.at("bucket").get<std::string>(), input.at("holder").get<std::string>(),
+        store->renew(bucket, input.at("holder").get<std::string>(),
                      input.at("fence").get<std::uint64_t>(), input.at("ttl_ms").get<std::int64_t>());
     if (!outcome.ok()) return object_failure(outcome);
-    return ApiResult::success(lease_value(*outcome.lease));
+    return ApiResult::success(lease_value(*outcome.lease, incarnation));
 }
 
 const nlohmann::json& release_schema() {
@@ -453,11 +514,13 @@ const nlohmann::json& release_schema() {
 ApiResult handle_release(const nlohmann::json& input, ApiContext& context) {
     zetta::data::ObjectStore* store = context.node.object_store();
     if (!store) return no_store();
+    const std::string bucket = input.at("bucket").get<std::string>();
+    const std::string incarnation = store->incarnation(bucket);
     const ObjectOutcome outcome =
-        store->release(input.at("bucket").get<std::string>(), input.at("holder").get<std::string>(),
+        store->release(bucket, input.at("holder").get<std::string>(),
                        input.at("fence").get<std::uint64_t>());
     if (!outcome.ok()) return object_failure(outcome);
-    return ApiResult::success(lease_value(*outcome.lease));
+    return ApiResult::success(lease_value(*outcome.lease, incarnation));
 }
 
 // ---- OpenAPI for the byte routes and the aliases ----------------------------------------
@@ -517,6 +580,14 @@ nlohmann::json object_route_paths() {
         {"description", "the bucket lease's current fence; required once the bucket has had a "
                         "lease holder (409 `fenced` otherwise)"},
         {"schema", {{"type", "integer"}, {"minimum", 0}}}};
+    const nlohmann::json incarnation_header{
+        {"name", "Zetta-Incarnation"},
+        {"in", "header"},
+        {"required", false},
+        {"description", "the bucket's incarnation the caller last saw; when the bucket's is "
+                        "another, 409 `incarnation_changed` (details.incarnation) and nothing is "
+                        "applied (lake#543)"},
+        {"schema", {{"type", "string"}}}};
     const nlohmann::json durable = query_parameter(
         "durable", {{"type", "boolean"}}, false,
         "fsync before answering (otherwise the barrier is the durability point)");
@@ -549,12 +620,13 @@ nlohmann::json object_route_paths() {
          "is absent (409 conflict otherwise). Requires data:objects_write (objects:write, "
          "object-scopable ON BUCKET)."},
         {"parameters",
-         {bucket, key, fence_header, durable,
+         {bucket, key, fence_header, incarnation_header, durable,
           query_parameter("if_absent", {{"type", "boolean"}}, false,
                           "create only when the key is absent")}},
         {"requestBody", {{"required", true}, {"content", octets}}},
         {"responses", write_responses("`conflict`: the key exists (if_absent); `fenced`: a stale "
-                                      "or missing Zetta-Fence (details.fence)")}});
+                                      "or missing Zetta-Fence (details.fence); "
+                                      "`incarnation_changed`: see Zetta-Incarnation")}});
     object["patch"] = tagged({
         {"operationId", "objects_put_range"},
         {"summary", "Put a range of an object"},
@@ -564,12 +636,13 @@ nlohmann::json object_route_paths() {
          "succeeds and changes nothing, so an append can be retried. Requires "
          "data:objects_write."},
         {"parameters",
-         {bucket, key, fence_header, durable,
+         {bucket, key, fence_header, incarnation_header, durable,
           query_parameter("offset", {{"type", "integer"}, {"minimum", 0}}, true,
                           "where the bytes go: the object's size to append")}},
         {"requestBody", {{"required", true}, {"content", octets}}},
         {"responses", write_responses("`conflict`: any other range (details.size is the object's "
-                                      "size); `fenced`: a stale or missing Zetta-Fence")}});
+                                      "size); `fenced`: a stale or missing Zetta-Fence; "
+                                      "`incarnation_changed`: see Zetta-Incarnation")}});
     object["get"] = tagged({
         {"operationId", "objects_get"},
         {"summary", "Get an object or a range of it"},
@@ -594,8 +667,9 @@ nlohmann::json object_route_paths() {
         {"summary", "Remove an object"},
         {"description", "The delete_object capability at the object's route. Requires "
                         "data:objects_write."},
-        {"parameters", {bucket, key, fence_header, durable}},
-        {"responses", write_responses("`fenced`: a stale or missing Zetta-Fence")}});
+        {"parameters", {bucket, key, fence_header, incarnation_header, durable}},
+        {"responses", write_responses("`fenced`: a stale or missing Zetta-Fence; "
+                                      "`incarnation_changed`: see Zetta-Incarnation")}});
 
     paths["/v1/objects/{bucket}"]["get"] = tagged({
         {"operationId", "objects_list"},
@@ -625,9 +699,10 @@ nlohmann::json object_route_paths() {
         {"summary", "Barrier: make acknowledged writes durable"},
         {"description", "The object_barrier capability at the bucket's route. Requires "
                         "data:objects_write."},
-        {"parameters", {bucket}},
+        {"parameters", {bucket, incarnation_header}},
         {"responses", {{"200", {{"description", "every live node synced the bucket"},
                                 {"content", json_envelope(barrier_output_schema())}}},
+                       {"409", error_reply("`incarnation_changed`: see Zetta-Incarnation")},
                        {"4XX", error_reply("the input or authorization is at fault")},
                        {"503", error_reply("a node did not confirm the barrier: retry")}}}});
     const auto lease_operation = [&](std::string id, std::string summary, std::string capability,
@@ -703,7 +778,7 @@ void register_object_capabilities(Registry& registry) {
                                  "Fsync every write to the bucket acknowledged before this call, "
                                  "on every live node; the durability point for writes made "
                                  "without durable. No other side effects.",
-                                 bucket_only_schema(),
+                                 barrier_schema(),
                                  barrier_output_schema(),
                                  CapabilityKind::Action,
                                  kObjectsWrite,

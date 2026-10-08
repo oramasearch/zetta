@@ -1,6 +1,7 @@
 #include "zetta/data/object_store.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <iterator>
@@ -69,6 +70,20 @@ std::uint64_t random_id() {
     return id;
 }
 
+// 128 bits from the system's entropy source, as 32 hex digits: a node's
+// incarnation (lake#543). Two starts never share one, whatever the clock does.
+std::string random_incarnation() {
+    std::random_device entropy;
+    std::string hex;
+    hex.reserve(32);
+    constexpr std::string_view kDigits = "0123456789abcdef";
+    for (int word = 0; word < 4; ++word) {
+        const std::uint32_t value = entropy();
+        for (int shift = 28; shift >= 0; shift -= 4) hex.push_back(kDigits[(value >> shift) & 0xfu]);
+    }
+    return hex;
+}
+
 std::string bucket_key(std::string_view bucket) {
     return std::string(catalog::kObjectBucketPrefix) + std::string(bucket);
 }
@@ -118,7 +133,8 @@ std::optional<ObjectStatus> status_from_string(std::string_view text) {
     for (const ObjectStatus status :
          {ObjectStatus::Ok, ObjectStatus::InvalidInput, ObjectStatus::NotFound,
           ObjectStatus::Conflict, ObjectStatus::Fenced, ObjectStatus::Held,
-          ObjectStatus::OutOfRange, ObjectStatus::QuotaExceeded, ObjectStatus::Unavailable}) {
+          ObjectStatus::OutOfRange, ObjectStatus::QuotaExceeded, ObjectStatus::Unavailable,
+          ObjectStatus::IncarnationChanged}) {
         if (to_string(status) == text) return status;
     }
     return std::nullopt;
@@ -205,6 +221,7 @@ nlohmann::json outcome_json(const ObjectOutcome& outcome) {
     if (outcome.unchanged) value["unchanged"] = true;
     if (outcome.fence != 0) value["fence"] = outcome.fence;
     if (outcome.lease) value["lease"] = to_json(*outcome.lease);
+    if (!outcome.incarnation.empty()) value["incarnation"] = outcome.incarnation;
     return value;
 }
 
@@ -239,6 +256,10 @@ std::optional<ObjectOutcome> outcome_from_json(const nlohmann::json& document,
         outcome.lease = object_lease_from_json(bucket, *lease);
         if (!outcome.lease) return std::nullopt;
     }
+    if (const auto incarnation = document.find("incarnation");
+        incarnation != document.end() && incarnation->is_string()) {
+        outcome.incarnation = incarnation->get<std::string>();
+    }
     return outcome;
 }
 
@@ -261,6 +282,7 @@ std::string_view to_string(ObjectStatus status) {
         case ObjectStatus::OutOfRange: return "range_not_satisfiable";
         case ObjectStatus::QuotaExceeded: return "quota_exceeded";
         case ObjectStatus::Unavailable: return "unavailable";
+        case ObjectStatus::IncarnationChanged: return "incarnation_changed";
     }
     return "ok";
 }
@@ -349,6 +371,7 @@ const nlohmann::json& object_signal_schema() {
     "if_absent": {"type": "boolean"},
     "durable": {"type": "boolean"},
     "fence": {"type": "integer", "minimum": 0},
+    "incarnation": {"type": "string", "maxLength": 128},
     "holder": {"type": "string", "maxLength": 256},
     "ttl_ms": {"type": "integer", "minimum": 1},
     "prefix": {"type": "string", "maxLength": 1024},
@@ -498,6 +521,7 @@ struct ObjectStore::Mutation {
         if (if_absent) value["if_absent"] = true;
         if (options.durable) value["durable"] = true;
         if (options.fence) value["fence"] = *options.fence;
+        if (!options.incarnation.empty()) value["incarnation"] = options.incarnation;
         if (generation != 0) value["generation"] = generation;
         if (updated_ms != 0) value["updated"] = updated_ms;
         return value;
@@ -522,6 +546,7 @@ struct ObjectStore::Mutation {
         mutation.if_absent = header.value("if_absent", false);
         mutation.options.durable = header.value("durable", false);
         if (header.contains("fence")) mutation.options.fence = header.at("fence").get<std::uint64_t>();
+        mutation.options.incarnation = header.value("incarnation", std::string());
         mutation.generation = header.value("generation", std::uint64_t{0});
         mutation.updated_ms = header.value("updated", std::int64_t{0});
         if (mutation.op == Op::Commit && mutation.upload == 0) return std::nullopt;
@@ -627,6 +652,13 @@ ObjectOutcome from_written(const ObjectLog::Written& written, const std::string&
             outcome.status = ObjectStatus::Unavailable;
             outcome.message = "the object log could not be written on " + node;
             break;
+        case ObjectLog::Result::IncarnationChanged:
+            outcome.status = ObjectStatus::IncarnationChanged;
+            outcome.message = "the bucket's log on " + node +
+                              " was reopened since the caller's incarnation, and writes it "
+                              "acknowledged without durability may be gone; nothing was applied";
+            outcome.path = "/incarnation";
+            break;
     }
     if (written.version) outcome.object = info_of(*written.version);
     if (outcome.ok() && !written.durable) {
@@ -643,7 +675,8 @@ ObjectStore::ObjectStore(zetta::cluster::ReplicationManager& replication, std::s
     : replication_(replication),
       node_id_(std::move(node_id)),
       directory_(std::move(directory)),
-      segment_bytes_(segment_bytes) {}
+      segment_bytes_(segment_bytes),
+      incarnation_(random_incarnation()) {}
 
 ObjectStore::~ObjectStore() { detach(); }
 
@@ -662,6 +695,27 @@ bool ObjectStore::open(std::string* reason) {
         state->log = std::make_unique<ObjectLog>(entry.path(), kTombstoneGraceMs, segment_bytes_);
         if (fsync_) state->log->set_fsync(fsync_);
         if (!state->log->open(reason)) return false;
+        // The lease this node last decided (lake#543): lease() takes it over the
+        // catalogue's when the catalogue lost it in a crash.
+        if (const std::optional<std::string> recorded = state->log->read_record("lease")) {
+            const nlohmann::json document = nlohmann::json::parse(*recorded, nullptr, false);
+            state->lease = object_lease_from_json(name, document);
+        }
+        // The bucket's definition (lake#543): registered again when the
+        // catalogue lost it in a crash, so the bucket's objects and lease are
+        // reachable again rather than answering "no bucket".
+        if (const std::optional<std::string> recorded = state->log->read_record("bucket")) {
+            const nlohmann::json document = nlohmann::json::parse(*recorded, nullptr, false);
+            if (const std::optional<ObjectBucket> definition = object_bucket_from_json(document);
+                definition && definition->name == name) {
+                replication_.update(
+                    bucket_key(name),
+                    [&](const nlohmann::json* current) -> std::optional<std::vector<ReplicationWrite>> {
+                        if (current) return std::nullopt;
+                        return std::vector<ReplicationWrite>{{bucket_key(name), to_json(*definition)}};
+                    });
+            }
+        }
         const std::unique_lock lock(buckets_mutex_);
         buckets_[name] = std::move(state);
     }
@@ -680,6 +734,38 @@ void ObjectStore::detach() {
     if (!cluster) return;
     if (cluster->signal_handler() == this) cluster->set_signal_handler(delegate_.load());
     delegate_.store(nullptr);
+}
+
+void ObjectStore::set_before_log_write(std::function<void()> hook) {
+    before_log_write_ = std::move(hook);
+}
+
+void ObjectStore::set_before_barrier_sync(std::function<void()> hook) {
+    before_barrier_sync_ = std::move(hook);
+}
+
+std::optional<std::uint64_t> ObjectStore::expected_reopens(const std::string& expected) const {
+    if (expected.size() <= incarnation_.size() + 1 || !expected.starts_with(incarnation_) ||
+        expected[incarnation_.size()] != '.') {
+        return std::nullopt;
+    }
+    std::uint64_t reopens = 0;
+    const char* begin = expected.data() + incarnation_.size() + 1;
+    const char* end = expected.data() + expected.size();
+    const auto [stop, error] = std::from_chars(begin, end, reopens);
+    if (error != std::errc{} || stop != end) return std::nullopt;
+    return reopens;
+}
+
+std::string ObjectStore::incarnation(const std::string& bucket) const {
+    std::uint64_t reopens = 0;
+    {
+        const std::shared_lock lock(buckets_mutex_);
+        if (const auto found = buckets_.find(bucket); found != buckets_.end()) {
+            reopens = found->second->log->health().reopens;
+        }
+    }
+    return incarnation_ + "." + std::to_string(reopens);
 }
 
 ObjectStore::Bucket* ObjectStore::bucket_state(const std::string& name, bool create) {
@@ -823,9 +909,19 @@ ObjectOutcome ObjectStore::create_bucket(const ObjectBucket& requested) {
     }
     outcome.created = created;
     outcome.bucket = created ? bucket : existing;
-    if (!bucket_state(bucket.name, /*create=*/true)) {
+    Bucket* state = bucket_state(bucket.name, /*create=*/true);
+    if (!state) {
         return failure(ObjectStatus::Unavailable,
                        "the bucket's object log could not be opened on " + node_id_);
+    }
+    // lake#543: the definition is on this node's disk before the call answers.
+    // The catalogue reaches disk up to a second later, and a crash in that
+    // second would leave the bucket's objects and lease unreachable ("no
+    // bucket"); open() registers it again from this record.
+    if (!state->log->write_record("bucket", to_json(*outcome.bucket).dump())) {
+        return failure(ObjectStatus::Unavailable,
+                       "bucket '" + bucket.name + "''s definition could not be recorded on " +
+                           node_id_ + "'s disk; retry");
     }
     // Every live peer learns the definition before this answers.
     const std::vector<std::string> peers = live_peers();
@@ -948,6 +1044,20 @@ ObjectOutcome ObjectStore::lease_decide(const nlohmann::json& request) {
         }
     }
     next.version = std::max((current ? current->version : 0) + 1, now_micros());
+    // lake#543: an acquire or a release is on this node's disk before it is
+    // answered. The replicated catalogue reaches disk up to a second later, so
+    // a crash in that second would otherwise bring back an older lease, and a
+    // fence already handed out could be handed out again or an old holder's
+    // fence become current again. A renewal only moves the expiry, and losing
+    // one makes the lease end sooner, which is safe, so it is not synced.
+    if (op != "renew") {
+        Bucket* state = bucket_state(bucket, /*create=*/true);
+        if (!state || !state->log->write_record("lease", to_json(next).dump())) {
+            return failure(ObjectStatus::Unavailable,
+                           "bucket '" + bucket + "''s lease could not be recorded on " + node_id_ +
+                               "'s disk; retry");
+        }
+    }
     replication_.set(lease_key(bucket), to_json(next));
     install_lease(next);
     ObjectOutcome outcome;
@@ -1143,30 +1253,53 @@ ObjectOutcome ObjectStore::decide(const Mutation& mutation, std::string_view byt
                                "-byte quota; this write needs " + std::to_string(grows) + " more");
         }
     }
+    // The Zetta-Incarnation precondition (lake#543): another start of this
+    // node is refused here; the log's reopen count is checked by the log, in
+    // the same step as the write.
+    std::optional<std::uint64_t> expected;
+    if (!mutation.options.incarnation.empty()) {
+        expected = expected_reopens(mutation.options.incarnation);
+        if (!expected) {
+            ObjectOutcome outcome =
+                failure(ObjectStatus::IncarnationChanged,
+                        "incarnation " + mutation.options.incarnation + " is not bucket '" +
+                            mutation.bucket + "''s on " + node_id_ +
+                            ": the node restarted since, and writes it acknowledged without "
+                            "durability may be gone; nothing was applied",
+                        "/incarnation");
+            outcome.incarnation = incarnation(mutation.bucket);
+            return outcome;
+        }
+    }
+    if (before_log_write_) before_log_write_();
     const std::uint64_t fresh = now_micros();
     const bool sync = mutation.options.durable;
     ObjectLog::Written written;
+    const auto decided = [&](ObjectOutcome outcome) {
+        outcome.incarnation = incarnation_ + "." + std::to_string(written.reopens);
+        return outcome;
+    };
     switch (mutation.op) {
         case Mutation::Op::Append:
-            written = state->log->append(mutation.key, mutation.offset, bytes, fresh, sync);
+            written = state->log->append(mutation.key, mutation.offset, bytes, fresh, sync, expected);
             break;
         case Mutation::Op::Put:
-            written = state->log->put(mutation.key, bytes, fresh, mutation.if_absent, sync);
+            written = state->log->put(mutation.key, bytes, fresh, mutation.if_absent, sync, expected);
             if (written.result == ObjectLog::Result::Conflict) {
                 ObjectOutcome outcome = from_written(written, node_id_, mutation.key);
                 outcome.message = "object '" + mutation.key + "' already exists";
                 outcome.path = "/if_absent";
-                return outcome;
+                return decided(std::move(outcome));
             }
             break;
         case Mutation::Op::Commit:
             written = state->log->commit(mutation.key, mutation.upload, mutation.size, fresh,
-                                         mutation.if_absent, sync);
+                                         mutation.if_absent, sync, expected);
             if (written.result == ObjectLog::Result::Conflict) {
                 ObjectOutcome outcome = from_written(written, node_id_, mutation.key);
                 outcome.message = "object '" + mutation.key + "' already exists";
                 outcome.path = "/if_absent";
-                return outcome;
+                return decided(std::move(outcome));
             }
             if (written.result == ObjectLog::Result::NotFound) {
                 return failure(ObjectStatus::Unavailable,
@@ -1175,10 +1308,10 @@ ObjectOutcome ObjectStore::decide(const Mutation& mutation, std::string_view byt
             }
             break;
         case Mutation::Op::Remove:
-            written = state->log->remove(mutation.key, fresh, sync);
+            written = state->log->remove(mutation.key, fresh, sync, expected);
             break;
     }
-    return from_written(written, node_id_, mutation.key);
+    return decided(from_written(written, node_id_, mutation.key));
 }
 
 ObjectOutcome ObjectStore::install(const Mutation& mutation, std::string_view bytes) {
@@ -1696,13 +1829,43 @@ ObjectPage ObjectStore::list(const std::string& bucket, const std::string& prefi
     return page;
 }
 
-ObjectOutcome ObjectStore::barrier(const std::string& bucket) {
+ObjectOutcome ObjectStore::barrier(const std::string& bucket,
+                                   const std::string& expected_incarnation) {
     if (!valid_bucket_name(bucket)) return failure(ObjectStatus::InvalidInput, "want a bucket name", "/bucket");
     if (!find_bucket(bucket)) return failure(ObjectStatus::NotFound, "no bucket '" + bucket + "'", "/bucket");
     ObjectOutcome outcome;
-    if (Bucket* state = bucket_state(bucket, /*create=*/false); state && !state->log->sync()) {
+    Bucket* state = bucket_state(bucket, /*create=*/false);
+    // lake#543: the reopen count before the sync and after it, each read under
+    // the log's writers' lock. A reopen between them may have dropped writes
+    // the caller was told about before this barrier, which the sync then never
+    // covered: refuse, and answer the incarnation read after the sync.
+    const std::uint64_t before = state ? state->log->reopens() : 0;
+    const auto changed = [&](std::uint64_t now, std::string message) {
+        ObjectOutcome refused = failure(ObjectStatus::IncarnationChanged, std::move(message),
+                                        "/incarnation");
+        refused.incarnation = incarnation_ + "." + std::to_string(now);
+        return refused;
+    };
+    if (!expected_incarnation.empty()) {
+        const std::optional<std::uint64_t> expected = expected_reopens(expected_incarnation);
+        if (!expected || *expected != before) {
+            return changed(before, "incarnation " + expected_incarnation + " is not bucket '" +
+                                       bucket + "''s on " + node_id_ +
+                                       ": writes acknowledged under it without durability may "
+                                       "be gone; nothing was synced");
+        }
+    }
+    if (before_barrier_sync_) before_barrier_sync_();
+    if (state && !state->log->sync()) {
         return failure(ObjectStatus::Unavailable, "the bucket could not be synced on " + node_id_);
     }
+    const std::uint64_t after = state ? state->log->reopens() : 0;
+    if (after != before) {
+        return changed(after, "bucket '" + bucket + "''s log on " + node_id_ +
+                                  " was reopened during the barrier: writes acknowledged before "
+                                  "it without durability may be gone");
+    }
+    outcome.incarnation = incarnation_ + "." + std::to_string(after);
     outcome.nodes = 1;
     const std::vector<std::string> peers = live_peers();
     if (zetta::cluster::Cluster* cluster = cluster_.load(); cluster && !peers.empty()) {

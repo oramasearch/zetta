@@ -139,7 +139,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 
 | Name | Kind | Requires | Does |
 |---|---|---|---|
-| `server_info` | read | api:query | node identity, version, entity counts, membership |
+| `server_info` | read | api:query | node identity, version, entity counts, membership, failed object logs, the object logs' durability format (`object_log_prefix_durability`) and the node's `incarnation` |
 | `node_memory` | read | api:query | process RSS, allocator truth, and subsystem ownership |
 | `sql` | read | api:query | one governed SQL statement — every `system.*` view; answers `{messages, columns, rows}` with `columns` always filled, and an error for an unknown column ([query.md](../data/query.md)). Each data-changing statement is authorized on its own (`sql:write` / `sql:ddl` / `users:manage` / `tokens:manage`) and audited as `data_changed` ([per-statement enforcement](../governance/access-control.md#per-statement-enforcement), #1229); also a JSON-body POST, so a statement is not bound by the ~4 KiB request line (#1231) |
 | `get_record` | read | data:records_read (`records:read`, scopable `ON COLLECTION`) | one keyed record by `(collection, key)`; also POST ([record-store.md](../data/record-store.md)) |
@@ -189,7 +189,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `create_bucket` | action | orchestration:objects_manage (`objects:manage`, scopable `ON BUCKET`) | declare an object bucket, its quota and replication factor; idempotent for an identical definition |
 | `object_barrier` | action | data:objects_write (`objects:write`) | fsync every write to the bucket acknowledged before the call, on every live node; also `POST /v1/objects/<bucket>:barrier` |
 | `delete_object` | action | data:objects_write | remove one object, fenced once the bucket has a lease holder; also `DELETE /v1/objects/<bucket>/<key>` |
-| `acquire_object_lease` / `renew_object_lease` / `release_object_lease` | action | data:objects_write | the bucket's owner lease: `acquire` waits up to `wait_ms` without holding a thread and returns the fence (409 `held` otherwise); also `POST /v1/objects/<bucket>:acquire` / `:renew` / `:release` |
+| `acquire_object_lease` / `renew_object_lease` / `release_object_lease` | action | data:objects_write | the bucket's owner lease: `acquire` waits up to `wait_ms` without holding a thread and returns the fence, the bucket's `incarnation` and `object_log_prefix_durability` (409 `held` otherwise); also `POST /v1/objects/<bucket>:acquire` / `:renew` / `:release` |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `record_action` | action | orchestration:record_action | append score, decision, action, actor, versions, experiment cell, cost, and timestamps to the solutions audit ledger |
 | `record_outcome` | action | orchestration:record_outcome | append a connector or manual outcome referencing an existing action entry |

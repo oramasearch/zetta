@@ -88,10 +88,11 @@ enum class ObjectStatus {
     OutOfRange,     // a read past the object's end
     QuotaExceeded,
     Unavailable,    // an owner did not answer, or not every owner holds the write: retry
+    IncarnationChanged,  // the caller's expected incarnation is not the bucket's (lake#543)
 };
 
 // Wire names: "ok", "invalid_input", "not_found", "conflict", "fenced", "held",
-// "range_not_satisfiable", "quota_exceeded", "unavailable".
+// "range_not_satisfiable", "quota_exceeded", "unavailable", "incarnation_changed".
 std::string_view to_string(ObjectStatus status);
 
 struct ObjectInfo {
@@ -115,6 +116,10 @@ struct ObjectOutcome {
     std::size_t replicas = 0;            // owners that hold the write
     std::size_t replicas_expected = 0;   // the owners it was placed on
     std::size_t nodes = 0;               // barrier: nodes that synced
+    // The deciding node's incarnation for the bucket (lake#543): for a write,
+    // the one it was decided under; for a barrier, the one read after the sync;
+    // on IncarnationChanged, the current one.
+    std::string incarnation;
 
     bool ok() const { return status == ObjectStatus::Ok; }
 };
@@ -123,6 +128,10 @@ struct ObjectOutcome {
 struct ObjectWrite {
     std::optional<std::uint64_t> fence;  // the Zetta-Fence header
     bool durable = false;                // fsync before answering
+    // The Zetta-Incarnation precondition (lake#543): the bucket's incarnation
+    // the caller last saw; empty for none. Checked by the deciding node in the
+    // same step as the write.
+    std::string incarnation;
 };
 
 struct ObjectPage {
@@ -226,6 +235,13 @@ public:
     static constexpr std::int64_t kTombstoneGraceMs = 24ll * 60 * 60 * 1000;
     // An upload with no part for this long is dropped.
     static constexpr std::int64_t kUploadIdleMs = 10ll * 60 * 1000;
+    // The durability format this build's bucket logs keep, reported as
+    // `object_log_prefix_durability` (lake#543). 1: the prefix guarantee of
+    // #1235 — after any crash, power loss included, a bucket's log on one node
+    // keeps a prefix of its writes reaching the last durable write and barrier.
+    // A node that reports nothing predates it. Raise it only for a stronger
+    // guarantee; a caller accepts this value or higher.
+    static constexpr std::uint32_t kPrefixDurability = 1;
 
     // `directory` holds one log per bucket; empty keeps everything in memory
     // (tests and benchmarks that need no durability). `segment_bytes` 0 is the
@@ -239,6 +255,18 @@ public:
 
     // Open every bucket log already on disk.
     bool open(std::string* reason = nullptr);
+
+    // A random id (32 hex digits) chosen when this store was constructed, so
+    // it differs after every start of the node (lake#543).
+    const std::string& incarnation() const { return incarnation_; }
+    // The incarnation a bucket's answers carry: incarnation(), `.`, and how
+    // many times this node reopened the bucket's log after a failed fsync. A
+    // restart or a reopen can drop writes acknowledged without durability, and
+    // either changes it, so a caller that sees it change between a write's
+    // answer and its barrier's knows that write may be gone. Read it before
+    // the call it answers for: a reopen that lands during the call then shows
+    // in the next answer, never hidden in this one.
+    std::string incarnation(const std::string& bucket) const;
 
     // Join the signal plane, chained over the cluster's current handler; detach
     // restores it.
@@ -288,7 +316,11 @@ public:
     ObjectPage list(const std::string& bucket, const std::string& prefix,
                     const std::string& after, std::size_t limit);
     // Every write acknowledged before the call is fsynced on every live node.
-    ObjectOutcome barrier(const std::string& bucket);
+    // `expected_incarnation` (lake#543), when not empty, must be this node's
+    // incarnation for the bucket before the sync, and the barrier fails
+    // IncarnationChanged when the bucket's log was reopened while it synced:
+    // the answer's incarnation is the one read after the sync.
+    ObjectOutcome barrier(const std::string& bucket, const std::string& expected_incarnation = {});
     ObjectUsage usage(const std::string& bucket);
 
     // ---- the owner lease ----------------------------------------------------------
@@ -323,6 +355,12 @@ public:
     // the store opens or writes.
     using Fsync = std::function<int(const std::filesystem::path& file, int descriptor)>;
     void set_fsync(Fsync fsync);
+    // Injection points for fault tests (lake#543): run on the deciding node
+    // between a write's precondition and fence checks and its log write, and
+    // between a barrier's first incarnation read and its sync. Set them before
+    // the calls they should interrupt.
+    void set_before_log_write(std::function<void()> hook);
+    void set_before_barrier_sync(std::function<void()> hook);
 
     zetta::cluster::SignalResponse on_request(const zetta::cluster::Signal& request) override;
     void on_event(const zetta::cluster::Signal& event) override;
@@ -357,7 +395,13 @@ private:
     std::string node_id_;
     std::filesystem::path directory_;
     std::uint64_t segment_bytes_;
+    std::string incarnation_;
     Fsync fsync_;  // tests only (set_fsync)
+    std::function<void()> before_log_write_;     // tests only
+    std::function<void()> before_barrier_sync_;  // tests only
+    // `expected` against this node: nullopt when it names another start of the
+    // node (or is malformed), else the log reopen count it names.
+    std::optional<std::uint64_t> expected_reopens(const std::string& expected) const;
     mutable std::shared_mutex buckets_mutex_;
     std::map<std::string, std::unique_ptr<Bucket>> buckets_;
     std::mutex lease_mutex_;  // lease decisions on this node, one at a time

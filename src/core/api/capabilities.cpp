@@ -119,7 +119,7 @@ const nlohmann::json& server_info_output_schema() {
         {"type", "object"},
         {"required",
          {"version", "node_id", "cluster_members", "databases", "projects",
-          "runs", "models", "jobs", "failed_object_logs"}},
+          "runs", "models", "jobs", "failed_object_logs", "object_log_prefix_durability"}},
         {"additionalProperties", false},
         {"properties",
          {{"version", {{"type", "string"}}},
@@ -130,6 +130,20 @@ const nlohmann::json& server_info_output_schema() {
           {"runs", {{"type", "integer"}}},
           {"models", {{"type", "integer"}}},
           {"jobs", {{"type", "integer"}}},
+          {"object_log_prefix_durability",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description",
+             "the durability format of this build's object bucket logs: 1 keeps a prefix of a "
+             "bucket's writes, up to the last barrier, after any crash, power loss included "
+             "(#1235). Absent on a build from before it; the object lease and barrier answers "
+             "carry it too (lake#543)"}}},
+          {"incarnation",
+           {{"type", "string"},
+            {"description",
+             "a random id chosen when this node's object store started; it changes at every "
+             "start. The object answers carry it per bucket (lake#543). Absent on a node "
+             "without an object store"}}},
           {"failed_object_logs",
            {{"type", "array"},
             {"description",
@@ -156,8 +170,10 @@ ApiResult handle_server_info(const nlohmann::json&, ApiContext& context) {
     output["runs"] = context.node.runs().size();
     output["models"] = context.node.models().size();
     output["jobs"] = context.node.jobs().size();
+    output["object_log_prefix_durability"] = zetta::data::ObjectStore::kPrefixDurability;
     nlohmann::json failed_object_logs = nlohmann::json::array();
     if (auto* objects = context.node.object_store()) {
+        output["incarnation"] = objects->incarnation();
         for (const auto& failure : objects->failed_logs()) {
             failed_object_logs.push_back({{"bucket", failure.bucket},
                                           {"stopped", failure.stopped},

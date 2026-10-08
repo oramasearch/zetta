@@ -78,4 +78,9 @@ body so the connection stays usable. The bucket routes (`GET <bucket>`,
 `:usage`, `:barrier`, `:acquire`, `:renew`, `:release`) and `DELETE` call the
 registry capabilities through `answer_capability`, the second half of the REST
 rendering. A retrying `AwaitableRead` waits on REST and MCP without holding a
-thread. See [the object capability](../../../docs/data/object-store.md).
+thread. Every write, lease and barrier answer carries the bucket's
+`incarnation`, and the lease and barrier answers carry
+`object_log_prefix_durability` (lake#543). The `Zetta-Incarnation` precondition
+travels in `ObjectWrite::incarnation` and the barrier's input, and the store
+checks it in the same step as the write. See
+[the object capability](../../../docs/data/object-store.md).
