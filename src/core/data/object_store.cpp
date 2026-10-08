@@ -69,6 +69,20 @@ std::uint64_t random_id() {
     return id;
 }
 
+// 128 bits from the system's entropy source, as 32 hex digits: a node's
+// incarnation (lake#543). Two starts never share one, whatever the clock does.
+std::string random_incarnation() {
+    std::random_device entropy;
+    std::string hex;
+    hex.reserve(32);
+    constexpr std::string_view kDigits = "0123456789abcdef";
+    for (int word = 0; word < 4; ++word) {
+        const std::uint32_t value = entropy();
+        for (int shift = 28; shift >= 0; shift -= 4) hex.push_back(kDigits[(value >> shift) & 0xfu]);
+    }
+    return hex;
+}
+
 std::string bucket_key(std::string_view bucket) {
     return std::string(catalog::kObjectBucketPrefix) + std::string(bucket);
 }
@@ -643,7 +657,8 @@ ObjectStore::ObjectStore(zetta::cluster::ReplicationManager& replication, std::s
     : replication_(replication),
       node_id_(std::move(node_id)),
       directory_(std::move(directory)),
-      segment_bytes_(segment_bytes) {}
+      segment_bytes_(segment_bytes),
+      incarnation_(random_incarnation()) {}
 
 ObjectStore::~ObjectStore() { detach(); }
 
@@ -680,6 +695,17 @@ void ObjectStore::detach() {
     if (!cluster) return;
     if (cluster->signal_handler() == this) cluster->set_signal_handler(delegate_.load());
     delegate_.store(nullptr);
+}
+
+std::string ObjectStore::incarnation(const std::string& bucket) const {
+    std::uint64_t reopens = 0;
+    {
+        const std::shared_lock lock(buckets_mutex_);
+        if (const auto found = buckets_.find(bucket); found != buckets_.end()) {
+            reopens = found->second->log->health().reopens;
+        }
+    }
+    return incarnation_ + "." + std::to_string(reopens);
 }
 
 ObjectStore::Bucket* ObjectStore::bucket_state(const std::string& name, bool create) {

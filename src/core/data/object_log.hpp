@@ -142,6 +142,10 @@ public:
         bool stopped = false;  // reopening gave up: an operator must restart
         std::uint32_t reopen_attempts = 0;
         std::int64_t next_reopen_ms = 0;
+        // Reopens that succeeded since the log was opened. Each one may have
+        // dropped writes acknowledged without durability, so it is part of
+        // the bucket's incarnation (ObjectStore::incarnation, lake#543).
+        std::uint64_t reopens = 0;
     };
     Health health() const;
     ~ObjectLog();
@@ -350,6 +354,7 @@ private:
     std::int64_t reopen_delay_ms_ = 0;
     std::int64_t next_reopen_ms_ = 0;
     bool reopen_stopped_ = false;
+    std::uint64_t reopens_ = 0;
 };
 
 }  // namespace zetta::data

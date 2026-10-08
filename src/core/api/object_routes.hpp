@@ -37,9 +37,19 @@ std::string object_error_code(zetta::data::ObjectStatus status);
 // current `fence` when fenced, the holder's lease when held.
 ApiResult object_failure(const zetta::data::ObjectOutcome& outcome);
 
-// The success value of a write (put, put range, remove).
+// The success value of a write (put, put range, remove). `incarnation` is the
+// bucket's (ObjectStore::incarnation(bucket)), read before the write ran.
 nlohmann::json object_write_value(const std::string& bucket,
-                                  const zetta::data::ObjectOutcome& outcome);
+                                  const zetta::data::ObjectOutcome& outcome,
+                                  const std::string& incarnation);
+
+// The Zetta-Incarnation precondition of a write or barrier (lake#543): a caller
+// sends the incarnation it last saw, and when `current` (the bucket's, read
+// before the call) differs the call is refused `incarnation_changed` (409) with
+// `details.incarnation`, and nothing is applied. Empty `expected`: no
+// precondition.
+std::optional<ApiResult> incarnation_refusal(const std::string& expected,
+                                             const std::string& current);
 
 // Authorize one byte-route call and record it in the audit trail, like a
 // registry capability: `operation` held flat, or ON BUCKET <prefix> covering

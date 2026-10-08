@@ -226,6 +226,13 @@ public:
     static constexpr std::int64_t kTombstoneGraceMs = 24ll * 60 * 60 * 1000;
     // An upload with no part for this long is dropped.
     static constexpr std::int64_t kUploadIdleMs = 10ll * 60 * 1000;
+    // The durability format this build's bucket logs keep, reported as
+    // `object_log_prefix_durability` (lake#543). 1: the prefix guarantee of
+    // #1235 — after any crash, power loss included, a bucket's log on one node
+    // keeps a prefix of its writes reaching the last durable write and barrier.
+    // A node that reports nothing predates it. Raise it only for a stronger
+    // guarantee; a caller accepts this value or higher.
+    static constexpr std::uint32_t kPrefixDurability = 1;
 
     // `directory` holds one log per bucket; empty keeps everything in memory
     // (tests and benchmarks that need no durability). `segment_bytes` 0 is the
@@ -239,6 +246,18 @@ public:
 
     // Open every bucket log already on disk.
     bool open(std::string* reason = nullptr);
+
+    // A random id (32 hex digits) chosen when this store was constructed, so
+    // it differs after every start of the node (lake#543).
+    const std::string& incarnation() const { return incarnation_; }
+    // The incarnation a bucket's answers carry: incarnation(), `.`, and how
+    // many times this node reopened the bucket's log after a failed fsync. A
+    // restart or a reopen can drop writes acknowledged without durability, and
+    // either changes it, so a caller that sees it change between a write's
+    // answer and its barrier's knows that write may be gone. Read it before
+    // the call it answers for: a reopen that lands during the call then shows
+    // in the next answer, never hidden in this one.
+    std::string incarnation(const std::string& bucket) const;
 
     // Join the signal plane, chained over the cluster's current handler; detach
     // restores it.
@@ -357,6 +376,7 @@ private:
     std::string node_id_;
     std::filesystem::path directory_;
     std::uint64_t segment_bytes_;
+    std::string incarnation_;
     Fsync fsync_;  // tests only (set_fsync)
     mutable std::shared_mutex buckets_mutex_;
     std::map<std::string, std::unique_ptr<Bucket>> buckets_;

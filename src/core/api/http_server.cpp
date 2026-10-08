@@ -1326,6 +1326,13 @@ struct ApiServer::Impl {
         return options;
     }
 
+    // The Zetta-Incarnation precondition a write or barrier carries (lake#543),
+    // empty when it carries none.
+    static std::string expected_incarnation(const boost::http::route_params& route) {
+        if (route.req.count("Zetta-Incarnation") == 0) return {};
+        return std::string(route.req.at("Zetta-Incarnation"));
+    }
+
     boost::http::route_task serve_objects(boost::http::route_params& route) {
         namespace http = boost::http;
         RequestLifetime request_lifetime(requests_in_flight);
@@ -1394,6 +1401,11 @@ struct ApiServer::Impl {
                 if (read_error) co_return http::route_error(read_error);
             }
             input["bucket"] = bucket;
+            if (name == "object_barrier") {
+                if (std::string expected = expected_incarnation(route); !expected.empty()) {
+                    input["incarnation"] = std::move(expected);
+                }
+            }
             co_return co_await answer_capability(route, capability, std::move(input), identity);
         }
 
@@ -1414,6 +1426,9 @@ struct ApiServer::Impl {
             nlohmann::json input{{"bucket", bucket}, {"key", key}};
             if (options->fence) input["fence"] = *options->fence;
             if (options->durable) input["durable"] = true;
+            if (std::string expected = expected_incarnation(route); !expected.empty()) {
+                input["incarnation"] = std::move(expected);
+            }
             co_return co_await answer_capability(route, capability_registry.find("delete_object"),
                                                  std::move(input), identity);
         }
@@ -1478,6 +1493,12 @@ struct ApiServer::Impl {
         if (auto error = co_await read_body_slice(route, slice, kSlice, eof); error) {
             co_return http::route_error(error);
         }
+        // Read before the write, so a reopen of the bucket's log while it runs
+        // shows in the next answer rather than hiding in this one (lake#543).
+        const std::string incarnation = store.incarnation(bucket);
+        if (auto refusal = incarnation_refusal(expected_incarnation(route), incarnation)) {
+            co_return co_await send_object_result(route, *refusal, !eof);
+        }
         zetta::data::ObjectOutcome outcome;
         if (range) {
             // Each slice is one conditional append at the offset the previous left.
@@ -1531,8 +1552,8 @@ struct ApiServer::Impl {
             }
         }
         if (!outcome.ok()) co_return co_await send_object_result(route, object_failure(outcome), !eof);
-        co_return co_await send_object_result(route,
-                                              ApiResult::success(object_write_value(bucket, outcome)));
+        co_return co_await send_object_result(
+            route, ApiResult::success(object_write_value(bucket, outcome, incarnation)));
     }
 
     boost::http::route_task serve_object_get(boost::http::route_params& route,

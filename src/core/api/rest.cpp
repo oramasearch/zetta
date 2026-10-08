@@ -103,6 +103,7 @@ int rest_status(const ApiResult& result) {
     if (code == "not_found") return 404;
     if (code == "conflict") return 409;
     if (code == "fenced" || code == "held") return 409;  // the object lease (#1005)
+    if (code == "incarnation_changed") return 409;       // the object routes (lake#543)
     if (code == "range_not_satisfiable") return 416;
     if (code == "quota_exceeded") return 507;
     if (code == "unknown_capability") return 404;

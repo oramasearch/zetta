@@ -94,6 +94,7 @@ TEST(RestRendering, ErrorCodesMapToHttpStatuses) {
     EXPECT_EQ(zetta::api::rest_status(ApiResult::failure("engine_error", "")),
               422);
     EXPECT_EQ(zetta::api::rest_status(ApiResult::failure("busy", "")), 503);
+    EXPECT_EQ(zetta::api::rest_status(ApiResult::failure("incarnation_changed", "")), 409);
     EXPECT_EQ(zetta::api::rest_status(ApiResult::failure("novel_code", "")),
               500);
 }

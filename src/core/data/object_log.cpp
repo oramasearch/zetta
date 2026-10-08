@@ -1452,7 +1452,7 @@ void ObjectLog::maintain(std::int64_t now_ms) {
 
 ObjectLog::Health ObjectLog::health() const {
     const std::lock_guard failing(failure_mutex_);
-    return Health{failed_.load(), reopen_stopped_, reopen_attempts_, next_reopen_ms_};
+    return Health{failed_.load(), reopen_stopped_, reopen_attempts_, next_reopen_ms_, reopens_};
 }
 
 bool ObjectLog::reopen(std::int64_t now_ms) {
@@ -1520,6 +1520,7 @@ bool ObjectLog::reopen(std::int64_t now_ms) {
         reopen_attempts_ = 0;
         reopen_delay_ms_ = 0;
         next_reopen_ms_ = 0;
+        ++reopens_;
         failed_.store(false);
         std::fprintf(stderr, "zetta: object log %s: reopened from disk after an fsync failure\n",
                      directory_.c_str());

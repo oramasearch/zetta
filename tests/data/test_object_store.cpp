@@ -393,7 +393,14 @@ TEST_F(ObjectStoreFixture, ObjectsSurviveARestartAndStayOutOfTheCatalogue) {
     ASSERT_TRUE(store->remove("store", "gone", {}).ok());
     ASSERT_TRUE(store->put("store", "big", pattern(9 * 1024 * 1024, 9), {}).ok());
     ASSERT_TRUE(store->barrier("store").ok());
+    // A restart is a new incarnation (lake#543): 32 random hex digits each time.
+    const std::string before = store->incarnation();
+    ASSERT_EQ(before.size(), 32u);
+    EXPECT_EQ(before.find_first_not_of("0123456789abcdef"), std::string::npos);
+    EXPECT_EQ(store->incarnation("store"), before + ".0");
     reopen();
+    EXPECT_NE(store->incarnation(), before);
+    EXPECT_EQ(store->incarnation("store"), store->incarnation() + ".0");
     EXPECT_EQ(read(*store, "store", "packs/1").bytes, pack);
     EXPECT_EQ(read(*store, "store", "index/1").bytes, "run");
     EXPECT_EQ(read(*store, "store", "gone").status, ObjectStatus::NotFound);
@@ -483,6 +490,8 @@ TEST_F(ObjectStoreFixture, AFailedLogAnswersUnavailableUntilItIsReopened) {
     for (int index = 0; index < 5; ++index) {
         ASSERT_TRUE(store->put("store", "k" + std::to_string(index), "value", durable).ok());
     }
+    const std::string incarnation = store->incarnation("store");
+    EXPECT_EQ(incarnation, store->incarnation() + ".0");
     failing = true;
     const ObjectOutcome failed = store->put("store", "k9", "lost", durable);
     EXPECT_EQ(failed.status, ObjectStatus::Unavailable);
@@ -509,9 +518,14 @@ TEST_F(ObjectStoreFixture, AFailedLogAnswersUnavailableUntilItIsReopened) {
     store->maintain(now);
     ASSERT_EQ(store->failed_logs().front().reopen_attempts, 1u);
     expect_unavailable("after a failed reopen");
+    // Only a reopen that succeeds changes the bucket's incarnation.
+    EXPECT_EQ(store->incarnation("store"), incarnation);
     failing = false;
     store->maintain(now + 60'000);
     EXPECT_TRUE(store->failed_logs().empty());
+    // The reopen dropped what no fsync covered, so the bucket's incarnation
+    // changes (lake#543), and the node's stays.
+    EXPECT_EQ(store->incarnation("store"), store->incarnation() + ".1");
     EXPECT_EQ(store->storage_stats().failed_logs, 0u);
     EXPECT_EQ(read(*store, "store", "k1").bytes, "value");
     EXPECT_EQ(read(*store, "store", "k9").status, ObjectStatus::NotFound);
