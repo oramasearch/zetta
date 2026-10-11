@@ -52,7 +52,8 @@ holds the tick.
 replicated dataset or bucket counts on every node that holds a copy. A cluster's total is the sum of
 each member's answer; lake's workspace engines are single-node, so one call is the workspace. Folding
 every member's census into one answer through the telemetry exchange (`NodeTelemetryExchange`, which
-already carries each member's disk use) is the follow-up for multi-node engines.
+already carries each member's disk use) is the follow-up for multi-node engines
+([zetta#1259](https://github.com/oramasearch/zetta/issues/1259)).
 
 ## Verify
 
