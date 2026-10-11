@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute/compute_job.hpp"
@@ -139,9 +141,28 @@ struct DistributedTrainResult {
     double mae = 0.0;
     double held_out_rmse = 0.0;
     double held_out_mae = 0.0;
+    // The held-out chart artifacts a classifier logs on its Run (#1247):
+    // confusion_matrix, roc_curve and calibration, built on the root from the
+    // gathered held-out predictions. Empty on every other node, on a regressor,
+    // and without a holdout.
+    std::vector<nlohmann::json> held_out_artifacts;
 
     bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
+
+// The held-out chart artifacts of a binary classifier (#1247), in the Run
+// artifact shape (`{type, name, data}`; Run::log_artifact stamps `time`):
+//   - confusion_matrix at threshold 0.5, labels ["0", "1"], rows = actual,
+//     columns = predicted;
+//   - roc_curve: x = false-positive rate, y = true-positive rate, one point per
+//     distinct score (thinned to at most `max_points`), from (0,0) to (1,1);
+//   - calibration: ten equal-width probability bins, each non-empty bin's mean
+//     predicted probability, observed positive rate, and row count.
+// `probabilities` and `targets` are aligned; targets are {0,1}. Empty when there
+// are no rows. Pure, so the chart math is testable apart from the cluster job.
+std::vector<nlohmann::json> held_out_chart_artifacts(
+    const std::vector<double>& probabilities, const std::vector<double>& targets,
+    std::size_t max_points = 101);
 
 // Train a histogram GBDT across the cluster as a `train` ComputeJob, with
 // `features` this node's shard (the columns named by `feature_columns`, the {0,1}
