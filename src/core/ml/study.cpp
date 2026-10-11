@@ -1563,10 +1563,30 @@ std::optional<ml::GbdtParams> study_gbdt_params(
     return parsed;
 }
 
+// The name of the model a trial trains (#1242): `<experiment name>-trial-<n>`,
+// with the name lowercased and every run of other characters folded to one
+// '-'; `experiment-<id8>-trial-<n>` when the experiment has no usable name.
+// ("Study" is the engine's word; a person reads "experiment".)
+std::string trial_model_name(const std::string& experiment_name,
+                             const std::string& experiment_id,
+                             std::size_t trial_number) {
+    std::string slug;
+    for (const unsigned char character : experiment_name) {
+        if (std::isalnum(character)) {
+            slug.push_back(static_cast<char>(std::tolower(character)));
+        } else if (!slug.empty() && slug.back() != '-') {
+            slug.push_back('-');
+        }
+    }
+    while (!slug.empty() && slug.back() == '-') slug.pop_back();
+    if (slug.empty()) slug = "experiment-" + experiment_id.substr(0, 8);
+    return slug + "-trial-" + std::to_string(trial_number);
+}
+
 std::optional<RealTrialPlan> prepare_real_trial(
     Node& node, const StudySpec& spec, const nlohmann::json& sampled,
-    const std::string& run_id, const std::atomic<bool>* cancel,
-    std::string& error) {
+    const std::string& run_id, const std::string& model_name,
+    const std::atomic<bool>* cancel, std::string& error) {
     RealTrialPlan plan;
     if (!spec.project.empty() || !spec.pipeline.empty()) {
         std::shared_ptr<pipeline::Project> project;
@@ -1644,7 +1664,7 @@ std::optional<RealTrialPlan> prepare_real_trial(
     plan.options.params = *params;
     plan.options.run_id = run_id;
     plan.options.cancel = cancel;
-    plan.options.model_name = "study-" + run_id.substr(0, 8);
+    plan.options.model_name = model_name;
     plan.options.coordinate = true;
     return plan;
 }
@@ -2037,6 +2057,7 @@ StudyDriver::State::TrialResult StudyDriver::State::execute_trial(
         study->reset_trial_for_retry(trial.run);
     });
     plan = prepare_real_trial(node, spec, trial.params, trial.run,
+                              trial_model_name(spec.name, study_id, trial.number),
                               trial_cancel.get(), result.error);
     if (plan) {
         plan->options.training_progress =
