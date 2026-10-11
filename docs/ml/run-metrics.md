@@ -202,10 +202,23 @@ gets none. This write is best effort: the model is already registered, so a
 failed write leaves the run without these entries (the model's `metrics` and
 `get_run_report` still carry them) rather than failing a finished job.
 
-**Artifacts.** No engine trainer logs artifacts yet; `artifacts` is `[]` unless
-a caller used `log_run_artifact`. Confusion matrix, ROC and calibration charts
-for GBDT would be built on the root from the held-out predictions in
-`run_train_job`, the only place they exist; that is follow-up work.
+**Artifacts (#1247).** A GBDT **classifier** run with a holdout logs three
+chart artifacts, all named `held_out` and built on the root from the gathered
+held-out predictions in `run_train_job` (the only place they exist), by
+`held_out_chart_artifacts`:
+
+- `confusion_matrix` at threshold 0.5: `labels` `["0", "1"]`, rows are the
+  actual class and columns the predicted one (`[[TN, FP], [FN, TP]]`);
+- `roc_curve`: `x` = false-positive rate, `y` = true-positive rate, one point
+  per distinct score from (0,0) to (1,1), thinned to at most 101 points, with
+  the score `thresholds` (1.0 for the first point);
+- `calibration`: ten equal-width probability bins; each non-empty bin's mean
+  predicted probability, observed positive rate, and row count.
+
+A **regressor** logs none (there is no class to count or rank), nor does a run
+without a holdout or one suppressed for differential privacy. Like the held-out
+scores, the write is best effort. Any other trainer's `artifacts` is `[]` unless
+a caller used `log_run_artifact`.
 
 Installing a metric hook must leave model bytes and privacy spend identical.
 The GBDT metric pass runs only when a hook is enabled; distributed participants

@@ -567,6 +567,11 @@ DistributedTrainResult run_train_job(
                     measured
                         ? evaluate_binary(held_probabilities, held_targets)
                         : GbdtMetrics{};
+                // The held-out charts exist only here, on the root (#1247).
+                if (measured) {
+                    out.held_out_artifacts =
+                        held_out_chart_artifacts(held_probabilities, held_targets);
+                }
                 metric_wire = {metrics.auc,
                                metrics.log_loss,
                                metrics.accuracy,
@@ -719,6 +724,12 @@ DistributedTrainResult run_train_job(
                 // run just lacks the summary entry, as before #1239.
                 static_cast<void>(node->log_run_metrics(run_id, step, held_out,
                                                         {}, &error));
+                // The held-out charts (#1247), on the same terms: best effort,
+                // and none for a run suppressed for differential privacy.
+                for (nlohmann::json& artifact : out.held_out_artifacts) {
+                    static_cast<void>(
+                        node->log_run_artifact(run_id, std::move(artifact), &error));
+                }
             });
         }
     }
@@ -730,6 +741,99 @@ DistributedTrainResult run_train_job(
         checkpoint.store->clear(tag);
     }
     return out;
+}
+
+std::vector<nlohmann::json> held_out_chart_artifacts(
+    const std::vector<double>& probabilities, const std::vector<double>& targets,
+    std::size_t max_points) {
+    const std::size_t rows = std::min(probabilities.size(), targets.size());
+    if (rows == 0) return {};
+    std::vector<nlohmann::json> artifacts;
+
+    // Confusion matrix at 0.5: rows are the actual class, columns the predicted.
+    std::uint64_t true_negative = 0, false_positive = 0;
+    std::uint64_t false_negative = 0, true_positive = 0;
+    for (std::size_t i = 0; i < rows; ++i) {
+        const bool actual = targets[i] >= 0.5;
+        const bool predicted = probabilities[i] >= 0.5;
+        if (actual) {
+            (predicted ? true_positive : false_negative) += 1;
+        } else {
+            (predicted ? false_positive : true_negative) += 1;
+        }
+    }
+    artifacts.push_back(
+        {{"type", "confusion_matrix"},
+         {"name", "held_out"},
+         {"data",
+          {{"labels", {"0", "1"}},
+           {"matrix",
+            {{true_negative, false_positive}, {false_negative, true_positive}}}}}});
+
+    // ROC: walk the rows by score, highest first, emitting one point per
+    // distinct score, then thin to at most max_points (keeping both ends).
+    const std::uint64_t positives = true_positive + false_negative;
+    const std::uint64_t negatives = true_negative + false_positive;
+    if (positives > 0 && negatives > 0) {
+        std::vector<std::size_t> order(rows);
+        for (std::size_t i = 0; i < rows; ++i) order[i] = i;
+        std::ranges::sort(order, [&](std::size_t a, std::size_t b) {
+            return probabilities[a] > probabilities[b];
+        });
+        std::vector<double> x{0.0}, y{0.0}, thresholds{1.0};
+        std::uint64_t seen_positive = 0, seen_negative = 0;
+        for (std::size_t k = 0; k < rows; ++k) {
+            const std::size_t row = order[k];
+            (targets[row] >= 0.5 ? seen_positive : seen_negative) += 1;
+            if (k + 1 < rows && probabilities[order[k + 1]] == probabilities[row]) {
+                continue;  // one point per distinct score
+            }
+            x.push_back(static_cast<double>(seen_negative) / static_cast<double>(negatives));
+            y.push_back(static_cast<double>(seen_positive) / static_cast<double>(positives));
+            thresholds.push_back(probabilities[row]);
+        }
+        if (max_points >= 2 && x.size() > max_points) {
+            std::vector<double> thin_x, thin_y, thin_thresholds;
+            for (std::size_t p = 0; p < max_points; ++p) {
+                const std::size_t index = p * (x.size() - 1) / (max_points - 1);
+                thin_x.push_back(x[index]);
+                thin_y.push_back(y[index]);
+                thin_thresholds.push_back(thresholds[index]);
+            }
+            x = std::move(thin_x);
+            y = std::move(thin_y);
+            thresholds = std::move(thin_thresholds);
+        }
+        artifacts.push_back({{"type", "roc_curve"},
+                             {"name", "held_out"},
+                             {"data", {{"x", x}, {"y", y}, {"thresholds", thresholds}}}});
+    }
+
+    // Calibration: ten equal-width bins over [0, 1]; empty bins are left out.
+    constexpr std::size_t kBins = 10;
+    std::vector<double> predicted_sum(kBins, 0.0), observed_sum(kBins, 0.0);
+    std::vector<std::uint64_t> counts(kBins, 0);
+    for (std::size_t i = 0; i < rows; ++i) {
+        const double probability = std::clamp(probabilities[i], 0.0, 1.0);
+        const std::size_t bin =
+            std::min(kBins - 1, static_cast<std::size_t>(probability * kBins));
+        predicted_sum[bin] += probability;
+        observed_sum[bin] += targets[i] >= 0.5 ? 1.0 : 0.0;
+        counts[bin] += 1;
+    }
+    std::vector<double> predicted, observed;
+    std::vector<std::uint64_t> bin_counts;
+    for (std::size_t bin = 0; bin < kBins; ++bin) {
+        if (counts[bin] == 0) continue;
+        predicted.push_back(predicted_sum[bin] / static_cast<double>(counts[bin]));
+        observed.push_back(observed_sum[bin] / static_cast<double>(counts[bin]));
+        bin_counts.push_back(counts[bin]);
+    }
+    artifacts.push_back(
+        {{"type", "calibration"},
+         {"name", "held_out"},
+         {"data", {{"predicted", predicted}, {"observed", observed}, {"counts", bin_counts}}}});
+    return artifacts;
 }
 
 }  // namespace zetta::ml

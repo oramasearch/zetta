@@ -937,6 +937,31 @@ TEST(GbdtHoldout, HeldOutScoresAreLoggedOnTheRun) {
                      static_cast<double>(result.held_out_rows));
     EXPECT_TRUE(summary.contains("train.log_loss")) << "the training curve is still there";
 
+    // The held-out charts are logged on the run (#1247), over the held-out rows.
+    const nlohmann::json& artifacts = run->value().metrics.at("artifacts");
+    std::map<std::string, nlohmann::json> by_type;
+    for (const nlohmann::json& artifact : artifacts) {
+        EXPECT_EQ(artifact.at("name"), "held_out");
+        by_type[artifact.at("type").get<std::string>()] = artifact.at("data");
+    }
+    ASSERT_TRUE(by_type.contains("confusion_matrix")) << artifacts.dump();
+    ASSERT_TRUE(by_type.contains("roc_curve")) << artifacts.dump();
+    ASSERT_TRUE(by_type.contains("calibration")) << artifacts.dump();
+    std::uint64_t confusion_total = 0;
+    for (const auto& row : by_type["confusion_matrix"].at("matrix")) {
+        for (const auto& cell : row) confusion_total += cell.get<std::uint64_t>();
+    }
+    EXPECT_EQ(confusion_total, result.held_out_rows);
+    const nlohmann::json& roc = by_type["roc_curve"];
+    EXPECT_DOUBLE_EQ(roc.at("x").front().get<double>(), 0.0);
+    EXPECT_DOUBLE_EQ(roc.at("y").back().get<double>(), 1.0);
+    EXPECT_DOUBLE_EQ(roc.at("x").back().get<double>(), 1.0);
+    std::uint64_t calibrated_rows = 0;
+    for (const auto& count : by_type["calibration"].at("counts")) {
+        calibrated_rows += count.get<std::uint64_t>();
+    }
+    EXPECT_EQ(calibrated_rows, result.held_out_rows);
+
     // A run with no holdout gets no held-out entry, never a zero.
     GbdtParams in_sample = params;
     in_sample.holdout_fraction = 0.0;
@@ -947,6 +972,7 @@ TEST(GbdtHoldout, HeldOutScoresAreLoggedOnTheRun) {
         "in-sample-model", {}, {}, zetta::ml::kDefaultGbdtTimeout, {}, plain_run->id());
     ASSERT_TRUE(plain.ok());
     EXPECT_FALSE(plain_run->value().metrics.at("summary").contains("held_out_auc"));
+    EXPECT_TRUE(plain_run->value().metrics.at("artifacts").empty());
 
     cn.coordinator.stop();
     cn.cluster.stop();
@@ -1195,4 +1221,41 @@ TEST(GbdtRegression, TheDefaultObjectiveIsUnchangedWhenAbsent) {
     const auto decoded = zetta::ml::GbdtParams::from_json(value);
     ASSERT_TRUE(decoded.has_value()) << "objective is optional; omitting it must still parse";
     EXPECT_EQ(decoded->objective, "binary_logistic");
+}
+
+// The held-out chart math (#1247), on four rows worked by hand.
+TEST(GbdtHoldout, HeldOutChartsAreWorkedOutFromTheHeldOutRows) {
+    const std::vector<double> probabilities{0.9, 0.8, 0.3, 0.1};
+    const std::vector<double> targets{1.0, 0.0, 1.0, 0.0};
+    const std::vector<nlohmann::json> charts =
+        zetta::ml::held_out_chart_artifacts(probabilities, targets);
+    ASSERT_EQ(charts.size(), 3u);
+
+    EXPECT_EQ(charts[0].at("type"), "confusion_matrix");
+    EXPECT_EQ(charts[0].at("data").at("labels"), (nlohmann::json{"0", "1"}));
+    // rows = actual, columns = predicted at 0.5: TN FP / FN TP
+    EXPECT_EQ(charts[0].at("data").at("matrix"), (nlohmann::json{{1, 1}, {1, 1}}));
+
+    EXPECT_EQ(charts[1].at("type"), "roc_curve");
+    EXPECT_EQ(charts[1].at("data").at("x"), (nlohmann::json{0.0, 0.0, 0.5, 0.5, 1.0}));
+    EXPECT_EQ(charts[1].at("data").at("y"), (nlohmann::json{0.0, 0.5, 0.5, 1.0, 1.0}));
+    EXPECT_EQ(charts[1].at("data").at("thresholds"),
+              (nlohmann::json{1.0, 0.9, 0.8, 0.3, 0.1}));
+
+    EXPECT_EQ(charts[2].at("type"), "calibration");
+    EXPECT_EQ(charts[2].at("data").at("counts"), (nlohmann::json{1, 1, 1, 1}));
+    EXPECT_EQ(charts[2].at("data").at("observed"), (nlohmann::json{0.0, 1.0, 0.0, 1.0}));
+
+    // A long curve is thinned, keeping both ends.
+    std::vector<double> many_probabilities, many_targets;
+    for (int i = 0; i < 1000; ++i) {
+        many_probabilities.push_back(i / 1000.0);
+        many_targets.push_back(i % 3 == 0 ? 1.0 : 0.0);
+    }
+    const auto thinned =
+        zetta::ml::held_out_chart_artifacts(many_probabilities, many_targets, 51);
+    EXPECT_EQ(thinned[1].at("data").at("x").size(), 51u);
+    EXPECT_DOUBLE_EQ(thinned[1].at("data").at("x").back().get<double>(), 1.0);
+
+    EXPECT_TRUE(zetta::ml::held_out_chart_artifacts({}, {}).empty());
 }
