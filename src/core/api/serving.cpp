@@ -193,6 +193,13 @@ const nlohmann::json& serve_search_request_schema() {
            {{"type", "string"},
             {"description",
              "restrict matching to one indexed field (optional)"}}},
+          {"fields",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description",
+             "the row fields each hit carries back (default: the index's own "
+             "fields; [] = ids and scores only). Each must be one of the "
+             "index's fields."}}},
           {"top_k",
            {{"type", "integer"},
             {"minimum", 1},
@@ -219,11 +226,18 @@ const nlohmann::json& search_response_schema() {
            {{"type", "array"},
             {"items",
              {{"type", "object"},
-              {"required", {"id", "score"}},
+              {"required", {"id", "score", "fields"}},
               {"additionalProperties", false},
               {"properties",
-               {{"id", {{"type", "string"}}},
-                {"score", {{"type", "number"}}}}}}}}},
+               {{"id",
+                 {{"type", "string"},
+                  {"description", "the engine's internal row id"}}},
+                {"score", {{"type", "number"}}},
+                {"fields",
+                 {{"type", "object"},
+                  {"description",
+                   "the matched row's values for the requested fields "
+                   "(default: the index's own fields)"}}}}}}}}},
           {"nodes",
            {{"type", "array"},
             {"description", "per-node provenance: which member answered, at "
@@ -249,7 +263,8 @@ const nlohmann::json& search_response_schema() {
 nlohmann::json search_result_to_json(const zetta::index::SearchResult& result) {
     nlohmann::json hits = nlohmann::json::array();
     for (const zetta::index::SearchHit& hit : result.hits) {
-        hits.push_back({{"id", hit.row_id}, {"score", hit.score}});
+        hits.push_back(
+            {{"id", hit.row_id}, {"score", hit.score}, {"fields", hit.fields}});
     }
     // Per-node provenance: which node answered, and at what cost (#641).
     nlohmann::json nodes = nlohmann::json::array();
@@ -523,6 +538,9 @@ ApiResult serve_search(Node& node, const ServeRequest& request) {
     search_request.query = input.at("query").get<std::string>();
     search_request.field = input.value("field", std::string{});
     search_request.top_k = input.value("top_k", std::size_t{10});
+    if (input.contains("fields")) {
+        search_request.fields = input.at("fields").get<std::vector<std::string>>();
+    }
 
     // The search records its own `search` span tree (root + local + per-peer,
     // #641) as a child of this serve span — one trace for the whole request.

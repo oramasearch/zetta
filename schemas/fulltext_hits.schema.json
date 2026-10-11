@@ -9,6 +9,9 @@
       "items": {
         "additionalProperties": false,
         "properties": {
+          "fields": {
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },

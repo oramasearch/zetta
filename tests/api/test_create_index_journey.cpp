@@ -9,6 +9,7 @@
 // cluster.fulltext_index case, TC-13).
 #include <gtest/gtest.h>
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -162,6 +163,30 @@ TEST(CreateIndexJourney, CreateThenDiscoverThenSearch) {
     for (std::size_t rank = 0; rank < oracle.size(); ++rank) {
         EXPECT_EQ(hits[rank].at("id"), oracle[rank]) << "rank " << rank;
     }
+
+    // Each hit carries its row's fields (#1243), so an outside caller can use
+    // it without the engine's internal row id; `fields` narrows them.
+    std::map<std::string, nlohmann::json> rows;
+    for (const auto& partition : zetta::index::read_index_partitions(table->store())) {
+        for (const auto& document : partition.documents) rows.emplace(document.id, document.doc);
+    }
+    for (const nlohmann::json& hit : hits) {
+        const std::string id = hit.at("id");
+        EXPECT_EQ(hit.at("fields"), rows.at(id)) << id;
+    }
+    auto narrowed = call("search", nlohmann::json{{"target", "articles"},
+                                                  {"query", "postgres"},
+                                                  {"fields", {"title"}}});
+    ASSERT_TRUE(narrowed.ok) << narrowed.error.message;
+    for (const nlohmann::json& hit : narrowed.value.at("hits")) {
+        const std::string id = hit.at("id");
+        EXPECT_EQ(hit.at("fields"),
+                  (nlohmann::json{{"title", rows.at(id).at("title")}}));
+    }
+    auto unindexed = call("search", nlohmann::json{{"target", "articles"},
+                                                   {"query", "postgres"},
+                                                   {"fields", {"author"}}});
+    EXPECT_FALSE(unindexed.ok);
 
     // Step 4 — the error surfaces the engine's real reason: an unloaded table is
     // not_found; an unknown backend is invalid_input; zero fields is rejected at

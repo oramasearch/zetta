@@ -139,7 +139,8 @@ const nlohmann::json& fulltext_query_schema() {
     "fields": { "type": "array", "minItems": 1, "items": { "type": "string" } },
     "field": { "type": "string" },
     "term": { "type": ["string", "number", "boolean", "null"] },
-    "top_k": { "type": "integer", "minimum": 0 }
+    "top_k": { "type": "integer", "minimum": 0 },
+    "return_fields": { "type": "array", "items": { "type": "string" } }
   },
   "required": ["table", "kind", "fields", "term"],
   "additionalProperties": false
@@ -167,7 +168,8 @@ const nlohmann::json& fulltext_hits_schema() {
         "type": "object",
         "properties": {
           "id": { "type": "string" },
-          "score": { "type": "number" }
+          "score": { "type": "number" },
+          "fields": { "type": "object" }
         },
         "required": ["id", "score"],
         "additionalProperties": false
@@ -189,18 +191,18 @@ std::vector<FulltextHit> merge_fulltext_hits(
     // Dedup by row id, keeping the highest score (a row id should appear in exactly
     // one partition, but a duplicate is collapsed rather than listed twice). std::map
     // gives ascending row-id order, the stable tiebreak.
-    std::map<std::string, double> best;
+    std::map<std::string, const FulltextHit*> best;
     for (const std::vector<FulltextHit>& source : sources) {
         for (const FulltextHit& hit : source) {
-            const auto [it, inserted] = best.try_emplace(hit.row_id, hit.score);
-            if (!inserted && hit.score > it->second) it->second = hit.score;
+            const auto [it, inserted] = best.try_emplace(hit.row_id, &hit);
+            if (!inserted && hit.score > it->second->score) it->second = &hit;
         }
     }
 
     std::vector<FulltextHit> merged;
     merged.reserve(best.size());
-    for (const auto& [row_id, score] : best) {
-        merged.push_back(FulltextHit{row_id, score});
+    for (const auto& [row_id, hit] : best) {
+        merged.push_back(*hit);  // carries the owner-attached fields along
     }
     // Score descending; ascending row id breaks a tie (stable_sort over the already
     // id-ascending vector → deterministic, reproducible).
@@ -237,6 +239,7 @@ std::string encode_fulltext_query(const FulltextQueryRequest& request) {
     if (!request.field.empty()) document["field"] = request.field;
     document["term"] = request.term;
     document["top_k"] = request.top_k;
+    if (request.return_fields) document["return_fields"] = *request.return_fields;
     return document.dump();
 }
 
@@ -271,6 +274,9 @@ std::optional<FulltextQueryRequest> decode_fulltext_query(std::string_view paylo
     request.field = document.value("field", std::string{});
     request.term = document.at("term");
     request.top_k = document.value("top_k", static_cast<std::size_t>(0));
+    if (const auto fields = document.find("return_fields"); fields != document.end()) {
+        request.return_fields = fields->get<std::vector<std::string>>();
+    }
     return request;
 }
 
@@ -279,7 +285,9 @@ std::string encode_fulltext_hits(const FulltextQueryResponse& response) {
     if (!response.from.empty()) document["from"] = response.from;
     nlohmann::json hits = nlohmann::json::array();
     for (const FulltextHit& hit : response.hits) {
-        hits.push_back({{"id", hit.row_id}, {"score", hit.score}});
+        nlohmann::json item{{"id", hit.row_id}, {"score", hit.score}};
+        if (hit.fields.is_object()) item["fields"] = hit.fields;
+        hits.push_back(std::move(item));
     }
     document["hits"] = std::move(hits);
     document["sub_indexes"] = response.sub_indexes;
@@ -307,8 +315,9 @@ std::optional<FulltextQueryResponse> decode_fulltext_hits(std::string_view paylo
     response.sub_indexes =
         static_cast<std::size_t>(document.value("sub_indexes", std::uint64_t{0}));
     for (const nlohmann::json& hit : document.at("hits")) {
-        response.hits.push_back(
-            FulltextHit{hit.at("id").get<std::string>(), hit.at("score").get<double>()});
+        response.hits.push_back(FulltextHit{
+            hit.at("id").get<std::string>(), hit.at("score").get<double>(),
+            hit.value("fields", nlohmann::json{})});
     }
     return response;
 }
@@ -369,6 +378,8 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
         for (const IndexSpec& sub : prior->second) backend_->drop(sub);
         sub_specs_.erase(prior);
     }
+    rows_.erase(spec.key());
+    std::map<std::string, nlohmann::json> rows;
 
     std::vector<IndexSpec> subs;
     for (const std::shared_ptr<zetta::data::DatasetPartition>& partition : owned) {
@@ -393,6 +404,20 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
             return out;
         }
 
+        // Keep each row's indexed values, so a hit can carry them (#1243).
+        for (const IndexDocument& document : built_partition.documents) {
+            nlohmann::json values = nlohmann::json::object();
+            if (document.doc.is_object()) {
+                for (const std::string& field : spec.fields) {
+                    if (const auto found = document.doc.find(field);
+                        found != document.doc.end()) {
+                        values[field] = *found;
+                    }
+                }
+            }
+            rows.insert_or_assign(document.id, std::move(values));
+        }
+
         // One sub-index per partition, keyed distinctly by suffixing the table.
         IndexSpec sub = spec;
         sub.table = spec.table + kPartitionMarker + "part" + kPartitionMarker +
@@ -408,13 +433,14 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
     }
 
     sub_specs_[spec.key()] = std::move(subs);
+    rows_[spec.key()] = std::move(rows);
     out.status = IndexStatus::success();
     return out;
 }
 
 std::vector<FulltextHit> DistributedFulltextIndex::query_local(
     const IndexSpec& spec, const IndexQuery& query, IndexStatus* status,
-    std::size_t* sub_indexes) const {
+    std::size_t* sub_indexes, const std::vector<std::string>* return_fields) const {
     const std::lock_guard<std::mutex> lock(mutex_);
 
     if (sub_indexes) *sub_indexes = 0;
@@ -444,14 +470,33 @@ std::vector<FulltextHit> DistributedFulltextIndex::query_local(
         per_partition.push_back(std::move(hits));
     }
     if (status) *status = first_failure;
-    return merge_fulltext_hits(per_partition, query.top_k);
+    std::vector<FulltextHit> merged = merge_fulltext_hits(per_partition, query.top_k);
+    if (return_fields != nullptr) {
+        // This node owns every row it just matched, so it attaches their values
+        // here: only the capped hits, never the whole partition (#1243).
+        const auto rows = rows_.find(spec.key());
+        for (FulltextHit& hit : merged) {
+            hit.fields = nlohmann::json::object();
+            if (rows == rows_.end()) continue;
+            const auto row = rows->second.find(hit.row_id);
+            if (row == rows->second.end()) continue;
+            for (const std::string& field : *return_fields) {
+                if (const auto value = row->second.find(field);
+                    value != row->second.end()) {
+                    hit.fields[field] = *value;
+                }
+            }
+        }
+    }
+    return merged;
 }
 
 DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     const IndexSpec& spec, const IndexQuery& query,
     std::chrono::milliseconds timeout,
     zetta::observability::SpanRecorder* recorder,
-    const zetta::observability::TraceContext* parent) const {
+    const zetta::observability::TraceContext* parent,
+    const std::vector<std::string>* return_fields) const {
     QueryResult out;
 
     // Tracing needs both halves; with either missing, spans become no-ops.
@@ -464,8 +509,8 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     local_span.set_attribute("node_id", cluster_.node_id());
     IndexStatus local_status;
     std::size_t local_sub_indexes = 0;
-    std::vector<FulltextHit> local =
-        query_local(spec, query, &local_status, &local_sub_indexes);
+    std::vector<FulltextHit> local = query_local(
+        spec, query, &local_status, &local_sub_indexes, return_fields);
     if (!local_status.ok()) {
         local_span.finish(/*ok=*/false, local_status.message);
         out.status = local_status;
@@ -496,6 +541,7 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     request.field = query.field;
     request.term = query.term;
     request.top_k = query.top_k;
+    if (return_fields != nullptr) request.return_fields = *return_fields;
     const std::string payload = encode_fulltext_query(request);
 
     for (const zetta::cluster::ClusterPeer& peer : cluster_.peers()) {
@@ -544,9 +590,11 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
         merge_fulltext_hits(sources, query.top_k);
     out.row_ids.reserve(merged.size());
     out.scores.reserve(merged.size());
+    out.fields.reserve(merged.size());
     for (const FulltextHit& hit : merged) {
         out.row_ids.push_back(hit.row_id);
         out.scores.push_back(hit.score);
+        out.fields.push_back(hit.fields);
     }
     out.nodes_answered = answered;
     out.wire_bytes_moved = wire;
@@ -565,8 +613,9 @@ zetta::cluster::SignalResponse DistributedFulltextIndex::on_request(const zetta:
         }
         IndexStatus status;
         std::size_t sub_indexes = 0;
-        std::vector<FulltextHit> hits =
-            query_local(message->spec(), message->query(), &status, &sub_indexes);
+        std::vector<FulltextHit> hits = query_local(
+            message->spec(), message->query(), &status, &sub_indexes,
+            message->return_fields ? &*message->return_fields : nullptr);
         if (!status.ok()) {
             return zetta::cluster::SignalResponse{.ok = false,
                                   .error = "fulltext.query local: " + status.message};

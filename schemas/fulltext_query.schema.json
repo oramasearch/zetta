@@ -23,6 +23,12 @@
       ],
       "type": "string"
     },
+    "return_fields": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "table": {
       "minLength": 1,
       "type": "string"
