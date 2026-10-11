@@ -900,6 +900,58 @@ TEST(GbdtHoldout, RegisteredModelMetricsSurviveTheEntityBoundary) {
     cn.cluster.stop();
 }
 
+// #1239: the held-out scores reach the Run, so get_run_metrics' summary and
+// compare_runs carry the figure that decides between runs, not only the Model.
+TEST(GbdtHoldout, HeldOutScoresAreLoggedOnTheRun) {
+    const Synthetic data = make_synthetic(120);
+    GbdtParams params;
+    params.num_trees = 8;
+    params.holdout_fraction = 0.3;
+
+    ComputeNode cn("node-hold-run", 22480, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    CpuDevice device;
+    auto frame = load_data_frame(make_store(synthetic_rows(data, "y")),
+                                 training_schema(data.names, "y"), device);
+    ASSERT_TRUE(frame.ok()) << frame.status.message;
+    const auto run = cn.node.create_run();
+    ASSERT_TRUE(run);
+    std::shared_ptr<ComputeJob> job = cn.node.create_job(JobKind::Train);
+    const auto result = run_train_job(
+        cn.coordinator, *job, frame.frame, data.names, "y", params, &cn.node,
+        "holdout-run-model", {}, {}, zetta::ml::kDefaultGbdtTimeout, {}, run->id());
+    ASSERT_TRUE(result.ok());
+    ASSERT_TRUE(result.has_held_out);
+
+    const nlohmann::json& summary = run->value().metrics.at("summary");
+    ASSERT_TRUE(summary.contains("held_out_auc")) << summary.dump();
+    EXPECT_DOUBLE_EQ(summary["held_out_auc"]["final"].get<double>(), result.held_out.auc);
+    EXPECT_EQ(summary["held_out_auc"]["direction"], "max");
+    EXPECT_DOUBLE_EQ(summary["held_out_log_loss"]["final"].get<double>(),
+                     result.held_out.log_loss);
+    EXPECT_EQ(summary["held_out_log_loss"]["direction"], "min");
+    EXPECT_DOUBLE_EQ(summary["held_out_accuracy"]["final"].get<double>(),
+                     result.held_out.accuracy);
+    EXPECT_DOUBLE_EQ(summary["held_out_rows"]["final"].get<double>(),
+                     static_cast<double>(result.held_out_rows));
+    EXPECT_TRUE(summary.contains("train.log_loss")) << "the training curve is still there";
+
+    // A run with no holdout gets no held-out entry, never a zero.
+    GbdtParams in_sample = params;
+    in_sample.holdout_fraction = 0.0;
+    const auto plain_run = cn.node.create_run();
+    std::shared_ptr<ComputeJob> plain_job = cn.node.create_job(JobKind::Train);
+    const auto plain = run_train_job(
+        cn.coordinator, *plain_job, frame.frame, data.names, "y", in_sample, &cn.node,
+        "in-sample-model", {}, {}, zetta::ml::kDefaultGbdtTimeout, {}, plain_run->id());
+    ASSERT_TRUE(plain.ok());
+    EXPECT_FALSE(plain_run->value().metrics.at("summary").contains("held_out_auc"));
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
 // The holdout is decided by a content hash of the row, so WHICH rows are held out
 // does not depend on how the rows were spread over nodes. Two shardings of the
 // same data therefore report the same held-out figure — without this, a run's
