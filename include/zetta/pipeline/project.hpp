@@ -157,11 +157,14 @@ public:
     // Workspace. Reads the intent input's payload body, resolves the selected
     // methodology, and persists its graph as a named ProjectGraph. `options`
     // may select a methodology or solution and carry hints. `error` receives a
-    // compile refusal. The M-1 default name remains "churn skeleton".
+    // compile refusal. Without a `name`, the graph is named from the intent's
+    // words (#1238), numbered " (2)", " (3)"… when that name is taken;
+    // `template_name` receives the template its steps started from.
     std::shared_ptr<ProjectGraph>
     compile_intent_to_graph(const std::string& input_id, std::string name = {},
                             const IntentCompileOptions& options = {},
-                            std::string* error = nullptr);
+                            std::string* error = nullptr,
+                            std::string* template_name = nullptr);
 
     // Approve a proposed plan (#885, review-before-build): mark the graph
     // (found by `name`) approved by `approver` at `at` (ISO-8601), capture the

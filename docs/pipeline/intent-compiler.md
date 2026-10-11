@@ -65,13 +65,32 @@ if (compiled) {
 ```
 
 The API capability accepts the same optional `methodology`, `solution`, and
-`hints` fields. Its answer includes the methodology id it compiled. Unless a
-caller supplies a name, M-1 keeps `churn skeleton`; every other resolved method
-uses `<methodology name> pipeline`. For example, M-3 returns
-`Segmentation / clustering pipeline`, not `generic skeleton` (#1082).
-`CompiledIntent::name` supplies this default independently of the legacy
-`IntentShape` classification. Unresolved intents still fail rather than
-producing a generic pipeline.
+`hints` fields. Its answer includes the methodology id it compiled and
+`template`, the template its steps started from.
+
+**Names (#1238).** Unless a caller supplies a name, a compiled pipeline is named
+from the intent's own words (`intent_pipeline_name`): its first words, at most
+eight and about sixty characters, punctuation dropped, the first letter
+capitalized, and never ending on a joining word such as *and* or *the*.
+*"Predict which customers will churn next quarter and rank the at-risk
+accounts"* compiles to `Predict which customers will churn next quarter`. An
+intent with no words falls back to `<project> pipeline` (or
+`<methodology name> pipeline` without a project). Every pipeline used to be
+named for its template (`churn skeleton` for M-1, `<methodology name> pipeline`
+otherwise), so a person who described their own problem got a pipeline named for
+someone else's.
+
+**Template.** `CompiledIntent::template_name`, and `template` in the
+capability's answer, say which template the steps came from: `the M-1 churn
+template`, `the S-2 template` when a solution was selected, or `the M-3
+Segmentation / clustering template`. The steps' names (`load_customers`,
+`notify_retention` …) are the template's until someone edits them; the template
+is said rather than hidden. Fitting step names to a dataset's columns is the
+shape builders' work, not the compiler's.
+
+`CompiledIntent::name` is independent of the legacy `IntentShape`
+classification. Unresolved intents still fail rather than producing a generic
+pipeline.
 
 ## M-1 reference shape
 
@@ -126,10 +145,13 @@ and registered ensemble keywords select this shape. S-10 stays with M-1.
 
 `Project::compile_intent_to_graph` reads an immutable captured intent, calls the
 same compiler, and persists the resulting graph through `create_graph`.
-Callers may supply `IntentCompileOptions`; the default graph name remains
-`"churn skeleton"` for M-1 unless a name is given. The method returns an empty
-handle when the input is missing, is not an intent, has no local body, cannot be
-resolved to a runnable methodology, or the graph name collides.
+Callers may supply `IntentCompileOptions`. Without a name the graph is named
+from the intent's words; when the project already has a graph by that name, the
+new one is numbered (`… (2)`, `… (3)`), so compiling the same intent twice no
+longer fails. An optional `template_name` out-parameter receives the template.
+The method returns an empty handle when the input is missing, is not an intent,
+has no local body, cannot be resolved to a runnable methodology, or an explicit
+graph name collides.
 
 The graph uses the existing IR JSON boundary and replication path. This feature
 introduces no new stored graph format.

@@ -8047,8 +8047,10 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     ASSERT_TRUE(explicit_m3.ok) << explicit_m3.error.message;
     EXPECT_EQ(explicit_m3.value.at("methodology"), "M-3");
     EXPECT_TRUE(explicit_m3.value.at("runnable"));
-    EXPECT_EQ(explicit_m3.value.at("name"), "Segmentation / clustering pipeline");
-    EXPECT_NE(explicit_m3.value.at("name"), "generic skeleton");
+    // Named from the intent's words, with the template it started from (#1238).
+    EXPECT_EQ(explicit_m3.value.at("name"), "Group customers into personas");
+    EXPECT_EQ(explicit_m3.value.at("template"),
+              "the M-3 Segmentation / clustering template");
 
     const ApiResult solution =
         call("compile_intent", {{"project", "portfolio"},

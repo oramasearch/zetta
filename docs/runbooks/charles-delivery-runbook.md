@@ -310,7 +310,7 @@ name with the same arguments object:
 ```sh
 curl -s -X POST "$ZETTA/mcp" -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
-       "params":{"name":"compile_intent","arguments":{"project":"churn"}}}'
+       "params":{"name":"compile_intent","arguments":{"project":"churn","name":"churn skeleton"}}}'
 ```
 
 ### 4.0 · The one that will cost him an hour: reads are GET, actions are POST
@@ -555,7 +555,7 @@ P create_project '{"name":"churn","description":"Which accounts are about to lea
 P capture_intent '{"project":"churn",
   "text":"predict which accounts are likely to churn, with calibrated scores and explanations"}'
 
-P compile_intent '{"project":"churn"}'
+P compile_intent '{"project":"churn","name":"churn skeleton"}'
 ```
 
 `compile_intent` returns the Pipeline it built. **Measured — a 7-step graph, 6 edges:**

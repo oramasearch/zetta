@@ -228,7 +228,7 @@ same arguments object:
 ```sh
 curl -s -X POST "$ZETTA/mcp" -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
-       "params":{"name":"compile_intent","arguments":{"project":"churn"}}}'
+       "params":{"name":"compile_intent","arguments":{"project":"churn","name":"churn skeleton"}}}'
 ```
 
 ### 4.2 · Land the data
@@ -394,7 +394,7 @@ P() { curl -s -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: applicat
 
 P create_project  '{"name":"churn","description":"Which accounts are about to leave, and why"}'
 P capture_intent  '{"project":"churn","text":"predict which accounts are likely to churn, with calibrated scores and explanations"}'
-P compile_intent  '{"project":"churn"}'
+P compile_intent  '{"project":"churn","name":"churn skeleton"}'
 ```
 
 **Measured** — `compile_intent` returns a 7-step Pipeline, 6 edges:
