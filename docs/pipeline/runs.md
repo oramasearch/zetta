@@ -35,7 +35,7 @@ exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 | `lineage` | `RunLineage` | `{ sources[], steps[], freshness, confidence }`. |
 | `features` | JSON object | Accepted feature provenance: `used[{name, source[], transform, why}]` and `excluded[{name, why}]`; absent on old records means empty arrays (#1062). |
 | `metrics` | JSON object | Column-oriented step series, one-time flattened params, final/best summaries, and typed JSON artifacts. See [run metrics](../ml/run-metrics.md) (#1137). |
-| `entity_key_mapping` | JSON object | Present for a text-keyed dataset: the entity column plus collision-checked `{derived_id, original_value}` entries used to restore business ids in every output (#957). |
+| `entity_key_mapping` | JSON object | Present for a text-keyed dataset: the entity column plus collision-checked `{derived_id, original_value}` entries used to restore business ids in every output (#957). `get_run` answers `{column, entry_count}` in its place unless `include_entity_keys: true` (#1202): the entries grow with the row count (222 KB on 1,500 rows). |
 
 `status` is grounded in the run events: a run starts `Pending`, moves to
 `Running` (RunStarted), and ends `Succeeded` (RunSucceeded, with outputs +

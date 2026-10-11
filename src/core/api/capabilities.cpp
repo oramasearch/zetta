@@ -583,15 +583,35 @@ ApiResult handle_get_project(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// An id input plus the opt-in for an entity-key mapping's entries (#1202).
+nlohmann::json id_input_with_entity_keys_schema(std::string_view field,
+                                                std::string_view description) {
+    nlohmann::json schema = id_input_schema(field, description);
+    schema["properties"]["include_entity_keys"] = {
+        {"type", "boolean"},
+        {"description",
+         "also return entity_key_mapping.entries, every distinct text id and "
+         "its derived key (default false: a count, entry_count — the list "
+         "grows with the dataset's row count)"}};
+    return schema;
+}
+
 const nlohmann::json& get_run_schema() {
-    static const nlohmann::json schema =
-        id_input_schema("run_id", "the run's uuid (system.runs.run_id)");
+    static const nlohmann::json schema = id_input_with_entity_keys_schema(
+        "run_id", "the run's uuid (system.runs.run_id)");
     return schema;
 }
 
 const nlohmann::json& get_run_output_schema() {
-    static const nlohmann::json schema =
-        entity_value_with_id_schema(zetta::pipeline::run_value_schema());
+    static const nlohmann::json schema = [] {
+        nlohmann::json value =
+            entity_value_with_id_schema(zetta::pipeline::run_value_schema());
+        // Summarized by default (#1202); the full form on include_entity_keys.
+        nlohmann::json& mapping = value["properties"]["entity_key_mapping"];
+        mapping = {{"anyOf",
+                    {mapping, zetta::data::entity_key_mapping_summary_schema()}}};
+        return value;
+    }();
     return schema;
 }
 
@@ -603,6 +623,9 @@ ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
     }
     nlohmann::json output = run->metadata();
     output["id"] = run->id();
+    if (!input.value("include_entity_keys", false)) {
+        zetta::data::summarize_entity_key_mappings(output);
+    }
     return ApiResult::success(std::move(output));
 }
 
@@ -2081,8 +2104,8 @@ ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) 
 }
 
 const nlohmann::json& get_model_schema() {
-    static const nlohmann::json schema =
-        id_input_schema("model_id", "the model's uuid (system.models.model_id)");
+    static const nlohmann::json schema = id_input_with_entity_keys_schema(
+        "model_id", "the model's uuid (system.models.model_id)");
     return schema;
 }
 
@@ -2100,6 +2123,10 @@ ApiResult handle_get_model(const nlohmann::json& input, ApiContext& context) {
     }
     nlohmann::json output = model->metadata();
     output["id"] = model->id();
+    // feature_schema.entity_key_mapping: a count unless asked for (#1202).
+    if (!input.value("include_entity_keys", false)) {
+        zetta::data::summarize_entity_key_mappings(output);
+    }
     return ApiResult::success(std::move(output));
 }
 
@@ -2940,6 +2967,10 @@ const nlohmann::json& list_models_output_schema() {
 ApiResult handle_list_models(const nlohmann::json&, ApiContext& context) {
     nlohmann::json models = nlohmann::json::array();
     for (const auto& model : context.node.models()) {
+        // A list never carries a mapping's entries (#1202): get_model with
+        // include_entity_keys reads them for one model.
+        nlohmann::json feature_schema = model->feature_schema();
+        zetta::data::summarize_entity_key_mappings(feature_schema);
         models.push_back({{"id", model->id()},
                           {"name", model->name()},
                           {"kind", model->kind()},
@@ -2949,7 +2980,7 @@ ApiResult handle_list_models(const nlohmann::json&, ApiContext& context) {
                           {"run", model->run()},
                           {"run_id", model->run_id()},
                           {"metrics", model->metrics()},
-                          {"feature_schema", model->feature_schema()},
+                          {"feature_schema", std::move(feature_schema)},
                           {"exposed", model->exposed()},
                           {"created", model->created()},
                           {"has_weights", model->has_weights()}});
