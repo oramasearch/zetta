@@ -217,6 +217,12 @@ study.
 - a ranked leaderboard with a 95% confidence interval when intermediate
   measurements allow one.
 
+Each trial's Model is named from its study: `<study name>-trial-<n>`, with the
+name lowercased and other characters folded to `-` (`Churn tuning` trial 3 →
+`churn-tuning-trial-3`; `experiment-<id8>-trial-<n>` when the name has no
+letters or digits). A person reads a study as an *experiment*, so its models
+are never named `study-<id>` (#1242).
+
 `promote_trial` accepts only a complete trial whose Run has a registered Model.
 It records that existing Model as the Study's promoted project model version;
 it does not copy weights. The action requires the dedicated

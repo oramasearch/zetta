@@ -278,6 +278,9 @@ TEST_F(StudyDriverJourney,
         const auto model = node.find_model(trial.model);
         ASSERT_TRUE(model);
         EXPECT_EQ(model->run_id(), trial.run);
+        // Named from the experiment, never "study-<id>" (#1242).
+        EXPECT_EQ(model->name(),
+                  "dataset-study-trial-" + std::to_string(trial.number));
     }
     ASSERT_GE(complete.size(), 2u);
     EXPECT_EQ(node.models().size(), complete.size());
