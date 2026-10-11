@@ -86,7 +86,7 @@ written without them parses back to a report without them.
   "verdict": "pass",
   "block_deploy": false,
   "applied": 1,
-  "not_applicable": 104
+  "not_applicable": 107
 }
 ```
 
