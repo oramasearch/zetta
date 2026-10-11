@@ -503,3 +503,48 @@ TEST(DistributedFulltext, BuildsRealFulltextSubIndexesAndRanksLikeOracle) {
             << "score diverged at rank " << i;
     }
 }
+
+// ----- a hit's row fields travel with it (#1243) -----------------------------
+
+TEST(DistributedFulltextWire, ReturnFieldsAndHitFieldsRoundTrip) {
+    FulltextQueryRequest request;
+    request.table = "articles";
+    request.kind = IndexKind::Search;
+    request.fields = {"title", "body"};
+    request.term = "postgres";
+    request.return_fields = std::vector<std::string>{"title"};
+    std::string error;
+    const auto decoded = zetta::index::decode_fulltext_query(
+        zetta::index::encode_fulltext_query(request), &error);
+    ASSERT_TRUE(decoded) << error;
+    ASSERT_TRUE(decoded->return_fields);
+    EXPECT_EQ(*decoded->return_fields, (std::vector<std::string>{"title"}));
+
+    // An older coordinator sends no return_fields: ids and scores only.
+    request.return_fields.reset();
+    const auto legacy = zetta::index::decode_fulltext_query(
+        zetta::index::encode_fulltext_query(request), &error);
+    ASSERT_TRUE(legacy) << error;
+    EXPECT_FALSE(legacy->return_fields);
+
+    FulltextQueryResponse response;
+    response.hits = {{"r1", 2.0, nlohmann::json{{"title", "Postgres"}}}, {"r2", 1.0}};
+    const auto hits = zetta::index::decode_fulltext_hits(
+        zetta::index::encode_fulltext_hits(response), &error);
+    ASSERT_TRUE(hits) << error;
+    EXPECT_EQ(hits->hits[0].fields, (nlohmann::json{{"title", "Postgres"}}));
+    EXPECT_TRUE(hits->hits[1].fields.is_null());
+}
+
+TEST(DistributedFulltextMerge, KeepsTheFieldsOfTheHitItKeeps) {
+    const std::vector<std::vector<FulltextHit>> sources = {
+        {{"r1", 1.0, nlohmann::json{{"title", "low"}}}},
+        {{"r1", 3.0, nlohmann::json{{"title", "high"}}},
+         {"r2", 2.0, nlohmann::json{{"title", "other"}}}},
+    };
+    const std::vector<FulltextHit> merged = zetta::index::merge_fulltext_hits(sources);
+    ASSERT_EQ(merged.size(), 2u);
+    EXPECT_EQ(merged[0].row_id, "r1");
+    EXPECT_EQ(merged[0].fields, (nlohmann::json{{"title", "high"}}));
+    EXPECT_EQ(merged[1].fields, (nlohmann::json{{"title", "other"}}));
+}

@@ -4,8 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/index_backend.hpp"
@@ -42,6 +45,11 @@ struct SearchRequest {
     std::string query;    // the free-text query
     std::string field;    // optional: restrict to one indexed field
     std::size_t top_k = 0;  // cap on the global ranking (0 = no cap)
+    // The row fields each hit carries back (#1243). nullopt = the index's own
+    // fields; an empty list = ids and scores only. Each name must be one of the
+    // index's fields — the values come from what the index holds, read by the
+    // node that owns the row.
+    std::optional<std::vector<std::string>> fields;
     std::chrono::milliseconds timeout =
         DistributedFulltextIndex::kDefaultTimeout;  // per-peer scatter budget
 };
@@ -51,6 +59,9 @@ struct SearchRequest {
 struct SearchHit {
     std::string row_id;
     double score = 0.0;
+    // The matched row's values for the requested fields (#1243); an empty
+    // object when none were requested.
+    nlohmann::json fields = nlohmann::json::object();
 
     bool operator==(const SearchHit&) const = default;
 };

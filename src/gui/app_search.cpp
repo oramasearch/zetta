@@ -337,8 +337,13 @@ void App::draw_search() {
 
             // The source row's fields, read live from the local store: the
             // indexed fields first (the snippet), the rest muted after them.
-            const std::optional<nlohmann::json> source_row =
+            // A row owned by another node falls back to the indexed fields
+            // its owner sent back with the hit (#1243).
+            std::optional<nlohmann::json> source_row =
                 find_local_row(node_, result.spec.table, hit->row_id);
+            if (!source_row && hit->fields.is_object() && !hit->fields.empty()) {
+                source_row = hit->fields;
+            }
             if (!source_row) {
                 ImGui::TextColored(
                     kInkMuted,

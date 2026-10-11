@@ -18349,6 +18349,23 @@
             }
           },
           {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "the row fields each hit carries back (default: the index's own fields; [] = ids and scores only). Each must be one of the index's fields.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "the row fields each hit carries back (default: the index's own fields; [] = ids and scores only). Each must be one of the index's fields.",
+            "in": "query",
+            "name": "fields",
+            "required": false
+          },
+          {
             "description": "the free-text query",
             "in": "query",
             "name": "query",
@@ -18410,7 +18427,12 @@
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "fields": {
+                                "description": "the matched row's values for the requested fields (default: the index's own fields)",
+                                "type": "object"
+                              },
                               "id": {
+                                "description": "the engine's internal row id",
                                 "type": "string"
                               },
                               "score": {
@@ -18419,7 +18441,8 @@
                             },
                             "required": [
                               "id",
-                              "score"
+                              "score",
+                              "fields"
                             ],
                             "type": "object"
                           },
@@ -30857,6 +30880,23 @@
             }
           },
           {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "the row fields each hit carries back (default: the index's own fields; [] = ids and scores only). Each must be one of the index's fields.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "the row fields each hit carries back (default: the index's own fields; [] = ids and scores only). Each must be one of the index's fields.",
+            "in": "query",
+            "name": "fields",
+            "required": false
+          },
+          {
             "description": "the free-text query",
             "in": "query",
             "name": "query",
@@ -30929,7 +30969,12 @@
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "fields": {
+                                "description": "the matched row's values for the requested fields (default: the index's own fields)",
+                                "type": "object"
+                              },
                               "id": {
+                                "description": "the engine's internal row id",
                                 "type": "string"
                               },
                               "score": {
@@ -30938,7 +30983,8 @@
                             },
                             "required": [
                               "id",
-                              "score"
+                              "score",
+                              "fields"
                             ],
                             "type": "object"
                           },

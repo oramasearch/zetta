@@ -66,6 +66,9 @@ namespace zetta::index {
 struct FulltextHit {
     std::string row_id;
     double score = 0.0;
+    // The matched row's values for the requested fields (#1243), filled by the
+    // node that owns the row's partition. Null when fields were not requested.
+    nlohmann::json fields;
 
     bool operator==(const FulltextHit&) const = default;
 };
@@ -111,9 +114,13 @@ struct FulltextQueryRequest {
     IndexKind kind = IndexKind::Search;
     std::string backend;              // the backend selector (provenance/validation)
     std::vector<std::string> fields;  // the indexed fields (>= 1)
-    std::string field;                // optional named field (seam parity)
+    std::string field;                // optional named field (one field to match)
     nlohmann::json term;              // the free-text query value (scalar)
     std::size_t top_k = 0;            // per-shard cap (0 = no cap)
+    // The row fields each hit should carry back (#1243): the owning node
+    // attaches them, so a row is never fetched from another node. nullopt = ids
+    // and scores only.
+    std::optional<std::vector<std::string>> return_fields;
 
     // The IndexSpec this request names (table/kind/backend/fields) — what a peer
     // looks its sub-indexes up by.
@@ -187,6 +194,9 @@ public:
         IndexStatus status;
         std::vector<std::string> row_ids;  // global ranking (score desc, id asc)
         std::vector<double> scores;        // aligned to row_ids
+        // Aligned to row_ids: each hit's requested field values (#1243), or
+        // null when no fields were requested.
+        std::vector<nlohmann::json> fields;
         std::size_t nodes_answered = 0;    // self + peers that contributed
         std::uint64_t wire_bytes_moved = 0;  // scatter+gather payload bytes this query
                                              //   moved (the hits, not the rows)
@@ -235,10 +245,16 @@ public:
     // "search:peer" per scattered peer) under `parent`, carrying node id, hit count,
     // and wire bytes — so a surface can show where the query's time went (#641).
     // Both null (the default) = no spans, unchanged behavior.
+    //
+    // `return_fields`, when non-null, asks every node to attach those fields'
+    // values to its own hits (#1243): the node that owns a row's partition reads
+    // it from what it indexed, so rows never cross the wire twice. Each name
+    // must be one of `spec.fields`.
     QueryResult query(const IndexSpec& spec, const IndexQuery& query,
                       std::chrono::milliseconds timeout = kDefaultTimeout,
                       zetta::observability::SpanRecorder* recorder = nullptr,
-                      const zetta::observability::TraceContext* parent = nullptr) const;
+                      const zetta::observability::TraceContext* parent = nullptr,
+                      const std::vector<std::string>* return_fields = nullptr) const;
 
     // Query only this node's local sub-indexes (no scatter) → its merged, ranked
     // hits, capped to `query.top_k`. Used by query() for the local contribution and
@@ -249,7 +265,8 @@ public:
     std::vector<FulltextHit> query_local(const IndexSpec& spec,
                                          const IndexQuery& query,
                                          IndexStatus* status = nullptr,
-                                         std::size_t* sub_indexes = nullptr) const;
+                                         std::size_t* sub_indexes = nullptr,
+                                         const std::vector<std::string>* return_fields = nullptr) const;
 
     // The participants of a scatter: this node + every connected peer, sorted by
     // node id (so the set is the same on every node).
@@ -272,6 +289,11 @@ private:
     mutable std::mutex mutex_;
     // base IndexSpec::key() -> the per-partition sub-index specs built into backend_.
     std::map<std::string, std::vector<IndexSpec>> sub_specs_;
+    // base IndexSpec::key() -> row id -> the row's values for the index's own
+    // fields, kept from the build (#1243). A hit's fields come from here, on the
+    // node that owns the row: the network thread answering a peer cannot read
+    // the node's partition bodies, and the index already holds these values.
+    std::map<std::string, std::map<std::string, nlohmann::json>> rows_;
 };
 
 }  // namespace zetta::index

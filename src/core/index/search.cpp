@@ -1,6 +1,8 @@
 #include "zetta/index/search.hpp"
 
+#include <algorithm>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -11,6 +13,7 @@
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_registry.hpp"
 #include "zetta/node.hpp"
+#include "zetta/storage/engine.hpp"
 
 namespace zetta::index {
 namespace {
@@ -67,6 +70,40 @@ bool has_placed_partitions(Node& node, const std::string& table_id) {
     return false;
 }
 
+// The consolidated path's row lookup (#1243): the index was built over the
+// table's own store (the index step executor), so its rows are on this node.
+// Fills each hit's requested fields from them; a row that is gone keeps an
+// empty object.
+void attach_consolidated_fields(Node& node, const std::string& table,
+                                const std::vector<std::string>& fields,
+                                std::vector<SearchHit>& hits) {
+    if (fields.empty() || hits.empty()) return;
+    std::unordered_map<std::string, SearchHit*> wanted;
+    for (SearchHit& hit : hits) wanted.emplace(hit.row_id, &hit);
+    for (const std::string& name : node.database_names()) {
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(name);
+        if (!database) continue;
+        const std::shared_ptr<zetta::data::Table> found = database->find_table(table);
+        if (!found) continue;
+        const zetta::storage::StorageEngine& store = found->store();
+        for (std::size_t i = 0; i < store.size() && !wanted.empty(); ++i) {
+            const auto hit = wanted.find(store.id_at(i));
+            if (hit == wanted.end()) continue;
+            if (const zetta::storage::ParquetLazyPtr row = store.at(i);
+                row && row->is_object()) {
+                for (const std::string& field : fields) {
+                    if (const auto value = row->find(field); value != row->end()) {
+                        hit->second->fields[field] = *value;
+                    }
+                }
+            }
+            wanted.erase(hit);
+        }
+        return;
+    }
+}
+
 }  // namespace
 
 SearchResult search(Node& node, const SearchRequest& request,
@@ -120,6 +157,23 @@ SearchResult search(Node& node, const SearchRequest& request,
     result.index_id = index->id();
     result.spec = index->spec();
 
+    // Which fields each hit carries back (#1243): the index's own by default,
+    // and only ever fields the index holds.
+    const std::vector<std::string> return_fields =
+        request.fields ? *request.fields : result.spec.fields;
+    for (const std::string& field : return_fields) {
+        if (std::ranges::find(result.spec.fields, field) == result.spec.fields.end()) {
+            std::string available;
+            for (const std::string& indexed : result.spec.fields) {
+                if (!available.empty()) available += ", ";
+                available += indexed;
+            }
+            return fail(IndexStatus::invalid_argument(
+                "search: field '" + field + "' is not one of index '" +
+                index->id() + "''s fields (" + available + ")"));
+        }
+    }
+
     IndexQuery query;
     query.field = request.field;
     query.term = request.query;
@@ -141,12 +195,18 @@ SearchResult search(Node& node, const SearchRequest& request,
         node.reconcile_search_indexes();
         const DistributedFulltextIndex::QueryResult distributed_result =
             distributed->query(result.spec, query, request.timeout, recorder,
-                               &inner);
+                               &inner,
+                               return_fields.empty() ? nullptr : &return_fields);
         if (!distributed_result.ok()) return fail(distributed_result.status);
         result.hits.reserve(distributed_result.row_ids.size());
         for (std::size_t i = 0; i < distributed_result.row_ids.size(); ++i) {
-            result.hits.push_back(SearchHit{distributed_result.row_ids[i],
-                                            distributed_result.scores[i]});
+            SearchHit hit{distributed_result.row_ids[i], distributed_result.scores[i]};
+            // The owning node attached the row's values to its own hits.
+            if (i < distributed_result.fields.size() &&
+                distributed_result.fields[i].is_object()) {
+                hit.fields = distributed_result.fields[i];
+            }
+            result.hits.push_back(std::move(hit));
         }
         result.nodes = distributed_result.contributions;
         result.wire_bytes_moved = distributed_result.wire_bytes_moved;
@@ -173,6 +233,8 @@ SearchResult search(Node& node, const SearchRequest& request,
                 i < query_result.scores.size() ? query_result.scores[i] : 0.0;
             result.hits.push_back(SearchHit{query_result.row_ids[i], score});
         }
+        attach_consolidated_fields(node, result.spec.table, return_fields,
+                                   result.hits);
         NodeContribution self;
         self.node_id = node.node_id();
         self.local = true;

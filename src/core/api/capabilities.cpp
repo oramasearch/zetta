@@ -401,6 +401,13 @@ const nlohmann::json& search_schema() {
            {{"type", "string"},
             {"description",
              "restrict matching to one indexed field (optional)"}}},
+          {"fields",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description",
+             "the row fields each hit carries back (default: the index's own "
+             "fields; [] = ids and scores only). Each must be one of the "
+             "index's fields."}}},
           {"top_k",
            {{"type", "integer"},
             {"minimum", 1},
@@ -421,6 +428,9 @@ ApiResult handle_search(const nlohmann::json& input, ApiContext& context) {
     request.query = input.at("query").get<std::string>();
     request.field = input.value("field", std::string{});
     request.top_k = input.value("top_k", 10);
+    if (input.contains("fields")) {
+        request.fields = input.at("fields").get<std::vector<std::string>>();
+    }
 
     const zetta::index::SearchResult result =
         context.node.search(request, context.recorder, &context.trace);

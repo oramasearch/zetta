@@ -102,10 +102,13 @@ reaches the index:
 
 - **request** — `schemas/fulltext_query.schema.json`: the `IndexSpec` the peer looks
   its sub-indexes up by (`table` / `kind` / `fields`, with `backend` for provenance)
-  plus the query (`field` / `term` / `top_k`). `encode_fulltext_query` /
-  `decode_fulltext_query`.
+  plus the query (`field` / `term` / `top_k`), and an optional `return_fields`
+  list: the row fields each hit should carry back ([#1243](https://github.com/oramasearch/zetta/issues/1243)).
+  `encode_fulltext_query` / `decode_fulltext_query`.
 - **response** — `schemas/fulltext_hits.schema.json`: one node's ranked
-  `{ id, score }` hits, plus an optional `sub_indexes` count (how many
+  `{ id, score, fields? }` hits (`fields` = the requested values of a row this
+  node owns, read from what `build_local` kept for the index's fields), plus an
+  optional `sub_indexes` count (how many
   per-partition sub-indexes the node consulted — the provenance surfaces show,
   [#643](https://github.com/oramasearch/zetta/issues/643); a payload without
   it decodes to 0). `encode_fulltext_hits` / `decode_fulltext_hits`.

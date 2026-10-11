@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -233,6 +234,36 @@ TEST(NodeSearch, UnpartitionedTableDegradesToConsolidatedWithSelfProvenance) {
         EXPECT_EQ(result.hits[i].row_id, oracle[i]) << "rank " << i;
     }
 
+    // Each hit carries the matched row's indexed fields (#1243), read from the
+    // table the consolidated index was built over.
+    std::map<std::string, nlohmann::json> rows;
+    for (const zetta::index::IndexPartition& partition :
+         zetta::index::read_index_partitions(table->store())) {
+        for (const zetta::index::IndexDocument& document : partition.documents) {
+            rows.emplace(document.id, document.doc);
+        }
+    }
+    for (const zetta::index::SearchHit& hit : result.hits) {
+        ASSERT_TRUE(rows.contains(hit.row_id));
+        EXPECT_EQ(hit.fields, rows.at(hit.row_id)) << hit.row_id;
+    }
+    {
+        SearchRequest narrowed = request;
+        narrowed.fields = std::vector<std::string>{"title"};
+        const SearchResult only_title = node.search(narrowed);
+        ASSERT_TRUE(only_title.ok()) << only_title.status.message;
+        ASSERT_FALSE(only_title.hits.empty());
+        for (const zetta::index::SearchHit& hit : only_title.hits) {
+            EXPECT_EQ(hit.fields,
+                      (nlohmann::json{{"title", rows.at(hit.row_id).at("title")}}));
+        }
+        SearchRequest unindexed = request;
+        unindexed.fields = std::vector<std::string>{"author"};
+        const SearchResult refused = node.search(unindexed);
+        EXPECT_FALSE(refused.ok());
+        EXPECT_NE(refused.status.message.find("author"), std::string::npos);
+    }
+
     // Per-node provenance: exactly this node, marked local; the one
     // consolidated index is the single "sub-index" consulted.
     ASSERT_EQ(result.nodes.size(), 1u);
@@ -337,6 +368,17 @@ TEST(NodeSearch, DistributedSearchMatchesOracleWithProvenanceAndOneTrace) {
         consolidated_oracle(tables, spec, query);
     ASSERT_FALSE(oracle.empty());
 
+    // Every row, from every node's shard: what a hit's fields must equal.
+    std::map<std::string, nlohmann::json> rows;
+    for (Table* table : tables) {
+        for (const zetta::index::IndexPartition& partition :
+             zetta::index::read_index_partitions(table->store())) {
+            for (const zetta::index::IndexDocument& document : partition.documents) {
+                rows.emplace(document.id, document.doc);
+            }
+        }
+    }
+
     // Every node, coordinating through THE entry point, produces the identical
     // global ranking — equal to the oracle — with full per-node provenance.
     for (std::size_t index = 0; index < kNodes; ++index) {
@@ -354,6 +396,42 @@ TEST(NodeSearch, DistributedSearchMatchesOracleWithProvenanceAndOneTrace) {
         for (std::size_t rank = 0; rank < oracle.size(); ++rank) {
             EXPECT_EQ(result.hits[rank].row_id, oracle[rank])
                 << "node " << index << " rank " << rank;
+        }
+
+        // Each hit carries its row's indexed fields (#1243) — including the
+        // rows that live on another node, which that node attached.
+        std::size_t remote_hits = 0;
+        for (const zetta::index::SearchHit& hit : result.hits) {
+            ASSERT_TRUE(rows.contains(hit.row_id));
+            EXPECT_EQ(hit.fields, rows.at(hit.row_id))
+                << "node " << index << " hit " << hit.row_id;
+            bool local = false;
+            for (const auto& partition :
+                 zetta::index::read_index_partitions(nodes[index]->table->store())) {
+                for (const auto& document : partition.documents) {
+                    local = local || document.id == hit.row_id;
+                }
+            }
+            if (!local) ++remote_hits;
+        }
+        EXPECT_GT(remote_hits, 0u) << "node " << index;
+        {
+            SearchRequest narrowed = request;
+            narrowed.fields = std::vector<std::string>{"title"};
+            const SearchResult only_title = nodes[index]->node.search(narrowed);
+            ASSERT_TRUE(only_title.ok()) << only_title.status.message;
+            ASSERT_EQ(only_title.hits.size(), oracle.size());
+            for (const zetta::index::SearchHit& hit : only_title.hits) {
+                EXPECT_EQ(hit.fields,
+                          (nlohmann::json{{"title", rows.at(hit.row_id).at("title")}}));
+            }
+            SearchRequest ids_only = request;
+            ids_only.fields = std::vector<std::string>{};
+            const SearchResult bare = nodes[index]->node.search(ids_only);
+            ASSERT_TRUE(bare.ok());
+            for (const zetta::index::SearchHit& hit : bare.hits) {
+                EXPECT_TRUE(hit.fields.empty());
+            }
         }
 
         // Per-node provenance: all three nodes answered; exactly one (this
