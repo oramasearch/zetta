@@ -3474,21 +3474,30 @@
                   },
                   "skills": {
                     "items": {
-                      "enum": [
-                        "search",
-                        "generate-data",
-                        "train",
-                        "summarize",
-                        "call-api",
-                        "drives",
-                        "transcripts",
-                        "repositories",
-                        "datasets",
-                        "streams",
-                        "pipelines",
-                        "usage"
-                      ],
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "search",
+                            "generate-data",
+                            "train",
+                            "summarize",
+                            "call-api",
+                            "drives",
+                            "transcripts",
+                            "repositories",
+                            "datasets",
+                            "streams",
+                            "pipelines",
+                            "usage"
+                          ],
+                          "type": "string"
+                        },
+                        {
+                          "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                          "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
+                          "type": "string"
+                        }
+                      ]
                     },
                     "type": "array"
                   },
@@ -3641,21 +3650,30 @@
                         },
                         "skills": {
                           "items": {
-                            "enum": [
-                              "search",
-                              "generate-data",
-                              "train",
-                              "summarize",
-                              "call-api",
-                              "drives",
-                              "transcripts",
-                              "repositories",
-                              "datasets",
-                              "streams",
-                              "pipelines",
-                              "usage"
-                            ],
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "search",
+                                  "generate-data",
+                                  "train",
+                                  "summarize",
+                                  "call-api",
+                                  "drives",
+                                  "transcripts",
+                                  "repositories",
+                                  "datasets",
+                                  "streams",
+                                  "pipelines",
+                                  "usage"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
+                                "type": "string"
+                              }
+                            ]
                           },
                           "type": "array"
                         },
@@ -11769,21 +11787,30 @@
                         },
                         "skills": {
                           "items": {
-                            "enum": [
-                              "search",
-                              "generate-data",
-                              "train",
-                              "summarize",
-                              "call-api",
-                              "drives",
-                              "transcripts",
-                              "repositories",
-                              "datasets",
-                              "streams",
-                              "pipelines",
-                              "usage"
-                            ],
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "search",
+                                  "generate-data",
+                                  "train",
+                                  "summarize",
+                                  "call-api",
+                                  "drives",
+                                  "transcripts",
+                                  "repositories",
+                                  "datasets",
+                                  "streams",
+                                  "pipelines",
+                                  "usage"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
+                                "type": "string"
+                              }
+                            ]
                           },
                           "type": "array"
                         },
@@ -19322,21 +19349,30 @@
                               },
                               "skills": {
                                 "items": {
-                                  "enum": [
-                                    "search",
-                                    "generate-data",
-                                    "train",
-                                    "summarize",
-                                    "call-api",
-                                    "drives",
-                                    "transcripts",
-                                    "repositories",
-                                    "datasets",
-                                    "streams",
-                                    "pipelines",
-                                    "usage"
-                                  ],
-                                  "type": "string"
+                                  "anyOf": [
+                                    {
+                                      "enum": [
+                                        "search",
+                                        "generate-data",
+                                        "train",
+                                        "summarize",
+                                        "call-api",
+                                        "drives",
+                                        "transcripts",
+                                        "repositories",
+                                        "datasets",
+                                        "streams",
+                                        "pipelines",
+                                        "usage"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    {
+                                      "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                      "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
+                                      "type": "string"
+                                    }
+                                  ]
                                 },
                                 "type": "array"
                               },
@@ -32485,21 +32521,30 @@
                         },
                         "skills": {
                           "items": {
-                            "enum": [
-                              "search",
-                              "generate-data",
-                              "train",
-                              "summarize",
-                              "call-api",
-                              "drives",
-                              "transcripts",
-                              "repositories",
-                              "datasets",
-                              "streams",
-                              "pipelines",
-                              "usage"
-                            ],
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "search",
+                                  "generate-data",
+                                  "train",
+                                  "summarize",
+                                  "call-api",
+                                  "drives",
+                                  "transcripts",
+                                  "repositories",
+                                  "datasets",
+                                  "streams",
+                                  "pipelines",
+                                  "usage"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
+                                "type": "string"
+                              }
+                            ]
                           },
                           "type": "array"
                         },
@@ -34336,21 +34381,30 @@
                   },
                   "skills": {
                     "items": {
-                      "enum": [
-                        "search",
-                        "generate-data",
-                        "train",
-                        "summarize",
-                        "call-api",
-                        "drives",
-                        "transcripts",
-                        "repositories",
-                        "datasets",
-                        "streams",
-                        "pipelines",
-                        "usage"
-                      ],
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "search",
+                            "generate-data",
+                            "train",
+                            "summarize",
+                            "call-api",
+                            "drives",
+                            "transcripts",
+                            "repositories",
+                            "datasets",
+                            "streams",
+                            "pipelines",
+                            "usage"
+                          ],
+                          "type": "string"
+                        },
+                        {
+                          "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                          "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
+                          "type": "string"
+                        }
+                      ]
                     },
                     "type": "array"
                   },
@@ -34503,21 +34557,30 @@
                         },
                         "skills": {
                           "items": {
-                            "enum": [
-                              "search",
-                              "generate-data",
-                              "train",
-                              "summarize",
-                              "call-api",
-                              "drives",
-                              "transcripts",
-                              "repositories",
-                              "datasets",
-                              "streams",
-                              "pipelines",
-                              "usage"
-                            ],
-                            "type": "string"
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "search",
+                                  "generate-data",
+                                  "train",
+                                  "summarize",
+                                  "call-api",
+                                  "drives",
+                                  "transcripts",
+                                  "repositories",
+                                  "datasets",
+                                  "streams",
+                                  "pipelines",
+                                  "usage"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
+                                "type": "string"
+                              }
+                            ]
                           },
                           "type": "array"
                         },
