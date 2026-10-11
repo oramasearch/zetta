@@ -1,5 +1,7 @@
 #include "zetta/pipeline/graph_checks.hpp"
 
+#include "zetta/ml/workspace_methodology.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -5224,6 +5226,20 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
                                node_label(*node) + ": model_kind must be a string"};
         }
         const std::string named = kind->get<std::string>();
+        // A workspace methodology (zetta#1261) is not in the catalogue: whether it
+        // can run depends on its replicated registry entry, which this pure check
+        // cannot read. The API's gate and run answer from the entry
+        // (`gate_with_workspace_methodologies`); here it is never "implemented".
+        if (const std::string workspace =
+                zetta::ml::workspace_methodology_id_of_model_kind(named);
+            !workspace.empty()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) + ": this step runs the workspace methodology " + workspace +
+                    " in Lake's runner. Verify and run it through the gate and run "
+                    "capabilities, which read its registry entry; it cannot be deployed for "
+                    "serving yet."};
+        }
         const std::vector<std::string>& ok = implemented();
         if (std::find(ok.begin(), ok.end(), named) == ok.end()) {
             if (const zetta::ml::Methodology* methodology =

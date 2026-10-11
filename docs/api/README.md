@@ -79,7 +79,7 @@ The same server serves the registry as **plain REST** (#618,
 [rest-openapi.md](rest-openapi.md)): reads are `GET /v1/<name>` (query-string
 input), actions/jobs are `POST /v1/<name>` (JSON body), same bearer → same
 audit, responses are the same envelope with error codes mapped onto HTTP
-statuses; `GET /v1/openapi.json` is the OpenAPI document generated from the
+statuses (`forbidden` is 403 and `runner_required` 409, #1261); `GET /v1/openapi.json` is the OpenAPI document generated from the
 registered schemas (drift-checked into `schemas/openapi.json`).
 
 The same server also answers plain `GET /llms.txt` / `/llms/<topic>.txt` /
@@ -169,7 +169,12 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
-| `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, study support and published search spaces, primary solutions, model kinds, implementation status, and tracking issues |
+| `list_methodologies` | read | api:query | all 21 catalogue methodologies, their data and result contracts, study support and published search spaces, primary solutions, model kinds, implementation status, and tracking issues, then the workspace's own; every entry says `source` (`orama` or `workspace`) and `editable` ([workspace methodologies](../ml/workspace-methodologies.md), #1261) |
+| `get_methodology` | read | api:query | one methodology by id: a catalogue entry (M-n, read-only) or a workspace methodology (W-<8 hex>) with its interface, code location, image and validation (#1261) |
+| `register_methodology` | action | orchestration:register_methodology | register a workspace methodology whose Python code Lake's runner runs (never the engine); returns its W- id, not validated (#1261) |
+| `update_methodology` | action | orchestration:update_methodology | change a workspace methodology, its image or its validation; a new code revision resets validation; Orama's answer `forbidden` (#1261) |
+| `delete_methodology` | action | orchestration:delete_methodology | remove a workspace methodology (idempotent); Orama's answer `forbidden` (#1261) |
+| `record_methodology_run` | action | orchestration:record_methodology_run | record what Lake's runner produced: a training run registers a Model (kind `python:<id>`, artifact ≤ 24 MiB as its weights, in-sample and held-out metrics) and a Run, on the pipeline for a step (#1261) |
 | `list_ledger` | read | api:query | immutable action and outcome entries from the replicated [solutions audit ledger](../solutions/audit-ledger.md) |
 | `list_solutions` | read | api:query | all 20 runnable catalogue solutions, with composition, product contract, `levels` objects, missing components, and runnable status |
 | `get_solution` | read | api:query | one runnable catalogue solution by id; `solution.levels[].level` is the integer posted to `create_solution` |
@@ -234,7 +239,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `compile_python` | action | orchestration:compile_python | lower sim-Python source to a stored, editable graph (never runs Python) |
 | `gate` | action | orchestration:gate | run the correctness gate; returns the full ValidationReport (no state change) |
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
-| `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch their runner, including M-5 survival, M-12 graph ML and M-21 streaming over their connect-step tables; M-16 accepts bounded LP/MIP controls and returns solver status plus plan/constraint table handles; refuse unknown or unavailable model kinds; graphs without a model remain structural |
+| `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch their runner, including M-5 survival, M-12 graph ML and M-21 streaming over their connect-step tables; a workspace methodology's graph answers `runner_required` (409) with `error.details` naming what Lake's runner runs ([workspace methodologies](../ml/workspace-methodologies.md#a-pipeline-step), #1261); M-16 accepts bounded LP/MIP controls and returns solver status plus plan/constraint table handles; refuse unknown or unavailable model kinds; graphs without a model remain structural |
 | `run_solution` | job | orchestration:run_solution | run snapshot and methodology stages, enforce policy/holdout protection, deliver actions and record ledger/monitor state; return a durable Run and decision-table output |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
 | `snapshot` | action | orchestration:snapshot | materialize the latest row per entity at or before an inclusive cutoff into a replicated table keyed by `(entity_id, as_of)` (#1103) |

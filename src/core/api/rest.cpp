@@ -99,6 +99,8 @@ int rest_status(const ApiResult& result) {
     const std::string& code = result.error.code;
     if (code == "invalid_input") return 400;
     if (code == "unauthorized") return 403;
+    if (code == "forbidden") return 403;          // read-only by design (zetta#1261)
+    if (code == "runner_required") return 409;    // Lake's runner runs it (zetta#1261)
     if (code == "consent_required") return 403;
     if (code == "not_found") return 404;
     if (code == "conflict") return 409;

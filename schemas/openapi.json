@@ -2904,7 +2904,7 @@
                     "type": "string"
                   },
                   "methodology": {
-                    "description": "methodology id or model kind; takes precedence",
+                    "description": "methodology id (a catalogue M-n or a workspace W-<8 hex>) or model kind; takes precedence",
                     "minLength": 1,
                     "type": "string"
                   },
@@ -8559,6 +8559,111 @@
         ]
       }
     },
+    "/v1/delete_methodology": {
+      "post": {
+        "description": "Remove a workspace methodology by id (a CRDT tombstone; replicates). Idempotent. Orama's catalogue methodologies are read-only: deleting one answers forbidden. Requires orchestration:delete_methodology.",
+        "operationId": "delete_methodology",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "description": "a catalogue id (M-n) or a workspace methodology's id (W-<8 hex>)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "removed",
+                        "id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete a workspace methodology",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/delete_model": {
       "post": {
         "description": "Delete a model on every node; a served model stops being served. The run that trained it is kept. dry_run: true answers what would go and changes nothing. Not undoable. Requires orchestration:delete_model.",
@@ -12859,6 +12964,609 @@
           }
         },
         "summary": "Get one job",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_methodology": {
+      "get": {
+        "description": "Read one methodology: Orama's catalogue entry (M-n, read-only) or a workspace methodology (W-<8 hex>) with its interface, where its Python code lives, its image and its validation. No side effects. Requires api:query.",
+        "operationId": "get_methodology",
+        "parameters": [
+          {
+            "description": "a catalogue id (M-n) or a workspace methodology's id (W-<8 hex>)",
+            "in": "query",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "a catalogue id (M-n) or a workspace methodology's id (W-<8 hex>)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "methodology": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "code": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "path": {
+                                  "type": "string"
+                                },
+                                "repository_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "revision": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "repository_id",
+                                "revision"
+                              ],
+                              "type": "object"
+                            },
+                            "created_at": {
+                              "type": "string"
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "duplicated_from": {
+                              "type": "string"
+                            },
+                            "editable": {
+                              "type": "boolean"
+                            },
+                            "family": {
+                              "type": "string"
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "image": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "build_id": {
+                                  "type": "string"
+                                },
+                                "reference": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "inputs": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "required": {
+                                    "type": "boolean"
+                                  },
+                                  "role": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "role",
+                                  "required",
+                                  "description"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "interface": {
+                              "description": "what a workspace methodology's code declares: the input kinds it needs, its target, required features, parameters (for studies to search), the metric base names it reports (as in_sample_<m> and held_out_<m>) and whether it explains",
+                              "properties": {
+                                "explain": {
+                                  "type": "boolean"
+                                },
+                                "input_kinds": {
+                                  "items": {
+                                    "enum": [
+                                      "tabular",
+                                      "text",
+                                      "time_series",
+                                      "graph",
+                                      "image",
+                                      "audio",
+                                      "document"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "metrics": {
+                                  "items": {
+                                    "pattern": "^[a-z][a-z0-9_]*$",
+                                    "type": "string"
+                                  },
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "parameters": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "choices": {
+                                        "items": {
+                                          "type": [
+                                            "string",
+                                            "number",
+                                            "integer",
+                                            "boolean"
+                                          ]
+                                        },
+                                        "minItems": 1,
+                                        "type": "array"
+                                      },
+                                      "default": {
+                                        "type": [
+                                          "string",
+                                          "number",
+                                          "integer",
+                                          "boolean"
+                                        ]
+                                      },
+                                      "description": {
+                                        "type": "string"
+                                      },
+                                      "kind": {
+                                        "enum": [
+                                          "int",
+                                          "float",
+                                          "categorical",
+                                          "bool"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "log": {
+                                        "type": "boolean"
+                                      },
+                                      "maximum": {
+                                        "type": "number"
+                                      },
+                                      "minimum": {
+                                        "type": "number"
+                                      },
+                                      "name": {
+                                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "name",
+                                      "kind",
+                                      "default"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "required_features": {
+                                  "items": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "target": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "kind": {
+                                      "enum": [
+                                        "binary",
+                                        "multiclass",
+                                        "regression",
+                                        "none"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "required": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "required",
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "issue": {
+                              "type": "string"
+                            },
+                            "metrics": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "model_kinds": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "network": {
+                              "type": "boolean"
+                            },
+                            "outputs": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "partial": {
+                              "type": "boolean"
+                            },
+                            "resources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "cpu": {
+                                  "type": "string"
+                                },
+                                "gpu": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "memory": {
+                                  "type": "string"
+                                },
+                                "timeout_seconds": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "runnable": {
+                              "type": "boolean"
+                            },
+                            "solutions": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "source": {
+                              "description": "orama: the catalogue, read-only; workspace: the workspace's own, its Python code run by Lake's runner (zetta#1261)",
+                              "enum": [
+                                "orama",
+                                "workspace"
+                              ],
+                              "type": "string"
+                            },
+                            "studies": {
+                              "type": "boolean"
+                            },
+                            "study_reason": {
+                              "type": "string"
+                            },
+                            "study_search_space": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "dataset_path": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "directory_paths": {
+                                          "type": "boolean"
+                                        },
+                                        "format": {
+                                          "const": "database.table",
+                                          "type": "string"
+                                        },
+                                        "kind": {
+                                          "const": "table",
+                                          "type": "string"
+                                        },
+                                        "must_exist": {
+                                          "type": "boolean"
+                                        },
+                                        "required_without_project_pipeline": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "format",
+                                        "must_exist",
+                                        "required_without_project_pipeline",
+                                        "directory_paths"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "objective_metric_aliases": {
+                                      "additionalProperties": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "description": "accepted input aliases per canonical objective metric; they normalize to the canonical name",
+                                      "type": "object"
+                                    },
+                                    "objective_metrics": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "parameters": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "aliases": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "choices": {
+                                            "items": {
+                                              "type": [
+                                                "string",
+                                                "number",
+                                                "integer",
+                                                "boolean"
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "condition_parameter": {
+                                            "type": "string"
+                                          },
+                                          "condition_values": {
+                                            "items": {
+                                              "type": [
+                                                "string",
+                                                "number",
+                                                "integer",
+                                                "boolean"
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "default": {
+                                            "type": [
+                                              "string",
+                                              "number",
+                                              "integer",
+                                              "boolean"
+                                            ]
+                                          },
+                                          "kind": {
+                                            "enum": [
+                                              "int",
+                                              "float",
+                                              "categorical"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "log": {
+                                            "type": "boolean"
+                                          },
+                                          "maximum": {
+                                            "type": "number"
+                                          },
+                                          "minimum": {
+                                            "type": "number"
+                                          },
+                                          "name": {
+                                            "type": "string"
+                                          },
+                                          "step": {
+                                            "minimum": 0,
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "name",
+                                          "kind",
+                                          "minimum",
+                                          "maximum",
+                                          "step",
+                                          "log",
+                                          "default",
+                                          "choices",
+                                          "aliases",
+                                          "condition_parameter",
+                                          "condition_values"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "validation_splits": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": [
+                                    "parameters",
+                                    "objective_metrics",
+                                    "objective_metric_aliases",
+                                    "validation_splits",
+                                    "dataset_path"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "updated_at": {
+                              "type": "string"
+                            },
+                            "validation": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "findings": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "check": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "message": {
+                                        "type": "string"
+                                      },
+                                      "ok": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "check",
+                                      "ok"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "revision": {
+                                  "type": "string"
+                                },
+                                "run_id": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "enum": [
+                                    "not_validated",
+                                    "running",
+                                    "passed",
+                                    "failed"
+                                  ],
+                                  "type": "string"
+                                },
+                                "validated_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "family",
+                            "model_kinds",
+                            "solutions",
+                            "inputs",
+                            "outputs",
+                            "metrics",
+                            "runnable",
+                            "partial",
+                            "issue",
+                            "studies",
+                            "study_reason",
+                            "study_search_space",
+                            "source",
+                            "editable"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "methodology"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a methodology",
         "tags": [
           "read"
         ]
@@ -20600,11 +21308,59 @@
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "code": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "path": {
+                                    "type": "string"
+                                  },
+                                  "repository_id": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "revision": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "repository_id",
+                                  "revision"
+                                ],
+                                "type": "object"
+                              },
+                              "created_at": {
+                                "type": "string"
+                              },
+                              "created_by": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "duplicated_from": {
+                                "type": "string"
+                              },
+                              "editable": {
+                                "type": "boolean"
+                              },
                               "family": {
                                 "type": "string"
                               },
                               "id": {
                                 "type": "string"
+                              },
+                              "image": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "build_id": {
+                                    "type": "string"
+                                  },
+                                  "reference": {
+                                    "type": "string"
+                                  }
+                                },
+                                "type": "object"
                               },
                               "inputs": {
                                 "items": {
@@ -20629,6 +21385,130 @@
                                 },
                                 "type": "array"
                               },
+                              "interface": {
+                                "description": "what a workspace methodology's code declares: the input kinds it needs, its target, required features, parameters (for studies to search), the metric base names it reports (as in_sample_<m> and held_out_<m>) and whether it explains",
+                                "properties": {
+                                  "explain": {
+                                    "type": "boolean"
+                                  },
+                                  "input_kinds": {
+                                    "items": {
+                                      "enum": [
+                                        "tabular",
+                                        "text",
+                                        "time_series",
+                                        "graph",
+                                        "image",
+                                        "audio",
+                                        "document"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "metrics": {
+                                    "items": {
+                                      "pattern": "^[a-z][a-z0-9_]*$",
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "parameters": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "choices": {
+                                          "items": {
+                                            "type": [
+                                              "string",
+                                              "number",
+                                              "integer",
+                                              "boolean"
+                                            ]
+                                          },
+                                          "minItems": 1,
+                                          "type": "array"
+                                        },
+                                        "default": {
+                                          "type": [
+                                            "string",
+                                            "number",
+                                            "integer",
+                                            "boolean"
+                                          ]
+                                        },
+                                        "description": {
+                                          "type": "string"
+                                        },
+                                        "kind": {
+                                          "enum": [
+                                            "int",
+                                            "float",
+                                            "categorical",
+                                            "bool"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "log": {
+                                          "type": "boolean"
+                                        },
+                                        "maximum": {
+                                          "type": "number"
+                                        },
+                                        "minimum": {
+                                          "type": "number"
+                                        },
+                                        "name": {
+                                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "name",
+                                        "kind",
+                                        "default"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "required_features": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "target": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "enum": [
+                                          "binary",
+                                          "multiclass",
+                                          "regression",
+                                          "none"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "required": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "required",
+                                      "kind"
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              },
                               "issue": {
                                 "type": "string"
                               },
@@ -20647,6 +21527,9 @@
                               "name": {
                                 "type": "string"
                               },
+                              "network": {
+                                "type": "boolean"
+                              },
                               "outputs": {
                                 "items": {
                                   "type": "string"
@@ -20656,6 +21539,26 @@
                               "partial": {
                                 "type": "boolean"
                               },
+                              "resources": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "cpu": {
+                                    "type": "string"
+                                  },
+                                  "gpu": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "memory": {
+                                    "type": "string"
+                                  },
+                                  "timeout_seconds": {
+                                    "minimum": 1,
+                                    "type": "integer"
+                                  }
+                                },
+                                "type": "object"
+                              },
                               "runnable": {
                                 "type": "boolean"
                               },
@@ -20664,6 +21567,14 @@
                                   "type": "string"
                                 },
                                 "type": "array"
+                              },
+                              "source": {
+                                "description": "orama: the catalogue, read-only; workspace: the workspace's own, its Python code run by Lake's runner (zetta#1261)",
+                                "enum": [
+                                  "orama",
+                                  "workspace"
+                                ],
+                                "type": "string"
                               },
                               "studies": {
                                 "type": "boolean"
@@ -20827,6 +21738,59 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "updated_at": {
+                                "type": "string"
+                              },
+                              "validation": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "findings": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "check": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "message": {
+                                          "type": "string"
+                                        },
+                                        "ok": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "check",
+                                        "ok"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "revision": {
+                                    "type": "string"
+                                  },
+                                  "run_id": {
+                                    "type": "string"
+                                  },
+                                  "status": {
+                                    "enum": [
+                                      "not_validated",
+                                      "running",
+                                      "passed",
+                                      "failed"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "validated_at": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "status"
+                                ],
+                                "type": "object"
                               }
                             },
                             "required": [
@@ -20843,7 +21807,9 @@
                               "issue",
                               "studies",
                               "study_reason",
-                              "study_search_space"
+                              "study_search_space",
+                              "source",
+                              "editable"
                             ],
                             "type": "object"
                           },
@@ -29692,6 +30658,187 @@
         ]
       }
     },
+    "/v1/record_methodology_run": {
+      "post": {
+        "description": "Record what Lake's runner produced for a workspace methodology. A training run registers a Model (kind python:<id>) with its in-sample and held-out metrics and the artifact as its weights, and a Run with its parameters, metrics and lineage (on the pipeline's project and graph for a pipeline step). A validation run registers nothing. Requires orchestration:record_methodology_run.",
+        "operationId": "record_methodology_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_base64": {
+                    "description": "the fitted artifact, base64; at most 24 MiB decoded. Required for train.",
+                    "type": "string"
+                  },
+                  "artifact_format": {
+                    "enum": [
+                      "bytes",
+                      "pickle"
+                    ],
+                    "type": "string"
+                  },
+                  "dataset_path": {
+                    "description": "database.table it read",
+                    "type": "string"
+                  },
+                  "features": {
+                    "description": "the feature columns it was given",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "graph": {
+                    "description": "for a pipeline step: the graph's name or id",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "methodology": {
+                    "description": "the workspace methodology that ran",
+                    "pattern": "^W-[0-9a-f]{8}$",
+                    "type": "string"
+                  },
+                  "metrics": {
+                    "additionalProperties": {
+                      "type": "number"
+                    },
+                    "description": "in_sample_<m> and held_out_<m>, numbers only",
+                    "type": "object"
+                  },
+                  "mode": {
+                    "description": "train registers a Model and a Run; validate registers nothing (Lake records the outcome with update_methodology's validation)",
+                    "enum": [
+                      "validate",
+                      "train"
+                    ],
+                    "type": "string"
+                  },
+                  "params": {
+                    "description": "the parameters it ran with",
+                    "type": "object"
+                  },
+                  "project": {
+                    "description": "for a pipeline step: the project's name or id",
+                    "type": "string"
+                  },
+                  "rows": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "held_out": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "train": {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "run_id": {
+                    "description": "Lake's id for the run, kept on the Model as its lineage",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "methodology",
+                  "run_id",
+                  "mode"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "model_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "run_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "model_id",
+                        "run_id"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Record a methodology run",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/record_metric": {
       "post": {
         "description": "Append up to 1000 labelled points to a counter or gauge; all are validated before any is written. Mutates replicated state. Requires data:metrics_write.",
@@ -30108,6 +31255,792 @@
           }
         },
         "summary": "Record an action outcome",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/register_methodology": {
+      "post": {
+        "description": "Register a workspace methodology: Python code in one of the workspace's repositories that Lake's sandboxed runner runs (the engine never runs it). Declares its input kinds, target, required features, parameters, metrics and code location; returns the entry with its generated W- id, not validated. Replicates to every node. Requires orchestration:register_methodology.",
+        "operationId": "register_methodology",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      },
+                      "repository_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "revision": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "repository_id",
+                      "revision"
+                    ],
+                    "type": "object"
+                  },
+                  "created_by": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 20000,
+                    "type": "string"
+                  },
+                  "duplicated_from": {
+                    "type": "string"
+                  },
+                  "explain": {
+                    "type": "boolean"
+                  },
+                  "family": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "input_kinds": {
+                    "items": {
+                      "enum": [
+                        "tabular",
+                        "text",
+                        "time_series",
+                        "graph",
+                        "image",
+                        "audio",
+                        "document"
+                      ],
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "metrics": {
+                    "items": {
+                      "pattern": "^[a-z][a-z0-9_]*$",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "network": {
+                    "type": "boolean"
+                  },
+                  "parameters": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "choices": {
+                          "items": {
+                            "type": [
+                              "string",
+                              "number",
+                              "integer",
+                              "boolean"
+                            ]
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "default": {
+                          "type": [
+                            "string",
+                            "number",
+                            "integer",
+                            "boolean"
+                          ]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "int",
+                            "float",
+                            "categorical",
+                            "bool"
+                          ],
+                          "type": "string"
+                        },
+                        "log": {
+                          "type": "boolean"
+                        },
+                        "maximum": {
+                          "type": "number"
+                        },
+                        "minimum": {
+                          "type": "number"
+                        },
+                        "name": {
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "kind",
+                        "default"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "required_features": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "resources": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cpu": {
+                        "type": "string"
+                      },
+                      "gpu": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "memory": {
+                        "type": "string"
+                      },
+                      "timeout_seconds": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "target": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "binary",
+                          "multiclass",
+                          "regression",
+                          "none"
+                        ],
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "required",
+                      "kind"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "name",
+                  "input_kinds",
+                  "target",
+                  "metrics",
+                  "code"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "methodology": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "code": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "path": {
+                                  "type": "string"
+                                },
+                                "repository_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "revision": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "repository_id",
+                                "revision"
+                              ],
+                              "type": "object"
+                            },
+                            "created_at": {
+                              "type": "string"
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "duplicated_from": {
+                              "type": "string"
+                            },
+                            "editable": {
+                              "type": "boolean"
+                            },
+                            "family": {
+                              "type": "string"
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "image": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "build_id": {
+                                  "type": "string"
+                                },
+                                "reference": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "inputs": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "required": {
+                                    "type": "boolean"
+                                  },
+                                  "role": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "role",
+                                  "required",
+                                  "description"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "interface": {
+                              "description": "what a workspace methodology's code declares: the input kinds it needs, its target, required features, parameters (for studies to search), the metric base names it reports (as in_sample_<m> and held_out_<m>) and whether it explains",
+                              "properties": {
+                                "explain": {
+                                  "type": "boolean"
+                                },
+                                "input_kinds": {
+                                  "items": {
+                                    "enum": [
+                                      "tabular",
+                                      "text",
+                                      "time_series",
+                                      "graph",
+                                      "image",
+                                      "audio",
+                                      "document"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "metrics": {
+                                  "items": {
+                                    "pattern": "^[a-z][a-z0-9_]*$",
+                                    "type": "string"
+                                  },
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "parameters": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "choices": {
+                                        "items": {
+                                          "type": [
+                                            "string",
+                                            "number",
+                                            "integer",
+                                            "boolean"
+                                          ]
+                                        },
+                                        "minItems": 1,
+                                        "type": "array"
+                                      },
+                                      "default": {
+                                        "type": [
+                                          "string",
+                                          "number",
+                                          "integer",
+                                          "boolean"
+                                        ]
+                                      },
+                                      "description": {
+                                        "type": "string"
+                                      },
+                                      "kind": {
+                                        "enum": [
+                                          "int",
+                                          "float",
+                                          "categorical",
+                                          "bool"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "log": {
+                                        "type": "boolean"
+                                      },
+                                      "maximum": {
+                                        "type": "number"
+                                      },
+                                      "minimum": {
+                                        "type": "number"
+                                      },
+                                      "name": {
+                                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "name",
+                                      "kind",
+                                      "default"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "required_features": {
+                                  "items": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "target": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "kind": {
+                                      "enum": [
+                                        "binary",
+                                        "multiclass",
+                                        "regression",
+                                        "none"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "required": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "required",
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "issue": {
+                              "type": "string"
+                            },
+                            "metrics": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "model_kinds": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "network": {
+                              "type": "boolean"
+                            },
+                            "outputs": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "partial": {
+                              "type": "boolean"
+                            },
+                            "resources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "cpu": {
+                                  "type": "string"
+                                },
+                                "gpu": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "memory": {
+                                  "type": "string"
+                                },
+                                "timeout_seconds": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "runnable": {
+                              "type": "boolean"
+                            },
+                            "solutions": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "source": {
+                              "description": "orama: the catalogue, read-only; workspace: the workspace's own, its Python code run by Lake's runner (zetta#1261)",
+                              "enum": [
+                                "orama",
+                                "workspace"
+                              ],
+                              "type": "string"
+                            },
+                            "studies": {
+                              "type": "boolean"
+                            },
+                            "study_reason": {
+                              "type": "string"
+                            },
+                            "study_search_space": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "dataset_path": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "directory_paths": {
+                                          "type": "boolean"
+                                        },
+                                        "format": {
+                                          "const": "database.table",
+                                          "type": "string"
+                                        },
+                                        "kind": {
+                                          "const": "table",
+                                          "type": "string"
+                                        },
+                                        "must_exist": {
+                                          "type": "boolean"
+                                        },
+                                        "required_without_project_pipeline": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "format",
+                                        "must_exist",
+                                        "required_without_project_pipeline",
+                                        "directory_paths"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "objective_metric_aliases": {
+                                      "additionalProperties": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "description": "accepted input aliases per canonical objective metric; they normalize to the canonical name",
+                                      "type": "object"
+                                    },
+                                    "objective_metrics": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "parameters": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "aliases": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "choices": {
+                                            "items": {
+                                              "type": [
+                                                "string",
+                                                "number",
+                                                "integer",
+                                                "boolean"
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "condition_parameter": {
+                                            "type": "string"
+                                          },
+                                          "condition_values": {
+                                            "items": {
+                                              "type": [
+                                                "string",
+                                                "number",
+                                                "integer",
+                                                "boolean"
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "default": {
+                                            "type": [
+                                              "string",
+                                              "number",
+                                              "integer",
+                                              "boolean"
+                                            ]
+                                          },
+                                          "kind": {
+                                            "enum": [
+                                              "int",
+                                              "float",
+                                              "categorical"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "log": {
+                                            "type": "boolean"
+                                          },
+                                          "maximum": {
+                                            "type": "number"
+                                          },
+                                          "minimum": {
+                                            "type": "number"
+                                          },
+                                          "name": {
+                                            "type": "string"
+                                          },
+                                          "step": {
+                                            "minimum": 0,
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "name",
+                                          "kind",
+                                          "minimum",
+                                          "maximum",
+                                          "step",
+                                          "log",
+                                          "default",
+                                          "choices",
+                                          "aliases",
+                                          "condition_parameter",
+                                          "condition_values"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "validation_splits": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": [
+                                    "parameters",
+                                    "objective_metrics",
+                                    "objective_metric_aliases",
+                                    "validation_splits",
+                                    "dataset_path"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "updated_at": {
+                              "type": "string"
+                            },
+                            "validation": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "findings": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "check": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "message": {
+                                        "type": "string"
+                                      },
+                                      "ok": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "check",
+                                      "ok"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "revision": {
+                                  "type": "string"
+                                },
+                                "run_id": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "enum": [
+                                    "not_validated",
+                                    "running",
+                                    "passed",
+                                    "failed"
+                                  ],
+                                  "type": "string"
+                                },
+                                "validated_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "family",
+                            "model_kinds",
+                            "solutions",
+                            "inputs",
+                            "outputs",
+                            "metrics",
+                            "runnable",
+                            "partial",
+                            "issue",
+                            "studies",
+                            "study_reason",
+                            "study_search_space",
+                            "source",
+                            "editable"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "methodology"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Register a workspace methodology",
         "tags": [
           "action"
         ]
@@ -34801,6 +36734,855 @@
           }
         },
         "summary": "Update event",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_methodology": {
+      "post": {
+        "description": "Change a workspace methodology's fields, its image or its validation. A new code revision resets validation unless the same call reports it. Orama's catalogue methodologies are read-only: changing one answers forbidden. Requires orchestration:update_methodology.",
+        "operationId": "update_methodology",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      },
+                      "repository_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "revision": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "repository_id",
+                      "revision"
+                    ],
+                    "type": "object"
+                  },
+                  "created_by": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 20000,
+                    "type": "string"
+                  },
+                  "duplicated_from": {
+                    "type": "string"
+                  },
+                  "explain": {
+                    "type": "boolean"
+                  },
+                  "family": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "id": {
+                    "description": "the workspace methodology's id (W-<8 hex>)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "image": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "build_id": {
+                        "type": "string"
+                      },
+                      "reference": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "input_kinds": {
+                    "items": {
+                      "enum": [
+                        "tabular",
+                        "text",
+                        "time_series",
+                        "graph",
+                        "image",
+                        "audio",
+                        "document"
+                      ],
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "metrics": {
+                    "items": {
+                      "pattern": "^[a-z][a-z0-9_]*$",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "network": {
+                    "type": "boolean"
+                  },
+                  "parameters": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "choices": {
+                          "items": {
+                            "type": [
+                              "string",
+                              "number",
+                              "integer",
+                              "boolean"
+                            ]
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "default": {
+                          "type": [
+                            "string",
+                            "number",
+                            "integer",
+                            "boolean"
+                          ]
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "int",
+                            "float",
+                            "categorical",
+                            "bool"
+                          ],
+                          "type": "string"
+                        },
+                        "log": {
+                          "type": "boolean"
+                        },
+                        "maximum": {
+                          "type": "number"
+                        },
+                        "minimum": {
+                          "type": "number"
+                        },
+                        "name": {
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "kind",
+                        "default"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "required_features": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "resources": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cpu": {
+                        "type": "string"
+                      },
+                      "gpu": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "memory": {
+                        "type": "string"
+                      },
+                      "timeout_seconds": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "target": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "binary",
+                          "multiclass",
+                          "regression",
+                          "none"
+                        ],
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "required",
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  "validation": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "findings": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "check": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
+                            },
+                            "ok": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "check",
+                            "ok"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "revision": {
+                        "type": "string"
+                      },
+                      "run_id": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": [
+                          "not_validated",
+                          "running",
+                          "passed",
+                          "failed"
+                        ],
+                        "type": "string"
+                      },
+                      "validated_at": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "methodology": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "code": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "path": {
+                                  "type": "string"
+                                },
+                                "repository_id": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "revision": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "repository_id",
+                                "revision"
+                              ],
+                              "type": "object"
+                            },
+                            "created_at": {
+                              "type": "string"
+                            },
+                            "created_by": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "duplicated_from": {
+                              "type": "string"
+                            },
+                            "editable": {
+                              "type": "boolean"
+                            },
+                            "family": {
+                              "type": "string"
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "image": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "build_id": {
+                                  "type": "string"
+                                },
+                                "reference": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "inputs": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "required": {
+                                    "type": "boolean"
+                                  },
+                                  "role": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "role",
+                                  "required",
+                                  "description"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "interface": {
+                              "description": "what a workspace methodology's code declares: the input kinds it needs, its target, required features, parameters (for studies to search), the metric base names it reports (as in_sample_<m> and held_out_<m>) and whether it explains",
+                              "properties": {
+                                "explain": {
+                                  "type": "boolean"
+                                },
+                                "input_kinds": {
+                                  "items": {
+                                    "enum": [
+                                      "tabular",
+                                      "text",
+                                      "time_series",
+                                      "graph",
+                                      "image",
+                                      "audio",
+                                      "document"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "metrics": {
+                                  "items": {
+                                    "pattern": "^[a-z][a-z0-9_]*$",
+                                    "type": "string"
+                                  },
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "parameters": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "choices": {
+                                        "items": {
+                                          "type": [
+                                            "string",
+                                            "number",
+                                            "integer",
+                                            "boolean"
+                                          ]
+                                        },
+                                        "minItems": 1,
+                                        "type": "array"
+                                      },
+                                      "default": {
+                                        "type": [
+                                          "string",
+                                          "number",
+                                          "integer",
+                                          "boolean"
+                                        ]
+                                      },
+                                      "description": {
+                                        "type": "string"
+                                      },
+                                      "kind": {
+                                        "enum": [
+                                          "int",
+                                          "float",
+                                          "categorical",
+                                          "bool"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "log": {
+                                        "type": "boolean"
+                                      },
+                                      "maximum": {
+                                        "type": "number"
+                                      },
+                                      "minimum": {
+                                        "type": "number"
+                                      },
+                                      "name": {
+                                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "name",
+                                      "kind",
+                                      "default"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "required_features": {
+                                  "items": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "target": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "kind": {
+                                      "enum": [
+                                        "binary",
+                                        "multiclass",
+                                        "regression",
+                                        "none"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "required": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "required",
+                                    "kind"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "issue": {
+                              "type": "string"
+                            },
+                            "metrics": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "model_kinds": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "network": {
+                              "type": "boolean"
+                            },
+                            "outputs": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "partial": {
+                              "type": "boolean"
+                            },
+                            "resources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "cpu": {
+                                  "type": "string"
+                                },
+                                "gpu": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "memory": {
+                                  "type": "string"
+                                },
+                                "timeout_seconds": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "runnable": {
+                              "type": "boolean"
+                            },
+                            "solutions": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "source": {
+                              "description": "orama: the catalogue, read-only; workspace: the workspace's own, its Python code run by Lake's runner (zetta#1261)",
+                              "enum": [
+                                "orama",
+                                "workspace"
+                              ],
+                              "type": "string"
+                            },
+                            "studies": {
+                              "type": "boolean"
+                            },
+                            "study_reason": {
+                              "type": "string"
+                            },
+                            "study_search_space": {
+                              "oneOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "dataset_path": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "directory_paths": {
+                                          "type": "boolean"
+                                        },
+                                        "format": {
+                                          "const": "database.table",
+                                          "type": "string"
+                                        },
+                                        "kind": {
+                                          "const": "table",
+                                          "type": "string"
+                                        },
+                                        "must_exist": {
+                                          "type": "boolean"
+                                        },
+                                        "required_without_project_pipeline": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "format",
+                                        "must_exist",
+                                        "required_without_project_pipeline",
+                                        "directory_paths"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "objective_metric_aliases": {
+                                      "additionalProperties": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "description": "accepted input aliases per canonical objective metric; they normalize to the canonical name",
+                                      "type": "object"
+                                    },
+                                    "objective_metrics": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "parameters": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "aliases": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "choices": {
+                                            "items": {
+                                              "type": [
+                                                "string",
+                                                "number",
+                                                "integer",
+                                                "boolean"
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "condition_parameter": {
+                                            "type": "string"
+                                          },
+                                          "condition_values": {
+                                            "items": {
+                                              "type": [
+                                                "string",
+                                                "number",
+                                                "integer",
+                                                "boolean"
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "default": {
+                                            "type": [
+                                              "string",
+                                              "number",
+                                              "integer",
+                                              "boolean"
+                                            ]
+                                          },
+                                          "kind": {
+                                            "enum": [
+                                              "int",
+                                              "float",
+                                              "categorical"
+                                            ],
+                                            "type": "string"
+                                          },
+                                          "log": {
+                                            "type": "boolean"
+                                          },
+                                          "maximum": {
+                                            "type": "number"
+                                          },
+                                          "minimum": {
+                                            "type": "number"
+                                          },
+                                          "name": {
+                                            "type": "string"
+                                          },
+                                          "step": {
+                                            "minimum": 0,
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "name",
+                                          "kind",
+                                          "minimum",
+                                          "maximum",
+                                          "step",
+                                          "log",
+                                          "default",
+                                          "choices",
+                                          "aliases",
+                                          "condition_parameter",
+                                          "condition_values"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "validation_splits": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": [
+                                    "parameters",
+                                    "objective_metrics",
+                                    "objective_metric_aliases",
+                                    "validation_splits",
+                                    "dataset_path"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "updated_at": {
+                              "type": "string"
+                            },
+                            "validation": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "findings": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "check": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "message": {
+                                        "type": "string"
+                                      },
+                                      "ok": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "check",
+                                      "ok"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "revision": {
+                                  "type": "string"
+                                },
+                                "run_id": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "enum": [
+                                    "not_validated",
+                                    "running",
+                                    "passed",
+                                    "failed"
+                                  ],
+                                  "type": "string"
+                                },
+                                "validated_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "family",
+                            "model_kinds",
+                            "solutions",
+                            "inputs",
+                            "outputs",
+                            "metrics",
+                            "runnable",
+                            "partial",
+                            "issue",
+                            "studies",
+                            "study_reason",
+                            "study_search_space",
+                            "source",
+                            "editable"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "methodology"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update a workspace methodology",
         "tags": [
           "action"
         ]

@@ -53,6 +53,7 @@
 #include "zetta/ml/streaming.hpp"
 #include "zetta/ml/score_table.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
+#include "zetta/ml/workspace_methodology.hpp"
 #include "zetta/data/object_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
@@ -80,9 +81,16 @@
 #include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
+#include "../base64.hpp"  // zetta::detail::base64_decode (record_methodology_run)
+
 namespace zetta::api {
 
 namespace {
+
+// zetta#1261: a graph's methodology and whether it can run, workspace
+// methodologies included (defined with the workspace methodology capabilities).
+std::pair<nlohmann::json, bool> graph_methodology_fields(const ApiContext& context,
+                                                         const zetta::ir::ExecutionGraph& graph);
 
 using zetta::governance::CapabilityDomain;
 using zetta::governance::Operation;
@@ -559,21 +567,15 @@ ApiResult handle_get_project(const nlohmann::json& input, ApiContext& context) {
     output["inputs"] = std::move(inputs);
     nlohmann::json graphs = nlohmann::json::array();
     for (const auto& graph : project->graphs()) {
-        const zetta::ml::Methodology* methodology =
-            zetta::ml::methodology_for_graph(graph->graph());
-        const bool has_model =
-            !graph->graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+        const auto [methodology, runnable] = graph_methodology_fields(context, graph->graph());
         graphs.push_back(
             {{"id", graph->id()},
              {"name", graph->name()},
              {"approval", graph->approval_status()},
              {"approved_by", graph->approved_by()},
              {"approved_at", graph->approved_at()},
-             {"methodology", methodology != nullptr
-                                 ? nlohmann::json(methodology->id)
-                                 : nlohmann::json(nullptr)},
-             {"runnable",
-              methodology != nullptr ? methodology->runnable : !has_model}});
+             {"methodology", methodology},
+             {"runnable", runnable}});
     }
     output["graphs"] = std::move(graphs);
     return ApiResult::success(std::move(output));
@@ -3120,6 +3122,30 @@ ApiResult handle_list_datasets(const nlohmann::json&, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// A property of the stored workspace methodology's schema
+// (ml/workspace_methodology.hpp), reused so the capability schemas and the
+// replicated value cannot disagree (zetta#1261).
+nlohmann::json workspace_value_property(const char* name) {
+    return zetta::ml::workspace_methodology_value_schema().at("properties").at(name);
+}
+
+const nlohmann::json& workspace_interface_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"description",
+         "what a workspace methodology's code declares: the input kinds it needs, its "
+         "target, required features, parameters (for studies to search), the metric base "
+         "names it reports (as in_sample_<m> and held_out_<m>) and whether it explains"},
+        {"properties",
+         {{"input_kinds", workspace_value_property("input_kinds")},
+          {"target", workspace_value_property("target")},
+          {"required_features", workspace_value_property("required_features")},
+          {"parameters", workspace_value_property("parameters")},
+          {"metrics", workspace_value_property("metrics")},
+          {"explain", {{"type", "boolean"}}}}}};
+    return schema;
+}
+
 const nlohmann::json& list_methodologies_schema() {
     static const nlohmann::json schema = empty_object_schema();
     return schema;
@@ -3196,10 +3222,28 @@ const nlohmann::json& list_methodologies_output_schema() {
         {"required",
          {"id", "name", "family", "model_kinds", "solutions", "inputs",
           "outputs", "metrics", "runnable", "partial", "issue", "studies",
-          "study_reason", "study_search_space"}},
+          "study_reason", "study_search_space", "source", "editable"}},
         {"additionalProperties", false},
         {"properties",
-         {{"id", {{"type", "string"}}},
+         {{"source",
+           {{"type", "string"},
+            {"enum", {"orama", "workspace"}},
+            {"description",
+             "orama: the catalogue, read-only; workspace: the workspace's own, its "
+             "Python code run by Lake's runner (zetta#1261)"}}},
+          {"editable", {{"type", "boolean"}}},
+          {"description", {{"type", "string"}}},
+          {"interface", workspace_interface_schema()},
+          {"code", workspace_value_property("code")},
+          {"image", workspace_value_property("image")},
+          {"validation", workspace_value_property("validation")},
+          {"network", {{"type", "boolean"}}},
+          {"resources", workspace_value_property("resources")},
+          {"duplicated_from", {{"type", "string"}}},
+          {"created_by", {{"type", "string"}}},
+          {"created_at", {{"type", "string"}}},
+          {"updated_at", {{"type", "string"}}},
+          {"id", {{"type", "string"}}},
           {"name", {{"type", "string"}}},
           {"family", {{"type", "string"}}},
           {"model_kinds", string_array},
@@ -3227,16 +3271,31 @@ const nlohmann::json& list_methodologies_output_schema() {
     return schema;
 }
 
-ApiResult handle_list_methodologies(const nlohmann::json&, ApiContext&) {
+// One catalogue entry as list_methodologies and get_methodology answer it:
+// Orama's, read-only (zetta#1261).
+nlohmann::json catalogue_methodology_json(const zetta::ml::Methodology& methodology) {
+    nlohmann::json entry = zetta::ml::methodology_json(methodology);
+    for (auto& [key, value] :
+         study_search_space_for_methodology(methodology.id).items()) {
+        entry[key] = value;
+    }
+    entry["source"] = "orama";
+    entry["editable"] = false;
+    return entry;
+}
+
+ApiResult handle_list_methodologies(const nlohmann::json&, ApiContext& context) {
     nlohmann::json entries = nlohmann::json::array();
     for (const zetta::ml::Methodology& methodology :
          zetta::ml::methodologies()) {
-        nlohmann::json entry = zetta::ml::methodology_json(methodology);
-        for (auto& [key, value] :
-             study_search_space_for_methodology(methodology.id).items()) {
-            entry[key] = value;
+        entries.push_back(catalogue_methodology_json(methodology));
+    }
+    // The workspace's own after the catalogue (zetta#1261).
+    if (context.node.replication() != nullptr) {
+        const zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+        for (const nlohmann::json& value : store.list()) {
+            entries.push_back(zetta::ml::workspace_methodology_listing(value));
         }
-        entries.push_back(std::move(entry));
     }
     return ApiResult::success({{"methodologies", std::move(entries)}});
 }
@@ -4477,21 +4536,16 @@ nlohmann::json input_json(const zetta::pipeline::ProjectInput& input) {
                           {"size", input.size()}};
 }
 
-nlohmann::json graph_json(const zetta::pipeline::ProjectGraph& graph) {
-    const zetta::ml::Methodology* methodology =
-        zetta::ml::methodology_for_graph(graph.graph());
-    const bool has_model =
-        !graph.graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+nlohmann::json graph_json(const ApiContext& context, const zetta::pipeline::ProjectGraph& graph) {
+    const auto [methodology, runnable] = graph_methodology_fields(context, graph.graph());
     return nlohmann::json{
         {"graph_id", graph.id()},
         {"name", graph.name()},
         {"steps", graph.graph().node_count()},
         {"edges", graph.graph().edge_count()},
         {"approval", graph.approval_status()},
-        {"methodology", methodology != nullptr ? nlohmann::json(methodology->id)
-                                               : nlohmann::json(nullptr)},
-        {"runnable",
-         methodology != nullptr ? methodology->runnable : !has_model}};
+        {"methodology", methodology},
+        {"runnable", runnable}};
 }
 
 // --- get_graph / save_graph: the visual graph workspace's read + write path ---
@@ -4564,15 +4618,9 @@ ApiResult handle_get_graph(const nlohmann::json& input, ApiContext& context) {
     output["approval"] = graph->approval_status();
     output["approved_by"] = graph->approved_by();
     output["approved_at"] = graph->approved_at();
-    const zetta::ml::Methodology* methodology =
-        zetta::ml::methodology_for_graph(graph->graph());
-    output["methodology"] = methodology != nullptr
-                                ? nlohmann::json(methodology->id)
-                                : nlohmann::json(nullptr);
-    output["runnable"] =
-        methodology != nullptr
-            ? methodology->runnable
-            : graph->graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+    const auto [methodology, runnable] = graph_methodology_fields(context, graph->graph());
+    output["methodology"] = methodology;
+    output["runnable"] = runnable;
     return ApiResult::success(std::move(output));
 }
 
@@ -4630,7 +4678,7 @@ ApiResult handle_save_graph(const nlohmann::json& input, ApiContext& context) {
             "engine_error",
             "could not save the graph (empty name, or a name collision)");
     }
-    nlohmann::json output = graph_json(*saved);
+    nlohmann::json output = graph_json(context, *saved);
     output["project"] = project->name();
     return ApiResult::success(std::move(output));
 }
@@ -4875,6 +4923,523 @@ ApiResult handle_import_n8n(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- workspace methodologies (zetta#1261, lake#655) -------------------------------
+//
+// A workspace's own methodology: an entry in the replicated registry whose
+// Python code runs in Lake's sandboxed runner, never in the engine (ADR-17).
+// The catalogue (M-n) is Orama's and read-only; these capabilities change only
+// the workspace's own (W-<8 hex>).
+
+// Decoded artifacts above this are refused: the request that carries one,
+// base64-encoded, must stay under the HTTP adapter's body limit.
+constexpr std::size_t kMaxMethodologyArtifactBytes = 24 * 1024 * 1024;
+
+nlohmann::json workspace_methodology_input_properties(bool include_state) {
+    nlohmann::json properties = nlohmann::json::object();
+    for (const char* name :
+         {"name", "description", "family", "input_kinds", "target", "required_features",
+          "parameters", "metrics", "explain", "code", "network", "resources",
+          "duplicated_from", "created_by"}) {
+        properties[name] = workspace_value_property(name);
+    }
+    if (include_state) {
+        properties["image"] = workspace_value_property("image");
+        properties["validation"] = workspace_value_property("validation");
+    }
+    return properties;
+}
+
+const nlohmann::json& register_methodology_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "input_kinds", "target", "metrics", "code"}},
+        {"additionalProperties", false},
+        {"properties", workspace_methodology_input_properties(false)}};
+    return schema;
+}
+
+const nlohmann::json& update_methodology_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json properties = workspace_methodology_input_properties(true);
+        properties["id"] = {{"type", "string"},
+                            {"minLength", 1},
+                            {"description", "the workspace methodology's id (W-<8 hex>)"}};
+        return nlohmann::json{{"type", "object"},
+                              {"required", {"id"}},
+                              {"additionalProperties", false},
+                              {"properties", std::move(properties)}};
+    }();
+    return schema;
+}
+
+const nlohmann::json& methodology_id_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"id",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "a catalogue id (M-n) or a workspace methodology's id (W-<8 hex>)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& methodology_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"methodology"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"methodology",
+           list_methodologies_output_schema()
+               .at("properties")
+               .at("methodologies")
+               .at("items")}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_methodology_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"removed", "id"}},
+        {"additionalProperties", false},
+        {"properties", {{"removed", {{"type", "boolean"}}}, {"id", {{"type", "string"}}}}}};
+    return schema;
+}
+
+// The refusal for any change to Orama's catalogue: read-only, and the way to
+// a changeable copy.
+ApiResult catalogue_methodology_refusal(const std::string& id, const char* verb) {
+    return ApiResult::failure(
+        "forbidden",
+        "methodology " + id + " is Orama's and read-only: it cannot be " + verb +
+            ". Duplicate it into a workspace methodology of your own "
+            "(register_methodology with duplicated_from \"" + id + "\") and change that.");
+}
+
+bool is_catalogue_methodology_id(const std::string& id) {
+    if (zetta::ml::is_workspace_methodology_id(id)) return false;
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        if (methodology.id == id) return true;
+    }
+    return id.starts_with("M-");
+}
+
+ApiResult handle_register_methodology(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("engine_error",
+                                  "workspace methodologies require a replicated node");
+    }
+    zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+    nlohmann::json value = input;
+    value["id"] = store.new_id();
+    if (!value.contains("family")) value["family"] = "Workspace";
+    if (!value.contains("parameters")) value["parameters"] = nlohmann::json::array();
+    if (!value.contains("required_features")) {
+        value["required_features"] = nlohmann::json::array();
+    }
+    if (!value.contains("explain")) value["explain"] = false;
+    if (!value.contains("network")) value["network"] = false;
+    if (const auto from = value.find("duplicated_from");
+        from != value.end() && !from->get<std::string>().empty()) {
+        const std::string source = from->get<std::string>();
+        const bool known = is_catalogue_methodology_id(source) ||
+                           store.get(source).has_value();
+        if (!known) {
+            return ApiResult::failure("invalid_input",
+                                      "duplicated_from names no methodology '" + source + "'",
+                                      "/duplicated_from");
+        }
+    }
+    value["validation"] = {{"status", "not_validated"}, {"findings", nlohmann::json::array()}};
+    value["created_at"] = zetta::util::now_iso8601();
+    value["updated_at"] = value["created_at"];
+    std::string error;
+    const std::optional<nlohmann::json> stored = store.put(value, &error);
+    if (!stored) return ApiResult::failure("invalid_input", error);
+    return ApiResult::success(
+        {{"methodology", zetta::ml::workspace_methodology_listing(*stored)}});
+}
+
+ApiResult handle_update_methodology(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("id").get<std::string>();
+    if (is_catalogue_methodology_id(id)) return catalogue_methodology_refusal(id, "changed");
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no workspace methodologies on a standalone node");
+    }
+    zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+    const std::optional<nlohmann::json> existing = store.get(id);
+    if (!existing) return ApiResult::failure("not_found", "no methodology '" + id + "'");
+    nlohmann::json updated = *existing;
+    for (const auto& [key, field] : input.items()) {
+        if (key != "id") updated[key] = field;
+    }
+    // New code is not the code that was validated: unless this call reports the
+    // validation of the new revision, the entry goes back to not validated.
+    const std::string before = existing->at("code").value("revision", std::string());
+    const std::string after = updated.at("code").value("revision", std::string());
+    if (before != after && !input.contains("validation")) {
+        updated["validation"] = {{"status", "not_validated"},
+                                 {"findings", nlohmann::json::array()}};
+    }
+    updated["updated_at"] = zetta::util::now_iso8601();
+    std::string error;
+    const std::optional<nlohmann::json> stored = store.put(updated, &error);
+    if (!stored) return ApiResult::failure("invalid_input", error);
+    return ApiResult::success(
+        {{"methodology", zetta::ml::workspace_methodology_listing(*stored)}});
+}
+
+ApiResult handle_delete_methodology(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("id").get<std::string>();
+    if (is_catalogue_methodology_id(id)) return catalogue_methodology_refusal(id, "deleted");
+    bool removed = false;
+    if (context.node.replication() != nullptr) {
+        zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+        removed = store.remove(id);
+    }
+    return ApiResult::success({{"removed", removed}, {"id", id}});
+}
+
+ApiResult handle_get_methodology(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("id").get<std::string>();
+    if (zetta::ml::is_workspace_methodology_id(id)) {
+        if (context.node.replication() != nullptr) {
+            const zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+            if (const std::optional<nlohmann::json> value = store.get(id)) {
+                return ApiResult::success(
+                    {{"methodology", zetta::ml::workspace_methodology_listing(*value)}});
+            }
+        }
+        return ApiResult::failure("not_found", "no methodology '" + id + "'");
+    }
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        if (methodology.id == id) {
+            return ApiResult::success({{"methodology", catalogue_methodology_json(methodology)}});
+        }
+    }
+    return ApiResult::failure("not_found", "no methodology '" + id + "'");
+}
+
+// The workspace methodology a graph's model step names, its stored entry, and
+// whether it is runnable; nullopt for a graph that names none.
+struct GraphWorkspaceMethodology {
+    std::string id;
+    std::optional<nlohmann::json> value;
+    bool runnable = false;
+};
+
+std::optional<GraphWorkspaceMethodology> graph_workspace_methodology(
+    const ApiContext& context, const zetta::ir::ExecutionGraph& graph) {
+    std::string id = zetta::ml::workspace_methodology_of_graph(graph);
+    if (id.empty()) return std::nullopt;
+    GraphWorkspaceMethodology found{std::move(id), std::nullopt, false};
+    if (context.node.replication() != nullptr) {
+        const zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+        found.value = store.get(found.id);
+        found.runnable =
+            found.value.has_value() && zetta::ml::workspace_methodology_runnable(*found.value);
+    }
+    return found;
+}
+
+// The gate as the API runs it: the default gate, then a `methodology` check
+// the pure gate cannot make, from the workspace methodology's registry entry:
+// it passes only once the entry passed validation for its current code.
+zetta::pipeline::ValidationReport gate_with_workspace_methodologies(
+    const ApiContext& context, const zetta::ir::ExecutionGraph& graph) {
+    zetta::pipeline::ValidationReport report = zetta::pipeline::default_gate().run(graph);
+    const std::optional<GraphWorkspaceMethodology> workspace =
+        graph_workspace_methodology(context, graph);
+    if (!workspace) return report;
+    zetta::pipeline::CheckResult result{"methodology", zetta::pipeline::CheckStatus::Pass,
+                                        ""};
+    if (!workspace->value) {
+        result.status = zetta::pipeline::CheckStatus::Fail;
+        result.reason = "this pipeline names the workspace methodology " + workspace->id +
+                        ", which is not registered in this workspace";
+    } else if (!workspace->runnable) {
+        const nlohmann::json validation =
+            workspace->value->value("validation", nlohmann::json::object());
+        result.status = zetta::pipeline::CheckStatus::Fail;
+        result.reason = "the workspace methodology " + workspace->id + " (" +
+                        workspace->value->at("name").get<std::string>() +
+                        ") has not passed validation for its current code (status " +
+                        validation.value("status", std::string("not_validated")) +
+                        "): validate it before this pipeline can be verified or run";
+    } else {
+        result.reason = "the workspace methodology " + workspace->id +
+                        " passed validation for its current code; Lake's runner runs it";
+    }
+    bool replaced = false;
+    for (zetta::pipeline::CheckResult& check : report.checks) {
+        if (check.name == "methodology") {
+            check = result;
+            replaced = true;
+        }
+    }
+    if (!replaced) report.checks.push_back(result);
+    report.block_deploy = !report.passed();
+    return report;
+}
+
+// get_graph / get_project / graph_json report a graph's methodology and
+// whether it can run; a workspace methodology's answer comes from its entry.
+std::pair<nlohmann::json, bool> graph_methodology_fields(const ApiContext& context,
+                                                         const zetta::ir::ExecutionGraph& graph) {
+    if (const std::optional<GraphWorkspaceMethodology> workspace =
+            graph_workspace_methodology(context, graph)) {
+        return {nlohmann::json(workspace->id), workspace->runnable};
+    }
+    const zetta::ml::Methodology* methodology = zetta::ml::methodology_for_graph(graph);
+    const bool has_model = !graph.nodes_of_kind(zetta::ir::StepKind::Model).empty();
+    return {methodology != nullptr ? nlohmann::json(methodology->id) : nlohmann::json(nullptr),
+            methodology != nullptr ? methodology->runnable : !has_model};
+}
+
+// run on a graph whose model step is a workspace methodology: the engine does
+// not run Python, so it answers `runner_required` with what Lake needs to run
+// the code in its sandbox and report back through record_methodology_run.
+ApiResult runner_required(const ApiContext& context, const zetta::pipeline::Project& project,
+                          const zetta::pipeline::ProjectGraph& graph,
+                          const GraphWorkspaceMethodology& workspace,
+                          const nlohmann::json& input) {
+    nlohmann::json model_step = nlohmann::json::object();
+    for (const auto& node : graph.graph().nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (node && node->attributes.is_object()) {
+            model_step = node->attributes;
+            break;
+        }
+    }
+    std::string dataset_path = input.value("dataset_path", std::string());
+    if (dataset_path.empty()) {
+        for (const auto& node : graph.graph().nodes_of_kind(zetta::ir::StepKind::Connect)) {
+            if (!node || !node->attributes.is_object()) continue;
+            const std::string source = node->attributes.value("source", std::string());
+            const std::string table = node->attributes.value("table", std::string());
+            if (!source.empty() && !table.empty()) {
+                dataset_path = source + "." + table;
+                break;
+            }
+        }
+    }
+    (void)context;
+    ApiResult result = ApiResult::failure(
+        "runner_required",
+        "this pipeline's model step is the workspace methodology " + workspace.id +
+            ", whose Python code runs in Lake's runner, not in the engine. Run it through "
+            "Lake (start_run); the runner reports the result with record_methodology_run.");
+    result.error.details = {
+        {"methodology", workspace.id},
+        {"dataset_path", dataset_path},
+        {"params", model_step.value("parameters", nlohmann::json::object())},
+        {"target", model_step.value("target", std::string())},
+        {"holdout_fraction", model_step.value("holdout_fraction", 0.2)},
+        {"project", project.id()},
+        {"project_name", project.name()},
+        {"graph", graph.id()},
+        {"graph_name", graph.name()},
+        {"code", workspace.value ? workspace.value->at("code") : nlohmann::json(nullptr)}};
+    return result;
+}
+
+const nlohmann::json& record_methodology_run_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"methodology", "run_id", "mode"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"methodology",
+           {{"type", "string"},
+            {"pattern", "^W-[0-9a-f]{8}$"},
+            {"description", "the workspace methodology that ran"}}},
+          {"run_id",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "Lake's id for the run, kept on the Model as its lineage"}}},
+          {"mode",
+           {{"type", "string"},
+            {"enum", {"validate", "train"}},
+            {"description",
+             "train registers a Model and a Run; validate registers nothing (Lake records the "
+             "outcome with update_methodology's validation)"}}},
+          {"dataset_path", {{"type", "string"}, {"description", "database.table it read"}}},
+          {"params", {{"type", "object"}, {"description", "the parameters it ran with"}}},
+          {"metrics",
+           {{"type", "object"},
+            {"additionalProperties", {{"type", "number"}}},
+            {"description", "in_sample_<m> and held_out_<m>, numbers only"}}},
+          {"rows",
+           {{"type", "object"},
+            {"additionalProperties", false},
+            {"properties",
+             {{"train", {{"type", "integer"}, {"minimum", 0}}},
+              {"held_out", {{"type", "integer"}, {"minimum", 0}}}}}}},
+          {"artifact_base64",
+           {{"type", "string"},
+            {"description",
+             "the fitted artifact, base64; at most 24 MiB decoded. Required for train."}}},
+          {"artifact_format", {{"type", "string"}, {"enum", {"bytes", "pickle"}}}},
+          {"features",
+           {{"type", "array"}, {"items", {{"type", "string"}}},
+            {"description", "the feature columns it was given"}}},
+          {"project",
+           {{"type", "string"},
+            {"description", "for a pipeline step: the project's name or id"}}},
+          {"graph",
+           {{"type", "string"},
+            {"description", "for a pipeline step: the graph's name or id"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& record_methodology_run_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "run_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", {"string", "null"}}}},
+          {"run_id", {{"type", {"string", "null"}}}}}}};
+    return schema;
+}
+
+bool strict_base64(std::string_view text) {
+    std::size_t padding = 0;
+    for (const char character : text) {
+        if (character == '=') {
+            ++padding;
+            continue;
+        }
+        if (padding > 0) return false;
+        const bool valid = (character >= 'A' && character <= 'Z') ||
+                           (character >= 'a' && character <= 'z') ||
+                           (character >= '0' && character <= '9') || character == '+' ||
+                           character == '/';
+        if (!valid) return false;
+    }
+    return padding <= 2 && text.size() % 4 == 0;
+}
+
+ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("methodology").get<std::string>();
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no workspace methodologies on a standalone node");
+    }
+    const zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+    const std::optional<nlohmann::json> methodology = store.get(id);
+    if (!methodology) return ApiResult::failure("not_found", "no methodology '" + id + "'");
+    if (input.at("mode").get<std::string>() == "validate") {
+        return ApiResult::success({{"model_id", nullptr}, {"run_id", nullptr}});
+    }
+
+    const std::string encoded = input.value("artifact_base64", std::string());
+    if (encoded.empty()) {
+        return ApiResult::failure("invalid_input", "a training run reports its artifact",
+                                  "/artifact_base64");
+    }
+    if (!strict_base64(encoded)) {
+        return ApiResult::failure("invalid_input", "artifact_base64 is not base64",
+                                  "/artifact_base64");
+    }
+    if (encoded.size() / 4 * 3 > kMaxMethodologyArtifactBytes + 3) {
+        return ApiResult::failure(
+            "invalid_input",
+            "the artifact is larger than " + std::to_string(kMaxMethodologyArtifactBytes) +
+                " bytes, the most a run can report",
+            "/artifact_base64");
+    }
+    const std::string artifact = zetta::detail::base64_decode_to_string(encoded);
+    if (artifact.size() > kMaxMethodologyArtifactBytes) {
+        return ApiResult::failure("invalid_input",
+                                  "the artifact is larger than " +
+                                      std::to_string(kMaxMethodologyArtifactBytes) + " bytes",
+                                  "/artifact_base64");
+    }
+
+    std::shared_ptr<zetta::pipeline::Project> project;
+    std::shared_ptr<zetta::pipeline::ProjectGraph> graph;
+    if (input.contains("project") || input.contains("graph")) {
+        if (!input.contains("project") || !input.contains("graph")) {
+            return ApiResult::failure("invalid_input",
+                                      "a pipeline step names both project and graph");
+        }
+        project = resolve_project(context, input.at("project").get<std::string>());
+        if (!project) {
+            return ApiResult::failure("not_found", "no project '" +
+                                                       input.at("project").get<std::string>() +
+                                                       "'");
+        }
+        graph = resolve_graph(*project, input.at("graph").get<std::string>());
+        if (!graph) {
+            return ApiResult::failure("not_found", "no graph '" +
+                                                       input.at("graph").get<std::string>() +
+                                                       "' on project '" + project->name() + "'");
+        }
+        if (zetta::ml::workspace_methodology_of_graph(graph->graph()) != id) {
+            return ApiResult::failure("invalid_input",
+                                      "the graph '" + graph->name() +
+                                          "' does not run the workspace methodology " + id,
+                                      "/graph");
+        }
+    }
+
+    const std::string lake_run = input.at("run_id").get<std::string>();
+    const std::string dataset_path = input.value("dataset_path", std::string());
+    const nlohmann::json params = input.value("params", nlohmann::json::object());
+    const nlohmann::json metrics = input.value("metrics", nlohmann::json::object());
+    const std::string name = methodology->at("name").get<std::string>();
+
+    const std::shared_ptr<zetta::pipeline::Run> run = context.node.create_run(
+        project ? project->id() : std::string(), graph ? graph->id() : std::string());
+    if (!run) return ApiResult::failure("engine_error", "the run record could not be created");
+    run->set_status(zetta::pipeline::RunStatus::Running);
+    run->add_log({zetta::util::now_iso8601(), "info",
+                  "ran the workspace methodology " + id + " (" + name +
+                      ") in Lake's runner, Lake run " + lake_run +
+                      (dataset_path.empty() ? std::string() : ", on " + dataset_path)});
+    std::string error;
+    if (!params.empty() && !context.node.log_run_params(run->id(), params, &error)) {
+        run->add_log({zetta::util::now_iso8601(), "warn", "parameters not recorded: " + error});
+    }
+    std::map<std::string, double> values;
+    for (const auto& [key, number] : metrics.items()) values[key] = number.get<double>();
+    if (!values.empty() && !context.node.log_run_metrics(run->id(), 0, values, {}, &error)) {
+        run->add_log({zetta::util::now_iso8601(), "warn", "metrics not recorded: " + error});
+    }
+
+    zetta::ml::ModelValue model_value;
+    model_value.kind = zetta::ml::workspace_model_kind(id);
+    model_value.name = name + " " + zetta::util::now_iso8601().substr(0, 10);
+    model_value.project = project ? project->id() : std::string();
+    model_value.run = run->id();
+    model_value.metrics = metrics;
+    model_value.feature_schema = {
+        {"methodology", id},
+        {"lake_run_id", lake_run},
+        {"code", methodology->at("code")},
+        {"params", params},
+        {"features", input.value("features", nlohmann::json::array())},
+        {"artifact_format", input.value("artifact_format", std::string("pickle"))}};
+    if (!dataset_path.empty()) model_value.feature_schema["dataset_path"] = dataset_path;
+    if (input.contains("rows")) model_value.feature_schema["rows"] = input.at("rows");
+    const std::shared_ptr<zetta::ml::Model> model = context.node.create_model(model_value);
+    if (!model || !model->set_weights(artifact)) {
+        run->add_log({zetta::util::now_iso8601(), "error", "the model could not be registered"});
+        run->set_status(zetta::pipeline::RunStatus::Failed);
+        return ApiResult::failure("engine_error", "the model could not be registered");
+    }
+    run->set_outputs({{"model", name, model->id()}});
+    zetta::pipeline::RunLineage lineage;
+    if (!dataset_path.empty()) lineage.sources.push_back(dataset_path);
+    lineage.steps.push_back(graph ? "python_methodology" : id);
+    lineage.freshness = zetta::util::now_iso8601();
+    lineage.confidence = 1.0;
+    run->set_lineage(std::move(lineage));
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    return ApiResult::success({{"model_id", model->id()}, {"run_id", run->id()}});
+}
+
 // --- compile_intent / compile_n8n / compile_python -------------------------------
 //
 // Three thin compilers onto the same destination: a named, editable, replicated
@@ -4908,7 +5473,9 @@ const nlohmann::json& compile_intent_schema() {
           {"methodology",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "methodology id or model kind; takes precedence"}}},
+            {"description",
+             "methodology id (a catalogue M-n or a workspace W-<8 hex>) or model kind; "
+             "takes precedence"}}},
           {"solution",
            {{"type", "string"},
             {"minLength", 1},
@@ -4963,6 +5530,15 @@ ApiResult handle_compile_intent(const nlohmann::json& input, ApiContext& context
     options.methodology = input.value("methodology", "");
     options.solution = input.value("solution", "");
     options.hints = input.value("hints", nlohmann::json::object());
+    // A workspace methodology (zetta#1261) is read from the replicated registry;
+    // its shape is built from the entry.
+    std::optional<nlohmann::json> workspace_entry;
+    if (zetta::ml::is_workspace_methodology_id(options.methodology) &&
+        context.node.replication() != nullptr) {
+        const zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+        workspace_entry = store.get(options.methodology);
+        if (workspace_entry) options.workspace_methodology = &*workspace_entry;
+    }
     std::string compile_error;
     std::string template_name;
     auto graph = project->compile_intent_to_graph(
@@ -4984,7 +5560,7 @@ ApiResult handle_compile_intent(const nlohmann::json& input, ApiContext& context
                 "' (payload body not present locally, empty intent, or the "
                 "graph name collides with an existing graph)");
     }
-    nlohmann::json output = graph_json(*graph);
+    nlohmann::json output = graph_json(context, *graph);
     output["project"] = project->name();
     // Which template the steps came from (#1238): their names are the
     // template's until someone edits them.
@@ -5039,7 +5615,7 @@ ApiResult handle_compile_n8n(const nlohmann::json& input, ApiContext& context) {
             "the graph name collides with an existing graph on project '" +
                 project->name() + "' (or is empty)");
     }
-    nlohmann::json output = graph_json(*graph);
+    nlohmann::json output = graph_json(context, *graph);
     output["project"] = project->name();
     return ApiResult::success(std::move(output));
 }
@@ -5087,7 +5663,7 @@ ApiResult handle_compile_python(const nlohmann::json& input, ApiContext& context
             "the graph name collides with an existing graph on project '" +
                 project->name() + "' (or is empty)");
     }
-    nlohmann::json output = graph_json(*graph);
+    nlohmann::json output = graph_json(context, *graph);
     output["project"] = project->name();
     return ApiResult::success(std::move(output));
 }
@@ -5153,7 +5729,7 @@ ApiResult handle_gate(const nlohmann::json& input, ApiContext& context) {
                 "' is proposed — approve it (approve_plan) before verification");
     }
     const zetta::pipeline::ValidationReport report =
-        zetta::pipeline::default_gate().run(graph->graph());
+        gate_with_workspace_methodologies(context, graph->graph());
     // A blocked graph is a successful gate *evaluation* — the report carries
     // the verdict; deploy/run are where a blocked graph becomes an error.
     // checks that applied + verdict + block_deploy + applied/not_applicable
@@ -5232,6 +5808,16 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
     if (!kind) {
         return ApiResult::failure("invalid_input", "unknown deployment target",
                                   "/target");
+    }
+    // A workspace methodology's model is served by nothing yet: its code runs only
+    // in Lake's runner (zetta#1261).
+    if (const std::optional<GraphWorkspaceMethodology> workspace =
+            graph_workspace_methodology(context, graph->graph())) {
+        return ApiResult::failure(
+            "not_supported",
+            "this pipeline runs the workspace methodology " + workspace->id +
+                " in Lake's runner; serving it from a deployment is not built yet. Run it "
+                "through Lake instead.");
     }
     // The gate report first, for the failing check's reason; the engine's own
     // deploy_graph re-runs the gate and audits BOTH outcomes (RULE-1 lives in
@@ -5661,10 +6247,15 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
     }
 
     const zetta::pipeline::ValidationReport report =
-        zetta::pipeline::default_gate().run(graph->graph());
+        gate_with_workspace_methodologies(context, graph->graph());
     if (report.block_deploy) {
         return ApiResult::failure(
             "engine_error", "blocked by gate: " + first_gate_failure(report));
+    }
+    // A workspace methodology (zetta#1261) runs in Lake's runner, never here.
+    if (const std::optional<GraphWorkspaceMethodology> workspace =
+            graph_workspace_methodology(context, graph->graph())) {
+        return runner_required(context, *project, *graph, *workspace, input);
     }
 
     const bool has_model =
@@ -9200,6 +9791,11 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         {"plan_features",
          "read a methodology-specific feature/exclusion plan or required dataset transform"},
         {"list_solutions", "list the configured solution catalogue"},
+        {"list_methodologies",
+         "list the methodologies: Orama's catalogue (read-only) and the workspace's own, "
+         "each marked source and runnable"},
+        {"get_methodology",
+         "read one methodology, Orama's or the workspace's own: {\"id\": \"M-1 or W-…\"}"},
         {"get_solution",
          "read one solution: {\"solution\": \"<S-1 through S-12 or B-1 through B-8>\"}"},
         {"list_models", "list the trained models and their measures"},
@@ -10478,6 +11074,56 @@ void register_core_capabilities(Registry& registry) {
         CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false, handle_list_methodologies});
+
+    // --- workspace methodologies (zetta#1261, lake#655) ------------------------
+    registry.add(Capability{
+        "get_methodology", "Get a methodology",
+        "Read one methodology: Orama's catalogue entry (M-n, read-only) or a workspace "
+        "methodology (W-<8 hex>) with its interface, where its Python code lives, its image "
+        "and its validation. No side effects.",
+        methodology_id_schema(), methodology_output_schema(), CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false, handle_get_methodology});
+    registry.add(Capability{
+        "register_methodology", "Register a workspace methodology",
+        "Register a workspace methodology: Python code in one of the workspace's repositories "
+        "that Lake's sandboxed runner runs (the engine never runs it). Declares its input "
+        "kinds, target, required features, parameters, metrics and code location; returns the "
+        "entry with its generated W- id, not validated. Replicates to every node.",
+        register_methodology_schema(), methodology_output_schema(), CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "register_methodology"},
+        /*mutates=*/true,
+        /*requires_consent=*/false, handle_register_methodology});
+    registry.add(Capability{
+        "update_methodology", "Update a workspace methodology",
+        "Change a workspace methodology's fields, its image or its validation. A new code "
+        "revision resets validation unless the same call reports it. Orama's catalogue "
+        "methodologies are read-only: changing one answers forbidden.",
+        update_methodology_schema(), methodology_output_schema(), CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "update_methodology"},
+        /*mutates=*/true,
+        /*requires_consent=*/false, handle_update_methodology});
+    registry.add(Capability{
+        "delete_methodology", "Delete a workspace methodology",
+        "Remove a workspace methodology by id (a CRDT tombstone; replicates). Idempotent. "
+        "Orama's catalogue methodologies are read-only: deleting one answers forbidden.",
+        methodology_id_schema(), delete_methodology_output_schema(), CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_methodology"},
+        /*mutates=*/true,
+        /*requires_consent=*/false, handle_delete_methodology});
+    registry.add(Capability{
+        "record_methodology_run", "Record a methodology run",
+        "Record what Lake's runner produced for a workspace methodology. A training run "
+        "registers a Model (kind python:<id>) with its in-sample and held-out metrics and the "
+        "artifact as its weights, and a Run with its parameters, metrics and lineage (on the "
+        "pipeline's project and graph for a pipeline step). A validation run registers "
+        "nothing.",
+        record_methodology_run_schema(), record_methodology_run_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "record_methodology_run"},
+        /*mutates=*/true,
+        /*requires_consent=*/false, handle_record_methodology_run});
 
     registry.add(Capability{
         "list_ledger",

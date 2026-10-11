@@ -45,7 +45,11 @@ struct ApiError {
     std::string code;     // "invalid_input" | "unauthorized" | "not_found" |
                           // "engine_error" | "unknown_capability" | "busy" |
                           // "consent_required" | "conflict" (a name already
-                          // taken, e.g. upload_dataset without if_exists rename)
+                          // taken, e.g. upload_dataset without if_exists rename) |
+                          // "forbidden" (read-only by design: Orama's catalogue
+                          // methodologies, zetta#1261) | "runner_required" (a
+                          // workspace methodology's pipeline runs in Lake's runner;
+                          // `details` says what to run, zetta#1261)
     std::string message;  // the engine's reason, verbatim where one exists
     std::string path;     // JSON pointer / field path when the input is at fault
     // Structured payload riding with the failure — the consent challenge for

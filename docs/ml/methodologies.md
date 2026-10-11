@@ -54,6 +54,17 @@ validation splits, and dataset-path rules from the definition used by Study
 validation. Unsupported methodologies publish a reason and a null search
 space.
 
+## Workspace methodologies
+
+The 21 entries above are Orama's catalogue and read-only. A workspace can add its
+own methodology from Python code (#1261, lake#655): a replicated `W-<8 hex>` entry
+listed after the catalogue, with `source: workspace` and `editable: true` (catalogue
+entries say `source: orama`, `editable: false`). The engine never runs that code;
+Lake's sandboxed runner does, and reports back through `record_methodology_run`.
+`compile_intent` with `methodology: W-…` builds its own three-step shape;
+Verification refuses it until it has passed validation for its current code; `run`
+answers `runner_required`. See [workspace-methodologies.md](workspace-methodologies.md).
+
 ## Compile and run behavior
 
 [`compile_intent`](../pipeline/intent-compiler.md) resolves an explicit

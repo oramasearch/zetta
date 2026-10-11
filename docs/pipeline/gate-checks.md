@@ -17,6 +17,7 @@ The reusable annotation and methodology-specific checks are:
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
 | `SnapshotLineageCheck` | `snapshot_lineage` | a feature-bearing model whose lineage ends in a live table or future snapshot, or whose label window violates its configured blackout gap |
 | `TemporalValidationCheck` | `temporal_validation` | a time-ordered model without time-aware validation |
+| `MethodologyCheck` | `methodology` | a model step naming a methodology the engine cannot execute; a workspace methodology's `python:W-…` kind is never implemented here. The API's `gate` and `run` add a `methodology` check from a workspace methodology's registry entry, passing only once it has passed validation for its current code (#1261, [workspace methodologies](../ml/workspace-methodologies.md#a-pipeline-step)) |
 | `EntityResolutionGraphCheck` | `entity_resolution_profile` | an M-2 model that omits blocking keys, valid match/review thresholds, or verified-identifier conflict rejection |
 | `SegmentationCheck` | `segmentation` | entity/outcome features, non-global preprocessing, an incorrect K criterion or minimum share, malformed parameters and disconnected assignment/profile outputs |
 | `ForecastGraphCheck` | `forecast_correctness` | an M-4 graph with invalid temporal backtests, future features, calibration, or no seasonal-naive baseline |
