@@ -11,7 +11,7 @@ std::string ForecastGraphCheck::name() const {
 CheckResult
 ForecastGraphCheck::evaluate(const ir::ExecutionGraph &graph) const {
   if (!ml::owns_forecast(graph)) {
-    return {name(), CheckStatus::Pass, "no forecast model"};
+    return {name(), CheckStatus::NotApplicable, "no forecast model"};
   }
   std::string error;
   if (!ml::parse_forecast_pipeline(graph, error)) {

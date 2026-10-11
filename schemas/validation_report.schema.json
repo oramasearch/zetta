@@ -22,8 +22,9 @@
       "type": "object"
     },
     "checkStatus": {
-      "description": "A single check's outcome, ordered by severity pass < warn < fail.",
+      "description": "A single check's outcome, ordered by severity not_applicable < pass < warn < fail. not_applicable is a check that had nothing to check on this graph; it never counts as a pass and never moves the verdict.",
       "enum": [
+        "not_applicable",
         "pass",
         "warn",
         "fail"
@@ -36,16 +37,26 @@
   "additionalProperties": false,
   "description": "The correctness-gate result for a graph version (ENT-5 / FEAT-3): per-check results, a derived overall verdict, and a block-deploy flag. Mirrored by zetta::ValidationReport in include/zetta/validation.hpp and enforced by validation_report_from_json() in src/core/validation.cpp — keep the three in sync.",
   "properties": {
+    "applied": {
+      "description": "Derived: how many checks applied to the graph (any status but not_applicable). Advisory on input.",
+      "minimum": 0,
+      "type": "integer"
+    },
     "block_deploy": {
       "description": "The gate's deploy policy for this report. Independent of the verdict so a gate can block on a warning (strict) or allow a deploy despite a failure (signed-off override).",
       "type": "boolean"
     },
     "checks": {
-      "description": "Per-check results. Order is preserved.",
+      "description": "Per-check results, in gate order. Only the checks that applied, unless the reader asked for the not-applicable ones too.",
       "items": {
         "$ref": "#/$defs/checkResult"
       },
       "type": "array"
+    },
+    "not_applicable": {
+      "description": "Derived: how many checks had nothing to check on this graph. They are left out of \"checks\" unless the reader asked for them. Advisory on input.",
+      "minimum": 0,
+      "type": "integer"
     },
     "verdict": {
       "$ref": "#/$defs/checkStatus",

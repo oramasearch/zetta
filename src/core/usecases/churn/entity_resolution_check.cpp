@@ -186,7 +186,7 @@ zetta::pipeline::CheckResult EntityResolutionCheck::evaluate(const ir::Execution
         }
     }
     if (steps.empty()) {
-        return {name(), zetta::pipeline::CheckStatus::Pass, "no entity-resolution step to evaluate"};
+        return {name(), zetta::pipeline::CheckStatus::NotApplicable, "no entity-resolution step to evaluate"};
     }
 
     zetta::pipeline::CheckStatus worst = zetta::pipeline::CheckStatus::Pass;

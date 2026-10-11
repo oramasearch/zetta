@@ -134,3 +134,54 @@ TEST(ValidationStatus, StringRoundTrip) {
     CheckStatus unused{};
     EXPECT_FALSE(zetta::pipeline::check_status_from_string("nope", unused));
 }
+
+// ---- not_applicable (#1240) -------------------------------------------------
+
+TEST(ValidationReport, NotApplicableRoundTripsAndNeverMovesTheVerdict) {
+    CheckStatus parsed{};
+    ASSERT_TRUE(zetta::pipeline::check_status_from_string("not_applicable", parsed));
+    EXPECT_EQ(parsed, CheckStatus::NotApplicable);
+    EXPECT_EQ(zetta::pipeline::to_string(CheckStatus::NotApplicable), "not_applicable");
+
+    ValidationReport only_skipped;
+    only_skipped.add("s4_regulatory_contact", CheckStatus::NotApplicable, "no bound S-4 Pipeline");
+    EXPECT_EQ(only_skipped.verdict(), CheckStatus::Pass);
+    EXPECT_TRUE(only_skipped.passed());
+    EXPECT_EQ(only_skipped.applied_count(), 0u);
+    EXPECT_EQ(only_skipped.not_applicable_count(), 1u);
+
+    ValidationReport mixed = only_skipped;
+    mixed.add("leakage", CheckStatus::Warn, "near-target feature");
+    EXPECT_EQ(mixed.verdict(), CheckStatus::Warn);
+}
+
+TEST(ValidationReport, JsonListsTheAppliedChecksAndCountsTheRest) {
+    ValidationReport report;
+    report.add("schema_types", CheckStatus::Pass, "all columns type-check")
+        .add("s4_regulatory_contact", CheckStatus::NotApplicable, "no bound S-4 Pipeline")
+        .add("b7_fairness_review", CheckStatus::NotApplicable, "no bound B-7 Pipeline");
+
+    const nlohmann::json document = report;
+    ASSERT_EQ(document.at("checks").size(), 1u);
+    EXPECT_EQ(document.at("checks").at(0).at("name"), "schema_types");
+    EXPECT_EQ(document.at("applied"), 1);
+    EXPECT_EQ(document.at("not_applicable"), 2);
+    EXPECT_EQ(document.at("verdict"), "pass");
+
+    nlohmann::json audit;
+    zetta::pipeline::to_json(audit, report, /*include_not_applicable=*/true);
+    ASSERT_EQ(audit.at("checks").size(), 3u);
+    EXPECT_EQ(audit.at("checks").at(1).at("status"), "not_applicable");
+
+    // Both documents parse back; the default one simply omits the skipped checks.
+    const auto full = zetta::pipeline::validation_report_from_json(audit);
+    ASSERT_TRUE(full);
+    EXPECT_EQ(*full, report);
+    const auto applied = zetta::pipeline::validation_report_from_json(document);
+    ASSERT_TRUE(applied);
+    EXPECT_EQ(applied->checks.size(), 1u);
+
+    nlohmann::json bad_count = document;
+    bad_count["applied"] = "one";
+    EXPECT_FALSE(zetta::pipeline::validation_report_from_json(bad_count));
+}

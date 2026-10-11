@@ -21,7 +21,7 @@ implement the same `Check` interface;
 
 The baseline also registers `SegmentationCheck` (#1042). It refuses unsafe entity
 or outcome features, non-global transforms, invalid K/minimum-share settings and
-incomplete assignment/profile graphs for M-3; other graphs pass it vacuously.
+incomplete assignment/profile graphs for M-3; on other graphs it does not apply (`not_applicable`).
 See [segmentation.md](../ml/segmentation.md#running-it).
 
 ## The shape
@@ -74,6 +74,13 @@ the results into a `ValidationReport` in order, and sets the report's
 **Deploy policy (the baseline):** the gate blocks deploy **exactly when some
 check fails** — `block_deploy = !report.passed()`. A `verdict()` of `fail` blocks;
 `warn` and `pass` allow the deploy. This is RULE-1 in code.
+
+**Checks that did not apply** (#1240). A check with nothing to check on the graph
+(a solution-family check on a graph that binds no such Pipeline, a speech check
+with no speech model) returns `not_applicable` with its reason, never `pass`.
+The report's JSON lists only the checks that applied, with the counts `applied`
+and `not_applicable`; the `gate` capability lists the rest only when asked
+(`include_not_applicable: true`). See [validation.md](validation.md#a-check-that-did-not-apply-is-not-a-pass-1240).
 
 `verdict` and `block_deploy` stay [separate in the report on purpose](validation.md#verdict-and-block-deploy-are-separate-on-purpose):
 the data model carries the bit, the gate sets the policy. This gate implements
@@ -156,6 +163,8 @@ renderer over `default_gate().run(graph)`, no SDL/ImGui types leaking into
   derived from `report.block_deploy`), then a per-check table of **Check /
   Status / Reason**, the status shown as a colour-coded `PASS` / `WARN` / `FAIL`
   badge and the reason as the human-readable text the `CheckResult` carries.
+  Checks that did not apply are left out of the table and counted under it
+  (*"N check(s) did not apply to this graph."*).
 
 The panel holds no gate state of its own — it re-resolves the selected project by
 name each frame (so a dropped/renamed project never leaves a dangling handle) and

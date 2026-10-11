@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 
@@ -7,6 +9,7 @@
 
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/pipeline/intent_compiler.hpp"
 #include "zetta/pipeline/validation.hpp"
 
 using zetta::pipeline::Check;
@@ -260,11 +263,58 @@ TEST(CorrectnessGate, ProducedReportRoundTripsThroughJson) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(ExecutionGraph{});  // a failing run
 
-    const nlohmann::json document = report;  // to_json ADL hook
+    // The audit form lists every check, the not-applicable ones included (#1240),
+    // so it round-trips exactly.
+    nlohmann::json document;
+    zetta::pipeline::to_json(document, report, /*include_not_applicable=*/true);
     EXPECT_EQ(document.at("verdict"), "fail");
     EXPECT_EQ(document.at("block_deploy"), true);
 
     const auto parsed = zetta::pipeline::validation_report_from_json(document);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(*parsed, report);
+}
+
+// ---- checks that did not apply (#1240) --------------------------------------
+
+TEST(CorrectnessGate, AChurnGraphListsOnlyTheChecksThatApplied) {
+    const auto compiled =
+        zetta::pipeline::compile_intent("reduce churn and improve retention");
+    ASSERT_TRUE(compiled);
+    const ValidationReport report = zetta::pipeline::default_gate().run(compiled->graph);
+
+    // The churn graph binds none of the S-2…S-12 / B-1…B-8 families, so their
+    // checks did not apply — and none of them is reported as a pass.
+    EXPECT_GT(report.not_applicable_count(), 20u);
+    EXPECT_GT(report.applied_count(), 0u);
+    EXPECT_EQ(report.applied_count() + report.not_applicable_count(),
+              report.checks.size());
+    for (const CheckResult& check : report.checks) {
+        if (check.name.starts_with("s4_") || check.name.starts_with("b7_")) {
+            EXPECT_EQ(check.status, CheckStatus::NotApplicable) << check.name;
+        }
+        // A pass says what was verified; "no X to check" is not a pass.
+        if (check.status == CheckStatus::Pass) {
+            EXPECT_FALSE(check.reason.starts_with("no ")) << check.name << ": " << check.reason;
+        }
+        if (std::getenv("ZETTA_DUMP_GATE")) {
+            std::printf("%-48s %-15s %s\n", check.name.c_str(),
+                        zetta::pipeline::to_string(check.status).c_str(),
+                        check.reason.c_str());
+        }
+    }
+    EXPECT_TRUE(report.passed());
+
+    const nlohmann::json document = report;
+    ASSERT_TRUE(document.at("checks").is_array());
+    EXPECT_EQ(document.at("checks").size(), report.applied_count());
+    EXPECT_EQ(document.at("applied"), report.applied_count());
+    EXPECT_EQ(document.at("not_applicable"), report.not_applicable_count());
+    for (const auto& check : document.at("checks")) {
+        EXPECT_NE(check.at("status"), "not_applicable") << check.dump();
+    }
+
+    nlohmann::json audit;
+    zetta::pipeline::to_json(audit, report, /*include_not_applicable=*/true);
+    EXPECT_EQ(audit.at("checks").size(), report.checks.size());
 }

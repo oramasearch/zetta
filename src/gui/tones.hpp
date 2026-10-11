@@ -76,9 +76,11 @@ constexpr Tone tone_of(zetta::compute::ScalingAction action) {
     return Tone::Muted;
 }
 
-// A correctness-gate check: pass green, warn amber, fail red.
+// A correctness-gate check: pass green, warn amber, fail red; a check that did
+// not apply is quiet — it verified nothing, so it never looks like a pass.
 constexpr Tone tone_of(zetta::pipeline::CheckStatus status) {
     switch (status) {
+        case zetta::pipeline::CheckStatus::NotApplicable: return Tone::Muted;
         case zetta::pipeline::CheckStatus::Pass: return Tone::Ok;
         case zetta::pipeline::CheckStatus::Warn: return Tone::Warn;
         case zetta::pipeline::CheckStatus::Fail: return Tone::Error;
@@ -167,6 +169,7 @@ static_assert(tone_of(zetta::testkit::TestOutcome::Pass) == Tone::Ok);
 static_assert(tone_of(zetta::pipeline::RunStatus::Failed) == Tone::Error);
 static_assert(tone_of(zetta::compute::JobStatus::Failed) == Tone::Error);
 static_assert(tone_of(zetta::pipeline::CheckStatus::Fail) == Tone::Error);
+static_assert(tone_of(zetta::pipeline::CheckStatus::NotApplicable) == Tone::Muted);
 static_assert(tone_of(zetta::testkit::TestOutcome::Fail) == Tone::Error);
 static_assert(tone_of(zetta::pipeline::RunStatus::Running) == Tone::Warn);
 static_assert(tone_of(zetta::compute::JobStatus::Running) == Tone::Warn);

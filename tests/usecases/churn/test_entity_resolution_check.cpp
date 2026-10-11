@@ -84,7 +84,7 @@ TEST(EntityResolutionCheck, NoResolutionStepPassesVacuously) {
     graph.add_node(StepKind::Connect, "load_crm");  // no entity_resolution attribute
     graph.add_node(StepKind::Serve, "expose");
     const CheckResult result = evaluate(graph);
-    EXPECT_EQ(result.status, CheckStatus::Pass);
+    EXPECT_EQ(result.status, CheckStatus::NotApplicable);
 }
 
 TEST(EntityResolutionCheck, EmptyRecordSetHasNothingToConflate) {

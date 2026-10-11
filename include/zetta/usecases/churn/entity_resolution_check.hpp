@@ -49,7 +49,7 @@ namespace zetta::usecases::churn {
 //     `resolved` accounts — is the symmetric, softer error: it WARNs (does not
 //     block deploy).
 //   * A graph with no entity-resolution step has nothing to conflate, so the
-//     check passes vacuously.
+//     check does not apply (NotApplicable, #1240) — never a pass.
 class EntityResolutionCheck final : public zetta::pipeline::Check {
 public:
     std::string name() const override { return "entity_resolution"; }

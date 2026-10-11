@@ -4307,10 +4307,25 @@ const nlohmann::json& validation_report_json_schema() {
               {"properties",
                {{"name", {{"type", "string"}}},
                 {"status",
-                 {{"type", "string"}, {"enum", {"pass", "warn", "fail"}}}},
-                {"reason", {{"type", "string"}}}}}}}}},
+                 {{"type", "string"},
+                  {"enum", {"not_applicable", "pass", "warn", "fail"}}}},
+                {"reason", {{"type", "string"}}}}}}},
+            {"description",
+             "the checks that applied to the graph; the ones that did not are "
+             "left out (counted in not_applicable) unless include_not_applicable "
+             "was asked for"}}},
           {"verdict",
            {{"type", "string"}, {"enum", {"pass", "warn", "fail"}}}},
+          {"applied",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description", "how many checks applied to the graph"}}},
+          {"not_applicable",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description",
+             "how many checks had nothing to check on this graph (never "
+             "reported as pass)"}}},
           {"block_deploy", {{"type", "boolean"}}}}}};
     return schema;
 }
@@ -4640,7 +4655,13 @@ const nlohmann::json& gate_schema() {
           {"graph",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "the stored graph's name, or its uuid"}}}}}};
+            {"description", "the stored graph's name, or its uuid"}}},
+          {"include_not_applicable",
+           {{"type", "boolean"},
+            {"description",
+             "also list the checks that had nothing to check on this graph, "
+             "with status not_applicable (default false: only the checks that "
+             "applied are listed, and the rest are counted)"}}}}}};
     return schema;
 }
 
@@ -4683,7 +4704,11 @@ ApiResult handle_gate(const nlohmann::json& input, ApiContext& context) {
         zetta::pipeline::default_gate().run(graph->graph());
     // A blocked graph is a successful gate *evaluation* — the report carries
     // the verdict; deploy/run are where a blocked graph becomes an error.
-    nlohmann::json output = report;  // ADL to_json: checks + verdict + block_deploy
+    // checks that applied + verdict + block_deploy + applied/not_applicable
+    // counts (#1240); the not-applicable checks only on request, for audits.
+    nlohmann::json output;
+    zetta::pipeline::to_json(output, report,
+                             input.value("include_not_applicable", false));
     output["project"] = project->name();
     output["graph"] = graph->name();
     return ApiResult::success(std::move(output));
@@ -9848,8 +9873,11 @@ void register_core_capabilities(Registry& registry) {
         "gate",
         "Run the correctness gate",
         "Run the correctness gate over a stored project graph and return the "
-        "full validation report (per-check status + reason, verdict, "
-        "block_deploy). Evaluates only — no state change.",
+        "validation report: the checks that applied (status + reason), the "
+        "verdict, block_deploy, and the counts applied / not_applicable. "
+        "Checks with nothing to check on this graph are counted, never "
+        "reported as pass; include_not_applicable lists them too. Evaluates "
+        "only — no state change.",
         gate_schema(),
         gate_output_schema(),
         CapabilityKind::Action,

@@ -412,16 +412,21 @@ bool speech_step(const ir::Node& node) {
 CheckResult require_speech_flag(const ir::ExecutionGraph& graph,
                                 std::string name, const char* flag,
                                 std::string failure, std::string success) {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (!node || !speech_step(*node)) {
             continue;
         }
+        applies = true;
         const auto value = node->attributes.find(flag);
         if (value == node->attributes.end() || !value->is_boolean() ||
             !value->get<bool>()) {
             return {std::move(name), CheckStatus::Fail,
                     node_label(*node) + ": " + std::move(failure)};
         }
+    }
+    if (!applies) {
+        return {std::move(name), CheckStatus::NotApplicable, "no speech model"};
     }
     return {std::move(name), CheckStatus::Pass, std::move(success)};
 }
@@ -629,7 +634,7 @@ const json* s11_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult s11_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-11 Pipeline to validate"};
 }
 
@@ -672,7 +677,7 @@ const json* b8_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult b8_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound B-8 Pipeline to validate"};
 }
 
@@ -715,7 +720,7 @@ const json* s10_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult s10_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-10 Pipeline to validate"};
 }
 
@@ -818,7 +823,7 @@ const json* b1_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult b1_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound B-1 Pipeline to validate"};
 }
 
@@ -831,7 +836,7 @@ CheckResult b1_success(std::string name, std::string reason) {
 }
 
 CheckResult s1_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-1 Pipeline to validate"};
 }
 
@@ -844,7 +849,7 @@ CheckResult s1_success(std::string name, std::string reason) {
 }
 
 CheckResult s2_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-2 Pipeline to validate"};
 }
 
@@ -857,7 +862,7 @@ CheckResult s2_success(std::string name, std::string reason) {
 }
 
 CheckResult s5_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-5 Pipeline to validate"};
 }
 
@@ -870,7 +875,7 @@ CheckResult s5_success(std::string name, std::string reason) {
 }
 
 CheckResult s6_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-6 Pipeline to validate"};
 }
 
@@ -913,7 +918,7 @@ const json* s7_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult s7_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-7 Pipeline to validate"};
 }
 
@@ -956,7 +961,7 @@ const json* s8_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult s8_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-8 Pipeline to validate"};
 }
 
@@ -999,7 +1004,7 @@ const json* s9_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult s9_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-9 Pipeline to validate"};
 }
 
@@ -1077,7 +1082,7 @@ const json* s4_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult s4_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-4 Pipeline to validate"};
 }
 
@@ -1120,7 +1125,7 @@ const json* b5_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult b5_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound B-5 Pipeline to validate"};
 }
 
@@ -1203,7 +1208,7 @@ const json* s3_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult s3_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-3 Pipeline to validate"};
 }
 
@@ -2606,7 +2611,7 @@ const json* s12_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult s12_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound S-12 Pipeline to validate"};
 }
 
@@ -2649,7 +2654,7 @@ const json* b3_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult b3_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound B-3 Pipeline to validate"};
 }
 
@@ -3096,7 +3101,7 @@ const json* b4_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult b4_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound B-4 Pipeline to validate"};
 }
 
@@ -3288,7 +3293,7 @@ const json* b6_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult b6_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound B-6 Pipeline to validate"};
 }
 
@@ -3537,7 +3542,7 @@ const json* b7_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult b7_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound B-7 Pipeline to validate"};
 }
 
@@ -3959,7 +3964,7 @@ const json* b2_correctness_profile(const ir::ExecutionGraph& graph,
 }
 
 CheckResult b2_not_applicable(std::string name) {
-    return {std::move(name), CheckStatus::Pass,
+    return {std::move(name), CheckStatus::NotApplicable,
             "no bound B-2 Pipeline to validate"};
 }
 
@@ -5090,12 +5095,14 @@ bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
 }
 
 CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) continue;
         const auto kind = node->attributes.find("model_kind");
         if (kind == node->attributes.end() || !kind->is_string()) continue;
         const std::string named = kind->get<std::string>();
         if (!is_time_ordered(named)) continue;
+        applies = true;
 
         // Calibration on a time-ordered model is the churn recipe misapplied — see the header.
         for (const auto& other : graph.nodes()) {
@@ -5136,12 +5143,16 @@ CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) c
                     "content is not comparable to anything this model will see in production."};
         }
     }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable, "no time-ordered model"};
+    }
     return CheckResult{name(), CheckStatus::Pass,
                        "every time-ordered model is validated over time and uncalibrated"};
 }
 
 CheckResult LabelEfficiencyGoldIsolationCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model ||
             !node->attributes.is_object()) {
@@ -5157,6 +5168,7 @@ CheckResult LabelEfficiencyGoldIsolationCheck::evaluate(
             model_kind != "weak_supervision") {
             continue;
         }
+        applies = true;
         const auto weak_as_gold =
             node->attributes.find("weak_labels_are_gold");
         if (weak_as_gold == node->attributes.end() ||
@@ -5176,6 +5188,10 @@ CheckResult LabelEfficiencyGoldIsolationCheck::evaluate(
                     ": the gold evaluation set must be disjoint; set "
                     "`gold_split` to `disjoint`"};
         }
+    }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable,
+                           "no label-efficiency model"};
     }
     return CheckResult{
         name(), CheckStatus::Pass,
@@ -5242,6 +5258,7 @@ CheckResult StreamingCorrectnessCheck::evaluate(
         return CheckResult{name(), CheckStatus::Fail,
                            node_label(node) + ": " + std::move(reason)};
     };
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (!node || node->kind != ir::StepKind::Model ||
             !node->attributes.is_object()) {
@@ -5256,6 +5273,7 @@ CheckResult StreamingCorrectnessCheck::evaluate(
         if (kind != "streaming" && kind != "online_learning") {
             continue;
         }
+        applies = true;
         if (!node->attributes.value("event_time_ordered", false)) {
             return fail(*node,
                         "streaming decisions must set event_time_ordered=true");
@@ -5279,12 +5297,16 @@ CheckResult StreamingCorrectnessCheck::evaluate(
                         "streaming evaluation must set prequential=true");
         }
     }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable, "no streaming model"};
+    }
     return CheckResult{
         name(), CheckStatus::Pass,
         "streaming models order event time, delay labels, and evaluate test-then-train"};
 }
 
 CheckResult PrivacyBudgetCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model ||
             !node->attributes.is_object()) {
@@ -5295,6 +5317,7 @@ CheckResult PrivacyBudgetCheck::evaluate(const ir::ExecutionGraph& graph) const 
         if (methodology == nullptr || methodology->id != "M-20") {
             continue;
         }
+        applies = true;
         const auto fail = [&](std::string reason) {
             return CheckResult{name(), CheckStatus::Fail,
                                node_label(*node) + ": " + std::move(reason)};
@@ -5340,12 +5363,17 @@ CheckResult PrivacyBudgetCheck::evaluate(const ir::ExecutionGraph& graph) const 
             return fail("privacy_evaluation must be true before synthetic output publication");
         }
     }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable,
+                           "no synthetic_private step"};
+    }
     return CheckResult{name(), CheckStatus::Pass,
                        "every synthetic_private step states and enforces its privacy budget"};
 }
 
 CheckResult EnsembleOutOfFoldCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model ||
             !node->attributes.is_object()) {
@@ -5357,6 +5385,7 @@ CheckResult EnsembleOutOfFoldCheck::evaluate(
                       *kind != "stacking")) {
             continue;
         }
+        applies = true;
         const std::optional<std::string> predictions =
             string_field(node->attributes, "stacking_predictions");
         if (!predictions || *predictions != "out_of_fold") {
@@ -5397,6 +5426,9 @@ CheckResult EnsembleOutOfFoldCheck::evaluate(
             }
         }
     }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable, "no ensemble model"};
+    }
     return CheckResult{
         name(), CheckStatus::Pass,
         "every ensemble fits only out-of-fold scores and respects time order"};
@@ -5405,6 +5437,7 @@ CheckResult EnsembleOutOfFoldCheck::evaluate(
 
 CheckResult UncertaintyValidationCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model ||
             !node->attributes.is_object()) {
@@ -5422,6 +5455,7 @@ CheckResult UncertaintyValidationCheck::evaluate(
             normalized_model_kind != "uncertainty") {
             continue;
         }
+        applies = true;
         const auto coverage = node->attributes.find("coverage_checked");
         if (coverage == node->attributes.end() || !coverage->is_boolean() ||
             !coverage->get<bool>()) {
@@ -5484,6 +5518,9 @@ CheckResult UncertaintyValidationCheck::evaluate(
             }
         }
     }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable, "no Bayesian model"};
+    }
     return CheckResult{
         name(), CheckStatus::Pass,
         "Bayesian model steps measure coverage and state exchangeability"};
@@ -5492,6 +5529,7 @@ CheckResult UncertaintyValidationCheck::evaluate(
 
 CheckResult EntityResolutionGraphCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model ||
             !node->attributes.is_object()) {
@@ -5506,6 +5544,7 @@ CheckResult EntityResolutionGraphCheck::evaluate(
             model_kind != "entity-resolution") {
             continue;
         }
+        applies = true;
 
         const std::string mode =
             node->attributes.value("resolution_mode", std::string("fuzzy"));
@@ -5567,6 +5606,10 @@ CheckResult EntityResolutionGraphCheck::evaluate(
                     "conflicts"};
         }
     }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable,
+                           "no entity-resolution model"};
+    }
     return CheckResult{
         name(), CheckStatus::Pass,
         "every entity-resolution model states keyed identity or safe fuzzy "
@@ -5575,6 +5618,7 @@ CheckResult EntityResolutionGraphCheck::evaluate(
 
 CheckResult SurvivalCensoringCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model ||
             !node->attributes.is_object()) {
@@ -5588,6 +5632,7 @@ CheckResult SurvivalCensoringCheck::evaluate(
         if (model_kind != "survival" && model_kind != "time_to_event") {
             continue;
         }
+        applies = true;
         if (const auto error = validate_annotations(node->attributes)) {
             return {name(), CheckStatus::Fail,
                     node_label(*node) +
@@ -5615,11 +5660,15 @@ CheckResult SurvivalCensoringCheck::evaluate(
                         "point_in_time_features=true"};
         }
     }
+    if (!applies) {
+        return {name(), CheckStatus::NotApplicable, "no survival model"};
+    }
     return {name(), CheckStatus::Pass,
             "survival steps preserve censoring and point-in-time boundaries"};
 }
 
 CheckResult OptimizationContractCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) {
             continue;
@@ -5632,6 +5681,7 @@ CheckResult OptimizationContractCheck::evaluate(const ir::ExecutionGraph& graph)
         if (model_kind != "optimization" && model_kind != "operations_research") {
             continue;
         }
+        applies = true;
         const auto requires_true = [&](std::string_view attribute,
                                        std::string reason) {
             const auto found = node->attributes.find(attribute);
@@ -5662,6 +5712,9 @@ CheckResult OptimizationContractCheck::evaluate(const ir::ExecutionGraph& graph)
         if (result.status == CheckStatus::Fail) {
             return result;
         }
+    }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable, "no optimization model"};
     }
     return CheckResult{name(), CheckStatus::Pass,
                        "optimization plans require scenarios, independent "
@@ -5719,7 +5772,8 @@ CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
 
     if (checked == 0) {
-        return pass("no step declares schema requirements");
+        return CheckResult{name(), CheckStatus::NotApplicable,
+                           "no step declares schema requirements"};
     }
     return pass(std::to_string(checked) +
                 " step(s) type-check against their source profiles");
@@ -5792,7 +5846,8 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
 
     if (checked == 0) {
-        return pass("no ML step declares features to check for leakage");
+        return CheckResult{name(), CheckStatus::NotApplicable,
+                           "no ML step declares features to check for leakage"};
     }
     return pass(std::to_string(checked) +
                 " ML step(s) are point-in-time correct and target-leakage free");
@@ -5836,7 +5891,8 @@ CheckResult SnapshotLineageCheck::evaluate(
     }
 
     if (checked == 0) {
-        return pass("no model step declares features that require snapshot lineage");
+        return CheckResult{name(), CheckStatus::NotApplicable,
+                           "no model step declares features that require snapshot lineage"};
     }
     return pass(std::to_string(checked) +
                 " feature-bearing model step(s) terminate in valid snapshots");
@@ -5916,11 +5972,12 @@ CheckResult CausalUpliftCheck::evaluate(const ir::ExecutionGraph& graph) const {
             }
         }
     }
-    return CheckResult{
-        name(), CheckStatus::Pass,
-        checked == 0
-            ? "no causal uplift step to check"
-            : "causal uplift roles, overlap, and feature timing are valid"};
+    if (checked == 0) {
+        return CheckResult{name(), CheckStatus::NotApplicable,
+                           "no causal uplift step to check"};
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "causal uplift roles, overlap, and feature timing are valid"};
 }
 
 CheckResult RankCorrectnessCheck::evaluate(
@@ -5959,18 +6016,22 @@ CheckResult RankCorrectnessCheck::evaluate(
                         "information would leak into the queue"};
         }
     }
+    if (checked == 0) {
+        return {name(), CheckStatus::NotApplicable,
+                "no learning-to-rank model to validate"};
+    }
     return {name(), CheckStatus::Pass,
-            checked == 0
-                ? "no learning-to-rank model to validate"
-                : std::to_string(checked) +
+            std::to_string(checked) +
                       " rank model(s) require groups, whole-group splits, and "
                       "ranking-time features"};
 }
 
 CheckResult LanguageGroundingCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (!language_model(*node)) continue;
+        applies = true;
         if (auto error = validate_annotations(node->attributes)) {
             return {name(), CheckStatus::Fail,
                     node_label(*node) +
@@ -5987,14 +6048,17 @@ CheckResult LanguageGroundingCheck::evaluate(
                         ": M-10 must refuse when retrieval is empty or irrelevant"};
         }
     }
+    if (!applies) return {name(), CheckStatus::NotApplicable, "no language model"};
     return {name(), CheckStatus::Pass,
             "every language model requires grounded citations and refusal"};
 }
 
 CheckResult LanguageTrainingAccessCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (!language_model(*node)) continue;
+        applies = true;
         if (auto error = validate_annotations(node->attributes)) {
             return {name(), CheckStatus::Fail,
                     node_label(*node) +
@@ -6011,12 +6075,14 @@ CheckResult LanguageTrainingAccessCheck::evaluate(
                         ": M-10 requires an upstream source with caller-read enforcement"};
         }
     }
+    if (!applies) return {name(), CheckStatus::NotApplicable, "no language model"};
     return {name(), CheckStatus::Pass,
             "every language model requires caller-authorized training text"};
 }
 
 CheckResult DocumentReviewCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (node->kind != ir::StepKind::Model ||
             !node->attributes.is_object()) {
@@ -6027,6 +6093,7 @@ CheckResult DocumentReviewCheck::evaluate(
             kind->get<std::string>() != "document_extraction") {
             continue;
         }
+        applies = true;
         const auto confidence =
             node->attributes.find("confidence_required");
         if (confidence == node->attributes.end() ||
@@ -6082,6 +6149,10 @@ CheckResult DocumentReviewCheck::evaluate(
                 node_label(*node) +
                     ": document extraction needs an Act step that writes the review_queue"};
         }
+    }
+    if (!applies) {
+        return CheckResult{name(), CheckStatus::NotApplicable,
+                           "no document-extraction model"};
     }
     return CheckResult{
         name(), CheckStatus::Pass,
@@ -6142,11 +6213,12 @@ CheckResult GraphEdgeTimeCheck::evaluate(const ir::ExecutionGraph& graph) const 
                 "graph model requires an edge-time filter with the same "
                 "column and prediction cutoff"};
     }
-    return {name(), CheckStatus::Pass, "no graph model step to check"};
+    return {name(), CheckStatus::NotApplicable, "no graph model step to check"};
 }
 
 CheckResult VisionSourceSplitCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (auto error = validate_annotations(node->attributes)) {
             return {name(), CheckStatus::Fail,
@@ -6166,6 +6238,7 @@ CheckResult VisionSourceSplitCheck::evaluate(
         if (kind != "vision" && kind != "computer_vision") {
             continue;
         }
+        applies = true;
         const auto disjoint = node->attributes.find("source_disjoint");
         if (disjoint == node->attributes.end() || !disjoint->is_boolean() ||
             !disjoint->get<bool>()) {
@@ -6184,15 +6257,18 @@ CheckResult VisionSourceSplitCheck::evaluate(
                         "or other group held out as a unit"};
         }
     }
+    if (!applies) return {name(), CheckStatus::NotApplicable, "no vision model"};
     return {name(), CheckStatus::Pass,
             "every vision model holds out complete source groups"};
 }
 
 CheckResult SpeechConsentCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    bool applies = false;
     for (const auto& node : graph.nodes()) {
         if (!node || !speech_step(*node)) {
             continue;
         }
+        applies = true;
         const auto required = node->attributes.find("consent_required");
         const auto column = node->attributes.find("consent_column");
         if (required == node->attributes.end() || !required->is_boolean() ||
@@ -6203,6 +6279,7 @@ CheckResult SpeechConsentCheck::evaluate(const ir::ExecutionGraph& graph) const 
                         ": speech requires explicit consent and a consent_column"};
         }
     }
+    if (!applies) return {name(), CheckStatus::NotApplicable, "no speech model"};
     return {name(), CheckStatus::Pass,
             "every speech model requires an explicit consent field"};
 }
@@ -6302,7 +6379,7 @@ CheckResult BanditPolicyCheck::evaluate(const ir::ExecutionGraph& graph) const {
         }
     }
     if (checked == 0) {
-        return CheckResult{name(), CheckStatus::Pass,
+        return CheckResult{name(), CheckStatus::NotApplicable,
                            "no bandit policy requires allocation checks"};
     }
     return CheckResult{name(), CheckStatus::Pass,

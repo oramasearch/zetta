@@ -9237,10 +9237,16 @@
                         },
                         "gate": {
                           "properties": {
+                            "applied": {
+                              "description": "how many checks applied to the graph",
+                              "minimum": 0,
+                              "type": "integer"
+                            },
                             "block_deploy": {
                               "type": "boolean"
                             },
                             "checks": {
+                              "description": "the checks that applied to the graph; the ones that did not are left out (counted in not_applicable) unless include_not_applicable was asked for",
                               "items": {
                                 "properties": {
                                   "name": {
@@ -9251,6 +9257,7 @@
                                   },
                                   "status": {
                                     "enum": [
+                                      "not_applicable",
                                       "pass",
                                       "warn",
                                       "fail"
@@ -9265,6 +9272,11 @@
                                 "type": "object"
                               },
                               "type": "array"
+                            },
+                            "not_applicable": {
+                              "description": "how many checks had nothing to check on this graph (never reported as pass)",
+                              "minimum": 0,
+                              "type": "integer"
                             },
                             "verdict": {
                               "enum": [
@@ -10736,7 +10748,7 @@
     },
     "/v1/gate": {
       "post": {
-        "description": "Run the correctness gate over a stored project graph and return the full validation report (per-check status + reason, verdict, block_deploy). Evaluates only — no state change. Requires orchestration:gate.",
+        "description": "Run the correctness gate over a stored project graph and return the validation report: the checks that applied (status + reason), the verdict, block_deploy, and the counts applied / not_applicable. Checks with nothing to check on this graph are counted, never reported as pass; include_not_applicable lists them too. Evaluates only — no state change. Requires orchestration:gate.",
         "operationId": "gate",
         "requestBody": {
           "content": {
@@ -10748,6 +10760,10 @@
                     "description": "the stored graph's name, or its uuid",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "include_not_applicable": {
+                    "description": "also list the checks that had nothing to check on this graph, with status not_applicable (default false: only the checks that applied are listed, and the rest are counted)",
+                    "type": "boolean"
                   },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
@@ -10790,10 +10806,16 @@
                     },
                     "value": {
                       "properties": {
+                        "applied": {
+                          "description": "how many checks applied to the graph",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
                         "block_deploy": {
                           "type": "boolean"
                         },
                         "checks": {
+                          "description": "the checks that applied to the graph; the ones that did not are left out (counted in not_applicable) unless include_not_applicable was asked for",
                           "items": {
                             "properties": {
                               "name": {
@@ -10804,6 +10826,7 @@
                               },
                               "status": {
                                 "enum": [
+                                  "not_applicable",
                                   "pass",
                                   "warn",
                                   "fail"
@@ -10821,6 +10844,11 @@
                         },
                         "graph": {
                           "type": "string"
+                        },
+                        "not_applicable": {
+                          "description": "how many checks had nothing to check on this graph (never reported as pass)",
+                          "minimum": 0,
+                          "type": "integer"
                         },
                         "project": {
                           "type": "string"

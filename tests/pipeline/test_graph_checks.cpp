@@ -133,7 +133,7 @@ TEST(SchemaTypeCheck, EpochAsOfAnnotationPasses) {
                    json{{"as_of", 1711929600.0}}, "n-model");
 
     const CheckResult result = SchemaTypeCheck{}.evaluate(graph);
-    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+    EXPECT_EQ(result.status, CheckStatus::NotApplicable) << result.reason;
 }
 
 TEST(SchemaTypeCheck, MissingFieldFailsWithReason) {
@@ -188,7 +188,7 @@ TEST(SchemaTypeCheck, GraphWithoutRequirementsPasses) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Connect, "load_orders");  // no annotations at all
     const CheckResult result = SchemaTypeCheck{}.evaluate(graph);
-    EXPECT_EQ(result.status, CheckStatus::Pass);
+    EXPECT_EQ(result.status, CheckStatus::NotApplicable);
 }
 
 TEST(SchemaTypeCheck, MalformedRequiresAnnotationFails) {
@@ -391,7 +391,7 @@ TEST(DataLeakageCheck, FeatureFlaggedLeaksTargetFails) {
 TEST(DataLeakageCheck, GraphWithoutFeaturesPasses) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Model, "model");  // no leakage annotations
-    EXPECT_EQ(DataLeakageCheck{}.evaluate(graph).status, CheckStatus::Pass);
+    EXPECT_EQ(DataLeakageCheck{}.evaluate(graph).status, CheckStatus::NotApplicable);
 }
 
 TEST(DataLeakageCheck, MalformedFeatureAnnotationFails) {
@@ -1424,13 +1424,13 @@ TEST(TemporalValidationCheck, AForecastThatCalibratesFails) {
 TEST(TemporalValidationCheck, ChurnMayStillCalibrate) {
     const auto graph = model_graph({{"model_kind", "gbdt"}, {"calibrated", true}});
     const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
-    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::NotApplicable) << result.reason;
 }
 
 TEST(TemporalValidationCheck, AModelWithNoMethodologyIsSkipped) {
     const auto graph = model_graph(nlohmann::json::object());
     EXPECT_EQ(zetta::pipeline::TemporalValidationCheck{}.evaluate(graph).status,
-              zetta::pipeline::CheckStatus::Pass);
+              zetta::pipeline::CheckStatus::NotApplicable);
 }
 
 TEST(StreamingGraphCheck, CorrectEventTimeAndPrequentialPolicyPasses) {
@@ -1494,7 +1494,7 @@ TEST(TemporalValidationCheck, TheChurnShapeAndTheForecastShapeAreNotInterchangea
         model_graph({{"model_kind", "forecast"}, {"temporal_validation", true}});
 
     const zetta::pipeline::TemporalValidationCheck temporal;
-    EXPECT_EQ(temporal.evaluate(churn_shape).status, zetta::pipeline::CheckStatus::Pass);
+    EXPECT_EQ(temporal.evaluate(churn_shape).status, zetta::pipeline::CheckStatus::NotApplicable);
     EXPECT_EQ(temporal.evaluate(forecast_shape).status, zetta::pipeline::CheckStatus::Pass);
 
     // Now swap the methodologies onto the wrong shapes. Both must be refused.

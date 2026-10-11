@@ -9,6 +9,8 @@ namespace zetta::pipeline {
 
 std::string to_string(CheckStatus status) {
     switch (status) {
+        case CheckStatus::NotApplicable:
+            return "not_applicable";
         case CheckStatus::Pass:
             return "pass";
         case CheckStatus::Warn:
@@ -20,6 +22,10 @@ std::string to_string(CheckStatus status) {
 }
 
 bool check_status_from_string(std::string_view text, CheckStatus& out) {
+    if (text == "not_applicable") {
+        out = CheckStatus::NotApplicable;
+        return true;
+    }
     if (text == "pass") {
         out = CheckStatus::Pass;
         return true;
@@ -44,6 +50,15 @@ CheckStatus ValidationReport::verdict() const {
     return worst;
 }
 
+std::size_t ValidationReport::not_applicable_count() const {
+    return static_cast<std::size_t>(std::ranges::count(
+        checks, CheckStatus::NotApplicable, &CheckResult::status));
+}
+
+std::size_t ValidationReport::applied_count() const {
+    return checks.size() - not_applicable_count();
+}
+
 ValidationReport& ValidationReport::add(std::string name, CheckStatus status,
                                         std::string reason) {
     checks.push_back(
@@ -57,10 +72,23 @@ void to_json(nlohmann::json& document, const CheckResult& result) {
                              {"reason", result.reason}};
 }
 
-void to_json(nlohmann::json& document, const ValidationReport& report) {
-    document = nlohmann::json{{"checks", report.checks},
+void to_json(nlohmann::json& document, const ValidationReport& report,
+             bool include_not_applicable) {
+    nlohmann::json checks = nlohmann::json::array();
+    for (const CheckResult& check : report.checks) {
+        if (include_not_applicable || check.status != CheckStatus::NotApplicable) {
+            checks.push_back(check);
+        }
+    }
+    document = nlohmann::json{{"checks", std::move(checks)},
                              {"verdict", to_string(report.verdict())},
-                             {"block_deploy", report.block_deploy}};
+                             {"block_deploy", report.block_deploy},
+                             {"applied", report.applied_count()},
+                             {"not_applicable", report.not_applicable_count()}};
+}
+
+void to_json(nlohmann::json& document, const ValidationReport& report) {
+    to_json(document, report, false);
 }
 
 namespace {
@@ -103,6 +131,11 @@ std::optional<ValidationReport> validation_report_from_json(
         if (!parse_check(entry, parsed.checks)) return std::nullopt;
     }
     parsed.block_deploy = document["block_deploy"].get<bool>();
+    for (const char* count : {"applied", "not_applicable"}) {
+        if (document.contains(count) && !document[count].is_number_unsigned()) {
+            return std::nullopt;
+        }
+    }
 
     // "verdict" is derived, so it is advisory on input: accept it when absent,
     // reject the document if a present verdict contradicts the checks (a sign
@@ -135,13 +168,23 @@ const nlohmann::json& validation_report_schema() {
   "additionalProperties": false,
   "properties": {
     "checks": {
-      "description": "Per-check results. Order is preserved.",
+      "description": "Per-check results, in gate order. Only the checks that applied, unless the reader asked for the not-applicable ones too.",
       "type": "array",
       "items": { "$ref": "#/$defs/checkResult" }
     },
     "verdict": {
       "description": "Derived: the worst status across checks (an empty list is \"pass\"). Emitted for readability; advisory on input — when present it must equal the verdict computed from the checks.",
       "$ref": "#/$defs/checkStatus"
+    },
+    "applied": {
+      "description": "Derived: how many checks applied to the graph (any status but not_applicable). Advisory on input.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "not_applicable": {
+      "description": "Derived: how many checks had nothing to check on this graph. They are left out of \"checks\" unless the reader asked for them. Advisory on input.",
+      "type": "integer",
+      "minimum": 0
     },
     "block_deploy": {
       "description": "The gate's deploy policy for this report. Independent of the verdict so a gate can block on a warning (strict) or allow a deploy despite a failure (signed-off override).",
@@ -150,9 +193,9 @@ const nlohmann::json& validation_report_schema() {
   },
   "$defs": {
     "checkStatus": {
-      "description": "A single check's outcome, ordered by severity pass < warn < fail.",
+      "description": "A single check's outcome, ordered by severity not_applicable < pass < warn < fail. not_applicable is a check that had nothing to check on this graph; it never counts as a pass and never moves the verdict.",
       "type": "string",
-      "enum": ["pass", "warn", "fail"]
+      "enum": ["not_applicable", "pass", "warn", "fail"]
     },
     "checkResult": {
       "type": "object",
