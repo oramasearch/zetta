@@ -116,7 +116,7 @@ nlohmann::json agent_skill_schema() {
                                      {"pattern", kMcpConnectionSkillPattern},
                                      {"description",
                                       "the allowed tools of the workspace's MCP connection "
-                                      "with this prefix in lake"}}})}};
+                                      "with this prefix in Lake"}}})}};
 }
 
 const std::vector<std::string>& agent_skills() {
