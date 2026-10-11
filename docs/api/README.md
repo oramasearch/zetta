@@ -149,6 +149,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `query_metric` | read | data:metrics_read (`metrics:read`) | sum a counter or aggregate a gauge over a range, filtered, grouped and stepped; also POST ([time-series.md](../data/time-series.md)) |
 | `list_objects` | read | data:objects_read (`objects:read`, scopable `ON BUCKET`) | a bucket's keys and sizes by key, paged; also POST and `GET /v1/objects/<bucket>` ([object-store.md](../data/object-store.md)) |
 | `object_usage` | read | data:objects_read | a bucket's objects, bytes and quota; also `GET /v1/objects/<bucket>:usage` |
+| `storage_usage` | read | api:query | the bytes this node holds on its disk, by kind (datasets, files, models, indexes, runs, buckets and each bucket, streams, records, catalogue, system); walks the data directory on the blocking pool ([storage-census.md](../data/storage-census.md)) |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
@@ -214,7 +215,11 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `purge_audit` | action | orchestration:purge_audit | admin-only segment rewrite before a UTC cutoff; advances replicated low-water marks and records `audit_purged` (#1169) |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
 | `delete_dataset` | action | orchestration:delete_dataset | delete a dataset with its partitions, their bodies and every index over it; `dry_run` lists what goes ([deletes.md](deletes.md)) |
-| `delete_model` | action | orchestration:delete_model | delete a model (unexposed first); its run is kept; `dry_run` lists what goes ([deletes.md](deletes.md)) |
+| `delete_model` | action | orchestration:delete_model | delete a model (unexposed first); its run is kept; a standalone model's last version takes its internal project with it; `dry_run` lists what goes ([deletes.md](deletes.md)) |
+| `train_model` | job | orchestration:train_model | train a standalone model from a dataset, a target and a methodology; its internal project is never listed ([standalone-models.md](../ml/standalone-models.md)) |
+| `retrain_model` | job | orchestration:retrain_model | train a new version of a model, on what it trained on or new settings ([standalone-models.md](../ml/standalone-models.md)) |
+| `register_model` | action | orchestration:register_model | keep a brought model file (the engine's GBDT weights format) as a standalone model, or a new version of one ([standalone-models.md](../ml/standalone-models.md)) |
+| `move_model_to_project` | action | orchestration:move_model_to_project | reveal a standalone model's project under a name, with every version ([standalone-models.md](../ml/standalone-models.md)) |
 | `delete_run` | action | orchestration:delete_run | delete a finished run; refused while pending or running; its models are kept and listed ([deletes.md](deletes.md)) |
 | `delete_index` | action | orchestration:delete_index | delete an index (unexposed first); the dataset is kept ([deletes.md](deletes.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |

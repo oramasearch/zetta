@@ -40,7 +40,7 @@ const nlohmann::json& create_study_schema() {
             {"type", "boolean"},
             {"description",
              "fill a missing objective (held_out_auc, maximize, validation "
-             "split), budgets and the methodology's default search space"}};
+             "split), budgets and the methodology's default parameter ranges"}};
         return document;
     }();
     return schema;

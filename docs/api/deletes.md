@@ -24,7 +24,10 @@ confirmation. A missing entity is `not_found`.
 
 - `delete_dataset` → `{dataset, name, database, table_id, dry_run, removed: {rows, size_bytes,
   partitions, indexes: [index ids]}}`.
-- `delete_model` → `{model_id, name, dry_run, removed: {model: 1, was_exposed}, kept: {run}}`.
+- `delete_model` → `{model_id, name, dry_run, removed: {model: 1, was_exposed, standalone_project?},
+  kept: {run}}`. `standalone_project: 1` says the model was a standalone model's last version and its
+  internal project goes too ([../ml/standalone-models.md](../ml/standalone-models.md)); it stays while
+  one of that project's runs is pending or running.
 - `delete_run` → `{run_id, name (its pipeline name, or empty), dry_run, removed: {run: 1, status},
   kept: {models: [model ids]}}`.
 - `delete_index` → `{index_id, name (the indexed table: indexes have no name of their own), table,

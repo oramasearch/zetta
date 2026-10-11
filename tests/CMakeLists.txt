@@ -39,9 +39,11 @@ add_executable(zetta-tests
   api/test_action_journeys.cpp
   api/test_study_driver.cpp
   api/test_getting_started_churn.cpp
+  api/test_standalone_models.cpp
   api/test_serving.cpp
   api/test_scoped_grants_api.cpp
   api/test_record_capabilities.cpp
+  api/test_storage_capabilities.cpp
   api/test_object_routes.cpp
   api/test_row_security_api.cpp
   api/test_web_ui_forms.cpp
@@ -69,6 +71,7 @@ add_executable(zetta-tests
   data/test_metric_store.cpp
   data/test_record_soak.cpp
   data/test_object_store.cpp
+  data/test_storage_census.cpp
   data/test_object_log_crash.cpp
   data/test_object_soak.cpp
   pipeline/test_project.cpp

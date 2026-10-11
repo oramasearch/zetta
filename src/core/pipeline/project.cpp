@@ -42,6 +42,11 @@ void Project::set_description(std::string description) {
     persist_meta();
 }
 
+void Project::set_internal(bool internal) {
+    internal_ = internal;
+    persist_meta();
+}
+
 void Project::set_metadata(std::string name, std::string created,
                            std::string updated, std::string owner,
                            std::string description) {
@@ -54,11 +59,13 @@ void Project::set_metadata(std::string name, std::string created,
 }
 
 nlohmann::json Project::metadata() const {
-    return nlohmann::json{{"name", name_},
-                          {"created", created_},
-                          {"updated", updated_},
-                          {"owner", owner_},
-                          {"description", description_}};
+    nlohmann::json value{{"name", name_},
+                         {"created", created_},
+                         {"updated", updated_},
+                         {"owner", owner_},
+                         {"description", description_}};
+    if (internal_) value["internal"] = true;
+    return value;
 }
 
 void Project::persist_meta() const {
