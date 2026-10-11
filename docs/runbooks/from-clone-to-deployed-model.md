@@ -404,7 +404,7 @@ connect  Load customer accounts
 connect  Load usage & billing activity
 clean    Build churn features
 model    Train churn-risk model
-index    Index churn scores
+index    Score and index customer accounts
 serve    Serve churn scores & reasons
 act      Trigger retention outreach
 ```

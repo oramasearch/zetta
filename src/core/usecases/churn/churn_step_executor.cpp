@@ -629,11 +629,73 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
                            "index step ran before the model was trained", {}, {}};
     }
 
-    // Build the real index first — over the accounts shard, keyed by the entity
-    // column, through the node's IndexBackend registry. The output references the
-    // real Index id when built. When no Search backend is registered the build is
-    // skipped (the at-risk list is still produced) — backward compatible.
     std::string index_ref;
+    std::vector<std::string> notes;
+
+    // A landed table (#1241): index the real table, as create_index does — record
+    // a Search Index entity over it and let every node build its sub-indexes over
+    // the partitions it owns (reconcile_search_indexes: per-partition, compute
+    // near data, scatter-gather at query time). The run then links to an index
+    // that list_indexes lists and search can target.
+    if (!config_.accounts_table.empty()) {
+        std::string reason;
+        node_.run_on_owner([&] {
+            std::shared_ptr<zetta::data::Table> table;
+            for (const std::string& name : node_.database_names()) {
+                if (const std::shared_ptr<zetta::data::Database> database =
+                        node_.find_database(name)) {
+                    table = database->find_table_by_id(config_.accounts_table);
+                    if (!table) table = database->find_table(config_.accounts_table);
+                    if (table) break;
+                }
+            }
+            if (!table) {
+                reason = "the table '" + config_.accounts_table + "' is not in the catalog";
+                return;
+            }
+            zetta::index::IndexValue value;
+            value.table = table->name();
+            value.kind = zetta::index::IndexKind::Search;
+            // The ranked full-text backend when this build has it, else the
+            // exact-match reference one.
+            value.backend = std::string(zetta::index::InMemoryIndexBackend::kName);
+            zetta::index::IndexValue ranked = value;
+            ranked.backend = "oramacore_fulltext";
+            if (node_.index_registry().resolve(ranked.spec())) value.backend = ranked.backend;
+            for (const zetta::ddf::ColumnSchema& column : config_.accounts_schema.columns) {
+                const std::string& field = column.field.empty() ? column.name : column.field;
+                if (!field.empty() &&
+                    std::ranges::find(value.fields, field) == value.fields.end()) {
+                    value.fields.push_back(field);
+                }
+            }
+            if (value.fields.empty()) {
+                reason = "the dataset names no columns to index";
+                return;
+            }
+            // A re-run reuses the index it made before, rather than adding one
+            // per run.
+            std::shared_ptr<zetta::index::Index> index;
+            const std::string key = value.spec().key();
+            for (const std::shared_ptr<zetta::index::Index>& existing : node_.indexes()) {
+                if (existing && existing->spec().key() == key) index = existing;
+            }
+            if (!index) index = node_.create_index(std::move(value));
+            if (!index) {
+                reason = "the index over '" + table->name() + "' could not be recorded";
+                return;
+            }
+            node_.reconcile_search_indexes();
+            index_ref = index->id();
+        });
+        if (index_ref.empty()) {
+            return zetta::pipeline::StepOutcome{
+                /*ok=*/false, "could not index the dataset: " + reason, {}, {}};
+        }
+    }
+
+    // The in-memory demo path: build a consolidated index over the accounts
+    // shard through the node's IndexBackend registry.
     zetta::index::IndexValue index_value;
     index_value.table = "churn_accounts";
     index_value.kind = zetta::index::IndexKind::Search;
@@ -642,7 +704,9 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
     std::shared_ptr<zetta::index::IndexBackend> backend;
     node_.run_on_owner(
         [&] { backend = node_.index_registry().resolve(index_value.spec()); });
-    if (backend && config_.accounts_store != nullptr) {
+    if (!index_ref.empty()) {
+        // Indexed above.
+    } else if (backend && config_.accounts_store != nullptr) {
         const std::vector<zetta::index::IndexPartition> partitions =
             zetta::index::read_index_partitions(*config_.accounts_store);
         const zetta::index::IndexStatus status = backend->build(index_value.spec(), partitions);
@@ -654,6 +718,11 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
         std::shared_ptr<zetta::index::Index> index;
         node_.run_on_owner([&] { index = node_.create_index(index_value); });
         if (index) index_ref = index->id();
+    } else {
+        // Never skip silently: the run log says why there is no index.
+        notes.push_back(
+            "no search index was built: the run has no dataset table to index" +
+            std::string(backend ? "" : " and no search backend is registered"));
     }
 
     std::shared_ptr<zetta::compute::ComputeJob> job;
@@ -678,11 +747,13 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
     state.ranked_ready = true;
 
     zetta::pipeline::StepOutcome outcome;
-    // Prefer the real Index id; fall back to the at-risk-list handle when no index
-    // backend was registered (so the run output is always well-formed).
+    // Prefer the real Index id (list_indexes lists it; search targets it); fall
+    // back to the at-risk-list handle when no index was built (so the run output
+    // is always well-formed).
     outcome.outputs.push_back(zetta::pipeline::RunOutput{
         "index", step_label(step),
         index_ref.empty() ? "atrisk:" + job->id() : index_ref});
+    outcome.notes = std::move(notes);
     return outcome;
 }
 

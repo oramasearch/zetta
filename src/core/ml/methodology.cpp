@@ -76,6 +76,27 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         request.hints.is_object()
             ? request.hints.value("label_column", std::string("churned"))
             : "churned";
+    // #1246: the generic template (no solution family of its own) is fitted to
+    // the dataset it was compiled for. hints.source/hints.table name the connect
+    // step's source; the label and the table name the steps.
+    const auto hint = [&request](const char* key) {
+        return request.hints.is_object() ? request.hints.value(key, std::string{})
+                                         : std::string{};
+    };
+    const std::string hinted_source = hint("source");
+    const std::string hinted_table = hint("table");
+    const std::string hinted_label = hint("label_column");
+    const bool family = credit_underwriting || fraud_decisioning || supplier_risk ||
+                        lead_scoring || collections || automated_outbound;
+    const bool fitted = !family && (!hinted_table.empty() || !hinted_label.empty());
+    const auto words = [](std::string text) {
+        std::ranges::replace(text, '_', ' ');
+        std::ranges::replace(text, '.', ' ');
+        return text;
+    };
+    const std::string subject = words(dataset_label);
+    const std::string table_words =
+        hinted_table.empty() ? std::string("customer accounts") : words(hinted_table);
 
     if (request.solution == "B-2") {
         const std::string group_column =
@@ -285,7 +306,8 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
 
     graph.add_node(
         ir::StepKind::Connect,
-        credit_underwriting ? "Load credit applications"
+        fitted ? "Load " + table_words
+        : credit_underwriting ? "Load credit applications"
         : fraud_decisioning ? "Load authorization requests"
         : supplier_risk ? "Load supplier and contract records"
         : lead_scoring ? "Load lead and opportunity records"
@@ -293,8 +315,10 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
                                        : automated_outbound ? "Load consented outbound candidates"
                              : "Load customer accounts",
         nlohmann::json{
-            {"source", "warehouse"},
-            {"table", credit_underwriting ? "credit_applications"
+            {"source", !family && !hinted_source.empty() ? hinted_source
+                                                         : std::string("warehouse")},
+            {"table", !family && !hinted_table.empty() ? hinted_table
+                         : credit_underwriting ? "credit_applications"
                          : fraud_decisioning ? "authorizations"
                          : supplier_risk ? "suppliers"
                          : lead_scoring ? "leads"
@@ -307,6 +331,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
                          : collections ? "eligible receivables to score for recovery priority"
                                        : automated_outbound
                          ? "resolved customers eligible for outbound audience selection"
+                         : fitted ? "the rows to score for " + subject
                          : "active accounts to score for churn risk"}},
         "load_customers");
     if (!retention) {
@@ -339,7 +364,8 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     }
     graph.add_node(
         ir::StepKind::Clean,
-        credit_underwriting ? "Build point-in-time credit features"
+        fitted ? "Build " + subject + " features"
+        : credit_underwriting ? "Build point-in-time credit features"
         : fraud_decisioning ? "Build request-time fraud features"
         : supplier_risk ? "Build supplier risk features"
         : lead_scoring ? "Build conversion features"
@@ -363,7 +389,8 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "build_features");
     graph.add_node(
         ir::StepKind::Model,
-        credit_underwriting ? "Train credit-risk model"
+        fitted ? "Train " + subject + " model"
+        : credit_underwriting ? "Train credit-risk model"
         : fraud_decisioning ? "Train fraud-risk model"
         : supplier_risk ? "Train supplier disruption-risk model"
         : lead_scoring ? "Train conversion-propensity model"
@@ -386,11 +413,17 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
                          : collections ? "predict point-in-time recovery propensity"
                                        : automated_outbound
                                     ? "predict response propensity before incremental targeting"
+                                    : fitted ? (request.intent.empty()
+                                                    ? "predict " + subject + " for each row"
+                                                    : request.intent)
                                     : "predict probability each account churns"}},
         "train_churn_model");
     graph.add_node(
         ir::StepKind::Index,
-        credit_underwriting ? "Index credit risk scores"
+        // The step scores every row and builds a search index over the dataset
+        // (#1241): name it for that.
+        !family ? "Score and index " + table_words
+        : credit_underwriting ? "Index credit risk scores"
         : fraud_decisioning ? "Index authorization scores"
         : supplier_risk ? "Index supplier risk scores"
         : lead_scoring ? "Index conversion scores"
@@ -398,11 +431,14 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
                                        : automated_outbound ? "Index outbound response scores"
                              : "Index churn scores",
         nlohmann::json{{"kind", "feature"},
-                       {"note", "make scores fast to look up at serve time"}},
+                       {"note", !family ? "rank every row by score, and make the dataset "
+                                          "searchable (list_indexes, search)"
+                                        : "make scores fast to look up at serve time"}},
         "index_scores");
     graph.add_node(
         ir::StepKind::Serve,
-        credit_underwriting ? "Serve credit scores and adverse-action reasons"
+        fitted ? "Serve " + subject + " scores & reasons"
+        : credit_underwriting ? "Serve credit scores and adverse-action reasons"
         : fraud_decisioning ? "Serve authorization scores and reasons"
         : supplier_risk ? "Serve supplier flags and evidence"
         : lead_scoring ? "Serve conversion scores and reasons"
@@ -421,7 +457,8 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "serve_scores");
     graph.add_node(
         ir::StepKind::Act,
-        credit_underwriting ? "Publish credit risk scores"
+        fitted ? "Write " + subject + " scores"
+        : credit_underwriting ? "Publish credit risk scores"
         : fraud_decisioning ? "Write fraud authorization scores"
         : supplier_risk ? "Publish supplier risk flags"
         : lead_scoring ? "Route sales queue tasks"

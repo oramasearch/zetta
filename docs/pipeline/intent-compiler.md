@@ -107,6 +107,18 @@ The model node carries `model_kind: "gbdt"` as the dispatch identity and keeps
 the existing `algo: "gradient_boosting"` configuration. All attributes remain
 editable starting-point hints for review.
 
+**Fitted to the dataset (#1246).** When no solution family names the steps
+(no `solution`, or `S-1`) and the hints name a `table` or a `label_column`, the
+template is fitted to them: the connect step reads `hints.source` /
+`hints.table`, the model's note is the intent, and the steps are named from the
+label and the table — `Load subscriptions`, `Build downgraded features`,
+`Train downgraded model`, `Score and index subscriptions`,
+`Serve downgraded scores & reasons`, `Write downgraded scores`. Step ids stay
+fixed (executors and checks address steps by id). A solution family (S-2, S-4,
+S-9, S-10, B-5, B-7) keeps its own names and sources. Without hints the
+generic template keeps its churn names, except the index step, which is named
+for what it does: `Score and index customer accounts` (#1241).
+
 M-2 is also runnable. Its entity-resolution shape connects the selected records
 table, normalizes and blocks candidate pairs, scores them with
 `model_kind: "entity_resolution"`, clusters conflict-safe matches, and writes

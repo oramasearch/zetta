@@ -19,6 +19,8 @@
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ddf/local_partitions.hpp"
+#include "zetta/index/index.hpp"
+#include "zetta/index/search.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/explain_row.hpp"
@@ -267,6 +269,35 @@ TEST(ChurnTableRun, AConnectorLandedTableTrainsAModelOnItsOwnColumns) {
     // driver is one of the two columns the label was actually built from.
     EXPECT_TRUE(result.top_driver == "failed_payments" || result.top_driver == "logins_30d")
         << "dominant driver was '" << result.top_driver << "'";
+
+    // 6. The index step built a real search index over the landed table (#1241):
+    // the run links to it, list_indexes lists it, and search answers from it.
+    std::string index_id;
+    for (const auto& output : result.execution.run->outputs()) {
+        if (output.kind == "index") index_id = output.ref;
+    }
+    const std::shared_ptr<zetta::index::Index> index = host.node.find_index(index_id);
+    ASSERT_TRUE(index) << "the run's index output '" << index_id << "' is not an Index";
+    EXPECT_EQ(index->table(), "accounts");
+    EXPECT_EQ(index->kind(), zetta::index::IndexKind::Search);
+    EXPECT_NE(std::ranges::find(index->fields(), "account_id"), index->fields().end());
+    EXPECT_EQ(host.node.indexes().size(), 1u);
+
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{
+        host.node, &host.cluster, {}, {}, &host.node.span_recorder()};
+    const zetta::api::ApiResult listed =
+        registry.call("list_indexes", Json::object(), context);
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(listed.value.at("indexes").size(), 1u);
+    EXPECT_EQ(listed.value.at("indexes")[0].at("id"), index_id);
+
+    // A second run reuses the index instead of adding one per run.
+    const ChurnSolutionResult again = zetta::usecases::churn::run_churn_solution_on_table(
+        host.node, device, solution->graph, input, options);
+    ASSERT_TRUE(again.ok()) << again.execution.error;
+    EXPECT_EQ(host.node.indexes().size(), 1u);
 }
 
 TEST(ChurnTableRun, TextBusinessIdsAndBooleanLabelsReachEveryDurableOutput) {
@@ -307,6 +338,20 @@ TEST(ChurnTableRun, TextBusinessIdsAndBooleanLabelsReachEveryDurableOutput) {
     ASSERT_TRUE(result.ok()) << result.execution.error;
     ASSERT_TRUE(result.execution.run);
     EXPECT_FALSE(result.execution.run->entity_key_mapping().empty());
+
+    // The run's index (#1241) finds an account by its business id.
+    std::string index_id;
+    for (const auto& output : result.execution.run->outputs()) {
+        if (output.kind == "index") index_id = output.ref;
+    }
+    ASSERT_TRUE(host.node.find_index(index_id)) << index_id;
+    zetta::index::SearchRequest search;
+    search.target = index_id;
+    search.query = "c00042";
+    search.field = "customer_id";
+    const zetta::index::SearchResult found = host.node.search(search);
+    ASSERT_TRUE(found.ok()) << found.status.message;
+    EXPECT_EQ(found.hits.size(), 1u);
 
     const std::shared_ptr<zetta::ml::Model> model =
         host.node.find_model(result.model_id);

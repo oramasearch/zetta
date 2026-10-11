@@ -45,6 +45,15 @@ Two things also had to line up for *the catalog blueprint* specifically:
    `index` step so the blueprint is `connect×2 → clean → model → index → serve →
    act`, matching the real pipeline. (The blueprint still passes the
    [gate](../pipeline/gate.md); no test pins its shape.)
+
+   **The index step builds a real search index (#1241).** On a landed table
+   (`run_churn_solution_on_table`, lake's `run_pipeline`) the step records a
+   Search `Index` over that table — every column the dataset contract names,
+   with the ranked `oramacore_fulltext` backend when this build has it — and
+   `reconcile_search_indexes` builds each node's sub-indexes over the partitions
+   it owns. The run's `index` output is that index's id, so `list_indexes` lists
+   it and `search` targets it; a re-run reuses it. When nothing can be indexed
+   the step says why in the run log instead of skipping silently.
 2. The fixture → numeric encoding lived inline in the test harness. #398 promotes it
    to a first-class, reusable core surface so the wiring is legible and testable, and
    so the headed Deploy panel and the acceptance test share one path.
