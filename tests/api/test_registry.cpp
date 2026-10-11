@@ -105,7 +105,7 @@ TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        155u); // +5 workspace methodology capabilities (zetta#1261), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        160u); // +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -257,6 +257,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
           "log_run_metrics", "log_run_params", "log_run_artifact",
           "create_study", "stop_study", "stop_trial", "promote_trial",
           "delete_study", "delete_dataset", "delete_model", "delete_run", "delete_index",
+          "train_model", "retrain_model", "register_model", "move_model_to_project",
           "create_solution", "run_solution",
           "publish_report", "enqueue_action_task", "deliver_action_task", "execute_closed_loop"}) {
         const auto entry = registry.find(name);
@@ -268,6 +269,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     }
     EXPECT_EQ(registry.find("run")->kind, CapabilityKind::Job);
     EXPECT_EQ(registry.find("run_solution")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("train_model")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("retrain_model")->kind, CapabilityKind::Job);
     EXPECT_EQ(registry.find("testsuite_run")->kind, CapabilityKind::Job);
     EXPECT_FALSE(registry.find("no_such_tool"));
 }

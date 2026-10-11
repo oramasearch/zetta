@@ -279,10 +279,21 @@ public:
     // project.hpp / docs/pipeline/projects.md), mirroring the database CRUD shape.
     // create stamps created/updated and takes an optional owner key;
     // create/rename yield an empty handle / false on an empty name or a clash.
+    // `internal` creates a project that holds one standalone model (lake#654):
+    // it is never listed by project_names(), and is found by its id.
     std::shared_ptr<zetta::pipeline::Project> create_project(std::string name,
                                             std::string owner = {},
-                                            std::string description = {});
+                                            std::string description = {},
+                                            bool internal = false);
     std::shared_ptr<zetta::pipeline::Project> find_project(const std::string& name) const;
+    // By uuid, internal projects included; empty handle on a miss.
+    std::shared_ptr<zetta::pipeline::Project> project_by_id(const std::string& id) const {
+        return find_project_by_id(id);
+    }
+    // Turn an internal project into one people see, under `name` (lake#654,
+    // "Move into a project"). Replicates. false when it is not internal, or the
+    // name is empty or taken.
+    bool reveal_project(const std::string& id, const std::string& name);
     std::vector<std::shared_ptr<zetta::pipeline::Project>> projects() const {
         return projects_;
     }
@@ -292,6 +303,8 @@ public:
     // a plain label, and stay listed (#1009, docs/pipeline/projects.md).
     bool drop_project(const std::string& name);
     bool rename_project(const std::string& from, const std::string& to);
+    // The names of the projects people see: every project except an internal
+    // one (a standalone model's, lake#654).
     std::vector<std::string> project_names() const;
     std::size_t project_count() const { return projects_.size(); }
 
@@ -1305,7 +1318,8 @@ private:
                                                  std::string created,
                                                  std::string updated,
                                                  std::string owner,
-                                                 std::string description = {});
+                                                 std::string description = {},
+                                                 bool internal = false);
     bool materialize_drop_project(const std::string& id);
     std::shared_ptr<zetta::pipeline::Deployment> materialize_deployment(
         std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,

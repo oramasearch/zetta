@@ -279,7 +279,42 @@ TEST_F(AgentApiFixture, KindsRuntimesStudioShapeAndPipelineGrants) {
 
     nlohmann::json bad_skill = python_agent;
     bad_skill["skills"] = {"launch-missiles"};
-    EXPECT_FALSE(call("create_agent", bad_skill).ok);
+    ApiResult refused_skill = call("create_agent", bad_skill);
+    EXPECT_FALSE(refused_skill.ok);
+    EXPECT_EQ(refused_skill.error.path, "/skills/0") << refused_skill.error.message;
+
+    // Lake's own areas are skills too (agent-runtime#7): agent-runtime gives them their tools.
+    nlohmann::json lake_skills = python_agent;
+    lake_skills["name"] = "Drive reader";
+    lake_skills["skills"] = {"drives", "transcripts", "repositories", "datasets", "streams",
+                             "pipelines", "usage"};
+    ApiResult lake_skilled = call("create_agent", lake_skills);
+    ASSERT_TRUE(lake_skilled.ok) << lake_skilled.error.message;
+    EXPECT_EQ(lake_skilled.value.at("skills").size(), 7u);
+    ASSERT_TRUE(call("delete_agent", {{"id", lake_skilled.value.at("id")}}).ok);
+
+    // An MCP connection in lake is a skill, mcp:<prefix> (lake#652): accepted through the API's
+    // schema, at create and at update; a malformed one and an unknown plain skill are refused there.
+    nlohmann::json mcp_skills = python_agent;
+    mcp_skills["name"] = "Ticket Desk Agent";
+    mcp_skills["skills"] = {"mcp:ticket_desk", "search"};
+    ApiResult mcp_skilled = call("create_agent", mcp_skills);
+    ASSERT_TRUE(mcp_skilled.ok) << mcp_skilled.error.message;
+    EXPECT_EQ(mcp_skilled.value.at("skills").at(0), "mcp:ticket_desk");
+    ApiResult mcp_updated = call("update_agent", {{"id", mcp_skilled.value.at("id")},
+                                                  {"skills", {"mcp:wiki_2"}}});
+    ASSERT_TRUE(mcp_updated.ok) << mcp_updated.error.message;
+    EXPECT_EQ(mcp_updated.value.at("skills"), nlohmann::json::array({"mcp:wiki_2"}));
+    for (const char* refused : {"mcp:", "mcp:Ticket", "mcp:9desk", "mcp:a-b",
+                                "mcp:aaaaaaaaaaaaaaaaaaaaaaaaa", "mcp_ticket", "deploy"}) {
+        nlohmann::json bad = python_agent;
+        bad["name"] = std::string("Refused ") + refused;
+        bad["skills"] = {refused};
+        ApiResult answered = call("create_agent", bad);
+        EXPECT_FALSE(answered.ok) << refused;
+        EXPECT_EQ(answered.error.path, "/skills/0") << refused << ": " << answered.error.message;
+    }
+    ASSERT_TRUE(call("delete_agent", {{"id", mcp_skilled.value.at("id")}}).ok);
 
     // The Ask Orama contract: one explicit default, reported by list_agents.
     ApiResult listed = call("list_agents", nlohmann::json::object());

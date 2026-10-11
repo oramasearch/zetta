@@ -107,10 +107,12 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // agent_training_status + set_training_schedule, #941;
     // list_source_tables, #994; delete_project, #1009;
     // create_solution + run_solution, #1102; snapshot, #1103; policy operations, #1104;
-    // experiment creation and assignment, #1105; publish/enqueue/deliver/closed-loop, #1109).
+    // experiment creation and assignment, #1105; publish/enqueue/deliver/closed-loop, #1109;
+    // delete_dataset/model/run/index, lake#645; train/retrain/register_model and
+    // move_model_to_project, lake#654).
     const std::vector<Operation> pipeline_operations =
         permission_operations("pipelines:manage");
-    EXPECT_EQ(pipeline_operations.size(), 60u);  // +4 lake#645 deletes, +4 workspace methodology actions (zetta#1261)
+    EXPECT_EQ(pipeline_operations.size(), 64u);  // +4 workspace methodology actions (zetta#1261)
     EXPECT_TRUE(std::ranges::contains(
         pipeline_operations,
         Operation{CapabilityDomain::Orchestration, "create_solution"}));

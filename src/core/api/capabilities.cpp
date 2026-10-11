@@ -46,6 +46,7 @@
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ml/anomaly_methodology.hpp"
 #include "zetta/ml/explain_row.hpp"
+#include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/run_features.hpp"
 #include "zetta/ml/model.hpp"
@@ -547,14 +548,9 @@ ApiResult handle_get_project(const nlohmann::json& input, ApiContext& context) {
     auto project = context.node.find_project(name);
     if (!project) {
         // Entity refs elsewhere (runs, jobs, models) carry the project *uuid*,
-        // so accept it as the handle too.
-        for (const std::string& candidate : context.node.project_names()) {
-            auto by_name = context.node.find_project(candidate);
-            if (by_name && by_name->id() == name) {
-                project = std::move(by_name);
-                break;
-            }
-        }
+        // so accept it as the handle too (a standalone model's internal project
+        // is found this way only, lake#654).
+        project = context.node.project_by_id(name);
     }
     if (!project) {
         return ApiResult::failure("not_found",
@@ -2962,7 +2958,13 @@ const nlohmann::json& list_models_output_schema() {
                 {"feature_schema", {{"type", "object"}}},
                 {"exposed", {{"type", "boolean"}}},
                 {"created", {{"type", "string"}}},
-                {"has_weights", {{"type", "boolean"}}}}}}}}}}}};
+                {"has_weights", {{"type", "boolean"}}},
+                {"standalone",
+                 {{"type", "boolean"},
+                  {"description",
+                   "made on its own (train_model, register_model), not by a "
+                   "project's pipeline; its project is internal and never listed "
+                   "(lake#654)"}}}}}}}}}}}};
     return schema;
 }
 
@@ -2986,6 +2988,13 @@ ApiResult handle_list_models(const nlohmann::json&, ApiContext& context) {
                           {"exposed", model->exposed()},
                           {"created", model->created()},
                           {"has_weights", model->has_weights()}});
+        if (const auto project = model->project().empty()
+                                     ? nullptr
+                                     : context.node.project_by_id(model->project())) {
+            models.back()["standalone"] = project->internal();
+        } else {
+            models.back()["standalone"] = false;
+        }
     }
     nlohmann::json output;
     output["models"] = std::move(models);
@@ -3798,7 +3807,12 @@ const nlohmann::json& delete_model_output_schema() {
                {{"type", "boolean"},
                 {"description",
                  "the model was served; its endpoint stops answering with the "
-                 "delete"}}}}}}},
+                 "delete"}}},
+              {"standalone_project",
+               {{"type", "integer"},
+                {"description",
+                 "1 when this was a standalone model's last version: the internal "
+                 "project that held it goes too (lake#654)"}}}}}}},
           {"kept",
            {{"type", "object"},
             {"required", {"run"}},
@@ -3835,6 +3849,21 @@ ApiResult handle_delete_model(const nlohmann::json& input, ApiContext& context) 
     const std::string name = model->name();
     const bool was_exposed = model->exposed();
     const std::string run = !model->run_id().empty() ? model->run_id() : model->run();
+    // A standalone model's internal project (lake#654) goes with its last
+    // version, unless one of its runs is still training a next one.
+    std::shared_ptr<zetta::pipeline::Project> standalone;
+    if (!model->project().empty()) {
+        if (auto project = context.node.project_by_id(model->project());
+            project && project->internal()) {
+            const bool others = std::ranges::any_of(context.node.models(), [&](const auto& each) {
+                return each && each->id() != id && each->project() == project->id();
+            });
+            const bool training = std::ranges::any_of(context.node.runs(), [&](const auto& each) {
+                return each && each->project() == project->id() && is_in_flight(each->status());
+            });
+            if (!others && !training) standalone = std::move(project);
+        }
+    }
     if (!dry_run) {
         // Unexpose first, so the replicated flag stops serving it on every peer
         // even before the drop converges.
@@ -3842,12 +3871,14 @@ ApiResult handle_delete_model(const nlohmann::json& input, ApiContext& context) 
         if (!context.node.drop_model(id)) {
             return ApiResult::failure("engine_error", "could not delete model '" + id + "'");
         }
+        if (standalone) context.node.drop_project(standalone->name());
     }
     nlohmann::json output;
     output["model_id"] = id;
     output["name"] = name;
     output["dry_run"] = dry_run;
     output["removed"] = {{"model", 1}, {"was_exposed", was_exposed}};
+    if (standalone) output["removed"]["standalone_project"] = 1;
     output["kept"] = {{"run", run}};
     return ApiResult::success(std::move(output));
 }
@@ -4486,11 +4517,7 @@ std::shared_ptr<zetta::pipeline::Project> resolve_project(
     ApiContext& context, const std::string& name) {
     auto project = context.node.find_project(name);
     if (project) return project;
-    for (const std::string& candidate : context.node.project_names()) {
-        auto by_name = context.node.find_project(candidate);
-        if (by_name && by_name->id() == name) return by_name;
-    }
-    return nullptr;
+    return context.node.project_by_id(name);
 }
 
 // Resolve a stored graph on a project by name or uuid.
@@ -6325,6 +6352,609 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
     }
     return result;
 }
+// --- standalone models (lake#654, docs/ml/standalone-models.md) -----------------
+//
+// A model people make on its own, not as one step of a project's pipeline. The
+// methodology runners train through a project and a pipeline (RunRequest carries
+// both, and the Run and the Model record them as lineage), so a standalone model
+// gets an **internal** project of its own: created here, holding the one
+// pipeline its methodology composes, and never listed to people
+// (Node::project_names() leaves it out). Each training is a run of that pipeline,
+// so the model's records are its versions exactly as a project's are.
+// move_model_to_project reveals the project when a pipeline should grow around
+// the model; deleting its last version removes it.
+
+constexpr std::string_view kStandaloneSuffix = " (standalone model)";
+// The model step attribute that keeps what a standalone model trains on, so
+// retrain_model trains the same thing again. It rides in the replicated graph.
+constexpr const char* kStandaloneTraining = "standalone_training";
+
+std::string standalone_project_name(const std::string& model_name) {
+    return model_name + std::string(kStandaloneSuffix);
+}
+
+// The internal project that holds a standalone model, or empty.
+std::shared_ptr<zetta::pipeline::Project> standalone_project_of(
+    ApiContext& context, const zetta::ml::Model& model) {
+    if (model.project().empty()) return nullptr;
+    auto project = context.node.project_by_id(model.project());
+    return project && project->internal() ? project : nullptr;
+}
+
+std::shared_ptr<zetta::ml::Model> resolve_model(ApiContext& context,
+                                                const std::string& wanted,
+                                                std::string* error) {
+    if (auto model = context.node.find_model(wanted)) return model;
+    std::shared_ptr<zetta::ml::Model> named;
+    std::size_t count = 0;
+    for (const auto& each : context.node.models()) {
+        if (each && !each->name().empty() && each->name() == wanted) {
+            named = each;
+            ++count;
+        }
+    }
+    if (count > 1) {
+        *error = std::to_string(count) + " models are named '" + wanted +
+                 "'; name one by its model_id";
+        return nullptr;
+    }
+    if (!named) *error = "no model named '" + wanted + "' (or with that id)";
+    return named;
+}
+
+nlohmann::json model_step_training(const zetta::ir::ExecutionGraph& graph) {
+    for (const auto& step : graph.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (!step || !step->attributes.is_object()) continue;
+        const auto found = step->attributes.find(kStandaloneTraining);
+        if (found != step->attributes.end() && found->is_object()) return *found;
+    }
+    return nlohmann::json::object();
+}
+
+// The graph with `training` recorded on its model steps and the connect step
+// pointed at the dataset (so the pipeline says what it reads when it is moved
+// into a project). nullopt when the copy fails to parse back.
+std::optional<zetta::ir::ExecutionGraph> with_standalone_training(
+    const zetta::ir::ExecutionGraph& graph, const nlohmann::json& training) {
+    std::string error;
+    auto copy = zetta::ir::from_json(zetta::ir::to_json(graph), &error);
+    if (!copy) return std::nullopt;
+    const zetta::data::DatasetPath path =
+        zetta::data::parse_dataset_path(training.value("dataset_path", std::string{}));
+    for (const auto& step : copy->nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (!step->attributes.is_object()) step->attributes = nlohmann::json::object();
+        step->attributes[kStandaloneTraining] = training;
+        if (training.contains("target")) step->attributes["target"] = training.at("target");
+        step->attributes["model_name"] = training.value("model_name", std::string{});
+    }
+    if (path.kind == zetta::data::DatasetPathKind::Table) {
+        const auto connects = copy->nodes_of_kind(zetta::ir::StepKind::Connect);
+        if (!connects.empty()) {
+            if (!connects.front()->attributes.is_object()) {
+                connects.front()->attributes = nlohmann::json::object();
+            }
+            connects.front()->attributes["source"] = path.database;
+            connects.front()->attributes["table"] = path.table;
+        }
+    }
+    return copy;
+}
+
+// The `run` input that trains a standalone model from its recorded training.
+nlohmann::json standalone_run_input(const std::string& project_id,
+                                    const std::string& graph_name,
+                                    const nlohmann::json& training) {
+    nlohmann::json input = {{"project", project_id},
+                            {"graph", graph_name},
+                            {"model_name", training.value("model_name", graph_name)}};
+    if (const auto path = training.find("dataset_path");
+        path != training.end() && path->is_string()) {
+        input["dataset_path"] = *path;
+    }
+    nlohmann::json contract = nlohmann::json::object();
+    if (const auto target = training.find("target"); target != training.end() &&
+                                                     target->is_string()) {
+        contract["label_column"] = *target;
+    }
+    if (const auto entity = training.find("entity_column");
+        entity != training.end() && entity->is_string()) {
+        contract["entity_column"] = *entity;
+    }
+    if (!contract.empty()) input["dataset"] = std::move(contract);
+    if (const auto holdout = training.find("holdout_fraction");
+        holdout != training.end() && holdout->is_number() && holdout->get<double>() > 0) {
+        input["holdout_fraction"] = *holdout;
+    }
+    return input;
+}
+
+nlohmann::json standalone_training_properties() {
+    return {
+        {"dataset_path",
+         {{"type", "string"},
+          {"minLength", 1},
+          {"description",
+           "the dataset to learn from, as `database.table` (list_datasets)"}}},
+        {"target",
+         {{"type", "string"},
+          {"minLength", 1},
+          {"description",
+           "the column to predict. Omit it for a methodology that learns without one "
+           "(segmentation, anomaly detection); a methodology whose `label` input is "
+           "required refuses without it"}}},
+        {"entity_column",
+         {{"type", "string"},
+          {"minLength", 1},
+          {"description", "the column that identifies a row (default: the dataset's own)"}}},
+        {"holdout_fraction",
+         {{"type", "number"},
+          {"exclusiveMinimum", 0},
+          {"exclusiveMaximum", 1},
+          {"description",
+           "hold this fraction of rows out of training and score the model on them "
+           "(e.g. 0.2). Without it the only figures are in-sample, and they flatter"}}}};
+}
+
+const nlohmann::json& train_model_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json properties = standalone_training_properties();
+        properties["name"] = {{"type", "string"},
+                              {"minLength", 1},
+                              {"description", "the model's name; its versions keep it"}};
+        properties["methodology"] = {
+            {"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "how it learns: a methodology id from list_methodologies (e.g. `M-1`), "
+             "or one of its model kinds"}};
+        return nlohmann::json{{"type", "object"},
+                              {"required", {"name", "methodology", "dataset_path"}},
+                              {"additionalProperties", false},
+                              {"properties", std::move(properties)}};
+    }();
+    return schema;
+}
+
+const nlohmann::json& train_model_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "run_id", "project_id", "pipeline", "standalone"}},
+        {"properties",
+         {{"name", {{"type", "string"}, {"description", "the model's name"}}},
+          {"run_id",
+           {{"type", "string"},
+            {"description",
+             "the training run; the model's new version appears in list_models when "
+             "it finishes (get_run)"}}},
+          {"project_id",
+           {{"type", "string"},
+            {"description", "the internal project that holds the model (never listed)"}}},
+          {"pipeline", {{"type", "string"}, {"description", "its pipeline's name"}}},
+          {"methodology", {{"type", "string"}}},
+          {"standalone", {{"type", "boolean"}}},
+          {"status", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_train_model(const nlohmann::json& input, ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    const std::string wanted = input.at("methodology").get<std::string>();
+    const zetta::ml::Methodology* methodology = zetta::ml::find_methodology(wanted);
+    if (methodology == nullptr) {
+        return ApiResult::failure(
+            "not_found", "no methodology '" + wanted +
+                             "' (list_methodologies). Runnable: " +
+                             zetta::ml::runnable_methodologies());
+    }
+    if (!methodology->runnable || !methodology->run || !methodology->build_shape) {
+        return ApiResult::failure("not_supported",
+                                  zetta::ml::unsupported_methodology_message(*methodology));
+    }
+    const std::string dataset_path = input.at("dataset_path").get<std::string>();
+    const zetta::data::DatasetPath path = zetta::data::parse_dataset_path(dataset_path);
+    if (path.kind != zetta::data::DatasetPathKind::Table) {
+        return ApiResult::failure("invalid_input",
+                                  "/dataset_path: name a dataset as `database.table`");
+    }
+    const auto database = context.node.find_database(path.database);
+    if (!database || !database->find_table(path.table)) {
+        return ApiResult::failure("not_found", "/dataset_path: no dataset '" +
+                                                   path.database + "." + path.table +
+                                                   "' (list_datasets)");
+    }
+    const bool needs_label = std::ranges::any_of(
+        methodology->inputs, [](const zetta::ml::MethodologyInput& role) {
+            return role.required && role.role == "label";
+        });
+    if (needs_label && !input.contains("target")) {
+        return ApiResult::failure(
+            "invalid_input", "/target: " + methodology->name + " (" + methodology->id +
+                                 ") learns to predict a column; name it");
+    }
+    const std::string project_name = standalone_project_name(name);
+    if (context.node.find_project(project_name)) {
+        return ApiResult::failure(
+            "invalid_input", "/name: a standalone model named '" + name +
+                                 "' exists; retrain_model trains a new version of it");
+    }
+
+    auto project = context.node.create_project(
+        project_name, actor_of(context),
+        "Holds the standalone model '" + name + "'.", /*internal=*/true);
+    if (!project) {
+        return ApiResult::failure("engine_error", "could not create the model's project");
+    }
+    const auto discard = [&] { context.node.drop_project(project->name()); };
+
+    nlohmann::json training = {{"model_name", name},
+                               {"methodology", methodology->id},
+                               {"dataset_path", path.database + "." + path.table}};
+    for (const char* key : {"target", "entity_column", "holdout_fraction"}) {
+        if (input.contains(key)) training[key] = input.at(key);
+    }
+    std::string intent = "Train " + name + " on " + path.database + "." + path.table;
+    if (input.contains("target")) {
+        intent += " to predict " + input.at("target").get<std::string>();
+    }
+    const auto intent_input = project->capture_intent(intent, actor_of(context));
+    if (!intent_input) {
+        discard();
+        return ApiResult::failure("engine_error", "could not record what the model is for");
+    }
+    zetta::pipeline::IntentCompileOptions options;
+    options.project = project->name();
+    options.methodology = methodology->id;
+    options.hints = {{"source", path.database}, {"table", path.table}};
+    if (input.contains("target")) options.hints["label_column"] = input.at("target");
+    if (input.contains("entity_column")) options.hints["entity_column"] = input.at("entity_column");
+    std::string compile_error;
+    auto compiled = project->compile_intent_to_graph(intent_input->id(), name, options,
+                                                     &compile_error);
+    if (!compiled) {
+        discard();
+        return ApiResult::failure("invalid_input",
+                                  compile_error.empty()
+                                      ? "the methodology composed no pipeline for this dataset"
+                                      : compile_error);
+    }
+    const auto fitted = with_standalone_training(compiled->graph(), training);
+    if (!fitted || !project->update_graph(compiled->name(), *fitted)) {
+        discard();
+        return ApiResult::failure("engine_error", "could not record the model's training");
+    }
+    // Asking for the model is the approval: there is no proposed pipeline for
+    // anyone else to review, and it is never shown as one.
+    project->approve_graph(name, actor_of(context), zetta::util::now_iso8601());
+    ApiResult run = handle_run(standalone_run_input(project->id(), name, training), context);
+    if (!run.ok) {
+        discard();
+        return run;
+    }
+    nlohmann::json output = run.value;
+    output["name"] = name;
+    output["project_id"] = project->id();
+    output["pipeline"] = name;
+    output["methodology"] = methodology->id;
+    output["standalone"] = true;
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& retrain_model_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json properties = standalone_training_properties();
+        properties["model_id"] = {
+            {"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "any version of the model (its uuid), or its name when one model has it"}};
+        for (auto& [key, value] : properties.items()) {
+            if (key != "model_id") {
+                value["description"] = value.value("description", std::string{}) +
+                                       ". Given, it replaces what the model trained on "
+                                       "and the model keeps it for its next retrain";
+            }
+        }
+        return nlohmann::json{{"type", "object"},
+                              {"required", {"model_id"}},
+                              {"additionalProperties", false},
+                              {"properties", std::move(properties)}};
+    }();
+    return schema;
+}
+
+const nlohmann::json& retrain_model_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "run_id", "project_id", "pipeline", "standalone"}},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"run_id",
+           {{"type", "string"},
+            {"description", "the run that trains the new version (get_run)"}}},
+          {"project_id", {{"type", "string"}}},
+          {"pipeline", {{"type", "string"}}},
+          {"standalone", {{"type", "boolean"}}},
+          {"status", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_retrain_model(const nlohmann::json& input, ApiContext& context) {
+    std::string error;
+    const auto model = resolve_model(context, input.at("model_id").get<std::string>(), &error);
+    if (!model) return ApiResult::failure("not_found", error);
+    const std::string run_id = !model->run_id().empty() ? model->run_id() : model->run();
+    const auto run = run_id.empty() ? nullptr : context.node.find_run(run_id);
+    const auto project = model->project().empty()
+                             ? nullptr
+                             : context.node.project_by_id(model->project());
+    const auto graph = run && project ? project->find_graph_by_id(run->graph()) : nullptr;
+    if (!graph) {
+        return ApiResult::failure(
+            "not_supported",
+            "model '" + model->name() +
+                "' was not trained here, so there is nothing to retrain; register_model "
+                "with version_of adds a version of a brought model");
+    }
+    nlohmann::json training = model_step_training(graph->graph());
+    if (training.empty()) training = {{"model_name", model->name()}};
+    bool changed = false;
+    for (const char* key : {"dataset_path", "target", "entity_column", "holdout_fraction"}) {
+        if (input.contains(key) && training.value(key, nlohmann::json()) != input.at(key)) {
+            training[key] = input.at(key);
+            changed = true;
+        }
+    }
+    if (input.contains("dataset_path")) {
+        const zetta::data::DatasetPath path =
+            zetta::data::parse_dataset_path(input.at("dataset_path").get<std::string>());
+        const auto database = path.kind == zetta::data::DatasetPathKind::Table
+                                  ? context.node.find_database(path.database)
+                                  : nullptr;
+        if (!database || !database->find_table(path.table)) {
+            return ApiResult::failure("not_found",
+                                      "/dataset_path: no dataset '" +
+                                          input.at("dataset_path").get<std::string>() +
+                                          "' (list_datasets)");
+        }
+        training["dataset_path"] = path.database + "." + path.table;
+    }
+    // A project's model keeps its pipeline as it is: what it trains on is the
+    // pipeline's to say. Only a standalone model records its training here.
+    const bool standalone = project->internal();
+    if (changed && standalone) {
+        const auto fitted = with_standalone_training(graph->graph(), training);
+        if (!fitted || !project->update_graph(graph->name(), *fitted)) {
+            return ApiResult::failure("engine_error", "could not record the new training");
+        }
+    }
+    nlohmann::json run_input = standalone_run_input(project->id(), graph->name(), training);
+    if (!standalone) {
+        // Only what was asked to change; the pipeline supplies the rest.
+        run_input = {{"project", project->id()},
+                     {"graph", graph->name()},
+                     {"model_name", model->name()}};
+        const nlohmann::json overrides = standalone_run_input(project->id(), graph->name(),
+                                                              training);
+        for (const char* key : {"dataset_path", "holdout_fraction"}) {
+            if (input.contains(key) && overrides.contains(key)) run_input[key] = overrides.at(key);
+        }
+        if ((input.contains("target") || input.contains("entity_column")) &&
+            overrides.contains("dataset")) {
+            run_input["dataset"] = overrides.at("dataset");
+        }
+    }
+    ApiResult result = handle_run(run_input, context);
+    if (!result.ok) return result;
+    nlohmann::json output = result.value;
+    output["name"] = model->name();
+    output["project_id"] = project->id();
+    output["pipeline"] = graph->name();
+    output["standalone"] = standalone;
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& register_model_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"weights"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the model's name (required unless `version_of` is given)"}}},
+          {"weights",
+           {{"type", "string"},
+            {"minLength", 2},
+            {"description",
+             "the model file's contents: a gradient-boosted tree model in the engine's "
+             "own JSON weights format (objective, base_score, feature_names, trees), "
+             "the format every model trained here is kept in. The engine scores, serves "
+             "and explains only what it can read; any other format is refused"}}},
+          {"kind",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "`classifier` or `regressor` (default: from the file's objective)"}}},
+          {"metrics",
+           {{"type", "object"},
+            {"additionalProperties", {{"type", "number"}}},
+            {"description",
+             "figures measured where it was trained, by name (held_out_auc, held_out_rmse, "
+             "…), so it compares with trained models. Kept as given"}}},
+          {"source",
+           {{"type", "string"},
+            {"maxLength", 2048},
+            {"description",
+             "where the file came from (a drive path, a model repository and revision); "
+             "kept with the model"}}},
+          {"version_of",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "a brought standalone model's id: add this file as its new version"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& register_model_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "name", "kind", "project_id", "features", "standalone"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"kind", {{"type", "string"}}},
+          {"project_id",
+           {{"type", "string"},
+            {"description", "the internal project that holds the model (never listed)"}}},
+          {"features",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "the columns it reads, in its own order"}}},
+          {"standalone", {{"type", "boolean"}}}}}};
+    return schema;
+}
+
+ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context) {
+    const nlohmann::json body = nlohmann::json::parse(input.at("weights").get<std::string>(),
+                                                      nullptr, /*allow_exceptions=*/false);
+    std::string reason;
+    const std::optional<zetta::ml::GbdtModel> weights =
+        body.is_discarded() ? std::nullopt : zetta::ml::GbdtModel::from_json(body, &reason);
+    if (!weights) {
+        return ApiResult::failure(
+            "not_supported",
+            "/weights: the engine reads gradient-boosted tree models in its own JSON "
+            "weights format, and this file is not one" +
+                (body.is_discarded() ? std::string(" (it is not JSON)") : ": " + reason));
+    }
+    std::shared_ptr<zetta::pipeline::Project> project;
+    std::string name = input.value("name", std::string{});
+    if (input.contains("version_of")) {
+        std::string error;
+        const auto earlier =
+            resolve_model(context, input.at("version_of").get<std::string>(), &error);
+        if (!earlier) return ApiResult::failure("not_found", "/version_of: " + error);
+        project = standalone_project_of(context, *earlier);
+        if (!project) {
+            return ApiResult::failure(
+                "invalid_input",
+                "/version_of: '" + earlier->name() +
+                    "' is not a standalone model; a project's model gets new versions "
+                    "from its pipeline");
+        }
+        if (!name.empty() && name != earlier->name()) {
+            return ApiResult::failure("invalid_input",
+                                      "/name: a version keeps its model's name '" +
+                                          earlier->name() + "'");
+        }
+        name = earlier->name();
+    } else {
+        if (name.empty()) {
+            return ApiResult::failure("invalid_input",
+                                      "/name: name the model (or give version_of)");
+        }
+        if (context.node.find_project(standalone_project_name(name))) {
+            return ApiResult::failure(
+                "invalid_input", "/name: a standalone model named '" + name +
+                                     "' exists; version_of adds a version of it");
+        }
+        project = context.node.create_project(standalone_project_name(name),
+                                              actor_of(context),
+                                              "Holds the standalone model '" + name + "'.",
+                                              /*internal=*/true);
+        if (!project) {
+            return ApiResult::failure("engine_error", "could not create the model's project");
+        }
+    }
+    const bool regression = weights->objective == "squared_error";
+    const std::string kind =
+        input.value("kind", std::string(regression ? "regressor" : "classifier"));
+    zetta::ml::ModelValue value;
+    value.name = name;
+    value.kind = kind;
+    value.project = project->id();
+    value.project_name = project->name();
+    nlohmann::json features = weights->feature_names;
+    value.feature_schema = {{"features", features},
+                            {"objective", weights->objective},
+                            {"trees", weights->tree_count()},
+                            {"brought", true}};
+    if (input.contains("source")) value.feature_schema["source"] = input.at("source");
+    value.metrics = input.value("metrics", nlohmann::json::object());
+    const auto model = context.node.create_model(std::move(value));
+    if (!model || !model->set_weights(weights->to_json().dump())) {
+        if (model) context.node.drop_model(model->id());
+        if (!input.contains("version_of")) context.node.drop_project(project->name());
+        return ApiResult::failure("engine_error", "could not keep the model");
+    }
+    return ApiResult::success({{"model_id", model->id()},
+                               {"name", model->name()},
+                               {"kind", model->kind()},
+                               {"project_id", project->id()},
+                               {"features", std::move(features)},
+                               {"standalone", true}});
+}
+
+const nlohmann::json& move_model_to_project_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "any version of the standalone model, or its name"}}},
+          {"project_name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the project's name (default: the model's name)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& move_model_to_project_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project_id", "project_name", "name", "versions"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project_id", {{"type", "string"}}},
+          {"project_name", {{"type", "string"}}},
+          {"name", {{"type", "string"}, {"description", "the model's name"}}},
+          {"versions",
+           {{"type", "integer"},
+            {"description", "the model's versions, now the project's"}}}}}};
+    return schema;
+}
+
+ApiResult handle_move_model_to_project(const nlohmann::json& input, ApiContext& context) {
+    std::string error;
+    const auto model = resolve_model(context, input.at("model_id").get<std::string>(), &error);
+    if (!model) return ApiResult::failure("not_found", error);
+    const auto project = standalone_project_of(context, *model);
+    if (!project) {
+        return ApiResult::failure("invalid_input",
+                                  "/model_id: '" + model->name() +
+                                      "' already belongs to a project");
+    }
+    const std::string name = input.value("project_name", model->name());
+    if (context.node.find_project(name) && context.node.find_project(name) != project) {
+        return ApiResult::failure("invalid_input", "/project_name: a project named '" + name +
+                                                       "' exists; choose another name");
+    }
+    if (!context.node.reveal_project(project->id(), name)) {
+        return ApiResult::failure("engine_error", "could not move the model into a project");
+    }
+    const auto versions = std::ranges::count_if(
+        context.node.models(), [&](const auto& each) { return each->project() == project->id(); });
+    return ApiResult::success({{"project_id", project->id()},
+                               {"project_name", project->name()},
+                               {"name", model->name()},
+                               {"versions", versions}});
+}
+
 // --- score ---------------------------------------------------------------------
 
 const nlohmann::json& score_schema() {
@@ -8196,9 +8826,7 @@ const nlohmann::json& agent_fields_schema() {
           {"goal", {{"type", "string"}}},
           {"skills",
            {{"type", "array"},
-            {"items",
-             {{"type", "string"},
-              {"enum", {"search", "generate-data", "train", "summarize", "call-api"}}}}}},
+            {"items", zetta::agent::agent_skill_schema()}}},
           {"trigger", {{"type", "string"}, {"description", "empty = conversation only"}}},
           {"status",
            {{"type", "string"},
@@ -8237,19 +8865,19 @@ const nlohmann::json& agent_definition_input_schema() {
         {"type", "object"},
         {"additionalProperties", false},
         {"description",
-         "runtime: python. {source: \"zetta\", instructions, entrypoint, files: [{path, "
-         "contents}]} (inline, at most 1 MiB) or {source: \"lake\", repository_id, revision, "
-         "entrypoint}; entrypoint is module:function"},
+         "runtime: python. `{source: \"zetta\", instructions, entrypoint, files: [{path, "
+         "contents}]}` (inline, at most 1 MiB) or `{source: \"lake\", repository_id, revision, "
+         "entrypoint}`; entrypoint is `module:function`"},
         {"properties",
-         {{"source", {{"type", "string"}, {"description", "zetta (inline) or lake"}}},
-          {"instructions", {{"type", "string"}, {"description", "source zetta: the agent's instructions"}}},
+         {{"source", {{"type", "string"}, {"description", "`zetta` (inline) or `lake`"}}},
+          {"instructions", {{"type", "string"}, {"description", "with `source: \"zetta\"`: the agent's instructions"}}},
           {"entrypoint", {{"type", "string"}, {"description", "module:function"}}},
-          {"repository_id", {{"type", "string"}, {"description", "source lake: the repository"}}},
+          {"repository_id", {{"type", "string"}, {"description", "with `source: \"lake\"`: the repository"}}},
           {"revision",
-           {{"type", "string"}, {"description", "source lake: a pinned revision of the repository"}}},
+           {{"type", "string"}, {"description", "with `source: \"lake\"`: a pinned revision of the repository"}}},
           {"files",
            {{"type", "array"},
-            {"description", "source zetta: the agent's files, one entry per file"},
+            {"description", "with `source: \"zetta\"`: the agent's files, one entry per file"},
             {"items",
              {{"type", "object"},
               // `path` and `contents` are not `required` here: the validator reports a
@@ -8356,9 +8984,7 @@ const nlohmann::json& create_agent_schema() {
           {"goal", {{"type", "string"}}},
           {"skills",
            {{"type", "array"},
-            {"items",
-             {{"type", "string"},
-              {"enum", {"search", "generate-data", "train", "summarize", "call-api"}}}}}},
+            {"items", zetta::agent::agent_skill_schema()}}},
           {"trigger", {{"type", "string"}, {"description", "empty = conversation only"}}},
           {"status",
            {{"type", "string"},
@@ -8414,9 +9040,7 @@ const nlohmann::json& update_agent_schema() {
           {"goal", {{"type", "string"}}},
           {"skills",
            {{"type", "array"},
-            {"items",
-             {{"type", "string"},
-              {"enum", {"search", "generate-data", "train", "summarize", "call-api"}}}}}},
+            {"items", zetta::agent::agent_skill_schema()}}},
           {"trigger", {{"type", "string"}, {"description", "empty = conversation only"}}},
           {"status",
            {{"type", "string"},
@@ -10609,6 +11233,59 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_delete_model});
+    // lake#654: a model made on its own, not only as a project pipeline's step.
+    registry.add(Capability{
+        "train_model",
+        "Train a standalone model",
+        "Train a model on its own from a dataset, a target column (none for a methodology "
+        "that learns without one) and a methodology, with an optional held-out share. "
+        "Starts a run and answers its run_id; the model appears in list_models, standalone, "
+        "when it finishes. No project is shown for it.",
+        train_model_schema(),
+        train_model_output_schema(),
+        CapabilityKind::Job,
+        Operation{CapabilityDomain::Orchestration, "train_model"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_train_model});
+    registry.add(Capability{
+        "retrain_model",
+        "Retrain a model",
+        "Train a new version of a model the engine trained, on what it trained on before "
+        "or on a new dataset, target or held-out share (kept for the next retrain of a "
+        "standalone model). Starts a run and answers its run_id.",
+        retrain_model_schema(),
+        retrain_model_output_schema(),
+        CapabilityKind::Job,
+        Operation{CapabilityDomain::Orchestration, "retrain_model"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_retrain_model});
+    registry.add(Capability{
+        "register_model",
+        "Register a brought model",
+        "Keep a model trained elsewhere, from its file, as a standalone model that score, "
+        "explain, expose_model and predict use like a trained one; or, with version_of, "
+        "as a new version of one. Refuses a format the engine cannot read.",
+        register_model_schema(),
+        register_model_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "register_model"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_register_model});
+    registry.add(Capability{
+        "move_model_to_project",
+        "Move a standalone model into a project",
+        "Turn a standalone model into a project people see, with its pipeline and every "
+        "version, so a pipeline can grow around it. Replicates.",
+        move_model_to_project_schema(),
+        move_model_to_project_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "move_model_to_project"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_move_model_to_project});
     registry.add(Capability{
         "delete_run",
         "Delete run",
@@ -11270,6 +11947,7 @@ void register_core_capabilities(Registry& registry) {
     register_run_metrics_capabilities(registry);
     register_record_capabilities(registry);
     register_object_capabilities(registry);
+    register_storage_capabilities(registry);
     register_study_capabilities(registry);
     register_solution_capabilities(registry);
 

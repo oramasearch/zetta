@@ -17,10 +17,22 @@ bool one_of(const std::array<std::string_view, Size>& values, std::string_view v
 constexpr std::array<std::string_view, 2> kKinds{"custom", "orama"};
 constexpr std::array<std::string_view, 3> kRuntimes{"native", "python", "service"};
 constexpr std::array<std::string_view, 3> kWorkAreas{"workspace", "project", "dataset"};
-constexpr std::array<std::string_view, 5> kSkills{"search", "generate-data", "train", "summarize",
-                                                  "call-api"};
 constexpr std::array<std::string_view, 5> kStatuses{"idle", "running", "waiting", "completed",
                                                     "failed"};
+
+// `mcp:<prefix>` grants the allowed tools of one of the workspace's MCP connections (lake#652): the
+// prefix Lake gives a connection, a letter then letters, digits and underscores, at most 24. Lake
+// checks the skill on every call of a connected tool; the engine only keeps it.
+bool mcp_connection_skill(std::string_view skill) {
+    constexpr std::string_view prefix = "mcp:";
+    if (!skill.starts_with(prefix)) return false;
+    const std::string_view name = skill.substr(prefix.size());
+    if (name.empty() || name.size() > 24 || name.front() < 'a' || name.front() > 'z') return false;
+    for (const char c : name) {
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    }
+    return true;
+}
 
 std::string definition_error(const AgentDefinition& definition) {
     if (definition.source == "zetta") {
@@ -76,9 +88,14 @@ std::string AgentRecord::validation_error() const {
         return "agent.work_area.kind must be 'workspace', 'project' or 'dataset'";
     }
     for (const std::string& skill : skills) {
-        if (!one_of(kSkills, skill)) {
-            return "agent.skills: '" + skill +
-                   "' is not a skill (search, generate-data, train, summarize, call-api)";
+        if (std::ranges::find(agent_skills(), skill) == agent_skills().end() &&
+            !mcp_connection_skill(skill)) {
+            std::string known;
+            for (const std::string& name : agent_skills()) {
+                known += (known.empty() ? "" : ", ") + name;
+            }
+            return "agent.skills: '" + skill + "' is not a skill (" + known +
+                   ", or mcp:<connection prefix>)";
         }
     }
     if (!one_of(kStatuses, status)) {
@@ -90,6 +107,23 @@ std::string AgentRecord::validation_error() const {
         }
     }
     return std::string();
+}
+
+nlohmann::json agent_skill_schema() {
+    return {{"anyOf",
+             nlohmann::json::array({{{"type", "string"}, {"enum", agent_skills()}},
+                                    {{"type", "string"},
+                                     {"pattern", kMcpConnectionSkillPattern},
+                                     {"description",
+                                      "the allowed tools of the workspace's MCP connection "
+                                      "with this prefix in Lake"}}})}};
+}
+
+const std::vector<std::string>& agent_skills() {
+    static const std::vector<std::string> skills{
+        "search",      "generate-data", "train",    "summarize", "call-api",  "drives",
+        "transcripts", "repositories",  "datasets", "streams",   "pipelines", "usage"};
+    return skills;
 }
 
 const nlohmann::json& agent_schema() {
