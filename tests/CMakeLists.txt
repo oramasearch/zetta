@@ -39,6 +39,7 @@ add_executable(zetta-tests
   api/test_action_journeys.cpp
   api/test_study_driver.cpp
   api/test_getting_started_churn.cpp
+  api/test_standalone_models.cpp
   api/test_serving.cpp
   api/test_scoped_grants_api.cpp
   api/test_record_capabilities.cpp

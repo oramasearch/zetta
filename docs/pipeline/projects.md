@@ -117,6 +117,14 @@ a **projection** of it ([replication.md](../cluster/replication.md)).
   a project **survives restart** in both standalone and replicated nodes. The
   folder name *is* the id, so rename only rewrites `project.json`.
 
+An **internal** project (lake#654) carries `internal: true` in both its replicated
+value and `project.json`; every other project's value is unchanged. It holds one
+standalone model, is never listed (`Node::project_names()` leaves it out, so
+`list_projects`, the GUI and the web UI never show it), and is found by its id.
+`Node::reveal_project(id, name)` (the `move_model_to_project` capability) turns it
+into a project people see. See [../ml/standalone-models.md](../ml/standalone-models.md).
+`rename_project` keeps a project's description (it used to clear it).
+
 `project.json` is **validated at the boundary** on load: a malformed or
 incomplete file (not an object, or missing a string `name`) is skipped rather
 than allowed to corrupt the in-memory tree — matching how `database.json` /

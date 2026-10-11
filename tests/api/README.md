@@ -56,6 +56,15 @@ the four numeric measures are used, `plan` is excluded with how to include it,
 only `account_id` is a candidate key, and a dataset-level Study trial records the
 same feature list. A text-only table fails with `create_eligible_features`
 naming each excluded column and how to include it (#1216).
+The standalone-model journeys (`test_standalone_models.cpp`, lake#654) train a
+model with `train_model` from a dataset, a target and M-1 and check it is listed
+`standalone` with a held-out score while `list_projects` stays empty; refuse a
+missing target, dataset or methodology and a taken name, leaving nothing; retrain
+it to a second version that keeps a new held-out share; bring one with
+`register_model` from the trained weights (scored, exposed, a new version; other
+formats `not_supported`); move one into a project; and delete the last version,
+which removes its internal project. The internal flag replicates and survives a
+restart.
 The S-1 live-shape journey runs CL-1 and CL-4 over 12,000 single-table rows:
 2,000 text-keyed customers with six ISO-timestamped monthly observations each.
 One fixture concentrates positive outcomes near the end and another spreads

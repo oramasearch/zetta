@@ -1379,6 +1379,10 @@ void Node::load_projects() {
                 update_pipeline_display_name(project_id, pipeline_id,
                                              old_name, new_name);
             });
+        if (const auto internal = meta.find("internal");
+            internal != meta.end() && internal->is_boolean() && internal->get<bool>()) {
+            project->set_internal(true);
+        }
         project->load();  // bring in this project's inputs + graphs from disk
         projects_.push_back(std::move(project));
     }
@@ -1648,20 +1652,37 @@ std::vector<std::string> Node::database_names() const {
 
 std::shared_ptr<zetta::pipeline::Project> Node::create_project(std::string name,
                                               std::string owner,
-                                              std::string description) {
+                                              std::string description,
+                                              bool internal) {
     if (name.empty() || find_project(name)) return nullptr;
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
     if (replication_) {
-        replication_->set(catalog::project_key(id),
-                          nlohmann::json{{"name", name},
-                                         {"created", now},
-                                         {"updated", now},
-                                         {"owner", owner},
-                                         {"description", description}});
+        nlohmann::json value{{"name", name},
+                             {"created", now},
+                             {"updated", now},
+                             {"owner", owner},
+                             {"description", description}};
+        if (internal) value["internal"] = true;
+        replication_->set(catalog::project_key(id), std::move(value));
     }
     return materialize_project(id, std::move(name), now, now, std::move(owner),
-                               std::move(description));
+                               std::move(description), internal);
+}
+
+bool Node::reveal_project(const std::string& id, const std::string& name) {
+    auto project = find_project_by_id(id);
+    if (!project || !project->internal() || name.empty()) return false;
+    const std::string from = project->name();
+    if (name != from && find_project(name)) return false;
+    project->set_metadata(name, project->created(), zetta::util::now_iso8601(),
+                          project->owner(), project->description());
+    project->set_internal(false);
+    if (replication_) {
+        replication_->set(catalog::project_key(project->id()), project->metadata());
+    }
+    if (name != from) update_project_display_name(project->id(), from, name);
+    return true;
 }
 
 std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string id,
@@ -1669,7 +1690,8 @@ std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string 
                                                    std::string created,
                                                    std::string updated,
                                                    std::string owner,
-                                                   std::string description) {
+                                                   std::string description,
+                                                   bool internal) {
     if (auto existing = find_project_by_id(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
@@ -1689,7 +1711,8 @@ std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string 
                                                      project_id, pipeline_id,
                                                      old_name, new_name);
                                              });
-    project->persist_meta();
+    if (internal) project->set_internal(true);  // persists project.json
+    else project->persist_meta();
     projects_.push_back(project);
     return project;
 }
@@ -1737,7 +1760,7 @@ bool Node::rename_project(const std::string& from, const std::string& to) {
     auto project = find_project(from);
     if (!project) return false;
     project->set_metadata(to, project->created(), zetta::util::now_iso8601(),
-                          project->owner());
+                          project->owner(), project->description());
     if (replication_) {
         replication_->set(catalog::project_key(project->id()),
                           project->metadata());
@@ -1749,7 +1772,9 @@ bool Node::rename_project(const std::string& from, const std::string& to) {
 std::vector<std::string> Node::project_names() const {
     std::vector<std::string> names;
     names.reserve(projects_.size());
-    for (const auto& project : projects_) names.push_back(project->name());
+    for (const auto& project : projects_) {
+        if (!project->internal()) names.push_back(project->name());
+    }
     return names;
 }
 
@@ -5548,6 +5573,7 @@ void Node::reconcile_projects(
         std::string updated;
         std::string owner;
         std::string description;
+        bool internal = false;
     };
     std::map<std::string, ProjectEntry> projects;  // id -> entry
     for (const auto& [key, value] : snapshot.items()) {
@@ -5560,7 +5586,10 @@ void Node::reconcile_projects(
                                       value.value("created", std::string{}),
                                       value.value("updated", std::string{}),
                                       value.value("owner", std::string{}),
-                                      value.value("description", std::string{})});
+                                      value.value("description", std::string{}),
+                                      value.contains("internal") &&
+                                          value["internal"].is_boolean() &&
+                                          value["internal"].get<bool>()});
     }
     std::vector<std::string> local_project_ids;
     for (const auto& project : projects_) {
@@ -5577,13 +5606,18 @@ void Node::reconcile_projects(
         auto project = find_project_by_id(id);
         if (!project) {
             materialize_project(id, entry.name, entry.created, entry.updated,
-                                entry.owner, entry.description);
-        } else if (project->name() != entry.name ||
-                   project->updated() != entry.updated ||
-                   project->owner() != entry.owner ||
-                   project->description() != entry.description) {
-            project->set_metadata(entry.name, entry.created, entry.updated,
-                                  entry.owner, entry.description);  // a peer changed it (no re-capture)
+                                entry.owner, entry.description, entry.internal);
+        } else {
+            if (project->name() != entry.name ||
+                project->updated() != entry.updated ||
+                project->owner() != entry.owner ||
+                project->description() != entry.description) {
+                project->set_metadata(entry.name, entry.created, entry.updated,
+                                      entry.owner, entry.description);  // a peer changed it (no re-capture)
+            }
+            if (project->internal() != entry.internal) {
+                project->set_internal(entry.internal);  // a peer revealed it (lake#654)
+            }
         }
     }
 }

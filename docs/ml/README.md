@@ -31,6 +31,7 @@ for model work. M-21 adds event-time online logistic regression over pub/sub top
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [integration.md](integration.md) — integration branch merge order, primary solution ownership, diff audit and native proof (#1082).
+- [standalone-models.md](standalone-models.md) — a model made on its own, not as a project pipeline's step: `train_model`, `retrain_model`, `register_model` (a brought model file), `move_model_to_project`, and the internal project that holds it and is never listed (lake#654).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
 - [Data-first featurization](../data/featurization.md) — all 21 methodologies enforce run preconditions and report native feature/exclusion provenance, including grouped posteriors, stacking, labelling rules, private inputs, and event windows; numeric measures are never identifiers by value alone (#1062, #1216).
 - [entity_resolution.md](entity_resolution.md) — M-2 keyed single-source projection or distributed fuzzy owned-pair blocking and scoring, allreduced EM, merged conflict-safe components, result tables, and metrics (#1041, #1072, #1204).
