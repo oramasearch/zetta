@@ -8610,6 +8610,10 @@
                             "model": {
                               "type": "integer"
                             },
+                            "standalone_project": {
+                              "description": "1 when this was a standalone model's last version: the internal project that held it goes too (lake#654)",
+                              "type": "integer"
+                            },
                             "was_exposed": {
                               "description": "the model was served; its endpoint stops answering with the delete",
                               "type": "boolean"
@@ -20910,6 +20914,10 @@
                               },
                               "run_id": {
                                 "type": "string"
+                              },
+                              "standalone": {
+                                "description": "made on its own (train_model, register_model), not by a project's pipeline; its project is internal and never listed (lake#654)",
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -25128,6 +25136,126 @@
         "summary": "Predict (served model endpoint)",
         "tags": [
           "serving"
+        ]
+      }
+    },
+    "/v1/move_model_to_project": {
+      "post": {
+        "description": "Turn a standalone model into a project people see, with its pipeline and every version, so a pipeline can grow around it. Replicates. Requires orchestration:move_model_to_project.",
+        "operationId": "move_model_to_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model_id": {
+                    "description": "any version of the standalone model, or its name",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "project_name": {
+                    "description": "the project's name (default: the model's name)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "description": "the model's name",
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "project_name": {
+                          "type": "string"
+                        },
+                        "versions": {
+                          "description": "the model's versions, now the project's",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "project_id",
+                        "project_name",
+                        "name",
+                        "versions"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Move a standalone model into a project",
+        "tags": [
+          "action"
         ]
       }
     },
@@ -29921,6 +30049,159 @@
         ]
       }
     },
+    "/v1/register_model": {
+      "post": {
+        "description": "Keep a model trained elsewhere, from its file, as a standalone model that score, explain, expose_model and predict use like a trained one; or, with version_of, as a new version of one. Refuses a format the engine cannot read. Requires orchestration:register_model.",
+        "operationId": "register_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "`classifier` or `regressor` (default: from the file's objective)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "metrics": {
+                    "additionalProperties": {
+                      "type": "number"
+                    },
+                    "description": "figures measured where it was trained, by name (held_out_auc, held_out_rmse, …), so it compares with trained models. Kept as given",
+                    "type": "object"
+                  },
+                  "name": {
+                    "description": "the model's name (required unless `version_of` is given)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "source": {
+                    "description": "where the file came from (a drive path, a model repository and revision); kept with the model",
+                    "maxLength": 2048,
+                    "type": "string"
+                  },
+                  "version_of": {
+                    "description": "a brought standalone model's id: add this file as its new version",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "weights": {
+                    "description": "the model file's contents: a gradient-boosted tree model in the engine's own JSON weights format (objective, base_score, feature_names, trees), the format every model trained here is kept in. The engine scores, serves and explains only what it can read; any other format is refused",
+                    "minLength": 2,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "weights"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "features": {
+                          "description": "the columns it reads, in its own order",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "model_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "description": "the internal project that holds the model (never listed)",
+                          "type": "string"
+                        },
+                        "standalone": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "model_id",
+                        "name",
+                        "kind",
+                        "project_id",
+                        "features",
+                        "standalone"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Register a brought model",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/release_object_lease": {
       "post": {
         "description": "Give the lease up so a waiting acquirer gets it at once; the fence stays until the next holder raises it. Mutates replicated state. Requires data:objects_write.",
@@ -30209,6 +30490,147 @@
         "summary": "Renew a bucket's owner lease",
         "tags": [
           "action"
+        ]
+      }
+    },
+    "/v1/retrain_model": {
+      "post": {
+        "description": "Train a new version of a model the engine trained, on what it trained on before or on a new dataset, target or held-out share (kept for the next retrain of a standalone model). Starts a run and answers its run_id. Requires orchestration:retrain_model. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "retrain_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dataset_path": {
+                    "description": "the dataset to learn from, as `database.table` (list_datasets). Given, it replaces what the model trained on and the model keeps it for its next retrain",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "entity_column": {
+                    "description": "the column that identifies a row (default: the dataset's own). Given, it replaces what the model trained on and the model keeps it for its next retrain",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "holdout_fraction": {
+                    "description": "hold this fraction of rows out of training and score the model on them (e.g. 0.2). Without it the only figures are in-sample, and they flatter. Given, it replaces what the model trained on and the model keeps it for its next retrain",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model_id": {
+                    "description": "any version of the model (its uuid), or its name when one model has it",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "target": {
+                    "description": "the column to predict. Omit it for a methodology that learns without one (segmentation, anomaly detection); a methodology whose `label` input is required refuses without it. Given, it replaces what the model trained on and the model keeps it for its next retrain",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "pipeline": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "description": "the run that trains the new version (get_run)",
+                          "type": "string"
+                        },
+                        "standalone": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "run_id",
+                        "project_id",
+                        "pipeline",
+                        "standalone"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Retrain a model",
+        "tags": [
+          "job"
         ]
       }
     },
@@ -33173,6 +33595,160 @@
           }
         },
         "summary": "Run a test-suite case",
+        "tags": [
+          "job"
+        ]
+      }
+    },
+    "/v1/train_model": {
+      "post": {
+        "description": "Train a model on its own from a dataset, a target column (none for a methodology that learns without one) and a methodology, with an optional held-out share. Starts a run and answers its run_id; the model appears in list_models, standalone, when it finishes. No project is shown for it. Requires orchestration:train_model. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "train_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dataset_path": {
+                    "description": "the dataset to learn from, as `database.table` (list_datasets)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "entity_column": {
+                    "description": "the column that identifies a row (default: the dataset's own)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "holdout_fraction": {
+                    "description": "hold this fraction of rows out of training and score the model on them (e.g. 0.2). Without it the only figures are in-sample, and they flatter",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "methodology": {
+                    "description": "how it learns: a methodology id from list_methodologies (e.g. `M-1`), or one of its model kinds",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "the model's name; its versions keep it",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "target": {
+                    "description": "the column to predict. Omit it for a methodology that learns without one (segmentation, anomaly detection); a methodology whose `label` input is required refuses without it",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "methodology",
+                  "dataset_path"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "methodology": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "the model's name",
+                          "type": "string"
+                        },
+                        "pipeline": {
+                          "description": "its pipeline's name",
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "description": "the internal project that holds the model (never listed)",
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "description": "the training run; the model's new version appears in list_models when it finishes (get_run)",
+                          "type": "string"
+                        },
+                        "standalone": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "run_id",
+                        "project_id",
+                        "pipeline",
+                        "standalone"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Train a standalone model",
         "tags": [
           "job"
         ]

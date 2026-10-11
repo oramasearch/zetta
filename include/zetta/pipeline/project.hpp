@@ -61,6 +61,14 @@ public:
     // Set the description and persist (also replicated via metadata()).
     void set_description(std::string description);
     const std::filesystem::path& dir() const { return dir_; }
+    // An internal project holds one standalone model (lake#654,
+    // docs/ml/standalone-models.md): the engine trains and versions the model
+    // through it, and never lists it to people (`Node::project_names()` leaves it
+    // out). It is still found by its id. false for every project people create.
+    bool internal() const { return internal_; }
+    // Set the flag and persist project.json. The caller captures metadata()
+    // into the CRDT (Node::create_project, Node::move_model_project).
+    void set_internal(bool internal);
 
     // Replace the mutable metadata to match a (replicated) value, then rewrite
     // project.json. The folder/id is unchanged. `created` is logically
@@ -72,7 +80,9 @@ public:
     // Write this project's metadata (id + fields) to dir/project.json.
     void persist_meta() const;
 
-    // The replicated/on-disk value shape: { name, created, updated, owner }.
+    // The replicated/on-disk value shape: { name, created, updated, owner,
+    // description }, plus `internal: true` only on an internal project, so every
+    // other project's value is unchanged.
     // (The id is the CRDT key / folder name, so it isn't repeated here.)
     nlohmann::json metadata() const;
 
@@ -206,6 +216,7 @@ private:
     std::string updated_;
     std::string owner_;
     std::string description_;
+    bool internal_ = false;
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<ProjectInput>> inputs_;
     std::vector<std::shared_ptr<ProjectGraph>> graphs_;  // insertion order

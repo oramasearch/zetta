@@ -214,7 +214,11 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `purge_audit` | action | orchestration:purge_audit | admin-only segment rewrite before a UTC cutoff; advances replicated low-water marks and records `audit_purged` (#1169) |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
 | `delete_dataset` | action | orchestration:delete_dataset | delete a dataset with its partitions, their bodies and every index over it; `dry_run` lists what goes ([deletes.md](deletes.md)) |
-| `delete_model` | action | orchestration:delete_model | delete a model (unexposed first); its run is kept; `dry_run` lists what goes ([deletes.md](deletes.md)) |
+| `delete_model` | action | orchestration:delete_model | delete a model (unexposed first); its run is kept; a standalone model's last version takes its internal project with it; `dry_run` lists what goes ([deletes.md](deletes.md)) |
+| `train_model` | job | orchestration:train_model | train a standalone model from a dataset, a target and a methodology; its internal project is never listed ([standalone-models.md](../ml/standalone-models.md)) |
+| `retrain_model` | job | orchestration:retrain_model | train a new version of a model, on what it trained on or new settings ([standalone-models.md](../ml/standalone-models.md)) |
+| `register_model` | action | orchestration:register_model | keep a brought model file (the engine's GBDT weights format) as a standalone model, or a new version of one ([standalone-models.md](../ml/standalone-models.md)) |
+| `move_model_to_project` | action | orchestration:move_model_to_project | reveal a standalone model's project under a name, with every version ([standalone-models.md](../ml/standalone-models.md)) |
 | `delete_run` | action | orchestration:delete_run | delete a finished run; refused while pending or running; its models are kept and listed ([deletes.md](deletes.md)) |
 | `delete_index` | action | orchestration:delete_index | delete an index (unexposed first); the dataset is kept ([deletes.md](deletes.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
