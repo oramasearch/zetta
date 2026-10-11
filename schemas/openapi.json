@@ -33199,6 +33199,186 @@
         ]
       }
     },
+    "/v1/storage_usage": {
+      "get": {
+        "description": "Report the bytes this node holds on its disk, by kind: datasets, files, models, indexes, runs, buckets (and each bucket), streams, records, catalogue and system. Walks the data directory; no side effects. Requires api:query.",
+        "operationId": "storage_usage",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "buckets": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bucket": {
+                                "type": "string"
+                              },
+                              "bytes": {
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "bucket",
+                              "bytes"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "kinds": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "buckets": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "catalogue": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "datasets": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "files": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "indexes": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "models": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "records": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "runs": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "streams": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "system": {
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "datasets",
+                            "files",
+                            "models",
+                            "indexes",
+                            "runs",
+                            "buckets",
+                            "streams",
+                            "records",
+                            "catalogue",
+                            "system"
+                          ],
+                          "type": "object"
+                        },
+                        "node_id": {
+                          "type": "string"
+                        },
+                        "scope": {
+                          "description": "the disk of the node that answered",
+                          "enum": [
+                            "node"
+                          ],
+                          "type": "string"
+                        },
+                        "total_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "node_id",
+                        "scope",
+                        "total_bytes",
+                        "kinds",
+                        "buckets"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Storage usage",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/submit_feedback": {
       "post": {
         "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Requires api:query.",
