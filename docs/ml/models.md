@@ -197,6 +197,11 @@ state ([../api/serving.md](../api/serving.md), #648): whether the model's HTTP
 predict route is published, and at which path (`endpoint` is null while
 unexposed).
 
+A **standalone model** (lake#654) is made on its own rather than by a project's pipeline:
+`train_model`, `retrain_model`, `register_model` and `move_model_to_project`, through an internal
+project that is never listed. `list_models` marks each version `standalone`. See
+[standalone-models.md](standalone-models.md).
+
 The `list_models` capability returns those display names and producing Run id
 alongside `name`, `kind`, `metrics`, `feature_schema`, `exposed`, `created`, and
 weight availability. REST and MCP share this output schema, so a Models page
