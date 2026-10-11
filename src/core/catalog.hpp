@@ -155,6 +155,9 @@
 //                          node-local object log, never here, see data/object_store.hpp)
 //   object_lease:<name> -> { holder, fence, expires, version }  (the bucket's owner
 //                          lease; its fence guards every mutation — #1005)
+//   methodology:<W-id> -> a workspace methodology (#1261): its interface, where its
+//                          Python lives, its image and validation; the code runs in
+//                          Lake's runner, never here (ml/workspace_methodology.hpp)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -180,6 +183,7 @@ inline constexpr std::string_view kExperimentPrefix = "experiment:";
 inline constexpr std::string_view kExperimentAssignmentPrefix =
     "experiment_assignment:";
 inline constexpr std::string_view kAgentPrefix = "agent:";
+inline constexpr std::string_view kWorkspaceMethodologyPrefix = "methodology:";
 inline constexpr std::string_view kJobPrefix = "job:";
 inline constexpr std::string_view kIndexPrefix = "index:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
@@ -258,6 +262,9 @@ inline std::string experiment_assignment_key(
 }
 inline std::string agent_key(const std::string& agent_id) {
     return std::string(kAgentPrefix) + agent_id;
+}
+inline std::string workspace_methodology_key(const std::string& methodology_id) {
+    return std::string(kWorkspaceMethodologyPrefix) + methodology_id;
 }
 inline std::string job_key(const std::string& job_id) {
     return std::string(kJobPrefix) + job_id;

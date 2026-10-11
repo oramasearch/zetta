@@ -53,6 +53,10 @@ struct IntentCompileOptions {
     std::string solution;
     std::string methodology;
     nlohmann::json hints = nlohmann::json::object();
+    // A workspace methodology's stored entry (zetta#1261), resolved by the
+    // caller from the replicated registry when `methodology` is a `W-` id. Its
+    // shape is built from the entry; the code runs in Lake's runner.
+    const nlohmann::json* workspace_methodology = nullptr;
 };
 
 std::optional<CompiledIntent> compile_intent(std::string_view intent,

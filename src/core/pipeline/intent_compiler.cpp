@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/workspace_methodology.hpp"
 
 namespace zetta::pipeline {
 namespace {
@@ -180,6 +181,33 @@ compile_intent(std::string_view intent, const IntentCompileOptions& options,
     if (intent.find_first_not_of(" \t\r\n\f\v") == std::string_view::npos) {
         if (error != nullptr)
             *error = "intent is empty";
+        return std::nullopt;
+    }
+
+    if (options.workspace_methodology != nullptr) {
+        const nlohmann::json& entry = *options.workspace_methodology;
+        ml::ShapeRequest request;
+        request.project = options.project;
+        request.intent = std::string(intent);
+        request.solution = options.solution;
+        request.hints = options.hints;
+        const std::string id = entry.at("id").get<std::string>();
+        const std::string entry_name = entry.at("name").get<std::string>();
+        std::string name = intent_pipeline_name(intent);
+        if (name.empty()) {
+            name = options.project.empty() ? entry_name + " pipeline"
+                                           : options.project + " pipeline";
+        }
+        return CompiledIntent{ml::build_workspace_methodology_shape(entry, request),
+                              IntentShape::Generic, id, std::move(name),
+                              "the " + id + " " + entry_name +
+                                  " workspace methodology template"};
+    }
+    if (ml::is_workspace_methodology_id(options.methodology)) {
+        if (error != nullptr) {
+            *error = "unknown methodology '" + options.methodology +
+                     "': no workspace methodology has that id";
+        }
         return std::nullopt;
     }
 
