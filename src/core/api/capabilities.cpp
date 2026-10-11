@@ -7646,19 +7646,19 @@ const nlohmann::json& agent_definition_input_schema() {
         {"type", "object"},
         {"additionalProperties", false},
         {"description",
-         "runtime: python. {source: \"zetta\", instructions, entrypoint, files: [{path, "
-         "contents}]} (inline, at most 1 MiB) or {source: \"lake\", repository_id, revision, "
-         "entrypoint}; entrypoint is module:function"},
+         "runtime: python. `{source: \"zetta\", instructions, entrypoint, files: [{path, "
+         "contents}]}` (inline, at most 1 MiB) or `{source: \"lake\", repository_id, revision, "
+         "entrypoint}`; entrypoint is `module:function`"},
         {"properties",
-         {{"source", {{"type", "string"}, {"description", "zetta (inline) or lake"}}},
-          {"instructions", {{"type", "string"}, {"description", "source zetta: the agent's instructions"}}},
+         {{"source", {{"type", "string"}, {"description", "`zetta` (inline) or `lake`"}}},
+          {"instructions", {{"type", "string"}, {"description", "with `source: \"zetta\"`: the agent's instructions"}}},
           {"entrypoint", {{"type", "string"}, {"description", "module:function"}}},
-          {"repository_id", {{"type", "string"}, {"description", "source lake: the repository"}}},
+          {"repository_id", {{"type", "string"}, {"description", "with `source: \"lake\"`: the repository"}}},
           {"revision",
-           {{"type", "string"}, {"description", "source lake: a pinned revision of the repository"}}},
+           {{"type", "string"}, {"description", "with `source: \"lake\"`: a pinned revision of the repository"}}},
           {"files",
            {{"type", "array"},
-            {"description", "source zetta: the agent's files, one entry per file"},
+            {"description", "with `source: \"zetta\"`: the agent's files, one entry per file"},
             {"items",
              {{"type", "object"},
               // `path` and `contents` are not `required` here: the validator reports a

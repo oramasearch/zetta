@@ -3352,14 +3352,14 @@
                   },
                   "definition": {
                     "additionalProperties": false,
-                    "description": "runtime: python. {source: \"zetta\", instructions, entrypoint, files: [{path, contents}]} (inline, at most 1 MiB) or {source: \"lake\", repository_id, revision, entrypoint}; entrypoint is module:function",
+                    "description": "runtime: python. `{source: \"zetta\", instructions, entrypoint, files: [{path, contents}]}` (inline, at most 1 MiB) or `{source: \"lake\", repository_id, revision, entrypoint}`; entrypoint is `module:function`",
                     "properties": {
                       "entrypoint": {
                         "description": "module:function",
                         "type": "string"
                       },
                       "files": {
-                        "description": "source zetta: the agent's files, one entry per file",
+                        "description": "with `source: \"zetta\"`: the agent's files, one entry per file",
                         "items": {
                           "additionalProperties": false,
                           "properties": {
@@ -3378,19 +3378,19 @@
                         "type": "array"
                       },
                       "instructions": {
-                        "description": "source zetta: the agent's instructions",
+                        "description": "with `source: \"zetta\"`: the agent's instructions",
                         "type": "string"
                       },
                       "repository_id": {
-                        "description": "source lake: the repository",
+                        "description": "with `source: \"lake\"`: the repository",
                         "type": "string"
                       },
                       "revision": {
-                        "description": "source lake: a pinned revision of the repository",
+                        "description": "with `source: \"lake\"`: a pinned revision of the repository",
                         "type": "string"
                       },
                       "source": {
-                        "description": "zetta (inline) or lake",
+                        "description": "`zetta` (inline) or `lake`",
                         "type": "string"
                       }
                     },
@@ -6294,7 +6294,7 @@
                     "type": "boolean"
                   },
                   "from_defaults": {
-                    "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default search space",
+                    "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default parameter ranges",
                     "type": "boolean"
                   },
                   "intent": {
@@ -33420,14 +33420,14 @@
                   },
                   "definition": {
                     "additionalProperties": false,
-                    "description": "runtime: python. {source: \"zetta\", instructions, entrypoint, files: [{path, contents}]} (inline, at most 1 MiB) or {source: \"lake\", repository_id, revision, entrypoint}; entrypoint is module:function",
+                    "description": "runtime: python. `{source: \"zetta\", instructions, entrypoint, files: [{path, contents}]}` (inline, at most 1 MiB) or `{source: \"lake\", repository_id, revision, entrypoint}`; entrypoint is `module:function`",
                     "properties": {
                       "entrypoint": {
                         "description": "module:function",
                         "type": "string"
                       },
                       "files": {
-                        "description": "source zetta: the agent's files, one entry per file",
+                        "description": "with `source: \"zetta\"`: the agent's files, one entry per file",
                         "items": {
                           "additionalProperties": false,
                           "properties": {
@@ -33446,19 +33446,19 @@
                         "type": "array"
                       },
                       "instructions": {
-                        "description": "source zetta: the agent's instructions",
+                        "description": "with `source: \"zetta\"`: the agent's instructions",
                         "type": "string"
                       },
                       "repository_id": {
-                        "description": "source lake: the repository",
+                        "description": "with `source: \"lake\"`: the repository",
                         "type": "string"
                       },
                       "revision": {
-                        "description": "source lake: a pinned revision of the repository",
+                        "description": "with `source: \"lake\"`: a pinned revision of the repository",
                         "type": "string"
                       },
                       "source": {
-                        "description": "zetta (inline) or lake",
+                        "description": "`zetta` (inline) or `lake`",
                         "type": "string"
                       }
                     },
@@ -35695,12 +35695,12 @@
             }
           },
           {
-            "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default search space",
+            "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default parameter ranges",
             "in": "query",
             "name": "from_defaults",
             "required": false,
             "schema": {
-              "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default search space",
+              "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default parameter ranges",
               "type": "boolean"
             }
           },
