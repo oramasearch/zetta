@@ -3539,6 +3539,390 @@ ApiResult handle_delete_project(const nlohmann::json& input, ApiContext& context
     return ApiResult::success(std::move(output));
 }
 
+// --- delete_dataset / delete_model / delete_run / delete_index (lake#645) -----
+//
+// The entities a workspace accumulates could be created but never removed: a
+// dataset could only be dropped through SQL (which leaves its partitions and its
+// indexes behind), a model or a search index could only be unexposed, and a run
+// stayed forever. Each delete goes through the replicated drop path
+// (Node::drop_* / Database::drop_table), so every peer converges, and each takes
+// `dry_run: true`, which changes nothing and answers what would go.
+
+namespace {
+
+nlohmann::json delete_input_schema(std::string_view field,
+                                   std::string_view description) {
+    nlohmann::json schema = id_input_schema(field, description);
+    schema["properties"]["dry_run"] = {
+        {"type", "boolean"},
+        {"description",
+         "true: change nothing and answer what would be deleted (default false)"}};
+    return schema;
+}
+
+bool is_in_flight(zetta::pipeline::RunStatus status) {
+    return status == zetta::pipeline::RunStatus::Pending ||
+           status == zetta::pipeline::RunStatus::Running;
+}
+
+}  // namespace
+
+const nlohmann::json& delete_dataset_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json value = delete_input_schema(
+            "dataset",
+            "the dataset's name as list_datasets reports it, `database.table`, "
+            "or its table id");
+        value["properties"]["database"] = {
+            {"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the dataset's database — needed only when the same name exists in "
+             "several databases"}};
+        return value;
+    }();
+    return schema;
+}
+
+const nlohmann::json& delete_dataset_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"dataset", "name", "database", "table_id", "dry_run", "removed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"dataset", {{"type", "string"}, {"description", "the dataset's name"}}},
+          {"name", {{"type", "string"}}},
+          {"database", {{"type", "string"}}},
+          {"table_id", {{"type", "string"}}},
+          {"dry_run", {{"type", "boolean"}}},
+          {"removed",
+           {{"type", "object"},
+            {"required", {"rows", "size_bytes", "partitions", "indexes"}},
+            {"additionalProperties", false},
+            {"description", "what was (or, on a dry run, would be) deleted"},
+            {"properties",
+             {{"rows", {{"type", "integer"}}},
+              {"size_bytes", {{"type", "integer"}}},
+              {"partitions", {{"type", "integer"}}},
+              {"indexes",
+               {{"type", "array"},
+                {"description", "the ids of the indexes built over the dataset"},
+                {"items", {{"type", "string"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_delete_dataset(const nlohmann::json& input, ApiContext& context) {
+    const std::string target = input.at("dataset").get<std::string>();
+    const bool dry_run = input.value("dry_run", false);
+    std::string name = target;
+    std::string database = input.value("database", "");
+    std::vector<zetta::data::DatasetSummary> matches;
+    const std::vector<zetta::data::DatasetSummary> all = context.node.datasets();
+    // By table id first: it is unambiguous.
+    for (const zetta::data::DatasetSummary& dataset : all) {
+        if (dataset.table_id == target) matches.push_back(dataset);
+    }
+    if (matches.empty()) {
+        // `database.table`, unless a table's own name holds the dot (get_dataset's rule).
+        const bool exact = std::ranges::any_of(
+            all, [&](const zetta::data::DatasetSummary& each) { return each.name == target; });
+        if (const std::size_t dot = target.find('.'); dot != std::string::npos && !exact) {
+            const std::string named_database = target.substr(0, dot);
+            if (!database.empty() && database != named_database) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "dataset '" + target + "' names database '" + named_database +
+                        "', but database is '" + database + "'",
+                    "/database");
+            }
+            database = named_database;
+            name = target.substr(dot + 1);
+        }
+        for (const zetta::data::DatasetSummary& dataset : all) {
+            if (dataset.name != name) continue;
+            if (!database.empty() && dataset.database != database) continue;
+            matches.push_back(dataset);
+        }
+    }
+    if (matches.empty()) {
+        return ApiResult::failure(
+            "not_found", "no dataset named '" + target + "'" +
+                             (database.empty() ? "" : " in database '" + database + "'"));
+    }
+    if (matches.size() > 1) {
+        std::string databases;
+        for (const zetta::data::DatasetSummary& match : matches) {
+            if (!databases.empty()) databases += ", ";
+            databases += match.database;
+        }
+        return ApiResult::failure(
+            "engine_error", "dataset '" + target + "' exists in several databases (" +
+                                databases + ") — pass \"database\" to pick one");
+    }
+    const zetta::data::DatasetSummary dataset = matches.front();
+    if (dataset.database == zetta::connect::kConnectionDatabase) {
+        return ApiResult::failure(
+            "forbidden", "\"" + dataset.database +
+                             "\" is the reserved connection store; remove a connection "
+                             "with delete_connection");
+    }
+    const std::shared_ptr<zetta::data::Database> owner =
+        context.node.find_database(dataset.database);
+    if (!owner || !owner->find_table_by_id(dataset.table_id)) {
+        return ApiResult::failure("not_found", "no dataset named '" + target + "'");
+    }
+    // An index records the table by the name create_index was given: the bare
+    // name, or `database.table`.
+    const std::string qualified = dataset.database + "." + dataset.name;
+    std::vector<std::string> indexes;
+    for (const auto& index : context.node.indexes()) {
+        if (index->table() == dataset.name || index->table() == qualified) {
+            indexes.push_back(index->id());
+        }
+    }
+    std::vector<std::shared_ptr<zetta::data::DatasetPartition>> partitions;
+    for (const auto& partition : context.node.dataset_partitions()) {
+        if (partition && partition->table() == dataset.table_id) {
+            partitions.push_back(partition);
+        }
+    }
+    if (!dry_run) {
+        for (const std::string& index : indexes) context.node.drop_index(index);
+        // A partition's body is a large object of the dataset's database; unlink
+        // it with the catalog entry, as a discarded ingest does.
+        for (const auto& partition : partitions) {
+            if (!partition->blob_ref().empty()) {
+                owner->large_objects().unlink(partition->blob_ref());
+            }
+            context.node.drop_dataset_partition(partition->id());
+        }
+        if (!owner->drop_table(dataset.name)) {
+            return ApiResult::failure("engine_error",
+                                      "could not delete dataset '" + qualified + "'");
+        }
+    }
+    nlohmann::json output;
+    output["dataset"] = dataset.name;
+    output["name"] = dataset.name;
+    output["database"] = dataset.database;
+    output["table_id"] = dataset.table_id;
+    output["dry_run"] = dry_run;
+    output["removed"] = {{"rows", dataset.rows},
+                         {"size_bytes", dataset.size_bytes},
+                         {"partitions", partitions.size()},
+                         {"indexes", indexes}};
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& delete_model_schema() {
+    static const nlohmann::json schema = delete_input_schema(
+        "model_id", "the model's uuid (system.models.model_id), or its display name");
+    return schema;
+}
+
+const nlohmann::json& delete_model_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "name", "dry_run", "removed", "kept"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"dry_run", {{"type", "boolean"}}},
+          {"removed",
+           {{"type", "object"},
+            {"required", {"model", "was_exposed"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"model", {{"type", "integer"}}},
+              {"was_exposed",
+               {{"type", "boolean"},
+                {"description",
+                 "the model was served; its endpoint stops answering with the "
+                 "delete"}}}}}}},
+          {"kept",
+           {{"type", "object"},
+            {"required", {"run"}},
+            {"additionalProperties", false},
+            {"description", "the run that trained it is a record and is kept"},
+            {"properties", {{"run", {{"type", "string"}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_delete_model(const nlohmann::json& input, ApiContext& context) {
+    const std::string target = input.at("model_id").get<std::string>();
+    const bool dry_run = input.value("dry_run", false);
+    std::shared_ptr<zetta::ml::Model> model = context.node.find_model(target);
+    if (!model) {
+        // By display name only when it names exactly one model: a delete never
+        // guesses between several.
+        std::size_t named = 0;
+        for (const auto& each : context.node.models()) {
+            if (each && !each->name().empty() && each->name() == target) {
+                model = each;
+                ++named;
+            }
+        }
+        if (named > 1) {
+            return ApiResult::failure(
+                "engine_error", std::to_string(named) + " models are named '" + target +
+                                    "' — delete one by its model_id");
+        }
+    }
+    if (!model) {
+        return ApiResult::failure("not_found", "no model named '" + target + "'");
+    }
+    const std::string id = model->id();
+    const std::string name = model->name();
+    const bool was_exposed = model->exposed();
+    const std::string run = !model->run_id().empty() ? model->run_id() : model->run();
+    if (!dry_run) {
+        // Unexpose first, so the replicated flag stops serving it on every peer
+        // even before the drop converges.
+        if (was_exposed) model->set_exposed(false);
+        if (!context.node.drop_model(id)) {
+            return ApiResult::failure("engine_error", "could not delete model '" + id + "'");
+        }
+    }
+    nlohmann::json output;
+    output["model_id"] = id;
+    output["name"] = name;
+    output["dry_run"] = dry_run;
+    output["removed"] = {{"model", 1}, {"was_exposed", was_exposed}};
+    output["kept"] = {{"run", run}};
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& delete_run_schema() {
+    static const nlohmann::json schema =
+        delete_input_schema("run_id", "the run's uuid (system.runs.run_id)");
+    return schema;
+}
+
+const nlohmann::json& delete_run_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run_id", "name", "dry_run", "removed", "kept"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"run_id", {{"type", "string"}}},
+          {"name",
+           {{"type", "string"},
+            {"description", "the run's pipeline name, when it has one"}}},
+          {"dry_run", {{"type", "boolean"}}},
+          {"removed",
+           {{"type", "object"},
+            {"required", {"run", "status"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"run", {{"type", "integer"}}}, {"status", {{"type", "string"}}}}}}},
+          {"kept",
+           {{"type", "object"},
+            {"required", {"models"}},
+            {"additionalProperties", false},
+            {"description",
+             "the models this run trained are kept (delete them with delete_model)"},
+            {"properties",
+             {{"models", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_delete_run(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("run_id").get<std::string>();
+    const bool dry_run = input.value("dry_run", false);
+    const auto run = context.node.find_run(id);
+    if (!run) {
+        return ApiResult::failure("not_found", "no run with id '" + id + "'");
+    }
+    if (is_in_flight(run->status())) {
+        return ApiResult::failure(
+            "engine_error", "run '" + id + "' is still " +
+                                std::string(zetta::pipeline::to_string(run->status())) +
+                                "; wait for it to finish (get_run) and delete it then");
+    }
+    std::vector<std::string> models;
+    for (const auto& model : context.node.models()) {
+        if (model && (model->run() == id || model->run_id() == id)) {
+            models.push_back(model->id());
+        }
+    }
+    for (const auto& output : run->outputs()) {
+        if (output.kind == "model" && !output.ref.empty() &&
+            std::ranges::find(models, output.ref) == models.end() &&
+            context.node.find_model(output.ref)) {
+            models.push_back(output.ref);
+        }
+    }
+    const std::string status(zetta::pipeline::to_string(run->status()));
+    const std::string name = run->pipeline_name();
+    if (!dry_run && !context.node.drop_run(id)) {
+        return ApiResult::failure("engine_error", "could not delete run '" + id + "'");
+    }
+    nlohmann::json output;
+    output["run_id"] = id;
+    output["name"] = name;
+    output["dry_run"] = dry_run;
+    output["removed"] = {{"run", 1}, {"status", status}};
+    output["kept"] = {{"models", models}};
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& delete_index_schema() {
+    static const nlohmann::json schema =
+        delete_input_schema("index_id", "the index's uuid (system.indexes.index_id)");
+    return schema;
+}
+
+const nlohmann::json& delete_index_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"index_id", "name", "table", "dry_run", "removed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"index_id", {{"type", "string"}}},
+          {"name",
+           {{"type", "string"},
+            {"description", "indexes have no name of their own: the indexed table"}}},
+          {"table", {{"type", "string"}}},
+          {"dry_run", {{"type", "boolean"}}},
+          {"removed",
+           {{"type", "object"},
+            {"required", {"index", "was_exposed"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"index", {{"type", "integer"}}},
+              {"was_exposed",
+               {{"type", "boolean"},
+                {"description",
+                 "the index was served; its endpoint stops answering with the "
+                 "delete"}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_delete_index(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("index_id").get<std::string>();
+    const bool dry_run = input.value("dry_run", false);
+    const auto index = context.node.find_index(id);
+    if (!index) {
+        return ApiResult::failure("not_found", "no index with id '" + id + "'");
+    }
+    const bool was_exposed = index->exposed();
+    const std::string table = index->table();
+    if (!dry_run) {
+        if (was_exposed) index->set_exposed(false);
+        if (!context.node.drop_index(id)) {
+            return ApiResult::failure("engine_error", "could not delete index '" + id + "'");
+        }
+    }
+    nlohmann::json output;
+    output["index_id"] = id;
+    output["name"] = table;
+    output["table"] = table;
+    output["dry_run"] = dry_run;
+    output["removed"] = {{"index", 1}, {"was_exposed", was_exposed}};
+    return ApiResult::success(std::move(output));
+}
+
 // --- expose_model / expose_index (#648, docs/api/serving.md) ------------------
 //
 // Exposure flips the entity's REPLICATED `exposed` flag (Model::set_exposed /
@@ -9552,6 +9936,59 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_delete_project});
+    // lake#645: what a workspace accumulates can be removed, not only created.
+    registry.add(Capability{
+        "delete_dataset",
+        "Delete dataset",
+        "Delete a dataset (its table) on every node, with its partitions and their "
+        "bodies and every index built over it, so nothing of it is left. "
+        "dry_run: true answers what would go and changes nothing. Not undoable.",
+        delete_dataset_schema(),
+        delete_dataset_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_dataset"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_dataset});
+    registry.add(Capability{
+        "delete_model",
+        "Delete model",
+        "Delete a model on every node; a served model stops being served. The run "
+        "that trained it is kept. dry_run: true answers what would go and changes "
+        "nothing. Not undoable.",
+        delete_model_schema(),
+        delete_model_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_model"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_model});
+    registry.add(Capability{
+        "delete_run",
+        "Delete run",
+        "Delete a finished run with its logs and metrics on every node. Refused while "
+        "it is pending or running. The models it trained are kept and listed. "
+        "dry_run: true answers what would go and changes nothing. Not undoable.",
+        delete_run_schema(),
+        delete_run_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_run"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_run});
+    registry.add(Capability{
+        "delete_index",
+        "Delete index",
+        "Delete a search index on every node; a served index stops being served. The "
+        "indexed dataset is kept. dry_run: true answers what would go and changes "
+        "nothing. Not undoable.",
+        delete_index_schema(),
+        delete_index_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_index"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_index});
 
     // --- agents (#849): CRUD for the served, selectable agent entity ----------
     Capability create_agent_capability{
