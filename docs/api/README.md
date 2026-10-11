@@ -48,6 +48,8 @@ MCP/HTTP work.
 - [../ml/studies.md](../ml/studies.md) — the ten study capabilities, published search spaces, read-only validation, Run-backed
   trials, dedicated promotion/deletion permissions, analysis, lineage-preserving
   cleanup, and bounded live progress reads (#1138, #1158).
+- [deletes.md](deletes.md) — `delete_dataset`, `delete_model`, `delete_run`,
+  `delete_index` (lake#645): what each removes and keeps, `dry_run`, refusals.
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
@@ -211,6 +213,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `execute_closed_loop` | action | orchestration:execute_closed_loop | enqueue and deliver one task while rechecking holdout and the current policy kill-switch before HTTP |
 | `purge_audit` | action | orchestration:purge_audit | admin-only segment rewrite before a UTC cutoff; advances replicated low-water marks and records `audit_purged` (#1169) |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
+| `delete_dataset` | action | orchestration:delete_dataset | delete a dataset with its partitions, their bodies and every index over it; `dry_run` lists what goes ([deletes.md](deletes.md)) |
+| `delete_model` | action | orchestration:delete_model | delete a model (unexposed first); its run is kept; `dry_run` lists what goes ([deletes.md](deletes.md)) |
+| `delete_run` | action | orchestration:delete_run | delete a finished run; refused while pending or running; its models are kept and listed ([deletes.md](deletes.md)) |
+| `delete_index` | action | orchestration:delete_index | delete an index (unexposed first); the dataset is kept ([deletes.md](deletes.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
 | `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |
 | `expose_index` | action | orchestration:expose_index | publish an index's /v1/indexes/{name}/search endpoint (distributed scatter-gather underneath); endpoint access needs data:search |

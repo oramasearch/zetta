@@ -105,7 +105,7 @@ TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        146u); // +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        150u); // +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -256,7 +256,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
           "decide", "approve_decision", "create_experiment", "assign",
           "log_run_metrics", "log_run_params", "log_run_artifact",
           "create_study", "stop_study", "stop_trial", "promote_trial",
-          "delete_study",
+          "delete_study", "delete_dataset", "delete_model", "delete_run", "delete_index",
           "create_solution", "run_solution",
           "publish_report", "enqueue_action_task", "deliver_action_task", "execute_closed_loop"}) {
         const auto entry = registry.find(name);
@@ -890,6 +890,172 @@ TEST_F(RegistryFixture, DeleteProjectRefusesWhileARunIsInProgress) {
     run->set_status(zetta::pipeline::RunStatus::Failed);
     EXPECT_TRUE(call("delete_project", nlohmann::json{{"name", "busy"}}).ok);
     EXPECT_FALSE(node.find_project("busy"));
+}
+
+// lake#645: a dataset is deleted with its partitions and every index built over
+// it; a dry run answers the same list and changes nothing.
+TEST_F(RegistryFixture, DeleteDatasetRemovesItsPartitionsAndIndexes) {
+    auto database = node.create_database("data");
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    table->add_row({{"id", 1}, {"note", "first"}});
+    table->add_row({{"id", 2}, {"note", "second"}});
+    const std::string table_id = table->id();
+    auto keeper = database->create_table("customers");
+    ASSERT_TRUE(keeper);
+
+    zetta::data::DatasetPartitionValue partition_value;
+    partition_value.table = table_id;
+    partition_value.row_range = {0, 2};
+    auto partition = node.create_dataset_partition(std::move(partition_value));
+    ASSERT_TRUE(partition);
+
+    zetta::index::IndexValue over_orders;
+    over_orders.table = "orders";
+    over_orders.backend = "memory_search";
+    over_orders.fields = {"note"};
+    auto index = node.create_index(over_orders);
+    ASSERT_TRUE(index);
+    zetta::index::IndexValue over_customers = over_orders;
+    over_customers.table = "customers";
+    auto other_index = node.create_index(over_customers);
+    ASSERT_TRUE(other_index);
+
+    auto preview = call("delete_dataset", {{"dataset", "data.orders"}, {"dry_run", true}});
+    ASSERT_TRUE(preview.ok) << preview.error.code << ": " << preview.error.message;
+    EXPECT_EQ(preview.value.at("dataset"), "orders");
+    EXPECT_EQ(preview.value.at("database"), "data");
+    EXPECT_EQ(preview.value.at("table_id"), table_id);
+    EXPECT_TRUE(preview.value.at("dry_run").get<bool>());
+    EXPECT_EQ(preview.value.at("removed").at("partitions"), 1u);
+    EXPECT_EQ(preview.value.at("removed").at("indexes"),
+              nlohmann::json::array({index->id()}));
+    // Nothing changed.
+    EXPECT_TRUE(database->find_table("orders"));
+    EXPECT_TRUE(node.find_index(index->id()));
+    EXPECT_TRUE(node.find_dataset_partition(partition->id()));
+
+    auto deleted = call("delete_dataset", {{"dataset", "orders"}, {"database", "data"}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
+    EXPECT_FALSE(deleted.value.at("dry_run").get<bool>());
+    EXPECT_EQ(deleted.value.at("removed"), preview.value.at("removed"));
+    EXPECT_FALSE(database->find_table("orders"));
+    EXPECT_FALSE(node.find_index(index->id()));
+    EXPECT_FALSE(node.find_dataset_partition(partition->id()));
+    // The other dataset and its index are untouched.
+    EXPECT_TRUE(database->find_table("customers"));
+    EXPECT_TRUE(node.find_index(other_index->id()));
+    auto read = call("get_dataset", {{"dataset", "orders"}});
+    EXPECT_EQ(read.error.code, "not_found");
+
+    auto again = call("delete_dataset", {{"dataset", "orders"}});
+    EXPECT_FALSE(again.ok);
+    EXPECT_EQ(again.error.code, "not_found");
+    // By table id too.
+    auto by_id = call("delete_dataset", {{"dataset", keeper->id()}, {"dry_run", true}});
+    ASSERT_TRUE(by_id.ok) << by_id.error.message;
+    EXPECT_EQ(by_id.value.at("dataset"), "customers");
+}
+
+TEST_F(RegistryFixture, DeleteModelStopsServingItAndKeepsItsRun) {
+    auto run = node.create_run("");
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    zetta::ml::ModelValue value;
+    value.kind = "classifier";
+    value.name = "churn-model";
+    value.run = run->id();
+    auto model = node.create_model(std::move(value));
+    ASSERT_TRUE(model);
+    model->set_exposed(true);
+
+    auto preview = call("delete_model", {{"model_id", "churn-model"}, {"dry_run", true}});
+    ASSERT_TRUE(preview.ok) << preview.error.code << ": " << preview.error.message;
+    EXPECT_EQ(preview.value.at("model_id"), model->id());
+    EXPECT_EQ(preview.value.at("name"), "churn-model");
+    EXPECT_TRUE(preview.value.at("removed").at("was_exposed").get<bool>());
+    EXPECT_EQ(preview.value.at("kept").at("run"), run->id());
+    EXPECT_TRUE(node.find_model(model->id()));
+    EXPECT_TRUE(model->exposed());
+
+    const std::string id = model->id();
+    auto deleted = call("delete_model", {{"model_id", id}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.message;
+    EXPECT_FALSE(node.find_model(id));
+    EXPECT_TRUE(node.find_run(run->id()));
+    EXPECT_EQ(call("get_model", {{"model_id", id}}).error.code, "not_found");
+    EXPECT_EQ(call("delete_model", {{"model_id", id}}).error.code, "not_found");
+}
+
+TEST_F(RegistryFixture, DeleteModelByNameRefusesAnAmbiguousName) {
+    for (int i = 0; i < 2; ++i) {
+        zetta::ml::ModelValue value;
+        value.kind = "classifier";
+        value.name = "twin";
+        ASSERT_TRUE(node.create_model(std::move(value)));
+    }
+    auto refused = call("delete_model", {{"model_id", "twin"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_EQ(node.models().size(), 2u);
+}
+
+TEST_F(RegistryFixture, DeleteRunRefusesWhileInFlightAndKeepsItsModels) {
+    auto run = node.create_run("");
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Running);
+    zetta::ml::ModelValue value;
+    value.kind = "classifier";
+    value.run = run->id();
+    auto model = node.create_model(std::move(value));
+    ASSERT_TRUE(model);
+
+    auto refused = call("delete_run", {{"run_id", run->id()}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_NE(refused.error.message.find("running"), std::string::npos)
+        << refused.error.message;
+    EXPECT_TRUE(node.find_run(run->id()));
+
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    auto preview = call("delete_run", {{"run_id", run->id()}, {"dry_run", true}});
+    ASSERT_TRUE(preview.ok) << preview.error.message;
+    EXPECT_EQ(preview.value.at("removed").at("status"), "succeeded");
+    EXPECT_EQ(preview.value.at("kept").at("models"), nlohmann::json::array({model->id()}));
+    EXPECT_TRUE(node.find_run(run->id()));
+
+    const std::string id = run->id();
+    auto deleted = call("delete_run", {{"run_id", id}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.message;
+    EXPECT_EQ(deleted.value.at("run_id"), id);
+    EXPECT_FALSE(node.find_run(id));
+    EXPECT_TRUE(node.find_model(model->id()));
+    EXPECT_EQ(call("delete_run", {{"run_id", id}}).error.code, "not_found");
+}
+
+TEST_F(RegistryFixture, DeleteIndexStopsServingItAndKeepsTheDataset) {
+    auto database = node.create_database("data");
+    ASSERT_TRUE(database->create_table("articles"));
+    zetta::index::IndexValue value;
+    value.table = "articles";
+    value.backend = "memory_search";
+    value.fields = {"title"};
+    auto index = node.create_index(value);
+    ASSERT_TRUE(index);
+    index->set_exposed(true);
+
+    auto preview = call("delete_index", {{"index_id", index->id()}, {"dry_run", true}});
+    ASSERT_TRUE(preview.ok) << preview.error.message;
+    EXPECT_EQ(preview.value.at("table"), "articles");
+    EXPECT_TRUE(preview.value.at("removed").at("was_exposed").get<bool>());
+    EXPECT_TRUE(node.find_index(index->id()));
+
+    const std::string id = index->id();
+    auto deleted = call("delete_index", {{"index_id", id}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.message;
+    EXPECT_FALSE(node.find_index(id));
+    EXPECT_TRUE(database->find_table("articles"));
+    EXPECT_EQ(call("delete_index", {{"index_id", id}}).error.code, "not_found");
 }
 
 // Journey (#616): create a project, capture an intent input and a graph, then

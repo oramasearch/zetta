@@ -8103,6 +8103,163 @@
         ]
       }
     },
+    "/v1/delete_dataset": {
+      "post": {
+        "description": "Delete a dataset (its table) on every node, with its partitions and their bodies and every index built over it, so nothing of it is left. dry_run: true answers what would go and changes nothing. Not undoable. Requires orchestration:delete_dataset.",
+        "operationId": "delete_dataset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "database": {
+                    "description": "the dataset's database — needed only when the same name exists in several databases",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dataset": {
+                    "description": "the dataset's name as list_datasets reports it, `database.table`, or its table id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dry_run": {
+                    "description": "true: change nothing and answer what would be deleted (default false)",
+                    "type": "boolean"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "dataset"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "database": {
+                          "type": "string"
+                        },
+                        "dataset": {
+                          "description": "the dataset's name",
+                          "type": "string"
+                        },
+                        "dry_run": {
+                          "type": "boolean"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "additionalProperties": false,
+                          "description": "what was (or, on a dry run, would be) deleted",
+                          "properties": {
+                            "indexes": {
+                              "description": "the ids of the indexes built over the dataset",
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "partitions": {
+                              "type": "integer"
+                            },
+                            "rows": {
+                              "type": "integer"
+                            },
+                            "size_bytes": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "rows",
+                            "size_bytes",
+                            "partitions",
+                            "indexes"
+                          ],
+                          "type": "object"
+                        },
+                        "table_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "dataset",
+                        "name",
+                        "database",
+                        "table_id",
+                        "dry_run",
+                        "removed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete dataset",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/delete_events": {
       "post": {
         "description": "Remove selected held events or all sequences strictly below before_sequence; pending subscribers skip them. Requires data:pubsub_publish.",
@@ -8229,6 +8386,287 @@
           }
         },
         "summary": "Delete events",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_index": {
+      "post": {
+        "description": "Delete a search index on every node; a served index stops being served. The indexed dataset is kept. dry_run: true answers what would go and changes nothing. Not undoable. Requires orchestration:delete_index.",
+        "operationId": "delete_index",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dry_run": {
+                    "description": "true: change nothing and answer what would be deleted (default false)",
+                    "type": "boolean"
+                  },
+                  "index_id": {
+                    "description": "the index's uuid (system.indexes.index_id)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "index_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "dry_run": {
+                          "type": "boolean"
+                        },
+                        "index_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "indexes have no name of their own: the indexed table",
+                          "type": "string"
+                        },
+                        "removed": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "index": {
+                              "type": "integer"
+                            },
+                            "was_exposed": {
+                              "description": "the index was served; its endpoint stops answering with the delete",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "index",
+                            "was_exposed"
+                          ],
+                          "type": "object"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "index_id",
+                        "name",
+                        "table",
+                        "dry_run",
+                        "removed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete index",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_model": {
+      "post": {
+        "description": "Delete a model on every node; a served model stops being served. The run that trained it is kept. dry_run: true answers what would go and changes nothing. Not undoable. Requires orchestration:delete_model.",
+        "operationId": "delete_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dry_run": {
+                    "description": "true: change nothing and answer what would be deleted (default false)",
+                    "type": "boolean"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model_id": {
+                    "description": "the model's uuid (system.models.model_id), or its display name",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "dry_run": {
+                          "type": "boolean"
+                        },
+                        "kept": {
+                          "additionalProperties": false,
+                          "description": "the run that trained it is a record and is kept",
+                          "properties": {
+                            "run": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "run"
+                          ],
+                          "type": "object"
+                        },
+                        "model_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "model": {
+                              "type": "integer"
+                            },
+                            "was_exposed": {
+                              "description": "the model was served; its endpoint stops answering with the delete",
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "model",
+                            "was_exposed"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "model_id",
+                        "name",
+                        "dry_run",
+                        "removed",
+                        "kept"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete model",
         "tags": [
           "action"
         ]
@@ -8693,6 +9131,154 @@
           }
         },
         "summary": "Delete a record",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_run": {
+      "post": {
+        "description": "Delete a finished run with its logs and metrics on every node. Refused while it is pending or running. The models it trained are kept and listed. dry_run: true answers what would go and changes nothing. Not undoable. Requires orchestration:delete_run.",
+        "operationId": "delete_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dry_run": {
+                    "description": "true: change nothing and answer what would be deleted (default false)",
+                    "type": "boolean"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "description": "the run's uuid (system.runs.run_id)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "run_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "dry_run": {
+                          "type": "boolean"
+                        },
+                        "kept": {
+                          "additionalProperties": false,
+                          "description": "the models this run trained are kept (delete them with delete_model)",
+                          "properties": {
+                            "models": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "models"
+                          ],
+                          "type": "object"
+                        },
+                        "name": {
+                          "description": "the run's pipeline name, when it has one",
+                          "type": "string"
+                        },
+                        "removed": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "run": {
+                              "type": "integer"
+                            },
+                            "status": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "run",
+                            "status"
+                          ],
+                          "type": "object"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "run_id",
+                        "name",
+                        "dry_run",
+                        "removed",
+                        "kept"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete run",
         "tags": [
           "action"
         ]
