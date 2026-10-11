@@ -396,3 +396,48 @@ TEST(IntentCompilerTest, ProjectBridgeRejectsBadInputs) {
     // Same name again → create_graph collision → empty handle.
     EXPECT_FALSE(project->compile_intent_to_graph(intent->id(), "my graph"));
 }
+
+// #1246: the generic M-1 template is fitted to the dataset it was compiled for —
+// the connect step reads the hinted source and table, and the steps are named
+// from the label and the table, not the churn demo.
+TEST(IntentCompilerTest, TheGenericTemplateIsFittedToTheDatasetHints) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.hints = {{"source", "billing"},
+                     {"table", "subscriptions"},
+                     {"entity_column", "subscription_id"},
+                     {"label_column", "downgraded"}};
+    const auto compiled =
+        compile_intent("Predict which subscriptions will downgrade", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-1");
+
+    const auto connect = compiled->graph.find_node("load_customers");
+    ASSERT_TRUE(connect);
+    EXPECT_EQ(connect->attributes.at("source"), "billing");
+    EXPECT_EQ(connect->attributes.at("table"), "subscriptions");
+    EXPECT_EQ(connect->name, "Load subscriptions");
+    EXPECT_EQ(compiled->graph.find_node("build_features")->name, "Build downgraded features");
+    const auto model = compiled->graph.find_node("train_churn_model");
+    ASSERT_TRUE(model);
+    EXPECT_EQ(model->name, "Train downgraded model");
+    EXPECT_EQ(model->attributes.at("target"), "downgraded");
+    EXPECT_EQ(model->attributes.at("note"), "Predict which subscriptions will downgrade");
+    EXPECT_EQ(compiled->graph.find_node("index_scores")->name, "Score and index subscriptions");
+    EXPECT_EQ(compiled->graph.find_node("serve_scores")->name, "Serve downgraded scores & reasons");
+    EXPECT_EQ(compiled->graph.find_node("notify_retention")->name, "Write downgraded scores");
+    for (const auto& node : compiled->graph.nodes()) {
+        EXPECT_EQ(node->name.find("churn"), std::string::npos) << node->name;
+    }
+}
+
+TEST(IntentCompilerTest, ASolutionFamilyKeepsItsOwnStepNames) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-4";
+    options.hints = {{"table", "subscriptions"}, {"label_column", "downgraded"}};
+    const auto compiled = compile_intent("Prioritize collections", options);
+    ASSERT_TRUE(compiled);
+    const auto connect = compiled->graph.find_node("load_customers");
+    ASSERT_TRUE(connect);
+    EXPECT_EQ(connect->name, "Load receivables");
+    EXPECT_EQ(connect->attributes.at("table"), "receivables");
+}
