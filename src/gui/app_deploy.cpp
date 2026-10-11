@@ -137,6 +137,9 @@ void App::draw_gate() {
                                 0.55f);
         ImGui::TableHeadersRow();
         for (const zetta::pipeline::CheckResult& check : report.checks) {
+            // A check that had nothing to check is counted below, not listed
+            // (#1240): the table shows what was verified.
+            if (check.status == zetta::pipeline::CheckStatus::NotApplicable) continue;
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(check.name.c_str());
@@ -148,8 +151,11 @@ void App::draw_gate() {
         }
         ImGui::EndTable();
     }
-    if (report.checks.empty()) {
-        ImGui::TextDisabled("(the gate ran no checks)");
+    if (report.applied_count() == 0) {
+        ImGui::TextDisabled("(no check applied to this graph)");
+    }
+    if (const std::size_t skipped = report.not_applicable_count(); skipped > 0) {
+        ImGui::TextDisabled("%zu check(s) did not apply to this graph.", skipped);
     }
 }
 

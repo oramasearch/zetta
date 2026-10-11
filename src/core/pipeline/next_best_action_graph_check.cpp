@@ -9,7 +9,7 @@ namespace zetta::pipeline {
 CheckResult
 NextBestActionGraphCheck::evaluate(const ir::ExecutionGraph &graph) const {
   if (!ml::owns_next_best_action(graph)) {
-    return {name(), CheckStatus::Pass, "no next-best-action model"};
+    return {name(), CheckStatus::NotApplicable, "no next-best-action model"};
   }
   std::string error;
   if (!ml::parse_next_best_action_pipeline(graph, error)) {

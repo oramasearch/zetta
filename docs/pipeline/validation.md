@@ -16,7 +16,7 @@ is what it produces.
 ## The shape
 
 ```
-CheckStatus   pass < warn < fail        (an enum ordered by severity)
+CheckStatus   not_applicable < pass < warn < fail   (ordered by severity)
 
 CheckResult   { name, status, reason }  one named check's outcome + why
 
@@ -25,7 +25,17 @@ ValidationReport
   block_deploy   bool                   the gate's deploy policy for this report
   verdict()      CheckStatus            derived: the worst status across checks
   passed()       bool                   true when no check failed (warn passes)
+  applied_count() / not_applicable_count()   how many checks applied, and how many did not
 ```
+
+### A check that did not apply is not a pass (#1240)
+
+Most of the ~100 checks in `default_gate()` belong to one solution family or one
+methodology (an S-4 regulatory-contact check, a speech-consent check). On a graph
+that has no such step they have nothing to check. They answer
+`not_applicable`, with the reason (*"no bound S-4 Pipeline to validate"*,
+*"no speech model"*), never `pass`. `not_applicable` is the lowest status, so it
+never moves the verdict: a report whose checks all did not apply still passes.
 
 `reason` is the human-readable explanation surfaced to authors — *"failures
 surface a reason, not a stack trace."*
@@ -60,6 +70,23 @@ contradicts the checks) so bad data fails fast instead of corrupting state.
   ],
   "verdict": "fail",
   "block_deploy": true
+}
+```
+
+**Only the checks that applied are listed.** The JSON carries the two counts
+`applied` and `not_applicable`; the not-applicable checks themselves are left
+out, so a reader sees what was verified rather than the whole catalog.
+`to_json(document, report, /*include_not_applicable=*/true)` lists them too (the
+`gate` capability's `include_not_applicable` input), for an audit. A document
+written without them parses back to a report without them.
+
+```json
+{
+  "checks": [{ "name": "non_empty_graph", "status": "pass", "reason": "graph has 7 step(s)" }],
+  "verdict": "pass",
+  "block_deploy": false,
+  "applied": 1,
+  "not_applicable": 104
 }
 ```
 

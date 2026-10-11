@@ -44,8 +44,9 @@ Per record:
   mention to. Required, non-empty.
 
 A node with no `entity_resolution` attribute is not a resolution step and is
-ignored; a graph with **no** resolution step passes the check vacuously (nothing
-to conflate).
+ignored; on a graph with **no** resolution step the check does not apply
+(`not_applicable`, #1240): there is nothing to conflate, and it is not counted
+as a pass.
 
 ## The correctness rule
 

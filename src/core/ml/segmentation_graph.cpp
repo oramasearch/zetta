@@ -247,7 +247,7 @@ CheckResult SegmentationCheck::evaluate(const ir::ExecutionGraph &graph) const {
         }
     }
     if (!model) {
-        return {name(), CheckStatus::Pass, "no segmentation model"};
+        return {name(), CheckStatus::NotApplicable, "no segmentation model"};
     }
     const auto fail = [&](const std::string &reason) {
         return CheckResult{name(), CheckStatus::Fail,

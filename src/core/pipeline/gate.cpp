@@ -259,8 +259,8 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<LabelEfficiencyGoldIsolationCheck>());
     gate.add_check(std::make_shared<PrivacyBudgetCheck>());
     gate.add_check(std::make_shared<StreamingCorrectnessCheck>());
-    // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
-    // pass) on graphs without an entity-resolution step, so it is safe in the
+    // The entity-resolution correctness eval (#312 / TC-4). Not applicable
+    // (#1240) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.
     gate.add_check(std::make_shared<zetta::usecases::churn::EntityResolutionCheck>());
     gate.add_check(std::make_shared<B4PerFieldConfidenceCheck>());

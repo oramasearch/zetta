@@ -234,6 +234,7 @@ std::optional<AnomalyPlan> parse_anomaly_plan(const ir::ExecutionGraph &graph,
 namespace zetta::pipeline {
 
 CheckResult AnomalyGraphCheck::evaluate(const ir::ExecutionGraph &graph) const {
+  bool applies = false;
   for (const auto &step : graph.nodes_of_kind(ir::StepKind::Model)) {
     if (!step->attributes.is_object()) {
       continue;
@@ -241,11 +242,15 @@ CheckResult AnomalyGraphCheck::evaluate(const ir::ExecutionGraph &graph) const {
     const auto kind = step->attributes.find("model_kind");
     if (kind != step->attributes.end() && kind->is_string() &&
         ml::is_anomaly_kind(kind->get<std::string>())) {
+      applies = true;
       std::string error;
       if (!ml::parse_anomaly_plan(graph, error)) {
         return {name(), CheckStatus::Fail, error};
       }
     }
+  }
+  if (!applies) {
+    return {name(), CheckStatus::NotApplicable, "no anomaly model"};
   }
   return {name(), CheckStatus::Pass,
           "anomaly labels, threshold, robust scaling, and causal windows are "
