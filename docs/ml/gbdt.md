@@ -130,7 +130,8 @@ return a `compute::ComputeStatus`.
   [held-out-metrics.md](held-out-metrics.md) (#953).
 - When the job is attached to a pipeline Run, each committed boosting round
   records globally reduced `train.log_loss` or `train.mean_squared_error`, row
-  throughput, host gauges, one-time parameters, and a live batch. See
+  throughput, host gauges, one-time parameters, and a live batch, and, when the
+  run held rows out, its held-out scores once at the end (#1239). See
   [run metrics](run-metrics.md) (#1137).
 - The deterministic collective **root** registers the trained model as a
   `Model` (kind `classifier` for binary logistic and `regressor` for squared

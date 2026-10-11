@@ -190,6 +190,23 @@ loss, learning rate, gradient norm, and scored-token throughput after each
 optimizer update. Logging failure fails the trainer call instead of silently
 claiming a fully tracked run.
 
+**Held-out scores (#1239).** When a GBDT run holds rows out, the root also logs
+the held-out figures once, at the last tree's step, after it registers the
+model: `held_out_auc`, `held_out_log_loss` and `held_out_accuracy` for a
+classifier, `held_out_rmse` and `held_out_mae` for a regressor, and
+`held_out_rows`. They land in `summary` (losses and errors minimize, the rest
+maximize) and in `compare_runs`, so the figure that decides between runs no
+longer needs one `get_run_report` per run. A run without a holdout gets none,
+never a zero, and a run whose metrics are suppressed for differential privacy
+gets none. This write is best effort: the model is already registered, so a
+failed write leaves the run without these entries (the model's `metrics` and
+`get_run_report` still carry them) rather than failing a finished job.
+
+**Artifacts.** No engine trainer logs artifacts yet; `artifacts` is `[]` unless
+a caller used `log_run_artifact`. Confusion matrix, ROC and calibration charts
+for GBDT would be built on the root from the held-out predictions in
+`run_train_job`, the only place they exist; that is follow-up work.
+
 Installing a metric hook must leave model bytes and privacy spend identical.
 The GBDT metric pass runs only when a hook is enabled; distributed participants
 agree on that choice before training. M-20 forces `TrainHooks::suppress_metrics`

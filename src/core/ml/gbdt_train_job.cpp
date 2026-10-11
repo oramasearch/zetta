@@ -689,6 +689,38 @@ DistributedTrainResult run_train_job(
             if (model) model->set_weights(out.model.to_json().dump());
         });
         if (model) out.model_id = model->id();
+
+        // The held-out scores are what decides between runs (#1239): log them on
+        // the Run as well, one point at the last tree, so get_run_metrics'
+        // summary and compare_runs carry them beside the training curves.
+        // Before, only the Model and get_run_report had them. A run whose
+        // metrics are suppressed for differential privacy gets none.
+        if (out.has_held_out && !run_id.empty()) {
+            std::map<std::string, double> held_out;
+            if (out.regression) {
+                held_out["held_out_rmse"] = out.held_out_rmse;
+                held_out["held_out_mae"] = out.held_out_mae;
+            } else {
+                held_out["held_out_auc"] = out.held_out.auc;
+                held_out["held_out_log_loss"] = out.held_out.log_loss;
+                held_out["held_out_accuracy"] = out.held_out.accuracy;
+            }
+            held_out["held_out_rows"] = static_cast<double>(out.held_out_rows);
+            std::erase_if(held_out, [](const auto& metric) {
+                return !std::isfinite(metric.second);
+            });
+            node->run_on_owner([&] {
+                const std::shared_ptr<pipeline::Run> run = node->find_run(run_id);
+                if (!run || !run->value().metrics_suppressed.empty()) return;
+                std::string error;
+                const auto step = static_cast<std::uint64_t>(
+                    std::max<std::size_t>(out.model.tree_count(), 1));
+                // A failed write leaves the model and its report intact; the
+                // run just lacks the summary entry, as before #1239.
+                static_cast<void>(node->log_run_metrics(run_id, step, held_out,
+                                                        {}, &error));
+            });
+        }
     }
 
     // Training fully completed — the model is durable as a Model entity, so the
