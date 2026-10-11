@@ -95,6 +95,8 @@ void register_record_capabilities(Registry& registry);
 // routes with raw bodies served by the HTTP adapter; object_route_paths() is
 // their OpenAPI rendering, with the bucket-route aliases of the entries above.
 void register_object_capabilities(Registry& registry);
+// storage_usage: the node's disk by kind (storage_capabilities.cpp, docs/data/storage-census.md).
+void register_storage_capabilities(Registry& registry);
 nlohmann::json object_route_paths();
 
 // Run experiment tracking (#1137): three writes and two reads. Live metric
