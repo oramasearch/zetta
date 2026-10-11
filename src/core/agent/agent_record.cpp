@@ -17,8 +17,6 @@ bool one_of(const std::array<std::string_view, Size>& values, std::string_view v
 constexpr std::array<std::string_view, 2> kKinds{"custom", "orama"};
 constexpr std::array<std::string_view, 3> kRuntimes{"native", "python", "service"};
 constexpr std::array<std::string_view, 3> kWorkAreas{"workspace", "project", "dataset"};
-constexpr std::array<std::string_view, 5> kSkills{"search", "generate-data", "train", "summarize",
-                                                  "call-api"};
 constexpr std::array<std::string_view, 5> kStatuses{"idle", "running", "waiting", "completed",
                                                     "failed"};
 
@@ -76,9 +74,12 @@ std::string AgentRecord::validation_error() const {
         return "agent.work_area.kind must be 'workspace', 'project' or 'dataset'";
     }
     for (const std::string& skill : skills) {
-        if (!one_of(kSkills, skill)) {
-            return "agent.skills: '" + skill +
-                   "' is not a skill (search, generate-data, train, summarize, call-api)";
+        if (std::ranges::find(agent_skills(), skill) == agent_skills().end()) {
+            std::string known;
+            for (const std::string& name : agent_skills()) {
+                known += (known.empty() ? "" : ", ") + name;
+            }
+            return "agent.skills: '" + skill + "' is not a skill (" + known + ")";
         }
     }
     if (!one_of(kStatuses, status)) {
@@ -90,6 +91,13 @@ std::string AgentRecord::validation_error() const {
         }
     }
     return std::string();
+}
+
+const std::vector<std::string>& agent_skills() {
+    static const std::vector<std::string> skills{
+        "search",      "generate-data", "train",    "summarize", "call-api",  "drives",
+        "transcripts", "repositories",  "datasets", "streams",   "pipelines", "usage"};
+    return skills;
 }
 
 const nlohmann::json& agent_schema() {

@@ -91,7 +91,7 @@ struct AgentRecord {
     WorkArea work_area;
     std::string manifesto;
     std::string goal;
-    std::vector<std::string> skills;  // search | generate-data | train | summarize | call-api
+    std::vector<std::string> skills;  // one of agent_skills()
     std::string trigger;              // empty = conversation only
     std::string status = "idle";      // idle | running | waiting | completed | failed
     std::string model_name;           // shown to people; `model` is what loads
@@ -115,6 +115,12 @@ struct AgentRecord {
 // The draft-07 boundary schema for an agent record (schema-as-code source of truth for
 // the REST/OpenAPI surface).
 const nlohmann::json& agent_schema();
+
+// The skills a person may grant an agent, in the order Studio and lake offer them. agent-runtime
+// gives an agent the tools each one names (oramasearch/agent-runtime `skills.py`): the original
+// five reach the workspace engine, the rest reach lake's drives, transcripts, repositories,
+// datasets, streams, pipeline design and usage (agent-runtime#7).
+const std::vector<std::string>& agent_skills();
 
 nlohmann::json to_json(const AgentRecord& agent);
 

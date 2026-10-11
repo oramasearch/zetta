@@ -279,7 +279,19 @@ TEST_F(AgentApiFixture, KindsRuntimesStudioShapeAndPipelineGrants) {
 
     nlohmann::json bad_skill = python_agent;
     bad_skill["skills"] = {"launch-missiles"};
-    EXPECT_FALSE(call("create_agent", bad_skill).ok);
+    ApiResult refused_skill = call("create_agent", bad_skill);
+    EXPECT_FALSE(refused_skill.ok);
+    EXPECT_EQ(refused_skill.error.path, "/skills/0") << refused_skill.error.message;
+
+    // Lake's own areas are skills too (agent-runtime#7): agent-runtime gives them their tools.
+    nlohmann::json lake_skills = python_agent;
+    lake_skills["name"] = "Drive reader";
+    lake_skills["skills"] = {"drives", "transcripts", "repositories", "datasets", "streams",
+                             "pipelines", "usage"};
+    ApiResult lake_skilled = call("create_agent", lake_skills);
+    ASSERT_TRUE(lake_skilled.ok) << lake_skilled.error.message;
+    EXPECT_EQ(lake_skilled.value.at("skills").size(), 7u);
+    ASSERT_TRUE(call("delete_agent", {{"id", lake_skilled.value.at("id")}}).ok);
 
     // The Ask Orama contract: one explicit default, reported by list_agents.
     ApiResult listed = call("list_agents", nlohmann::json::object());

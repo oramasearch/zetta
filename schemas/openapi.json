@@ -3479,7 +3479,14 @@
                         "generate-data",
                         "train",
                         "summarize",
-                        "call-api"
+                        "call-api",
+                        "drives",
+                        "transcripts",
+                        "repositories",
+                        "datasets",
+                        "streams",
+                        "pipelines",
+                        "usage"
                       ],
                       "type": "string"
                     },
@@ -3639,7 +3646,14 @@
                               "generate-data",
                               "train",
                               "summarize",
-                              "call-api"
+                              "call-api",
+                              "drives",
+                              "transcripts",
+                              "repositories",
+                              "datasets",
+                              "streams",
+                              "pipelines",
+                              "usage"
                             ],
                             "type": "string"
                           },
@@ -11756,7 +11770,14 @@
                               "generate-data",
                               "train",
                               "summarize",
-                              "call-api"
+                              "call-api",
+                              "drives",
+                              "transcripts",
+                              "repositories",
+                              "datasets",
+                              "streams",
+                              "pipelines",
+                              "usage"
                             ],
                             "type": "string"
                           },
@@ -19302,7 +19323,14 @@
                                     "generate-data",
                                     "train",
                                     "summarize",
-                                    "call-api"
+                                    "call-api",
+                                    "drives",
+                                    "transcripts",
+                                    "repositories",
+                                    "datasets",
+                                    "streams",
+                                    "pipelines",
+                                    "usage"
                                   ],
                                   "type": "string"
                                 },
@@ -32040,7 +32068,14 @@
                               "generate-data",
                               "train",
                               "summarize",
-                              "call-api"
+                              "call-api",
+                              "drives",
+                              "transcripts",
+                              "repositories",
+                              "datasets",
+                              "streams",
+                              "pipelines",
+                              "usage"
                             ],
                             "type": "string"
                           },
@@ -33550,7 +33585,14 @@
                         "generate-data",
                         "train",
                         "summarize",
-                        "call-api"
+                        "call-api",
+                        "drives",
+                        "transcripts",
+                        "repositories",
+                        "datasets",
+                        "streams",
+                        "pipelines",
+                        "usage"
                       ],
                       "type": "string"
                     },
@@ -33710,7 +33752,14 @@
                               "generate-data",
                               "train",
                               "summarize",
-                              "call-api"
+                              "call-api",
+                              "drives",
+                              "transcripts",
+                              "repositories",
+                              "datasets",
+                              "streams",
+                              "pipelines",
+                              "usage"
                             ],
                             "type": "string"
                           },
