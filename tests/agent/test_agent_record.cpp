@@ -66,4 +66,16 @@ TEST(AgentRecord, RequiresAnId) {
     EXPECT_NE(error.find("id"), std::string::npos) << error;
 }
 
+TEST(AgentRecord, AcceptsAnMcpConnectionSkill) {
+    auto json = zetta::agent::to_json(sample());
+    std::string error;
+    json["skills"] = {"search", "mcp:ticket_desk"};
+    ASSERT_TRUE(zetta::agent::agent_from_json(json, &error).has_value()) << error;
+    for (const char* bad : {"mcp:", "mcp:Ticket", "mcp:9desk", "mcp:a-b", "mcp:aaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "mcp_ticket", "deploy"}) {
+        json["skills"] = {bad};
+        EXPECT_FALSE(zetta::agent::agent_from_json(json, &error).has_value()) << bad;
+    }
+}
+
 }  // namespace
