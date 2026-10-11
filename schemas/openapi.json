@@ -3493,7 +3493,7 @@
                           "type": "string"
                         },
                         {
-                          "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                          "description": "the allowed tools of the workspace's MCP connection with this prefix in Lake",
                           "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
                           "type": "string"
                         }
@@ -3669,7 +3669,7 @@
                                 "type": "string"
                               },
                               {
-                                "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                "description": "the allowed tools of the workspace's MCP connection with this prefix in Lake",
                                 "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
                                 "type": "string"
                               }
@@ -11806,7 +11806,7 @@
                                 "type": "string"
                               },
                               {
-                                "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                "description": "the allowed tools of the workspace's MCP connection with this prefix in Lake",
                                 "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
                                 "type": "string"
                               }
@@ -19368,7 +19368,7 @@
                                       "type": "string"
                                     },
                                     {
-                                      "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                      "description": "the allowed tools of the workspace's MCP connection with this prefix in Lake",
                                       "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
                                       "type": "string"
                                     }
@@ -32540,7 +32540,7 @@
                                 "type": "string"
                               },
                               {
-                                "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                "description": "the allowed tools of the workspace's MCP connection with this prefix in Lake",
                                 "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
                                 "type": "string"
                               }
@@ -34400,7 +34400,7 @@
                           "type": "string"
                         },
                         {
-                          "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                          "description": "the allowed tools of the workspace's MCP connection with this prefix in Lake",
                           "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
                           "type": "string"
                         }
@@ -34576,7 +34576,7 @@
                                 "type": "string"
                               },
                               {
-                                "description": "the allowed tools of the workspace's MCP connection with this prefix in lake",
+                                "description": "the allowed tools of the workspace's MCP connection with this prefix in Lake",
                                 "pattern": "^mcp:[a-z][a-z0-9_]{0,23}$",
                                 "type": "string"
                               }
