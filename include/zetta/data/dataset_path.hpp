@@ -99,6 +99,20 @@ struct EntityKeyMappingResult {
 EntityKeyMappingResult derive_entity_key_mapping(
     std::string column, const std::vector<nlohmann::json>& values,
     const EntityKeyHash& hash = {});
+// A read answer's view of an entity-key mapping (#1202): `{column,
+// entry_count}` in place of `{column, entries}`. The entries list every distinct
+// text id of the dataset, so a Run or Model read carrying them grows with the
+// row count (222 KB for get_run on 1,500 rows). Reads leave them out unless
+// the caller asks for them; the stored record is unchanged.
+nlohmann::json entity_key_mapping_summary(const nlohmann::json& mapping);
+
+// Replace every `entity_key_mapping` object with entries anywhere in
+// `document` by its summary. Returns how many it replaced.
+std::size_t summarize_entity_key_mappings(nlohmann::json& document);
+
+// The JSON Schema of entity_key_mapping_summary()'s answer.
+const nlohmann::json& entity_key_mapping_summary_schema();
+
 std::shared_ptr<const EntityKeyMapping> entity_key_mapping_from_json(
     const nlohmann::json& value, std::string* error = nullptr);
 

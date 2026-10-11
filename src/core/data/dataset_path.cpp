@@ -183,6 +183,51 @@ EntityKeyMappingResult derive_entity_key_mapping(
     return result;
 }
 
+nlohmann::json entity_key_mapping_summary(const nlohmann::json& mapping) {
+    nlohmann::json summary = nlohmann::json::object();
+    if (const auto column = mapping.find("column"); column != mapping.end()) {
+        summary["column"] = *column;
+    }
+    const auto entries = mapping.find("entries");
+    summary["entry_count"] =
+        entries != mapping.end() && entries->is_array() ? entries->size() : 0;
+    return summary;
+}
+
+std::size_t summarize_entity_key_mappings(nlohmann::json& document) {
+    std::size_t replaced = 0;
+    if (document.is_object()) {
+        for (auto& [key, value] : document.items()) {
+            if (key == "entity_key_mapping" && value.is_object() &&
+                value.contains("entries")) {
+                value = entity_key_mapping_summary(value);
+                ++replaced;
+            } else {
+                replaced += summarize_entity_key_mappings(value);
+            }
+        }
+    } else if (document.is_array()) {
+        for (nlohmann::json& item : document) {
+            replaced += summarize_entity_key_mappings(item);
+        }
+    }
+    return replaced;
+}
+
+const nlohmann::json& entity_key_mapping_summary_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"column", "entry_count"}},
+        {"additionalProperties", false},
+        {"description",
+         "the text entity column and how many distinct ids it maps; the "
+         "entries themselves only on request (include_entity_keys)"},
+        {"properties",
+         {{"column", {{"type", "string"}, {"minLength", 1}}},
+          {"entry_count", {{"type", "integer"}, {"minimum", 0}}}}}};
+    return schema;
+}
+
 std::shared_ptr<const EntityKeyMapping> entity_key_mapping_from_json(
     const nlohmann::json& value, std::string* error) {
     const auto fail = [error](std::string reason) {

@@ -12192,6 +12192,16 @@
         "operationId": "get_model",
         "parameters": [
           {
+            "description": "also return entity_key_mapping.entries, every distinct text id and its derived key (default false: a count, entry_count — the list grows with the dataset's row count)",
+            "in": "query",
+            "name": "include_entity_keys",
+            "required": false,
+            "schema": {
+              "description": "also return entity_key_mapping.entries, every distinct text id and its derived key (default false: a count, entry_count — the list grows with the dataset's row count)",
+              "type": "boolean"
+            }
+          },
+          {
             "description": "the model's uuid (system.models.model_id)",
             "in": "query",
             "name": "model_id",
@@ -14221,6 +14231,16 @@
         "operationId": "get_run",
         "parameters": [
           {
+            "description": "also return entity_key_mapping.entries, every distinct text id and its derived key (default false: a count, entry_count — the list grows with the dataset's row count)",
+            "in": "query",
+            "name": "include_entity_keys",
+            "required": false,
+            "schema": {
+              "description": "also return entity_key_mapping.entries, every distinct text id and its derived key (default false: a count, entry_count — the list grows with the dataset's row count)",
+              "type": "boolean"
+            }
+          },
+          {
             "description": "the run's uuid (system.runs.run_id)",
             "in": "query",
             "name": "run_id",
@@ -14271,38 +14291,61 @@
                           "type": "string"
                         },
                         "entity_key_mapping": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "column": {
-                              "minLength": 1,
-                              "type": "string"
-                            },
-                            "entries": {
-                              "items": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "derived_id": {
-                                    "type": "integer"
-                                  },
-                                  "original_value": {
-                                    "minLength": 1,
-                                    "type": "string"
-                                  }
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "column": {
+                                  "minLength": 1,
+                                  "type": "string"
                                 },
-                                "required": [
-                                  "derived_id",
-                                  "original_value"
-                                ],
-                                "type": "object"
+                                "entries": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "derived_id": {
+                                        "type": "integer"
+                                      },
+                                      "original_value": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "derived_id",
+                                      "original_value"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
                               },
-                              "type": "array"
+                              "required": [
+                                "column",
+                                "entries"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "description": "the text entity column and how many distinct ids it maps; the entries themselves only on request (include_entity_keys)",
+                              "properties": {
+                                "column": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "entry_count": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "column",
+                                "entry_count"
+                              ],
+                              "type": "object"
                             }
-                          },
-                          "required": [
-                            "column",
-                            "entries"
-                          ],
-                          "type": "object"
+                          ]
                         },
                         "features": {
                           "additionalProperties": false,
