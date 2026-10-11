@@ -122,6 +122,15 @@ const nlohmann::json& agent_schema();
 // datasets, streams, pipeline design and usage (agent-runtime#7).
 const std::vector<std::string>& agent_skills();
 
+// The pattern of a skill that grants one of the workspace's MCP connections in lake (lake#652):
+// `mcp:` then the connection's prefix as lake makes it, a letter then letters, digits and
+// underscores, at most 24.
+inline constexpr const char* kMcpConnectionSkillPattern = "^mcp:[a-z][a-z0-9_]{0,23}$";
+
+// The JSON Schema of one entry of `skills`, for every capability input that takes them: one of
+// agent_skills(), or an MCP connection's skill.
+nlohmann::json agent_skill_schema();
+
 nlohmann::json to_json(const AgentRecord& agent);
 
 // Overwrite the fields added by zetta#1015 (kind, runtime, the Studio shape, pipelines, the Python

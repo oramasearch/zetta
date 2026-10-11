@@ -109,6 +109,16 @@ std::string AgentRecord::validation_error() const {
     return std::string();
 }
 
+nlohmann::json agent_skill_schema() {
+    return {{"anyOf",
+             nlohmann::json::array({{{"type", "string"}, {"enum", agent_skills()}},
+                                    {{"type", "string"},
+                                     {"pattern", kMcpConnectionSkillPattern},
+                                     {"description",
+                                      "the allowed tools of the workspace's MCP connection "
+                                      "with this prefix in lake"}}})}};
+}
+
 const std::vector<std::string>& agent_skills() {
     static const std::vector<std::string> skills{
         "search",      "generate-data", "train",    "summarize", "call-api",  "drives",
