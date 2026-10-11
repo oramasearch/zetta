@@ -2882,7 +2882,7 @@
     },
     "/v1/compile_intent": {
       "post": {
-        "description": "Resolve a methodology from an explicit methodology, primary solution, or intent keywords, then compile its editable graph. Unavailable methodologies are refused with their implementation issue. Requires orchestration:compile_intent.",
+        "description": "Resolve a methodology from an explicit methodology, primary solution, or intent keywords, then compile its editable graph. Unavailable methodologies are refused with their implementation issue. Without a `name`, the graph is named from the intent's own words; `template` says which template its steps started from. Requires orchestration:compile_intent.",
         "operationId": "compile_intent",
         "requestBody": {
           "content": {
@@ -2985,6 +2985,10 @@
                         },
                         "steps": {
                           "type": "integer"
+                        },
+                        "template": {
+                          "description": "compile_intent only: the template the steps started from (\"the M-1 churn template\"); their names are the template's until edited (#1238)",
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -3129,6 +3133,10 @@
                         },
                         "steps": {
                           "type": "integer"
+                        },
+                        "template": {
+                          "description": "compile_intent only: the template the steps started from (\"the M-1 churn template\"); their names are the template's until edited (#1238)",
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -3273,6 +3281,10 @@
                         },
                         "steps": {
                           "type": "integer"
+                        },
+                        "template": {
+                          "description": "compile_intent only: the template the steps started from (\"the M-1 churn template\"); their names are the template's until edited (#1238)",
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -30453,6 +30465,10 @@
                         },
                         "steps": {
                           "type": "integer"
+                        },
+                        "template": {
+                          "description": "compile_intent only: the template the steps started from (\"the M-1 churn template\"); their names are the template's until edited (#1238)",
+                          "type": "string"
                         }
                       },
                       "required": [

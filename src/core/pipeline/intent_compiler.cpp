@@ -73,7 +73,91 @@ const ml::Methodology* resolve_methodology(const std::string& lowered_intent,
     return nullptr;
 }
 
+std::string template_name(const ml::Methodology& methodology,
+                          const IntentCompileOptions& options) {
+    if (!options.solution.empty()) {
+        return "the " + options.solution + " template";
+    }
+    if (methodology.id == "M-1") {
+        return "the M-1 churn template";
+    }
+    return "the " + methodology.id + " " + methodology.name + " template";
+}
+
 }  // namespace
+
+std::string intent_pipeline_name(std::string_view intent) {
+    constexpr std::size_t max_words = 8;
+    constexpr std::size_t max_length = 60;
+    std::vector<std::string> words;
+    std::string word;
+    const auto flush = [&] {
+        // Trim the dashes and apostrophes a word may end or start with.
+        while (!word.empty() && (word.back() == '-' || word.back() == '\'')) {
+            word.pop_back();
+        }
+        while (!word.empty() && (word.front() == '-' || word.front() == '\'')) {
+            word.erase(word.begin());
+        }
+        if (!word.empty()) {
+            words.push_back(std::move(word));
+        }
+        word.clear();
+    };
+    for (const char character : intent) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (std::isalnum(byte) != 0 || character == '-' || character == '\'' ||
+            character == '_' || byte >= 0x80) {
+            word += character;
+        } else {
+            flush();
+        }
+        if (words.size() == max_words) {
+            break;
+        }
+    }
+    if (words.size() < max_words) {
+        flush();
+    }
+    std::string name;
+    for (const std::string& next : words) {
+        if (!name.empty() && name.size() + 1 + next.size() > max_length) {
+            break;
+        }
+        name += (name.empty() ? "" : " ") + next;
+    }
+    if (name.size() > max_length) {
+        name.resize(max_length);
+        // Never leave half of a UTF-8 character at the cut.
+        while (!name.empty() &&
+               (static_cast<unsigned char>(name.back()) & 0xC0) == 0x80) {
+            name.pop_back();
+        }
+        if (!name.empty() && static_cast<unsigned char>(name.back()) >= 0xC0) {
+            name.pop_back();
+        }
+    }
+    // A cut phrase does not end on a joining word ("… next quarter and").
+    static const std::vector<std::string> joining = {
+        "a",  "an", "and", "by",  "for", "from", "in",   "of",
+        "on", "or", "the", "to",  "with", "into", "that", "which"};
+    while (true) {
+        const std::size_t space = name.rfind(' ');
+        if (space == std::string::npos) {
+            break;
+        }
+        const std::string last = to_lower(std::string_view(name).substr(space + 1));
+        if (std::find(joining.begin(), joining.end(), last) == joining.end()) {
+            break;
+        }
+        name.resize(space);
+    }
+    if (!name.empty()) {
+        name.front() = static_cast<char>(
+            std::toupper(static_cast<unsigned char>(name.front())));
+    }
+    return name;
+}
 
 std::string_view to_string(IntentShape shape) {
     switch (shape) {
@@ -117,11 +201,16 @@ compile_intent(std::string_view intent, const IntentCompileOptions& options,
     request.hints = options.hints;
     const IntentShape shape =
         methodology->id == "M-1" ? IntentShape::Churn : IntentShape::Generic;
-    const std::string name = methodology->id == "M-1"
-                                 ? "churn skeleton"
-                                 : methodology->name + " pipeline";
+    // Named for what the person asked, not for the template (#1238); an
+    // intent with no words falls back to the project's or methodology's name.
+    std::string name = intent_pipeline_name(intent);
+    if (name.empty()) {
+        name = options.project.empty() ? methodology->name + " pipeline"
+                                       : options.project + " pipeline";
+    }
     return CompiledIntent{methodology->build_shape(request), shape,
-                          methodology->id, name};
+                          methodology->id, std::move(name),
+                          template_name(*methodology, options)};
 }
 
 } // namespace zetta::pipeline

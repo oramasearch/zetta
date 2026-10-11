@@ -52,7 +52,8 @@ commits. All 21 portfolio methodologies are runnable.
   round four extends it through M-21. The naming regression checks every
   runnable method and the M-3 capability response: default names come from
   `CompiledIntent::name`, not the legacy `IntentShape::Generic` label.
-  Explicit names and M-1's `churn skeleton` remain unchanged.
+  Explicit names remain unchanged. Since #1238 the default name comes from the
+  intent's words, and `template` says which template the steps started from.
 - GBDT retains binary-logistic and squared-error behavior alongside the
   LambdaMART gradient callback. Forecasting and uplift retain regression.
 - Reports retain every method's metrics, tables and dataset facts. Survival

@@ -33,8 +33,20 @@ struct CompiledIntent {
     ir::ExecutionGraph graph;
     IntentShape shape;
     std::string methodology;
+    // The pipeline's name, from the intent's own words (#1238): "Predict which
+    // customers will cancel next month", never a fixed template name.
     std::string name;
+    // The template the steps started from, said plainly so a person knows the
+    // step names are the template's until they edit them (#1238): "the M-1
+    // churn template", "the S-2 template", "the M-3 Segmentation / clustering
+    // template".
+    std::string template_name;
 };
+
+// A pipeline name from an intent's words (#1238): its first words, up to
+// eight and about sixty characters, punctuation dropped, the first letter
+// capitalized. Empty when the intent has no words.
+std::string intent_pipeline_name(std::string_view intent);
 
 struct IntentCompileOptions {
     std::string project;

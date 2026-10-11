@@ -328,7 +328,8 @@ std::shared_ptr<ProjectGraph> Project::approve_graph(const std::string& name,
 std::shared_ptr<ProjectGraph>
 Project::compile_intent_to_graph(const std::string& input_id, std::string name,
                                  const IntentCompileOptions& options,
-                                 std::string* error) {
+                                 std::string* error,
+                                 std::string* template_name) {
     // Resolve the stored intent input. It must exist, be an Intent (not an
     // artifact), and have its payload body present locally (a peer may hold the
     // metadata before body transfer — there is nothing to compile from then).
@@ -344,7 +345,15 @@ Project::compile_intent_to_graph(const std::string& input_id, std::string name,
     if (!compiled) return nullptr;
 
     if (name.empty()) {
+        // The intent's own words (#1238). The same intent compiled again in
+        // this project gets a numbered name rather than a collision.
         name = compiled->name;
+        for (int copy = 2; find_graph(name); ++copy) {
+            name = compiled->name + " (" + std::to_string(copy) + ")";
+        }
+    }
+    if (template_name != nullptr) {
+        *template_name = compiled->template_name;
     }
     // create_graph rejects an empty/colliding name and captures the new graph
     // into the CRDT, so the compiled skeleton replicates + is editable in the

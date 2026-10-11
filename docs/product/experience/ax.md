@@ -110,9 +110,9 @@ relay it to a person.
   bandit shape against the connect step's table, then reports policy metrics
   and its output tables. See
   [the registry contract](../../ml/methodologies.md).
-  Default pipeline names also identify the method: M-3 returns
-  `Segmentation / clustering pipeline`; M-1 retains `churn skeleton`.
-  Explicit caller names are unchanged.
+  Default pipeline names come from the intent's own words, and `template`
+  names the template the steps started from (#1238). Explicit caller names are
+  unchanged.
 - **Solution discovery and composition** ([#1102](https://github.com/oramasearch/zetta/issues/1102)):
   `list_solutions` and `get_solution` expose all 20 runnable catalogue modules
   with plain product copy, portfolio-number composition, data roles,

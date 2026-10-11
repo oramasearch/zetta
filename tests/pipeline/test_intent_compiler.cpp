@@ -87,7 +87,9 @@ TEST(IntentCompilerTest, UnknownModelKindIsRefused) {
               std::string::npos);
 }
 
-TEST(IntentCompilerTest, NamesEveryRunnablePipelineAfterItsMethodology) {
+// #1238: every compiled pipeline is named for what was asked, and says which
+// template its steps started from; none is named for the template.
+TEST(IntentCompilerTest, NamesEveryRunnablePipelineFromItsIntent) {
     for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
         ASSERT_TRUE(methodology.runnable) << methodology.id;
         zetta::pipeline::IntentCompileOptions options;
@@ -95,11 +97,39 @@ TEST(IntentCompilerTest, NamesEveryRunnablePipelineAfterItsMethodology) {
         const auto compiled = compile_intent("Build the selected pipeline", options);
         ASSERT_TRUE(compiled) << methodology.id;
         EXPECT_EQ(compiled->methodology, methodology.id);
-        EXPECT_EQ(compiled->name, methodology.id == "M-1"
-                                      ? "churn skeleton"
-                                      : methodology.name + " pipeline");
-        EXPECT_NE(compiled->name, "generic skeleton");
+        EXPECT_EQ(compiled->name, "Build the selected pipeline");
+        EXPECT_EQ(compiled->template_name,
+                  methodology.id == "M-1"
+                      ? std::string("the M-1 churn template")
+                      : "the " + methodology.id + " " + methodology.name + " template");
     }
+    zetta::pipeline::IntentCompileOptions solution;
+    solution.solution = "S-1";
+    EXPECT_EQ(compile_intent("Keep customers", solution)->template_name, "the S-1 template");
+}
+
+TEST(IntentCompilerTest, APipelineNameIsTheIntentsFirstWords) {
+    using zetta::pipeline::intent_pipeline_name;
+    EXPECT_EQ(intent_pipeline_name("predict which customers will cancel next month."),
+              "Predict which customers will cancel next month");
+    EXPECT_EQ(intent_pipeline_name("Predict which customers will churn next quarter and rank "
+                                   "the at-risk accounts"),
+              "Predict which customers will churn next quarter")
+        << "eight words at most, never ending on a joining word";
+    EXPECT_EQ(intent_pipeline_name("  Flag at-risk accounts!!! (churn) "),
+              "Flag at-risk accounts churn");
+    EXPECT_EQ(intent_pipeline_name("?!"), "");
+    const std::string long_words(70, 'x');
+    EXPECT_EQ(intent_pipeline_name(long_words).size(), 60u);
+    EXPECT_LE(intent_pipeline_name("supercalifragilistic expialidocious antidisestablishment "
+                                   "floccinaucinihilipilification words")
+                  .size(),
+              60u);
+    // No words: the project's name (or the methodology's) instead.
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-1";
+    options.project = "retention";
+    EXPECT_EQ(compile_intent("... ???", options)->name, "retention pipeline");
 }
 
 TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
@@ -364,15 +394,25 @@ TEST(IntentCompilerTest, ProjectCompilesStoredIntentToGraph) {
         "Flag accounts likely to churn and notify our retention team.");
     ASSERT_TRUE(intent);
 
-    auto graph = project->compile_intent_to_graph(intent->id());
+    std::string template_name;
+    auto graph = project->compile_intent_to_graph(intent->id(), {}, {}, nullptr,
+                                                  &template_name);
     ASSERT_TRUE(graph);
-    EXPECT_EQ(graph->name(), "churn skeleton");  // shape-derived default name
+    // Named from the intent's words (#1238), with the template it started from.
+    EXPECT_EQ(graph->name(), "Flag accounts likely to churn and notify our");
+    EXPECT_EQ(template_name, "the M-1 churn template");
     EXPECT_TRUE(covers_all_stages(graph->graph()));
 
     // It is a real stored graph: findable by name and listed by the project, so
     // the Graph Workspace renders + edits it like any other.
-    EXPECT_TRUE(project->find_graph("churn skeleton"));
+    EXPECT_TRUE(project->find_graph("Flag accounts likely to churn and notify our"));
     EXPECT_EQ(project->graph_count(), 1u);
+
+    // The same intent compiled again gets a numbered name, not a collision.
+    auto again = project->compile_intent_to_graph(intent->id());
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again->name(), "Flag accounts likely to churn and notify our (2)");
+    EXPECT_EQ(project->graph_count(), 2u);
 
     // The intent input is left intact — it is an immutable provenance record.
     EXPECT_TRUE(project->find_input(intent->id()));

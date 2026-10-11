@@ -4281,6 +4281,12 @@ const nlohmann::json& project_graph_output_schema() {
              "plan-approval state (#885); a fresh plan is proposed"}}},
           {"methodology", {{"type", {"string", "null"}}}},
           {"runnable", {{"type", "boolean"}}},
+          {"template",
+           {{"type", "string"},
+            {"description",
+             "compile_intent only: the template the steps started from "
+             "(\"the M-1 churn template\"); their names are the template's "
+             "until edited (#1238)"}}},
           {"project", {{"type", "string"}}}}}};
     return schema;
 }
@@ -4491,8 +4497,10 @@ ApiResult handle_compile_intent(const nlohmann::json& input, ApiContext& context
     options.solution = input.value("solution", "");
     options.hints = input.value("hints", nlohmann::json::object());
     std::string compile_error;
+    std::string template_name;
     auto graph = project->compile_intent_to_graph(
-        input_id, input.value("name", ""), options, &compile_error);
+        input_id, input.value("name", ""), options, &compile_error,
+        &template_name);
     if (!graph) {
         if (!compile_error.empty()) {
             const bool unsupported =
@@ -4511,6 +4519,9 @@ ApiResult handle_compile_intent(const nlohmann::json& input, ApiContext& context
     }
     nlohmann::json output = graph_json(*graph);
     output["project"] = project->name();
+    // Which template the steps came from (#1238): their names are the
+    // template's until someone edits them.
+    output["template"] = template_name;
     return ApiResult::success(std::move(output));
 }
 
@@ -9796,7 +9807,9 @@ void register_core_capabilities(Registry& registry) {
         "compile_intent", "Compile intent to graph",
         "Resolve a methodology from an explicit methodology, primary solution, "
         "or intent keywords, then compile its editable graph. Unavailable "
-        "methodologies are refused with their implementation issue.",
+        "methodologies are refused with their implementation issue. Without "
+        "a `name`, the graph is named from the intent's own words; `template` "
+        "says which template its steps started from.",
         compile_intent_schema(), project_graph_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "compile_intent"},
