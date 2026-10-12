@@ -14,6 +14,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/pipeline/run.hpp"
+
 namespace zetta {
 class Node;
 }
@@ -111,6 +113,9 @@ struct StudyValue {
     std::string stop_reason;
     std::string failure_reason;
     std::string promoted_model;
+    // The tables the study's trials read (zetta#1258), recorded at creation:
+    // delete_dataset refuses them while the study runs.
+    std::vector<pipeline::TableRead> reads;
 };
 
 struct StudyDeleteResult {

@@ -215,7 +215,17 @@ const nlohmann::json& schema_document() {
         "spent_cost":{"type":"number","minimum":0},
         "stop_reason":{"type":"string"},
         "failure_reason":{"type":"string"},
-        "promoted_model":{"type":"string"}
+        "promoted_model":{"type":"string"},
+        "reads":{"type":"array","items":{
+          "type":"object",
+          "required":["database","table"],
+          "additionalProperties":false,
+          "properties":{
+            "database":{"type":"string"},
+            "table":{"type":"string"},
+            "table_id":{"type":"string"}
+          }
+        }}
       }
     })JSON");
     return schema;
@@ -599,15 +609,18 @@ nlohmann::json to_json(const StudyValue& value) {
         }
         trials.push_back(std::move(item));
     }
-    return {{"spec", spec_json(value.spec)},
-            {"status", to_string(value.status)},
-            {"created", value.created},
-            {"updated", value.updated},
-            {"trials", std::move(trials)},
-            {"spent_cost", value.spent_cost},
-            {"stop_reason", value.stop_reason},
-            {"failure_reason", value.failure_reason},
-            {"promoted_model", value.promoted_model}};
+    nlohmann::json output{{"spec", spec_json(value.spec)},
+                          {"status", to_string(value.status)},
+                          {"created", value.created},
+                          {"updated", value.updated},
+                          {"trials", std::move(trials)},
+                          {"spent_cost", value.spent_cost},
+                          {"stop_reason", value.stop_reason},
+                          {"failure_reason", value.failure_reason},
+                          {"promoted_model", value.promoted_model}};
+    // Only when there is one, so the shape stays what an older peer accepts.
+    if (!value.reads.empty()) output["reads"] = pipeline::to_json(value.reads);
+    return output;
 }
 
 const nlohmann::json& study_value_schema() { return schema_document(); }
@@ -699,6 +712,9 @@ std::optional<StudyValue> parse_study_value(const nlohmann::json& value,
     parsed.stop_reason = value.at("stop_reason").get<std::string>();
     parsed.failure_reason = value.value("failure_reason", std::string{});
     parsed.promoted_model = value.at("promoted_model").get<std::string>();
+    if (const auto reads = value.find("reads"); reads != value.end()) {
+        parsed.reads = pipeline::table_reads_from_json(*reads);
+    }
     for (const nlohmann::json& item : value.at("trials")) {
         StudyTrial trial;
         trial.number = item.at("number").get<std::size_t>();
@@ -1117,6 +1133,7 @@ StudyRunResult run_study(Node& node, Study& study,
                 study.stop("could not create a trial Run");
                 break;
             }
+            run->add_reads(study.value().reads);  // zetta#1258
             run->set_status(zetta::pipeline::RunStatus::Running);
             nlohmann::json recorded_params = params;
             recorded_params["study.id"] = study.id();
@@ -1997,6 +2014,7 @@ std::vector<StudyTrial> StudyDriver::State::prepare_batch(
                 study->stop("could not create a trial Run");
                 break;
             }
+            run->add_reads(study->value().reads);  // zetta#1258
             run->set_status(pipeline::RunStatus::Running);
             StudyTrial trial;
             trial.number = number;

@@ -30,6 +30,7 @@
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/node.hpp"
@@ -958,6 +959,102 @@ TEST_F(RegistryFixture, DeleteDatasetRemovesItsPartitionsAndIndexes) {
     auto by_id = call("delete_dataset", {{"dataset", keeper->id()}, {"dry_run", true}});
     ASSERT_TRUE(by_id.ok) << by_id.error.message;
     EXPECT_EQ(by_id.value.at("dataset"), "customers");
+}
+
+// zetta#1258: a run records the tables it reads when it is created (its
+// pipeline's connect steps, and a dataset it is handed), a study records its
+// dataset, and delete_dataset refuses the dataset while any of them is in
+// flight, its dry run too, naming them.
+TEST_F(RegistryFixture, DeleteDatasetRefusesWhileARunOrAStudyReadsIt) {
+    auto database = node.create_database("data");
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    ASSERT_TRUE(database->create_table("customers"));
+
+    auto project = node.create_project("reader");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    ASSERT_TRUE(connect);
+    connect->attributes = {{"source", "data"}, {"table", "orders"}};
+    auto pipeline = project->create_graph("training", std::move(graph));
+    ASSERT_TRUE(pipeline);
+
+    // The pipeline's run records the table before it reads anything.
+    auto run = node.create_run(project->id(), pipeline->id());
+    ASSERT_TRUE(run);
+    ASSERT_EQ(run->reads().size(), 1u);
+    EXPECT_EQ(run->reads().front().database, "data");
+    EXPECT_EQ(run->reads().front().table, "orders");
+    EXPECT_EQ(run->reads().front().table_id, table->id());
+    // ...and it survives the replicated/on-disk round trip.
+    const auto parsed = zetta::pipeline::parse_run_value(run->metadata());
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed->reads, run->reads());
+    // A table it does not read is not recorded.
+    EXPECT_FALSE(zetta::pipeline::reads_table(run->reads(), "data", "customers", ""));
+
+    for (const bool dry_run : {true, false}) {
+        auto refused = call("delete_dataset", {{"dataset", "data.orders"}, {"dry_run", dry_run}});
+        EXPECT_FALSE(refused.ok);
+        EXPECT_EQ(refused.error.code, "engine_error");
+        EXPECT_NE(refused.error.message.find(run->id()), std::string::npos)
+            << refused.error.message;
+        EXPECT_NE(refused.error.message.find("pending"), std::string::npos)
+            << refused.error.message;
+    }
+    EXPECT_TRUE(database->find_table("orders"));
+    // A dataset the run does not read is deleted as before.
+    EXPECT_TRUE(call("delete_dataset", {{"dataset", "data.customers"}, {"dry_run", true}}).ok);
+
+    run->set_status(zetta::pipeline::RunStatus::Running);
+    EXPECT_EQ(call("delete_dataset", {{"dataset", "data.orders"}}).error.code, "engine_error");
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+
+    // A run handed the dataset (no pipeline of its own) records it too.
+    auto handed = node.create_run("");
+    ASSERT_TRUE(handed);
+    EXPECT_TRUE(handed->reads().empty());
+    handed->add_reads(node.tables_read({}, {}, "data.orders"));
+    handed->add_reads(node.tables_read({}, {}, "data.orders"));  // once
+    ASSERT_EQ(handed->reads().size(), 1u);
+    handed->set_status(zetta::pipeline::RunStatus::Running);
+    auto by_handed = call("delete_dataset", {{"dataset", table->id()}, {"dry_run", true}});
+    EXPECT_EQ(by_handed.error.code, "engine_error");
+    EXPECT_NE(by_handed.error.message.find(handed->id()), std::string::npos)
+        << by_handed.error.message;
+    handed->set_status(zetta::pipeline::RunStatus::Failed);
+
+    // A running study on the dataset keeps it, though no trial is in flight.
+    zetta::ml::StudySpec spec;
+    spec.name = "orders-tuning";
+    spec.dataset = "data.orders";
+    spec.methodology = "M-1";
+    spec.objective.metric = "validation.score";
+    spec.objective.validation_split = "validation";
+    zetta::ml::StudyParameter parameter;
+    parameter.name = "x";
+    parameter.minimum = 0.0;
+    parameter.maximum = 1.0;
+    spec.search_space = {parameter};
+    std::string error;
+    auto study = node.create_study(std::move(spec), &error);
+    ASSERT_TRUE(study) << error;
+    ASSERT_EQ(study->value().reads.size(), 1u);
+    EXPECT_EQ(study->value().reads.front().table_id, table->id());
+    const auto study_parsed = zetta::ml::parse_study_value(study->metadata());
+    ASSERT_TRUE(study_parsed);
+    EXPECT_EQ(study_parsed->reads, study->value().reads);
+    auto by_study = call("delete_dataset", {{"dataset", "data.orders"}, {"dry_run", true}});
+    EXPECT_EQ(by_study.error.code, "engine_error");
+    EXPECT_NE(by_study.error.message.find("orders-tuning"), std::string::npos)
+        << by_study.error.message;
+    study->stop("done");
+
+    // Nothing in flight reads it: the delete goes through.
+    auto deleted = call("delete_dataset", {{"dataset", "data.orders"}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
+    EXPECT_FALSE(database->find_table("orders"));
 }
 
 TEST_F(RegistryFixture, DeleteModelStopsServingItAndKeepsItsRun) {

@@ -540,6 +540,28 @@
     "project_name": {
       "type": "string"
     },
+    "reads": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "database": {
+            "type": "string"
+          },
+          "table": {
+            "type": "string"
+          },
+          "table_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "database",
+          "table"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "status": {
       "enum": [
         "pending",
