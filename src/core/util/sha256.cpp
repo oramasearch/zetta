@@ -1,7 +1,10 @@
 #include "zetta/util/sha256.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 
 // A small, self-contained SHA-256 (FIPS 180-4) so zetta-core has no crypto
 // dependency. Not constant-time; we only use it for content fingerprints, never
@@ -28,67 +31,113 @@ constexpr std::uint32_t rotr(std::uint32_t value, unsigned bits) {
 
 }  // namespace
 
-std::string sha256_hex(std::string_view bytes) {
-    std::array<std::uint32_t, 8> hash = {0x6a09e667, 0xbb67ae85, 0x3c6ef372,
-                                         0xa54ff53a, 0x510e527f, 0x9b05688c,
-                                         0x1f83d9ab, 0x5be0cd19};
+Sha256::Sha256()
+    : hash_{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+            0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19} {}
 
+void Sha256::block(const unsigned char* data) {
+    std::array<std::uint32_t, 64> words = {};
+    for (std::size_t i = 0; i < 16; ++i) {
+        words[i] = (static_cast<std::uint32_t>(data[i * 4]) << 24) |
+                   (static_cast<std::uint32_t>(data[i * 4 + 1]) << 16) |
+                   (static_cast<std::uint32_t>(data[i * 4 + 2]) << 8) |
+                   static_cast<std::uint32_t>(data[i * 4 + 3]);
+    }
+    for (std::size_t i = 16; i < 64; ++i) {
+        const std::uint32_t s0 =
+            rotr(words[i - 15], 7) ^ rotr(words[i - 15], 18) ^ (words[i - 15] >> 3);
+        const std::uint32_t s1 =
+            rotr(words[i - 2], 17) ^ rotr(words[i - 2], 19) ^ (words[i - 2] >> 10);
+        words[i] = words[i - 16] + s0 + words[i - 7] + s1;
+    }
+
+    std::uint32_t a = hash_[0], b = hash_[1], c = hash_[2], d = hash_[3];
+    std::uint32_t e = hash_[4], f = hash_[5], g = hash_[6], h = hash_[7];
+    for (std::size_t i = 0; i < 64; ++i) {
+        const std::uint32_t s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        const std::uint32_t ch = (e & f) ^ (~e & g);
+        const std::uint32_t temp1 = h + s1 + ch + kRoundConstants[i] + words[i];
+        const std::uint32_t s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        const std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        const std::uint32_t temp2 = s0 + maj;
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+    hash_[0] += a; hash_[1] += b; hash_[2] += c; hash_[3] += d;
+    hash_[4] += e; hash_[5] += f; hash_[6] += g; hash_[7] += h;
+}
+
+void Sha256::update(std::string_view bytes) {
+    length_ += bytes.size();
+    const auto* data = reinterpret_cast<const unsigned char*>(bytes.data());
+    std::size_t size = bytes.size();
+    if (buffered_ > 0) {
+        const std::size_t take = std::min(size, buffer_.size() - buffered_);
+        std::memcpy(buffer_.data() + buffered_, data, take);
+        buffered_ += take;
+        data += take;
+        size -= take;
+        if (buffered_ < buffer_.size()) return;
+        block(buffer_.data());
+        buffered_ = 0;
+    }
+    while (size >= 64) {
+        block(data);
+        data += 64;
+        size -= 64;
+    }
+    if (size > 0) {
+        std::memcpy(buffer_.data(), data, size);
+        buffered_ = size;
+    }
+}
+
+std::string Sha256::hex() {
     // Pad: append 0x80, then zeros, then the 64-bit big-endian bit length, so
     // the total is a multiple of 64 bytes.
-    std::string message(bytes);
-    const std::uint64_t bit_length = static_cast<std::uint64_t>(bytes.size()) * 8;
-    message.push_back(static_cast<char>(0x80));
-    while (message.size() % 64 != 56) message.push_back('\0');
+    const std::uint64_t bit_length = length_ * 8;
+    buffer_[buffered_++] = 0x80;
+    if (buffered_ > 56) {
+        while (buffered_ < 64) buffer_[buffered_++] = 0;
+        block(buffer_.data());
+        buffered_ = 0;
+    }
+    while (buffered_ < 56) buffer_[buffered_++] = 0;
     for (int shift = 56; shift >= 0; shift -= 8) {
-        message.push_back(static_cast<char>((bit_length >> shift) & 0xff));
+        buffer_[buffered_++] = static_cast<unsigned char>((bit_length >> shift) & 0xff);
     }
-
-    for (std::size_t offset = 0; offset < message.size(); offset += 64) {
-        std::array<std::uint32_t, 64> words = {};
-        for (std::size_t i = 0; i < 16; ++i) {
-            words[i] =
-                (static_cast<std::uint32_t>(
-                     static_cast<unsigned char>(message[offset + i * 4])) << 24) |
-                (static_cast<std::uint32_t>(
-                     static_cast<unsigned char>(message[offset + i * 4 + 1])) << 16) |
-                (static_cast<std::uint32_t>(
-                     static_cast<unsigned char>(message[offset + i * 4 + 2])) << 8) |
-                static_cast<std::uint32_t>(
-                    static_cast<unsigned char>(message[offset + i * 4 + 3]));
-        }
-        for (std::size_t i = 16; i < 64; ++i) {
-            const std::uint32_t s0 =
-                rotr(words[i - 15], 7) ^ rotr(words[i - 15], 18) ^ (words[i - 15] >> 3);
-            const std::uint32_t s1 =
-                rotr(words[i - 2], 17) ^ rotr(words[i - 2], 19) ^ (words[i - 2] >> 10);
-            words[i] = words[i - 16] + s0 + words[i - 7] + s1;
-        }
-
-        std::uint32_t a = hash[0], b = hash[1], c = hash[2], d = hash[3];
-        std::uint32_t e = hash[4], f = hash[5], g = hash[6], h = hash[7];
-        for (std::size_t i = 0; i < 64; ++i) {
-            const std::uint32_t s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-            const std::uint32_t ch = (e & f) ^ (~e & g);
-            const std::uint32_t temp1 = h + s1 + ch + kRoundConstants[i] + words[i];
-            const std::uint32_t s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-            const std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-            const std::uint32_t temp2 = s0 + maj;
-            h = g; g = f; f = e; e = d + temp1;
-            d = c; c = b; b = a; a = temp1 + temp2;
-        }
-        hash[0] += a; hash[1] += b; hash[2] += c; hash[3] += d;
-        hash[4] += e; hash[5] += f; hash[6] += g; hash[7] += h;
-    }
+    block(buffer_.data());
+    buffered_ = 0;
 
     static constexpr char kHexDigits[] = "0123456789abcdef";
     std::string hex;
     hex.reserve(64);
-    for (const std::uint32_t word : hash) {
+    for (const std::uint32_t word : hash_) {
         for (int shift = 28; shift >= 0; shift -= 4) {
             hex.push_back(kHexDigits[(word >> shift) & 0xf]);
         }
     }
     return hex;
+}
+
+std::string sha256_hex(std::string_view bytes) {
+    Sha256 digest;
+    digest.update(bytes);
+    return digest.hex();
+}
+
+std::optional<std::string> sha256_file_hex(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+    Sha256 digest;
+    std::string buffer(std::size_t{1} << 20, '\0');
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize got = in.gcount();
+        if (got > 0) digest.update(std::string_view(buffer.data(), static_cast<std::size_t>(got)));
+    }
+    if (in.bad()) return std::nullopt;
+    return digest.hex();
 }
 
 }  // namespace zetta::util

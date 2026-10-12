@@ -1149,6 +1149,126 @@
         ]
       }
     },
+    "/v1/append_methodology_artifact": {
+      "post": {
+        "description": "Send a workspace methodology run's artifact in chunks of at most 8 MiB, in order, when it is larger than record_methodology_run takes inline (24 MiB), up to 1 GiB. Answers the bytes staged; a chunk at an offset below that replaces what was held from there. record_methodology_run with artifact_staged then adopts it as the Model's weights. Requires orchestration:append_methodology_artifact.",
+        "operationId": "append_methodology_artifact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "chunk_base64": {
+                    "description": "the chunk, base64; at most 8 MiB decoded",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "methodology": {
+                    "description": "the workspace methodology that ran",
+                    "pattern": "^W-[0-9a-f]{8}$",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "description": "where this chunk starts; at most the bytes already received. A chunk below that replaces what was held from there",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "run_id": {
+                    "description": "Lake's id for the run; record_methodology_run names the same",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "methodology",
+                  "run_id",
+                  "offset",
+                  "chunk_base64"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "received": {
+                          "description": "the bytes now staged for this run",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "received"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Stage part of a methodology run's artifact",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/approve_consent": {
       "post": {
         "description": "Approve one pending consent challenge and execute exactly the named action once. Requires a named approver key of a DIFFERENT principal than the requester — a key can never approve its own cloud action. Requires orchestration:approve_consent.",
@@ -30686,6 +30806,150 @@
         ]
       }
     },
+    "/v1/read_model_weights": {
+      "get": {
+        "description": "Read a model's serialized weights, at most 8 MiB at a time from offset, with their total size and SHA-256. Lake serves a workspace methodology's model from them. Requires api:query.",
+        "operationId": "read_model_weights",
+        "parameters": [
+          {
+            "description": "bytes to read, at most 8 MiB",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 8388608,
+              "description": "bytes to read, at most 8 MiB",
+              "maximum": 8388608,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the model's id",
+            "in": "query",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "description": "the model's id",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "chunk_base64": {
+                          "type": "string"
+                        },
+                        "model_id": {
+                          "type": "string"
+                        },
+                        "next_offset": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "offset": {
+                          "type": "integer"
+                        },
+                        "sha256": {
+                          "type": "string"
+                        },
+                        "total_bytes": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "model_id",
+                        "offset",
+                        "chunk_base64",
+                        "next_offset",
+                        "total_bytes",
+                        "sha256"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Read a model's weights",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/receive_events": {
       "get": {
         "description": "Read an exposed topic's held events from a sequence number, oldest first; with wait_ms, wait for new ones (long poll). Stateless: pass the returned next_sequence to continue. Requires data:pubsub_subscribe.",
@@ -31200,6 +31464,25 @@
                       "pickle"
                     ],
                     "type": "string"
+                  },
+                  "artifact_staged": {
+                    "additionalProperties": false,
+                    "description": "instead of artifact_base64, for an artifact sent in chunks with append_methodology_artifact (lake#690): its size and SHA-256, which must match what was staged for this methodology and run_id",
+                    "properties": {
+                      "bytes": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "sha256": {
+                        "pattern": "^[0-9a-f]{64}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "bytes",
+                      "sha256"
+                    ],
+                    "type": "object"
                   },
                   "dataset_path": {
                     "description": "database.table it read",

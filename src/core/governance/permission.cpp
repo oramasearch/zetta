@@ -106,6 +106,7 @@ const std::vector<PermissionEntry>& vocabulary() {
           {CapabilityDomain::Orchestration, "update_methodology"},
           {CapabilityDomain::Orchestration, "delete_methodology"},
           {CapabilityDomain::Orchestration, "record_methodology_run"},
+          {CapabilityDomain::Orchestration, "append_methodology_artifact"},
           {CapabilityDomain::Orchestration, "create_workspace_profile"},
           {CapabilityDomain::Orchestration, "update_workspace_profile"},
           {CapabilityDomain::Orchestration, "create_plan"},

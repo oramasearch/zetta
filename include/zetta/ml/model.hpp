@@ -164,6 +164,18 @@ public:
     // (when replicated) and rewrite model.json. The metadata (size + hash)
     // replicates; peers fetch the body over the large-object body channel.
     bool set_weights(std::string_view bytes);
+    // The same for a body already on disk (lake#690: an artifact sent in
+    // chunks): move `staged` into place as the weights body, with the size and
+    // SHA-256 the caller verified. False (and `staged` left where it was) when
+    // it cannot be moved. Same filesystem as the model's directory expected; a
+    // copy is made otherwise.
+    bool adopt_weights_file(const std::filesystem::path& staged,
+                            std::uintmax_t size,
+                            std::string sha256);
+    // Up to `limit` bytes of the weights body from `offset` (lake#690: weights
+    // read back in chunks); nullopt if the body isn't present locally.
+    std::optional<std::string> read_weights_range(std::uintmax_t offset,
+                                                  std::size_t limit) const;
 
     // Update the evaluation metrics (free-form name→number object), then capture
     // + persist. The weights body is untouched.

@@ -202,6 +202,42 @@ bool Model::set_weights(std::string_view bytes) {
     return true;
 }
 
+bool Model::adopt_weights_file(const fs::path& staged, std::uintmax_t size,
+                               std::string sha256) {
+    std::error_code ec;
+    fs::create_directories(dir_, ec);
+    const fs::path path = weights_path();
+    fs::rename(staged, path, ec);
+    if (ec) {
+        // Another filesystem: copy beside the body, then publish atomically.
+        const fs::path tmp = path.string() + ".tmp";
+        ec.clear();
+        fs::copy_file(staged, tmp, fs::copy_options::overwrite_existing, ec);
+        if (ec) return false;
+        fs::rename(tmp, path, ec);
+        if (ec) return false;
+        fs::remove(staged, ec);
+    }
+    ModelWeights weights;
+    weights.size = size;
+    weights.sha256 = std::move(sha256);
+    value_.weights = weights;
+    capture_and_persist();
+    return true;
+}
+
+std::optional<std::string> Model::read_weights_range(std::uintmax_t offset,
+                                                     std::size_t limit) const {
+    std::ifstream in(weights_path(), std::ios::binary);
+    if (!in) return std::nullopt;
+    in.seekg(static_cast<std::streamoff>(offset));
+    if (!in) return std::string();
+    std::string chunk(limit, '\0');
+    in.read(chunk.data(), static_cast<std::streamsize>(limit));
+    chunk.resize(static_cast<std::size_t>(std::max<std::streamsize>(in.gcount(), 0)));
+    return chunk;
+}
+
 void Model::set_metrics(nlohmann::json metrics) {
     value_.metrics = std::move(metrics);
     capture_and_persist();
