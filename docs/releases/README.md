@@ -4,6 +4,11 @@ One page per tagged release, newest first. A page states what changed, **what it
 someone upgrading**, and what is knowingly still broken — a release note that lists only
 wins is marketing, and the next reader rediscovers the gap expensively.
 
+- [v0.2.0](v0.2.0.md) — 2026-10-12. The engine a hosted workspace runs on: 21 methodologies
+  behind one registry, composed solutions, AutoML studies, pub/sub inside the node, a keyed
+  record store and an object store, and an audit trail outside the replicated catalogue.
+  **Upgrade every node of a cluster together**, and every SQL statement that changes data
+  now checks its right (behaviour changes).
 - [v0.1.1](v0.1.1.md) — 2026-08-27. A repair release: the Postgres connector path is usable
   for the first time, consent enforcement is **off by default** (behaviour change), entity
   ids no longer wrap to 32 bits, and `list_source_tables` + the `model_from_source` MCP
