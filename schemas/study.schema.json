@@ -51,6 +51,14 @@
         "differential_privacy": {
           "type": "boolean"
         },
+        "features": {
+          "description": "a workspace methodology's study: the feature columns its trials read (every column but the target when empty)",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
         "methodology": {
           "minLength": 1,
           "type": "string"
@@ -189,6 +197,10 @@
         "seed": {
           "minimum": 0,
           "type": "integer"
+        },
+        "target": {
+          "description": "a workspace methodology's study: the target column its trials read",
+          "type": "string"
         }
       },
       "required": [

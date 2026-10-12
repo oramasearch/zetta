@@ -54,6 +54,8 @@
 #include "zetta/ml/score_table.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/ml/workspace_methodology.hpp"
+#include "zetta/ml/workspace_study.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/data/object_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
@@ -5289,7 +5291,22 @@ const nlohmann::json& record_methodology_run_schema() {
             {"description", "for a pipeline step: the project's name or id"}}},
           {"graph",
            {{"type", "string"},
-            {"description", "for a pipeline step: the graph's name or id"}}}}}};
+            {"description", "for a pipeline step: the graph's name or id"}}},
+          {"study",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "for an experiment's trial (lake#689): the study it belongs to; with trial"}}},
+          {"trial",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "for an experiment's trial: the trial's Run id, from the study's "
+                            "runner work; the result completes that Run"}}},
+          {"duration_seconds",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"description", "how long the code ran; an experiment's trial counts it as its cost "
+                            "in trial-seconds"}}}}}};
     return schema;
 }
 
@@ -5300,7 +5317,22 @@ const nlohmann::json& record_methodology_run_output_schema() {
         {"additionalProperties", false},
         {"properties",
          {{"model_id", {{"type", {"string", "null"}}}},
-          {"run_id", {{"type", {"string", "null"}}}}}}};
+          {"run_id", {{"type", {"string", "null"}}}},
+          {"study",
+           {{"type", "object"},
+            {"description",
+             "for an experiment's trial: the trial's outcome, the study's status, and the trials "
+             "now waiting for Lake's runner"},
+            {"required", {"id", "trial_state", "objective", "status", "runner"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"id", {{"type", "string"}}},
+              {"trial_state", {{"type", "string"}, {"enum", {"complete", "failed"}}}},
+              {"objective", {{"type", {"number", "null"}}}},
+              {"status",
+               {{"type", "string"}, {"enum", {"running", "stopped", "complete", "failed"}}}},
+              {"runner",
+               {{"type", "array"}, {"items", zetta::ml::workspace_study_work_schema()}}}}}}}}}};
     return schema;
 }
 
@@ -5390,8 +5422,44 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
     const nlohmann::json metrics = input.value("metrics", nlohmann::json::object());
     const std::string name = methodology->at("name").get<std::string>();
 
-    const std::shared_ptr<zetta::pipeline::Run> run = context.node.create_run(
-        project ? project->id() : std::string(), graph ? graph->id() : std::string());
+    // An experiment's trial (lake#689): the result completes the trial's own
+    // Run, which the study admitted and Lake's runner ran.
+    std::shared_ptr<zetta::ml::Study> study;
+    const zetta::ml::StudyTrial* trial = nullptr;
+    if (input.contains("study") || input.contains("trial")) {
+        if (!input.contains("study") || !input.contains("trial")) {
+            return ApiResult::failure("invalid_input", "an experiment's trial names both study and trial");
+        }
+        study = context.node.find_study(input.at("study").get<std::string>());
+        if (!study) return ApiResult::failure("not_found", "study was not found", "/study");
+        if (study->spec().methodology != id) {
+            return ApiResult::failure("invalid_input",
+                                      "the study " + study->spec().name + " runs " +
+                                          study->spec().methodology + ", not " + id,
+                                      "/study");
+        }
+        const std::string trial_run = input.at("trial").get<std::string>();
+        const auto found = std::ranges::find(study->value().trials, trial_run,
+                                             &zetta::ml::StudyTrial::run);
+        if (found == study->value().trials.end()) {
+            return ApiResult::failure("not_found", "the study has no trial " + trial_run,
+                                      "/trial");
+        }
+        if (found->state != zetta::ml::TrialState::Running) {
+            return ApiResult::failure("conflict",
+                                      "trial " + std::to_string(found->number) +
+                                          " already ended (" +
+                                          std::string(zetta::ml::to_string(found->state)) + ")",
+                                      "/trial");
+        }
+        trial = &*found;
+    }
+
+    const std::shared_ptr<zetta::pipeline::Run> run =
+        trial != nullptr
+            ? context.node.find_run(trial->run)
+            : context.node.create_run(project ? project->id() : std::string(),
+                                      graph ? graph->id() : std::string());
     if (!run) return ApiResult::failure("engine_error", "the run record could not be created");
     run->set_status(zetta::pipeline::RunStatus::Running);
     run->add_log({zetta::util::now_iso8601(), "info",
@@ -5399,7 +5467,9 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
                       ") in Lake's runner, Lake run " + lake_run +
                       (dataset_path.empty() ? std::string() : ", on " + dataset_path)});
     std::string error;
-    if (!params.empty() && !context.node.log_run_params(run->id(), params, &error)) {
+    // A trial's Run already holds its sampled parameters.
+    if (trial == nullptr && !params.empty() &&
+        !context.node.log_run_params(run->id(), params, &error)) {
         run->add_log({zetta::util::now_iso8601(), "warn", "parameters not recorded: " + error});
     }
     std::map<std::string, double> values;
@@ -5410,7 +5480,10 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
 
     zetta::ml::ModelValue model_value;
     model_value.kind = zetta::ml::workspace_model_kind(id);
-    model_value.name = name + " " + zetta::util::now_iso8601().substr(0, 10);
+    model_value.name =
+        trial != nullptr
+            ? zetta::ml::study_trial_model_name(study->spec().name, study->id(), trial->number)
+            : name + " " + zetta::util::now_iso8601().substr(0, 10);
     model_value.project = project ? project->id() : std::string();
     model_value.run = run->id();
     model_value.metrics = metrics;
@@ -5437,7 +5510,30 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
     lineage.confidence = 1.0;
     run->set_lineage(std::move(lineage));
     run->set_status(zetta::pipeline::RunStatus::Succeeded);
-    return ApiResult::success({{"model_id", model->id()}, {"run_id", run->id()}});
+    nlohmann::json output = {{"model_id", model->id()}, {"run_id", run->id()}};
+    if (trial != nullptr) {
+        const std::string metric = study->spec().objective.metric;
+        std::optional<double> objective;
+        if (const auto value = values.find(metric); value != values.end() &&
+                                                    std::isfinite(value->second)) {
+            objective = value->second;
+        }
+        const std::string trial_run = trial->run;
+        const double cost = input.value("duration_seconds", 0.0);
+        zetta::ml::finish_workspace_trial(
+            context.node, *study, trial_run, objective, cost,
+            objective ? std::string()
+                      : "the run did not report the objective metric " + metric,
+            model->id());
+        zetta::ml::advance_workspace_study(context.node, *study);
+        output["study"] = {
+            {"id", study->id()},
+            {"trial_state", objective ? "complete" : "failed"},
+            {"objective", objective ? nlohmann::json(*objective) : nlohmann::json(nullptr)},
+            {"status", zetta::ml::to_string(study->status())},
+            {"runner", zetta::ml::workspace_study_runner_work(context.node, *study)}};
+    }
+    return ApiResult::success(std::move(output));
 }
 
 // --- compile_intent / compile_n8n / compile_python -------------------------------

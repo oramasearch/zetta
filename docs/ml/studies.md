@@ -47,9 +47,12 @@ whose plan has no consumable input fails with the same
 `create_eligible_features` message as a Run
 ([#1216](https://github.com/oramasearch/zetta/issues/1216)).
 
-Dataset-level execution currently supports M-1 only. `create_study` rejects
-another methodology before storing the Study and explains that it has no
-dataset-level driver.
+Dataset-level execution currently supports M-1 natively. A workspace
+methodology (`W-…`, Python run by Lake's runner) is studied too: the engine samples
+its declared parameters and admits trials that wait for Lake's runner, which reports
+each result back ([workspace methodologies](workspace-methodologies.md#experiments),
+lake#689). `create_study` rejects any other methodology before storing the Study and
+explains that it has no dataset-level driver.
 
 M-1 search names are the canonical GBDT controls (`gbdt.num_trees`,
 `gbdt.max_depth`, `gbdt.max_bins`, `learning_rate`, regularization and split

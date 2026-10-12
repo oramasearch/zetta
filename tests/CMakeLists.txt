@@ -26,6 +26,7 @@ add_executable(zetta-tests
   api/test_registry.cpp
   api/test_agent_api.cpp
   api/test_workspace_methodology_api.cpp
+  api/test_workspace_study_api.cpp
   api/test_mcp_prompts.cpp
   api/test_consent.cpp
   api/test_auth_gate.cpp

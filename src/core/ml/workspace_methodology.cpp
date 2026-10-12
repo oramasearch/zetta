@@ -1,4 +1,5 @@
 #include "zetta/ml/workspace_methodology.hpp"
+#include "zetta/ml/workspace_study.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -292,11 +293,6 @@ nlohmann::json workspace_methodology_listing(const nlohmann::json& value) {
         {"runnable", workspace_methodology_runnable(value)},
         {"partial", false},
         {"issue", ""},
-        {"studies", false},
-        {"study_reason",
-         "Experiments on a workspace methodology run its code in Lake's runner, which does not "
-         "run experiment trials yet."},
-        {"study_search_space", nullptr},
         {"source", "workspace"},
         {"editable", true},
         {"description", value.value("description", std::string())},
@@ -312,6 +308,11 @@ nlohmann::json workspace_methodology_listing(const nlohmann::json& value) {
         {"created_by", value.value("created_by", std::string())},
         {"created_at", value.value("created_at", std::string())},
         {"updated_at", value.value("updated_at", std::string())}};
+    // Experiments over its declared parameters, its trials run by Lake's
+    // runner (lake#689).
+    for (auto& [key, field] : workspace_study_listing_fields(value).items()) {
+        listing[key] = field;
+    }
     return listing;
 }
 
