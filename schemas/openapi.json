@@ -11246,6 +11246,161 @@
         ]
       }
     },
+    "/v1/export_model": {
+      "get": {
+        "description": "Read one model version's weights as a file to keep or use elsewhere: as the engine keeps them (format zetta, any model), or a gradient-boosted tree model as ONNX (format onnx), which onnxruntime and other ONNX runtimes score. Changes nothing. Requires api:query.",
+        "operationId": "export_model",
+        "parameters": [
+          {
+            "description": "`zetta` (default): the weights exactly as the engine keeps them, for any model. `onnx`: a gradient-boosted tree model as an ONNX TreeEnsembleClassifier or TreeEnsembleRegressor that onnxruntime scores as the engine does",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "description": "`zetta` (default): the weights exactly as the engine keeps them, for any model. `onnx`: a gradient-boosted tree model as an ONNX TreeEnsembleClassifier or TreeEnsembleRegressor that onnxruntime scores as the engine does",
+              "enum": [
+                "zetta",
+                "onnx"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "the model version's id (or a name one model has)",
+            "in": "query",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "description": "the model version's id (or a name one model has)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "bytes": {
+                          "description": "the file's size",
+                          "type": "integer"
+                        },
+                        "content": {
+                          "description": "the file",
+                          "type": "string"
+                        },
+                        "encoding": {
+                          "description": "how `content` holds the file: as text, or in base64",
+                          "enum": [
+                            "utf-8",
+                            "base64"
+                          ],
+                          "type": "string"
+                        },
+                        "features": {
+                          "description": "the columns it reads, in its own order (a tree model's)",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "file_name": {
+                          "description": "a name to save the file as",
+                          "type": "string"
+                        },
+                        "format": {
+                          "type": "string"
+                        },
+                        "media_type": {
+                          "type": "string"
+                        },
+                        "model_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "model_id",
+                        "name",
+                        "format",
+                        "file_name",
+                        "media_type",
+                        "encoding",
+                        "content",
+                        "bytes"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Download a model's weights",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/expose_index": {
       "post": {
         "description": "Publish an index's HTTP search endpoint (/v1/indexes/{name}/search — the distributed scatter-gather path underneath) on every node; endpoint access then requires the data:search capability. Idempotent; undo with unexpose_index. Requires orchestration:expose_index.",
@@ -32056,6 +32211,26 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "feature_names": {
+                    "description": "the columns the model reads, in its own order: name an ONNX model's columns (ONNX names none, so they are f0, f1, … otherwise), or rename another file's",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "format": {
+                    "description": "the file's format (default: read from the file). Every format is converted into the engine's tree model, so it is scored, served and explained like a trained one; a model it cannot convert exactly (a neural network, a multiclass or random-forest classifier, categorical splits, a pickle) is refused and nothing is kept",
+                    "enum": [
+                      "zetta",
+                      "onnx",
+                      "xgboost_json",
+                      "xgboost_ubjson",
+                      "lightgbm"
+                    ],
+                    "type": "string"
+                  },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
@@ -32088,19 +32263,21 @@
                     "type": "string"
                   },
                   "weights": {
-                    "description": "the model file's contents: a gradient-boosted tree model in the engine's own JSON weights format (objective, base_score, feature_names, trees), the format every model trained here is kept in. The engine scores, serves and explains only what it can read; any other format is refused",
+                    "description": "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's text model, or the engine's own JSON weights (objective, base_score, feature_names, trees). Give this or `weights_base64`",
                     "minLength": 2,
+                    "type": "string"
+                  },
+                  "weights_base64": {
+                    "description": "the model file's contents in base64, for any file and required for a binary one: ONNX (a TreeEnsembleRegressor or TreeEnsembleClassifier, as scikit-learn, XGBoost and LightGBM export) or XGBoost's UBJSON model. Give this or `weights`",
+                    "minLength": 4,
                     "type": "string"
                   }
                 },
-                "required": [
-                  "weights"
-                ],
                 "type": "object"
               }
             }
           },
-          "required": true
+          "required": false
         },
         "responses": {
           "200": {
@@ -32130,6 +32307,10 @@
                             "type": "string"
                           },
                           "type": "array"
+                        },
+                        "format": {
+                          "description": "the format the file was read as (zetta, onnx, xgboost_json, xgboost_ubjson or lightgbm)",
+                          "type": "string"
                         },
                         "kind": {
                           "type": "string"

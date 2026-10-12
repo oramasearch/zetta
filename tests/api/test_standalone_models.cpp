@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <ranges>
 #include <string>
@@ -24,6 +26,8 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/ml/model_import.hpp"
+#include "../../src/core/base64.hpp"
 
 namespace {
 
@@ -277,6 +281,95 @@ TEST_F(StandaloneModels, BringOneScoreItAddAVersionAndRefuseOtherFormats) {
     EXPECT_EQ(json.error.code, "not_supported");
     EXPECT_TRUE(models_named("other").empty());
     EXPECT_FALSE(node.find_project("other (standalone model)"));
+}
+
+std::string model_fixture(const std::string& name) {
+    std::ifstream in(std::filesystem::path(ZETTA_TEST_FIXTURES_DIR) / "model_import" / name,
+                     std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// lake#681: ONNX, XGBoost and LightGBM files are brought like the engine's own, and any
+// model's weights are downloaded, as kept or as ONNX.
+TEST_F(StandaloneModels, BringCommonFormatsAndDownloadWeights) {
+    // The fixtures read tenure, spend, tickets and age; name them as crm.accounts does.
+    const Json columns = {"tenure_months", "monthly_spend", "support_tickets", "failed_payments"};
+    const ApiResult onnx = call("register_model",
+                                {{"name", "lightgbm churn"},
+                                 {"weights_base64", zetta::detail::base64_encode_bytes(
+                                                        model_fixture("lightgbm_binary_onnx.onnx"))},
+                                 {"feature_names", columns}});
+    ASSERT_TRUE(onnx.ok) << onnx.error.code << ": " << onnx.error.message;
+    EXPECT_EQ(onnx.value.at("format"), "onnx");
+    EXPECT_EQ(onnx.value.at("kind"), "classifier");
+    EXPECT_EQ(onnx.value.at("features"), columns);
+    EXPECT_EQ(models_named("lightgbm churn").at(0).at("feature_schema").at("format"), "onnx");
+    const ApiResult scored = call("score", {{"model", onnx.value.at("model_id")},
+                                            {"dataset_path", "crm.accounts"},
+                                            {"top_k", 3}});
+    ASSERT_TRUE(scored.ok) << scored.error.message;
+    EXPECT_EQ(scored.value.at("ranked").size(), 3u);
+
+    const ApiResult lightgbm = call("register_model", {{"name", "spend forecast"},
+                                                       {"weights", model_fixture("lightgbm_regression.txt")},
+                                                       {"feature_names", columns}});
+    ASSERT_TRUE(lightgbm.ok) << lightgbm.error.message;
+    EXPECT_EQ(lightgbm.value.at("format"), "lightgbm");
+    EXPECT_EQ(lightgbm.value.at("kind"), "regressor");
+    const ApiResult ubjson = call(
+        "register_model",
+        {{"version_of", onnx.value.at("model_id")},
+         {"weights_base64", zetta::detail::base64_encode_bytes(model_fixture("xgboost_binary_ubj.ubj"))},
+         {"feature_names", columns}});
+    ASSERT_TRUE(ubjson.ok) << ubjson.error.message;
+    EXPECT_EQ(ubjson.value.at("format"), "xgboost_ubjson");
+
+    // Refused, naming why, and nothing kept.
+    const ApiResult pickle = call("register_model",
+                                  {{"name", "pickled"},
+                                   {"weights_base64", zetta::detail::base64_encode_bytes(
+                                                          std::string("\x80\x04\x95\x10sklearn", 11))}});
+    EXPECT_EQ(pickle.error.code, "not_supported");
+    EXPECT_NE(pickle.error.message.find("pickle"), std::string::npos);
+    const ApiResult forest = call("register_model",
+                                  {{"name", "forest"},
+                                   {"weights_base64", zetta::detail::base64_encode_bytes(
+                                                          model_fixture("sklearn_rfc.onnx"))}});
+    EXPECT_EQ(forest.error.code, "not_supported");
+    EXPECT_TRUE(models_named("pickled").empty());
+    EXPECT_TRUE(models_named("forest").empty());
+    EXPECT_EQ(call("register_model", {{"name", "x"}}).error.code, "invalid_input");
+    EXPECT_EQ(call("register_model", {{"name", "x"}, {"weights", "{}"}, {"weights_base64", "e30="}})
+                  .error.code,
+              "invalid_input");
+
+    // Download: as the engine keeps it, and as ONNX that reads back to the same model.
+    const ApiResult kept = call("export_model", {{"model_id", onnx.value.at("model_id")}});
+    ASSERT_TRUE(kept.ok) << kept.error.message;
+    EXPECT_EQ(kept.value.at("encoding"), "utf-8");
+    EXPECT_EQ(kept.value.at("media_type"), "application/json");
+    const auto stored = node.find_model(onnx.value.at("model_id"));
+    ASSERT_TRUE(stored);
+    EXPECT_EQ(kept.value.at("content"), stored->read_weights().value());
+    EXPECT_EQ(kept.value.at("features"), columns);
+    const ApiResult as_onnx =
+        call("export_model", {{"model_id", onnx.value.at("model_id")}, {"format", "onnx"}});
+    ASSERT_TRUE(as_onnx.ok) << as_onnx.error.message;
+    EXPECT_EQ(as_onnx.value.at("encoding"), "base64");
+    EXPECT_TRUE(as_onnx.value.at("file_name").get<std::string>().ends_with(".onnx"));
+    const std::string file =
+        zetta::detail::base64_decode_to_string(as_onnx.value.at("content").get<std::string>());
+    EXPECT_EQ(as_onnx.value.at("bytes"), file.size());
+    std::string error;
+    const auto reread = zetta::ml::import_model(file, {}, &error);
+    ASSERT_TRUE(reread) << error;
+    const auto original = zetta::ml::GbdtModel::from_json(Json::parse(stored->read_weights().value()));
+    ASSERT_TRUE(original);
+    EXPECT_EQ(reread->model.feature_names, original->feature_names);
+    for (const std::vector<double>& row : {std::vector<double>{3, 120.5, 4, 0}, {40, 60, 0, 1}}) {
+        EXPECT_DOUBLE_EQ(reread->model.predict_proba(row), original->predict_proba(row));
+    }
+    EXPECT_EQ(call("export_model", {{"model_id", "no-such-model"}}).error.code, "not_found");
 }
 
 TEST_F(StandaloneModels, MoveIntoAProjectShowsItWithItsVersions) {

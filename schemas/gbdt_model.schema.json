@@ -42,6 +42,9 @@
                 "left": {
                   "type": "integer"
                 },
+                "missing_left": {
+                  "type": "boolean"
+                },
                 "right": {
                   "type": "integer"
                 },
