@@ -41,12 +41,16 @@ confirmation. A missing entity is `not_found`.
   `model_id`. A delete never guesses.
 - `delete_dataset` with a name that exists in several databases is `engine_error` (pass `database`);
   the reserved connection store (`zetta_connect`) is `forbidden` (use `delete_connection`).
-- `delete_dataset` does not check for a run reading the dataset: a run records its sources by
-  reference, not by table, so the check would not be reliable. A run that reads a deleted dataset
-  fails with the table's `not_found`.
+- `delete_dataset` refuses a dataset that a pending or running run, or a running study, reads
+  (`engine_error`, naming each: `run <id> (running)`, `study '<name>' (running)`); a `dry_run`
+  refuses the same way, so a preview never promises a delete that would be refused. Wait for the
+  runs to finish (`get_run`) and stop the study (`stop_study`), then delete it. A run and a study
+  record the tables they read when they are created (`reads`, zetta#1258): a run its pipeline's
+  connect steps and the `dataset_path` it was handed, a study its dataset
+  ([../pipeline/runs.md](../pipeline/runs.md), [../ml/studies.md](../ml/studies.md)).
 
 ## How to verify
 
 `tests/api/test_registry.cpp`: `DeleteDatasetRemovesItsPartitionsAndIndexes`,
-`DeleteModelStopsServingItAndKeepsItsRun`, `DeleteModelByNameRefusesAnAmbiguousName`,
+`DeleteDatasetRefusesWhileARunOrAStudyReadsIt`, `DeleteModelStopsServingItAndKeepsItsRun`, `DeleteModelByNameRefusesAnAmbiguousName`,
 `DeleteRunRefusesWhileInFlightAndKeepsItsModels`, `DeleteIndexStopsServingItAndKeepsTheDataset`.

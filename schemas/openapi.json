@@ -6513,6 +6513,28 @@
                         "promoted_model": {
                           "type": "string"
                         },
+                        "reads": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "database": {
+                                "type": "string"
+                              },
+                              "table": {
+                                "type": "string"
+                              },
+                              "table_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "database",
+                              "table"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "spec": {
                           "additionalProperties": false,
                           "properties": {
@@ -8137,7 +8159,7 @@
     },
     "/v1/delete_dataset": {
       "post": {
-        "description": "Delete a dataset (its table) on every node, with its partitions and their bodies and every index built over it, so nothing of it is left. dry_run: true answers what would go and changes nothing. Not undoable. Requires orchestration:delete_dataset.",
+        "description": "Delete a dataset (its table) on every node, with its partitions and their bodies and every index built over it, so nothing of it is left. dry_run: true answers what would go and changes nothing. Refused (engine_error, naming them) while a pending or running run or a running study reads it, its dry run too. Not undoable. Requires orchestration:delete_dataset.",
         "operationId": "delete_dataset",
         "requestBody": {
           "content": {
@@ -16232,6 +16254,28 @@
                         "project_name": {
                           "type": "string"
                         },
+                        "reads": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "database": {
+                                "type": "string"
+                              },
+                              "table": {
+                                "type": "string"
+                              },
+                              "table_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "database",
+                              "table"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "status": {
                           "enum": [
                             "pending",
@@ -17894,6 +17938,28 @@
                         },
                         "promoted_model": {
                           "type": "string"
+                        },
+                        "reads": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "database": {
+                                "type": "string"
+                              },
+                              "table": {
+                                "type": "string"
+                              },
+                              "table_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "database",
+                              "table"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
                         },
                         "spec": {
                           "additionalProperties": false,
@@ -24113,6 +24179,28 @@
                               },
                               "promoted_model": {
                                 "type": "string"
+                              },
+                              "reads": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "database": {
+                                      "type": "string"
+                                    },
+                                    "table": {
+                                      "type": "string"
+                                    },
+                                    "table_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "database",
+                                    "table"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
                               },
                               "spec": {
                                 "additionalProperties": false,

@@ -28,7 +28,9 @@
 #endif
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/data/partition_rebalance.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/governance/permission.hpp"
@@ -1952,6 +1954,37 @@ void Node::load_runs() {
     });
 }
 
+std::vector<zetta::pipeline::TableRead> Node::tables_read(
+    const std::string& project, const std::string& graph,
+    const std::string& dataset_path) const {
+    std::vector<zetta::pipeline::TableRead> reads;
+    const auto add = [&](const std::string& database, const std::string& table) {
+        if (database.empty() || table.empty()) return;
+        const std::shared_ptr<zetta::data::Database> owner = find_database(database);
+        const std::shared_ptr<zetta::data::Table> found =
+            owner ? owner->find_table(table) : nullptr;
+        if (!found) return;
+        zetta::pipeline::merge_table_reads(reads, {{database, table, found->id()}});
+    };
+    if (!dataset_path.empty()) {
+        const zetta::data::DatasetPath path = zetta::data::parse_dataset_path(dataset_path);
+        if (path.kind == zetta::data::DatasetPathKind::Table) add(path.database, path.table);
+    }
+    if (project.empty() || graph.empty()) return reads;
+    std::shared_ptr<zetta::pipeline::Project> stored = find_project_by_id(project);
+    if (!stored) stored = find_project(project);
+    if (!stored) return reads;
+    std::shared_ptr<zetta::pipeline::ProjectGraph> stored_graph = stored->find_graph_by_id(graph);
+    if (!stored_graph) stored_graph = stored->find_graph(graph);
+    if (!stored_graph) return reads;
+    for (const auto& step : stored_graph->graph().nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!step || !step->attributes.is_object()) continue;
+        add(step->attributes.value("source", std::string{}),
+            step->attributes.value("table", std::string{}));
+    }
+    return reads;
+}
+
 std::shared_ptr<zetta::pipeline::Run> Node::create_run(std::string project, std::string graph,
                                       std::string deployment) {
     const std::string id = zetta::util::new_uuid();
@@ -1978,6 +2011,8 @@ std::shared_ptr<zetta::pipeline::Run> Node::create_run(std::string project, std:
         }
     }
     value.deployment = std::move(deployment);
+    // What it reads, recorded before it reads anything (zetta#1258).
+    value.reads = tables_read(value.project, value.graph);
     value.status = zetta::pipeline::RunStatus::Pending;
     value.created = now;
     value.updated = now;
@@ -2210,6 +2245,8 @@ std::shared_ptr<zetta::ml::Study> Node::create_study(
         return nullptr;
     }
     zetta::ml::StudyValue value;
+    // The tables its trials read (zetta#1258): its dataset, or its pipeline's.
+    value.reads = tables_read(spec.project, spec.pipeline, spec.dataset);
     value.spec = std::move(spec);
     value.created = zetta::util::now_iso8601();
     value.updated = value.created;

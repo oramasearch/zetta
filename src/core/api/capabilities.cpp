@@ -68,6 +68,7 @@
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/project_input.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/solutions/experiment.hpp"
@@ -3633,6 +3634,35 @@ bool is_in_flight(zetta::pipeline::RunStatus status) {
            status == zetta::pipeline::RunStatus::Running;
 }
 
+// The pending or running runs and the running studies that read `dataset`, as
+// "run <id> (running), study '<name>' (running)"; empty when none does
+// (zetta#1258). A run's recorded reads are the check; a lineage source naming
+// the dataset counts too, for a runner that records it early.
+std::string dataset_readers(zetta::Node& node, const zetta::data::DatasetSummary& dataset) {
+    const std::string source = "dataset:" + dataset.database + "." + dataset.name;
+    std::string readers;
+    const auto name = [&](const std::string& reader) {
+        if (!readers.empty()) readers += ", ";
+        readers += reader;
+    };
+    for (const auto& run : node.runs()) {
+        if (!run || !is_in_flight(run->status())) continue;
+        const bool reads =
+            zetta::pipeline::reads_table(run->reads(), dataset.database, dataset.name,
+                                         dataset.table_id) ||
+            std::ranges::find(run->lineage().sources, source) != run->lineage().sources.end();
+        if (reads) name("run " + run->id() + " (" + std::string(to_string(run->status())) + ")");
+    }
+    for (const auto& study : node.studies()) {
+        if (!study || study->status() != zetta::ml::StudyStatus::Running) continue;
+        if (zetta::pipeline::reads_table(study->value().reads, dataset.database, dataset.name,
+                                         dataset.table_id)) {
+            name("study '" + study->spec().name + "' (running)");
+        }
+    }
+    return readers;
+}
+
 }  // namespace
 
 const nlohmann::json& delete_dataset_schema() {
@@ -3739,9 +3769,20 @@ ApiResult handle_delete_dataset(const nlohmann::json& input, ApiContext& context
     if (!owner || !owner->find_table_by_id(dataset.table_id)) {
         return ApiResult::failure("not_found", "no dataset named '" + target + "'");
     }
+    const std::string qualified = dataset.database + "." + dataset.name;
+    // A pending or running run, or a running study, that reads the dataset
+    // keeps it (zetta#1258): each records the tables it reads when it is
+    // created. A dry run refuses the same way, so it never promises a delete
+    // that would be refused.
+    if (const std::string readers = dataset_readers(context.node, dataset);
+        !readers.empty()) {
+        return ApiResult::failure(
+            "engine_error", "dataset '" + qualified + "' is being read by " + readers +
+                                ": wait for its runs to finish (get_run) and stop "
+                                "its studies (stop_study), then delete it");
+    }
     // An index records the table by the name create_index was given: the bare
     // name, or `database.table`.
-    const std::string qualified = dataset.database + "." + dataset.name;
     std::vector<std::string> indexes;
     for (const auto& index : context.node.indexes()) {
         if (index->table() == dataset.name || index->table() == qualified) {
@@ -6334,6 +6375,15 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
     const std::string run_id = result.value.at("run_id").get<std::string>();
     const std::shared_ptr<zetta::pipeline::Run> run =
         context.node.find_run(run_id);
+    // The run reads the dataset it was handed as well as its pipeline's own
+    // (zetta#1258). Recorded before this handler returns, so no delete_dataset
+    // can come between the run starting and the record.
+    if (run) {
+        if (const auto path = input.find("dataset_path");
+            path != input.end() && path->is_string()) {
+            run->add_reads(context.node.tables_read({}, {}, path->get<std::string>()));
+        }
+    }
     if (!run || !run->value().metrics_suppressed.empty() ||
         !run->value().metrics.at("series").empty()) {
         return result;
@@ -11212,7 +11262,9 @@ void register_core_capabilities(Registry& registry) {
         "Delete dataset",
         "Delete a dataset (its table) on every node, with its partitions and their "
         "bodies and every index built over it, so nothing of it is left. "
-        "dry_run: true answers what would go and changes nothing. Not undoable.",
+        "dry_run: true answers what would go and changes nothing. Refused "
+        "(engine_error, naming them) while a pending or running run or a running "
+        "study reads it, its dry run too. Not undoable.",
         delete_dataset_schema(),
         delete_dataset_output_schema(),
         CapabilityKind::Action,

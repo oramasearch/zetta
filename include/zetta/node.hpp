@@ -386,6 +386,14 @@ public:
                                     std::string graph = {},
                                     std::string deployment = {});
     std::shared_ptr<zetta::pipeline::Run> find_run(const std::string& id) const;
+    // The tables a run of `graph` on `project` reads (zetta#1258): every
+    // connect step naming an existing `source`.`table`, plus `dataset_path`
+    // (`database.table`) when it names an existing table. create_run records
+    // the graph's; a caller that hands the run another dataset adds it with
+    // Run::add_reads. Unknown refs and missing tables are skipped.
+    std::vector<zetta::pipeline::TableRead> tables_read(
+        const std::string& project, const std::string& graph,
+        const std::string& dataset_path = {}) const;
     bool drop_run(const std::string& id);
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
