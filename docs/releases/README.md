@@ -8,7 +8,8 @@ wins is marketing, and the next reader rediscovers the gap expensively.
   behind one registry, composed solutions, AutoML studies, pub/sub inside the node, a keyed
   record store and an object store, and an audit trail outside the replicated catalogue.
   **Upgrade every node of a cluster together**, and every SQL statement that changes data
-  now checks its right (behaviour changes).
+  now checks its right (behaviour changes). Image: `oramasearch/zetta:v0.2.0` (the same digest
+  as `main-4015ef76`).
 - [v0.1.1](v0.1.1.md) — 2026-08-27. A repair release: the Postgres connector path is usable
   for the first time, consent enforcement is **off by default** (behaviour change), entity
   ids no longer wrap to 32 bits, and `list_source_tables` + the `model_from_source` MCP
@@ -18,6 +19,35 @@ wins is marketing, and the next reader rediscovers the gap expensively.
   distributed ML. Note its known defects — **the connector path does not work on this tag**.
 
 ## Conventions
+
+### Cutting a release
+
+Steve names the version. A release is finished when the Git tag, the GitHub release and the image
+tag all exist and the cluster runs that image.
+
+1. **On a branch off `dev`**, write `docs/releases/vX.Y.Z.md`, add it to the list above, and move
+   `kVersion` in `include/zetta/version.hpp` and `info.version` in `schemas/openapi.json`. Build
+   and run the full suite, and put the counts in the page. Open the pull request into `dev`.
+2. **Promote `dev` to `main`** with a pull request titled `release: vX.Y.Z — ...`, merged with a
+   merge commit, never a squash. `dev` is kept.
+3. **Tag the merge commit** `vX.Y.Z` (a lightweight tag, like the earlier releases) and publish
+   the GitHub release from the page, with its relative links made absolute at the tag.
+4. **Build the image from the tag**: check a clone out at `vX.Y.Z` and run
+   `build/zetta/build-zetta.sh <clone> main-<sha8>` (the recipe is in `codex-work/build/zetta/`;
+   liquid-bridge's `liquid-dev` skill has the procedure). The repository must still answer 404 to
+   an anonymous request.
+5. **Roll it**: set both image fields on `Lake/prod` (`spec.zetta.image` and
+   `spec.services.zettaImage`) and wait for every `*-zetta-0` pod to be Ready on the new tag. Each
+   node logs `zetta X.Y.Z: node started`. Lake answers 503 on agent-task polls for about a minute
+   while the bus restarts; check they have stopped.
+6. **Tag the image `vX.Y.Z` in Docker Hub**, naming the digest that is deployed, without
+   rebuilding: `retag-image.py zetta main-<sha8> vX.Y.Z` (in the `liquid-dev` skill).
+7. **Move the pins**: zetta-bridge's pin of `modules/zetta` to the tag, then the umbrella's
+   pointer, and refresh the `zetta-pin` build context lake builds against.
+
+`v0.2.0` is `oramasearch/zetta:main-4015ef76`, also tagged `v0.2.0`.
+
+### Writing a release page
 
 - **Before working an issue, look for an open PR against it** — `gh pr list --search "<n>"`.
   A contributor's branch that already fixes it is worth reviewing and merging, not
