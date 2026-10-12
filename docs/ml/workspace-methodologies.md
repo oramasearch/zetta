@@ -1,7 +1,8 @@
 # Workspace methodologies
 
 Implemented for [#1261](https://github.com/oramasearch/zetta/issues/1261), part of
-[lake#655](https://github.com/oramasearch/lake/issues/655). Not deployed.
+[lake#655](https://github.com/oramasearch/lake/issues/655); experiments over its
+parameters for [lake#689](https://github.com/oramasearch/lake/issues/689). Not deployed.
 
 The [methodology registry](methodologies.md) holds Orama's catalogue, M-1 through
 M-21, and it is read-only. A workspace can also have its **own** methodologies:
@@ -59,7 +60,9 @@ workspace entry has the catalogue's fields, derived:
 - `inputs` are roles: `label` (required, when it has a target) and `feature` (required when it names required features);
 - `outputs` are `model`, `predictions`, `metrics`;
 - `metrics` are the `held_out_<m>` names, as the catalogue lists held-out keys;
-- `studies` is false, with a `study_reason`: Lake's runner does not run experiment trials yet;
+- `studies` is true, with its `study_search_space`, once it passed validation for its current
+  code and declares a parameter with a range to search ([Experiments](#experiments)); otherwise
+  false with a `study_reason` saying what is missing;
 - `solutions` is empty and `issue` is empty.
 
 It also carries `description`, `interface` (`input_kinds`, `target`,
@@ -100,6 +103,69 @@ the error `runner_required` (HTTP 409) with `error.details`:
 connect step's table. Lake's `start_run` dispatches the code to its runner and
 reports back with `record_methodology_run`, naming the project and graph.
 
+## Experiments
+
+An experiment (a study, [studies.md](studies.md)) can search a workspace
+methodology's declared parameters (lake#689). The engine samples them; Lake's runner
+runs each trial. `src/core/ml/workspace_study.cpp` and `advance_workspace_study`
+(`src/core/ml/study.cpp`).
+
+**What it searches.** `list_methodologies` publishes `studies: true` and a
+`study_search_space` for a runnable entry that declares at least one parameter with a
+range: an `int` or `float` with both `minimum` and `maximum` (an `int` steps by 1,
+`log` is kept), a `categorical` with its choices, a `bool` as the choices
+`false, true`. A number without both bounds stays at its default. The objective
+metrics are its `held_out_<m>` names, on the `validation` split: the rows each
+run holds out (`holdout_fraction`). Not yet validated, `studies` is false with the
+reason "Validate W-… first".
+
+**create_study.** `methodology: "W-…"` takes a dataset-level study (`dataset`,
+`database.table`, and `target`, the column to predict, required when the methodology
+has a target; optional `features`) or a pipeline study whose graph runs that
+methodology (`project`, `pipeline`; the target and holdout come from its model
+step). `from_defaults: true` fills the search space with the declared ranges, the
+objective with the first `held_out_` metric (minimized when it names a loss or an
+error) and the budgets as for any study. A searched parameter must be declared, of
+its declared kind, within its declared bounds and choices; the pruner is always
+`none` (a runner trial reports one result) and differential privacy is refused.
+The dataset's label preflight is M-1's and is not run.
+
+**Trials wait for Lake's runner.** The native `StudyDriver` never drives such a
+study. Creating it admits trials at once, up to `max_parallel_trials`: each is a Run
+with status `running`, its sampled parameters and `study.id`/`study.seed`, and a log
+line saying it waits for Lake's runner. Every answer for the study (`create_study`,
+`get_study`, `list_studies`) carries `runner`: one work item per waiting trial,
+
+```json
+{"study": "<id>", "study_name": "churn tuning", "trial": "<the trial's Run id>",
+ "number": 0, "methodology": "W-0123abcd",
+ "params": {"learning_rate": 0.04, "max_depth": 6, "seed_only": 7},
+ "seed": 11, "dataset_path": "shop.customers", "target": "churned",
+ "features": [], "holdout_fraction": 0.2}
+```
+
+`params` are the declared defaults overridden by the trial's sampled values
+(`holdout_fraction`, when searched, moves to its own field). A pipeline study adds
+`project` and `graph` ids.
+
+**A trial ends** in one of two ways:
+
+- **A result.** `record_methodology_run` with `study` and `trial` (and
+  `duration_seconds`, its cost in trial-seconds) completes the trial's own Run
+  instead of creating one: its metrics, the model (named `<study>-trial-<n>`) and
+  lineage. The objective is the result's `held_out_` metric the study optimizes; a
+  result without it fails the trial. The answer adds `study {id, trial_state,
+  objective, status, runner}`. A trial that already ended answers `conflict`.
+- **No result.** `stop_trial` with a `reason` (Lake names the run that failed or
+  was stopped) fails the trial; its answer adds the study's `status` and `runner`.
+
+Each end admits the next trials within the budgets (`max_trials`,
+`max_parallel_trials`, `cost_cap`; wall time is checked at each end, and a study past
+it completes once its running trials end). With nothing left to run the study
+completes, or fails when no trial completed. Two trials in a row ending with the
+same failure reason fail the study and its running trials. `promote_trial`,
+`get_study_analysis` and `delete_study` work as for any study.
+
 ## record_methodology_run
 
 Input: `methodology` (a `W-` id), `run_id` (Lake's run id), `mode`
@@ -107,7 +173,10 @@ Input: `methodology` (a `W-` id), `run_id` (Lake's run id), `mode`
 only), `rows {train, held_out}`, `artifact_base64`, `artifact_format`
 (`bytes` or `pickle`), `features`, `project` and `graph` (both or neither).
 
-- `validate` registers nothing: Lake sets the outcome with `update_methodology`'s `validation`. Answers `{model_id: null, run_id: null}`.
+- With `study` and `trial`, a training run is an experiment's trial
+([Experiments](#experiments)).
+
+`validate` registers nothing: Lake sets the outcome with `update_methodology`'s `validation`. Answers `{model_id: null, run_id: null}`.
 - `train` needs `artifact_base64`, strict base64 of at most **24 MiB** decoded (the request must stay under the HTTP adapter's 33 MiB body limit). It creates a Run (on the project and graph for a pipeline step; the graph must run this methodology), records its parameters, its metrics as step 0, a log line naming Lake's run, the model output and the lineage, and sets it Succeeded. It registers a Model: kind `python:<id>`, the metrics, the artifact as its weights, and in `feature_schema` the methodology, Lake's run id, the code, the parameters, the features, the dataset, the row counts and the artifact format. Answers `{model_id, run_id}`.
 
 The Model appears in `list_models` and `system.models` like any other. Its weights
@@ -116,15 +185,17 @@ are the methodology's own artifact; only Lake's runner can load them.
 ## Verify
 
 ```sh
-./build/tests/zetta-tests --gtest_filter='WorkspaceMethodology*'
+./build/tests/zetta-tests --gtest_filter='WorkspaceMethodology*:WorkspaceStudy*'
 ```
 
 `OramasMethodologiesAreReadOnly`, `RegisterGetUpdateDeleteAndList`,
 `APipelineStepIsVerifiedOnlyOnceValidatedAndRunsInLakesRunner`,
-`RecordingARunChecksWhatItIsGiven` and `ItsPipelineIsNotDeployedForServing`.
+`RecordingARunChecksWhatItIsGiven` and `ItsPipelineIsNotDeployedForServing`;
+`WorkspaceStudyFixture.*` (`tests/api/test_workspace_study_api.cpp`) covers the
+published search space, trials waiting for the runner, a result admitting the next,
+a failed trial, two failing the same way, promotion and the search-space checks.
 
 ## Not built
 
-- Experiments (studies) over a workspace methodology's parameters: the parameters are declared, but trials would run in Lake's runner.
 - Serving a workspace methodology's model (`predict` behind Ship → Models).
 - Artifacts above 24 MiB.

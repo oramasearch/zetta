@@ -28,6 +28,7 @@
 #include "zetta/ml/gbdt_train_job.hpp"
 #include "zetta/ml/metric_names.hpp"
 #include "zetta/ml/run_features.hpp"
+#include "zetta/ml/workspace_study.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -186,7 +187,9 @@ const nlohmann::json& schema_document() {
             },
             "seed":{"type":"integer","minimum":0},
             "differential_privacy":{"type":"boolean"},
-            "released_metrics":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}}
+            "released_metrics":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}},
+            "target":{"type":"string","description":"a workspace methodology's study: the target column its trials read"},
+            "features":{"type":"array","items":{"type":"string","minLength":1},"description":"a workspace methodology's study: the feature columns its trials read (every column but the target when empty)"}
           }
         },
         "status":{"type":"string","enum":["running","stopped","complete","failed"]},
@@ -262,7 +265,7 @@ nlohmann::json spec_json(const StudySpec& spec) {
     for (const StudyParameter& parameter : spec.search_space) {
         search_space.push_back(parameter_json(parameter));
     }
-    return {{"name", spec.name},
+    nlohmann::json document = {{"name", spec.name},
             {"project", spec.project},
             {"pipeline", spec.pipeline},
             {"dataset", spec.dataset},
@@ -282,6 +285,9 @@ nlohmann::json spec_json(const StudySpec& spec) {
             {"seed", spec.seed},
             {"differential_privacy", spec.differential_privacy},
             {"released_metrics", spec.released_metrics}};
+    if (!spec.target.empty()) document["target"] = spec.target;
+    if (!spec.features.empty()) document["features"] = spec.features;
+    return document;
 }
 
 StudySpec parse_spec(const nlohmann::json& value) {
@@ -326,6 +332,8 @@ StudySpec parse_spec(const nlohmann::json& value) {
     spec.differential_privacy = value.at("differential_privacy").get<bool>();
     spec.released_metrics =
         value.at("released_metrics").get<std::vector<std::string>>();
+    spec.target = value.value("target", std::string{});
+    spec.features = value.value("features", std::vector<std::string>{});
     return spec;
 }
 
@@ -1884,6 +1892,117 @@ bool validate_study_data(Node& node, const StudySpec& spec,
     return true;
 }
 
+std::string study_trial_model_name(const std::string& experiment_name,
+                                   const std::string& experiment_id, std::size_t trial_number) {
+    return trial_model_name(experiment_name, experiment_id, trial_number);
+}
+
+bool finish_workspace_trial(Node& node, Study& study, const std::string& run,
+                            std::optional<double> objective, double cost, std::string reason,
+                            std::string model) {
+    const TrialState state = objective ? TrialState::Complete : TrialState::Failed;
+    if (!study.finish_trial(run, state, objective, cost, std::move(reason), std::move(model))) {
+        return false;
+    }
+    if (const std::shared_ptr<pipeline::Run> found = node.find_run(run)) {
+        found->set_status(objective ? pipeline::RunStatus::Succeeded
+                                    : pipeline::RunStatus::Failed);
+    }
+    publish_progress(node, study, objective ? "trial_completed" : "trial_failed", run, 0,
+                     objective);
+    return true;
+}
+
+std::size_t advance_workspace_study(Node& node, Study& study) {
+    if (study.status() != StudyStatus::Running) return 0;
+    const std::vector<StudyTrial>& trials = study.value().trials;
+    // Two trials in a row (by number, of those that ended) failing for the
+    // same reason fail the study rather than spending the rest of its budget
+    // on the same failure.
+    std::vector<const StudyTrial*> ended;
+    for (const StudyTrial& trial : trials) {
+        if (trial.state != TrialState::Running) ended.push_back(&trial);
+    }
+    if (ended.size() >= 2) {
+        const StudyTrial& last = *ended.back();
+        const StudyTrial& previous = *ended[ended.size() - 2];
+        if (last.state == TrialState::Failed && previous.state == TrialState::Failed &&
+            !last.reason.empty() && last.reason == previous.reason &&
+            last.reason != "stopped by caller") {
+            std::vector<std::string> running_runs;
+            for (const StudyTrial& trial : trials) {
+                if (trial.state == TrialState::Running) running_runs.push_back(trial.run);
+            }
+            study.fail("trials", "trials " + std::to_string(previous.number) + " and " +
+                                     std::to_string(last.number) +
+                                     " failed the same way: " + last.reason);
+            for (const std::string& run : running_runs) {
+                if (const std::shared_ptr<pipeline::Run> found = node.find_run(run)) {
+                    found->set_status(pipeline::RunStatus::Failed);
+                }
+            }
+            publish_progress(node, study, "study_failed");
+            return 0;
+        }
+    }
+    const std::size_t running = static_cast<std::size_t>(std::ranges::count(
+        trials, TrialState::Running, &StudyTrial::state));
+    if (wall_time_reached(study.value())) {
+        if (running == 0) {
+            const StudyStatus ended = study.set_complete("wall_time");
+            publish_progress(node, study,
+                             ended == StudyStatus::Failed ? "study_failed" : "study_complete");
+        }
+        return 0;
+    }
+    const StudySpec& spec = study.spec();
+    const std::size_t remaining =
+        spec.budgets.max_trials > trials.size() ? spec.budgets.max_trials - trials.size() : 0;
+    const std::size_t available = spec.budgets.max_parallel_trials > running
+                                      ? spec.budgets.max_parallel_trials - running
+                                      : 0;
+    std::size_t add = 0;
+    while (add < std::min(remaining, available) && trial_cost_fits(study.value(), running + add)) {
+        ++add;
+    }
+    std::size_t admitted = 0;
+    for (std::size_t offset = 0; offset < add; ++offset) {
+        const std::size_t number = study.value().trials.size();
+        const nlohmann::json params = StudyOptimizer::sample(spec, study.value().trials, number);
+        const std::shared_ptr<pipeline::Run> run = node.create_run(spec.project, spec.pipeline);
+        if (!run) {
+            study.stop("could not create a trial Run");
+            publish_progress(node, study, "stopped");
+            return admitted;
+        }
+        run->set_status(pipeline::RunStatus::Running);
+        run->add_log({util::now_iso8601(), "info",
+                      "trial " + std::to_string(number) + " of the experiment " + spec.name +
+                          ": waiting for Lake's runner to run the workspace methodology " +
+                          spec.methodology});
+        StudyTrial trial;
+        trial.number = number;
+        trial.run = run->id();
+        trial.params = params;
+        trial.seed = spec.seed + number;
+        nlohmann::json run_params = params;
+        run_params["study.id"] = study.id();
+        run_params["study.seed"] = trial.seed;
+        std::string error;
+        run->log_params(std::move(run_params), &error);
+        if (!study.add_trial(std::move(trial), &error)) break;
+        ++admitted;
+        publish_progress(node, study, "trial_started", run->id());
+    }
+    if (admitted == 0 && running == 0) {
+        const StudyStatus ended =
+            study.set_complete(remaining == 0 ? "max_trials" : "budget");
+        publish_progress(node, study,
+                         ended == StudyStatus::Failed ? "study_failed" : "study_complete");
+    }
+    return admitted;
+}
+
 struct StudyDriver::State {
     struct TrialResult {
         std::string run;
@@ -2316,6 +2435,9 @@ void StudyDriver::reconcile() {
     }
     for (const std::shared_ptr<Study>& study : state_->node.studies()) {
         if (!study || study->status() != StudyStatus::Running) continue;
+        // A workspace methodology's trials run in Lake's runner (lake#689):
+        // record_methodology_run and stop_trial advance its study.
+        if (is_workspace_study(study->spec())) continue;
         if (!state_->owns(*study)) continue;
         if (state_->find_active(study->id()) != nullptr) continue;
         state_->launch(study);

@@ -6325,6 +6325,14 @@
                   "differential_privacy": {
                     "type": "boolean"
                   },
+                  "features": {
+                    "description": "a workspace methodology's study: the feature columns its trials read (every column but the target when empty)",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "from_defaults": {
                     "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default parameter ranges",
                     "type": "boolean"
@@ -6466,6 +6474,10 @@
                   "seed": {
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "target": {
+                    "description": "a workspace methodology's study: the target column its trials read",
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -6535,6 +6547,83 @@
                           },
                           "type": "array"
                         },
+                        "runner": {
+                          "description": "a workspace methodology's study only: each trial waiting for Lake's runner, which runs it and reports back with record_methodology_run (study, trial)",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "dataset_path": {
+                                "type": "string"
+                              },
+                              "features": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "graph": {
+                                "type": "string"
+                              },
+                              "holdout_fraction": {
+                                "type": "number"
+                              },
+                              "methodology": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "params": {
+                                "additionalProperties": {
+                                  "type": [
+                                    "string",
+                                    "number",
+                                    "integer",
+                                    "boolean"
+                                  ]
+                                },
+                                "description": "the declared defaults overridden by the trial's sampled values",
+                                "type": "object"
+                              },
+                              "project": {
+                                "type": "string"
+                              },
+                              "seed": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "study": {
+                                "type": "string"
+                              },
+                              "study_name": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "type": "string"
+                              },
+                              "trial": {
+                                "description": "the trial's Run id",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "study",
+                              "study_name",
+                              "trial",
+                              "number",
+                              "methodology",
+                              "params",
+                              "seed",
+                              "dataset_path",
+                              "target",
+                              "features",
+                              "holdout_fraction"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "spec": {
                           "additionalProperties": false,
                           "properties": {
@@ -6571,6 +6660,14 @@
                             },
                             "differential_privacy": {
                               "type": "boolean"
+                            },
+                            "features": {
+                              "description": "a workspace methodology's study: the feature columns its trials read (every column but the target when empty)",
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "type": "array"
                             },
                             "methodology": {
                               "minLength": 1,
@@ -6710,6 +6807,10 @@
                             "seed": {
                               "minimum": 0,
                               "type": "integer"
+                            },
+                            "target": {
+                              "description": "a workspace methodology's study: the target column its trials read",
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -18116,6 +18217,83 @@
                           },
                           "type": "array"
                         },
+                        "runner": {
+                          "description": "a workspace methodology's study only: each trial waiting for Lake's runner, which runs it and reports back with record_methodology_run (study, trial)",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "dataset_path": {
+                                "type": "string"
+                              },
+                              "features": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "graph": {
+                                "type": "string"
+                              },
+                              "holdout_fraction": {
+                                "type": "number"
+                              },
+                              "methodology": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "params": {
+                                "additionalProperties": {
+                                  "type": [
+                                    "string",
+                                    "number",
+                                    "integer",
+                                    "boolean"
+                                  ]
+                                },
+                                "description": "the declared defaults overridden by the trial's sampled values",
+                                "type": "object"
+                              },
+                              "project": {
+                                "type": "string"
+                              },
+                              "seed": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "study": {
+                                "type": "string"
+                              },
+                              "study_name": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "type": "string"
+                              },
+                              "trial": {
+                                "description": "the trial's Run id",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "study",
+                              "study_name",
+                              "trial",
+                              "number",
+                              "methodology",
+                              "params",
+                              "seed",
+                              "dataset_path",
+                              "target",
+                              "features",
+                              "holdout_fraction"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "spec": {
                           "additionalProperties": false,
                           "properties": {
@@ -18152,6 +18330,14 @@
                             },
                             "differential_privacy": {
                               "type": "boolean"
+                            },
+                            "features": {
+                              "description": "a workspace methodology's study: the feature columns its trials read (every column but the target when empty)",
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "type": "array"
                             },
                             "methodology": {
                               "minLength": 1,
@@ -18291,6 +18477,10 @@
                             "seed": {
                               "minimum": 0,
                               "type": "integer"
+                            },
+                            "target": {
+                              "description": "a workspace methodology's study: the target column its trials read",
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -24357,6 +24547,83 @@
                                 },
                                 "type": "array"
                               },
+                              "runner": {
+                                "description": "a workspace methodology's study only: each trial waiting for Lake's runner, which runs it and reports back with record_methodology_run (study, trial)",
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "dataset_path": {
+                                      "type": "string"
+                                    },
+                                    "features": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "graph": {
+                                      "type": "string"
+                                    },
+                                    "holdout_fraction": {
+                                      "type": "number"
+                                    },
+                                    "methodology": {
+                                      "type": "string"
+                                    },
+                                    "number": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "params": {
+                                      "additionalProperties": {
+                                        "type": [
+                                          "string",
+                                          "number",
+                                          "integer",
+                                          "boolean"
+                                        ]
+                                      },
+                                      "description": "the declared defaults overridden by the trial's sampled values",
+                                      "type": "object"
+                                    },
+                                    "project": {
+                                      "type": "string"
+                                    },
+                                    "seed": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "study": {
+                                      "type": "string"
+                                    },
+                                    "study_name": {
+                                      "type": "string"
+                                    },
+                                    "target": {
+                                      "type": "string"
+                                    },
+                                    "trial": {
+                                      "description": "the trial's Run id",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "study",
+                                    "study_name",
+                                    "trial",
+                                    "number",
+                                    "methodology",
+                                    "params",
+                                    "seed",
+                                    "dataset_path",
+                                    "target",
+                                    "features",
+                                    "holdout_fraction"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
                               "spec": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -24393,6 +24660,14 @@
                                   },
                                   "differential_privacy": {
                                     "type": "boolean"
+                                  },
+                                  "features": {
+                                    "description": "a workspace methodology's study: the feature columns its trials read (every column but the target when empty)",
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": "array"
                                   },
                                   "methodology": {
                                     "minLength": 1,
@@ -24532,6 +24807,10 @@
                                   "seed": {
                                     "minimum": 0,
                                     "type": "integer"
+                                  },
+                                  "target": {
+                                    "description": "a workspace methodology's study: the target column its trials read",
+                                    "type": "string"
                                   }
                                 },
                                 "required": [
@@ -30926,6 +31205,11 @@
                     "description": "database.table it read",
                     "type": "string"
                   },
+                  "duration_seconds": {
+                    "description": "how long the code ran; an experiment's trial counts it as its cost in trial-seconds",
+                    "minimum": 0,
+                    "type": "number"
+                  },
                   "features": {
                     "description": "the feature columns it was given",
                     "items": {
@@ -30987,6 +31271,16 @@
                     "description": "Lake's id for the run, kept on the Model as its lineage",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "study": {
+                    "description": "for an experiment's trial (lake#689): the study it belongs to; with trial",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "trial": {
+                    "description": "for an experiment's trial: the trial's Run id, from the study's runner work; the result completes that Run",
+                    "minLength": 1,
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -31033,6 +31327,121 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "study": {
+                          "additionalProperties": false,
+                          "description": "for an experiment's trial: the trial's outcome, the study's status, and the trials now waiting for Lake's runner",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "objective": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "runner": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "dataset_path": {
+                                    "type": "string"
+                                  },
+                                  "features": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "graph": {
+                                    "type": "string"
+                                  },
+                                  "holdout_fraction": {
+                                    "type": "number"
+                                  },
+                                  "methodology": {
+                                    "type": "string"
+                                  },
+                                  "number": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "params": {
+                                    "additionalProperties": {
+                                      "type": [
+                                        "string",
+                                        "number",
+                                        "integer",
+                                        "boolean"
+                                      ]
+                                    },
+                                    "description": "the declared defaults overridden by the trial's sampled values",
+                                    "type": "object"
+                                  },
+                                  "project": {
+                                    "type": "string"
+                                  },
+                                  "seed": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "study": {
+                                    "type": "string"
+                                  },
+                                  "study_name": {
+                                    "type": "string"
+                                  },
+                                  "target": {
+                                    "type": "string"
+                                  },
+                                  "trial": {
+                                    "description": "the trial's Run id",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "study",
+                                  "study_name",
+                                  "trial",
+                                  "number",
+                                  "methodology",
+                                  "params",
+                                  "seed",
+                                  "dataset_path",
+                                  "target",
+                                  "features",
+                                  "holdout_fraction"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "status": {
+                              "enum": [
+                                "running",
+                                "stopped",
+                                "complete",
+                                "failed"
+                              ],
+                              "type": "string"
+                            },
+                            "trial_state": {
+                              "enum": [
+                                "complete",
+                                "failed"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "trial_state",
+                            "objective",
+                            "status",
+                            "runner"
+                          ],
+                          "type": "object"
                         }
                       },
                       "required": [
@@ -35379,6 +35788,11 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "reason": {
+                    "description": "why the trial ended, kept as its reason; Lake's runner names a run that failed or was stopped (default: stopped by caller)",
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
                   "run": {
                     "minLength": 1,
                     "type": "string"
@@ -35424,8 +35838,95 @@
                           "minLength": 1,
                           "type": "string"
                         },
+                        "runner": {
+                          "description": "a workspace methodology's study only: each trial waiting for Lake's runner, which runs it and reports back with record_methodology_run (study, trial)",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "dataset_path": {
+                                "type": "string"
+                              },
+                              "features": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "graph": {
+                                "type": "string"
+                              },
+                              "holdout_fraction": {
+                                "type": "number"
+                              },
+                              "methodology": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "params": {
+                                "additionalProperties": {
+                                  "type": [
+                                    "string",
+                                    "number",
+                                    "integer",
+                                    "boolean"
+                                  ]
+                                },
+                                "description": "the declared defaults overridden by the trial's sampled values",
+                                "type": "object"
+                              },
+                              "project": {
+                                "type": "string"
+                              },
+                              "seed": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "study": {
+                                "type": "string"
+                              },
+                              "study_name": {
+                                "type": "string"
+                              },
+                              "target": {
+                                "type": "string"
+                              },
+                              "trial": {
+                                "description": "the trial's Run id",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "study",
+                              "study_name",
+                              "trial",
+                              "number",
+                              "methodology",
+                              "params",
+                              "seed",
+                              "dataset_path",
+                              "target",
+                              "features",
+                              "holdout_fraction"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "state": {
                           "const": "failed",
+                          "type": "string"
+                        },
+                        "status": {
+                          "description": "the study's status after the trial ended",
+                          "enum": [
+                            "running",
+                            "stopped",
+                            "complete",
+                            "failed"
+                          ],
                           "type": "string"
                         },
                         "study": {
@@ -39781,6 +40282,24 @@
             }
           },
           {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "a workspace methodology's study: the feature columns its trials read (every column but the target when empty)",
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "a workspace methodology's study: the feature columns its trials read (every column but the target when empty)",
+            "in": "query",
+            "name": "features",
+            "required": false
+          },
+          {
             "description": "fill a missing objective (held_out_auc, maximize, validation split), budgets and the methodology's default parameter ranges",
             "in": "query",
             "name": "from_defaults",
@@ -39987,6 +40506,16 @@
             }
           },
           {
+            "description": "a workspace methodology's study: the target column its trials read",
+            "in": "query",
+            "name": "target",
+            "required": false,
+            "schema": {
+              "description": "a workspace methodology's study: the target column its trials read",
+              "type": "string"
+            }
+          },
+          {
             "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
             "in": "query",
             "name": "intent",
@@ -40056,6 +40585,14 @@
                                 },
                                 "differential_privacy": {
                                   "type": "boolean"
+                                },
+                                "features": {
+                                  "description": "a workspace methodology's study: the feature columns its trials read (every column but the target when empty)",
+                                  "items": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "type": "array"
                                 },
                                 "methodology": {
                                   "minLength": 1,
@@ -40195,6 +40732,10 @@
                                 "seed": {
                                   "minimum": 0,
                                   "type": "integer"
+                                },
+                                "target": {
+                                  "description": "a workspace methodology's study: the target column its trials read",
+                                  "type": "string"
                                 }
                               },
                               "required": [

@@ -197,6 +197,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     segmentation_methodology.hpp M-3 graph/launch contracts, peer runner installation and typed report reader (#1042)
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
     workspace_methodology.hpp  zetta::ml — workspace methodologies (#1261): the replicated `methodology:<W-id>` value schema and rules, WorkspaceMethodologyStore, the listing, the python_methodology shape and graph resolution
+    workspace_study.hpp        zetta::ml — experiments over a workspace methodology's declared parameters (lake#689): the published search space, spec normalization, trial admission and Lake's runner work items
     solution.hpp            zetta::ml::Solution catalogue contract, typed defaults, capability levels, methodology availability, and composed execution graph (#1102/#1128)
     study.hpp               zetta::ml::Study replicated record, typed search space, Run-backed trial lifecycle, TPE/grid/random samplers, ASHA/median pruners, budgets, analysis and work-stealing runner (#1138)
     uplift.hpp              zetta::ml native T/X uplift learners, propensity model, held-out Qini/AUUC evaluation, bootstrap interval, and targeting policy (#1045)
@@ -533,6 +534,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     document_extraction.cpp M-11 PDF text reader, PGM preprocessing and line segmentation, native TrOCR inference, field extraction/evaluation, output tables, model, and run lineage (#1050)
     methodology_table.cpp   the ordered M-1 through M-21 portfolio table, aliases, primary solutions, keywords, data roles, outputs, metrics, and implementation issues (#1061)
     workspace_methodology.cpp  workspace methodology entries: schema + semantic validation, CRDT store, listing, three-step shape (#1261)
+    workspace_study.cpp        a workspace methodology's study: search space from its manifest, spec checks, runner work items (lake#689; admission is advance_workspace_study in study.cpp)
     solution_table.cpp      the ordered, runnable S-1 through S-12 and B-1 through B-8 registry, retained promotion conditions, portfolio-number mapping, typed-template projection, and callback-built composition (#1102/#1128/#1175/#1176/#1177/#1178/#1179/#1180/#1181/#1182)
     uplift.cpp              native T- and X-learner fitting, propensity overlap, held-out selection, Qini/AUUC, bootstrap, and targeting policy (#1045)
     uplift_job.cpp          JobRound allreduce/gather/broadcast adapter for distributed uplift training (#1045)

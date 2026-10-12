@@ -83,6 +83,11 @@ struct StudySpec {
     std::uint64_t seed = 0;
     bool differential_privacy = false;
     std::vector<std::string> released_metrics;
+    // A workspace methodology's study (lake#689): the target column and the
+    // feature columns its trials read. Empty for the catalogue's studies,
+    // which resolve both from the dataset contract.
+    std::string target;
+    std::vector<std::string> features;
 };
 
 struct TrialPoint {
@@ -139,6 +144,11 @@ bool validate_study_spec(const StudySpec& spec, std::string* error = nullptr);
 // used only to infer the column contract. Returns a repair-oriented data reason.
 bool validate_study_data(Node& node, const StudySpec& spec,
                          std::string* error = nullptr);
+
+// The name a trial's Model takes: `<study name>-trial-<n>`, the name lowercased
+// with other characters folded to `-` (#1242).
+std::string study_trial_model_name(const std::string& experiment_name,
+                                   const std::string& experiment_id, std::size_t trial_number);
 
 class Study {
 public:
