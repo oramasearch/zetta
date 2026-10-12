@@ -16,4 +16,5 @@ messaging; the compute layers built on these seams live in [../compute/](../comp
 - [node-metrics.md](node-metrics.md) — live per-node host and process resource
   telemetry plus pub/sub dispatch pool sizing: `system.node_metrics`, ephemeral
   + observed, no CRDT backing (`zetta::cluster::NodeMetricsSampler`, #581,
-  #1157, #1163).
+  #1157, #1163); the telemetry exchange also carries each node's storage census,
+  which `storage_usage` folds for the whole cluster (#1259).

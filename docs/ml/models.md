@@ -200,7 +200,8 @@ unexposed).
 A **standalone model** (lake#654) is made on its own rather than by a project's pipeline:
 `train_model`, `retrain_model`, `register_model` and `move_model_to_project`, through an internal
 project that is never listed. `list_models` marks each version `standalone`. See
-[standalone-models.md](standalone-models.md).
+[standalone-models.md](standalone-models.md). A brought model may be an ONNX, XGBoost or LightGBM
+file, and `export_model` downloads any model's weights ([model-import.md](model-import.md), lake#681).
 
 The `list_models` capability returns those display names and producing Run id
 alongside `name`, `kind`, `metrics`, `feature_schema`, `exposed`, `created`, and

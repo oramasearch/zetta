@@ -140,9 +140,9 @@ void tree_shap_recurse(const std::vector<TreeNode>& nodes, int index,
     const double value = static_cast<std::size_t>(split) < x.size()
                              ? x[static_cast<std::size_t>(split)]
                              : 0.0;
-    // The instance follows the same `<` routing predict() uses, so the "hot" child is
+    // The instance follows the same routing predict() uses (`<`, and missing_left for NaN), so the "hot" child is
     // the one it actually takes (its on-path branch carries one_fraction = 1).
-    const int hot = value < node.threshold ? node.left : node.right;
+    const int hot = node.child_for(value);
     const int cold = hot == node.left ? node.right : node.left;
 
     double incoming_zero = 1.0;

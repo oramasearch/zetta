@@ -64,6 +64,63 @@
     "sampled_at": {
       "type": "string"
     },
+    "storage_census": {
+      "additionalProperties": false,
+      "properties": {
+        "age_seconds": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "buckets": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bucket": {
+                "type": "string"
+              },
+              "bytes": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "bucket",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "buckets_omitted": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kinds": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "measured_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "total_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "measured_at",
+        "age_seconds",
+        "total_bytes",
+        "kinds",
+        "buckets"
+      ],
+      "type": "object"
+    },
     "storage_percent": {
       "type": "number"
     },

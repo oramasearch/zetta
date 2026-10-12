@@ -199,6 +199,7 @@ add_executable(zetta-tests
   ddf/test_ddf_featurize.cpp
   ddf/test_ddf_featurize_partitions.cpp
   ml/test_gbdt.cpp
+  ml/test_model_import.cpp
   ml/test_uplift.cpp
   ml/test_uplift_partitions.cpp
   ml/test_rank.cpp

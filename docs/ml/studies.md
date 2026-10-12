@@ -543,7 +543,11 @@ per request.
 
 ## Persistence and schemas
 
-The replicated catalog key is `study:<uuid>`. Its local projection is
+The replicated catalog key is `study:<uuid>`. A Study records the tables its
+trials read in `reads` (`{database, table, table_id}`, zetta#1258) when it is
+created: its `dataset`, or its Pipeline's connect steps. Each trial Run adds them
+to its own `reads`, and [`delete_dataset`](../api/deletes.md#refusals) refuses a
+dataset a running Study reads, even between trials. Its local projection is
 `<data-dir>/<uuid>/study.json`; restart and reconciliation validate the closed
 Study schema before materializing it. A running Study is eligible on exactly
 one replicated member after reconciliation, including after a restart, and a node

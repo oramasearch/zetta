@@ -34,7 +34,7 @@ Every kind is present in an answer, 0 when the node holds none of it, and the ki
 
 ## `storage_usage`
 
-A read (`api:query`), input `{}`:
+A read (`api:query`), input `{}` or `{"scope": "node"}`: the node that answers.
 
 ```json
 {"node_id": "…", "scope": "node", "total_bytes": 123456,
@@ -45,15 +45,51 @@ A read (`api:query`), input `{}`:
 
 It is a `blocks` entry: the registry authorizes and audits on the owner loop, then the handler
 walks the disk on the blocking pool. The handler reads only the node's configuration (its data
-directory and id) and the filesystem, never main-thread Node state, so a large data directory never
-holds the tick.
+directory and id), the filesystem and the telemetry cache (behind its own lock), never
+main-thread Node state, so a large data directory never holds the tick.
 
-**Scope: the node that answered.** Each node measures its own disk, so the bytes are physical: a
-replicated dataset or bucket counts on every node that holds a copy. A cluster's total is the sum of
-each member's answer; lake's workspace engines are single-node, so one call is the workspace. Folding
-every member's census into one answer through the telemetry exchange (`NodeTelemetryExchange`, which
-already carries each member's disk use) is the follow-up for multi-node engines
-([zetta#1259](https://github.com/oramasearch/zetta/issues/1259)).
+**Physical bytes.** Each node measures its own disk: a replicated dataset or bucket counts on every
+node that holds a copy.
+
+### The whole cluster: `{"scope": "cluster"}`
+
+A clustered node measures its own census on the blocking pool every
+`Node::kStorageCensusInterval` (60 s), one walk at a time, and carries the latest in every
+`node.metrics` telemetry event it broadcasts (`NodeTelemetryExchange`, beside
+`storage_used_bytes`; [node metrics](../cluster/node-metrics.md)) as `storage_census`:
+`measured_at` (by its clock), `age_seconds` (how old it was when the event was sent),
+`total_bytes`, `kinds` and at most 256 `buckets`, the largest, with the rest counted in
+`buckets_omitted` (their bytes stay in `kinds.buckets` and `total_bytes`). The payload is validated
+against the wire schema (`schemas/node_metrics.schema.json`) before any field is read.
+
+With `scope: "cluster"` the answering node measures its own disk now and folds in every peer's
+census from its telemetry cache (`zetta::cluster::fold_storage_census`):
+
+```json
+{"node_id": "node-a", "scope": "cluster", "bytes": "physical", "total_bytes": 370368,
+ "kinds": {"datasets": 3000, …}, "buckets": [{"bucket": "photos", "bytes": 270}],
+ "nodes": [{"node_id": "node-a", "local": true, "measured_at": "2026-10-11T12:00:00Z",
+            "age_seconds": 0, "total_bytes": 123456, "kinds": {…}, "buckets": […],
+            "buckets_omitted": 0}, …],
+ "missing": [{"node_id": "node-d", "reason": "stale"}]}
+```
+
+- `nodes[]`: each member with a fresh census, node-id ascending; `age_seconds` is its census's age
+  now (its age when sent plus the event's age), by this node's clock, so clock skew does not matter.
+- `kinds`, `buckets` (by name) and `total_bytes`: those members summed.
+- `missing[]`: every other member of the cluster membership (the replicated node-list), never
+  counted as zero: `not_reporting` (no telemetry within the 8 s freshness window: down,
+  partitioned, or a version without the census), `not_measured` (reporting, census not measured
+  yet: the first walk is still running) or `stale` (census older than
+  `Node::kStorageCensusStaleAfter`, 180 s).
+- `bytes: "physical"`: a replicated dataset or bucket is counted on every member that holds it.
+
+A standalone node answers the cluster scope with itself alone. A member that reports a kind this
+node does not know adds it to `total_bytes` but not to `kinds`.
+
+**Mixed versions.** The telemetry wire schema is closed, so a node from before zetta#1259 rejects a
+newer peer's `node.metrics` event (and its gauges) until it is upgraded; the newer nodes name the
+older one `not_reporting`. Roll a cluster's members within a short window.
 
 ## Verify
 
@@ -63,6 +99,13 @@ already carries each member's disk use) is the follow-up for multi-node engines
 - `StorageCapabilities.ANodeAnswersItsDiskByKind` (`tests/api/test_storage_capabilities.cpp`): a
   started node answers through the registry with every kind, its id and `scope: node`; bytes added
   to a bucket show in `kinds.buckets`, in that bucket and in `total_bytes`.
+- `StorageCapabilities.AClusterAnswersEveryMembersDiskSummed`: a three-node loopback cluster;
+  `scope: cluster` on one node lists all three with their census, sums their kinds, shows a bucket
+  written on another member's disk, says `bytes: physical`, and names none missing.
+- `NodeTelemetryWire.CarriesTheStorageCensus`, `.CapsTheListedBucketsAndKeepsTheirBytes`,
+  `.RejectsAMalformedCensus` (`tests/cluster/test_node_telemetry.cpp`): the census on the wire.
+- `StorageCensusFold.SumsFreshMembersAndNamesTheRest`: of five members, two fresh are summed and the
+  stale, unmeasured and silent ones are named with their reason.
 
 ## Change
 

@@ -131,8 +131,16 @@ struct TreeNode {
     int right = -1;
     double value = 0.0;     // leaf raw-score contribution
     double cover = 0.0;     // training weight (Σ Hessian) reaching this node — for SHAP
+    // Where a missing value (NaN) goes. False sends it right, which is what the
+    // strict `<` does with NaN and how every model trained here behaves. A model
+    // brought from elsewhere (model_import.hpp) records its source's own choice:
+    // XGBoost's default direction, LightGBM's missing type, ONNX's
+    // nodes_missing_value_tracks_true (lake#681).
+    bool missing_left = false;
 
     bool is_leaf() const noexcept { return feature < 0; }
+    // The child a feature value takes at this internal node.
+    int child_for(double value) const noexcept;
 };
 
 // A single regression tree: nodes[0] is the root.
