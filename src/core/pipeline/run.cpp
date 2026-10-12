@@ -385,6 +385,19 @@ const nlohmann::json& schema_document() {
             "additionalProperties": false
           }
         },
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "database": { "type": "string" },
+              "table":    { "type": "string" },
+              "table_id": { "type": "string" }
+            },
+            "required": ["database", "table"],
+            "additionalProperties": false
+          }
+        },
         "lineage": {
           "type": "object",
           "properties": {
@@ -485,10 +498,55 @@ nlohmann::json to_json(const RunValue& value) {
     if (!value.entity_key_mapping.empty()) {
         output["entity_key_mapping"] = value.entity_key_mapping;
     }
+    // Only when there is one, so a run that reads nothing keeps the shape an
+    // older peer accepts.
+    if (!value.reads.empty()) output["reads"] = to_json(value.reads);
     return output;
 }
 
 const nlohmann::json& run_value_schema() { return schema_document(); }
+
+bool reads_table(const std::vector<TableRead>& reads, std::string_view database,
+                 std::string_view table, std::string_view table_id) {
+    return std::ranges::any_of(reads, [&](const TableRead& read) {
+        if (!table_id.empty() && !read.table_id.empty()) return read.table_id == table_id;
+        return read.database == database && read.table == table;
+    });
+}
+
+bool merge_table_reads(std::vector<TableRead>& reads,
+                       const std::vector<TableRead>& added) {
+    bool changed = false;
+    for (const TableRead& read : added) {
+        if (read.database.empty() || read.table.empty()) continue;
+        if (reads_table(reads, read.database, read.table, read.table_id)) continue;
+        reads.push_back(read);
+        changed = true;
+    }
+    return changed;
+}
+
+nlohmann::json to_json(const std::vector<TableRead>& reads) {
+    nlohmann::json output = nlohmann::json::array();
+    for (const TableRead& read : reads) {
+        nlohmann::json entry{{"database", read.database}, {"table", read.table}};
+        if (!read.table_id.empty()) entry["table_id"] = read.table_id;
+        output.push_back(std::move(entry));
+    }
+    return output;
+}
+
+std::vector<TableRead> table_reads_from_json(const nlohmann::json& value) {
+    std::vector<TableRead> reads;
+    if (!value.is_array()) return reads;
+    for (const nlohmann::json& entry : value) {
+        if (!entry.is_object()) continue;
+        reads.push_back({entry.value("database", std::string{}),
+                         entry.value("table", std::string{}),
+                         entry.value("table_id", std::string{})});
+    }
+    return reads;
+}
 
 const nlohmann::json& run_features_schema() {
     return schema_document().at("properties").at("features");
@@ -546,6 +604,9 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
                                       output.value("ref", std::string{})});
         }
     }
+    if (const auto reads = value.find("reads"); reads != value.end()) {
+        parsed.reads = table_reads_from_json(*reads);
+    }
     if (const auto lineage = value.find("lineage"); lineage != value.end()) {
         parsed.lineage.sources =
             lineage->value("sources", std::vector<std::string>{});
@@ -588,6 +649,10 @@ void Run::set_lineage(RunLineage lineage) {
     lineage.confidence = clamp_confidence(lineage.confidence);
     value_.lineage = std::move(lineage);
     capture_and_persist();
+}
+
+void Run::add_reads(const std::vector<TableRead>& reads) {
+    if (merge_table_reads(value_.reads, reads)) capture_and_persist();
 }
 
 void Run::set_trace_id(std::string trace_id) {

@@ -584,6 +584,7 @@ add_library(zetta-core STATIC
   src/core/ml/methodology_optimization.cpp
   src/core/ml/methodology_table.cpp
   src/core/ml/workspace_methodology.cpp
+  src/core/ml/workspace_study.cpp
   src/core/ml/solution_table.cpp
   src/core/ml/entity_resolution.cpp
   src/core/ml/entity_resolution_job.cpp
@@ -724,6 +725,7 @@ add_library(zetta-core STATIC
   src/core/ddf/featurize_job.cpp
   src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
+  src/core/ml/model_import.cpp
   src/core/ml/uplift.cpp
   src/core/ml/uplift_job.cpp
   src/core/ml/uplift_methodology.cpp

@@ -56,6 +56,29 @@ struct RunLineage {
     double confidence = 0.0;           // 0..1 confidence score (clamped on write)
 };
 
+// One table a run or a study reads (zetta#1258). Recorded when the run or the
+// study is created, before it reads anything, so delete_dataset can refuse a
+// table an in-flight run or a running study still reads. `table_id` is the
+// table's stable id; `database`.`table` is its name at the time.
+struct TableRead {
+    std::string database;
+    std::string table;
+    std::string table_id;
+    friend bool operator==(const TableRead&, const TableRead&) = default;
+};
+
+// Add `added` to `reads`, skipping a table already listed (same table_id, or
+// same database.table when an id is missing). Returns true when one was added.
+bool merge_table_reads(std::vector<TableRead>& reads,
+                       const std::vector<TableRead>& added);
+
+// True when `reads` names the table (by id, or by database.table).
+bool reads_table(const std::vector<TableRead>& reads, std::string_view database,
+                 std::string_view table, std::string_view table_id);
+
+nlohmann::json to_json(const std::vector<TableRead>& reads);
+std::vector<TableRead> table_reads_from_json(const nlohmann::json& value);
+
 // The mutable, replicated/on-disk value of a run — everything the CRDT key
 // `run:<uuid>` carries (the id is the key / folder name, so it isn't repeated).
 // This is exactly the shape validated by the Run JSON Schema at every boundary.
@@ -77,6 +100,10 @@ struct RunValue {
     std::vector<RunLogEntry> logs;
     std::vector<RunOutput> outputs;
     RunLineage lineage;
+    // The tables the run reads (zetta#1258), recorded at creation. Lineage
+    // says where finished results came from; this says what an unfinished run
+    // is reading, which delete_dataset checks.
+    std::vector<TableRead> reads;
     // Empty for integer entities. Text-backed runs persist the deterministic
     // derived-id map so their intermediate numeric keys remain auditable.
     nlohmann::json entity_key_mapping = nlohmann::json::object();
@@ -146,6 +173,7 @@ public:
     const std::vector<RunLogEntry>& logs() const { return value_.logs; }
     const std::vector<RunOutput>& outputs() const { return value_.outputs; }
     const RunLineage& lineage() const { return value_.lineage; }
+    const std::vector<TableRead>& reads() const { return value_.reads; }
     const nlohmann::json& entity_key_mapping() const {
         return value_.entity_key_mapping;
     }
@@ -159,6 +187,8 @@ public:
     void add_log(RunLogEntry entry);
     void set_outputs(std::vector<RunOutput> outputs);
     void set_lineage(RunLineage lineage);
+    // Record more tables the run reads (zetta#1258); captures only on change.
+    void add_reads(const std::vector<TableRead>& reads);
     void set_trace_id(std::string trace_id);  // the run's trace (#640)
     bool set_entity_key_mapping(nlohmann::json mapping,
                                 std::string* error = nullptr);

@@ -26,6 +26,7 @@ add_executable(zetta-tests
   api/test_registry.cpp
   api/test_agent_api.cpp
   api/test_workspace_methodology_api.cpp
+  api/test_workspace_study_api.cpp
   api/test_mcp_prompts.cpp
   api/test_consent.cpp
   api/test_auth_gate.cpp
@@ -198,6 +199,7 @@ add_executable(zetta-tests
   ddf/test_ddf_featurize.cpp
   ddf/test_ddf_featurize_partitions.cpp
   ml/test_gbdt.cpp
+  ml/test_model_import.cpp
   ml/test_uplift.cpp
   ml/test_uplift_partitions.cpp
   ml/test_rank.cpp

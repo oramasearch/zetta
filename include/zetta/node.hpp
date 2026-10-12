@@ -386,6 +386,14 @@ public:
                                     std::string graph = {},
                                     std::string deployment = {});
     std::shared_ptr<zetta::pipeline::Run> find_run(const std::string& id) const;
+    // The tables a run of `graph` on `project` reads (zetta#1258): every
+    // connect step naming an existing `source`.`table`, plus `dataset_path`
+    // (`database.table`) when it names an existing table. create_run records
+    // the graph's; a caller that hands the run another dataset adds it with
+    // Run::add_reads. Unknown refs and missing tables are skipped.
+    std::vector<zetta::pipeline::TableRead> tables_read(
+        const std::string& project, const std::string& graph,
+        const std::string& dataset_path = {}) const;
     bool drop_run(const std::string& id);
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
@@ -744,6 +752,17 @@ public:
         if (!telemetry_) return {};
         return telemetry_->snapshot();
     }
+
+    // How often a clustered node measures its storage census (docs/data/storage-census.md,
+    // zetta#1259) on the blocking pool, to carry it in its telemetry; and how old a member's
+    // census may be before a cluster answer names it `stale` instead of counting it.
+    static constexpr std::chrono::seconds kStorageCensusInterval{60};
+    static constexpr std::chrono::seconds kStorageCensusStaleAfter{3 * kStorageCensusInterval};
+
+    // Every member of the attached cluster by id (the replicated node-list, this node included);
+    // just this node when no cluster is attached. Thread-safe (Cluster::membership() is), so the
+    // blocking pool may call it.
+    std::vector<std::string> cluster_member_ids() const;
 
     // Record one near-data compute job's **live pipeline instrumentation** (its
     // local-vs-wire byte counters — see pipeline_instrumentation.hpp). The
@@ -1504,6 +1523,16 @@ private:
     // replicated.
     std::unique_ptr<zetta::cluster::NodeTelemetryExchange> telemetry_;
     std::chrono::steady_clock::time_point last_telemetry_sample_{};
+    // The storage census this node carries in its telemetry (zetta#1259): measured on the
+    // blocking pool every kStorageCensusInterval, one round at a time; tick() takes a finished
+    // round's result (owner thread only) and attaches it to each sample with its age.
+    struct StorageCensusRound;
+    std::shared_ptr<StorageCensusRound> storage_census_round_;
+    std::chrono::steady_clock::time_point last_storage_census_{};
+    bool storage_census_measured_ = false;
+    zetta::data::StorageCensus storage_census_;
+    std::string storage_census_measured_at_;
+    std::chrono::steady_clock::time_point storage_census_taken_{};
     // The coordinated cross-process launch listener (#601): the `run.launch`
     // listener, wired as the coordinator's signal-handler fallback (delegating
     // everything else to telemetry_, which is why it is declared between the

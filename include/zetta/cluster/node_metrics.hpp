@@ -5,6 +5,8 @@
 #include <mutex>
 #include <string>
 
+#include "zetta/data/storage_census.hpp"
+
 namespace zetta::cluster {
 
 // A live snapshot of one node's host resource utilization — CPU, memory, GPU +
@@ -75,6 +77,18 @@ struct NodeMetrics {
     double net_percent = 0.0;         // 0..100 link utilization
 
     std::string sampled_at;           // ISO-8601 UTC stamp of this sample
+
+    // Storage census (zetta#1259, docs/data/storage-census.md): this node's disk by kind. Walking
+    // the data directory is blocking work, so the node measures it on the blocking pool at a
+    // bounded interval (Node::kStorageCensusInterval) and every sample carries the latest one;
+    // absent until the first measurement. Not part of `system.node_metrics`.
+    bool storage_census_available = false;
+    zetta::data::StorageCensus storage_census;
+    std::string storage_census_measured_at;  // ISO-8601 UTC, by the measuring node's clock
+    double storage_census_age_seconds = 0.0;  // how old the census was when this sample was taken
+    // Buckets beyond the wire's cap (kMaxWireCensusBuckets): counted in `kinds.buckets` and
+    // `total_bytes`, not listed in `storage_census.buckets`.
+    std::uint64_t storage_census_buckets_omitted = 0;
 };
 
 // A per-node, stateful sampler of `NodeMetrics`. The CPU and network gauges are

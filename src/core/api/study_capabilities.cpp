@@ -10,6 +10,8 @@
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/metric_names.hpp"
 #include "zetta/ml/study.hpp"
+#include "zetta/ml/workspace_methodology.hpp"
+#include "zetta/ml/workspace_study.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -63,10 +65,21 @@ const nlohmann::json& validate_study_output_schema() {
     return schema;
 }
 
+// A workspace methodology's study (lake#689): the trials waiting for Lake's
+// runner. Present only on such a study.
+nlohmann::json runner_work_schema() {
+    return {{"type", "array"},
+            {"items", zetta::ml::workspace_study_work_schema()},
+            {"description",
+             "a workspace methodology's study only: each trial waiting for Lake's runner, "
+             "which runs it and reports back with record_methodology_run (study, trial)"}};
+}
+
 const nlohmann::json& study_output_schema() {
     static const nlohmann::json schema = [] {
         nlohmann::json document = zetta::ml::study_value_schema();
         document["required"].push_back("id");
+        document["properties"]["runner"] = runner_work_schema();
         return document;
     }();
     return schema;
@@ -191,13 +204,30 @@ const nlohmann::json& delete_study_output_schema() {
     return schema;
 }
 
-const nlohmann::json& stop_trial_schema() {
+const nlohmann::json& promote_trial_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required", {"study", "run"}},
         {"additionalProperties", false},
         {"properties",
          {{"study", study_reference()}, {"run", study_reference()}}}};
+    return schema;
+}
+
+const nlohmann::json& stop_trial_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"study", "run"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"study", study_reference()},
+          {"run", study_reference()},
+          {"reason",
+           {{"type", "string"},
+            {"maxLength", 2000},
+            {"description",
+             "why the trial ended, kept as its reason; Lake's runner names a run that failed "
+             "or was stopped (default: stopped by caller)"}}}}}};
     return schema;
 }
 
@@ -209,7 +239,12 @@ const nlohmann::json& stop_trial_output_schema() {
         {"properties",
          {{"study", study_reference()},
           {"run", study_reference()},
-          {"state", {{"type", "string"}, {"const", "failed"}}}}}};
+          {"state", {{"type", "string"}, {"const", "failed"}}},
+          {"status",
+           {{"type", "string"},
+            {"enum", {"running", "stopped", "complete", "failed"}},
+            {"description", "the study's status after the trial ended"}}},
+          {"runner", runner_work_schema()}}}};
     return schema;
 }
 
@@ -249,10 +284,20 @@ const nlohmann::json& analysis_output_schema() {
     return schema;
 }
 
-nlohmann::json with_id(const std::shared_ptr<zetta::ml::Study>& study) {
+nlohmann::json with_id(zetta::Node& node, const std::shared_ptr<zetta::ml::Study>& study) {
     nlohmann::json output = study->metadata();
     output["id"] = study->id();
+    if (zetta::ml::is_workspace_study(study->spec())) {
+        output["runner"] = zetta::ml::workspace_study_runner_work(node, *study);
+    }
     return output;
+}
+
+// A workspace methodology's stored entry, or nullopt.
+std::optional<nlohmann::json> workspace_entry(zetta::Node& node, const std::string& id) {
+    if (node.replication() == nullptr) return std::nullopt;
+    const zetta::ml::WorkspaceMethodologyStore store(*node.replication());
+    return store.get(id);
 }
 
 struct StudyParameterDefinition {
@@ -391,6 +436,22 @@ std::vector<zetta::ml::StudyParameter> default_space(
     return parameters;
 }
 
+bool validate_study_dataset(zetta::Node& node, const zetta::ml::StudySpec& spec,
+                            std::string& reason) {
+    if (spec.dataset.empty()) return true;
+    const zetta::data::DatasetPath path = zetta::data::parse_dataset_path(spec.dataset);
+    if (path.kind != zetta::data::DatasetPathKind::Table) {
+        reason = "/dataset: study datasets must name database.table";
+        return false;
+    }
+    const zetta::data::ResolvedDataset dataset = zetta::data::resolve_dataset(node, path);
+    if (!dataset.ok()) {
+        reason = "/dataset: " + dataset.error;
+        return false;
+    }
+    return true;
+}
+
 bool validate_driver_spec(zetta::Node& node, zetta::ml::StudySpec& spec,
                           std::string& reason) {
     const bool has_project = !spec.project.empty();
@@ -402,6 +463,20 @@ bool validate_driver_spec(zetta::Node& node, zetta::ml::StudySpec& spec,
     if (!has_project && spec.dataset.empty()) {
         reason = "/dataset: a dataset-level study requires database.table";
         return false;
+    }
+    if (zetta::ml::is_workspace_methodology_id(spec.methodology)) {
+        const std::optional<nlohmann::json> entry =
+            workspace_entry(node, spec.methodology);
+        if (!entry) {
+            reason = "/methodology: no methodology '" + spec.methodology + "' in this workspace";
+            return false;
+        }
+        if (const std::optional<std::string> problem =
+                zetta::ml::normalize_workspace_study_spec(*entry, spec)) {
+            reason = *problem;
+            return false;
+        }
+        return validate_study_dataset(node, spec, reason);
     }
     const zetta::ml::Methodology* methodology =
         zetta::ml::find_methodology(spec.methodology);
@@ -485,21 +560,7 @@ bool validate_driver_spec(zetta::Node& node, zetta::ml::StudySpec& spec,
         const auto unique = std::ranges::unique(parameter.choices);
         parameter.choices.erase(unique.begin(), unique.end());
     }
-    if (!spec.dataset.empty()) {
-        const zetta::data::DatasetPath path =
-            zetta::data::parse_dataset_path(spec.dataset);
-        if (path.kind != zetta::data::DatasetPathKind::Table) {
-            reason = "/dataset: study datasets must name database.table";
-            return false;
-        }
-        const zetta::data::ResolvedDataset dataset =
-            zetta::data::resolve_dataset(node, path);
-        if (!dataset.ok()) {
-            reason = "/dataset: " + dataset.error;
-            return false;
-        }
-    }
-    return true;
+    return validate_study_dataset(node, spec, reason);
 }
 
 nlohmann::json default_objective() {
@@ -517,13 +578,44 @@ nlohmann::json default_budgets() {
             {"cost_cap", 0.0}};
 }
 
+nlohmann::json search_space_json(const std::vector<zetta::ml::StudyParameter>& parameters) {
+    nlohmann::json items = nlohmann::json::array();
+    for (const zetta::ml::StudyParameter& parameter : parameters) {
+        items.push_back({{"name", parameter.name},
+                         {"kind", zetta::ml::to_string(parameter.kind)},
+                         {"minimum", parameter.minimum},
+                         {"maximum", parameter.maximum},
+                         {"step", parameter.step},
+                         {"log", parameter.logarithmic},
+                         {"choices", parameter.choices},
+                         {"condition_parameter", parameter.condition_parameter},
+                         {"condition_values", parameter.condition_values}});
+    }
+    return items;
+}
+
 std::optional<zetta::ml::StudySpec> spec_from_input(
-    const nlohmann::json& input, std::string& reason) {
+    zetta::Node& node, const nlohmann::json& input, std::string& reason) {
     const std::string methodology_id =
         input.at("methodology").get<std::string>();
+    // A workspace methodology (lake#689): its declared parameters, its first
+    // held-out metric and its held-out rows are the defaults.
+    std::optional<zetta::ml::WorkspaceStudyDefinition> workspace;
+    if (zetta::ml::is_workspace_methodology_id(methodology_id)) {
+        const std::optional<nlohmann::json> entry = workspace_entry(node, methodology_id);
+        if (!entry) {
+            reason = "/methodology: no methodology '" + methodology_id + "' in this workspace";
+            return std::nullopt;
+        }
+        workspace = zetta::ml::workspace_study_definition(*entry);
+        if (!workspace->reason.empty()) {
+            reason = "/methodology: " + workspace->reason;
+            return std::nullopt;
+        }
+    }
     const zetta::ml::Methodology* methodology =
-        zetta::ml::find_methodology(methodology_id);
-    if (methodology == nullptr || !methodology->runnable) {
+        workspace ? nullptr : zetta::ml::find_methodology(methodology_id);
+    if (!workspace && (methodology == nullptr || !methodology->runnable)) {
         reason = "/methodology: no runnable methodology named '" +
                  methodology_id + "'";
         return std::nullopt;
@@ -553,7 +645,14 @@ std::optional<zetta::ml::StudySpec> spec_from_input(
         }
         return true;
     };
-    if (!fill("objective", default_objective()) ||
+    const nlohmann::json objective_defaults =
+        workspace ? nlohmann::json{{"metric", workspace->default_objective.metric},
+                                   {"direction",
+                                    zetta::ml::to_string(workspace->default_objective.direction)},
+                                   {"validation_split",
+                                    workspace->default_objective.validation_split}}
+                  : default_objective();
+    if (!fill("objective", objective_defaults) ||
         !fill("budgets", default_budgets())) {
         return std::nullopt;
     }
@@ -561,10 +660,11 @@ std::optional<zetta::ml::StudySpec> spec_from_input(
     spec["pipeline"] = input.value("pipeline", std::string{});
     spec["dataset"] = input.value("dataset", std::string{});
     spec["sampler"] = input.value("sampler", std::string{"tpe"});
-    spec["pruner"] = input.value("pruner", std::string{"asha"});
+    spec["pruner"] = input.value("pruner", std::string{workspace ? "none" : "asha"});
     spec["seed"] = input.value("seed", std::uint64_t{0});
     spec["differential_privacy"] =
-        input.value("differential_privacy", false) || methodology->id == "M-20";
+        input.value("differential_privacy", false) ||
+        (methodology != nullptr && methodology->id == "M-20");
     spec["released_metrics"] =
         input.value("released_metrics", std::vector<std::string>{});
     if (!input.contains("search_space")) {
@@ -572,6 +672,11 @@ std::optional<zetta::ml::StudySpec> spec_from_input(
             reason = "/search_space: required";
             return std::nullopt;
         }
+        if (workspace) {
+            spec["search_space"] = search_space_json(workspace->parameters);
+        }
+    }
+    if (!spec.contains("search_space")) {
         nlohmann::json parameters = nlohmann::json::array();
         const StudyMethodologyDefinition* definition =
             study_definition(methodology->id);
@@ -683,7 +788,7 @@ StudyValidation validate_and_normalize_study(const nlohmann::json& input,
                                              ApiContext& context) {
     std::string reason;
     std::optional<zetta::ml::StudySpec> spec =
-        spec_from_input(input, reason);
+        spec_from_input(context.node, input, reason);
     if (!spec) {
         return validation_failure("invalid_input", std::move(reason));
     }
@@ -705,7 +810,26 @@ StudyValidation validate_and_normalize_study(const nlohmann::json& input,
         }
         const zetta::pipeline::ValidationReport report =
             zetta::pipeline::default_gate().run(graph->graph());
-        if (report.block_deploy) {
+        // A workspace methodology's pipeline: the graph must run it; the
+        // pure gate's methodology check never passes a python:W- step, and
+        // the entry's own validation was checked above (lake#689).
+        const bool workspace = zetta::ml::is_workspace_study(*spec);
+        if (workspace &&
+            zetta::ml::workspace_methodology_of_graph(graph->graph()) != spec->methodology) {
+            return validation_failure("invalid_input",
+                                      "the pipeline does not run the workspace methodology " +
+                                          spec->methodology,
+                                      "/pipeline");
+        }
+        const bool blocked =
+            workspace ? std::ranges::any_of(report.checks,
+                                            [](const zetta::pipeline::CheckResult& check) {
+                                                return check.name != "methodology" &&
+                                                       check.status ==
+                                                           zetta::pipeline::CheckStatus::Fail;
+                                            })
+                      : report.block_deploy;
+        if (blocked) {
             return validation_failure(
                 "invalid_input",
                 "the pipeline failed Verification and cannot be studied",
@@ -722,7 +846,8 @@ StudyValidation validate_and_normalize_study(const nlohmann::json& input,
     if (!zetta::ml::validate_study_spec(*spec, &reason)) {
         return validation_failure("invalid_input", std::move(reason));
     }
-    if (!zetta::ml::validate_study_data(context.node, *spec, &reason)) {
+    if (!zetta::ml::is_workspace_study(*spec) &&
+        !zetta::ml::validate_study_data(context.node, *spec, &reason)) {
         return validation_failure("invalid_input", std::move(reason),
                                   "/dataset");
     }
@@ -777,7 +902,10 @@ ApiResult handle_create_study(const nlohmann::json& input,
         return ApiResult::failure(failure.code, failure.reason, failure.path);
     }
     publish_study_event(context.node, study, "created");
-    return ApiResult::success(with_id(study));
+    if (zetta::ml::is_workspace_study(study->spec())) {
+        zetta::ml::advance_workspace_study(context.node, *study);
+    }
+    return ApiResult::success(with_id(context.node, study));
 }
 
 ApiResult handle_validate_study(const nlohmann::json& input,
@@ -803,7 +931,7 @@ ApiResult handle_get_study(const nlohmann::json& input,
     const auto study =
         context.node.find_study(input.at("study").get<std::string>());
     if (!study) return ApiResult::failure("not_found", "study was not found", "/study");
-    return ApiResult::success(with_id(study));
+    return ApiResult::success(with_id(context.node, study));
 }
 
 ApiResult handle_list_studies(const nlohmann::json&, ApiContext& context) {
@@ -822,7 +950,7 @@ ApiResult handle_list_studies(const nlohmann::json&, ApiContext& context) {
                      : *trial.objective < *best);
             if (improves) best = trial.objective;
         }
-        nlohmann::json item = with_id(study);
+        nlohmann::json item = with_id(context.node, study);
         item["name"] = study->spec().name;
         item["project_name"] = study->spec().project;
         item["pipeline_name"] = study->spec().pipeline;
@@ -901,15 +1029,25 @@ ApiResult handle_stop_trial(const nlohmann::json& input,
     const std::string run_id = input.at("run").get<std::string>();
     std::string reason;
     context.node.request_stop_study_work(study->id(), run_id);
-    if (!study->stop_trial(run_id, "stopped by caller", &reason)) {
+    const std::string why = input.value("reason", std::string{});
+    if (!study->stop_trial(run_id, why.empty() ? "stopped by caller" : why, &reason)) {
         return ApiResult::failure("invalid_input", reason, "/run");
     }
     if (const auto run = context.node.find_run(run_id)) {
+        if (!why.empty()) {
+            run->add_log({zetta::util::now_iso8601(), "error", "trial ended: " + why});
+        }
         run->set_status(zetta::pipeline::RunStatus::Failed);
     }
     publish_study_event(context.node, study, "trial_failed", run_id);
-    return ApiResult::success(
-        {{"study", study->id()}, {"run", run_id}, {"state", "failed"}});
+    nlohmann::json output = {{"study", study->id()}, {"run", run_id}, {"state", "failed"}};
+    // A workspace methodology's study admits its next trial when one ends.
+    if (zetta::ml::is_workspace_study(study->spec())) {
+        zetta::ml::advance_workspace_study(context.node, *study);
+        output["runner"] = zetta::ml::workspace_study_runner_work(context.node, *study);
+    }
+    output["status"] = zetta::ml::to_string(study->status());
+    return ApiResult::success(std::move(output));
 }
 
 ApiResult handle_promote_trial(const nlohmann::json& input,
@@ -1052,7 +1190,7 @@ void register_study_capabilities(Registry& registry) {
     registry.add(Capability{
         "promote_trial", "Promote trial",
         "Register a complete trial's existing model as the study project's promoted model version; this requires the dedicated promotion permission.",
-        stop_trial_schema(), promote_trial_output_schema(), CapabilityKind::Action,
+        promote_trial_schema(), promote_trial_output_schema(), CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "promote_trial"}, true, false,
         handle_promote_trial});
     registry.add(Capability{

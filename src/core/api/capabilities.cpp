@@ -48,6 +48,7 @@
 #include "zetta/ml/anomaly_methodology.hpp"
 #include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/gbdt.hpp"
+#include "zetta/ml/model_import.hpp"
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/run_features.hpp"
 #include "zetta/ml/model.hpp"
@@ -55,6 +56,8 @@
 #include "zetta/ml/score_table.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/ml/workspace_methodology.hpp"
+#include "zetta/ml/workspace_study.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/data/object_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
@@ -69,6 +72,7 @@
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/project_input.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/solutions/experiment.hpp"
@@ -3635,6 +3639,35 @@ bool is_in_flight(zetta::pipeline::RunStatus status) {
            status == zetta::pipeline::RunStatus::Running;
 }
 
+// The pending or running runs and the running studies that read `dataset`, as
+// "run <id> (running), study '<name>' (running)"; empty when none does
+// (zetta#1258). A run's recorded reads are the check; a lineage source naming
+// the dataset counts too, for a runner that records it early.
+std::string dataset_readers(zetta::Node& node, const zetta::data::DatasetSummary& dataset) {
+    const std::string source = "dataset:" + dataset.database + "." + dataset.name;
+    std::string readers;
+    const auto name = [&](const std::string& reader) {
+        if (!readers.empty()) readers += ", ";
+        readers += reader;
+    };
+    for (const auto& run : node.runs()) {
+        if (!run || !is_in_flight(run->status())) continue;
+        const bool reads =
+            zetta::pipeline::reads_table(run->reads(), dataset.database, dataset.name,
+                                         dataset.table_id) ||
+            std::ranges::find(run->lineage().sources, source) != run->lineage().sources.end();
+        if (reads) name("run " + run->id() + " (" + std::string(to_string(run->status())) + ")");
+    }
+    for (const auto& study : node.studies()) {
+        if (!study || study->status() != zetta::ml::StudyStatus::Running) continue;
+        if (zetta::pipeline::reads_table(study->value().reads, dataset.database, dataset.name,
+                                         dataset.table_id)) {
+            name("study '" + study->spec().name + "' (running)");
+        }
+    }
+    return readers;
+}
+
 }  // namespace
 
 const nlohmann::json& delete_dataset_schema() {
@@ -3741,9 +3774,20 @@ ApiResult handle_delete_dataset(const nlohmann::json& input, ApiContext& context
     if (!owner || !owner->find_table_by_id(dataset.table_id)) {
         return ApiResult::failure("not_found", "no dataset named '" + target + "'");
     }
+    const std::string qualified = dataset.database + "." + dataset.name;
+    // A pending or running run, or a running study, that reads the dataset
+    // keeps it (zetta#1258): each records the tables it reads when it is
+    // created. A dry run refuses the same way, so it never promises a delete
+    // that would be refused.
+    if (const std::string readers = dataset_readers(context.node, dataset);
+        !readers.empty()) {
+        return ApiResult::failure(
+            "engine_error", "dataset '" + qualified + "' is being read by " + readers +
+                                ": wait for its runs to finish (get_run) and stop "
+                                "its studies (stop_study), then delete it");
+    }
     // An index records the table by the name create_index was given: the bare
     // name, or `database.table`.
-    const std::string qualified = dataset.database + "." + dataset.name;
     std::vector<std::string> indexes;
     for (const auto& index : context.node.indexes()) {
         if (index->table() == dataset.name || index->table() == qualified) {
@@ -5475,7 +5519,22 @@ const nlohmann::json& record_methodology_run_schema() {
             {"description", "for a pipeline step: the project's name or id"}}},
           {"graph",
            {{"type", "string"},
-            {"description", "for a pipeline step: the graph's name or id"}}}}}};
+            {"description", "for a pipeline step: the graph's name or id"}}},
+          {"study",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "for an experiment's trial (lake#689): the study it belongs to; with trial"}}},
+          {"trial",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "for an experiment's trial: the trial's Run id, from the study's "
+                            "runner work; the result completes that Run"}}},
+          {"duration_seconds",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"description", "how long the code ran; an experiment's trial counts it as its cost "
+                            "in trial-seconds"}}}}}};
     return schema;
 }
 
@@ -5486,7 +5545,22 @@ const nlohmann::json& record_methodology_run_output_schema() {
         {"additionalProperties", false},
         {"properties",
          {{"model_id", {{"type", {"string", "null"}}}},
-          {"run_id", {{"type", {"string", "null"}}}}}}};
+          {"run_id", {{"type", {"string", "null"}}}},
+          {"study",
+           {{"type", "object"},
+            {"description",
+             "for an experiment's trial: the trial's outcome, the study's status, and the trials "
+             "now waiting for Lake's runner"},
+            {"required", {"id", "trial_state", "objective", "status", "runner"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"id", {{"type", "string"}}},
+              {"trial_state", {{"type", "string"}, {"enum", {"complete", "failed"}}}},
+              {"objective", {{"type", {"number", "null"}}}},
+              {"status",
+               {{"type", "string"}, {"enum", {"running", "stopped", "complete", "failed"}}}},
+              {"runner",
+               {{"type", "array"}, {"items", zetta::ml::workspace_study_work_schema()}}}}}}}}}};
     return schema;
 }
 
@@ -5615,8 +5689,44 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
     const nlohmann::json metrics = input.value("metrics", nlohmann::json::object());
     const std::string name = methodology->at("name").get<std::string>();
 
-    const std::shared_ptr<zetta::pipeline::Run> run = context.node.create_run(
-        project ? project->id() : std::string(), graph ? graph->id() : std::string());
+    // An experiment's trial (lake#689): the result completes the trial's own
+    // Run, which the study admitted and Lake's runner ran.
+    std::shared_ptr<zetta::ml::Study> study;
+    const zetta::ml::StudyTrial* trial = nullptr;
+    if (input.contains("study") || input.contains("trial")) {
+        if (!input.contains("study") || !input.contains("trial")) {
+            return ApiResult::failure("invalid_input", "an experiment's trial names both study and trial");
+        }
+        study = context.node.find_study(input.at("study").get<std::string>());
+        if (!study) return ApiResult::failure("not_found", "study was not found", "/study");
+        if (study->spec().methodology != id) {
+            return ApiResult::failure("invalid_input",
+                                      "the study " + study->spec().name + " runs " +
+                                          study->spec().methodology + ", not " + id,
+                                      "/study");
+        }
+        const std::string trial_run = input.at("trial").get<std::string>();
+        const auto found = std::ranges::find(study->value().trials, trial_run,
+                                             &zetta::ml::StudyTrial::run);
+        if (found == study->value().trials.end()) {
+            return ApiResult::failure("not_found", "the study has no trial " + trial_run,
+                                      "/trial");
+        }
+        if (found->state != zetta::ml::TrialState::Running) {
+            return ApiResult::failure("conflict",
+                                      "trial " + std::to_string(found->number) +
+                                          " already ended (" +
+                                          std::string(zetta::ml::to_string(found->state)) + ")",
+                                      "/trial");
+        }
+        trial = &*found;
+    }
+
+    const std::shared_ptr<zetta::pipeline::Run> run =
+        trial != nullptr
+            ? context.node.find_run(trial->run)
+            : context.node.create_run(project ? project->id() : std::string(),
+                                      graph ? graph->id() : std::string());
     if (!run) return ApiResult::failure("engine_error", "the run record could not be created");
     run->set_status(zetta::pipeline::RunStatus::Running);
     run->add_log({zetta::util::now_iso8601(), "info",
@@ -5624,7 +5734,9 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
                       ") in Lake's runner, Lake run " + lake_run +
                       (dataset_path.empty() ? std::string() : ", on " + dataset_path)});
     std::string error;
-    if (!params.empty() && !context.node.log_run_params(run->id(), params, &error)) {
+    // A trial's Run already holds its sampled parameters.
+    if (trial == nullptr && !params.empty() &&
+        !context.node.log_run_params(run->id(), params, &error)) {
         run->add_log({zetta::util::now_iso8601(), "warn", "parameters not recorded: " + error});
     }
     std::map<std::string, double> values;
@@ -5635,7 +5747,10 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
 
     zetta::ml::ModelValue model_value;
     model_value.kind = zetta::ml::workspace_model_kind(id);
-    model_value.name = name + " " + zetta::util::now_iso8601().substr(0, 10);
+    model_value.name =
+        trial != nullptr
+            ? zetta::ml::study_trial_model_name(study->spec().name, study->id(), trial->number)
+            : name + " " + zetta::util::now_iso8601().substr(0, 10);
     model_value.project = project ? project->id() : std::string();
     model_value.run = run->id();
     model_value.metrics = metrics;
@@ -5665,7 +5780,30 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
     lineage.confidence = 1.0;
     run->set_lineage(std::move(lineage));
     run->set_status(zetta::pipeline::RunStatus::Succeeded);
-    return ApiResult::success({{"model_id", model->id()}, {"run_id", run->id()}});
+    nlohmann::json output = {{"model_id", model->id()}, {"run_id", run->id()}};
+    if (trial != nullptr) {
+        const std::string metric = study->spec().objective.metric;
+        std::optional<double> objective;
+        if (const auto value = values.find(metric); value != values.end() &&
+                                                    std::isfinite(value->second)) {
+            objective = value->second;
+        }
+        const std::string trial_run = trial->run;
+        const double cost = input.value("duration_seconds", 0.0);
+        zetta::ml::finish_workspace_trial(
+            context.node, *study, trial_run, objective, cost,
+            objective ? std::string()
+                      : "the run did not report the objective metric " + metric,
+            model->id());
+        zetta::ml::advance_workspace_study(context.node, *study);
+        output["study"] = {
+            {"id", study->id()},
+            {"trial_state", objective ? "complete" : "failed"},
+            {"objective", objective ? nlohmann::json(*objective) : nlohmann::json(nullptr)},
+            {"status", zetta::ml::to_string(study->status())},
+            {"runner", zetta::ml::workspace_study_runner_work(context.node, *study)}};
+    }
+    return ApiResult::success(std::move(output));
 }
 
 // --- compile_intent / compile_n8n / compile_python -------------------------------
@@ -6562,6 +6700,15 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
     const std::string run_id = result.value.at("run_id").get<std::string>();
     const std::shared_ptr<zetta::pipeline::Run> run =
         context.node.find_run(run_id);
+    // The run reads the dataset it was handed as well as its pipeline's own
+    // (zetta#1258). Recorded before this handler returns, so no delete_dataset
+    // can come between the run starting and the record.
+    if (run) {
+        if (const auto path = input.find("dataset_path");
+            path != input.end() && path->is_string()) {
+            run->add_reads(context.node.tables_read({}, {}, path->get<std::string>()));
+        }
+    }
     if (!run || !run->value().metrics_suppressed.empty() ||
         !run->value().metrics.at("series").empty()) {
         return result;
@@ -6984,7 +7131,6 @@ ApiResult handle_retrain_model(const nlohmann::json& input, ApiContext& context)
 const nlohmann::json& register_model_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"weights"}},
         {"additionalProperties", false},
         {"properties",
          {{"name",
@@ -6995,10 +7141,32 @@ const nlohmann::json& register_model_schema() {
            {{"type", "string"},
             {"minLength", 2},
             {"description",
-             "the model file's contents: a gradient-boosted tree model in the engine's "
-             "own JSON weights format (objective, base_score, feature_names, trees), "
-             "the format every model trained here is kept in. The engine scores, serves "
-             "and explains only what it can read; any other format is refused"}}},
+             "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's "
+             "text model, or the engine's own JSON weights (objective, base_score, "
+             "feature_names, trees). Give this or `weights_base64`"}}},
+          {"weights_base64",
+           {{"type", "string"},
+            {"minLength", 4},
+            {"description",
+             "the model file's contents in base64, for any file and required for a binary "
+             "one: ONNX (a TreeEnsembleRegressor or TreeEnsembleClassifier, as scikit-learn, "
+             "XGBoost and LightGBM export) or XGBoost's UBJSON model. Give this or `weights`"}}},
+          {"format",
+           {{"type", "string"},
+            {"enum", {"zetta", "onnx", "xgboost_json", "xgboost_ubjson", "lightgbm"}},
+            {"description",
+             "the file's format (default: read from the file). Every format is converted "
+             "into the engine's tree model, so it is scored, served and explained like a "
+             "trained one; a model it cannot convert exactly (a neural network, a "
+             "multiclass or random-forest classifier, categorical splits, a pickle) is "
+             "refused and nothing is kept"}}},
+          {"feature_names",
+           {{"type", "array"},
+            {"items", {{"type", "string"}, {"minLength", 1}}},
+            {"minItems", 1},
+            {"description",
+             "the columns the model reads, in its own order: name an ONNX model's columns "
+             "(ONNX names none, so they are f0, f1, … otherwise), or rename another file's"}}},
           {"kind",
            {{"type", "string"},
             {"minLength", 1},
@@ -7040,23 +7208,39 @@ const nlohmann::json& register_model_output_schema() {
            {{"type", "array"},
             {"items", {{"type", "string"}}},
             {"description", "the columns it reads, in its own order"}}},
-          {"standalone", {{"type", "boolean"}}}}}};
+          {"standalone", {{"type", "boolean"}}},
+          {"format",
+           {{"type", "string"},
+            {"description", "the format the file was read as (zetta, onnx, xgboost_json, "
+                            "xgboost_ubjson or lightgbm)"}}}}}};
     return schema;
 }
 
 ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context) {
-    const nlohmann::json body = nlohmann::json::parse(input.at("weights").get<std::string>(),
-                                                      nullptr, /*allow_exceptions=*/false);
-    std::string reason;
-    const std::optional<zetta::ml::GbdtModel> weights =
-        body.is_discarded() ? std::nullopt : zetta::ml::GbdtModel::from_json(body, &reason);
-    if (!weights) {
-        return ApiResult::failure(
-            "not_supported",
-            "/weights: the engine reads gradient-boosted tree models in its own JSON "
-            "weights format, and this file is not one" +
-                (body.is_discarded() ? std::string(" (it is not JSON)") : ": " + reason));
+    // lake#681: a model file in any supported format becomes the engine's tree model.
+    const bool text = input.contains("weights");
+    if (text == input.contains("weights_base64")) {
+        return ApiResult::failure("invalid_input",
+                                  "/weights: give the file as `weights` (text) or "
+                                  "`weights_base64`, one of them");
     }
+    const std::string field = text ? "/weights" : "/weights_base64";
+    const std::string bytes =
+        text ? input.at("weights").get<std::string>()
+             : zetta::detail::base64_decode_to_string(input.at("weights_base64").get<std::string>());
+    zetta::ml::ModelImportOptions options;
+    if (input.contains("format")) {
+        options.format =
+            zetta::ml::model_file_format_from_string(input.at("format").get<std::string>());
+    }
+    if (input.contains("feature_names")) {
+        options.feature_names = input.at("feature_names").get<std::vector<std::string>>();
+    }
+    std::string reason;
+    const std::optional<zetta::ml::ImportedModel> imported =
+        zetta::ml::import_model(bytes, options, &reason);
+    if (!imported) return ApiResult::failure("not_supported", field + ": " + reason);
+    const zetta::ml::GbdtModel* weights = &imported->model;
     std::shared_ptr<zetta::pipeline::Project> project;
     std::string name = input.value("name", std::string{});
     if (input.contains("version_of")) {
@@ -7096,9 +7280,8 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
             return ApiResult::failure("engine_error", "could not create the model's project");
         }
     }
-    const bool regression = weights->objective == "squared_error";
-    const std::string kind =
-        input.value("kind", std::string(regression ? "regressor" : "classifier"));
+    const std::string kind = input.value("kind", imported->kind);
+    const std::string format = zetta::ml::to_string(imported->format);
     zetta::ml::ModelValue value;
     value.name = name;
     value.kind = kind;
@@ -7108,7 +7291,8 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
     value.feature_schema = {{"features", features},
                             {"objective", weights->objective},
                             {"trees", weights->tree_count()},
-                            {"brought", true}};
+                            {"brought", true},
+                            {"format", format}};
     if (input.contains("source")) value.feature_schema["source"] = input.at("source");
     value.metrics = input.value("metrics", nlohmann::json::object());
     const auto model = context.node.create_model(std::move(value));
@@ -7122,7 +7306,103 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
                                {"kind", model->kind()},
                                {"project_id", project->id()},
                                {"features", std::move(features)},
-                               {"standalone", true}});
+                               {"standalone", true},
+                               {"format", format}});
+}
+
+// --- export_model (lake#681) ---------------------------------------------------------
+
+const nlohmann::json& export_model_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the model version's id (or a name one model has)"}}},
+          {"format",
+           {{"type", "string"},
+            {"enum", {"zetta", "onnx"}},
+            {"description",
+             "`zetta` (default): the weights exactly as the engine keeps them, for any "
+             "model. `onnx`: a gradient-boosted tree model as an ONNX TreeEnsembleClassifier "
+             "or TreeEnsembleRegressor that onnxruntime scores as the engine does"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& export_model_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"model_id", "name", "format", "file_name", "media_type", "encoding", "content", "bytes"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"format", {{"type", "string"}}},
+          {"file_name", {{"type", "string"}, {"description", "a name to save the file as"}}},
+          {"media_type", {{"type", "string"}}},
+          {"encoding",
+           {{"type", "string"},
+            {"enum", {"utf-8", "base64"}},
+            {"description", "how `content` holds the file: as text, or in base64"}}},
+          {"content", {{"type", "string"}, {"description", "the file"}}},
+          {"bytes", {{"type", "integer"}, {"description", "the file's size"}}},
+          {"features",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "the columns it reads, in its own order (a tree model's)"}}}}}};
+    return schema;
+}
+
+ApiResult handle_export_model(const nlohmann::json& input, ApiContext& context) {
+    std::string error;
+    const auto model = resolve_model(context, input.at("model_id").get<std::string>(), &error);
+    if (!model) return ApiResult::failure("not_found", "/model_id: " + error);
+    const std::optional<std::string> weights = model->read_weights();
+    if (!weights) {
+        return ApiResult::failure("not_found", "/model_id: '" + model->name() +
+                                                   "' has no weights kept on this node yet");
+    }
+    const std::string format = input.value("format", std::string("zetta"));
+    std::string file_stem;
+    for (const char character : model->name()) {
+        const bool plain = std::isalnum(static_cast<unsigned char>(character)) != 0 ||
+                           character == '-' || character == '_';
+        file_stem.push_back(plain ? character : '_');
+    }
+    if (file_stem.empty()) file_stem = "model";
+    file_stem += "-" + model->id().substr(0, 8);
+    const nlohmann::json body = nlohmann::json::parse(*weights, nullptr, false);
+    std::string reason;
+    const std::optional<zetta::ml::GbdtModel> gbdt =
+        body.is_discarded() ? std::nullopt : zetta::ml::GbdtModel::from_json(body, &reason);
+    nlohmann::json output{{"model_id", model->id()}, {"name", model->name()}, {"format", format}};
+    if (gbdt) output["features"] = gbdt->feature_names;
+    if (format == "onnx") {
+        if (!gbdt) {
+            return ApiResult::failure("not_supported",
+                                      "/format: '" + model->name() +
+                                          "' is not a gradient-boosted tree model, so it cannot "
+                                          "be written as ONNX; format zetta downloads its weights");
+        }
+        const std::optional<std::string> onnx = zetta::ml::export_onnx(*gbdt, &reason);
+        if (!onnx) return ApiResult::failure("not_supported", "/format: " + reason);
+        output["file_name"] = file_stem + ".onnx";
+        output["media_type"] = "application/onnx";
+        output["encoding"] = "base64";
+        output["content"] = zetta::detail::base64_encode_bytes(*onnx);
+        output["bytes"] = onnx->size();
+    } else {
+        output["file_name"] = file_stem + ".json";
+        output["media_type"] = "application/json";
+        output["encoding"] = "utf-8";
+        output["content"] = *weights;
+        output["bytes"] = weights->size();
+    }
+    return ApiResult::success(std::move(output));
 }
 
 const nlohmann::json& move_model_to_project_schema() {
@@ -11460,7 +11740,9 @@ void register_core_capabilities(Registry& registry) {
         "Delete dataset",
         "Delete a dataset (its table) on every node, with its partitions and their "
         "bodies and every index built over it, so nothing of it is left. "
-        "dry_run: true answers what would go and changes nothing. Not undoable.",
+        "dry_run: true answers what would go and changes nothing. Refused "
+        "(engine_error, naming them) while a pending or running run or a running "
+        "study reads it, its dry run too. Not undoable.",
         delete_dataset_schema(),
         delete_dataset_output_schema(),
         CapabilityKind::Action,
@@ -11522,6 +11804,19 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_register_model});
+    registry.add(Capability{
+        "export_model",
+        "Download a model's weights",
+        "Read one model version's weights as a file to keep or use elsewhere: as the engine "
+        "keeps them (format zetta, any model), or a gradient-boosted tree model as ONNX "
+        "(format onnx), which onnxruntime and other ONNX runtimes score. Changes nothing.",
+        export_model_schema(),
+        export_model_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_export_model});
     registry.add(Capability{
         "move_model_to_project",
         "Move a standalone model into a project",
