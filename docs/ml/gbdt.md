@@ -104,7 +104,10 @@ return a `compute::ComputeStatus`.
   ([`schemas/gbdt_model.schema.json`](../../schemas/gbdt_model.schema.json), the
   pboettch draft-07 validator — like the Run record — because the body is read back
   from disk / a peer) plus the structural rule that every child index is in range.
-  `predict_raw` / `predict_proba` evaluate it.
+  `predict_raw` / `predict_proba` evaluate it. A node goes left when
+  `x < threshold`; a missing value (NaN) goes right unless the node's optional
+  `missing_left` says left, which only a model brought from another library sets
+  ([model-import.md](model-import.md), lake#681), so a trained body never carries it.
 - `GbdtMetrics` — `auc` (Mann-Whitney, ties at 0.5), `log_loss` (mean
   cross-entropy), `accuracy@0.5`, via `evaluate_binary`. Distributed
   squared-error jobs instead report RMSE and MAE. Both shapes are stored in a

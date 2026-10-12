@@ -97,7 +97,8 @@ const nlohmann::json& model_schema_document() {
                     "left":      { "type": "integer" },
                     "right":     { "type": "integer" },
                     "value":     { "type": "number" },
-                    "cover":     { "type": "number" }
+                    "cover":     { "type": "number" },
+                    "missing_left": { "type": "boolean" }
                   },
                   "required": ["feature", "threshold", "left", "right", "value",
                                "cover"],
@@ -335,14 +336,17 @@ const nlohmann::json& gbdt_params_schema() {
 
 // --- RegressionTree / GbdtModel ----------------------------------------------
 
+int TreeNode::child_for(double value) const noexcept {
+    if (std::isnan(value)) return missing_left ? left : right;
+    return value < threshold ? left : right;
+}
+
 double RegressionTree::predict(const std::vector<double>& features) const {
     if (nodes.empty()) return 0.0;
     int cursor = 0;
     while (!nodes[cursor].is_leaf()) {
         const TreeNode& node = nodes[cursor];
-        cursor = features[static_cast<std::size_t>(node.feature)] < node.threshold
-                     ? node.left
-                     : node.right;
+        cursor = node.child_for(features[static_cast<std::size_t>(node.feature)]);
     }
     return nodes[cursor].value;
 }
@@ -368,12 +372,15 @@ nlohmann::json GbdtModel::to_json() const {
     for (const RegressionTree& tree : trees) {
         nlohmann::json nodes_json = nlohmann::json::array();
         for (const TreeNode& node : tree.nodes) {
-            nodes_json.push_back({{"feature", node.feature},
-                                  {"threshold", node.threshold},
-                                  {"left", node.left},
-                                  {"right", node.right},
-                                  {"value", node.value},
-                                  {"cover", node.cover}});
+            nlohmann::json node_json{{"feature", node.feature},
+                                     {"threshold", node.threshold},
+                                     {"left", node.left},
+                                     {"right", node.right},
+                                     {"value", node.value},
+                                     {"cover", node.cover}};
+            // Written only when set, so a trained model's body is unchanged.
+            if (node.missing_left) node_json["missing_left"] = true;
+            nodes_json.push_back(std::move(node_json));
         }
         trees_json.push_back({{"nodes", std::move(nodes_json)}});
     }
@@ -412,6 +419,7 @@ std::optional<GbdtModel> GbdtModel::from_json(const nlohmann::json& value,
             node.right = node_json.at("right").get<int>();
             node.value = node_json.at("value").get<double>();
             node.cover = node_json.at("cover").get<double>();
+            node.missing_left = node_json.value("missing_left", false);
             // Structural rule the schema can't express: an internal node's
             // children must be valid, distinct, forward indices in this tree.
             if (!node.is_leaf()) {

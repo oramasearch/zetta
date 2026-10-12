@@ -223,7 +223,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `delete_model` | action | orchestration:delete_model | delete a model (unexposed first); its run is kept; a standalone model's last version takes its internal project with it; `dry_run` lists what goes ([deletes.md](deletes.md)) |
 | `train_model` | job | orchestration:train_model | train a standalone model from a dataset, a target and a methodology; its internal project is never listed ([standalone-models.md](../ml/standalone-models.md)) |
 | `retrain_model` | job | orchestration:retrain_model | train a new version of a model, on what it trained on or new settings ([standalone-models.md](../ml/standalone-models.md)) |
-| `register_model` | action | orchestration:register_model | keep a brought model file (the engine's GBDT weights format) as a standalone model, or a new version of one ([standalone-models.md](../ml/standalone-models.md)) |
+| `register_model` | action | orchestration:register_model | keep a brought model file (ONNX tree ensemble, XGBoost JSON/UBJSON, LightGBM text, or the engine's own weights, converted exactly) as a standalone model, or a new version of one ([model-import.md](../ml/model-import.md)) |
+| `export_model` | read | api:query | one model version's weights as a file: as kept (`zetta`), or a tree model as ONNX (`onnx`) ([model-import.md](../ml/model-import.md)) |
 | `move_model_to_project` | action | orchestration:move_model_to_project | reveal a standalone model's project under a name, with every version ([standalone-models.md](../ml/standalone-models.md)) |
 | `delete_run` | action | orchestration:delete_run | delete a finished run; refused while pending or running; its models are kept and listed ([deletes.md](deletes.md)) |
 | `delete_index` | action | orchestration:delete_index | delete an index (unexposed first); the dataset is kept ([deletes.md](deletes.md)) |

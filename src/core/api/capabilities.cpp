@@ -47,6 +47,7 @@
 #include "zetta/ml/anomaly_methodology.hpp"
 #include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/gbdt.hpp"
+#include "zetta/ml/model_import.hpp"
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/run_features.hpp"
 #include "zetta/ml/model.hpp"
@@ -6806,7 +6807,6 @@ ApiResult handle_retrain_model(const nlohmann::json& input, ApiContext& context)
 const nlohmann::json& register_model_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"weights"}},
         {"additionalProperties", false},
         {"properties",
          {{"name",
@@ -6817,10 +6817,32 @@ const nlohmann::json& register_model_schema() {
            {{"type", "string"},
             {"minLength", 2},
             {"description",
-             "the model file's contents: a gradient-boosted tree model in the engine's "
-             "own JSON weights format (objective, base_score, feature_names, trees), "
-             "the format every model trained here is kept in. The engine scores, serves "
-             "and explains only what it can read; any other format is refused"}}},
+             "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's "
+             "text model, or the engine's own JSON weights (objective, base_score, "
+             "feature_names, trees). Give this or `weights_base64`"}}},
+          {"weights_base64",
+           {{"type", "string"},
+            {"minLength", 4},
+            {"description",
+             "the model file's contents in base64, for any file and required for a binary "
+             "one: ONNX (a TreeEnsembleRegressor or TreeEnsembleClassifier, as scikit-learn, "
+             "XGBoost and LightGBM export) or XGBoost's UBJSON model. Give this or `weights`"}}},
+          {"format",
+           {{"type", "string"},
+            {"enum", {"zetta", "onnx", "xgboost_json", "xgboost_ubjson", "lightgbm"}},
+            {"description",
+             "the file's format (default: read from the file). Every format is converted "
+             "into the engine's tree model, so it is scored, served and explained like a "
+             "trained one; a model it cannot convert exactly (a neural network, a "
+             "multiclass or random-forest classifier, categorical splits, a pickle) is "
+             "refused and nothing is kept"}}},
+          {"feature_names",
+           {{"type", "array"},
+            {"items", {{"type", "string"}, {"minLength", 1}}},
+            {"minItems", 1},
+            {"description",
+             "the columns the model reads, in its own order: name an ONNX model's columns "
+             "(ONNX names none, so they are f0, f1, … otherwise), or rename another file's"}}},
           {"kind",
            {{"type", "string"},
             {"minLength", 1},
@@ -6862,23 +6884,39 @@ const nlohmann::json& register_model_output_schema() {
            {{"type", "array"},
             {"items", {{"type", "string"}}},
             {"description", "the columns it reads, in its own order"}}},
-          {"standalone", {{"type", "boolean"}}}}}};
+          {"standalone", {{"type", "boolean"}}},
+          {"format",
+           {{"type", "string"},
+            {"description", "the format the file was read as (zetta, onnx, xgboost_json, "
+                            "xgboost_ubjson or lightgbm)"}}}}}};
     return schema;
 }
 
 ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context) {
-    const nlohmann::json body = nlohmann::json::parse(input.at("weights").get<std::string>(),
-                                                      nullptr, /*allow_exceptions=*/false);
-    std::string reason;
-    const std::optional<zetta::ml::GbdtModel> weights =
-        body.is_discarded() ? std::nullopt : zetta::ml::GbdtModel::from_json(body, &reason);
-    if (!weights) {
-        return ApiResult::failure(
-            "not_supported",
-            "/weights: the engine reads gradient-boosted tree models in its own JSON "
-            "weights format, and this file is not one" +
-                (body.is_discarded() ? std::string(" (it is not JSON)") : ": " + reason));
+    // lake#681: a model file in any supported format becomes the engine's tree model.
+    const bool text = input.contains("weights");
+    if (text == input.contains("weights_base64")) {
+        return ApiResult::failure("invalid_input",
+                                  "/weights: give the file as `weights` (text) or "
+                                  "`weights_base64`, one of them");
     }
+    const std::string field = text ? "/weights" : "/weights_base64";
+    const std::string bytes =
+        text ? input.at("weights").get<std::string>()
+             : zetta::detail::base64_decode_to_string(input.at("weights_base64").get<std::string>());
+    zetta::ml::ModelImportOptions options;
+    if (input.contains("format")) {
+        options.format =
+            zetta::ml::model_file_format_from_string(input.at("format").get<std::string>());
+    }
+    if (input.contains("feature_names")) {
+        options.feature_names = input.at("feature_names").get<std::vector<std::string>>();
+    }
+    std::string reason;
+    const std::optional<zetta::ml::ImportedModel> imported =
+        zetta::ml::import_model(bytes, options, &reason);
+    if (!imported) return ApiResult::failure("not_supported", field + ": " + reason);
+    const zetta::ml::GbdtModel* weights = &imported->model;
     std::shared_ptr<zetta::pipeline::Project> project;
     std::string name = input.value("name", std::string{});
     if (input.contains("version_of")) {
@@ -6918,9 +6956,8 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
             return ApiResult::failure("engine_error", "could not create the model's project");
         }
     }
-    const bool regression = weights->objective == "squared_error";
-    const std::string kind =
-        input.value("kind", std::string(regression ? "regressor" : "classifier"));
+    const std::string kind = input.value("kind", imported->kind);
+    const std::string format = zetta::ml::to_string(imported->format);
     zetta::ml::ModelValue value;
     value.name = name;
     value.kind = kind;
@@ -6930,7 +6967,8 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
     value.feature_schema = {{"features", features},
                             {"objective", weights->objective},
                             {"trees", weights->tree_count()},
-                            {"brought", true}};
+                            {"brought", true},
+                            {"format", format}};
     if (input.contains("source")) value.feature_schema["source"] = input.at("source");
     value.metrics = input.value("metrics", nlohmann::json::object());
     const auto model = context.node.create_model(std::move(value));
@@ -6944,7 +6982,103 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
                                {"kind", model->kind()},
                                {"project_id", project->id()},
                                {"features", std::move(features)},
-                               {"standalone", true}});
+                               {"standalone", true},
+                               {"format", format}});
+}
+
+// --- export_model (lake#681) ---------------------------------------------------------
+
+const nlohmann::json& export_model_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the model version's id (or a name one model has)"}}},
+          {"format",
+           {{"type", "string"},
+            {"enum", {"zetta", "onnx"}},
+            {"description",
+             "`zetta` (default): the weights exactly as the engine keeps them, for any "
+             "model. `onnx`: a gradient-boosted tree model as an ONNX TreeEnsembleClassifier "
+             "or TreeEnsembleRegressor that onnxruntime scores as the engine does"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& export_model_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"model_id", "name", "format", "file_name", "media_type", "encoding", "content", "bytes"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"format", {{"type", "string"}}},
+          {"file_name", {{"type", "string"}, {"description", "a name to save the file as"}}},
+          {"media_type", {{"type", "string"}}},
+          {"encoding",
+           {{"type", "string"},
+            {"enum", {"utf-8", "base64"}},
+            {"description", "how `content` holds the file: as text, or in base64"}}},
+          {"content", {{"type", "string"}, {"description", "the file"}}},
+          {"bytes", {{"type", "integer"}, {"description", "the file's size"}}},
+          {"features",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "the columns it reads, in its own order (a tree model's)"}}}}}};
+    return schema;
+}
+
+ApiResult handle_export_model(const nlohmann::json& input, ApiContext& context) {
+    std::string error;
+    const auto model = resolve_model(context, input.at("model_id").get<std::string>(), &error);
+    if (!model) return ApiResult::failure("not_found", "/model_id: " + error);
+    const std::optional<std::string> weights = model->read_weights();
+    if (!weights) {
+        return ApiResult::failure("not_found", "/model_id: '" + model->name() +
+                                                   "' has no weights kept on this node yet");
+    }
+    const std::string format = input.value("format", std::string("zetta"));
+    std::string file_stem;
+    for (const char character : model->name()) {
+        const bool plain = std::isalnum(static_cast<unsigned char>(character)) != 0 ||
+                           character == '-' || character == '_';
+        file_stem.push_back(plain ? character : '_');
+    }
+    if (file_stem.empty()) file_stem = "model";
+    file_stem += "-" + model->id().substr(0, 8);
+    const nlohmann::json body = nlohmann::json::parse(*weights, nullptr, false);
+    std::string reason;
+    const std::optional<zetta::ml::GbdtModel> gbdt =
+        body.is_discarded() ? std::nullopt : zetta::ml::GbdtModel::from_json(body, &reason);
+    nlohmann::json output{{"model_id", model->id()}, {"name", model->name()}, {"format", format}};
+    if (gbdt) output["features"] = gbdt->feature_names;
+    if (format == "onnx") {
+        if (!gbdt) {
+            return ApiResult::failure("not_supported",
+                                      "/format: '" + model->name() +
+                                          "' is not a gradient-boosted tree model, so it cannot "
+                                          "be written as ONNX; format zetta downloads its weights");
+        }
+        const std::optional<std::string> onnx = zetta::ml::export_onnx(*gbdt, &reason);
+        if (!onnx) return ApiResult::failure("not_supported", "/format: " + reason);
+        output["file_name"] = file_stem + ".onnx";
+        output["media_type"] = "application/onnx";
+        output["encoding"] = "base64";
+        output["content"] = zetta::detail::base64_encode_bytes(*onnx);
+        output["bytes"] = onnx->size();
+    } else {
+        output["file_name"] = file_stem + ".json";
+        output["media_type"] = "application/json";
+        output["encoding"] = "utf-8";
+        output["content"] = *weights;
+        output["bytes"] = weights->size();
+    }
+    return ApiResult::success(std::move(output));
 }
 
 const nlohmann::json& move_model_to_project_schema() {
@@ -11326,6 +11460,19 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_register_model});
+    registry.add(Capability{
+        "export_model",
+        "Download a model's weights",
+        "Read one model version's weights as a file to keep or use elsewhere: as the engine "
+        "keeps them (format zetta, any model), or a gradient-boosted tree model as ONNX "
+        "(format onnx), which onnxruntime and other ONNX runtimes score. Changes nothing.",
+        export_model_schema(),
+        export_model_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_export_model});
     registry.add(Capability{
         "move_model_to_project",
         "Move a standalone model into a project",
