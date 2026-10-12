@@ -30286,7 +30286,7 @@
     },
     "/v1/read_model_weights": {
       "get": {
-        "description": "Read a model's serialized weights, at most 8 MiB at a time from offset, with their total size and SHA-256. Lake serves a workspace methodology's model from them. Requires orchestration:read_model_weights.",
+        "description": "Read a model's serialized weights, at most 8 MiB at a time from offset, with their total size and SHA-256. Lake serves a workspace methodology's model from them. Requires api:query.",
         "operationId": "read_model_weights",
         "parameters": [
           {

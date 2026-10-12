@@ -11369,7 +11369,7 @@ void register_core_capabilities(Registry& registry) {
         "Read a model's serialized weights, at most 8 MiB at a time from offset, with their "
         "total size and SHA-256. Lake serves a workspace methodology's model from them.",
         read_model_weights_schema(), read_model_weights_output_schema(), CapabilityKind::Read,
-        Operation{CapabilityDomain::Orchestration, "read_model_weights"},
+        Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false, handle_read_model_weights});
 
