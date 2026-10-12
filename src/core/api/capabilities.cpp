@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -77,6 +78,7 @@
 #include "zetta/testkit/async_case_run.hpp"
 #include "zetta/testkit/test_suite.hpp"
 #include "zetta/tokenizer/bpe.hpp"
+#include "zetta/util/sha256.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
@@ -4933,6 +4935,12 @@ ApiResult handle_import_n8n(const nlohmann::json& input, ApiContext& context) {
 // Decoded artifacts above this are refused: the request that carries one,
 // base64-encoded, must stay under the HTTP adapter's body limit.
 constexpr std::size_t kMaxMethodologyArtifactBytes = 24 * 1024 * 1024;
+// A larger artifact arrives in chunks of at most this many bytes (lake#690),
+// staged on disk until record_methodology_run adopts it as a Model's weights,
+// up to kMaxStagedMethodologyArtifactBytes in all. Weights are read back in
+// chunks of the same size.
+constexpr std::size_t kMaxMethodologyArtifactChunkBytes = 8 * 1024 * 1024;
+constexpr std::uintmax_t kMaxStagedMethodologyArtifactBytes = std::uintmax_t{1} << 30;
 
 nlohmann::json workspace_methodology_input_properties(bool include_state) {
     nlohmann::json properties = nlohmann::json::object();
@@ -5244,6 +5252,173 @@ ApiResult runner_required(const ApiContext& context, const zetta::pipeline::Proj
     return result;
 }
 
+bool strict_base64(std::string_view text);
+
+// Where a chunked artifact (lake#690) waits until record_methodology_run
+// adopts it: one file per methodology and Lake run, named by a digest so no
+// caller-chosen text reaches the path.
+std::filesystem::path methodology_artifact_staging_path(const ApiContext& context,
+                                                        const std::string& methodology,
+                                                        const std::string& lake_run) {
+    return std::filesystem::path(context.node.config().data_dir) / "methodology-artifacts" /
+           (zetta::util::sha256_hex(methodology + "\n" + lake_run) + ".part");
+}
+
+const nlohmann::json& append_methodology_artifact_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"methodology", "run_id", "offset", "chunk_base64"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"methodology",
+           {{"type", "string"},
+            {"pattern", "^W-[0-9a-f]{8}$"},
+            {"description", "the workspace methodology that ran"}}},
+          {"run_id",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "Lake's id for the run; record_methodology_run names the same"}}},
+          {"offset",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description",
+             "where this chunk starts; at most the bytes already received. A chunk below that "
+             "replaces what was held from there"}}},
+          {"chunk_base64",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the chunk, base64; at most 8 MiB decoded"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& append_methodology_artifact_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"received"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"received",
+           {{"type", "integer"}, {"description", "the bytes now staged for this run"}}}}}};
+    return schema;
+}
+
+ApiResult handle_append_methodology_artifact(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("methodology").get<std::string>();
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no workspace methodologies on a standalone node");
+    }
+    const zetta::ml::WorkspaceMethodologyStore store(*context.node.replication());
+    if (!store.get(id)) return ApiResult::failure("not_found", "no methodology '" + id + "'");
+    const std::string encoded = input.at("chunk_base64").get<std::string>();
+    if (!strict_base64(encoded)) {
+        return ApiResult::failure("invalid_input", "chunk_base64 is not base64", "/chunk_base64");
+    }
+    if (encoded.size() / 4 * 3 > kMaxMethodologyArtifactChunkBytes + 3) {
+        return ApiResult::failure("invalid_input",
+                                  "a chunk is at most " +
+                                      std::to_string(kMaxMethodologyArtifactChunkBytes) + " bytes",
+                                  "/chunk_base64");
+    }
+    const std::string chunk = zetta::detail::base64_decode_to_string(encoded);
+    const std::uintmax_t offset = input.at("offset").get<std::uintmax_t>();
+    if (offset + chunk.size() > kMaxStagedMethodologyArtifactBytes) {
+        return ApiResult::failure(
+            "invalid_input",
+            "the artifact would be larger than " +
+                std::to_string(kMaxStagedMethodologyArtifactBytes) + " bytes, the most a run can report",
+            "/offset");
+    }
+    const std::filesystem::path path =
+        methodology_artifact_staging_path(context, id, input.at("run_id").get<std::string>());
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::uintmax_t held = std::filesystem::exists(path, ec) ? std::filesystem::file_size(path, ec) : 0;
+    if (ec) held = 0;
+    if (offset > held) {
+        return ApiResult::failure("conflict",
+                                  "expected a chunk at offset " + std::to_string(held) +
+                                      " or below; " + std::to_string(held) + " bytes are staged",
+                                  "/offset");
+    }
+    if (offset == 0) {
+        std::ofstream create(path, std::ios::binary | std::ios::trunc);
+        if (!create) return ApiResult::failure("engine_error", "the artifact could not be staged");
+    } else if (offset < held) {
+        std::filesystem::resize_file(path, offset, ec);
+        if (ec) return ApiResult::failure("engine_error", "the artifact could not be staged");
+    }
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::app);
+        out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+        if (!out.good()) {
+            return ApiResult::failure("engine_error", "the artifact could not be staged");
+        }
+    }
+    return ApiResult::success({{"received", offset + chunk.size()}});
+}
+
+const nlohmann::json& read_model_weights_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}, {"minLength", 1}, {"description", "the model's id"}}},
+          {"offset", {{"type", "integer"}, {"minimum", 0}, {"default", 0}}},
+          {"limit",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", static_cast<std::int64_t>(kMaxMethodologyArtifactChunkBytes)},
+            {"default", static_cast<std::int64_t>(kMaxMethodologyArtifactChunkBytes)},
+            {"description", "bytes to read, at most 8 MiB"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& read_model_weights_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "offset", "chunk_base64", "next_offset", "total_bytes", "sha256"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"offset", {{"type", "integer"}}},
+          {"chunk_base64", {{"type", "string"}}},
+          {"next_offset", {{"type", {"integer", "null"}}}},
+          {"total_bytes", {{"type", "integer"}}},
+          {"sha256", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_read_model_weights(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("model_id").get<std::string>();
+    const auto model = context.node.find_model(id);
+    if (!model) return ApiResult::failure("not_found", "no model with id '" + id + "'");
+    if (!model->weights() || !model->has_weights_body()) {
+        return ApiResult::failure("not_found", "model '" + id + "' has no weights on this node");
+    }
+    const std::uintmax_t total = model->weights()->size;
+    const std::uintmax_t offset = input.value("offset", std::uintmax_t{0});
+    if (offset > total) {
+        return ApiResult::failure("invalid_input",
+                                  "offset is past the weights' " + std::to_string(total) + " bytes",
+                                  "/offset");
+    }
+    const std::size_t limit =
+        input.value("limit", static_cast<std::size_t>(kMaxMethodologyArtifactChunkBytes));
+    const std::optional<std::string> chunk = model->read_weights_range(offset, limit);
+    if (!chunk) {
+        return ApiResult::failure("not_found", "model '" + id + "' has no weights on this node");
+    }
+    const std::uintmax_t end = offset + chunk->size();
+    return ApiResult::success(
+        {{"model_id", id},
+         {"offset", offset},
+         {"chunk_base64", zetta::detail::base64_encode_bytes(*chunk)},
+         {"next_offset", end < total ? nlohmann::json(end) : nlohmann::json(nullptr)},
+         {"total_bytes", total},
+         {"sha256", model->weights()->sha256}});
+}
+
 const nlohmann::json& record_methodology_run_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
@@ -5280,6 +5455,17 @@ const nlohmann::json& record_methodology_run_schema() {
            {{"type", "string"},
             {"description",
              "the fitted artifact, base64; at most 24 MiB decoded. Required for train."}}},
+          {"artifact_staged",
+           {{"type", "object"},
+            {"required", {"bytes", "sha256"}},
+            {"additionalProperties", false},
+            {"description",
+             "instead of artifact_base64, for an artifact sent in chunks with "
+             "append_methodology_artifact (lake#690): its size and SHA-256, which must match "
+             "what was staged for this methodology and run_id"},
+            {"properties",
+             {{"bytes", {{"type", "integer"}, {"minimum", 1}}},
+              {"sha256", {{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}}}}}}},
           {"artifact_format", {{"type", "string"}, {"enum", {"bytes", "pickle"}}}},
           {"features",
            {{"type", "array"}, {"items", {{"type", "string"}}},
@@ -5333,28 +5519,67 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
         return ApiResult::success({{"model_id", nullptr}, {"run_id", nullptr}});
     }
 
+    const std::string lake_run_for_staging = input.at("run_id").get<std::string>();
+    const bool staged = input.contains("artifact_staged");
     const std::string encoded = input.value("artifact_base64", std::string());
-    if (encoded.empty()) {
-        return ApiResult::failure("invalid_input", "a training run reports its artifact",
-                                  "/artifact_base64");
-    }
-    if (!strict_base64(encoded)) {
-        return ApiResult::failure("invalid_input", "artifact_base64 is not base64",
-                                  "/artifact_base64");
-    }
-    if (encoded.size() / 4 * 3 > kMaxMethodologyArtifactBytes + 3) {
-        return ApiResult::failure(
-            "invalid_input",
-            "the artifact is larger than " + std::to_string(kMaxMethodologyArtifactBytes) +
-                " bytes, the most a run can report",
-            "/artifact_base64");
-    }
-    const std::string artifact = zetta::detail::base64_decode_to_string(encoded);
-    if (artifact.size() > kMaxMethodologyArtifactBytes) {
+    std::string artifact;
+    std::filesystem::path staged_path;
+    std::uintmax_t staged_bytes = 0;
+    std::string staged_sha256;
+    if (staged && !encoded.empty()) {
         return ApiResult::failure("invalid_input",
-                                  "the artifact is larger than " +
-                                      std::to_string(kMaxMethodologyArtifactBytes) + " bytes",
-                                  "/artifact_base64");
+                                  "report the artifact inline or staged, not both",
+                                  "/artifact_staged");
+    }
+    if (staged) {
+        // lake#690: the artifact was sent with append_methodology_artifact.
+        staged_path = methodology_artifact_staging_path(context, id, lake_run_for_staging);
+        staged_bytes = input.at("artifact_staged").at("bytes").get<std::uintmax_t>();
+        staged_sha256 = input.at("artifact_staged").at("sha256").get<std::string>();
+        std::error_code ec;
+        const std::uintmax_t held = std::filesystem::file_size(staged_path, ec);
+        if (ec) {
+            return ApiResult::failure("conflict",
+                                      "no artifact is staged for this run; send it with "
+                                      "append_methodology_artifact first",
+                                      "/artifact_staged");
+        }
+        if (held != staged_bytes) {
+            return ApiResult::failure("conflict",
+                                      "the staged artifact is " + std::to_string(held) +
+                                          " bytes, not " + std::to_string(staged_bytes),
+                                      "/artifact_staged/bytes");
+        }
+        const std::optional<std::string> digest = zetta::util::sha256_file_hex(staged_path);
+        if (!digest || *digest != staged_sha256) {
+            return ApiResult::failure("conflict",
+                                      "the staged artifact does not match its SHA-256",
+                                      "/artifact_staged/sha256");
+        }
+    } else {
+        if (encoded.empty()) {
+            return ApiResult::failure("invalid_input", "a training run reports its artifact",
+                                      "/artifact_base64");
+        }
+        if (!strict_base64(encoded)) {
+            return ApiResult::failure("invalid_input", "artifact_base64 is not base64",
+                                      "/artifact_base64");
+        }
+        if (encoded.size() / 4 * 3 > kMaxMethodologyArtifactBytes + 3) {
+            return ApiResult::failure(
+                "invalid_input",
+                "the artifact is larger than " + std::to_string(kMaxMethodologyArtifactBytes) +
+                    " bytes, the most a run can report inline; send it in chunks with "
+                    "append_methodology_artifact and report artifact_staged",
+                "/artifact_base64");
+        }
+        artifact = zetta::detail::base64_decode_to_string(encoded);
+        if (artifact.size() > kMaxMethodologyArtifactBytes) {
+            return ApiResult::failure("invalid_input",
+                                      "the artifact is larger than " +
+                                          std::to_string(kMaxMethodologyArtifactBytes) + " bytes",
+                                      "/artifact_base64");
+        }
     }
 
     std::shared_ptr<zetta::pipeline::Project> project;
@@ -5424,7 +5649,10 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
     if (!dataset_path.empty()) model_value.feature_schema["dataset_path"] = dataset_path;
     if (input.contains("rows")) model_value.feature_schema["rows"] = input.at("rows");
     const std::shared_ptr<zetta::ml::Model> model = context.node.create_model(model_value);
-    if (!model || !model->set_weights(artifact)) {
+    const bool weighted =
+        model && (staged ? model->adopt_weights_file(staged_path, staged_bytes, staged_sha256)
+                         : model->set_weights(artifact));
+    if (!weighted) {
         run->add_log({zetta::util::now_iso8601(), "error", "the model could not be registered"});
         run->set_status(zetta::pipeline::RunStatus::Failed);
         return ApiResult::failure("engine_error", "the model could not be registered");
@@ -11124,6 +11352,26 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Orchestration, "record_methodology_run"},
         /*mutates=*/true,
         /*requires_consent=*/false, handle_record_methodology_run});
+    registry.add(Capability{
+        "append_methodology_artifact", "Stage part of a methodology run's artifact",
+        "Send a workspace methodology run's artifact in chunks of at most 8 MiB, in order, "
+        "when it is larger than record_methodology_run takes inline (24 MiB), up to 1 GiB. "
+        "Answers the bytes staged; a chunk at an offset below that replaces what was held from "
+        "there. record_methodology_run with artifact_staged then adopts it as the Model's "
+        "weights.",
+        append_methodology_artifact_schema(), append_methodology_artifact_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "append_methodology_artifact"},
+        /*mutates=*/true,
+        /*requires_consent=*/false, handle_append_methodology_artifact});
+    registry.add(Capability{
+        "read_model_weights", "Read a model's weights",
+        "Read a model's serialized weights, at most 8 MiB at a time from offset, with their "
+        "total size and SHA-256. Lake serves a workspace methodology's model from them.",
+        read_model_weights_schema(), read_model_weights_output_schema(), CapabilityKind::Read,
+        Operation{CapabilityDomain::Orchestration, "read_model_weights"},
+        /*mutates=*/false,
+        /*requires_consent=*/false, handle_read_model_weights});
 
     registry.add(Capability{
         "list_ledger",

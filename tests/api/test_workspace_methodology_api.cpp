@@ -18,6 +18,7 @@
 #include "zetta/observability/trace.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/util/sha256.hpp"
 
 namespace {
 
@@ -311,6 +312,101 @@ TEST_F(WorkspaceMethodologyFixture, RecordingARunChecksWhatItIsGiven) {
                                        {"artifact_format", "bytes"}});
     ASSERT_TRUE(standalone.ok) << standalone.error.message;
     EXPECT_TRUE(node.find_model(standalone.value.at("model_id").get<std::string>()));
+}
+
+// lake#690: an artifact larger than one request moves in chunks, staged until
+// record_methodology_run adopts it as the Model's weights, which read back in
+// chunks with their size and SHA-256.
+TEST_F(WorkspaceMethodologyFixture, AnArtifactMovesInChunksAndReadsBackInChunks) {
+    const std::string id = register_churn();
+    std::string artifact;
+    for (int i = 0; i < 5000; ++i) artifact.push_back(static_cast<char>(i * 31 % 256));
+    const auto chunk = [&](std::size_t offset, std::size_t length) {
+        return zetta::detail::base64_encode_bytes(std::string_view(artifact).substr(offset, length));
+    };
+    // In order: an offset past what is staged is a conflict naming where to resume.
+    ApiResult first = call("append_methodology_artifact",
+                           {{"methodology", id}, {"run_id", "big"}, {"offset", 0},
+                            {"chunk_base64", chunk(0, 2000)}});
+    ASSERT_TRUE(first.ok) << first.error.message;
+    EXPECT_EQ(first.value.at("received"), 2000);
+    const ApiResult gap = call("append_methodology_artifact",
+                               {{"methodology", id}, {"run_id", "big"}, {"offset", 3000},
+                                {"chunk_base64", chunk(3000, 10)}});
+    ASSERT_FALSE(gap.ok);
+    EXPECT_EQ(gap.error.code, "conflict");
+    // A chunk sent again replaces what was held from its offset.
+    ASSERT_TRUE(call("append_methodology_artifact",
+                     {{"methodology", id}, {"run_id", "big"}, {"offset", 2000},
+                      {"chunk_base64", chunk(2000, 2000)}}).ok);
+    const ApiResult again = call("append_methodology_artifact",
+                                 {{"methodology", id}, {"run_id", "big"}, {"offset", 2000},
+                                  {"chunk_base64", chunk(2000, 3000)}});
+    ASSERT_TRUE(again.ok) << again.error.message;
+    EXPECT_EQ(again.value.at("received"), 5000);
+    // Not base64, or an unknown methodology.
+    EXPECT_EQ(call("append_methodology_artifact",
+                   {{"methodology", id}, {"run_id", "big"}, {"offset", 0},
+                    {"chunk_base64", "not base64!"}}).error.code,
+              "invalid_input");
+    EXPECT_EQ(call("append_methodology_artifact",
+                   {{"methodology", "W-0000abcd"}, {"run_id", "big"}, {"offset", 0},
+                    {"chunk_base64", "AAAA"}}).error.code,
+              "not_found");
+
+    // The record must name what was staged: a wrong size or digest is a conflict.
+    const std::string digest = zetta::util::sha256_hex(artifact);
+    EXPECT_EQ(call("record_methodology_run",
+                   {{"methodology", id}, {"run_id", "big"}, {"mode", "train"},
+                    {"artifact_staged", {{"bytes", 4999}, {"sha256", digest}}}}).error.code,
+              "conflict");
+    EXPECT_EQ(call("record_methodology_run",
+                   {{"methodology", id}, {"run_id", "big"}, {"mode", "train"},
+                    {"artifact_staged", {{"bytes", 5000}, {"sha256", std::string(64, '0')}}}})
+                  .error.code,
+              "conflict");
+    EXPECT_EQ(call("record_methodology_run",
+                   {{"methodology", id}, {"run_id", "big"}, {"mode", "train"},
+                    {"artifact_base64", "AAAA"},
+                    {"artifact_staged", {{"bytes", 5000}, {"sha256", digest}}}}).error.code,
+              "invalid_input");
+    EXPECT_EQ(call("record_methodology_run",
+                   {{"methodology", id}, {"run_id", "nothing staged"}, {"mode", "train"},
+                    {"artifact_staged", {{"bytes", 5000}, {"sha256", digest}}}}).error.code,
+              "conflict");
+    const ApiResult recorded =
+        call("record_methodology_run",
+             {{"methodology", id}, {"run_id", "big"}, {"mode", "train"},
+              {"metrics", {{"held_out_auc", 0.7}}}, {"artifact_format", "bytes"},
+              {"artifact_staged", {{"bytes", 5000}, {"sha256", digest}}}});
+    ASSERT_TRUE(recorded.ok) << recorded.error.message;
+    const std::string model_id = recorded.value.at("model_id").get<std::string>();
+    const auto model = node.find_model(model_id);
+    ASSERT_TRUE(model);
+    EXPECT_EQ(model->weights()->size, 5000u);
+    EXPECT_EQ(model->weights()->sha256, digest);
+    EXPECT_EQ(model->read_weights(), artifact);
+
+    // Read back 2000 bytes at a time.
+    std::string read;
+    nlohmann::json offset = 0;
+    int pages = 0;
+    while (!offset.is_null()) {
+        const ApiResult page = call("read_model_weights",
+                                    {{"model_id", model_id}, {"offset", offset}, {"limit", 2000}});
+        ASSERT_TRUE(page.ok) << page.error.message;
+        EXPECT_EQ(page.value.at("total_bytes"), 5000);
+        EXPECT_EQ(page.value.at("sha256"), digest);
+        read += zetta::detail::base64_decode_to_string(
+            page.value.at("chunk_base64").get<std::string>());
+        offset = page.value.at("next_offset");
+        ++pages;
+    }
+    EXPECT_EQ(pages, 3);
+    EXPECT_EQ(read, artifact);
+    EXPECT_EQ(call("read_model_weights", {{"model_id", model_id}, {"offset", 5001}}).error.code,
+              "invalid_input");
+    EXPECT_EQ(call("read_model_weights", {{"model_id", "no-such-model"}}).error.code, "not_found");
 }
 
 TEST_F(WorkspaceMethodologyFixture, ItsPipelineIsNotDeployedForServing) {

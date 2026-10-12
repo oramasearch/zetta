@@ -51,6 +51,8 @@ validated.
 | `get_methodology` | `{id}` → `{methodology}`: a catalogue entry or a workspace entry |
 | `list_methodologies` | the 21 catalogue entries, then the workspace's own, id-ordered |
 | `record_methodology_run` | below |
+| `append_methodology_artifact` | below: a large artifact, in chunks (lake#690) |
+| `read_model_weights` | a model's weights read back in chunks (lake#690) |
 
 Every listed entry carries `source` (`orama` or `workspace`) and `editable`. A
 workspace entry has the catalogue's fields, derived:
@@ -108,7 +110,24 @@ only), `rows {train, held_out}`, `artifact_base64`, `artifact_format`
 (`bytes` or `pickle`), `features`, `project` and `graph` (both or neither).
 
 - `validate` registers nothing: Lake sets the outcome with `update_methodology`'s `validation`. Answers `{model_id: null, run_id: null}`.
-- `train` needs `artifact_base64`, strict base64 of at most **24 MiB** decoded (the request must stay under the HTTP adapter's 33 MiB body limit). It creates a Run (on the project and graph for a pipeline step; the graph must run this methodology), records its parameters, its metrics as step 0, a log line naming Lake's run, the model output and the lineage, and sets it Succeeded. It registers a Model: kind `python:<id>`, the metrics, the artifact as its weights, and in `feature_schema` the methodology, Lake's run id, the code, the parameters, the features, the dataset, the row counts and the artifact format. Answers `{model_id, run_id}`.
+- `train` needs the artifact: `artifact_base64`, strict base64 of at most **24 MiB** decoded (the request must stay under the HTTP adapter's 33 MiB body limit), or, for a larger one, `artifact_staged {bytes, sha256}` naming what `append_methodology_artifact` staged for the same `methodology` and `run_id` (below). Not both. It creates a Run (on the project and graph for a pipeline step; the graph must run this methodology), records its parameters, its metrics as step 0, a log line naming Lake's run, the model output and the lineage, and sets it Succeeded. It registers a Model: kind `python:<id>`, the metrics, the artifact as its weights, and in `feature_schema` the methodology, Lake's run id, the code, the parameters, the features, the dataset, the row counts and the artifact format. Answers `{model_id, run_id}`.
+
+## Artifacts over 24 MiB (lake#690)
+
+`append_methodology_artifact {methodology, run_id, offset, chunk_base64}` stages a
+run's artifact on the node's disk (`<data-dir>/methodology-artifacts/<sha256 of
+methodology and run>.part`), in order, at most **8 MiB** decoded per call and
+**1 GiB** in all. It answers `{received}`, the bytes staged. A chunk at an offset
+below `received` replaces what was staged from there, so a sender that starts over
+is safe; an offset past it is `conflict` naming where to resume.
+`record_methodology_run` with `artifact_staged {bytes, sha256}` checks the staged
+file's size and SHA-256 (hashed as it is read, `zetta::util::Sha256`), refuses a
+mismatch as `conflict`, and moves the file into place as the Model's weights
+(`Model::adopt_weights_file`) without reading it into memory.
+
+`read_model_weights {model_id, offset?, limit?}` answers up to 8 MiB of a model's
+weights from `offset` as `chunk_base64`, with `next_offset` (null at the end),
+`total_bytes` and `sha256`. Lake reads a served model's artifact this way.
 
 The Model appears in `list_models` and `system.models` like any other. Its weights
 are the methodology's own artifact; only Lake's runner can load them.
@@ -116,15 +135,18 @@ are the methodology's own artifact; only Lake's runner can load them.
 ## Verify
 
 ```sh
-./build/tests/zetta-tests --gtest_filter='WorkspaceMethodology*'
+./build/tests/zetta-tests --gtest_filter='WorkspaceMethodology*:Sha256*'
 ```
 
 `OramasMethodologiesAreReadOnly`, `RegisterGetUpdateDeleteAndList`,
 `APipelineStepIsVerifiedOnlyOnceValidatedAndRunsInLakesRunner`,
-`RecordingARunChecksWhatItIsGiven` and `ItsPipelineIsNotDeployedForServing`.
+`RecordingARunChecksWhatItIsGiven`, `AnArtifactMovesInChunksAndReadsBackInChunks`
+and `ItsPipelineIsNotDeployedForServing`; `Sha256.InPiecesEqualsAtOnce`.
 
-## Not built
+## Serving, and what is not built
 
 - Experiments (studies) over a workspace methodology's parameters: the parameters are declared, but trials would run in Lake's runner.
-- Serving a workspace methodology's model (`predict` behind Ship → Models).
-- Artifacts above 24 MiB.
+- Serving a workspace methodology's model is Lake's, not the engine's (lake#690): Ship → Models
+  publishes it, Lake has the Orama operator run the methodology's image in `serve` mode, and
+  Lake answers `predict` from it. The engine's `deploy` of such a pipeline still answers
+  `not_supported`, since the engine never runs the Python.

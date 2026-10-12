@@ -174,7 +174,9 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `register_methodology` | action | orchestration:register_methodology | register a workspace methodology whose Python code Lake's runner runs (never the engine); returns its W- id, not validated (#1261) |
 | `update_methodology` | action | orchestration:update_methodology | change a workspace methodology, its image or its validation; a new code revision resets validation; Orama's answer `forbidden` (#1261) |
 | `delete_methodology` | action | orchestration:delete_methodology | remove a workspace methodology (idempotent); Orama's answer `forbidden` (#1261) |
-| `record_methodology_run` | action | orchestration:record_methodology_run | record what Lake's runner produced: a training run registers a Model (kind `python:<id>`, artifact ≤ 24 MiB as its weights, in-sample and held-out metrics) and a Run, on the pipeline for a step (#1261) |
+| `record_methodology_run` | action | orchestration:record_methodology_run | record what Lake's runner produced: a training run registers a Model (kind `python:<id>`, the artifact as its weights: ≤ 24 MiB inline, or up to 1 GiB staged with `artifact_staged`, in-sample and held-out metrics) and a Run, on the pipeline for a step (#1261, lake#690) |
+| `append_methodology_artifact` | action | orchestration:append_methodology_artifact | stage a run's artifact over 24 MiB in ordered chunks of ≤ 8 MiB, up to 1 GiB; answers the bytes staged (lake#690) |
+| `read_model_weights` | read | api:query | a model's weights, ≤ 8 MiB from `offset`, with `next_offset`, `total_bytes` and `sha256` (lake#690) |
 | `list_ledger` | read | api:query | immutable action and outcome entries from the replicated [solutions audit ledger](../solutions/audit-ledger.md) |
 | `list_solutions` | read | api:query | all 20 runnable catalogue solutions, with composition, product contract, `levels` objects, missing components, and runnable status |
 | `get_solution` | read | api:query | one runnable catalogue solution by id; `solution.levels[].level` is the integer posted to `create_solution` |
