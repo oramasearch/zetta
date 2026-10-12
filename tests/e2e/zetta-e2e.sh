@@ -52,9 +52,9 @@
 # real behavior (verified live, HEAD 2026-07):
 #   * The capability envelope is {ok, value, trace_id, span_id, duration_ms};
 #     SQL rows live at `.value.rows` as named objects ([{col: val}]), aggregates
-#     name their output (sum(price) -> sum_price), GROUP BY is numeric-only, no
-#     bare count(*), no ORDER BY, single-predicate WHERE only (AND/OR/NOT are a
-#     tracked limit).
+#     name their output (sum(price) -> sum_price), single-predicate WHERE only
+#     (AND/OR/NOT are a tracked limit). Bare count(*), text GROUP BY keys and
+#     unknown-column errors arrived with zetta#1218 and are SKIPs before it.
 #   * The in-app suite is `testsuite_run` / `testsuite_list` (+ system.test_cases).
 #   * /mcp is JSON-RPC over POST; the harness sends an SSE `Accept` and reads a
 #     plain-JSON or `data:`-framed reply either way.
@@ -359,7 +359,7 @@ if want_level 3; then
     assert_count "SELECT * FROM $TBL" 6 "SELECT * returns all 6 rows"
     assert_field "SELECT * FROM $TBL WHERE id = 4" price 42 "point lookup id=4 -> price 42"
 
-    # --- 3.3 query engine: filters / aggregates (no ORDER BY; numeric GROUP BY) --
+    # --- 3.3 query engine: filters / aggregates ---------------------------------
     sec "LEVEL 3.3 — query engine"
     assert_count "SELECT * FROM $TBL WHERE price > 20" 3 "WHERE price > 20"
     assert_count "SELECT * FROM $TBL WHERE price <= 10" 2 "WHERE price <= 10"
@@ -368,8 +368,7 @@ if want_level 3; then
     assert_count "SELECT * FROM $TBL WHERE in_stock = false" 2 "WHERE in_stock = false"
     assert_count "SELECT * FROM $TBL WHERE category = 'tools'" 2 "WHERE category = 'tools'"
     assert_count "SELECT id, sum(price) FROM $TBL GROUP BY id" 6 "numeric GROUP BY (aggregate over DDF)"
-    # A SELECT over a missing table is rejected (the store is schemaless, so a
-    # missing *column* resolves to null rather than an error — not a negative).
+    # A SELECT over a missing table is rejected.
     assert_reject "SELECT * FROM e2e_missing_${RUN}" "SELECT over a nonexistent table is rejected"
     # Documented engine limits — asserted as tracked SKIPs, not silent gaps:
     if sql "SELECT * FROM $TBL WHERE price > 0" && ! sql "SELECT * FROM $TBL WHERE price > 20 AND in_stock = true"; then
@@ -378,8 +377,23 @@ if want_level 3; then
     if sql "SELECT * FROM $TBL WHERE price > 0" && ! sql "SELECT * FROM $TBL ORDER BY price"; then
         skip "ORDER BY unsupported by the deployed engine (tracked)"
     fi
-    if ! sql "SELECT category, sum(price) FROM $TBL GROUP BY category"; then
-        skip "string GROUP BY unsupported (DDF is numeric-only, zetta#756) (tracked)"
+    # zetta#1218: whole-table aggregates, text GROUP BY keys and unknown columns.
+    # An engine before it refuses the first two and answers the third with nulls,
+    # so each is a tracked SKIP there rather than a failure.
+    if sql "SELECT count(*) FROM $TBL"; then
+        assert_field "SELECT count(*) FROM $TBL" count 6 "whole-table count(*) without GROUP BY"
+    else
+        skip "bare count(*) unsupported by the deployed engine (zetta#1218)"
+    fi
+    if sql "SELECT category, sum(price) FROM $TBL GROUP BY category"; then
+        pass "text GROUP BY key (rows=$(rows_len))"
+    else
+        skip "text GROUP BY unsupported by the deployed engine (zetta#1218)"
+    fi
+    if sql "SELECT e2e_no_such_column FROM $TBL"; then
+        skip "an unknown column reads null on the deployed engine (zetta#1218)"
+    else
+        pass "an unknown column is rejected ($(err_msg))"
     fi
 
     # --- 3.4 the system.* catalog: shape + content, not just readability [#777] --
@@ -655,7 +669,7 @@ if want_level 3; then
         # deployed engine parses cleanly (scoped GRANT ... ON <object> is omitted:
         # it faults the current build via an escaping ParseError — see notes).
         sql_as "$ADMIN" "CREATE DATABASE $DB" >/dev/null 2>&1
-        RTBL="authz_${RUN}"       # the reader may write here (the #759 write tests)
+        RTBL="authz_${RUN}"       # the reader's write attempts target this one (#759, #1229)
         RLSTBL="authz_rls_${RUN}" # PRISTINE: admin-only rows, the reader only reads it
         sql_as "$ADMIN" "CREATE TABLE $RTBL (id, owner, amount)" >/dev/null 2>&1
         sql_as "$ADMIN" "CREATE TABLE $RLSTBL (id, owner, amount)" >/dev/null 2>&1
@@ -694,6 +708,21 @@ if want_level 3; then
             authz_privileged "CREATE USER"  "CREATE USER e2e_escalate_${RUN}"        "#759"
             authz_privileged "CREATE TOKEN FOR owner" "CREATE TOKEN FOR owner TYPE access" "#759"
             authz_privileged "CREATE TABLE (DDL)" "CREATE TABLE e2e_reader_ddl_${RUN} (x)" "#759"
+            # Every other data-changing statement checks sql:write / sql:ddl the
+            # way INSERT does (#1229) — enforced, so an allowed one FAILS.
+            authz_denied() { # DESC STMT FINDING
+                if sql_as "$RTOK" "$2"; then fail "$1 was ALLOWED for a reader [$3]"
+                else pass "$1 denied for a reader [$3]"; fi
+            }
+            authz_denied "UPDATE" "UPDATE $RTBL SET amount = '0'" "#1229"
+            authz_denied "DELETE" "DELETE FROM $RTBL WHERE id = 1" "#1229"
+            authz_denied "TRUNCATE" "TRUNCATE $RTBL" "#1229"
+            authz_denied "DROP TABLE" "DROP TABLE $RTBL" "#1229"
+            authz_denied "DROP DATABASE" "DROP DATABASE $DB" "#1229"
+            # The connection store is not reachable through SQL at all (#1230).
+            if sql_as "$ADMIN" "SELECT * FROM zetta_connect.connections"; then
+                fail "the connection store answered a SELECT [#1230]"
+            else pass "the connection store refuses SQL, even for the admin [#1230]"; fi
             # RLS: a SELECT policy limits a non-admin to rows current_user() owns;
             # admin bypasses [#748/#762]. RLS and column masking ride the SAME
             # per-statement executor gate as sql:write, so a build where writes are

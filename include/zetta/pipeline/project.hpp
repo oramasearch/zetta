@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/pipeline/intent_compiler.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/project_input.hpp"
 
@@ -37,11 +39,16 @@ namespace zetta::pipeline {
 // the project's `inputs/` subfolder (see project_input.hpp / docs/pipeline/project-inputs.md).
 class Project {
 public:
+    using PipelineRenameObserver = std::function<void(
+        const std::string& project_id, const std::string& pipeline_id,
+        const std::string& old_name, const std::string& new_name)>;
+
     Project(std::string id, std::string name, std::string created,
             std::string updated, std::string owner, std::filesystem::path dir,
             zetta::cluster::ReplicationManager* replication = nullptr,
             zetta::governance::AuditSink* audit = nullptr,
-            std::string description = {});
+            std::string description = {},
+            PipelineRenameObserver pipeline_rename_observer = {});
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
@@ -54,6 +61,14 @@ public:
     // Set the description and persist (also replicated via metadata()).
     void set_description(std::string description);
     const std::filesystem::path& dir() const { return dir_; }
+    // An internal project holds one standalone model (lake#654,
+    // docs/ml/standalone-models.md): the engine trains and versions the model
+    // through it, and never lists it to people (`Node::project_names()` leaves it
+    // out). It is still found by its id. false for every project people create.
+    bool internal() const { return internal_; }
+    // Set the flag and persist project.json. The caller captures metadata()
+    // into the CRDT (Node::create_project, Node::move_model_project).
+    void set_internal(bool internal);
 
     // Replace the mutable metadata to match a (replicated) value, then rewrite
     // project.json. The folder/id is unchanged. `created` is logically
@@ -65,7 +80,9 @@ public:
     // Write this project's metadata (id + fields) to dir/project.json.
     void persist_meta() const;
 
-    // The replicated/on-disk value shape: { name, created, updated, owner }.
+    // The replicated/on-disk value shape: { name, created, updated, owner,
+    // description }, plus `internal: true` only on an internal project, so every
+    // other project's value is unchanged.
     // (The id is the CRDT key / folder name, so it isn't repeated here.)
     nlohmann::json metadata() const;
 
@@ -125,7 +142,7 @@ public:
     // materialize_* variants are the reverse path used by reconciliation. A local
     // create/drop also emits a graph-change audit event through the AuditSink
     // (the audit trail, FEAT-9); the materialize_* paths do not (a peer's change
-    // arrives already-audited as its own replicated `audit:` event).
+    // arrives already-audited through the replicated segment log).
 
     // Store a new named graph. Returns an empty handle if the name is empty or
     // already taken. Assigns a fresh UUID and captures it into the CRDT.
@@ -145,18 +162,19 @@ public:
                                                std::string new_name = {});
 
     // Compile a stored natural-language **intent** input into a new, editable
-    // ExecutionGraph stored under this project (FEAT-2 / #311) — the bridge from a
-    // captured intent (FEAT-1) to a reviewable graph in the Graph Workspace. Reads
-    // the intent input's payload body, runs the templated compiler
-    // (zetta::pipeline::compile_intent), and persists the resulting skeleton as a named
-    // ProjectGraph (replicated + editable, exactly like create_graph). `name`
-    // defaults to "<intent-shape> skeleton" when empty. Returns an empty handle if
-    // the input id is unknown, the input is not an Intent, its body is not present
-    // locally, the intent is empty, or the (resolved) name collides with an
-    // existing graph. The intent input is left untouched (it is an immutable
-    // provenance record); the compiled graph is a fresh, separate artifact.
-    std::shared_ptr<ProjectGraph> compile_intent_to_graph(
-        const std::string& input_id, std::string name = {});
+    // ExecutionGraph stored under this project (FEAT-2 / #311) — the bridge
+    // from a captured intent (FEAT-1) to a reviewable graph in the Graph
+    // Workspace. Reads the intent input's payload body, resolves the selected
+    // methodology, and persists its graph as a named ProjectGraph. `options`
+    // may select a methodology or solution and carry hints. `error` receives a
+    // compile refusal. Without a `name`, the graph is named from the intent's
+    // words (#1238), numbered " (2)", " (3)"… when that name is taken;
+    // `template_name` receives the template its steps started from.
+    std::shared_ptr<ProjectGraph>
+    compile_intent_to_graph(const std::string& input_id, std::string name = {},
+                            const IntentCompileOptions& options = {},
+                            std::string* error = nullptr,
+                            std::string* template_name = nullptr);
 
     // Approve a proposed plan (#885, review-before-build): mark the graph
     // (found by `name`) approved by `approver` at `at` (ISO-8601), capture the
@@ -198,11 +216,13 @@ private:
     std::string updated_;
     std::string owner_;
     std::string description_;
+    bool internal_ = false;
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<ProjectInput>> inputs_;
     std::vector<std::shared_ptr<ProjectGraph>> graphs_;  // insertion order
     zetta::cluster::ReplicationManager* replication_;  // null = not replicated
     zetta::governance::AuditSink* audit_;  // null = not audited (no node behind this project)
+    PipelineRenameObserver pipeline_rename_observer_;
 };
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

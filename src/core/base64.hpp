@@ -56,6 +56,7 @@ inline std::vector<std::byte> base64_decode(std::string_view text) {
         return -1;  // '=' padding or invalid
     };
     std::vector<std::byte> out;
+    out.reserve(text.size() / 4 * 3 + 3);
     std::uint32_t accumulator = 0;
     int bits = 0;
     for (const char c : text) {

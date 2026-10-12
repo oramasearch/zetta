@@ -37,6 +37,9 @@ struct StepOutcome {
     std::string error;                  // why it failed (when !ok)
     std::vector<RunOutput> outputs;     // artifacts this step materialized
     std::vector<std::string> sources;   // source refs this step pulled from
+    // What a person should know about how this step ran (logged as info on the run):
+    // e.g. that a connect step was not read because the run trained on a named dataset.
+    std::vector<std::string> notes;
 };
 
 // The pluggable unit that executes one graph step (mirrors the gate's Check
@@ -47,6 +50,10 @@ struct StepOutcome {
 class StepExecutor {
 public:
     virtual ~StepExecutor() = default;
+
+    // Attach the durable Run before the first step. Executors that train models
+    // use this identifier to publish per-step metrics to that same Run.
+    virtual void bind_run(Node&, const std::string&) {}
 
     // Execute `step` and report what it produced (or why it failed).
     virtual StepOutcome run_step(const ir::Node& step) const = 0;
@@ -118,7 +125,8 @@ public:
     ExecutionResult execute(Node& node, const ir::ExecutionGraph& graph,
                             std::string project = {},
                             std::string graph_id = {},
-                            const std::atomic<bool>* cancel = nullptr) const;
+                            const std::atomic<bool>* cancel = nullptr,
+                            std::shared_ptr<Run> existing_run = {}) const;
 
     // The step executor this orchestrator runs each step with.
     const StepExecutor& step_executor() const { return *step_executor_; }

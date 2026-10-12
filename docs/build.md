@@ -24,7 +24,11 @@ What it installs (or install manually):
   since LLVM 21.1.8 the headers availability-gate symbols the macOS *system*
   dylib lacks (floating-point `std::from_chars` → "'from_chars' is
   unavailable: introduced in macOS 26.0"), which is a false alarm when running
-  against Homebrew's dylib.
+  against Homebrew's dylib. It also links **Homebrew's libunwind**
+  (`lib/unwind`, `-lunwind`): Homebrew's libc++abi paired with the *system*
+  unwinder sometimes skips a matching `catch` and `std::terminate()`s — a catch
+  that works in a toy program fails in a real frame (#1007). `otool -L
+  build/tests/zetta-tests | grep unwind` should show the Homebrew path.
 - **OpenSSL 3** (`openssl@3` on Homebrew, `libssl-dev` on apt) — **required**:
   it backs the cluster's inter-node mutual TLS (Corosio's TLS provider) and the
   node-identity certificate minting (CTL-2, #466;
@@ -64,6 +68,25 @@ cmake --build build
 
 The first configure clones the deps into `build/_deps/` (a few minutes);
 later builds are fast. `build/` is git-ignored.
+
+### Shared-library dependency check
+
+The shipped configuration remains static, but the shared variant verifies that
+each vendored library declares the runtime providers used by its own translation
+units. In particular, `boost_beast2` contains its HTTPS server and directly links
+Corosio's OpenSSL provider (#1096).
+
+Configure, build, and test the shared variant in a separate directory:
+
+```bash
+cmake -S . -B build-shared -G Ninja -DBUILD_SHARED_LIBS=ON
+cmake --build build-shared --target boost_beast2 -j 6
+cmake --build build-shared --target zetta-tests -j 6
+ctest --test-dir build-shared --output-on-failure
+```
+
+This check changes no runtime or wire format and does not change the default
+static build.
 
 ### Optional CUDA compute backend
 
@@ -114,8 +137,26 @@ backend.
 ./build/bin/zetta --advertise HOST:PORT # extra reachable endpoint(s) to advertise (a NAT'd/LB'd node's public address; repeatable)
 ./build/bin/zetta --log-cluster         # log gossip events to stderr (debugging)
 ./build/bin/zetta --no-preflight        # skip the startup integrity check
+./build/bin/zetta --pubsub-dispatch-mode pool       # shared pool (default); auto, per_key and inline are explicit
+./build/bin/zetta --pubsub-topics-per-thread 250    # active keys per dispatch worker
+./build/bin/zetta --pubsub-dispatch-threads 1       # minimum dispatch workers
+./build/bin/zetta --pubsub-dispatch-max-threads 16  # maximum; detected CPU count by default
+./build/bin/zetta --audit-retention-days 30          # ordinary rows; zero keeps forever
+./build/bin/zetta --audit-summary-retention-days 365 # summaries; zero keeps forever
 ./build/bin/zetta --help
 ```
+
+The matching environment variables are `ZETTA_PUBSUB_DISPATCH_MODE`,
+`ZETTA_PUBSUB_TOPICS_PER_THREAD`, `ZETTA_PUBSUB_DISPATCH_THREADS`, and
+`ZETTA_PUBSUB_DISPATCH_MAX_THREADS`. An explicit CLI value wins over its
+environment variable. See [pub/sub dispatch](pubsub/dispatch.md) for sizing,
+ordering and fairness.
+
+The audit retention flags map to `ZETTA_AUDIT_RETENTION_DAYS` and
+`ZETTA_AUDIT_SUMMARY_RETENTION_DAYS`. Ordinary rows default to 30 days and
+summaries to 365 days. Both expiration paths rewrite the segment log and
+advance the replicated class cursor; zero keeps that class forever. See
+[audit trail](governance/audit-trail.md#retention).
 
 On startup a node runs a **preflight integrity check** by default (disable with
 `--no-preflight`): it re-hashes each local large-object body against its recorded

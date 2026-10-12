@@ -10,7 +10,7 @@ SQL:
   credentials they log in with ([access-control.md](../governance/access-control.md));
 - **scope + capability grants** — per key, *which resources* it reaches and
   *which rights* it may exercise (deny-by-default, the capabilities TTL'd);
-- **the audit log** — the immutable, append-only trail of every governed action
+- **the audit log** — the immutable, retained trail of governed actions
   ([audit-trail.md](../governance/audit-trail.md)).
 
 Like the [Runs panel](../pipeline/runs.md#gui-panel), it is a **read-only viewer**. It renders
@@ -95,6 +95,8 @@ which passed its JSON Schema at the boundary when it entered from disk or the CR
 (`scope_from_json` / `capability_set_from_json` for keys; `parse_audit_event_value`
 for events). So this slice introduces **no new JSON format and no new boundary**,
 the same way the [Runs panel](../pipeline/runs.md#gui-panel) reuses `parse_run_value`.
+The audit table reads the node's bounded recent-event window; full retained
+history remains available through `system.audit`.
 
 ## Where it fits
 

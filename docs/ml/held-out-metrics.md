@@ -1,6 +1,7 @@
 # Held-out metrics
 
-**Issue:** [#953](https://github.com/oramasearch/zetta/issues/953) ·
+**Issue:** [#953](https://github.com/oramasearch/zetta/issues/953),
+[#1217](https://github.com/oramasearch/zetta/issues/1217) (names) ·
 **Code:** `src/core/ml/gbdt_train_job.cpp`, `include/zetta/ml/gbdt.hpp`,
 `include/zetta/ml/gbdt_train_job.hpp` ·
 **Tests:** `tests/ml/test_gbdt.cpp` (`GbdtHoldout.*`)
@@ -42,8 +43,14 @@ not look alike.
 
 ## How rows are chosen
 
-By `row_is_holdout` — an FNV-1a content hash of the row, the same function
-calibration has always used. Two properties follow:
+Ordinary runs use `row_is_holdout` — an FNV-1a content hash of the row, the same
+function calibration has always used. A table-backed Study with an observation
+time supplies that ordered column to the trainer instead: one cluster-wide
+cutoff reserves the newest `holdout_fraction` of rows for evaluation and only
+older rows fit the trees. This is the Study contract's out-of-time validation
+rule, independent of how those rows are sharded.
+
+The content-hash path has two properties:
 
 - **Sharding-invariant.** Which rows are held out does not depend on how the rows
   were spread over nodes, so a run's headline metric does not change when the
@@ -92,6 +99,26 @@ Alongside them go prefixed keys that **name** what each figure was measured on:
 that is the one. When it is absent no holdout was asked for, and the only numbers
 available are the flattering ones.
 
+### When a held-out figure is not a result (#1224)
+
+A held-out figure can be present and still not be one to quote. Two checks decide
+it, and both live in one function, `held_out_caveats()`
+(`src/core/api/capabilities.cpp`):
+
+| Check | Fires when | Why |
+|---|---|---|
+| `small_holdout` | `0 < held_out_rows < 30` (not for a `rank` model) | one row changing side moves AUC visibly, so the figure describes the split |
+| `perfect_auc` | `held_out_auc >= 0.999` | on real data this is a separable demo set or a leaked feature |
+
+`get_run_report` lists each as a `caveats` entry on `held_out_auc`. `model_health`
+sets `trustworthy: false` and adds a finding naming the check
+(`Held-out AUC caveat (small_holdout): …`). Before #1224 `model_health` only
+distrusted a missing holdout or an in-sample/held-out gap above 0.1, so the demo
+dataset's 1.000 AUC on four held-out rows was caveated by the report and called
+trustworthy by `model_health`. One function means the two cannot disagree again.
+Test: `ServingFixture.ModelHealthSharesTheRunReportsHeldOutCaveats`
+(`tests/api/test_serving.cpp`).
+
 ### Every value must be a number
 
 `model_schema()` declares `metrics` as `additionalProperties: {"type": "number"}`.
@@ -107,6 +134,27 @@ and failed 7 runs out of 7 on `Testkit.DistributedCasesRunOnARealCluster`.
 `GbdtHoldout.RegisteredModelMetricsSurviveTheEntityBoundary` now catches that
 class in two milliseconds by parsing the registered model back through its own
 boundary schema.
+
+## Metric names
+
+A held-out figure's report key is its one name everywhere
+([#1217](https://github.com/oramasearch/zetta/issues/1217)): a methodology's
+`metrics` list, the run report, and a Study's `objective.metric` all use it.
+`zetta::ml::metric_names()` (`include/zetta/ml/metric_names.hpp`) is the table;
+`canonical_metric_name` resolves an input, ignoring case and treating spaces,
+dots and hyphens alike.
+
+| Canonical | Accepted on input |
+|---|---|
+| `held_out_auc` | `validation.auc`, `ROC-AUC`, `held-out ROC-AUC`, `roc_auc`, `auc` |
+| `held_out_log_loss` | `validation.log_loss`, `log loss`, `log_loss`, `logloss` |
+| `held_out_accuracy` | `validation.accuracy`, `accuracy` |
+| `held_out_rmse` | `validation.rmse`, `RMSE`, `rmse` |
+| `held_out_mae` | `validation.mae`, `MAE`, `mae` |
+
+Aliases are input only; nothing writes them back out. A bare `auc` names the
+held-out figure here because a Study only optimizes on its validation split —
+the model record's legacy top-level `auc` is still the in-sample one, as above.
 
 ## Control surface
 

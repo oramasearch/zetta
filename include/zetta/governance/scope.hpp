@@ -16,7 +16,10 @@ namespace zetta::governance {
 // `Blob` (a large-object id or an id prefix), or a `Tool` (an MCP tool name).
 // The extra tiers add optional fields to `Resource` (below) without changing the
 // Scope shape; see docs/governance/access-control.md.
-enum class ResourceKind { Database, Project, Table, Column, Blob, Tool };
+// `Topic` (#1029) names a pub/sub topic by name or name prefix, like `Blob`.
+// `Collection` (#1231) names a keyed record collection by name or name prefix.
+// `Bucket` (#1005) names an object bucket by name or name prefix.
+enum class ResourceKind { Database, Project, Table, Column, Blob, Tool, Topic, Collection, Bucket };
 
 // Canonical lowercase name of a resource kind ("database" / "project" / "table"
 // / "column" / "blob" / "tool"). This is BOTH the display label AND the stored
@@ -59,6 +62,9 @@ struct Resource {
                            std::vector<std::string> columns);
     static Resource blob(std::string id_or_prefix);
     static Resource tool(std::string name);
+    static Resource topic(std::string name_or_prefix);
+    static Resource collection(std::string name_or_prefix);
+    static Resource bucket(std::string name_or_prefix);
 };
 
 // Does a granted object cover a requested `target`? The deny-by-default object

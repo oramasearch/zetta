@@ -14,7 +14,8 @@ namespace zetta::data {
 Table::Table(std::string id, std::string name, std::filesystem::path dir,
              zetta::cluster::ReplicationManager* replication,
              ReplicationStrategy replication_strategy, bool partition_only,
-             std::optional<DatasetManifestValue> partition_manifest)
+             std::optional<DatasetManifestValue> partition_manifest,
+             std::string source_format)
     : id_(std::move(id)),
       name_(std::move(name)),
       dir_(std::move(dir)),
@@ -22,7 +23,8 @@ Table::Table(std::string id, std::string name, std::filesystem::path dir,
       replication_(replication),
       replication_strategy_(std::move(replication_strategy)),
       partition_only_(partition_only),
-      partition_manifest_(std::move(partition_manifest)) {}
+      partition_manifest_(std::move(partition_manifest)),
+      source_format_(std::move(source_format)) {}
 
 std::size_t Table::add_row(nlohmann::json doc) {
     const std::string row_id = zetta::util::new_uuid();
@@ -108,6 +110,8 @@ void Table::persist_meta() const {
     }
     // Likewise omitted when false, so a normal table's table.json is unchanged.
     if (partition_only_) meta["partition_only"] = true;
+    // Omitted when not recorded (#1221), so other tables' table.json is unchanged.
+    if (!source_format_.empty()) meta["source_format"] = source_format_;
     // The partition manifest (#837) is persisted beside the rest so a restarted
     // node knows how many partitions its dataset has before the first gossip
     // round — and so a node with no ReplicationManager has one at all.

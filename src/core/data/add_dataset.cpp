@@ -1,11 +1,13 @@
 #include "zetta/data/add_dataset.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -83,7 +85,8 @@ std::string read_file_bytes(const fs::path& path, std::string& error) {
 // Split one CSV line into its fields, honoring double-quoted fields (a doubled
 // quote inside a quoted field is a literal quote, and a comma inside quotes is a
 // literal comma). Our rows never span lines. Mirrors the churn loader's parser.
-std::vector<std::string> parse_csv_line(const std::string& line) {
+// `closed` is false when a quoted field runs past the end of the line.
+std::vector<std::string> parse_csv_line(std::string_view line, bool& closed) {
     std::vector<std::string> fields;
     std::string field;
     bool in_quotes = false;
@@ -110,6 +113,7 @@ std::vector<std::string> parse_csv_line(const std::string& line) {
         }
     }
     fields.push_back(std::move(field));
+    closed = !in_quotes;
     return fields;
 }
 
@@ -184,41 +188,79 @@ struct DecodeProgress {
     }
 };
 
-// Decode a CSV file's bytes into rows: the first non-empty line is the header
-// (column names), each subsequent line one object keyed by the header, cells
-// type-inferred. A row with fewer cells than the header leaves the missing columns
-// absent; extra cells are dropped. `error` is set (and {} returned) when there is
-// no header row.
+// Read CSV text line by line: the first non-empty line is the header (column
+// names), each later non-empty line one row. Refuses (#1221), naming the 1-based
+// line, a header column with no name or named twice, a quoted field left open at
+// the end of its line, and a row whose field count is not the header's — a
+// ragged row used to be padded with nulls or cut short without a word. The
+// wording is lake's (lake PR #459), so a caller reads one answer from either
+// layer. With `rows`, each row is decoded into an object keyed by the header,
+// cells type-inferred; without, the text is only checked. On a refusal `error`
+// is set and `rows` is cleared.
+void scan_csv(std::string_view bytes, std::string& error,
+              std::vector<nlohmann::json>* rows,
+              const DecodeProgress& progress = {}) {
+    std::vector<std::string> header;
+    bool header_seen = false;
+    std::size_t number = 0;
+    std::size_t start = 0;
+    const auto refuse = [&](std::string reason) {
+        error = std::move(reason);
+        if (rows) rows->clear();
+    };
+    while (start < bytes.size()) {
+        if (progress.cancelled()) return refuse(kCancelledError);
+        std::size_t end = bytes.find('\n', start);
+        if (end == std::string_view::npos) end = bytes.size();
+        std::string_view line = bytes.substr(start, end - start);
+        start = end + 1;
+        ++number;
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);  // CRLF
+        if (line.empty()) continue;  // blank lines carry no row
+        bool closed = true;
+        std::vector<std::string> fields = parse_csv_line(line, closed);
+        const std::string at = "line " + std::to_string(number) + ": ";
+        if (!closed) {
+            return refuse(at + "a quoted field is not closed (a row must stay on one line)");
+        }
+        if (!header_seen) {
+            header_seen = true;
+            std::set<std::string> names;
+            for (std::size_t index = 0; index < fields.size(); ++index) {
+                if (fields[index].empty()) {
+                    return refuse(at + "header column " + std::to_string(index + 1) +
+                                  " has no name");
+                }
+                if (!names.insert(fields[index]).second) {
+                    return refuse(at + "the header names column '" + fields[index] +
+                                  "' twice");
+                }
+            }
+            header = std::move(fields);
+            continue;
+        }
+        if (fields.size() != header.size()) {
+            return refuse(at + std::to_string(fields.size()) +
+                          " fields, but the header has " +
+                          std::to_string(header.size()) + " columns");
+        }
+        if (!rows) continue;
+        nlohmann::json row = nlohmann::json::object();
+        for (std::size_t column = 0; column < header.size(); ++column) {
+            row[header[column]] = csv_cell_to_json(fields[column]);
+        }
+        rows->push_back(std::move(row));
+        progress.count(rows->size());
+    }
+    if (!header_seen) refuse("the file has no header row");
+}
+
+// Decode a CSV file's bytes into rows (see scan_csv for what is refused).
 std::vector<nlohmann::json> decode_csv(const std::string& bytes,
                                        std::string& error,
                                        const DecodeProgress& progress = {}) {
     std::vector<nlohmann::json> rows;
-    std::istringstream stream(bytes);
-    std::string line;
-    std::vector<std::string> header;
-    while (std::getline(stream, line)) {
-        if (progress.cancelled()) {
-            error = kCancelledError;
-            return {};
-        }
-        if (!line.empty() && line.back() == '\r') line.pop_back();  // CRLF
-        if (header.empty()) {
-            if (line.empty()) continue;  // skip leading blank lines
-            header = parse_csv_line(line);
-            continue;
-        }
-        if (line.empty()) continue;  // skip blank data lines
-        const std::vector<std::string> cells = parse_csv_line(line);
-        nlohmann::json row = nlohmann::json::object();
-        for (std::size_t column = 0; column < header.size(); ++column) {
-            if (header[column].empty()) continue;  // skip unnamed columns
-            row[header[column]] =
-                column < cells.size() ? csv_cell_to_json(cells[column]) : nullptr;
-        }
-        rows.push_back(std::move(row));
-        progress.count(rows.size());
-    }
-    if (header.empty()) error = "csv file has no header row";
+    scan_csv(bytes, error, &rows, progress);
     return rows;
 }
 
@@ -361,7 +403,7 @@ void create_named_target_table(Node& node, const std::string& base,
     // in the tbl: value, so every node knows the rows live in the partition
     // bodies rather than in the document before any row is written.
     std::shared_ptr<Table> table = database->create_table(
-        table_name, std::nullopt, options.partition_only);
+        table_name, std::nullopt, options.partition_only, result.source_format);
     if (!table) {
         result.error = "could not create table '" + table_name + "'";
         return;
@@ -477,19 +519,67 @@ void audit_dataset_added(Node& node, const AddDatasetResult& result) {
     zetta::governance::AuditEventValue event;
     event.action = zetta::governance::AuditAction::DatasetAdded;
     event.target = result.table->id();
+    // What the rows came from (#1221): a connector pull names its connector
+    // rather than the `jsonl` its in-memory rows happen to be shaped as.
     event.detail = "dataset '" + result.table->name() + "' added: " +
                    std::to_string(result.rows) + " row(s), " +
                    std::to_string(result.partitions.size()) + " partition(s), " +
-                   dataset_file::format_name(result.format);
+                   (result.source_format.empty()
+                        ? std::string(dataset_file::format_name(result.format))
+                        : result.source_format);
     node.record_audit_event(std::move(event));
 }
 
+// Words the SQL subset reads as syntax, so a table named one cannot be queried
+// unquoted — the same list lake checks (lake PR #459).
+constexpr std::array<std::string_view, 25> kSqlKeywords = {
+    "all",    "and",   "as",    "asc",  "by",    "desc",   "distinct", "from",  "group",
+    "having", "in",    "is",    "join", "like",  "limit",  "not",      "null",  "offset",
+    "on",     "or",    "order", "select", "union", "where", "with"};
+
 }  // namespace
+
+std::string dataset_name_problem(std::string_view name) {
+    if (name.empty()) return "a name is required";
+    if (name.size() > 63) return "a name is at most 63 characters";
+    const auto letter = [](char character) {
+        return std::isalpha(static_cast<unsigned char>(character)) != 0 ||
+               character == '_';
+    };
+    const std::string quoted = "'" + std::string(name) + "'";
+    if (!letter(name.front())) {
+        return quoted + " must start with a letter or an underscore";
+    }
+    for (const char character : name) {
+        if (!letter(character) &&
+            std::isdigit(static_cast<unsigned char>(character)) == 0) {
+            return quoted + " can hold only letters, digits and underscores (not '" +
+                   std::string(1, character) + "'), so SQL can query it";
+        }
+    }
+    std::string lowered(name);
+    std::ranges::transform(lowered, lowered.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    if (std::ranges::find(kSqlKeywords, lowered) != kSqlKeywords.end()) {
+        return quoted + " is a SQL keyword; choose another name";
+    }
+    return {};
+}
+
+std::string csv_problem(std::string_view content) {
+    std::string error;
+    scan_csv(content, error, nullptr);
+    return error;
+}
 
 AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
                                   const AddDatasetOptions& options) {
     AddDatasetResult result;
     result.format = dataset_file::format_from_path(path);
+    result.source_format = options.source_format.empty()
+                               ? dataset_file::format_name(result.format)
+                               : options.source_format;
 
     std::string error;
     std::vector<nlohmann::json> rows =
@@ -518,6 +608,67 @@ AddDatasetResult add_dataset_rows(Node& node, std::vector<nlohmann::json> rows,
     // to — so the dataset records the jsonl format (only the audit note reads
     // it; there is no file to classify).
     result.format = dataset_file::Format::Jsonl;
+    result.source_format =
+        options.source_format.empty() ? "rows" : options.source_format;
+
+    const std::string base =
+        options.table_name.empty() ? "dataset" : options.table_name;
+    create_named_target_table(node, base, options, result);
+    if (!result.table) return result;
+
+    for (nlohmann::json& row : rows) result.table->add_row(std::move(row));
+    result.rows = result.table->row_count();
+
+    partition_target_table(node, options, result);
+    audit_dataset_added(node, result);
+    return result;
+}
+
+AddDatasetResult add_dataset_content(Node& node, std::string_view content,
+                                     dataset_file::Format format,
+                                     const AddDatasetOptions& options) {
+    AddDatasetResult result;
+    result.format = format;
+    result.source_format = options.source_format.empty()
+                               ? dataset_file::format_name(format)
+                               : options.source_format;
+    if (content.size() > kMaxDatasetContentBytes) {
+        result.error = "content is " + std::to_string(content.size()) +
+                       " bytes; the most a dataset upload accepts is " +
+                       std::to_string(kMaxDatasetContentBytes) +
+                       " bytes (16 MiB). Put larger data in a file on the node "
+                       "(add_dataset) or load it from a source connection "
+                       "(create_dataset_from_query)";
+        return result;
+    }
+    if (content.find_first_not_of(" \t\r\n") == std::string_view::npos) {
+        result.error = "content is empty";
+        return result;
+    }
+
+    // The same decoders a file of this format goes through — only where the
+    // bytes came from differs.
+    const std::string bytes(content);
+    std::string error;
+    std::vector<nlohmann::json> rows;
+    switch (format) {
+        case dataset_file::Format::Csv:   rows = decode_csv(bytes, error); break;
+        case dataset_file::Format::Jsonl: rows = decode_jsonl(bytes, error); break;
+        case dataset_file::Format::Json:  rows = decode_json(bytes, error); break;
+        case dataset_file::Format::Parquet:
+        case dataset_file::Format::Unknown:
+            error = std::string("format '") + dataset_file::format_name(format) +
+                    "' cannot be uploaded as text (use csv, jsonl, or json)";
+            break;
+    }
+    if (!error.empty()) {
+        result.error = error;
+        return result;
+    }
+    if (rows.empty()) {
+        result.error = "content decoded to no rows";
+        return result;
+    }
 
     const std::string base =
         options.table_name.empty() ? "dataset" : options.table_name;
@@ -579,6 +730,9 @@ AsyncDatasetAdd::AsyncDatasetAdd(Node& node, std::filesystem::path path,
     decode_->path = std::move(path);
     decode_->format = dataset_file::format_from_path(decode_->path);
     result_.format = decode_->format;
+    result_.source_format = options_.source_format.empty()
+                                ? dataset_file::format_name(result_.format)
+                                : options_.source_format;
     std::shared_ptr<DecodeState> state = decode_;
     zetta::runtime::spawn(
         decode_dataset_task(state),

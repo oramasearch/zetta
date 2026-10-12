@@ -59,4 +59,20 @@ TEST(Timestamp, RejectsMalformedStamps) {
         zetta::util::parse_iso8601_seconds("2026-06-25T14:03:21.1x3Z").has_value());
 }
 
+TEST(Timestamp, NormalizesIsoAndEpochMethodologyTimes) {
+    const std::optional<double> iso = zetta::util::parse_time_seconds(
+        nlohmann::json("2026-06-25T14:03:21.123Z"));
+    const std::optional<double> epoch =
+        zetta::util::parse_time_seconds(nlohmann::json(1782396201.123));
+    const std::optional<double> date =
+        zetta::util::parse_time_seconds(nlohmann::json("1970-01-02"));
+    ASSERT_TRUE(iso);
+    ASSERT_TRUE(epoch);
+    ASSERT_TRUE(date);
+    EXPECT_NEAR(*iso, *epoch, 1e-6);
+    EXPECT_DOUBLE_EQ(*date, 86400.0);
+    EXPECT_FALSE(zetta::util::parse_time_seconds(nlohmann::json("not-time")));
+    EXPECT_FALSE(zetta::util::parse_time_seconds(nlohmann::json::object()));
+}
+
 }  // namespace

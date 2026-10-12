@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -135,6 +136,11 @@ struct AddDatasetOptions {
     // The policy that decides the plan; null = `default_partition_scheduler()`.
     // A non-owning back-reference: the scheduler outlives the call.
     const PartitionScheduler* scheduler = nullptr;
+    // What the rows were loaded from, recorded on the table (#1221; see
+    // Table::source_format). Empty = the path's own: the file or content
+    // format for `add_dataset_file` / `add_dataset_content`, `rows` for
+    // `add_dataset_rows`. A connector pull sets its connector type.
+    std::string source_format;
 };
 
 // The outcome of adding a dataset. On success `error` is empty, `table` is the
@@ -144,6 +150,7 @@ struct AddDatasetResult {
     std::shared_ptr<Database> database;
     std::shared_ptr<Table> table;
     dataset_file::Format format = dataset_file::Format::Unknown;
+    std::string source_format;  // recorded on the table (#1221)
     std::size_t rows = 0;
     std::vector<std::shared_ptr<DatasetPartition>> partitions;  // when partitioned
     // The plan the scheduler emitted for this write — the count it chose, the
@@ -181,6 +188,45 @@ AddDatasetResult add_dataset_file(Node& node, const std::filesystem::path& path,
 // the partition write fails, so the failure is observable rather than silent).
 AddDatasetResult add_dataset_rows(Node& node, std::vector<nlohmann::json> rows,
                                   const AddDatasetOptions& options = {});
+
+// Why `name` cannot name a dataset or a database that SQL reads unquoted, or
+// empty when it can (#1221): a letter or underscore, then letters, digits and
+// underscores, at most 63 characters, and not a SQL keyword. Lake applies the
+// same rule with the same words (lake PR #459), so a caller gets one answer.
+std::string dataset_name_problem(std::string_view name);
+
+// Why CSV `content` would not load row for row, or empty when it would
+// (#1221): a header that is missing, has an unnamed column or names one twice,
+// a quoted field left open at the end of its line, or a row whose field count
+// differs from the header's. Each names its 1-based line, e.g.
+// `line 3: 3 fields, but the header has 2 columns`. The CSV decoder refuses on
+// exactly these, so a ragged row is never padded with nulls or cut short.
+std::string csv_problem(std::string_view content);
+
+// The most file text `add_dataset_content` accepts: 16 MiB. The upload path
+// (`upload_dataset`, #1008) holds the whole text in the request and then in
+// memory while it decodes, on the owner loop, so the cap bounds both the request
+// and the owner-loop stall. Larger data belongs in a file on the node
+// (`add_dataset`) or a source connection (`create_dataset_from_query`), both of
+// which land it partition by partition.
+inline constexpr std::size_t kMaxDatasetContentBytes = std::size_t{16} * 1024 * 1024;
+
+// Load a file's TEXT, already in memory, as a new partitioned table on `node` —
+// the path for a caller that cannot put a file on the node's filesystem (a
+// remote REST/MCP client, #1008). `content` is decoded exactly as
+// `add_dataset_file` decodes a file of `format` (the same CSV header +
+// type-inferred cells, the same one-document-per-line JSONL, the same JSON
+// array), then materialized through the same table-creation, partition-write and
+// audit path. `format` must be Csv, Jsonl or Json (Parquet is binary and has no
+// text form; Unknown is rejected). `options.table_name` is the table's base name
+// (required in spirit: empty falls back to "dataset"); a clash gets the same
+// `_2`, `_3` suffix a re-added file does — `upload_dataset` refuses a taken
+// name before it gets here unless the caller asked for that rename. Non-throwing: content over
+// `kMaxDatasetContentBytes`, an unsupported format, empty or malformed content
+// each return a result whose `error` says why, and create nothing.
+AddDatasetResult add_dataset_content(Node& node, std::string_view content,
+                                     dataset_file::Format format,
+                                     const AddDatasetOptions& options = {});
 
 // --- Add a dataset WITHOUT blocking the caller's thread (#624) ---------------
 //

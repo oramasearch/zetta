@@ -1,27 +1,30 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ddf/local_partitions.hpp"
+#include "zetta/index/index.hpp"
+#include "zetta/index/search.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/model.hpp"
-#include "zetta/api/capabilities.hpp"
 #include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/score_table.hpp"
-#include <chrono>
-#include <thread>
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
@@ -99,6 +102,46 @@ std::vector<Json> warehouse_rows(std::size_t count) {
     return rows;
 }
 
+std::vector<Json> realistic_warehouse_rows(std::size_t count) {
+    std::vector<Json> rows;
+    rows.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const std::int64_t failed_payments = static_cast<std::int64_t>(index % 5);
+        const double logins_30d = static_cast<double>(60 - (index % 55));
+        const bool churned = failed_payments >= 3 && logins_30d < 30.0;
+        std::string customer_id = "c" + std::to_string(100000 + index);
+        customer_id.erase(1, 1);
+        rows.push_back({{"customer_id", std::move(customer_id)},
+                        {"observed_at", "2026-09-01T00:00:00Z"},
+                        {"failed_payments", failed_payments},
+                        {"logins_30d", logins_30d},
+                        {"active", index % 2 == 0},
+                        {"churned", churned}});
+    }
+    return rows;
+}
+
+bool is_business_id(const std::string& value) {
+    return value.size() == 6 && value.front() == 'c' &&
+           std::all_of(value.begin() + 1, value.end(),
+                       [](const char character) {
+                           return character >= '0' && character <= '9';
+                       });
+}
+
+std::string land_rows(Node& node, const std::string& database,
+                      const std::string& table, std::vector<Json> rows) {
+    zetta::data::AddDatasetOptions options;
+    options.database = database;
+    options.table_name = table;
+    options.partitioned = true;
+    options.members = {node.node_id()};
+    const zetta::data::AddDatasetResult added =
+        zetta::data::add_dataset_rows(node, rows, options);
+    EXPECT_TRUE(added.ok()) << added.error;
+    return added.table ? added.table->id() : std::string{};
+}
+
 // One account's value for one column, straight from the generator above. Used to
 // check an explanation against the DATA rather than against another engine read,
 // which would agree with a wrong answer as readily as a right one.
@@ -173,12 +216,32 @@ TEST(ChurnTableRun, AConnectorLandedTableTrainsAModelOnItsOwnColumns) {
     ChurnTableInput input;
     input.table_id = resolved.table_id;
     input.contract = resolved.contract;
+    input.dataset_name = "churn_demo.accounts";
+    input.notes = resolved.notes;
 
     const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_table(
         host.node, device, solution->graph, input, options);
     ASSERT_TRUE(result.ok()) << result.execution.error;
     ASSERT_TRUE(result.execution.run);
     EXPECT_EQ(result.execution.run->status(), RunStatus::Succeeded);
+
+    // The run says what it read (lake's UX review 2026-09-27): its lineage names the
+    // dataset, never the blueprint's own warehouse sources, and repeated connect
+    // steps say that they reuse the source already loaded by this run.
+    EXPECT_EQ(result.execution.run->lineage().sources,
+              (std::vector<std::string>{"dataset:churn_demo.accounts"}));
+    bool trained_on = false;
+    bool reused = false;
+    for (const auto& log : result.execution.run->logs()) {
+        if (log.message == "dataset: trained on churn_demo.accounts") trained_on = true;
+        if (log.message.find("reuses dataset churn_demo.accounts") !=
+            std::string::npos) {
+            reused = true;
+        }
+        EXPECT_EQ(log.message.find("warehouse"), std::string::npos) << log.message;
+    }
+    EXPECT_TRUE(trained_on) << "the run logs the dataset it trained on";
+    EXPECT_TRUE(reused) << "the run logs that its second connect reuses the dataset";
 
     // 3. A real registered Model, trained on the CUSTOMER'S columns — not the
     // fixture's mrr/seats/tenure_days.
@@ -206,6 +269,139 @@ TEST(ChurnTableRun, AConnectorLandedTableTrainsAModelOnItsOwnColumns) {
     // driver is one of the two columns the label was actually built from.
     EXPECT_TRUE(result.top_driver == "failed_payments" || result.top_driver == "logins_30d")
         << "dominant driver was '" << result.top_driver << "'";
+
+    // 6. The index step built a real search index over the landed table (#1241):
+    // the run links to it, list_indexes lists it, and search answers from it.
+    std::string index_id;
+    for (const auto& output : result.execution.run->outputs()) {
+        if (output.kind == "index") index_id = output.ref;
+    }
+    const std::shared_ptr<zetta::index::Index> index = host.node.find_index(index_id);
+    ASSERT_TRUE(index) << "the run's index output '" << index_id << "' is not an Index";
+    EXPECT_EQ(index->table(), "accounts");
+    EXPECT_EQ(index->kind(), zetta::index::IndexKind::Search);
+    EXPECT_NE(std::ranges::find(index->fields(), "account_id"), index->fields().end());
+    EXPECT_EQ(host.node.indexes().size(), 1u);
+
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{
+        host.node, &host.cluster, {}, {}, &host.node.span_recorder()};
+    const zetta::api::ApiResult listed =
+        registry.call("list_indexes", Json::object(), context);
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(listed.value.at("indexes").size(), 1u);
+    EXPECT_EQ(listed.value.at("indexes")[0].at("id"), index_id);
+
+    // A second run reuses the index instead of adding one per run.
+    const ChurnSolutionResult again = zetta::usecases::churn::run_churn_solution_on_table(
+        host.node, device, solution->graph, input, options);
+    ASSERT_TRUE(again.ok()) << again.execution.error;
+    EXPECT_EQ(host.node.indexes().size(), 1u);
+}
+
+TEST(ChurnTableRun, TextBusinessIdsAndBooleanLabelsReachEveryDurableOutput) {
+    AttachedNode host(24729);
+    const std::string table_id = land_rows(
+        host.node, "churn_demo", "real_accounts", realistic_warehouse_rows(200));
+    ASSERT_FALSE(table_id.empty());
+
+    DatasetContract overrides;
+    overrides.time_column = "observed_at";
+    overrides.as_of = 1790812800.0;
+    const zetta::data::ResolvedDataset resolved =
+        zetta::data::resolve_dataset(
+            host.node,
+            zetta::data::parse_dataset_path("churn_demo.real_accounts"),
+            overrides,
+            zetta::data::default_dataset_sampler(host.node, &host.cluster));
+    ASSERT_TRUE(resolved.ok()) << resolved.error;
+    ASSERT_TRUE(resolved.contract.entity_keys);
+    EXPECT_EQ(resolved.contract.label_column, "churned");
+    EXPECT_EQ(resolved.contract.feature_columns,
+              (std::vector<std::string>{"active", "failed_payments", "logins_30d"}));
+
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+    CpuDevice device;
+    ChurnTableInput input;
+    input.table_id = resolved.table_id;
+    input.contract = resolved.contract;
+    input.dataset_name = "churn_demo.real_accounts";
+    input.notes = resolved.notes;
+    ChurnSolutionOptions options;
+    options.project = "string-id-churn";
+    options.graph = "string-id-churn";
+    const ChurnSolutionResult result =
+        zetta::usecases::churn::run_churn_solution_on_table(
+            host.node, device, solution->graph, input, options);
+    ASSERT_TRUE(result.ok()) << result.execution.error;
+    ASSERT_TRUE(result.execution.run);
+    EXPECT_FALSE(result.execution.run->entity_key_mapping().empty());
+
+    // The run's index (#1241) finds an account by its business id.
+    std::string index_id;
+    for (const auto& output : result.execution.run->outputs()) {
+        if (output.kind == "index") index_id = output.ref;
+    }
+    ASSERT_TRUE(host.node.find_index(index_id)) << index_id;
+    zetta::index::SearchRequest search;
+    search.target = index_id;
+    search.query = "c00042";
+    search.field = "customer_id";
+    const zetta::index::SearchResult found = host.node.search(search);
+    ASSERT_TRUE(found.ok()) << found.status.message;
+    EXPECT_EQ(found.hits.size(), 1u);
+
+    const std::shared_ptr<zetta::ml::Model> model =
+        host.node.find_model(result.model_id);
+    ASSERT_TRUE(model);
+    EXPECT_TRUE(model->feature_schema().contains("entity_key_mapping"));
+
+    std::shared_ptr<zetta::data::Table> ranked_table;
+    for (const auto& output : result.execution.run->outputs()) {
+        if (output.kind != "dataset" ||
+            !output.ref.starts_with("churn_results.")) {
+            continue;
+        }
+        const std::shared_ptr<zetta::data::Database> database =
+            host.node.find_database("churn_results");
+        ranked_table = database
+                           ? database->find_table(
+                                 output.ref.substr(output.ref.find('.') + 1))
+                           : nullptr;
+    }
+    ASSERT_TRUE(ranked_table);
+    ASSERT_GT(ranked_table->store().size(), 0u);
+    const auto first = ranked_table->store().at(0);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(first->at("account").is_string()) << first->dump();
+    EXPECT_TRUE(is_business_id(first->at("account").get<std::string>()));
+
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{
+        host.node, &host.cluster, {}, {}, &host.node.span_recorder()};
+    const zetta::api::ApiResult scored = registry.call(
+        "score",
+        {{"model", model->id()},
+         {"dataset_path", "churn_demo.real_accounts"},
+         {"top_k", 5}},
+        context);
+    ASSERT_TRUE(scored.ok) << scored.error.message;
+    ASSERT_EQ(scored.value.at("ranked").size(), 5u);
+    for (const auto& score : scored.value.at("ranked")) {
+        ASSERT_TRUE(score.at("entity").is_string()) << score.dump();
+        EXPECT_TRUE(is_business_id(score.at("entity").get<std::string>()));
+    }
+    const zetta::api::ApiResult explained = registry.call(
+        "explain",
+        {{"model", model->id()},
+         {"dataset_path", "churn_demo.real_accounts"},
+         {"entity", "c00042"}},
+        context);
+    ASSERT_TRUE(explained.ok) << explained.error.message;
+    EXPECT_EQ(explained.value.at("entity"), "c00042");
 }
 
 // A contract that cannot be met must fail HERE, with the reason — never by training

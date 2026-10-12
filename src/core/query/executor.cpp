@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -35,6 +36,7 @@
 #include "zetta/observability/activity.hpp"
 #include "zetta/observability/crash.hpp"
 #include "zetta/pipeline/deployment.hpp"
+#include "zetta/data/object_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/distributed_select.hpp"
 #include "zetta/query/predicate.hpp"
@@ -42,6 +44,8 @@
 #include "zetta/data/table.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/testkit/test_suite.hpp"
+#include "zetta/pubsub/node_integration.hpp"
+#include "zetta/pubsub/pubsub.hpp"
 
 namespace zetta::query {
 namespace {
@@ -86,8 +90,10 @@ namespace {
 //  - `tokens` — the bearer credentials per user (Node::tokens()): id, user,
 //    type, created, expiry, revoked — deliberately NO hash/salt/secret (the
 //    plaintext is shown once at creation and never stored).
-//  - `audit` — the immutable, append-only audit trail (Node::audit_events();
-//    ENT-23 / FEAT-9).
+//  - `audit` — retained immutable audit records (Node::audit_events(); ENT-23 /
+//    FEAT-9), including nullable polling-summary totals.
+//  - `ledger` — the immutable, replicated score, decision, action, and outcome
+//    reward stream (Node::ledger_entries(); #1107).
 //  - `activity` — the merged, newest-first activity feed (#622): the audit trail
 //    + runs composed chronologically at query time
 //    (zetta::observability::activity_entries), each row with its actor, surface
@@ -149,6 +155,7 @@ constexpr std::string_view kJobsTable = "jobs";
 constexpr std::string_view kCloudProvidersTable = "cloud_providers";
 constexpr std::string_view kCloudStatusTable = "cloud_status";
 constexpr std::string_view kProvisionersTable = "provisioners";
+constexpr std::string_view kPubSubTopicsTable = "pubsub_topics";
 constexpr std::string_view kConsentRequestsTable = "consent_requests";
 constexpr std::string_view kConnectionsTable = "connections";
 constexpr std::string_view kRunsTable = "runs";
@@ -160,12 +167,14 @@ constexpr std::string_view kUserRolesTable = "user_roles";
 constexpr std::string_view kPoliciesTable = "policies";
 constexpr std::string_view kTokensTable = "tokens";
 constexpr std::string_view kAuditTable = "audit";
+constexpr std::string_view kLedgerTable = "ledger";
 constexpr std::string_view kActivityTable = "activity";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
 constexpr std::string_view kDatasetsTable = "datasets";
 constexpr std::string_view kLargeObjectsTable = "large_objects";
 constexpr std::string_view kCheckpointsTable = "checkpoints";
 constexpr std::string_view kNodeMetricsTable = "node_metrics";
+constexpr std::string_view kMemoryTable = "memory";
 constexpr std::string_view kPipelineJobsTable = "pipeline_jobs";
 constexpr std::string_view kCollectiveRoundsTable = "collective_rounds";
 constexpr std::string_view kSpansTable = "spans";
@@ -188,7 +197,7 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kActivityTable,
                     "the merged, newest-first activity feed: audit trail + "
                     "runs composed chronologically"},
-    SystemTableInfo{kAuditTable, "the immutable, append-only audit trail"},
+    SystemTableInfo{kAuditTable, "the immutable, retained audit trail"},
     SystemTableInfo{kCheckpointsTable,
                     "jobs with a durable resume checkpoint in this node's "
                     "local store (ephemeral, not replicated)"},
@@ -227,6 +236,10 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kKeysTable,
                     "the access keys the principals own: scope + capabilities, "
                     "no secret material"},
+    SystemTableInfo{kLedgerTable,
+                    "the immutable score, decision, action and outcome reward ledger"},
+    SystemTableInfo{kMemoryTable,
+                    "this process memory by owning subsystem plus allocator truth"},
     SystemTableInfo{kModelsTable,
                     "the model registry: trained models + their kind, "
                     "metrics, weights fingerprint"},
@@ -258,6 +271,10 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kProvisionersTable,
                     "cloud-burst provisioners detected from this node's local "
                     "CLIs; carries no credentials"},
+    SystemTableInfo{kPubSubTopicsTable,
+                    "pub/sub topics and inboxes on this node: subscribers, held "
+                    "events, memory and disk, spilling, the slowest subscriber "
+                    "(#1034; ephemeral, not replicated)"},
     SystemTableInfo{kRolesTable,
                     "the role registry: named permission sets (scope + rights) "
                     "granted to users"},
@@ -359,13 +376,38 @@ overloaded(Ts...) -> overloaded<Ts...>;
 const zetta::governance::Operation kManageRoles{
     zetta::governance::CapabilityDomain::Api, "manage_roles"};
 
-// The data operations the executor enforces object scoping against (#747): a
-// SELECT reads, an INSERT writes. These are the `sql:read` / `sql:write`
-// operations from the permission vocabulary (governance/permission.hpp).
+// The data operations the executor enforces object scoping against (#747,
+// #1229): a SELECT reads; INSERT, UPDATE, DELETE and TRUNCATE write; CREATE and
+// DROP of a database, table or virtual table change the schema. These are the
+// `sql:read` / `sql:write` / `sql:ddl` operations from the permission vocabulary
+// (governance/permission.hpp).
 const zetta::governance::Operation kSqlRead{
     zetta::governance::CapabilityDomain::Data, "read"};
 const zetta::governance::Operation kSqlWrite{
     zetta::governance::CapabilityDomain::Data, "write"};
+const zetta::governance::Operation kSqlDdl{
+    zetta::governance::CapabilityDomain::Data, "ddl"};
+// CREATE USER mints an identity and CREATE TOKEN a bearer credential for one
+// (#1229): `users:manage` and `tokens:manage`.
+const zetta::governance::Operation kManageUsers{
+    zetta::governance::CapabilityDomain::Api, "manage_users"};
+const zetta::governance::Operation kManageTokens{
+    zetta::governance::CapabilityDomain::Api, "manage_tokens"};
+
+// The reserved database that holds saved connector connections (#827). SQL never
+// reaches it, for read or write (#1230): its rows carry sealed credentials, and
+// the governed surfaces over it are system.connections and the connection
+// capabilities.
+bool is_connection_store(const std::string& database) {
+    return database == zetta::connect::kConnectionDatabase;
+}
+std::string connection_store_refusal() {
+    return std::string("permission denied: \"") +
+           zetta::connect::kConnectionDatabase +
+           "\" is the reserved connection store and is not reachable through "
+           "SQL — read system.connections, or use the create_connection / "
+           "list_connections / delete_connection capabilities";
+}
 
 // Translate the AST's dialect-neutral GrantObject into the governance Resource
 // the scoped-grant store + enforcement use (#747). RoleWide has no object (the
@@ -386,6 +428,10 @@ zetta::governance::Resource resource_of_object(const GrantObject& object) {
             return zetta::governance::Resource::blob(object.name);
         case GrantObjectKind::Tool:
             return zetta::governance::Resource::tool(object.name);
+        case GrantObjectKind::Collection:
+            return zetta::governance::Resource::collection(object.name);
+        case GrantObjectKind::Bucket:
+            return zetta::governance::Resource::bucket(object.name);
         case GrantObjectKind::RoleWide:
             break;
     }
@@ -437,8 +483,10 @@ std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& clu
                                               const Node& node) {
     // Direct-peer replication status, keyed by node_id (the live peer table).
     std::map<std::string, zetta::cluster::NodeReplication> replication_by_id;
+    std::map<std::string, unsigned> audit_protocol_by_id;
     for (const zetta::cluster::NodeStatus& n : cluster.nodes()) {
         replication_by_id[n.node_id] = n.replication;
+        audit_protocol_by_id[n.node_id] = n.audit_protocol_version;
     }
     // Live telemetry, cluster-wide + TTL'd — the ephemeral liveness signal
     // (node_id -> seconds since its last sample).
@@ -452,6 +500,11 @@ std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& clu
         nlohmann::json row;
         // --- durable (CRDT node:<id>) ---
         row["node_id"] = member.node_id;
+        const auto audit_protocol = audit_protocol_by_id.find(member.node_id);
+        row["audit_protocol_version"] = audit_protocol == audit_protocol_by_id.end()
+            ? nlohmann::json() : nlohmann::json(audit_protocol->second);
+        row["audit_compatible"] = audit_protocol != audit_protocol_by_id.end() &&
+            audit_protocol->second == zetta::governance::kAuditProtocolVersion;
         row["address"] = member.address;
         row["reachability"] =
             member.dial_out_only ? "dial-out-only" : "wan-accessible";
@@ -516,7 +569,7 @@ std::vector<nlohmann::json> deployment_rows(const Node& node) {
 
 // One JSON row per registered model for the models system table — the
 // model registry. Sourced from Node::models(). The serialized weights body is
-// not in the registry (it's a large binary that moves over the body seam); its
+// not in the registry (it's a large binary that moves over the body path); its
 // fingerprint (size + sha256) and presence are, so the registry shows what is
 // trained and whether its weights have landed here.
 // One JSON row per registered Workspace Profile (#886) — the input to the
@@ -596,6 +649,9 @@ std::vector<nlohmann::json> model_rows(const Node& node) {
         row["kind"] = model->kind();
         row["project"] = model->project();
         row["run"] = model->run();
+        row["project_name"] = model->project_name();
+        row["pipeline_name"] = model->pipeline_name();
+        row["run_id"] = model->run_id();
         row["feature_schema"] = model->feature_schema();
         row["metrics"] = model->metrics();
         row["created"] = model->created();
@@ -830,6 +886,8 @@ std::vector<nlohmann::json> run_rows(const Node& node) {
         row["run_id"] = run->id();
         row["project"] = run->project();
         row["graph"] = run->graph();
+        row["project_name"] = run->project_name();
+        row["pipeline_name"] = run->pipeline_name();
         row["deployment"] = run->deployment();
         row["status"] = std::string(to_string(run->status()));
         row["created"] = run->created();
@@ -983,6 +1041,9 @@ std::string render_scoped_grant(const zetta::governance::ScopedGrant& grant) {
             break;
         case RK::Blob: object = "blob:" + r.name; break;
         case RK::Tool: object = "tool:" + r.name; break;
+        case RK::Topic: object = "topic:" + r.name; break;
+        case RK::Collection: object = "collection:" + r.name; break;
+        case RK::Bucket: object = "bucket:" + r.name; break;
     }
     return permission_name_of(grant.operation) + " ON " + object;
 }
@@ -1349,10 +1410,22 @@ RlsContext rls_context(const Node& node, const std::string& acting_id,
     return ctx;
 }
 
-bool policy_command_covers(const std::string& command, bool write) {
+// Which rows a row-security filter is deciding (#748, #1229):
+//   Read     — rows a SELECT returns, and the rows UPDATE / DELETE may see at all
+//              (SELECT/ALL policies, USING);
+//   NewRow   — a row an INSERT adds or an UPDATE produces (INSERT/UPDATE/ALL
+//              policies, WITH CHECK falling back to USING);
+//   Existing — a stored row an UPDATE changes or a DELETE removes (the same
+//              write-class policies, USING falling back to WITH CHECK). There is
+//              no FOR DELETE command, so the write-class policies govern DELETE:
+//              a row the caller could not have written, it cannot change or
+//              remove.
+enum class RlsAccess { Read, NewRow, Existing };
+
+bool policy_command_covers(const std::string& command, RlsAccess access) {
     if (command == "all") return true;
-    return write ? (command == "insert" || command == "update")
-                 : (command == "select");
+    return access == RlsAccess::Read ? (command == "select")
+                                     : (command == "insert" || command == "update");
 }
 
 // Whether a policy applies to the acting identity: its role set intersects the
@@ -1380,22 +1453,26 @@ struct RlsFilter {
 
 RlsFilter build_rls_filter(const Node& node, const RlsContext& ctx,
                            const std::string& database, const std::string& table,
-                           bool write) {
+                           RlsAccess access) {
     RlsFilter filter;
     filter.bypass = ctx.bypass;
     if (ctx.bypass) return filter;
     for (const auto& policy : node.policies()) {
         const zetta::governance::PolicyValue& v = policy->value();
         if (v.database != database || v.table != table) continue;
-        if (!policy_command_covers(v.command, write)) continue;
+        if (!policy_command_covers(v.command, access)) continue;
         filter.engaged = true;  // a policy governs this table+class -> RLS is on
         if (!policy_applies_to_roles(v, ctx.roles)) continue;  // not this caller
-        // read -> USING; write -> WITH CHECK, falling back to USING when a write
-        // policy carries no explicit WITH CHECK (Postgres-like).
-        const nlohmann::json& source =
-            write ? (!v.check_predicate.is_null() ? v.check_predicate
-                                                  : v.using_predicate)
-                  : v.using_predicate;
+        // read -> USING; a new row -> WITH CHECK, falling back to USING when a
+        // write policy carries no explicit WITH CHECK (Postgres-like); an
+        // existing row -> USING, falling back to WITH CHECK.
+        const nlohmann::json* chosen = &v.using_predicate;
+        if (access == RlsAccess::NewRow && !v.check_predicate.is_null()) {
+            chosen = &v.check_predicate;
+        } else if (access == RlsAccess::Existing && v.using_predicate.is_null()) {
+            chosen = &v.check_predicate;
+        }
+        const nlohmann::json& source = *chosen;
         if (source.is_null()) {
             PolicyPredicate always;  // an applicable, predicate-less policy admits its rows
             always.always_true = true;
@@ -1425,10 +1502,10 @@ bool rls_row_permitted(const RlsFilter& filter, const nlohmann::json& row,
 
 // One JSON row per saved source connection for the connections system table
 // (#827). Sourced from connect::list_connections(). Like system.tokens this view
-// deliberately exposes NO credential: the token lives only in the replicated
-// store row that lets every node present it, and every read surface renders it
-// through SavedConnection::to_redacted_json(), which is built from
-// ConnectorConfig::to_json() — a serialization that cannot emit the token.
+// deliberately exposes NO credential: the token lives only sealed in the
+// replicated store row that lets every node present it (#1230), and this view
+// is built from the connector metadata plus `credential` — whether one is set
+// ("set" / "none" / "unreadable" / "plaintext"), never its value.
 std::vector<nlohmann::json> connection_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const zetta::connect::SavedConnection& saved :
@@ -1443,6 +1520,7 @@ std::vector<nlohmann::json> connection_rows(const Node& node) {
         row["schema"] = saved.config.schema;
         row["warehouse"] = saved.config.warehouse;
         row["role"] = saved.config.role;
+        row["credential"] = std::string(zetta::connect::to_string(saved.credential));
         row["created"] = saved.created;
         rows.push_back(std::move(row));
     }
@@ -1475,9 +1553,8 @@ std::vector<nlohmann::json> token_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per audit event for the audit system table — the immutable,
-// append-only audit trail (ENT-23 / FEAT-9), the queryable read view of the Admin
-// panel's audit log. Sourced from Node::audit_events() (chronological).
+// One JSON row per retained audit event (ENT-23 / FEAT-9), including structured
+// polling totals. Sourced from Node::audit_events() in chronological order.
 std::vector<nlohmann::json> audit_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const auto& event : node.audit_events()) {
@@ -1489,6 +1566,31 @@ std::vector<nlohmann::json> audit_rows(const Node& node) {
         row["allowed"] = event->allowed();
         row["detail"] = event->detail();
         row["time"] = event->time();
+        if (event->value().summary) {
+            row["calls"] = event->value().summary->calls;
+            row["events_delivered"] =
+                event->value().summary->events_delivered;
+            row["scope"] = event->value().summary->scope;
+            row["window_started"] =
+                event->value().summary->window_started;
+            row["window_ended"] = event->value().summary->window_ended;
+        } else {
+            row["calls"] = nullptr;
+            row["events_delivered"] = nullptr;
+            row["scope"] = nullptr;
+            row["window_started"] = nullptr;
+            row["window_ended"] = nullptr;
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+std::vector<nlohmann::json> ledger_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& entry : node.ledger_entries()) {
+        nlohmann::json row = entry->metadata();
+        row["ledger_id"] = entry->id();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -1603,6 +1705,7 @@ std::vector<nlohmann::json> dataset_rows(const Node& node) {
         row["database"] = dataset.database;
         row["table_id"] = dataset.table_id;
         row["format"] = dataset.format;
+        row["source_format"] = dataset.source_format;
         row["replication"] = dataset.replication;
         row["rows"] = dataset.rows;
         row["columns"] = join_comma(dataset.columns);
@@ -1674,6 +1777,20 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
         number_or_null(metrics.memory_available, metrics.memory_total_bytes);
     row["memory_percent"] =
         number_or_null(metrics.memory_available, metrics.memory_percent);
+    row["process_rss_bytes"] =
+        number_or_null(metrics.process_memory_available, metrics.process_rss_bytes);
+    row["process_peak_rss_bytes"] = number_or_null(
+        metrics.process_memory_available, metrics.process_peak_rss_bytes);
+    row["allocator_in_use_bytes"] = number_or_null(
+        metrics.allocator_memory_available, metrics.allocator_in_use_bytes);
+    row["allocator_free_held_bytes"] = number_or_null(
+        metrics.allocator_memory_available, metrics.allocator_free_held_bytes);
+    row["attributed_memory_bytes"] = number_or_null(
+        metrics.allocator_memory_available, metrics.attributed_memory_bytes);
+    row["unattributed_memory_bytes"] = number_or_null(
+        metrics.allocator_memory_available, metrics.unattributed_memory_bytes);
+    row["memory_explained_percent"] = number_or_null(
+        metrics.allocator_memory_available, metrics.memory_explained_percent);
     // GPU + VRAM (absent in a CPU-only core build → null)
     row["gpu_present"] = metrics.gpu_available;
     row["gpu_percent"] =
@@ -1697,8 +1814,74 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
     row["net_percent"] =
         number_or_null(metrics.net_utilization_available, metrics.net_percent);
     row["sampled_at"] = metrics.sampled_at;
+    row["audit_protocol_version"] = zetta::governance::kAuditProtocolVersion;
+    row["audit_watermarks"] = node.audit_watermarks().dump();
+    row["audit_memory_bytes"] = node.audit_memory_bytes();
+    // Object logs that failed an fsync (#1235): reopening, or stopped until a restart.
+    std::uint64_t object_logs_failed = 0;
+    std::uint64_t object_logs_stopped = 0;
+    if (auto* objects = node.object_store()) {
+        for (const auto& failure : objects->failed_logs()) {
+            ++object_logs_failed;
+            if (failure.stopped) ++object_logs_stopped;
+        }
+    }
+    row["object_logs_failed"] = object_logs_failed;
+    row["object_logs_stopped"] = object_logs_stopped;
+    if (const auto* pubsub = node.pubsub()) {
+        row["pubsub_dispatch_mode"] =
+            std::string(zetta::pubsub::to_string(pubsub->dispatch_mode()));
+        row["pubsub_dispatch_threads"] = pubsub->dispatch_threads();
+        row["pubsub_dispatch_keys"] = pubsub->dispatch_keys();
+        row["pubsub_topics_per_dispatch_thread"] =
+            pubsub->limits().topics_per_thread;
+        row["pubsub_dispatch_min_threads"] =
+            pubsub->limits().dispatch_min_threads;
+        row["pubsub_dispatch_max_threads"] =
+            pubsub->limits().dispatch_max_threads;
+    } else {
+        row["pubsub_dispatch_mode"] = nlohmann::json();
+        row["pubsub_dispatch_threads"] = nlohmann::json();
+        row["pubsub_dispatch_keys"] = nlohmann::json();
+        row["pubsub_topics_per_dispatch_thread"] = nlohmann::json();
+        row["pubsub_dispatch_min_threads"] = nlohmann::json();
+        row["pubsub_dispatch_max_threads"] = nlohmann::json();
+    }
 
     return {std::move(row)};
+}
+
+std::vector<nlohmann::json> memory_rows(const Node& node) {
+    const auto snapshot = node.memory_snapshot();
+    std::vector<nlohmann::json> rows;
+    const auto append = [&](std::string subsystem, std::uint64_t bytes,
+                            std::uint64_t items, std::uint64_t reserved_bytes,
+                            double share) {
+        nlohmann::json row;
+        row["subsystem"] = std::move(subsystem);
+        row["bytes"] = bytes;
+        row["items"] = items;
+        row["reserved_bytes"] = reserved_bytes;
+        row["share_of_in_use"] = share;
+        row["allocator_in_use_bytes"] = snapshot.allocator.in_use_bytes;
+        row["allocator_free_held_bytes"] = snapshot.allocator.free_held_bytes;
+        row["rss_bytes"] = snapshot.allocator.rss_bytes;
+        row["peak_rss_bytes"] = snapshot.allocator.peak_rss_bytes;
+        row["anonymous_bytes"] = snapshot.allocator.anonymous_bytes;
+        row["sampled_at_ms"] = snapshot.sampled_at_ms;
+        rows.push_back(std::move(row));
+    };
+    for (const auto& subsystem : snapshot.subsystems) {
+        append(subsystem.name, subsystem.bytes, subsystem.items,
+               subsystem.reserved_bytes, subsystem.share_of_in_use);
+    }
+    const double unattributed_share = snapshot.allocator.in_use_bytes == 0
+                                          ? 0.0
+                                          : 100.0 * snapshot.unattributed_bytes /
+                                                snapshot.allocator.in_use_bytes;
+    append("unattributed", snapshot.unattributed_bytes, 0, 0,
+           unattributed_share);
+    return rows;
 }
 
 // One JSON row per recorded near-data compute job for the system.pipeline_jobs
@@ -1889,10 +2072,213 @@ std::vector<nlohmann::json> crash_rows(const Node& node) {
 
 // Apply a SELECT's WHERE + projection to in-memory rows (used by the system
 // table; regular tables stream straight from the storage engine).
-QueryResult select_over_rows(const SelectStmt& statement,
-                             const std::vector<nlohmann::json>& source) {
+// Postgres' order for one ORDER BY key: numbers numerically, then booleans,
+// then strings; NULL (or a missing field) greatest, so last ascending and first
+// descending. Values of different kinds order by kind.
+int order_rank(const nlohmann::json& value) {
+    if (value.is_null()) return 4;
+    if (value.is_number()) return 0;
+    if (value.is_boolean()) return 1;
+    if (value.is_string()) return 2;
+    return 3;
+}
+
+int compare_for_order(const nlohmann::json& a, const nlohmann::json& b) {
+    const int ra = order_rank(a), rb = order_rank(b);
+    if (ra != rb) return ra < rb ? -1 : 1;
+    if (a.is_number()) {
+        const double x = a.get<double>(), y = b.get<double>();
+        return x < y ? -1 : (x > y ? 1 : 0);
+    }
+    if (a.is_boolean()) return a.get<bool>() == b.get<bool>() ? 0 : (a.get<bool>() ? 1 : -1);
+    if (a.is_string()) {
+        const int c = a.get_ref<const std::string&>().compare(b.get_ref<const std::string&>());
+        return c < 0 ? -1 : (c > 0 ? 1 : 0);
+    }
+    const std::string x = a.dump(), y = b.dump();
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+// ORDER BY, OFFSET and LIMIT over a finished SELECT result. Returns an error
+// when a key names a column the result does not have.
+std::optional<std::string> apply_order_and_limit(const SelectStmt& statement,
+                                                 QueryResult& result) {
+    if (!statement.order_by.empty()) {
+        for (const OrderKey& key : statement.order_by) {
+            const bool known =
+                statement.all ||
+                std::find(result.columns.begin(), result.columns.end(), key.column) !=
+                    result.columns.end() ||
+                (!result.rows.empty() && result.rows.front().contains(key.column));
+            if (!known && !result.rows.empty()) {
+                return "ORDER BY \"" + key.column +
+                       "\": order by a column of the result (a selected column, a "
+                       "GROUP BY key or an aggregate's alias)";
+            }
+        }
+        static const nlohmann::json null_value;
+        std::stable_sort(result.rows.begin(), result.rows.end(),
+                         [&](const nlohmann::json& a, const nlohmann::json& b) {
+                             for (const OrderKey& key : statement.order_by) {
+                                 const auto fa = a.find(key.column);
+                                 const auto fb = b.find(key.column);
+                                 int c = compare_for_order(
+                                     fa == a.end() ? null_value : *fa,
+                                     fb == b.end() ? null_value : *fb);
+                                 if (key.descending) c = -c;
+                                 if (c != 0) return c < 0;
+                             }
+                             return false;
+                         });
+    }
+    if (statement.offset > 0) {
+        const std::size_t drop = std::min(statement.offset, result.rows.size());
+        result.rows.erase(result.rows.begin(),
+                          result.rows.begin() + static_cast<std::ptrdiff_t>(drop));
+    }
+    if (statement.limit && result.rows.size() > *statement.limit) {
+        result.rows.resize(*statement.limit);
+    }
+    if (!statement.order_by.empty() || statement.offset > 0 || statement.limit) {
+        result.message = "SELECT " + std::to_string(result.rows.size());
+    }
+    return std::nullopt;
+}
+
+// --- columns, unknown columns and aggregation over rows (#1218) ---------------
+//
+// The storage is schemaless JSON, so a table has no declared column list: the
+// columns it HAS are the keys its rows carry. A column no row carries does not
+// exist, and naming it is an error rather than a column of nulls; `SELECT *`
+// reports those columns in `columns` rather than an empty list. A table with no
+// rows at all has no columns to check against, so nothing is refused there.
+
+// Every key any row of a source carries, in first-seen order.
+class ColumnCatalog {
+public:
+    void add_row(const nlohmann::json& row) {
+        if (!row.is_object()) return;
+        for (auto field = row.begin(); field != row.end(); ++field) add(field.key());
+    }
+    void add(const std::string& name) {
+        if (seen_.insert(name).second) names_.push_back(name);
+    }
+    bool has(const std::string& name) const { return seen_.contains(name); }
+    bool empty() const { return names_.empty(); }
+    const std::vector<std::string>& names() const { return names_; }
+
+private:
+    std::vector<std::string> names_;
+    std::unordered_set<std::string> seen_;
+};
+
+// Every source column a SELECT names, in the order written: the projection, the
+// WHERE, the GROUP BY key, a key passthrough and each aggregate's argument.
+// ORDER BY names a column of the RESULT and is checked against that instead.
+std::vector<std::string> source_columns_of(const SelectStmt& statement) {
+    std::vector<std::string> named;
+    if (!statement.aggregating()) {
+        named = statement.columns;
+    } else {
+        for (const GroupedItem& item : statement.items) {
+            if (item.aggregate) {
+                if (!item.aggregate->column.empty()) {
+                    named.push_back(item.aggregate->column);
+                }
+            } else {
+                named.push_back(item.column);
+            }
+        }
+        for (const std::string& key : statement.group_by) named.push_back(key);
+    }
+    if (statement.where) named.push_back(statement.where->column);
+    return named;
+}
+
+// The error for the first column the SELECT names that `known` lacks, naming
+// the column, the table and the columns it does have.
+std::optional<std::string> unknown_column_error(const SelectStmt& statement,
+                                                const ColumnCatalog& known,
+                                                const std::string& table) {
+    if (known.empty()) return std::nullopt;
+    for (const std::string& column : source_columns_of(statement)) {
+        if (known.has(column)) continue;
+        constexpr std::size_t kListed = 30;
+        std::string listed;
+        for (std::size_t i = 0; i < known.names().size() && i < kListed; ++i) {
+            if (!listed.empty()) listed += ", ";
+            listed += known.names()[i];
+        }
+        if (known.names().size() > kListed) listed += ", ...";
+        return "column \"" + column + "\" does not exist in " + table +
+               " (its columns: " + listed + ")";
+    }
+    return std::nullopt;
+}
+
+// The shape rules of an aggregating SELECT, checked the same way on every path:
+// one GROUP BY key at most, a bare column only as that key, and no two result
+// columns with one name.
+std::optional<std::string> aggregate_shape_error(const SelectStmt& statement) {
+    if (!statement.aggregating()) return std::nullopt;
+    if (statement.group_by.size() > 1) {
+        return "GROUP BY supports exactly one key column";
+    }
+    for (const GroupedItem& item : statement.items) {
+        if (item.aggregate) continue;
+        if (statement.group_by.empty() || item.column != statement.group_by.front()) {
+            return "column \"" + item.column +
+                   "\" must appear in GROUP BY or be aggregated";
+        }
+    }
+    std::unordered_set<std::string> names;
+    for (const std::string& name : aggregate_result_columns(statement)) {
+        if (!names.insert(name).second) {
+            return "duplicate output column \"" + name + "\" (use AS to rename)";
+        }
+    }
+    return std::nullopt;
+}
+
+// A finished aggregate over rows the caller has already filtered, through the
+// same accumulator and merge the scatter-gather path uses — so text keys, a
+// row missing the key (a NULL group) and a whole-table aggregate answer exactly
+// as they do over a partition-only table.
+QueryResult finish_aggregate(const SelectStmt& statement, GroupAccumulator& groups) {
+    PartitionScanResponse local;
+    local.groups = groups.take();
+    SelectOutcome merged = merge_scan_responses(statement, {}, {local});
     QueryResult result;
-    if (!statement.all) result.columns = statement.columns;
+    result.columns = std::move(merged.columns);
+    result.rows = std::move(merged.rows);
+    result.message = "SELECT " + std::to_string(result.rows.size());
+    return result;
+}
+
+// A SELECT over an in-memory row source (the system and virtual tables): the
+// WHERE, then the projection or the aggregate, with every named column checked
+// against the columns the source has. `declared` adds columns a source defines
+// even when no row carries them (a virtual table's column list).
+QueryResult select_over_rows(const SelectStmt& statement,
+                             const std::vector<nlohmann::json>& source,
+                             const std::string& table,
+                             const std::vector<std::string>& declared = {}) {
+    if (auto problem = aggregate_shape_error(statement)) return error(*problem);
+    ColumnCatalog known;
+    for (const std::string& column : declared) known.add(column);
+    for (const nlohmann::json& row : source) known.add_row(row);
+    if (auto problem = unknown_column_error(statement, known, table)) {
+        return error(*problem);
+    }
+    if (statement.aggregating()) {
+        GroupAccumulator groups(statement);
+        for (const nlohmann::json& row : source) {
+            if (row_matches(row, statement.where)) groups.add(row);
+        }
+        return finish_aggregate(statement, groups);
+    }
+    QueryResult result;
+    result.columns = statement.all ? known.names() : statement.columns;
     for (const nlohmann::json& row : source) {
         if (!row_matches(row, statement.where)) continue;
         if (statement.all) {
@@ -1912,11 +2298,14 @@ QueryResult select_over_rows(const SelectStmt& statement,
 
 // --- GROUP BY via the DDF engine --------------------------------------------
 //
-// An aggregating SELECT runs through the DDF DataFrame engine: the referenced
-// numeric columns are loaded into a DataFrame (scan), WHERE is applied via
-// ddf::filter, ddf::group_by computes the per-group aggregates, and the columnar
-// result is materialized back into query rows. The DataFrame is numeric only, so a
-// grouped query over a non-numeric column returns a clear error. This builds the
+// A grouped SELECT whose key, aggregated columns and WHERE are all dense numeric
+// runs through the DDF DataFrame engine: the referenced numeric columns are
+// loaded into a DataFrame (scan), WHERE is applied via ddf::filter,
+// ddf::group_by computes the per-group aggregates, and the columnar result is
+// materialized back into query rows. The DataFrame is numeric only, so any other
+// aggregating SELECT — a text key, a whole-table aggregate, a sparse column, a
+// string WHERE — is not this path's to answer: it returns nullopt and the
+// executor aggregates over rows instead (#1218). This builds the
 // already-validated DDF spec types directly (GroupBySpec / FilterPredicate); it
 // introduces no new JSON boundary — the SQL is validated by the parser and the DDF
 // types carry their own boundaries.
@@ -1983,18 +2372,14 @@ struct OutputColumn {
     std::string column;                     // the aggregated source column
 };
 
-QueryResult execute_grouped(const SelectStmt& s, zetta::data::Table& table) {
+std::optional<QueryResult> execute_grouped_ddf(const SelectStmt& s,
+                                               zetta::data::Table& table) {
     // The DDF engine groups by exactly one numeric key column.
-    if (s.group_by.size() != 1) {
-        return error("GROUP BY supports exactly one key column");
-    }
+    if (s.group_by.size() != 1) return std::nullopt;
     const std::string& key = s.group_by.front();
 
-    // Validate the WHERE: the DDF filter is numeric, so the predicate value must be
-    // a number (string/bool/null predicates are not supported in the grouped path).
-    if (s.where && !s.where->value.is_number()) {
-        return error("GROUP BY queries support only numeric WHERE predicates");
-    }
+    // The DDF filter is numeric, so the predicate value must be a number.
+    if (s.where && !s.where->value.is_number()) return std::nullopt;
 
     // Build the DDF group-by spec and the ordered output plan from the select list.
     // A non-aggregated select column must be the grouping key (standard SQL); a
@@ -2057,11 +2442,7 @@ QueryResult execute_grouped(const SelectStmt& s, zetta::data::Table& table) {
                 break;
             }
         }
-        if (found == nullptr) {
-            return error("column \"" + name +
-                         "\" is not a dense numeric column — GROUP BY runs over the "
-                         "DDF engine, which operates on numeric columns only");
-        }
+        if (found == nullptr) return std::nullopt;  // not dense numeric: rows
         schema.columns.push_back(*found);
         dtypes.emplace(name, found->dtype);
     }
@@ -2144,6 +2525,29 @@ QueryResult Executor::execute(const Statement& stmt,
     const auto db_name = [&](const TableRef& ref) -> std::string {
         return ref.database.empty() ? current_database : ref.database;
     };
+    // `db.table` as the caller would write it, for messages.
+    const auto table_label = [&](const TableRef& ref) -> std::string {
+        const std::string database = db_name(ref);
+        return database.empty() ? ref.table : database + "." + ref.table;
+    };
+    // Why a table reference resolved to no database (#1218). An unqualified
+    // name resolves against the default database the caller passed, so the
+    // error says which one that was — or that there was none — rather than
+    // `database "" does not exist`.
+    const auto missing_database = [&](const TableRef& ref) -> QueryResult {
+        if (!ref.database.empty()) {
+            return error("database \"" + ref.database + "\" does not exist");
+        }
+        if (current_database.empty()) {
+            return error("table \"" + ref.table +
+                         "\" is not qualified and no default database is set — "
+                         "write <database>." + ref.table +
+                         " or pass a default database");
+        }
+        return error("database \"" + current_database +
+                     "\" does not exist (it is the default database the "
+                     "unqualified table \"" + ref.table + "\" resolves against)");
+    };
 
     // A virtual table (#809 slice 3) is referenced by its unqualified, global
     // name; a real table in the current database takes precedence (a virtual
@@ -2158,11 +2562,82 @@ QueryResult Executor::execute(const Statement& stmt,
         return node_.find_virtual_table(ref.table);
     };
 
-    return std::visit(
+    // ----- authorization of data-changing statements (#1229) -----------------
+    // Every statement that changes data or schema checks its right here, the
+    // way INSERT always has: sql:write for INSERT / UPDATE / DELETE / TRUNCATE,
+    // sql:ddl for CREATE / DROP, at table or database scope. `denied` marks a
+    // refusal so the audit row recorded below says so.
+    bool denied = false;
+    const auto deny = [&](std::string reason) -> QueryResult {
+        denied = true;
+        return error(std::move(reason));
+    };
+    // The column access the acting identity has to db.table for a
+    // data-changing operation. A user folds its flat and object-scoped grants
+    // (Node::column_scope). A legacy AccessKey has no object tier, so it must
+    // hold the operation as a flat capability — it used to skip the check
+    // entirely. The trusted local session (empty acting key) is allowed.
+    const auto change_scope = [&](const zetta::governance::Operation& operation,
+                                  const std::string& database,
+                                  const std::string& table)
+        -> zetta::governance::ColumnAccess {
+        if (!acting_is_user_ && !acting_key_.empty()) {
+            zetta::governance::ColumnAccess access;
+            if (node_.authorize(acting_key_, operation)) {
+                access.table_allowed = true;
+                access.all_columns = true;
+            }
+            return access;
+        }
+        return node_.column_scope(acting_key_, acting_is_user_, operation,
+                                  database, table);
+    };
+    // The same decision for a whole database (CREATE / DROP DATABASE): a flat
+    // grant or a grant ON <database>.* admits it.
+    const auto may_change_database =
+        [&](const zetta::governance::Operation& operation,
+            const std::string& database) -> bool {
+        if (!acting_is_user_ && !acting_key_.empty()) {
+            return static_cast<bool>(node_.authorize(acting_key_, operation));
+        }
+        return node_.authorize_object(
+            acting_key_, acting_is_user_, operation,
+            zetta::governance::Resource{zetta::governance::ResourceKind::Database,
+                                        database});
+    };
+    // A statement that drops, creates or empties a whole table needs the right
+    // on the whole table: a grant on some of its columns is not enough.
+    const auto require_whole_table =
+        [&](const zetta::governance::Operation& operation,
+            std::string_view permission, std::string_view verb,
+            const std::string& database,
+            const std::string& table) -> std::optional<QueryResult> {
+        const zetta::governance::ColumnAccess access =
+            change_scope(operation, database, table);
+        if (!access.table_allowed) {
+            return deny("permission denied: no " + std::string(permission) +
+                        " grant on \"" + database + "." + table + "\"");
+        }
+        if (!access.all_columns) {
+            return deny("permission denied: " + std::string(verb) + " needs " +
+                        std::string(permission) + " on the whole table \"" +
+                        database + "." + table + "\", not only some columns");
+        }
+        return std::nullopt;
+    };
+
+    QueryResult result = std::visit(
         overloaded{
             [&](const CreateDatabaseStmt& s) -> QueryResult {
                 if (s.name == kSystemDatabase) {
                     return error("\"system\" is a reserved (virtual) database");
+                }
+                if (is_connection_store(s.name)) {
+                    return deny(connection_store_refusal());
+                }
+                if (!may_change_database(kSqlDdl, s.name)) {
+                    return deny("permission denied: no sql:ddl grant on database \"" +
+                                s.name + "\"");
                 }
                 if (!node_.create_database(s.name)) {
                     return error("database \"" + s.name +
@@ -2173,6 +2648,13 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const DropDatabaseStmt& s) -> QueryResult {
                 if (s.name == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
+                }
+                if (is_connection_store(s.name)) {
+                    return deny(connection_store_refusal());
+                }
+                if (!may_change_database(kSqlDdl, s.name)) {
+                    return deny("permission denied: no sql:ddl grant on database \"" +
+                                s.name + "\"");
                 }
                 if (!node_.drop_database(s.name)) {
                     return error("database \"" + s.name + "\" does not exist");
@@ -2188,6 +2670,14 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("no database selected — qualify as db.table or "
                                  "select a database");
                 }
+                if (is_connection_store(name)) {
+                    return deny(connection_store_refusal());
+                }
+                if (auto refused = require_whole_table(kSqlDdl, "sql:ddl",
+                                                       "CREATE TABLE", name,
+                                                       s.table.table)) {
+                    return std::move(*refused);
+                }
                 auto db = node_.find_database(name);
                 if (!db) return error("database \"" + name + "\" does not exist");
                 // Column definitions are parsed but not yet stored (the engine
@@ -2199,6 +2689,13 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE TABLE"};
             },
             [&](const CreateVirtualTableStmt& s) -> QueryResult {
+                // A virtual table is a global name over a replicated key family,
+                // not an object inside one database, so it needs sql:ddl as a
+                // flat right — a grant scoped to one database does not reach it.
+                if (auto why = require_permission(kSqlDdl)) {
+                    return deny("permission denied: CREATE VIRTUAL TABLE needs a "
+                                "sql:ddl grant on every database (" + *why + ")");
+                }
                 // OVER CRDT is required (the must-extend-a-CRDT invariant). The
                 // grammar can't reach here without it, but a bare '' is possible.
                 if (s.crdt_prefix.empty()) {
@@ -2275,11 +2772,18 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
-                auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
                 }
+                if (!db_name(s.table).empty()) {
+                    if (auto refused = require_whole_table(
+                            kSqlDdl, "sql:ddl", "DROP TABLE", db_name(s.table),
+                            s.table.table)) {
+                        return std::move(*refused);
+                    }
+                }
+                auto db = resolve_db(s.table);
+                if (!db) return missing_database(s.table);
                 if (!db->drop_table(s.table.table)) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
@@ -2289,16 +2793,16 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
                                  "\" is read-only — durable writes go to the base "
                                  "entity's own path");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
@@ -2310,19 +2814,18 @@ QueryResult Executor::execute(const Statement& stmt,
                 // Object-scoped write enforcement (#747): the acting identity must
                 // be able to write this table, and every target column.
                 const zetta::governance::ColumnAccess write_access =
-                    node_.column_scope(acting_key_, acting_is_user_, kSqlWrite,
-                                       db_name(s.table), s.table.table);
+                    change_scope(kSqlWrite, db_name(s.table), s.table.table);
                 if (!write_access.table_allowed) {
-                    return error("permission denied: no sql:write grant on \"" +
-                                 db_name(s.table) + "." + s.table.table + "\"");
+                    return deny("permission denied: no sql:write grant on \"" +
+                                db_name(s.table) + "." + s.table.table + "\"");
                 }
                 if (!write_access.all_columns) {
                     for (const std::string& col : s.columns) {
                         if (!write_access.allows(col)) {
-                            return error("permission denied: no sql:write grant on "
-                                         "column \"" + col + "\" of \"" +
-                                         db_name(s.table) + "." + s.table.table +
-                                         "\"");
+                            return deny("permission denied: no sql:write grant on "
+                                        "column \"" + col + "\" of \"" +
+                                        db_name(s.table) + "." + s.table.table +
+                                        "\"");
                         }
                     }
                 }
@@ -2333,7 +2836,7 @@ QueryResult Executor::execute(const Statement& stmt,
                 const RlsContext rls = rls_context(node_, acting_key_,
                                                     acting_is_user_);
                 const RlsFilter write_filter = build_rls_filter(
-                    node_, rls, db_name(s.table), s.table.table, /*write=*/true);
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::NewRow);
                 std::size_t inserted = 0;
                 for (const auto& tuple : s.rows) {
                     if (tuple.size() != s.columns.size()) {
@@ -2347,9 +2850,9 @@ QueryResult Executor::execute(const Statement& stmt,
                         row[s.columns[i]] = tuple[i];
                     }
                     if (!rls_row_permitted(write_filter, row, rls)) {
-                        return error("permission denied: row violates the "
-                                     "row-security WITH CHECK policy on \"" +
-                                     db_name(s.table) + "." + s.table.table + "\"");
+                        return deny("permission denied: row violates the "
+                                    "row-security WITH CHECK policy on \"" +
+                                    db_name(s.table) + "." + s.table.table + "\"");
                     }
                     table->add_row(std::move(row));
                     ++inserted;
@@ -2360,20 +2863,61 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
                                  "\" is read-only — durable writes go to the base "
                                  "entity's own path");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
+                const std::string label = db_name(s.table) + "." + s.table.table;
+                // Object-scoped write enforcement (#1229), as INSERT: the caller
+                // must be able to write this table and every assigned column.
+                const zetta::governance::ColumnAccess write_access =
+                    change_scope(kSqlWrite, db_name(s.table), s.table.table);
+                if (!write_access.table_allowed) {
+                    return deny("permission denied: no sql:write grant on \"" +
+                                label + "\"");
+                }
+                for (const Assignment& a : s.assignments) {
+                    if (!write_access.allows(a.column)) {
+                        return deny("permission denied: no sql:write grant on "
+                                    "column \"" + a.column + "\" of \"" + label +
+                                    "\"");
+                    }
+                }
+                // The WHERE column is read to choose the rows; a caller that may
+                // not read it could learn its values from the row count.
+                if (s.where) {
+                    const zetta::governance::ColumnAccess read_access =
+                        node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
+                                           db_name(s.table), s.table.table);
+                    if (!read_access.allows(s.where->column)) {
+                        return deny("permission denied: no sql:read grant on "
+                                    "column \"" + s.where->column +
+                                    "\" used in WHERE");
+                    }
+                }
+                // Row-level security (#748, #1229): UPDATE changes only rows the
+                // caller can see (USING of the read policies) and could have
+                // written (USING of the write policies); every row it produces
+                // must pass WITH CHECK, or the whole statement is refused.
+                const RlsContext rls = rls_context(node_, acting_key_,
+                                                    acting_is_user_);
+                const RlsFilter read_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::Read);
+                const RlsFilter existing_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table,
+                    RlsAccess::Existing);
+                const RlsFilter new_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::NewRow);
                 // Collect the matches (id + the updated row) BEFORE applying —
                 // update_row rewrites the store, which would invalidate indices.
                 std::vector<std::pair<std::string, nlohmann::json>> edits;
@@ -2382,10 +2926,19 @@ QueryResult Executor::execute(const Statement& stmt,
                     const zetta::storage::ParquetLazyPtr row = store.at(i);
                     if (!row) return error("row " + store.id_at(i) +
                                            " could not be read: " + row.error());
+                    if (!rls_row_permitted(read_filter, *row, rls) ||
+                        !rls_row_permitted(existing_filter, *row, rls)) {
+                        continue;
+                    }
                     if (!row_matches(*row, s.where)) continue;
                     nlohmann::json updated = *row;
                     for (const Assignment& a : s.assignments) {
                         updated[a.column] = a.value;
+                    }
+                    if (!rls_row_permitted(new_filter, updated, rls)) {
+                        return deny("permission denied: updated row violates the "
+                                    "row-security WITH CHECK policy on \"" +
+                                    label + "\"");
                     }
                     edits.emplace_back(store.id_at(i), std::move(updated));
                 }
@@ -2398,26 +2951,57 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
                                  "\" is read-only — durable writes go to the base "
                                  "entity's own path");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
+                // DELETE removes whole rows, so it needs sql:write on the whole
+                // table (#1229), and read access to the WHERE column.
+                if (auto refused = require_whole_table(kSqlWrite, "sql:write",
+                                                       "DELETE", db_name(s.table),
+                                                       s.table.table)) {
+                    return std::move(*refused);
+                }
+                if (s.where) {
+                    const zetta::governance::ColumnAccess read_access =
+                        node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
+                                           db_name(s.table), s.table.table);
+                    if (!read_access.allows(s.where->column)) {
+                        return deny("permission denied: no sql:read grant on "
+                                    "column \"" + s.where->column +
+                                    "\" used in WHERE");
+                    }
+                }
+                // Row-level security (#748, #1229): DELETE removes only rows the
+                // caller can see and could have written; the rest are untouched
+                // and uncounted.
+                const RlsContext rls = rls_context(node_, acting_key_,
+                                                    acting_is_user_);
+                const RlsFilter read_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::Read);
+                const RlsFilter existing_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table,
+                    RlsAccess::Existing);
                 std::vector<std::string> ids;
                 const zetta::storage::StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
                     const zetta::storage::ParquetLazyPtr row = store.at(i);
                     if (!row) return error("row " + store.id_at(i) +
                                            " could not be read: " + row.error());
+                    if (!rls_row_permitted(read_filter, *row, rls) ||
+                        !rls_row_permitted(existing_filter, *row, rls)) {
+                        continue;
+                    }
                     if (row_matches(*row, s.where)) ids.push_back(store.id_at(i));
                 }
                 for (const std::string& id : ids) table->delete_row(id);
@@ -2427,19 +3011,41 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
                                  "\" is read-only — durable writes go to the base "
                                  "entity's own path");
                 }
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
+                }
+                if (auto refused = require_whole_table(kSqlWrite, "sql:write",
+                                                       "TRUNCATE",
+                                                       db_name(s.table),
+                                                       s.table.table)) {
+                    return std::move(*refused);
+                }
+                // TRUNCATE removes every row regardless of who may see it, so on
+                // a table under row security a non-bypass caller is refused; a
+                // DELETE removes exactly the rows it may.
+                const RlsContext rls = rls_context(node_, acting_key_,
+                                                    acting_is_user_);
+                const RlsFilter read_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::Read);
+                const RlsFilter existing_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table,
+                    RlsAccess::Existing);
+                if (!rls.bypass && (read_filter.engaged || existing_filter.engaged)) {
+                    return deny("permission denied: row-level security is enabled "
+                                "on \"" + db_name(s.table) + "." + s.table.table +
+                                "\" — TRUNCATE would remove rows hidden from you; "
+                                "use DELETE");
                 }
                 // Remove every row — each as a tombstone, so the truncation
                 // replicates (same path as DELETE with no WHERE).
@@ -2455,110 +3061,121 @@ QueryResult Executor::execute(const Statement& stmt,
                 // Virtual `system` database (computed, read-only).
                 if (const std::string sys = system_table_of(s.table);
                     !sys.empty()) {
-                    if (s.grouped()) {
-                        return error("GROUP BY is not supported over system tables");
-                    }
+                    const std::string label = "system." + sys;
                     if (sys == kTablesTable) {
-                        return select_over_rows(s, system_table_rows());
+                        return select_over_rows(s, system_table_rows(), label);
                     }
                     if (sys == kTestCasesTable) {
-                        return select_over_rows(s, test_case_rows());
+                        return select_over_rows(s, test_case_rows(), label);
                     }
                     if (sys == kDeploymentsTable) {
-                        return select_over_rows(s, deployment_rows(node_));
+                        return select_over_rows(s, deployment_rows(node_), label);
                     }
                     if (sys == kModelsTable) {
-                        return select_over_rows(s, model_rows(node_));
+                        return select_over_rows(s, model_rows(node_), label);
                     }
                     if (sys == kWorkspaceProfilesTable) {
-                        return select_over_rows(s, workspace_profile_rows(node_));
+                        return select_over_rows(s, workspace_profile_rows(node_), label);
                     }
                     if (sys == kUsageTable) {
-                        return select_over_rows(s, usage_rows(node_));
+                        return select_over_rows(s, usage_rows(node_), label);
                     }
                     if (sys == kPlansTable) {
-                        return select_over_rows(s, plan_rows(node_));
+                        return select_over_rows(s, plan_rows(node_), label);
                     }
                     if (sys == kIndexesTable) {
-                        return select_over_rows(s, index_rows(node_));
+                        return select_over_rows(s, index_rows(node_), label);
                     }
                     if (sys == kJobsTable) {
-                        return select_over_rows(s, compute_job_rows(node_));
+                        return select_over_rows(s, compute_job_rows(node_), label);
                     }
                     if (sys == kCloudProvidersTable) {
-                        return select_over_rows(s, cloud_provider_rows());
+                        return select_over_rows(s, cloud_provider_rows(), label);
                     }
                     if (sys == kCloudStatusTable) {
-                        return select_over_rows(s, cloud_status_rows(node_));
+                        return select_over_rows(s, cloud_status_rows(node_), label);
                     }
                     if (sys == kProvisionersTable) {
-                        return select_over_rows(s, provisioner_rows(node_));
+                        return select_over_rows(s, provisioner_rows(node_), label);
+                    }
+                    if (sys == kPubSubTopicsTable) {
+                        return select_over_rows(
+                            s, node_.pubsub() != nullptr
+                                   ? zetta::pubsub::pubsub_topic_rows(*node_.pubsub())
+                                   : std::vector<nlohmann::json>{},
+                            label);
                     }
                     if (sys == kConsentRequestsTable) {
-                        return select_over_rows(s, consent_request_rows(node_));
+                        return select_over_rows(s, consent_request_rows(node_), label);
                     }
                     if (sys == kRunsTable) {
-                        return select_over_rows(s, run_rows(node_));
+                        return select_over_rows(s, run_rows(node_), label);
                     }
                     if (sys == kPrincipalsTable) {
-                        return select_over_rows(s, principal_rows(node_));
+                        return select_over_rows(s, principal_rows(node_), label);
                     }
                     if (sys == kKeysTable) {
-                        return select_over_rows(s, access_key_rows(node_));
+                        return select_over_rows(s, access_key_rows(node_), label);
                     }
                     if (sys == kUsersTable) {
-                        return select_over_rows(s, user_rows(node_));
+                        return select_over_rows(s, user_rows(node_), label);
                     }
                     if (sys == kRolesTable) {
-                        return select_over_rows(s, role_rows(node_));
+                        return select_over_rows(s, role_rows(node_), label);
                     }
                     if (sys == kUserRolesTable) {
-                        return select_over_rows(s, user_role_rows(node_));
+                        return select_over_rows(s, user_role_rows(node_), label);
                     }
                     if (sys == kPoliciesTable) {
-                        return select_over_rows(s, policy_rows(node_));
+                        return select_over_rows(s, policy_rows(node_), label);
                     }
                     if (sys == kTokensTable) {
-                        return select_over_rows(s, token_rows(node_));
+                        return select_over_rows(s, token_rows(node_), label);
                     }
                     if (sys == kConnectionsTable) {
-                        return select_over_rows(s, connection_rows(node_));
+                        return select_over_rows(s, connection_rows(node_), label);
                     }
                     if (sys == kAuditTable) {
-                        return select_over_rows(s, audit_rows(node_));
+                        return select_over_rows(s, audit_rows(node_), label);
+                    }
+                    if (sys == kLedgerTable) {
+                        return select_over_rows(s, ledger_rows(node_), label);
                     }
                     if (sys == kActivityTable) {
-                        return select_over_rows(s, activity_rows(node_));
+                        return select_over_rows(s, activity_rows(node_), label);
                     }
                     if (sys == kPartitionsTable) {
-                        return select_over_rows(s, partition_rows(node_));
+                        return select_over_rows(s, partition_rows(node_), label);
                     }
                     if (sys == kDatasetsTable) {
-                        return select_over_rows(s, dataset_rows(node_));
+                        return select_over_rows(s, dataset_rows(node_), label);
                     }
                     if (sys == kLargeObjectsTable) {
-                        return select_over_rows(s, large_object_rows(node_));
+                        return select_over_rows(s, large_object_rows(node_), label);
                     }
                     if (sys == kCheckpointsTable) {
-                        return select_over_rows(s, checkpoint_rows(node_));
+                        return select_over_rows(s, checkpoint_rows(node_), label);
                     }
                     if (sys == kNodeMetricsTable) {
-                        return select_over_rows(s, node_metrics_rows(node_));
+                        return select_over_rows(s, node_metrics_rows(node_), label);
+                    }
+                    if (sys == kMemoryTable) {
+                        return select_over_rows(s, memory_rows(node_), label);
                     }
                     if (sys == kPipelineJobsTable) {
-                        return select_over_rows(s, pipeline_job_rows(node_));
+                        return select_over_rows(s, pipeline_job_rows(node_), label);
                     }
                     if (sys == kCollectiveRoundsTable) {
-                        return select_over_rows(s, collective_round_rows(node_));
+                        return select_over_rows(s, collective_round_rows(node_), label);
                     }
                     if (sys == kSpansTable) {
-                        return select_over_rows(s, span_rows(node_));
+                        return select_over_rows(s, span_rows(node_), label);
                     }
                     if (sys == kTracesTable) {
-                        return select_over_rows(s, trace_rows(node_));
+                        return select_over_rows(s, trace_rows(node_), label);
                     }
                     if (sys == kCrashesTable) {
-                        return select_over_rows(s, crash_rows(node_));
+                        return select_over_rows(s, crash_rows(node_), label);
                     }
                     if (sys != kNodesTable) {
                         // Suggest the catalog itself (never drifts, unlike a
@@ -2577,25 +3194,27 @@ QueryResult Executor::execute(const Statement& stmt,
                         return error("system.nodes is unavailable here "
                                      "(no cluster)");
                     }
-                    return select_over_rows(s,
-                                            cluster_node_rows(*cluster_, node_));
+                    return select_over_rows(
+                        s, cluster_node_rows(*cluster_, node_), label);
                 }
                 // Virtual table (#809 slice 3): a user-declared read-only table
                 // over a CRDT key-family, referenced by its unqualified global
                 // name (a real table takes precedence). Its durable rows are
                 // projected from the CRDT; WHERE/projection reuse select_over_rows.
                 if (auto vtable = resolve_virtual_table(s.table)) {
-                    if (s.grouped()) {
-                        return error(
-                            "GROUP BY is not supported over virtual tables");
+                    std::vector<std::string> declared;
+                    for (const zetta::data::VirtualColumn& column : vtable->columns) {
+                        declared.push_back(column.name);
                     }
-                    return select_over_rows(s, node_.virtual_table_rows(*vtable));
+                    return select_over_rows(s, node_.virtual_table_rows(*vtable),
+                                            vtable->name, declared);
                 }
+                if (is_connection_store(db_name(s.table))) {
+                    return deny(connection_store_refusal());
+                }
+                if (auto problem = aggregate_shape_error(s)) return error(*problem);
                 auto db = resolve_db(s.table);
-                if (!db) {
-                    return error("database \"" + db_name(s.table) +
-                                 "\" does not exist");
-                }
+                if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
@@ -2625,10 +3244,11 @@ QueryResult Executor::execute(const Statement& stmt,
                         }
                     }
                     for (const GroupedItem& item : s.items) {
-                        if (!item.column.empty() &&
-                            !read_access.allows(item.column)) {
+                        const std::string& column =
+                            item.aggregate ? item.aggregate->column : item.column;
+                        if (!column.empty() && !read_access.allows(column)) {
                             return error("permission denied: no sql:read grant on "
-                                         "column \"" + item.column + "\"");
+                                         "column \"" + column + "\"");
                         }
                     }
                 }
@@ -2640,7 +3260,7 @@ QueryResult Executor::execute(const Statement& stmt,
                 const RlsContext rls = rls_context(node_, acting_key_,
                                                    acting_is_user_);
                 const RlsFilter read_filter = build_rls_filter(
-                    node_, rls, db_name(s.table), s.table.table, /*write=*/false);
+                    node_, rls, db_name(s.table), s.table.table, RlsAccess::Read);
                 // An aggregating SELECT (GROUP BY) runs through the DDF engine,
                 // which filters numerically and can't apply a row-security
                 // predicate — refuse it on a policy-protected table (for a
@@ -2661,10 +3281,22 @@ QueryResult Executor::execute(const Statement& stmt,
                     const SelectOutcome scattered = select_over_partitions(
                         node_, node_.distributed_select(), s, table->id());
                     if (!scattered.ok()) return error(scattered.error);
+                    // The owners report the columns their rows carry; with every
+                    // owner's list in hand, a column none of them saw does not
+                    // exist (#1218).
+                    ColumnCatalog known;
+                    for (const std::string& column : scattered.table_columns) {
+                        known.add(column);
+                    }
+                    if (scattered.table_columns_complete) {
+                        if (auto problem = unknown_column_error(
+                                s, known, table_label(s.table))) {
+                            return error(*problem);
+                        }
+                    }
                     QueryResult r;
-                    r.columns = s.grouped() ? scattered.columns
-                                            : (s.all ? std::vector<std::string>{}
-                                                     : s.columns);
+                    r.columns = s.aggregating() ? scattered.columns
+                                                : (s.all ? known.names() : s.columns);
                     r.rows = scattered.rows;
                     // Column-level access stays with the coordinator: the owner
                     // filtered + projected, this node knows the caller.
@@ -2681,15 +3313,26 @@ QueryResult Executor::execute(const Statement& stmt,
                     r.message = "SELECT " + std::to_string(r.rows.size());
                     return r;
                 }
-                if (s.grouped()) {
+                if (s.aggregating()) {
                     if (!read_filter.bypass && read_filter.engaged) {
                         return error("row-level security is enabled on \"" +
                                      db_name(s.table) + "." + s.table.table +
                                      "\": GROUP BY over a policy-protected table is "
                                      "not supported — query it without aggregation");
                     }
-                    return execute_grouped(s, *table);
+                    // A dense-numeric GROUP BY runs columnar through the DDF
+                    // engine; everything else aggregates over the rows below.
+                    if (std::optional<QueryResult> columnar =
+                            execute_grouped_ddf(s, *table)) {
+                        return std::move(*columnar);
+                    }
                 }
+                // One pass: learn the table's columns from every row (so a
+                // column no row carries is an error, not a column of nulls),
+                // and project or aggregate the rows that pass the WHERE.
+                ColumnCatalog known;
+                std::optional<GroupAccumulator> groups;
+                if (s.aggregating()) groups.emplace(s);
                 QueryResult r;
                 if (!s.all) r.columns = s.columns;
                 const zetta::storage::StorageEngine& store = table->store();
@@ -2698,8 +3341,14 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (!handle) return error("row " + store.id_at(i) +
                                               " could not be read: " + handle.error());
                     const nlohmann::json& row = *handle;
-                    if (!row_matches(row, s.where)) continue;
+                    // A row the caller may not see does not vouch for a column.
                     if (!rls_row_permitted(read_filter, row, rls)) continue;
+                    known.add_row(row);
+                    if (!row_matches(row, s.where)) continue;
+                    if (groups) {
+                        groups->add(row);
+                        continue;
+                    }
                     if (s.all) {
                         if (read_access.all_columns) {
                             r.rows.push_back(row);
@@ -2725,10 +3374,19 @@ QueryResult Executor::execute(const Statement& stmt,
                         r.rows.push_back(std::move(projected));
                     }
                 }
+                if (auto problem =
+                        unknown_column_error(s, known, table_label(s.table))) {
+                    return error(*problem);
+                }
+                if (groups) return finish_aggregate(s, *groups);
+                if (s.all) r.columns = known.names();
                 r.message = "SELECT " + std::to_string(r.rows.size());
                 return r;
             },
             [&](const CreateUserStmt& s) -> QueryResult {
+                if (auto why = require_permission(kManageUsers)) {
+                    return deny(*why);
+                }
                 if (!node_.create_user(s.name)) {
                     return error("user \"" + s.name +
                                  "\" already exists or the name is invalid");
@@ -2736,6 +3394,12 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE USER"};
             },
             [&](const CreateTokenStmt& s) -> QueryResult {
+                // Minting a bearer credential for any user is the
+                // tokens:manage right (#1229) — without it a caller could mint
+                // a token for the owner and act as admin.
+                if (auto why = require_permission(kManageTokens)) {
+                    return deny(*why);
+                }
                 auto user = node_.find_user(s.user);
                 if (!user) {
                     return error("user \"" + s.user + "\" does not exist");
@@ -2764,8 +3428,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return r;
             },
             [&](const CreateRoleStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (!node_.create_role(s.name)) {
                     return error("role \"" + s.name +
@@ -2774,8 +3438,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE ROLE"};
             },
             [&](const DropRoleStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (!node_.drop_role(s.name)) {
                     return error("role \"" + s.name + "\" does not exist");
@@ -2783,8 +3447,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "DROP ROLE"};
             },
             [&](const GrantPermissionStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (auto bad = first_unknown_permission(s.permissions)) {
                     return error("unknown permission \"" + *bad +
@@ -2803,8 +3467,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "GRANT"};
             },
             [&](const RevokePermissionStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (auto bad = first_unknown_permission(s.permissions)) {
                     return error("unknown permission \"" + *bad +
@@ -2821,8 +3485,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "REVOKE"};
             },
             [&](const GrantRoleStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 auto user = node_.find_user(s.user);
                 if (!user) {
@@ -2839,8 +3503,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "GRANT ROLE"};
             },
             [&](const RevokeRoleStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 auto user = node_.find_user(s.user);
                 if (!user) {
@@ -2857,8 +3521,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "REVOKE ROLE"};
             },
             [&](const CreatePolicyStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 const std::string database = db_name(s.table);
                 if (database.empty()) {
@@ -2920,8 +3584,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE POLICY"};
             },
             [&](const DropPolicyStmt& s) -> QueryResult {
-                if (auto denied = require_permission(kManageRoles)) {
-                    return error(*denied);
+                if (auto why = require_permission(kManageRoles)) {
+                    return deny(*why);
                 }
                 if (!node_.drop_policy(s.name)) {
                     return error("policy \"" + s.name + "\" does not exist");
@@ -2930,6 +3594,52 @@ QueryResult Executor::execute(const Statement& stmt,
             },
         },
         stmt);
+    // ORDER BY / LIMIT / OFFSET apply to whichever path answered the SELECT.
+    if (const auto* select = std::get_if<SelectStmt>(&stmt); select && result.ok()) {
+        if (auto problem = apply_order_and_limit(*select, result)) return error(*problem);
+    }
+
+    // Every statement that changes data, schema or governance is audited as an
+    // action (#1229) — `data_changed`, naming who, what object, and whether it
+    // was refused — whatever surface ran it (the sql capability, the consoles,
+    // the library). The detail is the statement's own status line or its
+    // error, never a value it wrote (CREATE TOKEN's secret stays in the result).
+    const std::string target = std::visit(
+        overloaded{
+            [&](const CreateDatabaseStmt& s) { return "database:" + s.name; },
+            [&](const DropDatabaseStmt& s) { return "database:" + s.name; },
+            [&](const CreateTableStmt& s) { return "table:" + table_label(s.table); },
+            [&](const DropTableStmt& s) { return "table:" + table_label(s.table); },
+            [&](const InsertStmt& s) { return "table:" + table_label(s.table); },
+            [&](const UpdateStmt& s) { return "table:" + table_label(s.table); },
+            [&](const DeleteStmt& s) { return "table:" + table_label(s.table); },
+            [&](const TruncateStmt& s) { return "table:" + table_label(s.table); },
+            [&](const CreateVirtualTableStmt& s) { return "virtual_table:" + s.name; },
+            [&](const CreateUserStmt& s) { return "user:" + s.name; },
+            [&](const CreateTokenStmt& s) { return "token:" + s.user; },
+            [&](const CreateRoleStmt& s) { return "role:" + s.name; },
+            [&](const DropRoleStmt& s) { return "role:" + s.name; },
+            [&](const GrantPermissionStmt& s) { return "role:" + s.role; },
+            [&](const RevokePermissionStmt& s) { return "role:" + s.role; },
+            [&](const GrantRoleStmt& s) { return "user:" + s.user; },
+            [&](const RevokeRoleStmt& s) { return "user:" + s.user; },
+            [&](const CreatePolicyStmt& s) { return "policy:" + s.name; },
+            [&](const DropPolicyStmt& s) { return "policy:" + s.name; },
+            [&](const SelectStmt&) { return std::string{}; },
+        },
+        stmt);
+    if (!target.empty()) {
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::DataChanged;
+        event.actor = acting_key_.empty() ? "local" : acting_key_;
+        event.target = "sql:" + target;
+        event.allowed = !denied;
+        event.detail = result.ok() ? result.message
+                                   : (denied ? result.error
+                                             : "failed: " + result.error);
+        node_.record_audit_event(std::move(event));
+    }
+    return result;
 }
 
 std::optional<std::string> Executor::require_permission(

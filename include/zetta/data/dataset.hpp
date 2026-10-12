@@ -36,8 +36,11 @@ struct DatasetSummary {
                             //   system.dataset_partitions.table)
     std::string format;     // on-disk storage format of the rows (e.g. "jsonl") —
                             //   the live storage engine's format, not the original
-                            //   import format (parquet/csv is not retained: it is
-                            //   not part of any live source)
+                            //   import format, which is `source_format` below
+    std::string source_format;  // what the rows were loaded from (#1221): csv /
+                                //   jsonl / json / parquet, a connector type
+                                //   (postgres, snowflake), or rows; empty when
+                                //   the table was not loaded (SQL, results)
     std::string replication;  // replication strategy name ("replicate_to_all" /
                             //   "partitioned" / "partitioned_with_replicas")
     std::uint64_t rows = 0;       // row count

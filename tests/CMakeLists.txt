@@ -22,8 +22,11 @@ endif()
 
 
 add_executable(zetta-tests
+  memory/test_accounting.cpp
   api/test_registry.cpp
   api/test_agent_api.cpp
+  api/test_workspace_methodology_api.cpp
+  api/test_workspace_study_api.cpp
   api/test_mcp_prompts.cpp
   api/test_consent.cpp
   api/test_auth_gate.cpp
@@ -34,9 +37,16 @@ add_executable(zetta-tests
   api/test_specs.cpp
   api/test_search_journey.cpp
   api/test_create_index_journey.cpp
+  api/test_entity_key_reads.cpp
   api/test_action_journeys.cpp
+  api/test_study_driver.cpp
+  api/test_getting_started_churn.cpp
+  api/test_standalone_models.cpp
   api/test_serving.cpp
   api/test_scoped_grants_api.cpp
+  api/test_record_capabilities.cpp
+  api/test_storage_capabilities.cpp
+  api/test_object_routes.cpp
   api/test_row_security_api.cpp
   api/test_web_ui_forms.cpp
   api/test_web_ui_studio.cpp
@@ -47,6 +57,7 @@ add_executable(zetta-tests
   pipeline/test_validation.cpp
   pipeline/test_gate.cpp
   pipeline/test_graph_checks.cpp
+  solutions/test_snapshot.cpp
   usecases/churn/test_entity_resolution_check.cpp
   usecases/churn/test_entity_resolution.cpp
   util/test_duration.cpp
@@ -58,6 +69,13 @@ add_executable(zetta-tests
   data/test_rendezvous_placement.cpp
   data/test_database.cpp
   data/test_replication_strategy.cpp
+  data/test_record_store.cpp
+  data/test_metric_store.cpp
+  data/test_record_soak.cpp
+  data/test_object_store.cpp
+  data/test_storage_census.cpp
+  data/test_object_log_crash.cpp
+  data/test_object_soak.cpp
   pipeline/test_project.cpp
   pipeline/test_project_input.cpp
   pipeline/test_project_graph.cpp
@@ -82,14 +100,44 @@ add_executable(zetta-tests
   cloud/test_cloud_provider.cpp
   cloud/test_cloud_inspector.cpp
   pipeline/test_run.cpp
+  solutions/test_monitor.cpp
+  solutions/test_roi_readout.cpp
+  ml/test_ensemble.cpp
+  ml/test_ensemble_train_partitions.cpp
+  ml/test_methodology.cpp
+  ml/test_solution.cpp
+  ml/test_entity_resolution.cpp
+  ml/test_entity_resolution_partitions.cpp
+  ml/test_survival.cpp
+  ml/test_graph.cpp
+  ml/test_graph_partitions.cpp
+  ml/test_vision.cpp
+  ml/test_vision_train_partitions.cpp
+  ml/test_document_extraction.cpp
+  ml/test_language.cpp
+  ml/test_speech.cpp
+  ml/test_speech_train_partitions.cpp
+  ml/test_optimization.cpp
+  ml/test_bayesian.cpp
+  ml/test_label_efficiency.cpp
+  ml/test_synthetic_private.cpp
+  ml/test_synthetic_private_partitions.cpp
   ml/test_model.cpp
+  ml/test_study.cpp
+  ml/test_next_best_action.cpp
+  ml/test_next_best_action_methodology.cpp
+  ml/test_next_best_action_partitions.cpp
   workspace/test_workspace_profile.cpp
   billing/test_plan.cpp
+  solutions/test_decision_policy.cpp
+  solutions/test_experiment.cpp
+  solutions/test_action_integration.cpp
   index/test_index.cpp
   index/test_index_step_executor.cpp
   index/test_oramacore_fulltext_index.cpp
   index/test_distributed_fulltext.cpp
   query/test_distributed_select.cpp
+  query/test_sql_write_permissions.cpp
   index/test_node_search.cpp
   compute/test_compute_job.cpp
   compute/test_checkpoint.cpp
@@ -102,6 +150,13 @@ add_executable(zetta-tests
   data/test_partition_rebalance.cpp
   data/test_partition_scheduler.cpp
   governance/test_access_control.cpp
+  pubsub/test_events.cpp
+  pubsub/test_stores.cpp
+  pubsub/test_delivery.cpp
+  pubsub/test_dispatch_and_resources.cpp
+  pubsub/test_pubsub.cpp
+  pubsub/test_node_pubsub.cpp
+  pubsub/test_pubsub_capabilities.cpp
   governance/test_users_roles_tokens.cpp
   governance/test_roles.cpp
   governance/test_scoped_grants.cpp
@@ -118,6 +173,7 @@ add_executable(zetta-tests
   testkit/test_testkit.cpp
   testkit/test_example_scripts.cpp
   governance/test_audit.cpp
+  solutions/test_audit_ledger.cpp
   observability/test_activity.cpp
   pipeline/test_intent_compiler.cpp
   pipeline/test_graph_plan.cpp
@@ -143,8 +199,22 @@ add_executable(zetta-tests
   ddf/test_ddf_featurize.cpp
   ddf/test_ddf_featurize_partitions.cpp
   ml/test_gbdt.cpp
+  ml/test_model_import.cpp
+  ml/test_uplift.cpp
+  ml/test_uplift_partitions.cpp
+  ml/test_rank.cpp
+  ml/test_bandit.cpp
+  ml/test_streaming.cpp
+  ml/test_streaming_train_partitions.cpp
   ml/test_backtest.cpp
   ml/test_forecast.cpp
+  ml/test_anomaly.cpp
+  ml/test_anomaly_partitions.cpp
+  ml/test_anomaly_table.cpp
+  ml/test_anomaly_methodology.cpp
+  ml/test_forecast_runner.cpp
+  ml/test_forecast_methodology.cpp
+  ml/test_forecast_launch.cpp
   ml/test_lag_features.cpp
   ml/test_temporal_split.cpp
   ml/test_gbdt_train_partitions.cpp
@@ -153,6 +223,9 @@ add_executable(zetta-tests
   ml/test_tree_shap.cpp
   ml/test_native_oracle.cpp
   ml/test_gbdt_score.cpp
+  ml/test_segmentation.cpp
+  ml/test_segmentation_methodology.cpp
+  ml/test_segmentation_launch.cpp
   ml/test_playbook.cpp
   compute/test_compute_device.cpp
   compute/test_cpu_device.cpp
@@ -165,9 +238,11 @@ add_executable(zetta-tests
   data/test_import.cpp
   data/test_add_dataset.cpp
   data/test_dataset_path.cpp
+  data/test_featurize_plan.cpp
   connect/test_connector.cpp
   connect/test_postgres_connector.cpp
   connect/test_connection_store.cpp
+  connect/test_credential_seal.cpp
   connect/test_distributed_fetch.cpp
   connect/test_distributed_ingest.cpp
   connect/test_native_http_transport.cpp
@@ -197,6 +272,7 @@ add_executable(zetta-tests
   cluster/test_signal.cpp
   cluster/test_collectives.cpp
   cluster/test_replication.cpp
+  cluster/test_solution_replication.cpp
   cluster/test_data_replication.cpp
   cluster/test_drop_replication.cpp
   data/test_large_object_replication.cpp
@@ -269,8 +345,15 @@ endif()
 # schemas/ dir, the generated home of the schema-as-code JSON Schemas (test_schemas).
 target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+  ZETTA_TEST_BINARY="$<TARGET_FILE:zetta>"
+  ZETTA_AUDIT_PROOF_BINARY="$<TARGET_FILE:zetta-audit-proof>"
   ZETTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
+add_dependencies(zetta-tests zetta)
+add_executable(zetta-audit-proof governance/audit_proof.cpp)
+target_link_libraries(zetta-audit-proof PRIVATE zetta-core)
+target_compile_features(zetta-audit-proof PRIVATE cxx_std_26)
+add_dependencies(zetta-tests zetta-audit-proof)
 target_link_libraries(zetta-tests
   PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
   # The boundary validator, so schema-as-code tests can assert every
@@ -293,3 +376,17 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(zetta-tests)
+
+# Process-level regression for #1078. This owns a real loopback listener and
+# launches the production binary, so it can distinguish exit(1) from SIGABRT.
+add_executable(zetta-refused-start-test
+  cluster/test_refused_start_exit.cpp
+)
+target_compile_features(zetta-refused-start-test PRIVATE cxx_std_26)
+target_compile_definitions(zetta-refused-start-test PRIVATE
+  ZETTA_BINARY_PATH="$<TARGET_FILE:zetta>")
+add_dependencies(zetta-refused-start-test zetta)
+add_test(NAME zetta-refused-start-exit COMMAND zetta-refused-start-test)
+set_tests_properties(zetta-refused-start-exit PROPERTIES
+  TIMEOUT 30
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")

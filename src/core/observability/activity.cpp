@@ -41,6 +41,7 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::GraphDeployed:      return "graph deployed";
         case AuditAction::GraphApproved:      return "plan approved";
         case AuditAction::DataAccess:         return "data access";
+        case AuditAction::DataAccessSummary:  return "data access summary";
         case AuditAction::JobCreated:         return "job queued";
         case AuditAction::JobFinished:        return "job finished";
         case AuditAction::KeyIssued:          return "key issued";
@@ -51,6 +52,14 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::ConsentRequested:   return "consent requested";
         case AuditAction::ConsentDecided:     return "consent decided";
         case AuditAction::ConsentBypassed:    return "consent bypassed";
+        case AuditAction::DecisionPolicyCreated: return "decision policy created";
+        case AuditAction::DecisionPolicyUpdated: return "decision policy updated";
+        case AuditAction::DecisionApproved:   return "decision approved";
+        case AuditAction::PubSubTopicUpdated: return "topic updated";
+        case AuditAction::PubSubEventUpdated: return "event updated";
+        case AuditAction::PubSubEventDeleted: return "event deleted";
+        case AuditAction::AuditPurged:        return "audit purged";
+        case AuditAction::DataChanged:        return "data changed";
     }
     return "data access";
 }
@@ -105,6 +114,15 @@ ActivityEntry entry_for(const zetta::governance::AuditEvent& event) {
             break;
         case AuditAction::CloudInspected:
             entry.ref_kind = "cloud";  // the audit target is the provider id
+            entry.ref_id = event.target();
+            break;
+        case AuditAction::DecisionPolicyCreated:
+        case AuditAction::DecisionPolicyUpdated:
+            entry.ref_kind = "decision_policy";
+            entry.ref_id = event.target();
+            break;
+        case AuditAction::DecisionApproved:
+            entry.ref_kind = "decision";
             entry.ref_id = event.target();
             break;
         default:

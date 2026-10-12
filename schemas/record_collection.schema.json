@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "A keyed record collection (#1231): the replicated `record_collection:<name>` value. `indexes` names the secondary indexes a record may carry a value for; `retention_ms`, when present, expires a record that long after its last write; `created` is milliseconds since the Unix epoch.",
+  "properties": {
+    "created": {
+      "type": "integer"
+    },
+    "indexes": {
+      "items": {
+        "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "name": {
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+      "type": "string"
+    },
+    "retention_ms": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "name",
+    "indexes",
+    "created"
+  ],
+  "title": "zetta.RecordCollection",
+  "type": "object"
+}

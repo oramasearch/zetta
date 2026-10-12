@@ -14,6 +14,24 @@
 
 namespace zetta::tokenizer {
 
+std::size_t BpeTokenizer::resident_bytes() const {
+    std::size_t bytes = sizeof(BpeTokenizer);
+    for (const auto& [token, id] : vocab_) {
+        (void)id;
+        bytes += sizeof(std::pair<const std::string, int>) + token.capacity();
+    }
+    for (const auto& token : id_to_token_) {
+        bytes += sizeof(std::string) + token.capacity();
+    }
+    bytes += merges_.size() *
+             sizeof(std::pair<const std::uint64_t, Merge>);
+    for (const auto& [token, id] : special_tokens_) {
+        (void)id;
+        bytes += sizeof(std::pair<const std::string, int>) + token.capacity();
+    }
+    return bytes;
+}
+
 std::optional<BpeTokenizer> BpeTokenizer::from_vocab_and_merges(
     std::unordered_map<std::string, int> vocab,
     const std::vector<std::pair<std::string, std::string>>& merges,

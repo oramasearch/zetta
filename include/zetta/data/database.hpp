@@ -54,17 +54,19 @@ public:
     // (ENT-35); pass one to override per table. `partition_only` marks the table
     // as one whose ROWS are never captured (#833; see Table::partition_only) —
     // the flag itself rides in the `tbl:` value so every node reads the table the
-    // same way.
+    // same way. `source_format` records what the rows were loaded from (#1221; see
+    // Table::source_format), likewise in the `tbl:` value.
     std::shared_ptr<Table> create_table(
         std::string name,
         std::optional<ReplicationStrategy> replication_strategy = std::nullopt,
-        bool partition_only = false);
+        bool partition_only = false, std::string source_format = {});
     // Apply a replicated table (from a peer) with a given id, without capturing.
     // Returns the existing handle if already present. The strategy and the
-    // partition-only marker carried in the replicated value are passed through.
+    // partition-only marker and source format carried in the replicated value
+    // are passed through.
     std::shared_ptr<Table> materialize_table(
         std::string id, std::string name, ReplicationStrategy strategy = {},
-        bool partition_only = false);
+        bool partition_only = false, std::string source_format = {});
     // Find a table by name, or an empty handle.
     std::shared_ptr<Table> find_table(const std::string& name) const;
     // Find a table by its id (UUID), or an empty handle.

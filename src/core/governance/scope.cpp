@@ -12,6 +12,9 @@ std::string_view to_string(ResourceKind kind) {
         case ResourceKind::Column:   return "column";
         case ResourceKind::Blob:     return "blob";
         case ResourceKind::Tool:     return "tool";
+        case ResourceKind::Topic:    return "topic";
+        case ResourceKind::Collection: return "collection";
+        case ResourceKind::Bucket:   return "bucket";
     }
     return "unknown";
 }
@@ -23,6 +26,9 @@ bool resource_kind_from_string(std::string_view text, ResourceKind& out) {
     if (text == "column")   { out = ResourceKind::Column;   return true; }
     if (text == "blob")     { out = ResourceKind::Blob;     return true; }
     if (text == "tool")     { out = ResourceKind::Tool;     return true; }
+    if (text == "topic")    { out = ResourceKind::Topic;    return true; }
+    if (text == "collection") { out = ResourceKind::Collection; return true; }
+    if (text == "bucket")   { out = ResourceKind::Bucket;   return true; }
     return false;
 }
 
@@ -58,6 +64,27 @@ Resource Resource::tool(std::string name) {
     return r;
 }
 
+Resource Resource::topic(std::string name_or_prefix) {
+    Resource r;
+    r.kind = ResourceKind::Topic;
+    r.name = std::move(name_or_prefix);
+    return r;
+}
+
+Resource Resource::collection(std::string name_or_prefix) {
+    Resource r;
+    r.kind = ResourceKind::Collection;
+    r.name = std::move(name_or_prefix);
+    return r;
+}
+
+Resource Resource::bucket(std::string name_or_prefix) {
+    Resource r;
+    r.kind = ResourceKind::Bucket;
+    r.name = std::move(name_or_prefix);
+    return r;
+}
+
 namespace {
 bool starts_with(std::string_view text, std::string_view prefix) {
     return text.size() >= prefix.size() &&
@@ -80,6 +107,20 @@ bool object_covers(const Resource& granted, const Resource& target) {
         case ResourceKind::Tool:
             return granted.kind == ResourceKind::Tool &&
                    granted.name == target.name;
+        case ResourceKind::Topic:
+            // A topic grant is a PREFIX of the topic name, like a blob grant (#1029).
+            return granted.kind == ResourceKind::Topic &&
+                   starts_with(target.name, granted.name);
+        case ResourceKind::Collection:
+            // A collection grant is a PREFIX of the collection name (#1231), so
+            // one grant can reserve a namespace such as `lake_`.
+            return granted.kind == ResourceKind::Collection &&
+                   starts_with(target.name, granted.name);
+        case ResourceKind::Bucket:
+            // A bucket grant is a PREFIX of the bucket name (#1005), so one grant
+            // can reserve a namespace such as `lake_`.
+            return granted.kind == ResourceKind::Bucket &&
+                   starts_with(target.name, granted.name);
         case ResourceKind::Table:
             // A database grant covers all its tables; a table/column grant on the
             // same table makes the table reachable.

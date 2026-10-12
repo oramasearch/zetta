@@ -253,24 +253,54 @@ All three are `Orchestration` operations under the `pipelines:manage` permission
 alongside `create_dataset_from_query`. `system.connections` renders the same
 source as a read view.
 
-### The token is in exactly one place
+### The credential is sealed at rest (#1230)
 
-The credential is written into the store row — that *is* the feature. Everything
-derived from it redacts:
+Until [#1230](https://github.com/oramasearch/zetta/issues/1230) the store row held
+the token in plaintext, and the row — like every row — is in the replicated
+catalogue every node gossips and persists, and was readable through
+`SELECT * FROM zetta_connect.connections`. Now:
+
+- **Sealed.** The row holds the settings without the token (`connector`, from
+  `ConnectorConfig::to_json()`) and the token sealed with **AES-256-GCM**
+  (`credential`: `{v, alg, kid, nonce, ciphertext, tag}`, the
+  [`sealed_credential`](../../schemas/sealed_credential.schema.json) schema). The
+  connection's name is the associated data, so a sealed value copied onto another
+  row does not open.
+- **The key is outside the catalogue.** It is derived (HKDF-SHA256) from the
+  cluster **join token** that `main` passes as `NodeConfig::connection_root_secret`
+  — the 0600 secret under `<data_dir>/security/` every member already holds, never
+  a catalogue key. Every member derives the same key, so each opens what another
+  sealed and the distributed fetch still finds the credential on every node. A node
+  embedded without a join token (the library, a test) creates a node-local secret
+  in `<data_dir>/security/connection-root-secret` (0600) on first use.
+- **Rotation re-seals.** A sealed value names its key id. When a node is re-keyed
+  with `--join-token`, the secret file keeps the earlier token in
+  `retired_join_tokens` (at most four), the keyring can still open values sealed
+  under it, and `Node::start` runs `connect::reseal_connections`, which rewrites
+  every entry not under the current key — and any legacy plaintext row — sealed
+  under the current one. A steady store is not rewritten. Saving a new credential
+  under an existing name seals it afresh (credential rotation).
+- **A credential a node cannot open** (sealed under a key it does not hold) leaves
+  the connection listable by name and settings, with `credential: "unreadable"`
+  and an empty token — a connector query through it fails with that reason.
 
 | Surface | Carries the token? |
 | --- | --- |
-| the store row (`ConnectorConfig::to_storage_json()`) | **yes** — the one serialization that does, and the only reason it exists |
+| the store row and the replicated catalogue | only **sealed** |
+| `find_connection` / `list_connections` (C++) | the **opened** token, in memory, for the connector query that presents it |
 | `ConnectorConfig::to_json()` | no — cannot emit it |
-| `SavedConnection::to_redacted_json()` | no — built from `to_json()`, so the redaction is structural, not a field someone must remember to strip |
-| `create_connection` / `list_connections` output | no |
-| `system.connections` | no |
+| `SavedConnection::to_redacted_json()` | no — built from `to_json()`, plus `credential`: `set` / `none` / `unreadable` / `plaintext` |
+| `create_connection` / `list_connections` output | no — `credential` says whether one is set |
+| `system.connections` | no — a `credential` column says whether one is set |
+| SQL on `zetta_connect.*` | refused for every caller, the local session included |
 | audit event details, log lines, error reasons | no |
 
-`tests/connect/test_connection_store.cpp` asserts this directly rather than
-trusting it: it searches every read surface — including a real
-`SELECT * FROM system.connections` — for the secret and requires a miss, and
-requires a hit in `to_storage_json()` alone.
+`tests/connect/test_connection_store.cpp` asserts this rather than trusting it: it
+searches the stored row, the replicated catalogue, every file under the data
+directory and every read surface for the secret and requires a miss, re-seals a
+legacy plaintext row on start, and rotates the root secret.
+`tests/connect/test_credential_seal.cpp` covers the cipher itself (fresh nonces,
+wrong key, wrong connection, tampering, the local secret file).
 
 Names are validated at the boundary: 1–64 characters of `[A-Za-z0-9_-]` starting
 with a letter or digit. Saving an existing name **replaces** it in place, so

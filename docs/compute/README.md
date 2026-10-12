@@ -15,6 +15,7 @@ autoscaling, or near-data execution; the ops themselves live in [../ddf/](../ddf
 - [job-coordinator.md](job-coordinator.md) — the single entry compute algorithms submit work through: tasks on the scheduler, collectives at round boundaries, job lifecycle (`JobCoordinator`, #372/#579).
 - [coordinated-launch.md](coordinated-launch.md) — the cross-process SPMD co-launch: a `run.launch` signal fans an interactive run out so every member co-runs its own shard (`CoordinatedLaunchListener`, #601).
 - [compute-jobs.md](compute-jobs.md) — the `ComputeJob` record: one unit of distributed compute (featurize/train/explain/score/ddf), lifecycle + audit + JSON boundary (ARC-11 / ENT-31).
+- [../governance/audit-trail.md](../governance/audit-trail.md) — job audit events replicate through segment ranges, independently of catalog reconciliation (#1164).
 - [compute-near-data.md](compute-near-data.md) — a distributed op runs over a node's OWNED partitions; bytes-moved ≈ partials, not ≈ dataset (`load_local_partitions`, #516, TC-11).
 - [scaling-policy.md](scaling-policy.md) — the per-job reward objective an autoscaler optimizes: cost / runtime target / data shape, inside hard bounds (`ScalingPolicy`, ADR-29 / #370).
 - [job-autoscaler.md](job-autoscaler.md) — the control loop: observe a running job, score its policy, add/remove nodes via the `Provisioner` with hysteresis (`JobAutoscaler`, #371).

@@ -80,9 +80,49 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   `agent_schema()` are the boundary.
 - **`AgentStore`** (`agent_store.hpp`) — CRUD over the `agent:` entities (put/get/list/remove
   capture into / read the CRDT document, so agents replicate + persist like every other entity).
+  Reads take the shared immutable view: `get` is one key lookup and `list` walks only the
+  `agent:` key range, never a copy of the catalogue (#1227,
+  [replication](../cluster/replication.md#reading-the-catalogue-without-copying-it-1227)).
 - **The CRUD surface** — `create_agent` / `list_agents` / `get_agent` / `update_agent` /
   `delete_agent` capabilities (`api/capabilities.cpp`), exposed on **both MCP and REST** by the
   capability registry. The GUI/web chat panels build on these (chat + tool-calling in flight).
+
+### Every agent lake shows (zetta#1015)
+
+The record describes **every** agent, not only the native base agent, so `list_agents` is the one
+list behind lake's Train → Agents and Ask Orama's selector
+([lake#228](https://github.com/oramasearch/lake/issues/228)):
+
+| Field | Meaning |
+|---|---|
+| `kind` | `custom` (built by a person or the Agent Factory; the default) or `orama` (a specialized agent Orama ships: the Agent Library) |
+| `runtime` | `native` (runs here: `chat`, `agent_run`; the default, so every older record keeps its meaning), `python` (runs on `agent-runtime` from `definition`), `service` (a specialized agent with its own image, at `endpoint`) |
+| `purpose`, `work_area {kind, detail}`, `manifesto`, `goal`, `skills`, `trigger`, `status`, `model_name`, `model_version` | Studio's agent shape. `skills` ∈ search, generate-data, train, summarize, call-api, drives, transcripts, repositories, datasets, streams, pipelines, usage (`agent_skills()`, one list for the validator and the schemas; agent-runtime's `skills.py` says what each grants, agent-runtime#7), or `mcp:<prefix>` (one of the workspace's MCP connections in Lake, lake#652, which Lake checks on every call; the prefix is a letter then up to 23 letters, digits or underscores). `create_agent`, `update_agent` and the agent record's schema accept both forms through one item schema, `agent_skill_schema()` (`anyOf` the list and the `mcp:` pattern), so the API's schema and the validator agree; `work_area.kind` ∈ workspace, project, dataset; an empty `trigger` means conversation only; `status` ∈ idle, running, waiting, completed, failed |
+| `chat_capable`, `is_default` | The Ask Orama selector contract. `list_agents` returns `default_agent_id`: the agent marked `is_default` that can chat (Ask Orama), empty when none |
+| `pipelines [{project, graph, version}]` | Approved Pipelines the agent may call as tools ([lake#238](https://github.com/oramasearch/lake/issues/238)). `create_agent` / `update_agent` refuse a graph that is not approved and pin `version` to its `approved_at`, so a graph re-approved later is a different version |
+| `definition` | `runtime: python`. `source: zetta` carries `instructions` and `files [{path, contents}]` inline (relative paths only, at most **1 MiB** in total because the record replicates everywhere); `source: lake` carries `repository_id` and a pinned `revision`. `entrypoint` is `module:function` |
+| `endpoint` | `runtime: service`: where lake reaches the agent |
+
+**Granted Pipelines are tools** in native `chat` too: each grant is `pipeline_<graph>`
+(`pipeline_tool_name`), run by `run_granted_pipeline`, which refuses a graph no longer approved at
+the pinned version, gates it, and runs it (`dataset`, `holdout`, `model_name` pass through). Verify:
+`AgentApiFixture.AGrantedPipelineRunsAsTheAgentsToolOnlyAtItsApprovedVersion`.
+
+**The `definition` input is closed (#1220).** `create_agent` / `update_agent` take only
+`source`, `instructions`, `entrypoint`, `repository_id`, `revision` and
+`files: [{path, contents}]` (`contents` is the file's text), with `additionalProperties: false`
+at both levels. Any other key is refused `invalid_input` at its own path, with lake's wording
+(lake PR #457) appended — `{path, content}` answers at `/definition/files/0/content`: *a file has
+no field 'content'; each file is {path, contents}, and contents holds the file's text* — where
+it used to be stored as an empty file without a word. A file without `path` or `contents` is
+refused at that field (*each file names its path*, *each file carries its text in contents*).
+The schema registry now reports an unknown property at the property itself, not its parent.
+Verify: `AgentApiFixture.KindsRuntimesStudioShapeAndPipelineGrants`.
+
+Validation: a `native` agent needs `model`; a `python` agent a valid `definition`; a `service`
+agent an `endpoint`. `chat` and `agent_run` refuse non-native agents and say where they run.
+`agent_training_status` reports a non-native agent as *not trained by Zetta* rather than
+untrained. Verify: `AgentApiFixture.KindsRuntimesStudioShapeAndPipelineGrants`.
 
 ## The reward primitive (shipped)
 

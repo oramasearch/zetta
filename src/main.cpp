@@ -24,12 +24,14 @@
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/observability/crash.hpp"
+#include "zetta/pubsub/pubsub.hpp"
 #include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
 #include "gui/app.hpp"
 
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -47,6 +49,21 @@ namespace {
 
 enum class Mode { Headed, Headless };
 
+class NativeHttpTransportLifetime {
+public:
+    NativeHttpTransportLifetime() {
+        zetta::api::install_native_http_transport();
+    }
+
+    ~NativeHttpTransportLifetime() {
+        zetta::api::shutdown_native_http_transport();
+    }
+
+    NativeHttpTransportLifetime(const NativeHttpTransportLifetime&) = delete;
+    NativeHttpTransportLifetime& operator=(const NativeHttpTransportLifetime&) =
+        delete;
+};
+
 struct Options {
     Mode mode = Mode::Headed;  // headed by default
     zetta::NodeConfig node;
@@ -58,6 +75,12 @@ struct Options {
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
+    bool pubsub_dispatch_mode_from_cli = false;
+    bool pubsub_topics_per_thread_from_cli = false;
+    bool pubsub_dispatch_min_threads_from_cli = false;
+    bool pubsub_dispatch_max_threads_from_cli = false;
+    bool audit_retention_from_cli = false;
+    bool audit_summary_retention_from_cli = false;
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -72,6 +95,24 @@ bool parse_uint16(const std::string& text, std::uint16_t& out) {
     }
     out = static_cast<std::uint16_t>(value);
     return true;
+}
+
+bool parse_positive_size(std::string_view text, std::size_t& out) {
+    std::size_t value = 0;
+    const auto [pointer, error] =
+        std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || pointer != text.data() + text.size() || value == 0) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+bool parse_uint32(const std::string& text, std::uint32_t& out) {
+    const auto [pointer, error_code] =
+        std::from_chars(text.data(), text.data() + text.size(), out);
+    return error_code == std::errc{} &&
+           pointer == text.data() + text.size();
 }
 
 void print_usage(const char* argv0) {
@@ -112,6 +153,20 @@ void print_usage(const char* argv0) {
         "                      mTLS is always on — there is no plaintext mode\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
+        "  --pubsub-dispatch-mode MODE\n"
+        "                      pool (default), auto, per_key, or inline\n"
+        "  --pubsub-topics-per-thread N\n"
+        "                      Active keys per pool worker (default 250)\n"
+        "  --pubsub-dispatch-threads N\n"
+        "                      Minimum shared-pool workers (default 1)\n"
+        "  --pubsub-dispatch-max-threads N\n"
+        "                      Maximum workers (default detected CPU count)\n"
+        "  --audit-retention-days N\n"
+        "                      Keep ordinary audit rows for N days (default 30);\n"
+        "                      zero keeps them forever\n"
+        "  --audit-summary-retention-days N\n"
+        "                      Keep audit summaries for N days (default 365);\n"
+        "                      zero keeps them forever\n"
         "  --governance        Enforce consent gating on cloud-touching calls.\n"
         "                      OFF by default (#995): a consent-gated capability\n"
         "                      executes on the first call and the bypass is\n"
@@ -125,7 +180,17 @@ void print_usage(const char* argv0) {
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
         "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
         "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n"
-        "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n",
+        "  ZETTA_PUBSUB_DISPATCH_MODE -> --pubsub-dispatch-mode\n"
+        "  ZETTA_PUBSUB_TOPICS_PER_THREAD -> --pubsub-topics-per-thread\n"
+        "  ZETTA_PUBSUB_DISPATCH_THREADS -> --pubsub-dispatch-threads\n"
+        "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
+        "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
+        "  ZETTA_AUDIT_RETENTION_DAYS\n"
+        "                      Ordinary audit retention in days\n"
+        "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
+        "                      Audit summary retention in days\n"
+        "  ZETTA_MALLOC_TRIM_THRESHOLD_BYTES\n"
+        "                      Opt-in free-held threshold for malloc_trim(0)\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -224,6 +289,78 @@ Options parse_args(int argc, char** argv) {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
             o.node.preflight = false;
+        } else if (arg == "--pubsub-dispatch-mode") {
+            const char* value = take_value(argc, argv, i, o, "--pubsub-dispatch-mode");
+            if (!value) break;
+            const auto mode = zetta::pubsub::parse_dispatch_mode(value);
+            if (!mode) {
+                std::fprintf(stderr,
+                             "zetta: --pubsub-dispatch-mode wants pool, auto, per_key, or inline\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.node.pubsub_dispatch_mode = *mode;
+            o.pubsub_dispatch_mode_from_cli = true;
+        } else if (arg == "--pubsub-topics-per-thread") {
+            const char* value = take_value(argc, argv, i, o, "--pubsub-topics-per-thread");
+            if (!value) break;
+            if (!parse_positive_size(value, o.node.pubsub_topics_per_thread)) {
+                std::fprintf(stderr, "zetta: --pubsub-topics-per-thread wants a positive number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.pubsub_topics_per_thread_from_cli = true;
+        } else if (arg == "--pubsub-dispatch-threads") {
+            const char* value = take_value(argc, argv, i, o, "--pubsub-dispatch-threads");
+            if (!value) break;
+            if (!parse_positive_size(value, o.node.pubsub_dispatch_min_threads)) {
+                std::fprintf(stderr, "zetta: --pubsub-dispatch-threads wants a positive number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.pubsub_dispatch_min_threads_from_cli = true;
+        } else if (arg == "--pubsub-dispatch-max-threads") {
+            const char* value = take_value(argc, argv, i, o, "--pubsub-dispatch-max-threads");
+            if (!value) break;
+            std::size_t maximum = 0;
+            if (!parse_positive_size(value, maximum)) {
+                std::fprintf(stderr, "zetta: --pubsub-dispatch-max-threads wants a positive number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.node.pubsub_dispatch_max_threads = maximum;
+            o.pubsub_dispatch_max_threads_from_cli = true;
+        } else if (arg == "--audit-retention-days") {
+            const char* value =
+                take_value(argc, argv, i, o, "--audit-retention-days");
+            if (!value) {
+                break;
+            }
+            std::uint32_t days = 0;
+            if (!parse_uint32(value, days)) {
+                std::fprintf(stderr,
+                             "zetta: --audit-retention-days wants a non-negative number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.node.audit_retention = std::chrono::hours(24ULL * days);
+            o.audit_retention_from_cli = true;
+        } else if (arg == "--audit-summary-retention-days") {
+            const char* value = take_value(
+                argc, argv, i, o, "--audit-summary-retention-days");
+            if (!value) {
+                break;
+            }
+            std::uint32_t days = 0;
+            if (!parse_uint32(value, days)) {
+                std::fprintf(
+                    stderr,
+                    "zetta: --audit-summary-retention-days wants a non-negative number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.node.audit_summary_retention = std::chrono::hours(24ULL * days);
+            o.audit_summary_retention_from_cli = true;
         } else if (arg == "--governance") {
             o.node.enforce_consent = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -235,6 +372,58 @@ Options parse_args(int argc, char** argv) {
         }
     }
     return o;
+}
+
+bool apply_pubsub_environment(Options& options) {
+    auto apply_size = [&](const char* name, bool set_on_command_line,
+                          std::size_t& destination) {
+        if (set_on_command_line) return true;
+        const char* value = std::getenv(name);
+        if (value == nullptr) return true;
+        if (parse_positive_size(value, destination)) return true;
+        std::fprintf(stderr, "zetta: %s wants a positive number\n", name);
+        return false;
+    };
+    if (!options.pubsub_dispatch_mode_from_cli) {
+        if (const char* value = std::getenv("ZETTA_PUBSUB_DISPATCH_MODE")) {
+            const auto mode = zetta::pubsub::parse_dispatch_mode(value);
+            if (!mode) {
+                std::fprintf(stderr,
+                             "zetta: ZETTA_PUBSUB_DISPATCH_MODE wants pool, auto, per_key, or inline\n");
+                return false;
+            }
+            options.node.pubsub_dispatch_mode = *mode;
+        }
+    }
+    if (!apply_size("ZETTA_PUBSUB_TOPICS_PER_THREAD",
+                    options.pubsub_topics_per_thread_from_cli,
+                    options.node.pubsub_topics_per_thread)) {
+        return false;
+    }
+    if (!apply_size("ZETTA_PUBSUB_DISPATCH_THREADS",
+                    options.pubsub_dispatch_min_threads_from_cli,
+                    options.node.pubsub_dispatch_min_threads)) {
+        return false;
+    }
+    if (!options.pubsub_dispatch_max_threads_from_cli) {
+        if (const char* value = std::getenv("ZETTA_PUBSUB_DISPATCH_MAX_THREADS")) {
+            std::size_t maximum = 0;
+            if (!parse_positive_size(value, maximum)) {
+                std::fprintf(stderr,
+                             "zetta: ZETTA_PUBSUB_DISPATCH_MAX_THREADS wants a positive number\n");
+                return false;
+            }
+            options.node.pubsub_dispatch_max_threads = maximum;
+        }
+    }
+    if (options.node.pubsub_dispatch_max_threads &&
+        *options.node.pubsub_dispatch_max_threads <
+            options.node.pubsub_dispatch_min_threads) {
+        std::fprintf(stderr,
+                     "zetta: pub/sub dispatch maximum threads must be at least the minimum\n");
+        return false;
+    }
+    return true;
 }
 
 // A node's identity (its cluster node id and replication actor id) must be STABLE
@@ -334,16 +523,9 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // Install the native coroutine HTTPS client into the connector transport
-    // seam (#827). zetta-core declares the seam but links no HTTP library, so
-    // the real client is a zetta-api TU that registers itself here — before
-    // anything can serve a connector query. Without this a connector query
-    // fails with "no outbound HTTP transport is installed", which is exactly
-    // what a build that deliberately has no egress should do.
-    zetta::api::install_native_http_transport();
 #ifdef ZETTA_WITH_POSTGRES
     // The libpqxx Postgres connector (#892) — registers into the connector runner
-    // seam so a "postgres" source connection can run its read-only query. Built
+    // runner so a "postgres" source connection can run its read-only query. Built
     // only when the libpqxx submodule is present; without it, a Postgres query
     // fails cleanly ("the Postgres connector is not built into this binary").
     zetta::connect::install_postgres_protocol();
@@ -358,7 +540,7 @@ int main(int argc, char** argv) {
 #endif
 
     // Provisioning env (#749): a burst/provisioned node is handed its cluster
-    // coordinates as environment by the provisioner seam (ZETTA_SEED_PEER,
+    // coordinates as environment by the provisioner contract (ZETTA_SEED_PEER,
     // ZETTA_CLUSTER_TOKEN, ZETTA_DATA_DIR; docs/plans/cloud-provisioning.md Gap
     // A). Fold them in as defaults beneath the flags already parsed — explicit
     // flag > env > default — so a provisioned node auto-joins the secure (mTLS)
@@ -420,6 +602,46 @@ int main(int argc, char** argv) {
                                         value == "yes" || value == "on";
         }
     }
+    if (!apply_pubsub_environment(opts)) {
+        return 2;
+    }
+    if (!opts.audit_retention_from_cli) {
+        if (const char* environment =
+                std::getenv("ZETTA_AUDIT_RETENTION_DAYS")) {
+            std::uint32_t days = 0;
+            if (!parse_uint32(environment, days)) {
+                std::fprintf(stderr,
+                             "zetta: ZETTA_AUDIT_RETENTION_DAYS wants a non-negative number\n");
+                return 2;
+            }
+            opts.node.audit_retention = std::chrono::hours(24ULL * days);
+        }
+    }
+    if (!opts.audit_summary_retention_from_cli) {
+        if (const char* environment =
+                std::getenv("ZETTA_AUDIT_SUMMARY_RETENTION_DAYS")) {
+            std::uint32_t days = 0;
+            if (!parse_uint32(environment, days)) {
+                std::fprintf(
+                    stderr,
+                    "zetta: ZETTA_AUDIT_SUMMARY_RETENTION_DAYS wants a non-negative number\n");
+                return 2;
+            }
+            opts.node.audit_summary_retention =
+                std::chrono::hours(24ULL * days);
+        }
+    }
+    if (const char* environment =
+            std::getenv("ZETTA_MALLOC_TRIM_THRESHOLD_BYTES")) {
+        std::size_t threshold = 0;
+        if (!parse_positive_size(environment, threshold)) {
+            std::fprintf(
+                stderr,
+                "zetta: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES wants a positive number\n");
+            return 2;
+        }
+        opts.node.malloc_trim_threshold_bytes = threshold;
+    }
 
     // One UUID is both the cluster node id and the replication actor id, so a
     // node's changes are attributed to it and merge conflict-free. It's stable
@@ -444,12 +666,23 @@ int main(int argc, char** argv) {
                          reason.c_str());
             return 1;
         }
+        // Saved connector credentials are sealed under a key derived from the
+        // join token (#1230): every member holds the token outside the
+        // replicated catalogue, so every member opens what another sealed.
+        // The retired tokens let a rotated node re-seal what the old one sealed.
+        opts.node.connection_root_secret = security->join_token;
+        opts.node.retired_connection_root_secrets = security->retired_join_tokens;
         opts.cluster.security = std::move(*security);
     }
 
     zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
+
+    // Keep the native coroutine HTTPS client alive only while the Node is
+    // alive. This guard joins the worker before Node destruction on every
+    // return path, including refused startup.
+    NativeHttpTransportLifetime native_http_transport;
 
     // Crash reports (#640, docs/architecture/observability.md): from here on a
     // fatal signal writes <data_dir>/crashes/<uuid>.json — stacktrace, recent
@@ -638,7 +871,7 @@ int main(int argc, char** argv) {
     // too — so a provisioned node boots with `--peer <seed> --join-token <token>`
     // and can join a non-plaintext cluster instead of being stuck on
     // --cluster-plaintext (#670). Empty under --cluster-plaintext, so nothing is
-    // injected. The token is a secret: it rides the same bootstrap env seam as the
+    // injected. The token is a secret: it rides the same bootstrap environment as the
     // seed peer (ZETTA_CLUSTER_TOKEN alongside ZETTA_SEED_PEER) and is never stored
     // in the detected provisioner config / system.provisioners.
     const std::string default_cluster_token = opts.cluster.security.join_token;
@@ -704,9 +937,16 @@ int main(int argc, char** argv) {
         // provisioners the headed control does (#621). The fleet + local
         // provisioner outlive the server (declared above).
         api_server->set_provisioner_resolver(provisioner_for);
+        // Work a pool worker queues on the owner (an offloaded call's gate, the
+        // pub/sub authorizer) wakes the idle loop instead of waiting a tick (#1063).
+        node.set_owner_wakeup([server = api_server.get()] { server->wake(); });
     }
-    const auto drain_api = [&api_server] {
+    const auto drain_api = [&api_server, &node] {
         if (api_server) api_server->drain();
+        // Work pool workers queued on the owner (an offloaded call's gate, the
+        // pub/sub authorizer) runs on this wake too, not only inside the 10 Hz
+        // tick: otherwise each such hop costs up to a full tick (#1063).
+        node.drain_owner_work();
     };
     // The owning loop's idle wait — wakes the instant a request is enqueued so
     // the drain above runs immediately instead of on the next 10 Hz tick (#731).
@@ -767,10 +1007,18 @@ int main(int argc, char** argv) {
         if (api_server) api_server->set_activity_hook({});
     }
 
+    node.set_owner_wakeup({});  // before the API server can go away
+    if (api_server) api_server->stop_accepting();
+    // Wake receive_events long polls before waiting for their connection
+    // coroutines. ApiServer::stop keeps both owner queues draining until the
+    // I/O thread has unwound, then the io_context can be destroyed safely
+    // (#1077).
+    if (node.pubsub()) node.pubsub()->shutdown();
+    if (api_server) {
+        api_server->stop();
+        api_server.reset();
+    }
     cluster.stop();
     node.stop();
-    // Stop the outbound HTTP client's io_context + join its thread, after the
-    // last thing that could issue a connector query has gone.
-    zetta::api::shutdown_native_http_transport();
     return rc;
 }

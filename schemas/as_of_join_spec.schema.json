@@ -1,0 +1,36 @@
+{
+  "$id": "https://oramasearch.github.io/zetta/schemas/as_of_join_spec.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Match each left row to the latest snapshot for its entity at or before the left row's decision time (#1103).",
+  "properties": {
+    "left_entity_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "left_time_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "right_entity_column": {
+      "default": "entity_id",
+      "minLength": 1,
+      "type": "string"
+    },
+    "right_prefix": {
+      "default": "snapshot_",
+      "type": "string"
+    },
+    "right_time_column": {
+      "default": "as_of",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "left_entity_column",
+    "left_time_column"
+  ],
+  "title": "AsOfJoinSpec",
+  "type": "object"
+}

@@ -42,8 +42,8 @@ CRUD (`shared_ptr` handles, empty/`false` on miss or clash):
 |---|---|---|
 | `create_project(name, owner = {})` | `shared_ptr<Project>` | Empty handle if `name` is empty or already taken. Stamps `created`/`updated`. |
 | `find_project(name)` | `shared_ptr<Project>` | Empty handle on miss. |
-| `drop_project(name)` | `bool` | `true` if one was removed. |
-| `rename_project(from, to)` | `bool` | `false` if `to` is empty/taken or `from` is missing. Bumps `updated`. |
+| `drop_project(name)` | `bool` | `true` if one was removed. Removes the project **with its inputs and graphs** (their `input:`/`graph:` keys and the folder); runs and models are kept (see [Deleting a project](#deleting-a-project--delete_project-1009)). |
+| `rename_project(from, to)` | `bool` | `false` if `to` is empty/taken or `from` is missing. Bumps `updated` and refreshes denormalized names on matching Runs, Models, and Studies. |
 | `project_names()` | `vector<string>` | Sorted by name. |
 | `project_count()` | `size_t` | — |
 
@@ -52,6 +52,37 @@ auto churn = node.create_project("churn", "team:risk");   // owner key optional
 node.rename_project("churn", "retention");                // keeps the id
 node.drop_project("retention");
 ```
+
+## Deleting a project — `delete_project` (#1009)
+
+The control-surface entry is the **`delete_project`** action (REST
+`POST /v1/delete_project`, the MCP tool of the same name), authorized like
+`create_project` — its own right, `orchestration:delete_project`, in the
+`pipelines:manage` bundle — and audited like every capability call.
+
+- **Input:** `{ "name": "<project>" }` (required, the name `list_projects` shows).
+- **Output:** `{ name, id, removed: { inputs, graphs }, kept: { runs, models } }`.
+- **Missing project:** `not_found`.
+- **A run of the project still `pending` or `running`:** refused (`engine_error`) —
+  deleting the graph out from under an executing run would fail it half-way.
+
+**What goes:** the project, its captured inputs (and their payload bodies) and its
+graphs — removed from the replicated document (tombstones, so every peer drops
+them on its next reconcile) and from disk. Before #1009, `drop_project` removed the
+graphs but left each `input:` key behind naming a project that no longer existed;
+the integrity check counted them as `dangling_inputs`.
+
+**What stays, deliberately: runs and models.** A run is a record of what happened
+and a model is what was trained; a model may be deployed or exposed and serving
+traffic, and its lineage is what an audit reads. Neither is *part* of the project —
+each carries the project's **id** as a plain label (`run.project`, `model.project`).
+They stay listed in `list_runs` / `list_models` / `system.runs` / `system.models`,
+still carrying that id, which now resolves to no project. The answer's `kept`
+counts them so the caller is not surprised to still see them. Deployments and agents
+that name the project are likewise untouched. A project later created with the same
+name gets a new id, so old runs do not attach to it.
+
+Not undoable: there is no trash or restore.
 
 ## Persistence & replication
 
@@ -86,6 +117,14 @@ a **projection** of it ([replication.md](../cluster/replication.md)).
   a project **survives restart** in both standalone and replicated nodes. The
   folder name *is* the id, so rename only rewrites `project.json`.
 
+An **internal** project (lake#654) carries `internal: true` in both its replicated
+value and `project.json`; every other project's value is unchanged. It holds one
+standalone model, is never listed (`Node::project_names()` leaves it out, so
+`list_projects`, the GUI and the web UI never show it), and is found by its id.
+`Node::reveal_project(id, name)` (the `move_model_to_project` capability) turns it
+into a project people see. See [../ml/standalone-models.md](../ml/standalone-models.md).
+`rename_project` keeps a project's description (it used to clear it).
+
 `project.json` is **validated at the boundary** on load: a malformed or
 incomplete file (not an object, or missing a string `name`) is skipped rather
 than allowed to corrupt the in-memory tree — matching how `database.json` /
@@ -102,8 +141,8 @@ reverse path used by reconciliation.
 | Method (on `Project`) | Returns | Behavior |
 |---|---|---|
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
-| `compile_intent_to_graph(input_id, name = {})` | `shared_ptr<ProjectGraph>` | Compile a stored **intent** input into a new graph via [`zetta::pipeline::compile_intent`](intent-compiler.md), then store it with `create_graph` (name defaults to `"<shape> skeleton"`). Empty handle if the input is unknown / not an `Intent` / has no local body, the intent is empty, or the name collides. The bridge from a captured intent (FEAT-1) to an editable graph (FEAT-2). |
-| `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection **and** re-captures `graph:<uuid>`, so an edit replicates exactly like a create. **Re-proposes the plan** (resets approval → proposed, #885). Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
+| `compile_intent_to_graph(input_id, name = {}, options = {}, error = nullptr, template_name = nullptr)` | `shared_ptr<ProjectGraph>` | Resolve a runnable [methodology](../ml/methodologies.md), compile the stored **intent** with that methodology's shape callback, and store it through `create_graph` (without a name, named from the intent's words and numbered on a collision, #1238). `options` may select a methodology or primary solution and carry hints. Empty handle on an invalid input, unsupported methodology, missing body, or an explicit name's collision; `error` explains compilation refusal and `template_name` receives the template the steps started from. |
+| `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection, refreshes denormalized names on matching Runs, Models, and Studies, and re-captures `graph:<uuid>`. **Re-proposes the plan** (resets approval → proposed, #885). Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
 | `approve_graph(name, approver, at)` | `shared_ptr<ProjectGraph>` | Mark a proposed plan **approved** (#885, review-before-build): stamps the approver + ISO instant, re-captures `graph:<uuid>`, and audits `graph_approved`. Idempotent. Empty handle if no graph by `name`. Reached over the governed `approve_plan` capability. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
 | `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |
@@ -153,8 +192,9 @@ both the disk and CRDT paths.
   The normal Studio flow is **approve → gate → deploy → run**; `run` inherits
   approval by sequence (it follows a deploy that required it).
 - **Surfaced for the UI.** `get_project` (per graph), `get_graph`, and the
-  compile/save outputs all carry `approval`, so the Studio statuses (Draft /
-  Needs approval / Ready / Running) map onto engine state.
+  compile/save outputs carry `approval`; the two read capabilities also carry
+  `methodology` and `runnable`. Studio statuses (Draft / Needs approval / Ready /
+  Running) therefore map onto engine state without inferring model support.
 
 ## GUI panel
 
@@ -218,7 +258,7 @@ edit here) and the correctness gate are separate slices.
 
 ## Tests
 
-`tests/pipeline/test_project.cpp` covers create/find/rename/drop (+ owner + stamps),
+`tests/pipeline/test_project.cpp` covers create/find/rename/drop (+ owner + stamps; a drop leaves no `input:`/`graph:` key behind and keeps a labelled run, #1009),
 survival across a restart (both disk-only and CRDT-only), and replication of a
 project + a rename to a connected peer. `tests/pipeline/test_project_graph.cpp` does the
 same for a project's execution graphs: create/find/drop, **`update_graph`**
@@ -226,4 +266,6 @@ same for a project's execution graphs: create/find/drop, **`update_graph`**
 survives restart via the CRDT), restart via disk and via the CRDT, and
 replication of a graph to a peer (with a faithful round-trip checked each time).
 Graph (de)serialization and the in-place `remove_node` / `remove_edge` edits are
-covered in `tests/pipeline/test_execution_graph.cpp`.
+covered in `tests/pipeline/test_execution_graph.cpp`. The `delete_project` capability's journey
+(delete → read back, runs/models kept, missing → `not_found`, refused while a run is in
+flight) is in `tests/api/test_registry.cpp`.

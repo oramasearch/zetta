@@ -61,6 +61,7 @@ struct TableScoreResult {
     // The model's ranked drivers (feature → importance, strongest first), read from
     // the Model record. Population-level, not per-row.
     std::vector<ModelDriver> drivers;
+    std::shared_ptr<const data::EntityKeyMapping> entity_keys;
 
     // How much was actually read, so a caller can tell "scored nothing" from
     // "scored everything and nothing was at risk".

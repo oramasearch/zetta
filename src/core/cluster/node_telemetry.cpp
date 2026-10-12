@@ -1,6 +1,11 @@
 #include "zetta/cluster/node_telemetry.hpp"
 
+#include <algorithm>
+#include <functional>
+#include <map>
+#include <set>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
@@ -26,6 +31,13 @@ const nlohmann::json& schema_document() {
         "memory_used_bytes":    { "type": "integer", "minimum": 0 },
         "memory_total_bytes":   { "type": "integer", "minimum": 0 },
         "memory_percent":       { "type": "number" },
+        "process_rss_bytes":    { "type": "integer", "minimum": 0 },
+        "process_peak_rss_bytes": { "type": "integer", "minimum": 0 },
+        "allocator_in_use_bytes": { "type": "integer", "minimum": 0 },
+        "allocator_free_held_bytes": { "type": "integer", "minimum": 0 },
+        "attributed_memory_bytes": { "type": "integer", "minimum": 0 },
+        "unattributed_memory_bytes": { "type": "integer", "minimum": 0 },
+        "memory_explained_percent": { "type": "number" },
         "gpu_percent":          { "type": "number" },
         "vram_used_bytes":      { "type": "integer", "minimum": 0 },
         "vram_total_bytes":     { "type": "integer", "minimum": 0 },
@@ -34,7 +46,35 @@ const nlohmann::json& schema_document() {
         "storage_percent":      { "type": "number" },
         "net_rx_bytes_per_sec": { "type": "integer", "minimum": 0 },
         "net_tx_bytes_per_sec": { "type": "integer", "minimum": 0 },
-        "net_percent":          { "type": "number" }
+        "net_percent":          { "type": "number" },
+        "storage_census": {
+          "type": "object",
+          "properties": {
+            "measured_at":     { "type": "string", "minLength": 1 },
+            "age_seconds":     { "type": "number", "minimum": 0 },
+            "total_bytes":     { "type": "integer", "minimum": 0 },
+            "kinds": {
+              "type": "object",
+              "additionalProperties": { "type": "integer", "minimum": 0 }
+            },
+            "buckets": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "bucket": { "type": "string" },
+                  "bytes":  { "type": "integer", "minimum": 0 }
+                },
+                "required": ["bucket", "bytes"],
+                "additionalProperties": false
+              }
+            },
+            "buckets_omitted": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["measured_at", "age_seconds", "total_bytes", "kinds", "buckets"],
+          "additionalProperties": false
+        }
       },
       "required": ["node_id", "sampled_at"],
       "additionalProperties": false
@@ -88,6 +128,17 @@ std::string encode_node_metrics(const NodeMetrics& metrics,
         document["memory_total_bytes"] = metrics.memory_total_bytes;
         document["memory_percent"] = metrics.memory_percent;
     }
+    if (metrics.process_memory_available) {
+        document["process_rss_bytes"] = metrics.process_rss_bytes;
+        document["process_peak_rss_bytes"] = metrics.process_peak_rss_bytes;
+    }
+    if (metrics.allocator_memory_available) {
+        document["allocator_in_use_bytes"] = metrics.allocator_in_use_bytes;
+        document["allocator_free_held_bytes"] = metrics.allocator_free_held_bytes;
+        document["attributed_memory_bytes"] = metrics.attributed_memory_bytes;
+        document["unattributed_memory_bytes"] = metrics.unattributed_memory_bytes;
+        document["memory_explained_percent"] = metrics.memory_explained_percent;
+    }
     if (metrics.gpu_available) {
         document["gpu_percent"] = metrics.gpu_percent;
         document["vram_used_bytes"] = metrics.vram_used_bytes;
@@ -104,6 +155,30 @@ std::string encode_node_metrics(const NodeMetrics& metrics,
     }
     if (metrics.net_utilization_available) {
         document["net_percent"] = metrics.net_percent;
+    }
+    if (metrics.storage_census_available) {
+        // The largest buckets by name, at most kMaxWireCensusBuckets; the rest are counted, and
+        // their bytes stay in kinds.buckets and total_bytes.
+        std::vector<std::pair<std::string, std::uint64_t>> buckets(
+            metrics.storage_census.buckets.begin(), metrics.storage_census.buckets.end());
+        std::ranges::stable_sort(buckets, std::ranges::greater{},
+                                 &std::pair<std::string, std::uint64_t>::second);
+        const std::size_t listed = std::min(buckets.size(), kMaxWireCensusBuckets);
+        nlohmann::json listed_buckets = nlohmann::json::array();
+        for (std::size_t index = 0; index < listed; ++index) {
+            listed_buckets.push_back(
+                {{"bucket", buckets[index].first}, {"bytes", buckets[index].second}});
+        }
+        nlohmann::json census{
+            {"measured_at", metrics.storage_census_measured_at},
+            {"age_seconds", std::max(0.0, metrics.storage_census_age_seconds)},
+            {"total_bytes", metrics.storage_census.total_bytes},
+            {"kinds", metrics.storage_census.kinds},
+            {"buckets", std::move(listed_buckets)}};
+        const std::uint64_t omitted =
+            metrics.storage_census_buckets_omitted + (buckets.size() - listed);
+        if (omitted > 0) census["buckets_omitted"] = omitted;
+        document["storage_census"] = std::move(census);
     }
     return document.dump();
 }
@@ -143,6 +218,26 @@ std::optional<NodeTelemetrySample> decode_node_metrics(std::string_view payload,
             document.value("memory_total_bytes", std::uint64_t{0});
         metrics.memory_percent = document.value("memory_percent", 0.0);
     }
+    if (document.contains("process_rss_bytes")) {
+        metrics.process_memory_available = true;
+        metrics.process_rss_bytes =
+            document.at("process_rss_bytes").get<std::uint64_t>();
+        metrics.process_peak_rss_bytes =
+            document.value("process_peak_rss_bytes", std::uint64_t{0});
+    }
+    if (document.contains("allocator_in_use_bytes")) {
+        metrics.allocator_memory_available = true;
+        metrics.allocator_in_use_bytes =
+            document.at("allocator_in_use_bytes").get<std::uint64_t>();
+        metrics.allocator_free_held_bytes =
+            document.value("allocator_free_held_bytes", std::uint64_t{0});
+        metrics.attributed_memory_bytes =
+            document.value("attributed_memory_bytes", std::uint64_t{0});
+        metrics.unattributed_memory_bytes =
+            document.value("unattributed_memory_bytes", std::uint64_t{0});
+        metrics.memory_explained_percent =
+            document.value("memory_explained_percent", 0.0);
+    }
     if (document.contains("gpu_percent")) {
         metrics.gpu_available = true;
         metrics.gpu_percent = document.at("gpu_percent").get<double>();
@@ -170,7 +265,63 @@ std::optional<NodeTelemetrySample> decode_node_metrics(std::string_view payload,
         metrics.net_utilization_available = true;
         metrics.net_percent = document.at("net_percent").get<double>();
     }
+    if (document.contains("storage_census")) {
+        const nlohmann::json& census = document.at("storage_census");
+        metrics.storage_census_available = true;
+        metrics.storage_census_measured_at = census.at("measured_at").get<std::string>();
+        metrics.storage_census_age_seconds = census.at("age_seconds").get<double>();
+        metrics.storage_census.total_bytes = census.at("total_bytes").get<std::uint64_t>();
+        for (const auto& [kind, bytes] : census.at("kinds").items()) {
+            metrics.storage_census.kinds[kind] = bytes.get<std::uint64_t>();
+        }
+        for (const nlohmann::json& bucket : census.at("buckets")) {
+            metrics.storage_census.buckets[bucket.at("bucket").get<std::string>()] +=
+                bucket.at("bytes").get<std::uint64_t>();
+        }
+        metrics.storage_census_buckets_omitted =
+            census.value("buckets_omitted", std::uint64_t{0});
+    }
     return sample;
+}
+
+ClusterStorageCensus fold_storage_census(const std::vector<std::string>& members,
+                                         const std::vector<NodeTelemetrySample>& samples,
+                                         std::chrono::duration<double> stale_after) {
+    ClusterStorageCensus folded;
+    for (const std::string_view kind : zetta::data::storage_kinds()) {
+        folded.total.kinds[std::string(kind)] = 0;
+    }
+    std::map<std::string, const NodeTelemetrySample*> sampled;
+    for (const NodeTelemetrySample& sample : samples) sampled[sample.node_id] = &sample;
+    std::set<std::string> everyone(members.begin(), members.end());
+    for (const auto& [node_id, sample] : sampled) everyone.insert(node_id);
+
+    for (const std::string& node_id : everyone) {  // std::set → node-id ascending
+        if (node_id.empty()) continue;
+        const auto found = sampled.find(node_id);
+        if (found == sampled.end()) {
+            folded.missing.push_back({node_id, "not_reporting"});
+            continue;
+        }
+        const NodeTelemetrySample& sample = *found->second;
+        if (!sample.metrics.storage_census_available) {
+            folded.missing.push_back({node_id, "not_measured"});
+            continue;
+        }
+        const double age = sample.metrics.storage_census_age_seconds + sample.age_seconds;
+        if (age >= stale_after.count()) {
+            folded.missing.push_back({node_id, "stale"});
+            continue;
+        }
+        const zetta::data::StorageCensus& census = sample.metrics.storage_census;
+        folded.total.total_bytes += census.total_bytes;
+        for (const auto& [kind, bytes] : census.kinds) folded.total.kinds[kind] += bytes;
+        for (const auto& [bucket, bytes] : census.buckets) folded.total.buckets[bucket] += bytes;
+        folded.nodes.push_back({node_id, sample.is_local, census,
+                                sample.metrics.storage_census_measured_at, age,
+                                sample.metrics.storage_census_buckets_omitted});
+    }
+    return folded;
 }
 
 void NodeTelemetryExchange::record_local(const std::string& node_id,

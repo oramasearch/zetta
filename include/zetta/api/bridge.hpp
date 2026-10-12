@@ -35,8 +35,12 @@ class MainThreadBridge {
 public:
     // Awaitable from any runtime coroutine (the Beast2 adapter): queue `work`
     // for the owning loop and resume once it has run. `work` must be quick
-    // (it executes inside a tick) and must not throw. Compose a timeout at
-    // the call site (the adapter maps a timed-out wait to a busy error).
+    // (it executes inside a tick) and must not throw — a throw is contained
+    // by drain() (logged; the awaiting coroutine still resumes, #1007), but
+    // whatever the work was meant to produce is lost. Once queued, cancellation
+    // is deferred until the work completes: the closure can borrow the awaiting
+    // request's frame. Shutdown must keep draining until those calls return
+    // (#1077; docs/api/registry-design.md).
     runtime::task<> run_on_owner(std::function<void()> work);
 
     // Called by the owning loop each tick/frame. Executes every queued work
@@ -53,6 +57,11 @@ public:
     // after enqueue. Optional — headless uses wait_for_work instead.
     void set_wakeup(std::function<void()> wakeup);
 
+    // Wake the owning loop without queueing bridge work: its idle wait returns
+    // (and a headed loop's wakeup fires) so the loop ticks now. For work queued
+    // elsewhere that the tick drains — Node::run_on_owner (#1063).
+    void poke();
+
     std::size_t pending() const;
 
 private:
@@ -65,6 +74,7 @@ private:
     mutable std::mutex queue_mutex_;
     std::condition_variable work_ready_;  // wakes the owning loop's idle wait
     std::deque<PendingWork> queue_;
+    bool poked_ = false;  // a poke() the idle wait has not consumed yet
     std::function<void()> wakeup_;  // owner-loop wake for non-cv loops (headed)
 };
 

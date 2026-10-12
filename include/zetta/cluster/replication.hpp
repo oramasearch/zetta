@@ -1,8 +1,12 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -11,9 +15,41 @@
 
 namespace zetta::cluster {
 
+using ReplicationChangeToken = std::uint64_t;
+
+struct ReplicationChanges {
+    ReplicationChangeToken next_token = 0;
+    std::shared_ptr<const nlohmann::json> snapshot;
+    std::vector<std::string> keys;
+    bool full_resync = false;
+};
+
+struct ReplicationMemoryUsage {
+    std::uint64_t bytes = 0;
+    std::uint64_t items = 0;
+    std::uint64_t pending_change_bytes = 0;
+    std::uint64_t pending_changes = 0;
+    std::uint64_t audit_bytes = 0;
+    std::uint64_t audit_items = 0;
+};
+
+// One write of an atomic ReplicationManager::update(): set `key` to `value`, or
+// remove it (a tombstone, exactly like remove()) when `value` is empty.
+struct ReplicationWrite {
+    std::string key;
+    std::optional<nlohmann::json> value;
+};
+
+// Decides an update from the key's current live value (null when absent or
+// removed). It runs under the replication mutex, so it must be cheap and must not
+// call back into the manager. Return nullopt to write nothing.
+using ReplicationUpdateDecision =
+    std::function<std::optional<std::vector<ReplicationWrite>>(
+        const nlohmann::json* current)>;
+
 // What/whom to replicate. The first (and currently only) policy is
 // ReplicateToAllNodes: every node holds a full copy of all replicated state.
-// More policies (sharded, quorum, ...) will be added behind this enum/seam.
+// More policies (sharded, quorum, ...) will be added through this policy enum.
 enum class ReplicationPolicy { ReplicateToAllNodes };
 
 // The node's replicated state, backed by an Automerge CRDT document.
@@ -21,7 +57,7 @@ enum class ReplicationPolicy { ReplicateToAllNodes };
 // Local changes are made with set(); peers exchange save()/merge() blobs (the
 // cluster gossips them) and the CRDT converges conflict-free — concurrent
 // changes to different keys both survive, with no coordination. Automerge is
-// hidden behind this facade (pImpl); the rest of zetta sees only JSON + bytes.
+// hidden behind this adapter (pImpl); the rest of zetta sees only JSON + bytes.
 // Thread-safe (the cluster's network thread and local callers both touch it).
 //
 // Holds the node's DDL / metadata / rows for replication. (Hooking the live
@@ -70,8 +106,27 @@ public:
     // is the standard CRDT trade and it is already what `row:` deletes do.
     void remove(const std::string& key);
 
+    // Atomic read-check-write (#1231): read `key`'s live value, let `decide`
+    // choose the writes, and apply them as ONE local change, all under the
+    // replication mutex, so no other local write can interleave between the read
+    // and the writes. Record collections and metrics are declared with it (an
+    // existing definition is compared, never overwritten). Returns whether
+    // anything was written.
+    bool update(const std::string& key, const ReplicationUpdateDecision& decide);
+
     // The merged document as JSON — live entries only, tombstoned keys omitted.
+    // This compatibility accessor copies the writer-maintained parsed cache.
     nlohmann::json snapshot() const;
+
+    // A shared immutable view of the writer-maintained parsed cache. Writers use
+    // copy-on-write when a reader still holds the current view (#1079).
+    std::shared_ptr<const nlohmann::json> shared_snapshot() const;
+
+    // Return the keys whose effective values changed after `token`, together
+    // with the immutable snapshot that contains those values. Token zero means
+    // that the caller has no baseline and requires a full reconcile. A bounded
+    // journal also requests a full reconcile when the token is too old (#1079).
+    ReplicationChanges changes_since(ReplicationChangeToken token) const;
 
     // Whether the document knows this key at all, INCLUDING as a tombstone. This
     // is the question "was this ever replicated?", as opposed to `snapshot()`'s
@@ -85,6 +140,10 @@ public:
     // number of nodes the document knows about). Tombstones are not counted.
     std::size_t entry_count() const;
 
+    // Cheap counters for the CRDT document, parsed snapshot, encoded-value
+    // cache, and bounded pending-change journal.
+    ReplicationMemoryUsage memory_usage() const;
+
     // A short, stable fingerprint of the document's current Automerge heads
     // (the change-DAG leaves). Two nodes hold identical state exactly when their
     // versions match — that's the convergence/"in sync" check. "empty" for an
@@ -97,12 +156,26 @@ public:
     // the blob doesn't decode.
     void merge(std::span<const std::byte> blob);
 
+    // Restore this node's persisted document, including its local actor clock.
+    // Unlike a peer merge, this preserves the sequence used for the next write.
+    bool restore(std::span<const std::byte> blob);
+
+    // #1164: durably migrate live legacy audit values, then discard every audit
+    // operation (including removals) from history and all caches. The visitor
+    // must make the record durable before returning true. After retirement,
+    // local writes and peer merges cannot introduce audit: keys again.
+    bool retire_audit(const std::function<bool(const std::string&,
+                                             const nlohmann::json&)>& migrate,
+                      const std::function<bool()>& flush);
+
 private:
     struct State;
 
-    // Whether any concurrent value at `key` is a tombstone. Caller holds the
-    // state mutex.
-    bool removed_locked(const std::string& key) const;
+    // The effective encoded value of `key` given the document's winner: the
+    // removal marker when any concurrent value is a tombstone, else the winner.
+    // Caller holds the state mutex.
+    std::string effective_locked(const std::string& key,
+                                 const std::string& winner) const;
 
     std::unique_ptr<State> state_;
     std::string node_id_;  // this node's UUID (its Automerge actor id)

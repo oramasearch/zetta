@@ -1,25 +1,42 @@
 #include "zetta/node.hpp"
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include "zetta/connect/connection_store.hpp"
+
+#include "zetta/pubsub/node_integration.hpp"
+#include "zetta/pubsub/pubsub.hpp"
+
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/coordinated_launch.hpp"
-#include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/usecases/churn/churn_solution.hpp"
-#include "zetta/pipeline/executor.hpp"
-#include "zetta/pipeline/gate.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
+#include "zetta/ml/synthetic_private_job.hpp"
+#include "zetta/ml/entity_resolution_job.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
+#include "zetta/ml/segmentation_methodology.hpp"
+#include "zetta/ml/anomaly_methodology.hpp"
+#include "zetta/ml/forecast_methodology.hpp"
+#include "zetta/pipeline/executor.hpp"
+#include "zetta/pipeline/gate.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
+#include "zetta/ml/next_best_action_methodology.hpp"
 #ifdef ZETTA_WITH_ORAMACORE
 #include "zetta/index/oramacore_fulltext_index.hpp"
 #endif
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/data/partition_rebalance.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/governance/permission.hpp"
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/runtime.hpp"
+#include "zetta/agent/model_cache.hpp"
 #include "zetta/util/sha256.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
@@ -34,6 +51,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <set>
 #include <system_error>
 #include <thread>
 #include <tuple>
@@ -62,12 +80,201 @@ std::vector<std::string> membership_from_snapshot(const nlohmann::json& snapshot
     return members;
 }
 
+bool reconciliation_includes_key(
+    const std::vector<std::string>* changed_keys,
+    const std::string& key) {
+    return !changed_keys ||
+           std::ranges::find(*changed_keys, key) != changed_keys->end();
+}
+
+struct ReconcileBatch {
+    nlohmann::json values = nlohmann::json::object();
+    std::vector<std::string> keys;
+};
+
+struct ReplicationReconcileBatches {
+    ReconcileBatch data;
+    ReconcileBatch projects;
+    ReconcileBatch inputs;
+    ReconcileBatch graphs;
+    ReconcileBatch deployments;
+    ReconcileBatch runs;
+    ReconcileBatch studies;
+    ReconcileBatch models;
+    ReconcileBatch monitors;
+    ReconcileBatch experiments;
+    ReconcileBatch profiles;
+    ReconcileBatch plans;
+    ReconcileBatch indexes;
+    ReconcileBatch jobs;
+    ReconcileBatch partitions;
+    ReconcileBatch principals;
+    ReconcileBatch access_keys;
+    ReconcileBatch users;
+    ReconcileBatch roles;
+    ReconcileBatch tokens;
+    ReconcileBatch user_roles;
+    ReconcileBatch policies;
+    ReconcileBatch ledger_entries;
+    ReconcileBatch nodes;
+};
+
+ReconcileBatch* batch_for_replication_key(
+    ReplicationReconcileBatches& batches,
+    const std::string& key) {
+    if (key.starts_with(catalog::kDatabasePrefix) ||
+        key.starts_with(catalog::kTablePrefix) ||
+        key.starts_with(catalog::kRowPrefix) ||
+        key.starts_with(catalog::kLargeObjectPrefix) ||
+        key.starts_with(catalog::kManifestPrefix)) {
+        return &batches.data;
+    }
+    if (key.starts_with(catalog::kProjectPrefix)) {
+        return &batches.projects;
+    }
+    if (key.starts_with(catalog::kInputPrefix)) {
+        return &batches.inputs;
+    }
+    if (key.starts_with(catalog::kGraphPrefix)) {
+        return &batches.graphs;
+    }
+    if (key.starts_with(catalog::kDeploymentPrefix)) {
+        return &batches.deployments;
+    }
+    if (key.starts_with(catalog::kRunPrefix)) {
+        return &batches.runs;
+    }
+    if (key.starts_with(catalog::kStudyPrefix)) {
+        return &batches.studies;
+    }
+    if (key.starts_with(catalog::kModelPrefix)) {
+        return &batches.models;
+    }
+    if (key.starts_with(catalog::kMonitorPrefix)) {
+        return &batches.monitors;
+    }
+    if (key.starts_with(catalog::kExperimentPrefix) ||
+        key.starts_with(catalog::kExperimentAssignmentPrefix)) {
+        return &batches.experiments;
+    }
+    if (key.starts_with(catalog::kWorkspaceProfilePrefix)) {
+        return &batches.profiles;
+    }
+    if (key.starts_with(catalog::kPlanPrefix)) {
+        return &batches.plans;
+    }
+    if (key.starts_with(catalog::kIndexPrefix)) {
+        return &batches.indexes;
+    }
+    if (key.starts_with(catalog::kJobPrefix)) {
+        return &batches.jobs;
+    }
+    if (key.starts_with(catalog::kPartitionPrefix)) {
+        return &batches.partitions;
+    }
+    if (key.starts_with(catalog::kPrincipalPrefix)) {
+        return &batches.principals;
+    }
+    if (key.starts_with(catalog::kAccessKeyPrefix)) {
+        return &batches.access_keys;
+    }
+    if (key.starts_with(catalog::kUserPrefix)) {
+        return &batches.users;
+    }
+    if (key.starts_with(catalog::kRolePrefix)) {
+        return &batches.roles;
+    }
+    if (key.starts_with(catalog::kTokenPrefix)) {
+        return &batches.tokens;
+    }
+    if (key.starts_with(catalog::kUserRolePrefix)) {
+        return &batches.user_roles;
+    }
+    if (key.starts_with(catalog::kPolicyPrefix)) {
+        return &batches.policies;
+    }
+    if (key.starts_with(catalog::kLedgerPrefix)) {
+        return &batches.ledger_entries;
+    }
+    if (key.starts_with(catalog::kNodePrefix)) {
+        return &batches.nodes;
+    }
+    return nullptr;
+}
+
+void add_current_value(ReconcileBatch& batch,
+                       const nlohmann::json& snapshot,
+                       const std::string& key) {
+    batch.keys.push_back(key);
+    if (const auto value = snapshot.find(key); value != snapshot.end()) {
+        batch.values[key] = *value;
+    }
+}
+
+void include_experiment_assignments(ReconcileBatch& batch,
+                                    const nlohmann::json& snapshot) {
+    std::set<std::string> parent_ids;
+    for (const std::string& key : batch.keys) {
+        const std::string id = catalog::id_after(key, catalog::kExperimentPrefix);
+        if (!id.empty()) {
+            parent_ids.insert(id);
+        }
+    }
+    if (parent_ids.empty()) {
+        return;
+    }
+    // A parent may arrive after an assignment, or be removed while its child
+    // keys remain in the document. Revisit those children in the same tick.
+    for (const auto& [key, value] : snapshot.items()) {
+        const std::string compound_id =
+            catalog::id_after(key, catalog::kExperimentAssignmentPrefix);
+        if (parent_ids.contains(compound_id.substr(0, compound_id.find(':'))) &&
+            !batch.values.contains(key)) {
+            add_current_value(batch, snapshot, key);
+        }
+    }
+}
+
+ReplicationReconcileBatches make_reconcile_batches(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>& changed_keys) {
+    ReplicationReconcileBatches batches;
+    for (const std::string& key : changed_keys) {
+        if (ReconcileBatch* batch = batch_for_replication_key(batches, key)) {
+            add_current_value(*batch, snapshot, key);
+        }
+    }
+    include_experiment_assignments(batches.experiments, snapshot);
+    for (const std::string& key : batches.data.keys) {
+        std::string related_key;
+        if (const std::string table_id =
+                catalog::id_after(key, catalog::kTablePrefix);
+            !table_id.empty()) {
+            related_key = catalog::manifest_key(table_id);
+        } else if (const std::string table_id =
+                       catalog::id_after(key, catalog::kManifestPrefix);
+                   !table_id.empty()) {
+            related_key = catalog::table_key(table_id);
+        }
+        if (related_key.empty() || batches.data.values.contains(related_key)) {
+            continue;
+        }
+        if (const auto value = snapshot.find(related_key);
+            value != snapshot.end()) {
+            batches.data.values[related_key] = *value;
+        }
+    }
+    return batches;
+}
+
 }  // namespace
 
 Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
     : config_(std::move(config)),
       replication_(replication),
+      experiment_manager_(config_.data_dir, replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
+    register_memory_probes();
     // The owner thread is adopted LAZILY, at the first tick() (#624) — never
     // here. A constructed-but-never-ticked node has no owner loop to drain
     // the gate, so run_on_owner treats it as ungated (inline); adopting the
@@ -91,6 +298,181 @@ Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
 // compute::JobCoordinator type is visible, and — for a node that reached stop()
 // — coordinator_ is already null, so the unwind never touches a dead cluster.
 Node::~Node() = default;
+
+void Node::register_memory_probes() {
+    memory_accounting_.register_probe("audit", [this] { return audit_memory_usage(); });
+    memory_accounting_.register_probe("pubsub", [this] { return pubsub_memory_usage(); });
+    memory_accounting_.register_probe("replication", [this] {
+        return replication_memory_usage();
+    });
+    memory_accounting_.register_probe("datasets_tables", [this] {
+        return dataset_memory_usage();
+    });
+    memory_accounting_.register_probe("registry_sessions_connections", [this] {
+        return registry_memory_usage();
+    });
+    memory_accounting_.register_probe("runtime", [this] { return runtime_memory_usage(); });
+    memory_accounting_.register_probe("models", [this] { return model_memory_usage(); });
+    memory_accounting_.register_probe("runs_jobs", [this] {
+        return run_job_memory_usage();
+    });
+}
+
+zetta::memory::ProbeSample Node::audit_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    if (audit_trail_) {
+        const auto usage = audit_trail_->memory_usage();
+        sample.bytes += usage.bytes;
+        sample.items += usage.items;
+    }
+    for (const auto& [key, window] : audit_summary_windows_) {
+        sample.bytes += sizeof(window) + key.capacity() + window.actor.capacity() +
+                        window.capability.capacity() + window.scope.capacity() +
+                        window.started.capacity();
+    }
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::pubsub_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    if (!pubsub_) {
+        return sample;
+    }
+    const auto topics = pubsub_->topic_stats();
+    sample.items = topics.size();
+    for (const auto& topic : topics) {
+        sample.bytes += topic.memory_bytes;
+        sample.items += topic.held_events;
+    }
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::replication_memory_usage() const {
+    if (!replication_) {
+        return {};
+    }
+    const auto usage = replication_->memory_usage();
+    return {usage.bytes, usage.items + usage.pending_changes, 0};
+}
+
+zetta::memory::ProbeSample Node::dataset_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    for (const auto& database : databases_) {
+        sample.bytes += sizeof(zetta::data::Database) + database->id().capacity() +
+                        database->name().capacity();
+        ++sample.items;
+        for (const auto& table : database->tables()) {
+            const auto usage = table->store().memory_usage();
+            sample.bytes += sizeof(zetta::data::Table) + usage.bytes;
+            sample.bytes += table->id().capacity() + table->name().capacity();
+            sample.items += usage.items + 1;
+        }
+    }
+    sample.bytes += dataset_partitions_.size() * 512;
+    sample.items += dataset_partitions_.size();
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::registry_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    const auto registry_items = projects_.size() + deployments_.size() +
+                                studies_.size() + monitors_.size() +
+                                workspace_profiles_.size() + plans_.size() +
+                                indexes_.size() + principals_.size() + users_.size() +
+                                roles_.size() + tokens_.size() + user_roles_.size() +
+                                policies_.size() + ledger_entries_.size();
+    sample.items = registry_items;
+    sample.bytes = registry_items * 512;
+    {
+        std::lock_guard lock{owner_work_mutex_};
+        sample.items += owner_work_queue_.size();
+        sample.bytes += owner_work_queue_.size() * sizeof(OwnerWork);
+    }
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::runtime_memory_usage() const {
+    const auto usage = zetta::runtime::memory_usage();
+    return {usage.bytes,
+            usage.coroutine_frames + usage.blocking_queue_depth + usage.thread_count,
+            usage.thread_stack_bytes};
+}
+
+zetta::memory::ProbeSample Node::model_memory_usage() const {
+    const auto loaded = zetta::agent::ModelCache::instance().memory_usage();
+    zetta::memory::ProbeSample sample{loaded.bytes, loaded.models, 0};
+    sample.bytes += models_.size() * (sizeof(zetta::ml::Model) + 1024);
+    sample.items += models_.size();
+    return sample;
+}
+
+zetta::memory::ProbeSample Node::run_job_memory_usage() const {
+    zetta::memory::ProbeSample sample;
+    sample.bytes += runs_.size() * (sizeof(zetta::pipeline::Run) + 1024);
+    sample.items += runs_.size();
+    sample.bytes += jobs_.size() * (sizeof(zetta::compute::ComputeJob) + 1024);
+    sample.items += jobs_.size();
+    {
+        std::lock_guard lock{pipeline_jobs_mutex_};
+        sample.bytes += pipeline_jobs_.capacity() *
+                        sizeof(zetta::compute::PipelineJobInstrumentation);
+        sample.items += pipeline_jobs_.size();
+    }
+    return sample;
+}
+
+zetta::cluster::NodeMetrics Node::sample_node_metrics() {
+    auto metrics = node_metrics_sampler_.sample(config_.data_dir);
+    const auto memory = memory_snapshot();
+    metrics.process_memory_available = memory.allocator.rss_available;
+    metrics.process_rss_bytes = memory.allocator.rss_bytes;
+    metrics.process_peak_rss_bytes = memory.allocator.peak_rss_bytes;
+    metrics.allocator_memory_available = memory.allocator.allocator_available;
+    metrics.allocator_in_use_bytes = memory.allocator.in_use_bytes;
+    metrics.allocator_free_held_bytes = memory.allocator.free_held_bytes;
+    metrics.attributed_memory_bytes = memory.attributed_bytes;
+    metrics.unattributed_memory_bytes = memory.unattributed_bytes;
+    if (memory.allocator.in_use_bytes != 0) {
+        metrics.memory_explained_percent =
+            100.0 * static_cast<double>(memory.attributed_bytes) /
+            static_cast<double>(memory.allocator.in_use_bytes);
+    }
+    return metrics;
+}
+
+void Node::report_memory(bool force) {
+    constexpr auto kCheckInterval = std::chrono::seconds(1);
+    constexpr auto kLogInterval = std::chrono::minutes(5);
+    constexpr std::uint64_t kRssStepBytes = 256ULL * 1024 * 1024;
+    const auto now = Clock::now();
+    if (!force && last_memory_check_.time_since_epoch().count() != 0 &&
+        now - last_memory_check_ < kCheckInterval) {
+        return;
+    }
+    last_memory_check_ = now;
+    const auto snapshot = memory_snapshot();
+    const auto rss_step = snapshot.allocator.rss_bytes / kRssStepBytes;
+    const bool crossed_step = last_memory_log_.time_since_epoch().count() != 0 &&
+                              rss_step != last_rss_step_;
+    const bool periodic = last_memory_log_.time_since_epoch().count() == 0 ||
+                          now - last_memory_log_ >= kLogInterval;
+    if (force || crossed_step || periodic) {
+        std::printf("zetta: INFO %s\n",
+                    zetta::memory::format_log_line(snapshot).c_str());
+        last_memory_log_ = now;
+        last_rss_step_ = rss_step;
+    }
+    if (config_.malloc_trim_threshold_bytes != 0 &&
+        snapshot.allocator.free_held_bytes >= config_.malloc_trim_threshold_bytes &&
+        (last_malloc_trim_.time_since_epoch().count() == 0 ||
+         now - last_malloc_trim_ >= kLogInterval)) {
+        const auto trim = zetta::memory::trim_allocator();
+        last_malloc_trim_ = now;
+        std::printf("zetta: INFO memory: malloc_trim supported=%s released=%s\n",
+                    trim.supported ? "true" : "false",
+                    trim.released ? "true" : "false");
+    }
+}
 
 std::vector<compute::JobCheckpoint> Node::checkpoints() const {
     // The latest valid checkpoint per job — the read view behind system.checkpoints
@@ -142,6 +524,7 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
             dataset.table_id = table->id();
             const zetta::storage::StorageEngine& store = table->store();
             dataset.format = store.name();
+            dataset.source_format = table->source_format();
             dataset.replication =
                 std::string(to_string(table->replication_strategy().kind()));
 
@@ -236,9 +619,12 @@ bool Node::start() {
     load_projects();
     load_deployments();
     load_runs();
+    load_studies();
     load_models();
+    load_monitors();
     load_workspace_profiles();
     load_plans();
+    experiment_manager_.load();
     load_indexes();
     load_jobs();
     load_dataset_partitions();
@@ -248,29 +634,86 @@ bool Node::start() {
     load_tokens();
     load_user_roles();
     load_policies();
-    load_audit_events();
+    if (!load_audit_events()) {
+        running_ = false;
+        return false;
+    }
+    load_ledger_entries();
     if (replication_) {
-        load_replication();         // bring in the persisted CRDT document
+        if (!load_replication()) {
+            running_ = false;
+            return false;
+        }
+        std::string migration_error;
+        if (!replication_->retire_audit(
+                [&](const std::string& id, const nlohmann::json& value) {
+                    const auto parsed = zetta::governance::parse_audit_event_value(value, &migration_error);
+                    return parsed && audit_trail_->append(id, *parsed, &migration_error);
+                }, [&] {
+                    return audit_trail_->flush();
+                })) {
+            std::fprintf(stderr, "zetta: legacy audit migration failed: %s\n", migration_error.c_str());
+            running_ = false;
+            return false;
+        }
+        // The record log (#1231): node-local, beside the catalogue, never in it.
+        metric_store_.reset();
+        record_store_ = std::make_unique<zetta::data::RecordStore>(
+            *replication_, replication_->node_id(),
+            std::filesystem::path(config_.data_dir) / "records");
+        std::string record_log_error;
+        if (!record_store_->open(&record_log_error)) {
+            std::fprintf(stderr, "zetta: cannot open the record log: %s\n",
+                         record_log_error.c_str());
+            running_ = false;
+            return false;
+        }
+        metric_store_ = std::make_unique<zetta::data::MetricStore>(
+            *replication_, *record_store_, replication_->node_id());
+        // The object logs (#1005): node-local, one per bucket, never in the catalogue.
+        object_store_ = std::make_unique<zetta::data::ObjectStore>(
+            *replication_, replication_->node_id(),
+            std::filesystem::path(config_.data_dir) / "objects");
+        std::string object_log_error;
+        if (!object_store_->open(&object_log_error)) {
+            std::fprintf(stderr, "zetta: cannot open the object logs: %s\n",
+                         object_log_error.c_str());
+            running_ = false;
+            return false;
+        }
         migrate_to_replication();   // capture any local-only data into it
-        const nlohmann::json snapshot = replication_->snapshot();
-        reconcile_from_replication(snapshot);  // materialize document-only state
+        const zetta::cluster::ReplicationChanges changes =
+            replication_->changes_since(0);
+        reconcile_from_replication(*changes.snapshot);
+        backfill_denormalized_names();
+        const zetta::cluster::ReplicationChanges settled =
+            replication_->changes_since(0);
         // Establish the membership baseline so a later join/leave is a detectable
         // delta — but never rebalance on startup (the partitions just loaded
         // already reflect their recorded placement).
-        last_membership_ = membership_from_snapshot(snapshot);
+        last_membership_ = membership_from_snapshot(*settled.snapshot);
+        last_replication_change_token_ = settled.next_token;
         persist_replication();
         last_seen_version_ = replication_->version();
+    } else {
+        backfill_denormalized_names();
     }
+    zetta::governance::AuditTrail::release_unused_memory();
+    // Opening the sidecar and bounded recent/tail frames is sufficient. The
+    // periodic retention pass runs later, outside the startup memory proof.
+    last_audit_retention_ = Clock::now();
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu models, %zu indexes, %zu jobs, "
+        "%zu deployments, %zu runs, %zu studies, %zu models, %zu experiments, %zu monitors, "
+        "%zu indexes, %zu jobs, "
         "%zu partitions, %zu principals, %zu users, %zu roles, %zu tokens, "
-        "%zu audit events)\n",
+        "%zu audit events, %zu ledger entries)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
-        projects_.size(), deployments_.size(), runs_.size(), models_.size(),
-        indexes_.size(), jobs_.size(), dataset_partitions_.size(),
+        projects_.size(), deployments_.size(), runs_.size(), studies_.size(), models_.size(),
+        experiment_manager_.experiments().size(), monitors_.size(), indexes_.size(),
+        jobs_.size(), dataset_partitions_.size(),
         principals_.size(), users_.size(), roles_.size(), tokens_.size(),
-        audit_events_.size());
+        audit_event_count(), ledger_entries_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -295,10 +738,51 @@ bool Node::start() {
                 integrity_.dangling_access_keys);
         }
     }
+    // Saved connector credentials (#1230): seal any legacy plaintext entry and
+    // re-seal any sealed under a retired root secret, so a rotated join token
+    // takes effect on the stored credentials the first time a node starts with
+    // it.
+    {
+        const zetta::connect::ResealReport resealed =
+            zetta::connect::reseal_connections(*this);
+        if (resealed.resealed > 0 || !resealed.unreadable.empty() ||
+            !resealed.error.empty()) {
+            std::printf(
+                "zetta: connection credentials: %zu re-sealed, %zu not openable "
+                "on this node%s%s\n",
+                resealed.resealed, resealed.unreadable.size(),
+                resealed.error.empty() ? "" : " — ", resealed.error.c_str());
+        }
+    }
+    // Pub/sub (#1024): governed by this node's users and roles, tables reachable
+    // as table:<database>.<table>; reloads what the last run flushed or spilled.
+    if (config_.pubsub) {
+        zetta::pubsub::PubSubConfig pubsub_config;
+        pubsub_config.data_directory = config_.data_dir;
+        pubsub_config.auto_create_prefixes = config_.pubsub_auto_create_prefixes;
+        pubsub_config.dispatch_mode = config_.pubsub_dispatch_mode;
+        pubsub_config.limit_overrides.topics_per_thread =
+            config_.pubsub_topics_per_thread;
+        pubsub_config.limit_overrides.dispatch_min_threads =
+            config_.pubsub_dispatch_min_threads;
+        pubsub_config.limit_overrides.dispatch_max_threads =
+            config_.pubsub_dispatch_max_threads;
+        // Drains and authorization marshal onto the owner loop; while stop()
+        // waits for them on this thread, it keeps that queue moving.
+        pubsub_config.idle_pump = [this] { if (on_owner_thread()) drain_owner_work(); };
+        pubsub_config.spans = &span_recorder();
+        pubsub_ = std::make_unique<zetta::pubsub::PubSub>(
+            std::move(pubsub_config), zetta::pubsub::make_node_authorizer(*this));
+        pubsub_->register_drain("table", zetta::pubsub::make_table_drain(*this));
+        zetta::pubsub::connect_audit_trail(*pubsub_, *this);
+        pubsub_->start();
+    }
     // Re-establish the compute plane if a cluster was attached before this start
     // (a stop()/start() cycle). On first boot main attaches after start(), so this
     // is a no-op then and attach_cluster brings the coordinator up itself.
     start_coordinator();
+    study_driver_ = std::make_unique<zetta::ml::StudyDriver>(*this);
+    report_memory(true);
     std::fflush(stdout);
     return true;
 }
@@ -314,6 +798,79 @@ void Node::flush_stores() {
             if (table) table->store().flush();
         }
     }
+}
+
+namespace {
+
+// One record anti-entropy round, off the owner loop: it waits on the signal plane.
+zetta::runtime::task<> run_record_anti_entropy(zetta::data::RecordStore* store) {
+    [[maybe_unused]] const std::size_t pulled =
+        co_await zetta::runtime::offload([store] { return store->anti_entropy(); });
+}
+
+}  // namespace
+
+struct Node::RecordAntiEntropyRound {
+    zetta::runtime::async_event done;
+    std::atomic<bool> finished{false};
+};
+
+struct Node::ObjectUpkeepRound {
+    zetta::runtime::async_event done;
+    std::atomic<bool> finished{false};
+};
+
+namespace {
+
+// One object-store upkeep round, off the owner loop: maintenance does disk I/O
+// and anti-entropy waits on the signal plane (#1005).
+zetta::runtime::task<> run_object_upkeep(zetta::data::ObjectStore* store, bool anti_entropy) {
+    [[maybe_unused]] const std::size_t moved = co_await zetta::runtime::offload([store, anti_entropy] {
+        store->maintain(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count());
+        return anti_entropy ? store->anti_entropy() : std::size_t{0};
+    });
+}
+
+}  // namespace
+
+struct Node::StorageCensusRound {
+    zetta::runtime::async_event done;
+    std::atomic<bool> finished{false};
+    zetta::data::StorageCensus census;  // written by the pool before `finished`
+    std::string measured_at;
+    std::chrono::steady_clock::time_point taken{};
+};
+
+namespace {
+
+// One storage census, off the owner loop: it walks the data directory (zetta#1259).
+// The round that owns the outputs stays alive until this finishes: the completion holds it.
+zetta::runtime::task<> run_storage_census(zetta::data::StorageCensus* census,
+                                          std::string* measured_at,
+                                          std::chrono::steady_clock::time_point* taken,
+                                          std::filesystem::path data_dir) {
+    [[maybe_unused]] const bool measured =
+        co_await zetta::runtime::offload([census, measured_at, taken, data_dir] {
+            *census = zetta::data::measure_storage(data_dir);
+            *measured_at = zetta::util::now_iso8601();
+            *taken = std::chrono::steady_clock::now();
+            return true;
+        });
+}
+
+}  // namespace
+
+std::vector<std::string> Node::cluster_member_ids() const {
+    std::vector<std::string> ids;
+    if (cluster_) {
+        for (const zetta::cluster::ClusterMember& member : cluster_->membership()) {
+            ids.push_back(member.node_id);
+        }
+    }
+    if (std::ranges::find(ids, node_id()) == ids.end()) ids.push_back(node_id());
+    return ids;
 }
 
 void Node::tick() {
@@ -344,12 +901,20 @@ void Node::tick() {
     const std::string version_at_pull =
         replication_ ? replication_->version() : std::string{};
     if (replication_ && version_at_pull != last_seen_version_) {
-        const nlohmann::json snapshot = replication_->snapshot();
-        reconcile_from_replication(snapshot);
-        // 1b. Between jobs: when the cluster membership (node:<id> keys) changed,
-        //     rebalance partition placement (#517). This DOES capture updated
-        //     part: owners; step 3 persists the moved document.
-        rebalance_partitions_on_membership_change(snapshot);
+        const zetta::cluster::ReplicationChanges changes =
+            replication_->changes_since(last_replication_change_token_);
+        const std::size_t full_reconcile_threshold =
+            std::max<std::size_t>(1, changes.snapshot->size() / 4);
+        const bool full_reconcile =
+            changes.full_resync ||
+            changes.keys.size() > full_reconcile_threshold;
+        if (full_reconcile) {
+            reconcile_from_replication(*changes.snapshot);
+            rebalance_partitions_on_membership_change(*changes.snapshot);
+        } else if (!changes.keys.empty()) {
+            reconcile_replication_changes(*changes.snapshot, changes.keys);
+        }
+        last_replication_change_token_ = changes.next_token;
         // 1c. Make the reconciled rows durable, ONCE. Reconcile issues an update
         //     per row and the storage engine defers the file write (#952), so the
         //     whole pass costs one rewrite per chunk it actually touched rather
@@ -361,6 +926,9 @@ void Node::tick() {
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
     controller_.reconcile();
+    if (study_driver_) study_driver_->reconcile();
+    // 2a. Write coalesced trainer captures whose interval has passed (#1217).
+    flush_pending_captures(false);
     // 2b. Search plane (#641): keep this node's per-partition search sub-indexes
     //     current with the (replicated) Search index entities + the placed
     //     partitions this node owns — so any node can answer a peer's
@@ -377,8 +945,13 @@ void Node::tick() {
     //    the one read at the TOP of the tick, never the current one (see step 1).
     if (replication_) {
         if (replication_->version() != last_seen_version_) {
-            persist_replication();
+            replication_persist_pending_ = true;
             last_seen_version_ = version_at_pull;
+        }
+        constexpr auto kPersistInterval = std::chrono::seconds(1);
+        if (replication_persist_pending_ &&
+            Clock::now() - last_replication_persist_ >= kPersistInterval) {
+            persist_replication();
         }
     }
     // 4. Telemetry plane (#584): sample this node's live host utilization and
@@ -391,15 +964,103 @@ void Node::tick() {
         using namespace std::chrono;
         constexpr duration<double> kTelemetryInterval{1.0};
         const steady_clock::time_point now = steady_clock::now();
+        // The storage census (zetta#1259): take a finished round, start the next when due.
+        if (storage_census_round_ &&
+            storage_census_round_->finished.load(std::memory_order_acquire)) {
+            storage_census_ = std::move(storage_census_round_->census);
+            storage_census_measured_at_ = std::move(storage_census_round_->measured_at);
+            storage_census_taken_ = storage_census_round_->taken;
+            storage_census_measured_ = true;
+            storage_census_round_.reset();
+        }
+        if (!storage_census_round_ &&
+            (last_storage_census_.time_since_epoch().count() == 0 ||
+             now - last_storage_census_ >= kStorageCensusInterval)) {
+            last_storage_census_ = now;
+            storage_census_round_ = std::make_shared<StorageCensusRound>();
+            zetta::runtime::spawn(run_storage_census(&storage_census_round_->census,
+                                                     &storage_census_round_->measured_at,
+                                                     &storage_census_round_->taken,
+                                                     config_.data_dir),
+                                  [round = storage_census_round_] {
+                                      round->finished.store(true, std::memory_order_release);
+                                      round->done.set();
+                                  });
+        }
         if (last_telemetry_sample_.time_since_epoch().count() == 0 ||
             now - last_telemetry_sample_ >= kTelemetryInterval) {
             last_telemetry_sample_ = now;
-            const zetta::cluster::NodeMetrics metrics = sample_node_metrics();
+            zetta::cluster::NodeMetrics metrics = sample_node_metrics();
+            if (storage_census_measured_) {
+                metrics.storage_census_available = true;
+                metrics.storage_census = storage_census_;
+                metrics.storage_census_measured_at = storage_census_measured_at_;
+                metrics.storage_census_age_seconds =
+                    std::max(0.0, duration<double>(now - storage_census_taken_).count());
+            }
             telemetry_->record_local(node_id(), metrics);
             cluster_->broadcast_event(
                 std::string(zetta::cluster::NodeTelemetryExchange::kMethod),
                 encode_node_metrics(metrics, node_id()));
         }
+    }
+    // The record log (#1231): retention every second, a flush and a bounded
+    // compaction step every tick, and anti-entropy with the live peers every five
+    // seconds on the blocking pool (it waits on the signal plane).
+    if (record_store_) {
+        constexpr auto kRecordSweepInterval = std::chrono::seconds(1);
+        if (Clock::now() - last_record_sweep_ >= kRecordSweepInterval) {
+            last_record_sweep_ = Clock::now();
+            record_store_->sweep(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count());
+        }
+        record_store_->maintain();
+        constexpr auto kAntiEntropyInterval = std::chrono::seconds(5);
+        if (cluster_ && !record_anti_entropy_ &&
+            Clock::now() - last_record_anti_entropy_ >= kAntiEntropyInterval) {
+            last_record_anti_entropy_ = Clock::now();
+            record_anti_entropy_ = std::make_shared<RecordAntiEntropyRound>();
+            zetta::runtime::spawn(run_record_anti_entropy(record_store_.get()),
+                                  [round = record_anti_entropy_] {
+                                      round->finished.store(true, std::memory_order_release);
+                                      round->done.set();
+                                  });
+        }
+        if (record_anti_entropy_ &&
+            record_anti_entropy_->finished.load(std::memory_order_acquire)) {
+            record_anti_entropy_.reset();
+        }
+    }
+    // The object logs (#1005): a maintenance step every 100 ms (tombstone grace,
+    // idle uploads, flushing rolled segments, a bounded compaction step) and
+    // anti-entropy every five seconds, on the pool, one round at a time.
+    if (object_store_) {
+        if (object_upkeep_ && object_upkeep_->finished.load(std::memory_order_acquire)) {
+            object_upkeep_.reset();
+        }
+        constexpr auto kObjectMaintenanceInterval = std::chrono::milliseconds(100);
+        constexpr auto kObjectAntiEntropyInterval = std::chrono::seconds(5);
+        if (!object_upkeep_ && Clock::now() - last_object_maintenance_ >= kObjectMaintenanceInterval) {
+            last_object_maintenance_ = Clock::now();
+            const bool anti_entropy =
+                cluster_ && Clock::now() - last_object_anti_entropy_ >= kObjectAntiEntropyInterval;
+            if (anti_entropy) last_object_anti_entropy_ = Clock::now();
+            object_upkeep_ = std::make_shared<ObjectUpkeepRound>();
+            zetta::runtime::spawn(run_object_upkeep(object_store_.get(), anti_entropy),
+                                  [round = object_upkeep_] {
+                                      round->finished.store(true, std::memory_order_release);
+                                      round->done.set();
+                                  });
+        }
+    }
+    flush_due_audit_summaries();
+    sync_audit_log();
+    constexpr auto kAuditRetentionCheckInterval = std::chrono::hours(1);
+    if (last_audit_retention_.time_since_epoch().count() == 0 ||
+        Clock::now() - last_audit_retention_ >=
+            kAuditRetentionCheckInterval) {
+        apply_audit_retention();
     }
     // 5. Coordinated co-launch (#601): execute any `run.launch` requests peers
     //    fanned out, HERE on the owner thread — the launched SPMD body blocks on
@@ -408,6 +1069,17 @@ void Node::tick() {
     //    same "synchronous on the thread that owns the Node" pattern every
     //    interactive submitter uses; the tick resumes when the co-run finishes.
     if (launch_listener_) launch_listener_->drain();
+    report_memory(false);
+}
+
+void Node::flush_pending_captures(bool force) {
+    std::erase_if(pending_run_captures_, [&](const std::string& run_id) {
+        const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+        return !run || run->flush_capture(force);
+    });
+    for (const std::shared_ptr<zetta::ml::Study>& study : studies_) {
+        if (study) study->flush_capture(force);
+    }
 }
 
 void Node::run_on_owner(const std::function<void()>& work) {
@@ -431,6 +1103,7 @@ void Node::run_on_owner(const std::function<void()>& work) {
         std::lock_guard<std::mutex> lock(owner_work_mutex_);
         owner_work_queue_.push_back(
             OwnerWork{work, [completed] { completed->set(); }});
+        if (owner_wakeup_) owner_wakeup_();
     }
     // Block this worker until the owner loop has executed the work. The wait
     // goes through the runtime's async_event, awaited to completion — the same
@@ -442,6 +1115,11 @@ void Node::run_on_owner(const std::function<void()>& work) {
             -> zetta::runtime::task<> {
             [[maybe_unused]] auto ready = co_await event->wait();
         }(completed));
+}
+
+void Node::set_owner_wakeup(std::function<void()> wakeup) {
+    std::lock_guard<std::mutex> lock(owner_work_mutex_);
+    owner_wakeup_ = std::move(wakeup);
 }
 
 bool Node::on_owner_thread() const {
@@ -466,14 +1144,59 @@ void Node::drain_owner_work() {
 
 void Node::stop() {
     if (!running_) return;
+    // A record anti-entropy round runs on the pool against the record store and
+    // the cluster; let it finish before either goes away (#1231).
+    if (record_anti_entropy_) {
+        zetta::runtime::block_on(
+            [](std::shared_ptr<RecordAntiEntropyRound> round) -> zetta::runtime::task<> {
+                [[maybe_unused]] auto finished = co_await round->done.wait();
+            }(record_anti_entropy_));
+        record_anti_entropy_.reset();
+    }
+    // The storage census round walks the data directory (zetta#1259).
+    if (storage_census_round_) {
+        zetta::runtime::block_on(
+            [](std::shared_ptr<StorageCensusRound> round) -> zetta::runtime::task<> {
+                [[maybe_unused]] auto finished = co_await round->done.wait();
+            }(storage_census_round_));
+        storage_census_round_.reset();
+    }
+    // The object store's upkeep round likewise (#1005).
+    if (object_upkeep_) {
+        zetta::runtime::block_on(
+            [](std::shared_ptr<ObjectUpkeepRound> round) -> zetta::runtime::task<> {
+                [[maybe_unused]] auto finished = co_await round->done.wait();
+            }(object_upkeep_));
+        object_upkeep_.reset();
+    }
+    if (study_driver_) {
+        study_driver_->stop();
+        study_driver_.reset();
+    }
     // Tear the coordinator down first, while the attached cluster is still alive
     // (its signal-handler unwind is a cheap atomic store, and the steal loop joins
     // promptly) — so the cluster can be stopped/destroyed after us safely (#579).
     stop_coordinator();
+    // Pub/sub flushes its default topics within its budget (#1031, D20), before
+    // the replicated document is persisted.
+    if (pubsub_) {
+        pubsub_->shutdown();
+        pubsub_.reset();
+    }
+    flush_audit_summaries();
+    if (audit_trail_) {
+        audit_trail_->flush();
+    }
+    flush_pending_captures(true);
     if (replication_) persist_replication();
     running_ = false;
     std::printf("zetta: node stopped\n");
     std::fflush(stdout);
+}
+
+void Node::request_stop_study_work(const std::string& study_id,
+                                   const std::string& run_id) {
+    if (study_driver_) study_driver_->request_stop(study_id, run_id);
 }
 
 void Node::attach_cluster(zetta::cluster::Cluster& cluster, unsigned worker_count) {
@@ -515,6 +1238,13 @@ void Node::start_coordinator() {
         *cluster_, telemetry_.get());
     launch_listener_->set_span_recorder(&span_recorder_);
     zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_entity_resolution_launch_runner(*launch_listener_, *this,
+                                                       *cluster_);
+    zetta::ml::install_segmentation_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_forecast_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_anomaly_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_next_best_action_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_synthetic_private_launch_runner(*launch_listener_, *this);
     zetta::connect::install_connector_fetch_launch_runner(*launch_listener_,
                                                           *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
@@ -557,12 +1287,22 @@ void Node::start_coordinator() {
     distributed_select_ = std::make_unique<zetta::query::DistributedSelect>(
         *this, *cluster_, cluster_->signal_handler());
     distributed_select_->refresh();
+
+    // The record store (#1231) chains over the SELECT plane: `record.put` and
+    // `record.apply` are served here, everything else routes on.
+    if (record_store_) record_store_->attach(*cluster_);
+    // The object store (#1005) chains over the record store: `object.*` is served
+    // here, everything else routes on.
+    if (object_store_) object_store_->attach(*cluster_);
 }
 
 void Node::stop_coordinator() {
-    // Unwind in reverse wiring order: the SELECT plane restores the search
-    // plane's handler, the search plane the compute plane's, then the
-    // coordinator restores its own fallback.
+    // Unwind in reverse wiring order: the object store restores the record
+    // store's handler, the record store the SELECT plane's, the SELECT plane the
+    // search plane's, the search plane the compute plane's, then the coordinator
+    // restores its own fallback.
+    if (object_store_) object_store_->detach();
+    if (record_store_) record_store_->detach();
     distributed_select_.reset();
     distributed_fulltext_.reset();
     search_build_fingerprints_.clear();
@@ -573,6 +1313,14 @@ void Node::stop_coordinator() {
     // launch listener — pending, undrained launches are ephemeral signal-plane
     // messages and die with the attachment (the initiator's collective rounds
     // surface the absence with their bounded timeout).
+    // The coordinator's stop restored the cluster's handler to its fallback,
+    // which is this listener; hand the chain on to the listener's own fallback
+    // (the telemetry exchange) before destroying it. set_signal_handler waits
+    // out any dispatch still inside the listener, so the reset below cannot
+    // race the network thread (#1131: a heap use-after-free under repeat).
+    if (cluster_ && cluster_->signal_handler() == launch_listener_.get()) {
+        cluster_->set_signal_handler(telemetry_.get());
+    }
     launch_listener_.reset();
 }
 
@@ -701,7 +1449,18 @@ void Node::load_projects() {
             meta.value("created", std::string{}),
             meta.value("updated", std::string{}),
             meta.value("owner", std::string{}), entry.path(), replication_,
-            this, meta.value("description", std::string{}));
+            this, meta.value("description", std::string{}),
+            [this](const std::string& project_id,
+                   const std::string& pipeline_id,
+                   const std::string& old_name,
+                   const std::string& new_name) {
+                update_pipeline_display_name(project_id, pipeline_id,
+                                             old_name, new_name);
+            });
+        if (const auto internal = meta.find("internal");
+            internal != meta.end() && internal->is_boolean() && internal->get<bool>()) {
+            project->set_internal(true);
+        }
         project->load();  // bring in this project's inputs + graphs from disk
         projects_.push_back(std::move(project));
     }
@@ -878,7 +1637,7 @@ std::shared_ptr<zetta::data::Database> Node::materialize_database(
 std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
     const std::string& database_id, const std::string& database_name,
     const std::string& table_id, const std::string& table_name,
-    bool partition_only) {
+    bool partition_only, const std::string& source_format) {
     // The keys are **captured**, not merely materialized — under the initiator's
     // ids, with the value `create_database`/`create_table` would have written.
     //
@@ -901,6 +1660,7 @@ std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
         if (!snapshot.contains(table_key)) {
             nlohmann::json value{{"db", database_id}, {"name", table_name}};
             if (partition_only) value["partition_only"] = true;
+            if (!source_format.empty()) value["source_format"] = source_format;
             replication_->set(table_key, value);
         }
     }
@@ -911,7 +1671,7 @@ std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
     if (auto existing = database->find_table_by_id(table_id)) return existing;
     return database->materialize_table(table_id, table_name,
                                        database->replication_strategy(),
-                                       partition_only);
+                                       partition_only, source_format);
 }
 
 std::shared_ptr<zetta::data::Database> Node::find_database(const std::string& name) const {
@@ -970,20 +1730,37 @@ std::vector<std::string> Node::database_names() const {
 
 std::shared_ptr<zetta::pipeline::Project> Node::create_project(std::string name,
                                               std::string owner,
-                                              std::string description) {
+                                              std::string description,
+                                              bool internal) {
     if (name.empty() || find_project(name)) return nullptr;
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
     if (replication_) {
-        replication_->set(catalog::project_key(id),
-                          nlohmann::json{{"name", name},
-                                         {"created", now},
-                                         {"updated", now},
-                                         {"owner", owner},
-                                         {"description", description}});
+        nlohmann::json value{{"name", name},
+                             {"created", now},
+                             {"updated", now},
+                             {"owner", owner},
+                             {"description", description}};
+        if (internal) value["internal"] = true;
+        replication_->set(catalog::project_key(id), std::move(value));
     }
     return materialize_project(id, std::move(name), now, now, std::move(owner),
-                               std::move(description));
+                               std::move(description), internal);
+}
+
+bool Node::reveal_project(const std::string& id, const std::string& name) {
+    auto project = find_project_by_id(id);
+    if (!project || !project->internal() || name.empty()) return false;
+    const std::string from = project->name();
+    if (name != from && find_project(name)) return false;
+    project->set_metadata(name, project->created(), zetta::util::now_iso8601(),
+                          project->owner(), project->description());
+    project->set_internal(false);
+    if (replication_) {
+        replication_->set(catalog::project_key(project->id()), project->metadata());
+    }
+    if (name != from) update_project_display_name(project->id(), from, name);
+    return true;
 }
 
 std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string id,
@@ -991,7 +1768,8 @@ std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string 
                                                    std::string created,
                                                    std::string updated,
                                                    std::string owner,
-                                                   std::string description) {
+                                                   std::string description,
+                                                   bool internal) {
     if (auto existing = find_project_by_id(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
@@ -1001,8 +1779,18 @@ std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string 
                                              std::move(created),
                                              std::move(updated),
                                              std::move(owner), dir,
-                                             replication_, this, std::move(description));
-    project->persist_meta();
+                                             replication_, this,
+                                             std::move(description),
+                                             [this](const std::string& project_id,
+                                                    const std::string& pipeline_id,
+                                                    const std::string& old_name,
+                                                    const std::string& new_name) {
+                                                 update_pipeline_display_name(
+                                                     project_id, pipeline_id,
+                                                     old_name, new_name);
+                                             });
+    if (internal) project->set_internal(true);  // persists project.json
+    else project->persist_meta();
     projects_.push_back(project);
     return project;
 }
@@ -1022,6 +1810,12 @@ bool Node::drop_project(const std::string& name) {
         // as dangling `graph:` keys once their parent is gone.
         for (const auto& graph : project->graphs()) {
             replication_->remove(catalog::graph_key(graph->id()));
+        }
+        // ...and its inputs (#1009). They were left behind as `input:` keys naming
+        // a project that no longer exists — the integrity check counts exactly
+        // these as dangling_inputs.
+        for (const auto& input : project->inputs()) {
+            replication_->remove(catalog::input_key(input->id()));
         }
         replication_->remove(catalog::project_key(project->id()));
     }
@@ -1044,18 +1838,21 @@ bool Node::rename_project(const std::string& from, const std::string& to) {
     auto project = find_project(from);
     if (!project) return false;
     project->set_metadata(to, project->created(), zetta::util::now_iso8601(),
-                          project->owner());
+                          project->owner(), project->description());
     if (replication_) {
         replication_->set(catalog::project_key(project->id()),
                           project->metadata());
     }
+    update_project_display_name(project->id(), from, to);
     return true;
 }
 
 std::vector<std::string> Node::project_names() const {
     std::vector<std::string> names;
     names.reserve(projects_.size());
-    for (const auto& project : projects_) names.push_back(project->name());
+    for (const auto& project : projects_) {
+        if (!project->internal()) names.push_back(project->name());
+    }
     return names;
 }
 
@@ -1070,7 +1867,7 @@ std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(const ir::Execut
     if (graph.empty()) return nullptr;
 
     // RULE-1: no deploy without a passing correctness gate. The gate runs at the
-    // deploy seam itself — so a *programmatic* deploy clears the same gate the GUI
+    // deploy boundary itself — so a *programmatic* deploy clears the same gate the GUI
     // Deploy panel runs, and an ungated/failing graph can never be placed. A gate
     // failure is a governed decision: record a blocked (allowed=false) deploy event
     // and place nothing.
@@ -1233,14 +2030,65 @@ void Node::load_runs() {
     });
 }
 
+std::vector<zetta::pipeline::TableRead> Node::tables_read(
+    const std::string& project, const std::string& graph,
+    const std::string& dataset_path) const {
+    std::vector<zetta::pipeline::TableRead> reads;
+    const auto add = [&](const std::string& database, const std::string& table) {
+        if (database.empty() || table.empty()) return;
+        const std::shared_ptr<zetta::data::Database> owner = find_database(database);
+        const std::shared_ptr<zetta::data::Table> found =
+            owner ? owner->find_table(table) : nullptr;
+        if (!found) return;
+        zetta::pipeline::merge_table_reads(reads, {{database, table, found->id()}});
+    };
+    if (!dataset_path.empty()) {
+        const zetta::data::DatasetPath path = zetta::data::parse_dataset_path(dataset_path);
+        if (path.kind == zetta::data::DatasetPathKind::Table) add(path.database, path.table);
+    }
+    if (project.empty() || graph.empty()) return reads;
+    std::shared_ptr<zetta::pipeline::Project> stored = find_project_by_id(project);
+    if (!stored) stored = find_project(project);
+    if (!stored) return reads;
+    std::shared_ptr<zetta::pipeline::ProjectGraph> stored_graph = stored->find_graph_by_id(graph);
+    if (!stored_graph) stored_graph = stored->find_graph(graph);
+    if (!stored_graph) return reads;
+    for (const auto& step : stored_graph->graph().nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!step || !step->attributes.is_object()) continue;
+        add(step->attributes.value("source", std::string{}),
+            step->attributes.value("table", std::string{}));
+    }
+    return reads;
+}
+
 std::shared_ptr<zetta::pipeline::Run> Node::create_run(std::string project, std::string graph,
                                       std::string deployment) {
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
     zetta::pipeline::RunValue value;
-    value.project = std::move(project);
-    value.graph = std::move(graph);
+    value.project = project;
+    value.graph = graph;
+    std::shared_ptr<zetta::pipeline::Project> stored_project =
+        find_project_by_id(project);
+    if (!stored_project) {
+        stored_project = find_project(project);
+    }
+    if (stored_project) {
+        value.project = stored_project->id();
+        value.project_name = stored_project->name();
+        std::shared_ptr<zetta::pipeline::ProjectGraph> stored_graph =
+            stored_project->find_graph_by_id(graph);
+        if (!stored_graph) {
+            stored_graph = stored_project->find_graph(graph);
+        }
+        if (stored_graph) {
+            value.graph = stored_graph->id();
+            value.pipeline_name = stored_graph->name();
+        }
+    }
     value.deployment = std::move(deployment);
+    // What it reads, recorded before it reads anything (zetta#1258).
+    value.reads = tables_read(value.project, value.graph);
     value.status = zetta::pipeline::RunStatus::Pending;
     value.created = now;
     value.updated = now;
@@ -1266,6 +2114,318 @@ std::shared_ptr<zetta::pipeline::Run> Node::find_run(const std::string& id) cons
         if (run->id() == id) return run;
     }
     return nullptr;
+}
+
+namespace {
+
+std::map<std::string, double> run_system_sample(
+    const zetta::cluster::NodeMetrics& host,
+    const std::map<std::string, double>& values) {
+    std::map<std::string, double> system_values;
+    if (host.cpu_percent_available) {
+        system_values["system.cpu.percent"] = host.cpu_percent;
+    }
+    if (host.memory_available) {
+        system_values["system.memory.used_bytes"] =
+            static_cast<double>(host.memory_used_bytes);
+        system_values["system.memory.percent"] = host.memory_percent;
+    }
+    if (host.gpu_available) {
+        system_values["system.gpu.percent"] = host.gpu_percent;
+        system_values["system.gpu.vram_used_bytes"] =
+            static_cast<double>(host.vram_used_bytes);
+    }
+    if (const auto tokens = values.find("train.tokens_per_second");
+        tokens != values.end()) {
+        system_values["system.throughput.per_second"] = tokens->second;
+    } else if (const auto rows = values.find("train.rows_per_second");
+               rows != values.end()) {
+        system_values["system.throughput.per_second"] = rows->second;
+    }
+    std::erase_if(system_values, [&](const auto& metric) {
+        return values.contains(metric.first);
+    });
+    return system_values;
+}
+
+}  // namespace
+
+bool Node::log_run_metrics(const std::string& run_id, std::uint64_t step,
+                           std::map<std::string, double> values,
+                           std::string time, std::string* error,
+                           bool coalesce) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    std::map<std::string, double> system_values;
+    if (run->value().metrics_suppressed.empty()) {
+        system_values = run_system_sample(sample_node_metrics(), values);
+    }
+    if (time.empty()) {
+        time = zetta::util::now_iso8601();
+    }
+    if (!run->log_metrics_with_system_sample(step, values, system_values,
+                                            time, error, coalesce)) {
+        return false;
+    }
+    if (run->capture_pending()) pending_run_captures_.insert(run_id);
+    if (pubsub_ == nullptr) {
+        return true;
+    }
+
+    const zetta::pubsub::Identity engine{
+        zetta::pubsub::Address{"service", "run-metrics"}, {}};
+    const zetta::pubsub::Address topic{"topic", "run-metrics." + run_id};
+    if (!pubsub_->topic_settings(topic)) {
+        zetta::pubsub::TopicSettings settings;
+        settings.exposed = true;
+        settings.lifecycle = zetta::pubsub::TopicLifecycle::Ephemeral;
+        std::string reason;
+        if (!pubsub_->create_topic(engine, topic, settings, &reason) &&
+            !pubsub_->topic_settings(topic)) {
+            if (error != nullptr) {
+                *error = "/run: metric batch was stored but its live topic could not be created: " +
+                         reason;
+            }
+            return false;
+        }
+    }
+    const std::optional<zetta::pubsub::TopicSettings> settings =
+        pubsub_->topic_settings(topic);
+    if (!settings || !settings->exposed) {
+        if (error != nullptr) {
+            *error = "/run: metric batch was stored but topic " +
+                     topic.to_string() + " is not exposed";
+        }
+        return false;
+    }
+    std::map<std::uint64_t, std::map<std::string, double>> batches;
+    if (!values.empty()) {
+        batches[step] = std::move(values);
+    }
+    for (const auto& [name, value] : system_values) {
+        const auto stored_step = run->value().metrics.at("series")
+                                     .at(name).at("steps").back()
+                                     .get<std::uint64_t>();
+        batches[stored_step][name] = value;
+    }
+    for (const auto& [stored_step, batch] : batches) {
+        zetta::pubsub::PublishRequest request;
+        request.to = {topic};
+        request.encoding = zetta::pubsub::Encoding::Json;
+        request.mime_type = "application/json";
+        request.correlation_id = run_id;
+        request.payload = nlohmann::json{{"run", run_id},
+                                        {"step", stored_step},
+                                        {"values", batch},
+                                        {"time", time}}
+                              .dump();
+        const zetta::pubsub::PublishResult published =
+            pubsub_->publish(engine, std::move(request));
+        if (!published.accepted) {
+            if (error != nullptr) {
+                *error = "/run: metric batch was stored but live publish failed: " +
+                         published.error;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Node::log_run_params(const std::string& run_id, nlohmann::json params,
+                          std::string* error) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    return run->log_params(std::move(params), error);
+}
+
+bool Node::log_run_artifact(const std::string& run_id,
+                            nlohmann::json artifact, std::string* error) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    return run->log_artifact(std::move(artifact), error);
+}
+
+// ----- studies (replicated AutoML searches; each trial is a Run) ------------
+
+void Node::load_studies() {
+    studies_.clear();
+    std::error_code error_code;
+    fs::create_directories(config_.data_dir, error_code);
+    for (const auto& entry : fs::directory_iterator(config_.data_dir, error_code)) {
+        if (!entry.is_directory()) continue;
+        const fs::path path = entry.path() / "study.json";
+        if (!fs::exists(path)) continue;
+        std::ifstream input(path);
+        const nlohmann::json document = nlohmann::json::parse(
+            input, nullptr, /*allow_exceptions=*/false);
+        std::string reason;
+        const std::optional<zetta::ml::StudyValue> value =
+            document.is_discarded()
+                ? std::nullopt
+                : zetta::ml::parse_study_value(document, &reason);
+        if (!value) {
+            std::printf("zetta: skipping invalid study %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        document.is_discarded() ? "unparseable JSON"
+                                                : reason.c_str());
+            continue;
+        }
+        studies_.push_back(std::make_shared<zetta::ml::Study>(
+            entry.path().filename().string(), *value, entry.path(), replication_));
+    }
+    std::ranges::sort(studies_, [](const auto& left, const auto& right) {
+        if (left->value().created != right->value().created) {
+            return left->value().created < right->value().created;
+        }
+        return left->id() < right->id();
+    });
+}
+
+std::shared_ptr<zetta::ml::Study> Node::create_study(
+    zetta::ml::StudySpec spec, std::string* error) {
+    std::shared_ptr<zetta::pipeline::Project> project =
+        find_project_by_id(spec.project);
+    if (!project) {
+        project = find_project(spec.project);
+    }
+    if (project) {
+        spec.project = project->name();
+        std::shared_ptr<zetta::pipeline::ProjectGraph> pipeline =
+            project->find_graph_by_id(spec.pipeline);
+        if (!pipeline) {
+            pipeline = project->find_graph(spec.pipeline);
+        }
+        if (pipeline) {
+            spec.pipeline = pipeline->name();
+        }
+    }
+    if (!zetta::ml::validate_study_spec(spec, error)) return nullptr;
+    if (find_study(spec.name)) {
+        if (error != nullptr) *error = "/name: a study with this name already exists";
+        return nullptr;
+    }
+    zetta::ml::StudyValue value;
+    // The tables its trials read (zetta#1258): its dataset, or its pipeline's.
+    value.reads = tables_read(spec.project, spec.pipeline, spec.dataset);
+    value.spec = std::move(spec);
+    value.created = zetta::util::now_iso8601();
+    value.updated = value.created;
+    const std::string id = zetta::util::new_uuid();
+    if (replication_ != nullptr) {
+        replication_->set(catalog::study_key(id), zetta::ml::to_json(value));
+    }
+    return materialize_study(id, std::move(value));
+}
+
+std::shared_ptr<zetta::ml::Study> Node::materialize_study(
+    std::string id, zetta::ml::StudyValue value) {
+    if (const auto existing = find_study(id)) return existing;
+    const fs::path directory = fs::path(config_.data_dir) / id;
+    std::error_code error_code;
+    fs::create_directories(directory, error_code);
+    if (error_code) return nullptr;
+    auto study = std::make_shared<zetta::ml::Study>(
+        std::move(id), std::move(value), directory, replication_);
+    study->persist_meta();
+    studies_.push_back(study);
+    return study;
+}
+
+std::shared_ptr<zetta::ml::Study> Node::find_study(
+    const std::string& id_or_name) const {
+    const auto found = std::ranges::find_if(
+        studies_, [&](const std::shared_ptr<zetta::ml::Study>& study) {
+            return study->id() == id_or_name ||
+                   study->spec().name == id_or_name;
+        });
+    return found == studies_.end() ? nullptr : *found;
+}
+
+std::optional<zetta::ml::StudyDeleteResult> Node::delete_study(
+    const std::string& id_or_name, std::string* error) {
+    const std::shared_ptr<zetta::ml::Study> study = find_study(id_or_name);
+    if (!study) {
+        if (error != nullptr) {
+            *error = "/study: no study named '" + id_or_name + "'";
+        }
+        return std::nullopt;
+    }
+    if (study->status() == zetta::ml::StudyStatus::Running) {
+        if (error != nullptr) {
+            *error = "/study: running studies must be stopped before deletion";
+        }
+        return std::nullopt;
+    }
+
+    zetta::ml::StudyDeleteResult result;
+    result.id = study->id();
+    result.name = study->spec().name;
+    result.kept_model = study->value().promoted_model;
+    if (!result.kept_model.empty()) {
+        if (const std::shared_ptr<zetta::ml::Model> model =
+                find_model(result.kept_model)) {
+            result.kept_run = model->run_id();
+        }
+        if (result.kept_run.empty()) {
+            const auto promoted_trial = std::ranges::find(
+                study->value().trials, result.kept_model,
+                &zetta::ml::StudyTrial::model);
+            if (promoted_trial != study->value().trials.end()) {
+                result.kept_run = promoted_trial->run;
+            }
+        }
+    }
+
+    std::vector<std::string> removable_runs;
+    for (const zetta::ml::StudyTrial& trial : study->value().trials) {
+        if (trial.run != result.kept_run) {
+            removable_runs.push_back(trial.run);
+        }
+    }
+    for (const std::string& run_id : removable_runs) {
+        if (drop_run(run_id)) {
+            result.removed_runs.push_back(run_id);
+        }
+    }
+    if (!drop_study(result.id)) {
+        if (error != nullptr) {
+            *error = "/study: could not delete study '" + result.name + "'";
+        }
+        return std::nullopt;
+    }
+    return result;
+}
+
+bool Node::drop_study(const std::string& id) {
+    if (!find_study(id)) return false;
+    if (replication_ != nullptr) replication_->remove(catalog::study_key(id));
+    return materialize_drop_study(id);
+}
+
+bool Node::materialize_drop_study(const std::string& id) {
+    const auto found = std::ranges::find(studies_, id,
+                                         &zetta::ml::Study::id);
+    if (found == studies_.end()) return false;
+    std::error_code error_code;
+    fs::remove_all((*found)->dir(), error_code);
+    studies_.erase(found);
+    return true;
 }
 
 // ----- models (a registered trained model; replicated as model:<uuid>) -------
@@ -1308,6 +2468,30 @@ void Node::load_models() {
 
 std::shared_ptr<zetta::ml::Model> Node::create_model(zetta::ml::ModelValue value) {
     if (value.kind.empty()) return nullptr;  // basic guard (kind is required)
+    if (value.run_id.empty()) {
+        value.run_id = value.run;
+    } else {
+        value.run = value.run_id;
+    }
+    if (const std::shared_ptr<zetta::pipeline::Run> run =
+            find_run(value.run_id)) {
+        value.project_name = run->project_name();
+        value.pipeline_name = run->pipeline_name();
+        if (!run->project().empty()) {
+            value.project = run->project();
+        }
+    }
+    if (value.project_name.empty()) {
+        std::shared_ptr<zetta::pipeline::Project> project =
+            find_project_by_id(value.project);
+        if (!project) {
+            project = find_project(value.project);
+        }
+        if (project) {
+            value.project = project->id();
+            value.project_name = project->name();
+        }
+    }
     const std::string id = zetta::util::new_uuid();
     value.created = zetta::util::now_iso8601();
     value.weights.reset();  // weights are attached separately via set_weights
@@ -1350,6 +2534,334 @@ bool Node::materialize_drop_model(const std::string& id) {
     fs::remove_all((*it)->dir(), ec);
     models_.erase(it);
     return true;
+}
+
+void Node::backfill_denormalized_names() {
+    for (const std::shared_ptr<zetta::pipeline::Run>& run : runs_) {
+        std::string project_name = run->project_name();
+        std::string pipeline_name = run->pipeline_name();
+        std::shared_ptr<zetta::pipeline::Project> project =
+            find_project_by_id(run->project());
+        if (!project) {
+            project = find_project(run->project());
+        }
+        if (project) {
+            project_name = project->name();
+            std::shared_ptr<zetta::pipeline::ProjectGraph> pipeline =
+                project->find_graph_by_id(run->graph());
+            if (!pipeline) {
+                pipeline = project->find_graph(run->graph());
+            }
+            if (pipeline) {
+                pipeline_name = pipeline->name();
+            }
+        }
+        run->set_display_names(std::move(project_name),
+                               std::move(pipeline_name));
+    }
+
+    for (const std::shared_ptr<zetta::ml::Model>& model : models_) {
+        const std::string run_id = model->run_id().empty()
+                                       ? model->run()
+                                       : model->run_id();
+        std::string project_name = model->project_name();
+        std::string pipeline_name = model->pipeline_name();
+        if (const std::shared_ptr<zetta::pipeline::Run> run =
+                find_run(run_id)) {
+            project_name = run->project_name();
+            pipeline_name = run->pipeline_name();
+        } else {
+            std::shared_ptr<zetta::pipeline::Project> project =
+                find_project_by_id(model->project());
+            if (!project) {
+                project = find_project(model->project());
+            }
+            if (project) {
+                project_name = project->name();
+            }
+        }
+        model->set_display_lineage(std::move(project_name),
+                                   std::move(pipeline_name), run_id);
+    }
+
+    for (const std::shared_ptr<zetta::ml::Study>& study : studies_) {
+        std::string project_name = study->spec().project;
+        std::string pipeline_name = study->spec().pipeline;
+        std::shared_ptr<zetta::pipeline::Project> project =
+            find_project_by_id(project_name);
+        if (!project) {
+            project = find_project(project_name);
+        }
+        if (project) {
+            project_name = project->name();
+            std::shared_ptr<zetta::pipeline::ProjectGraph> pipeline =
+                project->find_graph_by_id(pipeline_name);
+            if (!pipeline) {
+                pipeline = project->find_graph(pipeline_name);
+            }
+            if (pipeline) {
+                pipeline_name = pipeline->name();
+            }
+        }
+        study->set_project_pipeline(std::move(project_name),
+                                    std::move(pipeline_name));
+    }
+}
+
+void Node::update_project_display_name(const std::string& project_id,
+                                       const std::string& old_name,
+                                       const std::string& new_name) {
+    for (const std::shared_ptr<zetta::pipeline::Run>& run : runs_) {
+        if (run->project() == project_id || run->project() == old_name ||
+            run->project_name() == old_name) {
+            run->set_display_names(new_name, run->pipeline_name());
+        }
+    }
+    for (const std::shared_ptr<zetta::ml::Model>& model : models_) {
+        bool matches = model->project() == project_id ||
+                       model->project() == old_name ||
+                       model->project_name() == old_name;
+        if (const std::shared_ptr<zetta::pipeline::Run> run =
+                find_run(model->run_id())) {
+            matches = matches || run->project() == project_id;
+        }
+        if (matches) {
+            model->set_display_lineage(new_name, model->pipeline_name(),
+                                       model->run_id());
+        }
+    }
+    for (const std::shared_ptr<zetta::ml::Study>& study : studies_) {
+        if (study->spec().project == project_id ||
+            study->spec().project == old_name) {
+            study->set_project_pipeline(new_name, study->spec().pipeline);
+        }
+    }
+}
+
+void Node::update_pipeline_display_name(const std::string& project_id,
+                                        const std::string& pipeline_id,
+                                        const std::string& old_name,
+                                        const std::string& new_name) {
+    const std::shared_ptr<zetta::pipeline::Project> project =
+        find_project_by_id(project_id);
+    const std::string project_name = project ? project->name() : std::string{};
+    std::vector<std::string> matching_runs;
+    for (const std::shared_ptr<zetta::pipeline::Run>& run : runs_) {
+        const bool project_matches =
+            run->project() == project_id ||
+            (!project_name.empty() &&
+             (run->project() == project_name ||
+              run->project_name() == project_name));
+        const bool pipeline_matches = run->graph() == pipeline_id ||
+                                      run->graph() == old_name ||
+                                      run->pipeline_name() == old_name;
+        if (project_matches && pipeline_matches) {
+            run->set_display_names(run->project_name(), new_name);
+            matching_runs.push_back(run->id());
+        }
+    }
+    for (const std::shared_ptr<zetta::ml::Model>& model : models_) {
+        const bool run_matches = std::ranges::contains(
+            matching_runs, model->run_id());
+        const bool direct_match = model->pipeline_name() == old_name &&
+                                  (model->project() == project_id ||
+                                   (!project_name.empty() &&
+                                    model->project_name() == project_name));
+        if (run_matches || direct_match) {
+            model->set_display_lineage(model->project_name(), new_name,
+                                       model->run_id());
+        }
+    }
+    for (const std::shared_ptr<zetta::ml::Study>& study : studies_) {
+        const bool project_matches =
+            study->spec().project == project_id ||
+            (project && study->spec().project == project->name());
+        const bool pipeline_matches = study->spec().pipeline == pipeline_id ||
+                                      study->spec().pipeline == old_name;
+        if (project_matches && pipeline_matches) {
+            study->set_project_pipeline(study->spec().project, new_name);
+        }
+    }
+}
+
+// ----- solution monitors (#1106) -------------------------------------------
+
+void Node::load_monitors() {
+    monitors_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code filesystem_error;
+    fs::create_directories(root, filesystem_error);
+    for (const auto& entry : fs::directory_iterator(root, filesystem_error)) {
+        if (!entry.is_directory()) {
+            continue;
+        }
+        const fs::path metadata_path = entry.path() / "monitor.json";
+        if (!fs::exists(metadata_path)) {
+            continue;
+        }
+        std::ifstream input(metadata_path);
+        const nlohmann::json metadata = nlohmann::json::parse(
+            input,
+            nullptr,
+            /*allow_exceptions=*/false);
+        std::string error;
+        const std::optional<zetta::solutions::MonitorValue> value =
+            metadata.is_discarded()
+                ? std::nullopt
+                : zetta::solutions::parse_monitor_value(metadata, &error);
+        if (!value) {
+            std::printf(
+                "zetta: skipping invalid solution monitor %s (%s)\n",
+                entry.path().filename().string().c_str(),
+                metadata.is_discarded() ? "unparseable JSON" : error.c_str());
+            continue;
+        }
+        monitors_.push_back(std::make_shared<zetta::solutions::Monitor>(
+            entry.path().filename().string(),
+            *value,
+            entry.path(),
+            replication_,
+            [this](const zetta::solutions::MonitorBreach& breach) {
+                publish_monitor_breach(breach);
+            }));
+    }
+    std::sort(
+        monitors_.begin(),
+        monitors_.end(),
+        [](const auto& left, const auto& right) {
+            if (left->created() != right->created()) {
+                return left->created() < right->created();
+            }
+            return left->id() < right->id();
+        });
+}
+
+std::shared_ptr<zetta::solutions::Monitor> Node::create_monitor(
+    zetta::solutions::MonitorSpec spec,
+    std::string* error) {
+    if (find_monitor(spec.solution)) {
+        if (error != nullptr) {
+            *error = "a monitor already exists for solution '" +
+                     spec.solution + "'";
+        }
+        return nullptr;
+    }
+    const std::string id = zetta::util::new_uuid();
+    std::optional<zetta::solutions::MonitorValue> value =
+        zetta::solutions::make_monitor_value(
+            std::move(spec),
+            zetta::util::now_iso8601(),
+            error);
+    if (!value) {
+        return nullptr;
+    }
+    if (replication_ != nullptr) {
+        replication_->set(
+            catalog::monitor_key(id),
+            zetta::solutions::to_json(*value));
+    }
+    return materialize_monitor(id, std::move(*value));
+}
+
+std::shared_ptr<zetta::solutions::Monitor> Node::materialize_monitor(
+    std::string id,
+    zetta::solutions::MonitorValue value) {
+    if (auto existing = find_monitor(id)) {
+        return existing;
+    }
+    const fs::path directory = fs::path(config_.data_dir) / id;
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error) {
+        return nullptr;
+    }
+    auto monitor = std::make_shared<zetta::solutions::Monitor>(
+        std::move(id),
+        std::move(value),
+        directory,
+        replication_,
+        [this](const zetta::solutions::MonitorBreach& breach) {
+            publish_monitor_breach(breach);
+        });
+    monitor->persist_meta();
+    monitors_.push_back(monitor);
+    std::sort(
+        monitors_.begin(),
+        monitors_.end(),
+        [](const auto& left, const auto& right) {
+            if (left->created() != right->created()) {
+                return left->created() < right->created();
+            }
+            return left->id() < right->id();
+        });
+    return monitor;
+}
+
+std::shared_ptr<zetta::solutions::Monitor> Node::find_monitor(
+    const std::string& id_or_solution) const {
+    for (const auto& monitor : monitors_) {
+        if (monitor->id() == id_or_solution ||
+            monitor->solution() == id_or_solution) {
+            return monitor;
+        }
+    }
+    return nullptr;
+}
+
+bool Node::drop_monitor(const std::string& id) {
+    if (!find_monitor(id)) {
+        return false;
+    }
+    if (replication_ != nullptr) {
+        replication_->remove(catalog::monitor_key(id));
+    }
+    return materialize_drop_monitor(id);
+}
+
+bool Node::materialize_drop_monitor(const std::string& id) {
+    const auto found = std::find_if(
+        monitors_.begin(),
+        monitors_.end(),
+        [&](const std::shared_ptr<zetta::solutions::Monitor>& monitor) {
+            return monitor->id() == id;
+        });
+    if (found == monitors_.end()) {
+        return false;
+    }
+    std::error_code error;
+    fs::remove_all((*found)->dir(), error);
+    monitors_.erase(found);
+    return true;
+}
+
+void Node::publish_monitor_breach(
+    const zetta::solutions::MonitorBreach& breach) {
+    if (pubsub_ == nullptr) {
+        return;
+    }
+    const zetta::pubsub::Identity engine{
+        zetta::pubsub::Address{"service", "solution-monitor"},
+        {},
+    };
+    const zetta::pubsub::Address topic{"topic", "solution-events"};
+    if (!pubsub_->topic_settings(topic)) {
+        zetta::pubsub::TopicSettings settings;
+        settings.exposed = false;
+        std::string reason;
+        if (!pubsub_->create_topic(engine, topic, settings, &reason) &&
+            !pubsub_->topic_settings(topic)) {
+            return;
+        }
+    }
+    nlohmann::json payload = zetta::solutions::to_json(breach);
+    payload["type"] = "monitor_breach";
+    zetta::pubsub::PublishRequest request;
+    request.to = {topic};
+    request.encoding = zetta::pubsub::Encoding::Json;
+    request.mime_type = "application/json";
+    request.payload = payload.dump();
+    request.correlation_id = breach.monitor_id;
+    pubsub_->publish(engine, std::move(request));
 }
 
 // ----- workspace profiles (#886) --------------------------------------------
@@ -2080,7 +3592,9 @@ bool Node::materialize_drop_user(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_users(const nlohmann::json& snapshot) {
+void Node::reconcile_users(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     struct UserEntry {
         std::string name;
         governance::UserStatus status;
@@ -2100,7 +3614,10 @@ void Node::reconcile_users(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& user : users_) local_ids.push_back(user->id());
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_user(id);
+        if (reconciliation_includes_key(changed_keys, catalog::user_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_user(id);
+        }
     }
     for (const auto& [id, entry] : desired) {
         auto user = find_user_by_id(id);
@@ -2391,7 +3908,9 @@ bool Node::materialize_drop_role(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_roles(const nlohmann::json& snapshot) {
+void Node::reconcile_roles(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     struct RoleEntry {
         std::string name;
         governance::RolePermissions permissions;
@@ -2411,7 +3930,10 @@ void Node::reconcile_roles(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& role : roles_) local_ids.push_back(role->id());
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_role(id);
+        if (reconciliation_includes_key(changed_keys, catalog::role_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_role(id);
+        }
     }
     for (auto& [id, entry] : desired) {
         auto role = find_role_by_id(id);
@@ -2536,7 +4058,9 @@ bool Node::materialize_drop_token(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_tokens(const nlohmann::json& snapshot) {
+void Node::reconcile_tokens(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     std::map<std::string, governance::TokenValue> desired;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kTokenPrefix);
@@ -2548,7 +4072,10 @@ void Node::reconcile_tokens(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& token : tokens_) local_ids.push_back(token->id());
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_token(id);
+        if (reconciliation_includes_key(changed_keys, catalog::token_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_token(id);
+        }
     }
     for (auto& [id, value] : desired) {
         auto token = find_token_by_id(id);
@@ -2674,7 +4201,9 @@ bool Node::materialize_drop_user_role(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_user_roles(const nlohmann::json& snapshot) {
+void Node::reconcile_user_roles(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Assignments are immutable (like access keys): reconcile only adds new ones
     // and drops the ones a peer removed.
     struct AssignmentEntry {
@@ -2698,7 +4227,11 @@ void Node::reconcile_user_roles(const nlohmann::json& snapshot) {
         local_ids.push_back(assignment->id());
     }
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_user_role(id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::user_role_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_user_role(id);
+        }
     }
     for (auto& [id, entry] : desired) {
         bool present = false;
@@ -2799,7 +4332,9 @@ bool Node::materialize_drop_policy(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_policies(const nlohmann::json& snapshot) {
+void Node::reconcile_policies(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     std::map<std::string, governance::PolicyValue> desired;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kPolicyPrefix);
@@ -2811,7 +4346,10 @@ void Node::reconcile_policies(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& policy : policies_) local_ids.push_back(policy->id());
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_policy(id);
+        if (reconciliation_includes_key(changed_keys, catalog::policy_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_policy(id);
+        }
     }
     for (auto& [id, value] : desired) {
         auto policy = find_policy_by_id(id);
@@ -2905,6 +4443,30 @@ std::vector<nlohmann::json> Node::virtual_table_rows(
         rows.push_back(std::move(row));
     }
     return rows;
+}
+
+const zetta::connect::CredentialKeyring* Node::connection_keyring(
+    std::string* reason) const {
+    if (!connection_keyring_ && connection_keyring_error_.empty()) {
+        std::string why;
+        std::optional<zetta::connect::CredentialKeyring> keyring =
+            config_.connection_root_secret.empty()
+                ? zetta::connect::load_or_create_local_keyring(config_.data_dir, &why)
+                : zetta::connect::CredentialKeyring::from_root_secrets(
+                      config_.connection_root_secret,
+                      config_.retired_connection_root_secrets, &why);
+        if (keyring) {
+            connection_keyring_ = std::move(*keyring);
+        } else {
+            connection_keyring_error_ =
+                why.empty() ? std::string("no sealing key") : why;
+        }
+    }
+    if (!connection_keyring_) {
+        if (reason) *reason = connection_keyring_error_;
+        return nullptr;
+    }
+    return &*connection_keyring_;
 }
 
 bool Node::bypasses_row_security(const std::string& acting_id,
@@ -3020,77 +4582,423 @@ zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
     return decision;
 }
 
-// ----- audit trail (immutable, append-only; replicated as audit:<uuid>) ------
+// ----- audit trail (immutable records; replicated through segment ranges) ----
 
 fs::path Node::audit_dir() const {
     return fs::path(config_.data_dir) / "audit";
 }
 
-void Node::load_audit_events() {
-    audit_events_.clear();
-    const fs::path root = audit_dir();
-    std::error_code ec;
-    if (!fs::exists(root, ec)) return;
-    for (const auto& entry : fs::directory_iterator(root, ec)) {
-        if (!entry.is_regular_file() ||
-            entry.path().extension() != ".json") {
-            continue;
-        }
-        std::ifstream in(entry.path());
-        const auto meta = nlohmann::json::parse(in, nullptr,
-                                                /*allow_exceptions=*/false);
-        // Boundary validation: an audit file that fails the AuditEvent JSON
-        // Schema is rejected here (with a logged reason) rather than allowed to
-        // corrupt the in-memory trail — fail fast, don't propagate bad state.
-        std::string error;
-        const std::optional<zetta::governance::AuditEventValue> value =
-            meta.is_discarded() ? std::nullopt
-                                : zetta::governance::parse_audit_event_value(meta, &error);
-        if (!value) {
-            std::printf("zetta: skipping invalid audit event %s (%s)\n",
-                        entry.path().filename().string().c_str(),
-                        meta.is_discarded() ? "unparseable JSON"
-                                            : error.c_str());
-            continue;
-        }
-        audit_events_.push_back(std::make_shared<zetta::governance::AuditEvent>(
-            entry.path().stem().string(), *value, root));
+bool Node::load_audit_events() {
+    audit_trail_ = std::make_unique<zetta::governance::AuditTrail>(
+        audit_dir(), config_.audit_recent_events);
+    std::string error;
+    if (!audit_trail_->open(&error)) {
+        std::printf("zetta: audit store could not open (%s)\n", error.c_str());
+        return false;
     }
-    // Stable, chronological order (fixed-width ISO-8601 sorts as text); id breaks
-    // ties on identical stamps.
-    std::sort(audit_events_.begin(), audit_events_.end(),
-              [](const auto& a, const auto& b) {
-                  if (a->time() != b->time()) return a->time() < b->time();
-                  return a->id() < b->id();
-              });
+    return true;
 }
 
 void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     // The sink owns identity + time: stamp a fresh id and the current time so the
-    // append-only contract holds regardless of what the caller passed.
+    // immutable record contract holds regardless of what the caller passed.
     const std::string id = zetta::util::new_uuid();
     value.time = zetta::util::now_iso8601();
-    // CRDT first (the source of truth), then materialize the on-disk projection.
-    if (replication_) {
-        replication_->set(catalog::audit_key(id), to_json(value));
+    std::string error;
+    if (!audit_trail_ || !audit_trail_->append_local(node_id_, id, std::move(value), &error)) {
+        std::fprintf(stderr, "zetta: audit append failed (%s)\n", error.c_str());
     }
-    materialize_audit_event(id, std::move(value));
 }
 
-std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
-    std::string id, zetta::governance::AuditEventValue value) {
-    for (const auto& event : audit_events_) {
-        if (event->id() == id) return event;  // already present (append-only)
+std::optional<std::size_t> Node::purge_audit_before(
+    const std::string& before, std::string actor, std::string* error) {
+    const auto cutoff = zetta::util::parse_iso8601_seconds(before);
+    const auto now = zetta::util::parse_iso8601_seconds(
+        zetta::util::now_iso8601());
+    if (!cutoff) {
+        if (error) {
+            *error = "before must be a valid UTC ISO-8601 timestamp";
+        }
+        return std::nullopt;
     }
-    const fs::path dir = audit_dir();
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    if (ec) return nullptr;
-    auto event = std::make_shared<zetta::governance::AuditEvent>(std::move(id), std::move(value),
-                                              dir);
-    event->persist_meta();
-    audit_events_.push_back(event);
-    return event;
+    if (!now || *cutoff > *now) {
+        if (error) {
+            *error = "before must not be in the future";
+        }
+        return std::nullopt;
+    }
+    if (!audit_trail_) {
+        if (error) {
+            *error = "audit trail is unavailable";
+        }
+        return std::nullopt;
+    }
+
+    std::size_t removed = 0;
+    if (!audit_trail_->retain_since(
+            before, before,
+            [&removed](const std::string&) {
+                ++removed;
+            },
+            error)) {
+        return std::nullopt;
+    }
+
+    zetta::governance::AuditEventValue event;
+    event.action = zetta::governance::AuditAction::AuditPurged;
+    event.actor = actor.empty() ? "local" : std::move(actor);
+    event.target = "audit";
+    event.allowed = true;
+    event.detail = "purged audit records before " + before + "; " +
+                   std::to_string(removed) + " rows removed";
+    event.time = zetta::util::now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    if (!audit_trail_->append_local(
+            node_id_, id, std::move(event), error)) {
+        return std::nullopt;
+    }
+    return removed;
+}
+
+std::vector<std::shared_ptr<zetta::governance::AuditEvent>>
+Node::audit_events() const {
+    return audit_trail_ ? audit_trail_->events()
+                        : std::vector<std::shared_ptr<zetta::governance::AuditEvent>>{};
+}
+
+std::vector<std::shared_ptr<zetta::governance::AuditEvent>>
+Node::recent_audit_events() const {
+    return audit_trail_ ? audit_trail_->recent_events()
+                        : std::vector<std::shared_ptr<zetta::governance::AuditEvent>>{};
+}
+
+std::size_t Node::audit_event_count() const {
+    return audit_trail_ ? audit_trail_->size() : 0;
+}
+
+nlohmann::json Node::audit_watermarks() const {
+    nlohmann::json result = nlohmann::json::object();
+    if (audit_trail_) {
+        for (const auto& [origin, watermark] : audit_trail_->watermarks()) {
+            result[origin] = {{"high", watermark.high},
+                              {"low", watermark.low},
+                              {"summary_low", watermark.summary_low}};
+        }
+    }
+    return result;
+}
+
+std::size_t Node::audit_memory_bytes() const {
+    return audit_memory_usage().bytes;
+}
+
+void Node::sync_audit_log() {
+    if (!cluster_ || !audit_trail_) {
+        return;
+    }
+    const auto request_range = [&](const std::string& peer, const std::string& origin,
+                                    std::uint64_t after) {
+        const auto now = Clock::now();
+        const auto pending = audit_requests_.find(origin);
+        if (pending != audit_requests_.end() && now - pending->second < std::chrono::seconds(2)) {
+            return;
+        }
+        zetta::cluster::AuditMessage request;
+        request.kind = zetta::cluster::AuditMessage::Kind::Request;
+        request.peer = peer;
+        request.batch.origin = origin;
+        request.batch.after = after;
+        if (cluster_->send_audit(request)) {
+            audit_requests_[origin] = now;
+        }
+    };
+    bool caught_up = false;
+    for (auto& message : cluster_->take_audit_messages()) {
+        using Kind = zetta::cluster::AuditMessage::Kind;
+        std::string error;
+        if (message.kind == Kind::Status) {
+            const auto local = audit_trail_->watermarks();
+            for (const auto& [origin, watermark] : message.watermarks) {
+                const auto found = local.find(origin);
+                const auto high = found == local.end() ? 0 : found->second.high;
+                if (high < watermark.high ||
+                    (found != local.end() &&
+                     (found->second.low < watermark.low ||
+                      found->second.summary_low < watermark.summary_low))) {
+                    request_range(message.peer, origin, high);
+                }
+            }
+        } else if (message.kind == Kind::Request) {
+            auto batch = audit_trail_->read_range(message.batch.origin, message.batch.after, &error);
+            if (batch) {
+                message.kind = Kind::Response;
+                message.batch = std::move(*batch);
+                cluster_->send_audit(message);
+            }
+        } else {
+            audit_requests_.erase(message.batch.origin);
+            if (audit_trail_->receive(message.batch, &error)) {
+                audit_received_since_relief_ += message.batch.frames.size();
+                if (message.batch.next < message.batch.watermark.high) {
+                    request_range(message.peer, message.batch.origin, message.batch.next);
+                } else {
+                    caught_up = true;
+                }
+            }
+        }
+        if (!error.empty()) {
+            std::fprintf(stderr, "zetta: audit exchange with %s failed: %s\n", message.peer.c_str(), error.c_str());
+        }
+    }
+    // The message vector and decoded pages have been destroyed before asking
+    // the allocator to return unused pages. Small incremental writes do not
+    // trigger this process-wide operation.
+    if (caught_up && audit_requests_.empty() && audit_received_since_relief_ >= 8 * 1024 * 1024) {
+        zetta::governance::AuditTrail::release_unused_memory();
+        audit_received_since_relief_ = 0;
+    }
+    cluster_->publish_audit_watermarks(audit_trail_->watermarks());
+}
+
+void Node::record_authorized_read(std::string actor, std::string capability,
+                                  std::string scope,
+                                  std::uint64_t events_delivered,
+                                  bool returned_data) {
+    if (actor.empty()) {
+        actor = "local";
+    }
+    const std::string key = actor + '\x1f' + capability + '\x1f' + scope;
+    const Clock::time_point now = Clock::now();
+    auto found = audit_summary_windows_.find(key);
+    if (found != audit_summary_windows_.end() &&
+        config_.audit_summary_window.count() > 0 &&
+        now - found->second.opened_at >= config_.audit_summary_window) {
+        flush_audit_summary(key);
+        found = audit_summary_windows_.find(key);
+    }
+    if (found == audit_summary_windows_.end()) {
+        zetta::governance::AuditEventValue started;
+        started.action = zetta::governance::AuditAction::DataAccess;
+        started.actor = actor;
+        started.target = "api:" + capability;
+        started.allowed = true;
+        started.detail = "authorised read session started for " + scope;
+        record_audit_event(std::move(started));
+
+        AuditSummaryWindow window;
+        window.actor = std::move(actor);
+        window.capability = std::move(capability);
+        window.scope = std::move(scope);
+        window.started = zetta::util::now_iso8601();
+        window.opened_at = now;
+        found = audit_summary_windows_.emplace(key, std::move(window)).first;
+    }
+    ++found->second.calls;
+    found->second.events_delivered += events_delivered;
+    found->second.returned_data = found->second.returned_data || returned_data;
+}
+
+void Node::flush_audit_summary(const std::string& key) {
+    const auto found = audit_summary_windows_.find(key);
+    if (found == audit_summary_windows_.end() || found->second.calls == 0) {
+        return;
+    }
+    AuditSummaryWindow& window = found->second;
+    const std::string ended = zetta::util::now_iso8601();
+    if (window.events_delivered > 0 || window.returned_data) {
+        zetta::governance::AuditEventValue summary;
+        summary.action = zetta::governance::AuditAction::DataAccessSummary;
+        summary.actor = window.actor;
+        summary.target = "api:" + window.capability;
+        summary.allowed = true;
+        summary.detail = std::to_string(window.calls) +
+                         " authorised reads; " +
+                         std::to_string(window.events_delivered) +
+                         " events delivered";
+        summary.summary = zetta::governance::AuditReadSummary{
+            window.calls, window.events_delivered, window.scope,
+            window.started, ended};
+        record_audit_event(std::move(summary));
+    }
+    window.calls = 0;
+    window.events_delivered = 0;
+    window.returned_data = false;
+    window.started = ended;
+    window.opened_at = Clock::now();
+}
+
+void Node::flush_due_audit_summaries() {
+    if (config_.audit_summary_window.count() <= 0) {
+        return;
+    }
+    const Clock::time_point now = Clock::now();
+    std::vector<std::string> due;
+    for (const auto& [key, window] : audit_summary_windows_) {
+        if (window.calls > 0 &&
+            now - window.opened_at >= config_.audit_summary_window) {
+            due.push_back(key);
+        }
+    }
+    for (const std::string& key : due) {
+        flush_audit_summary(key);
+    }
+}
+
+void Node::flush_audit_summaries() {
+    std::vector<std::string> keys;
+    keys.reserve(audit_summary_windows_.size());
+    for (const auto& [key, window] : audit_summary_windows_) {
+        keys.push_back(key);
+    }
+    for (const std::string& key : keys) {
+        flush_audit_summary(key);
+    }
+    audit_summary_windows_.clear();
+}
+
+void Node::apply_audit_retention() {
+    last_audit_retention_ = Clock::now();
+    if (!audit_trail_ ||
+        (config_.audit_retention.count() <= 0 &&
+         config_.audit_summary_retention.count() <= 0)) {
+        return;
+    }
+    const auto cutoff_for = [](std::chrono::hours retention) {
+        if (retention.count() <= 0) {
+            return std::string{};
+        }
+        const long long seconds =
+            std::chrono::duration_cast<std::chrono::seconds>(retention).count();
+        return zetta::util::iso8601_seconds_ago(seconds);
+    };
+    const std::string cutoff = cutoff_for(config_.audit_retention);
+    const std::string summary_cutoff =
+        cutoff_for(config_.audit_summary_retention);
+    std::string error;
+    const bool retained = audit_trail_->retain_since(
+        cutoff, summary_cutoff,
+        [](const std::string&) {},
+        &error);
+    if (!retained) {
+        std::printf("zetta: audit retention failed (%s)\n", error.c_str());
+    }
+}
+
+// ----- solutions reward ledger (immutable, replicated as ledger:<uuid>) -----
+
+fs::path Node::ledger_dir() const {
+    return fs::path(config_.data_dir) / "ledger";
+}
+
+void Node::load_ledger_entries() {
+    ledger_entries_.clear();
+    const fs::path root = ledger_dir();
+    std::error_code error_code;
+    if (!fs::exists(root, error_code)) {
+        return;
+    }
+    for (const auto& entry : fs::directory_iterator(root, error_code)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+            continue;
+        }
+        std::ifstream input(entry.path());
+        const nlohmann::json document = nlohmann::json::parse(
+            input, nullptr, /*allow_exceptions=*/false);
+        std::string error;
+        const std::optional<zetta::solutions::LedgerEntryValue> value =
+            document.is_discarded()
+                ? std::nullopt
+                : zetta::solutions::parse_audit_ledger_entry(document, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid ledger entry %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        document.is_discarded() ? "unparseable JSON"
+                                                : error.c_str());
+            continue;
+        }
+        ledger_entries_.push_back(
+            std::make_shared<zetta::solutions::LedgerEntry>(
+                entry.path().stem().string(), *value, root));
+    }
+    std::sort(ledger_entries_.begin(), ledger_entries_.end(),
+              [](const auto& left, const auto& right) {
+                  if (left->recorded_at() != right->recorded_at()) {
+                      return left->recorded_at() < right->recorded_at();
+                  }
+                  return left->id() < right->id();
+              });
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::record_action(
+    zetta::solutions::ActionLedgerValue value) {
+    const std::string id = zetta::util::new_uuid();
+    value.recorded_at = zetta::util::now_iso8601();
+    zetta::solutions::LedgerEntryValue entry_value = std::move(value);
+    if (!zetta::solutions::validate_audit_ledger_entry(
+            zetta::solutions::to_json(entry_value))) {
+        return nullptr;
+    }
+    if (replication_ != nullptr) {
+        replication_->set(catalog::ledger_key(id),
+                          zetta::solutions::to_json(entry_value));
+    }
+    return materialize_ledger_entry(id, std::move(entry_value));
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::record_outcome(
+    zetta::solutions::OutcomeLedgerValue value) {
+    const std::shared_ptr<zetta::solutions::LedgerEntry> action =
+        find_ledger_entry(value.action_id);
+    if (!action || action->kind() != zetta::solutions::LedgerEntryKind::Action) {
+        return nullptr;
+    }
+    const std::string id = zetta::util::new_uuid();
+    value.recorded_at = zetta::util::now_iso8601();
+    zetta::solutions::LedgerEntryValue entry_value = std::move(value);
+    if (!zetta::solutions::validate_audit_ledger_entry(
+            zetta::solutions::to_json(entry_value))) {
+        return nullptr;
+    }
+    if (replication_ != nullptr) {
+        replication_->set(catalog::ledger_key(id),
+                          zetta::solutions::to_json(entry_value));
+    }
+    return materialize_ledger_entry(id, std::move(entry_value));
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::find_ledger_entry(
+    const std::string& id) const {
+    for (const auto& entry : ledger_entries_) {
+        if (entry->id() == id) {
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::materialize_ledger_entry(
+    std::string id, zetta::solutions::LedgerEntryValue value) {
+    if (const auto existing = find_ledger_entry(id)) {
+        return existing;
+    }
+    const fs::path root = ledger_dir();
+    std::error_code error_code;
+    fs::create_directories(root, error_code);
+    if (error_code) {
+        return nullptr;
+    }
+    auto entry = std::make_shared<zetta::solutions::LedgerEntry>(
+        std::move(id), std::move(value), root);
+    entry->persist_meta();
+    ledger_entries_.push_back(entry);
+    std::sort(ledger_entries_.begin(), ledger_entries_.end(),
+              [](const auto& left, const auto& right) {
+                  if (left->recorded_at() != right->recorded_at()) {
+                      return left->recorded_at() < right->recorded_at();
+                  }
+                  return left->id() < right->id();
+              });
+    return entry;
 }
 
 zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
@@ -3219,22 +5127,33 @@ fs::path Node::replication_path() const {
     return fs::path(config_.data_dir) / "replication.automerge";
 }
 
-void Node::load_replication() {
+bool Node::load_replication() {
     std::error_code ec;
     const fs::path path = replication_path();
-    if (!fs::exists(path, ec)) return;
+    if (!fs::exists(path, ec)) {
+        return !ec;
+    }
     std::ifstream in(path, std::ios::binary);
     const std::vector<char> raw((std::istreambuf_iterator<char>(in)),
                                 std::istreambuf_iterator<char>());
-    if (raw.empty()) return;
+    if (raw.empty()) {
+        std::fprintf(stderr, "zetta: empty or unreadable replicated catalog %s\n", path.c_str());
+        return false;
+    }
     std::vector<std::byte> bytes(raw.size());
     for (std::size_t i = 0; i < raw.size(); ++i) {
         bytes[i] = static_cast<std::byte>(raw[i]);
     }
-    replication_->merge(bytes);
+    if (!replication_->restore(bytes)) {
+        std::fprintf(stderr, "zetta: cannot restore replicated catalog %s\n", path.c_str());
+        return false;
+    }
+    return true;
 }
 
-void Node::persist_replication() const {
+void Node::persist_replication() {
+    persisting_.store(true, std::memory_order_release);
+    const auto started = std::chrono::steady_clock::now();
     const std::vector<std::byte> bytes = replication_->save();
     const fs::path path = replication_path();
     const fs::path tmp = path.string() + ".tmp";
@@ -3245,6 +5164,14 @@ void Node::persist_replication() const {
     }
     std::error_code ec;
     fs::rename(tmp, path, ec);  // atomic replace
+    ++persist_stats_.saves;
+    persist_stats_.last_bytes = bytes.size();
+    persist_stats_.last_ms = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count();
+    persisting_.store(false, std::memory_order_release);
+    last_replication_persist_ = Clock::now();
+    replication_persist_pending_ = false;
 }
 
 // ----- replication: capture local-only data ---------------------------------
@@ -3279,6 +5206,9 @@ void Node::migrate_to_replication() {
                         table->replication_strategy().to_json();
                 }
                 if (table->partition_only()) value["partition_only"] = true;
+                if (!table->source_format().empty()) {
+                    value["source_format"] = table->source_format();
+                }
                 replication_->set(catalog::table_key(table->id()), value);
             }
             // The partition manifest (#837) migrates with the table. Without
@@ -3347,10 +5277,22 @@ void Node::migrate_to_replication() {
             replication_->set(catalog::run_key(run->id()), run->metadata());
         }
     }
+    for (const auto& study : studies_) {
+        if (!already_replicated(catalog::study_key(study->id()))) {
+            replication_->set(catalog::study_key(study->id()),
+                              study->metadata());
+        }
+    }
     for (const auto& model : models_) {
         if (!already_replicated(catalog::model_key(model->id()))) {
             replication_->set(catalog::model_key(model->id()),
                               model->metadata());
+        }
+    }
+    for (const auto& monitor : monitors_) {
+        if (!already_replicated(catalog::monitor_key(monitor->id()))) {
+            replication_->set(catalog::monitor_key(monitor->id()),
+                              monitor->metadata());
         }
     }
     for (const auto& profile : workspace_profiles_) {
@@ -3364,6 +5306,7 @@ void Node::migrate_to_replication() {
             replication_->set(catalog::plan_key(plan->id()), plan->metadata());
         }
     }
+    experiment_manager_.migrate_to_replication();
     for (const auto& index : indexes_) {
         if (!already_replicated(catalog::index_key(index->id()))) {
             replication_->set(catalog::index_key(index->id()),
@@ -3393,10 +5336,10 @@ void Node::migrate_to_replication() {
             }
         }
     }
-    for (const auto& event : audit_events_) {
-        if (!already_replicated(catalog::audit_key(event->id()))) {
-            replication_->set(catalog::audit_key(event->id()),
-                              event->metadata());
+    for (const auto& entry : ledger_entries_) {
+        if (!already_replicated(catalog::ledger_key(entry->id()))) {
+            replication_->set(catalog::ledger_key(entry->id()),
+                              entry->metadata());
         }
     }
 }
@@ -3414,9 +5357,12 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_graphs(snapshot);
     reconcile_deployments(snapshot);
     reconcile_runs(snapshot);
+    reconcile_studies(snapshot);
     reconcile_models(snapshot);
+    reconcile_monitors(snapshot);
     reconcile_workspace_profiles(snapshot);
     reconcile_plans(snapshot);
+    experiment_manager_.reconcile(snapshot);
     reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
     reconcile_partitions(snapshot);
@@ -3427,12 +5373,118 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_tokens(snapshot);
     reconcile_user_roles(snapshot);
     reconcile_policies(snapshot);
-    reconcile_audit_events(snapshot);
+    reconcile_ledger_entries(snapshot);
+}
+
+void Node::reconcile_replication_changes(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>& changed_keys) {
+    ReplicationReconcileBatches batches =
+        make_reconcile_batches(snapshot, changed_keys);
+
+    if (!batches.data.keys.empty()) {
+        reconcile_databases(batches.data.values, &batches.data.keys);
+    }
+    if (!batches.projects.keys.empty()) {
+        reconcile_projects(batches.projects.values, &batches.projects.keys);
+    }
+    if (!batches.inputs.keys.empty()) {
+        reconcile_inputs(batches.inputs.values, &batches.inputs.keys);
+    }
+    if (!batches.graphs.keys.empty()) {
+        reconcile_graphs(batches.graphs.values, &batches.graphs.keys);
+    }
+    if (!batches.deployments.keys.empty()) {
+        reconcile_deployments(batches.deployments.values,
+                              &batches.deployments.keys);
+    }
+    if (!batches.runs.keys.empty()) {
+        reconcile_runs(batches.runs.values, &batches.runs.keys);
+    }
+    if (!batches.studies.keys.empty()) {
+        reconcile_studies(batches.studies.values, &batches.studies.keys);
+    }
+    if (!batches.models.keys.empty()) {
+        reconcile_models(batches.models.values, &batches.models.keys);
+    }
+    if (!batches.monitors.keys.empty()) {
+        reconcile_monitors(batches.monitors.values, &batches.monitors.keys);
+    }
+    if (!batches.profiles.keys.empty()) {
+        reconcile_workspace_profiles(batches.profiles.values,
+                                     &batches.profiles.keys);
+    }
+    if (!batches.plans.keys.empty()) {
+        reconcile_plans(batches.plans.values, &batches.plans.keys);
+    }
+    if (!batches.experiments.keys.empty()) {
+        experiment_manager_.reconcile(batches.experiments.values,
+                                      &batches.experiments.keys);
+    }
+    if (!batches.indexes.keys.empty()) {
+        reconcile_indexes(batches.indexes.values, &batches.indexes.keys);
+    }
+    if (!batches.jobs.keys.empty()) {
+        reconcile_jobs(batches.jobs.values, &batches.jobs.keys);
+    }
+    if (!batches.partitions.keys.empty()) {
+        reconcile_partitions(batches.partitions.values,
+                             &batches.partitions.keys);
+    }
+    if (!batches.principals.keys.empty()) {
+        reconcile_principals(batches.principals.values,
+                             &batches.principals.keys);
+    }
+    if (!batches.access_keys.keys.empty()) {
+        reconcile_access_keys(batches.access_keys.values,
+                              &batches.access_keys.keys);
+    }
+    if (!batches.users.keys.empty()) {
+        reconcile_users(batches.users.values, &batches.users.keys);
+    }
+    if (!batches.roles.keys.empty()) {
+        reconcile_roles(batches.roles.values, &batches.roles.keys);
+    }
+    if (!batches.tokens.keys.empty()) {
+        reconcile_tokens(batches.tokens.values, &batches.tokens.keys);
+    }
+    if (!batches.user_roles.keys.empty()) {
+        reconcile_user_roles(batches.user_roles.values,
+                             &batches.user_roles.keys);
+    }
+    if (!batches.policies.keys.empty()) {
+        reconcile_policies(batches.policies.values, &batches.policies.keys);
+    }
+    if (!batches.ledger_entries.keys.empty()) {
+        reconcile_ledger_entries(batches.ledger_entries.values,
+                                 &batches.ledger_entries.keys);
+    }
+    if (!batches.nodes.keys.empty()) {
+        rebalance_partitions_on_membership_change(snapshot,
+                                                  &batches.nodes.keys);
+    }
 }
 
 void Node::rebalance_partitions_on_membership_change(
-    const nlohmann::json& snapshot) {
-    std::vector<std::string> members = membership_from_snapshot(snapshot);
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
+    std::vector<std::string> members;
+    if (!changed_keys) {
+        members = membership_from_snapshot(snapshot);
+    } else {
+        members = last_membership_;
+        for (const std::string& key : *changed_keys) {
+            const std::string id = catalog::id_after(key, catalog::kNodePrefix);
+            if (id.empty()) continue;
+            const auto member = std::ranges::find(members, id);
+            if (snapshot.contains(key)) {
+                if (member == members.end()) members.push_back(id);
+            } else if (member != members.end()) {
+                members.erase(member);
+            }
+        }
+        std::sort(members.begin(), members.end());
+    }
     if (members == last_membership_) return;  // no membership delta — nothing to do
     // The previous membership distinguishes replicate-to-all partitions (owned by
     // exactly the old member set) from sharded ones, so rebalance leaves the
@@ -3448,7 +5500,9 @@ void Node::rebalance_partitions_on_membership_change(
 // Databases, tables, rows, and large objects reconcile together: they decode in
 // one shared pass over the snapshot, and table/large-object removals nest under
 // each kept database, so they don't split into independent helpers cleanly.
-void Node::reconcile_databases(const nlohmann::json& snapshot) {
+void Node::reconcile_databases(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Decode the flat catalog keys into desired databases / tables / rows.
     struct DatabaseEntry { std::string name; zetta::data::ReplicationStrategy strategy; };
     std::map<std::string, DatabaseEntry> databases;           // id -> entry
@@ -3457,6 +5511,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         std::string name;
         zetta::data::ReplicationStrategy strategy;
         bool partition_only = false;  // #833; rows are never captured
+        std::string source_format;    // #1221; what the rows were loaded from
     };
     std::map<std::string, TableEntry> tables;                 // id -> entry
     struct RowEntry { std::string table_id; nlohmann::json data; bool tombstone = false; };
@@ -3485,7 +5540,8 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
                            TableEntry{value["db"].get<std::string>(),
                                       value["name"].get<std::string>(),
                                       zetta::data::replication_strategy_from_meta(value),
-                                      value.value("partition_only", false)});
+                                      value.value("partition_only", false),
+                                      value.value("source_format", std::string())});
         } else if (std::string row_id =
                        catalog::id_after(key, catalog::kRowPrefix);
                    !row_id.empty() && value.is_object() &&
@@ -3524,7 +5580,9 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     std::vector<std::string> local_db_ids;
     for (const auto& db : databases_) local_db_ids.push_back(db->id());
     for (const std::string& db_id : local_db_ids) {
-        if (!databases.contains(db_id)) {
+        const bool database_changed = reconciliation_includes_key(
+            changed_keys, catalog::database_key(db_id));
+        if (database_changed && !databases.contains(db_id)) {
             materialize_drop_database(db_id);
             continue;
         }
@@ -3535,7 +5593,9 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
         for (const std::string& table_id : local_table_ids) {
             const auto it = tables.find(table_id);
-            if (it == tables.end() || it->second.database_id != db_id) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::table_key(table_id)) &&
+                (it == tables.end() || it->second.database_id != db_id)) {
                 db->materialize_drop_table(table_id);
             }
         }
@@ -3545,7 +5605,10 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
         for (const std::string& lo_id : local_lo_ids) {
             const auto it = large_objects.find(lo_id);
-            if (it == large_objects.end() || it->second.database_id != db_id) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::large_object_key(lo_id)) &&
+                (it == large_objects.end() ||
+                 it->second.database_id != db_id)) {
                 db->large_objects().materialize_unlink(lo_id);
             }
         }
@@ -3566,7 +5629,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         auto db = find_database_by_id(entry.database_id);
         if (db && !db->find_table_by_id(id)) {
             db->materialize_table(id, entry.name, entry.strategy,
-                                  entry.partition_only);
+                                  entry.partition_only, entry.source_format);
         }
     }
     // Partition manifests (#837): the document is the source of truth, so a table
@@ -3611,7 +5674,9 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_projects(const nlohmann::json& snapshot) {
+void Node::reconcile_projects(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Projects (top-level, no parent): project:<id> -> { name, created,
     // updated, owner }. Decode the desired set, then drop / add / update the
     // local projection to match the document — no re-capture.
@@ -3621,6 +5686,7 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
         std::string updated;
         std::string owner;
         std::string description;
+        bool internal = false;
     };
     std::map<std::string, ProjectEntry> projects;  // id -> entry
     for (const auto& [key, value] : snapshot.items()) {
@@ -3633,31 +5699,45 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
                                       value.value("created", std::string{}),
                                       value.value("updated", std::string{}),
                                       value.value("owner", std::string{}),
-                                      value.value("description", std::string{})});
+                                      value.value("description", std::string{}),
+                                      value.contains("internal") &&
+                                          value["internal"].is_boolean() &&
+                                          value["internal"].get<bool>()});
     }
     std::vector<std::string> local_project_ids;
     for (const auto& project : projects_) {
         local_project_ids.push_back(project->id());
     }
     for (const std::string& project_id : local_project_ids) {
-        if (!projects.contains(project_id)) materialize_drop_project(project_id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::project_key(project_id)) &&
+            !projects.contains(project_id)) {
+            materialize_drop_project(project_id);
+        }
     }
     for (const auto& [id, entry] : projects) {
         auto project = find_project_by_id(id);
         if (!project) {
             materialize_project(id, entry.name, entry.created, entry.updated,
-                                entry.owner, entry.description);
-        } else if (project->name() != entry.name ||
-                   project->updated() != entry.updated ||
-                   project->owner() != entry.owner ||
-                   project->description() != entry.description) {
-            project->set_metadata(entry.name, entry.created, entry.updated,
-                                  entry.owner, entry.description);  // a peer changed it (no re-capture)
+                                entry.owner, entry.description, entry.internal);
+        } else {
+            if (project->name() != entry.name ||
+                project->updated() != entry.updated ||
+                project->owner() != entry.owner ||
+                project->description() != entry.description) {
+                project->set_metadata(entry.name, entry.created, entry.updated,
+                                      entry.owner, entry.description);  // a peer changed it (no re-capture)
+            }
+            if (project->internal() != entry.internal) {
+                project->set_internal(entry.internal);  // a peer revealed it (lake#654)
+            }
         }
     }
 }
 
-void Node::reconcile_inputs(const nlohmann::json& snapshot) {
+void Node::reconcile_inputs(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Project inputs (owned by a project): input:<id> -> { project, kind,
     // source, filename, content_hash, size, created_by, created_at }. Inputs are
     // immutable provenance records (never renamed/edited), so reconcile only adds
@@ -3700,7 +5780,10 @@ void Node::reconcile_inputs(const nlohmann::json& snapshot) {
         }
         for (const std::string& input_id : local_input_ids) {
             const auto it = inputs.find(input_id);
-            if (it == inputs.end() || it->second.project_id != project->id()) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::input_key(input_id)) &&
+                (it == inputs.end() ||
+                 it->second.project_id != project->id())) {
                 project->materialize_drop_input(input_id);
             }
         }
@@ -3717,7 +5800,9 @@ void Node::reconcile_inputs(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_graphs(const nlohmann::json& snapshot) {
+void Node::reconcile_graphs(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Execution graphs (under a project): graph:<id> -> { project, name,
     // graph: {nodes, edges} }. Decode the desired set, parsing each graph
     // against the IR schema — a graph that doesn't parse is skipped, so a
@@ -3757,8 +5842,10 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
         }
         for (const std::string& graph_id : local_graph_ids) {
             const auto it = desired_graphs.find(graph_id);
-            if (it == desired_graphs.end() ||
-                it->second.project_id != project->id()) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::graph_key(graph_id)) &&
+                (it == desired_graphs.end() ||
+                 it->second.project_id != project->id())) {
                 project->materialize_drop_graph(graph_id);
             }
         }
@@ -3783,7 +5870,9 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_deployments(const nlohmann::json& snapshot) {
+void Node::reconcile_deployments(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Deployments (top-level, no parent): deployment:<id> -> { graph_name,
     // target, node, node_count, edge_count, created }. Decode the desired set,
     // then drop / add the local projection to match the document. Deployments
@@ -3820,7 +5909,9 @@ void Node::reconcile_deployments(const nlohmann::json& snapshot) {
         local_deployment_ids.push_back(deployment->id());
     }
     for (const std::string& deployment_id : local_deployment_ids) {
-        if (!deployments.contains(deployment_id)) {
+        if (reconciliation_includes_key(
+                changed_keys, catalog::deployment_key(deployment_id)) &&
+            !deployments.contains(deployment_id)) {
             materialize_drop_deployment(deployment_id);
         }
     }
@@ -3833,7 +5924,9 @@ void Node::reconcile_deployments(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_runs(const nlohmann::json& snapshot) {
+void Node::reconcile_runs(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Runs (top-level, no parent): run:<id> -> the run value. Decode + validate
     // the desired set at the boundary (a malformed CRDT value is ignored, not
     // trusted), then drop / add / update the local projection to match — with no
@@ -3849,25 +5942,65 @@ void Node::reconcile_runs(const nlohmann::json& snapshot) {
     std::vector<std::string> local_run_ids;
     for (const auto& run : runs_) local_run_ids.push_back(run->id());
     for (const std::string& run_id : local_run_ids) {
-        if (!runs.contains(run_id)) materialize_drop_run(run_id);
+        if (reconciliation_includes_key(changed_keys, catalog::run_key(run_id)) &&
+            !runs.contains(run_id)) {
+            materialize_drop_run(run_id);
+        }
     }
     for (auto& [id, value] : runs) {
         auto run = find_run(id);
         if (!run) {
             materialize_run(id, std::move(value));
-        } else if (run->metadata() != to_json(value)) {
-            run->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        } else if (!run->capture_pending() &&
+                   run->metadata() != to_json(value)) {
+            // A peer changed it (no re-capture). A Run holding a coalesced
+            // local change is newer than any capture it made, so it is left
+            // alone until that change is written (#1217).
+            run->apply_value(std::move(value));
         }
     }
 }
 
-void Node::reconcile_models(const nlohmann::json& snapshot) {
+void Node::reconcile_studies(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
+    std::map<std::string, zetta::ml::StudyValue> desired;
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kStudyPrefix);
+        if (id.empty()) continue;
+        if (std::optional<zetta::ml::StudyValue> parsed =
+                zetta::ml::parse_study_value(value)) {
+            desired.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& study : studies_) local_ids.push_back(study->id());
+    for (const std::string& id : local_ids) {
+        if (reconciliation_includes_key(changed_keys, catalog::study_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_study(id);
+        }
+    }
+    for (auto& [id, value] : desired) {
+        const auto study = find_study(id);
+        if (!study) {
+            materialize_study(id, std::move(value));
+        } else if (!study->capture_pending() &&
+                   study->metadata() != zetta::ml::to_json(value)) {
+            study->apply_value(std::move(value));
+        }
+    }
+}
+
+void Node::reconcile_models(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Models (top-level, no parent): model:<id> -> the model value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is
     // ignored, not trusted), then drop / add / update the local projection to
     // match — with no re-capture. apply_value updates only the metadata; the
     // serialized weights body is NOT in the document and arrives separately over
-    // the large-object body seam (the blob store requests it when missing).
+    // the large-object body transfer path (the blob store requests it when missing).
     std::map<std::string, zetta::ml::ModelValue> models;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kModelPrefix);
@@ -3879,7 +6012,11 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
     std::vector<std::string> local_model_ids;
     for (const auto& model : models_) local_model_ids.push_back(model->id());
     for (const std::string& model_id : local_model_ids) {
-        if (!models.contains(model_id)) materialize_drop_model(model_id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::model_key(model_id)) &&
+            !models.contains(model_id)) {
+            materialize_drop_model(model_id);
+        }
     }
     for (auto& [id, value] : models) {
         auto model = find_model(id);
@@ -3891,7 +6028,44 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_workspace_profiles(const nlohmann::json& snapshot) {
+void Node::reconcile_monitors(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
+    std::map<std::string, zetta::solutions::MonitorValue> monitors;
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kMonitorPrefix);
+        if (id.empty() || !reconciliation_includes_key(changed_keys, key)) {
+            continue;
+        }
+        std::optional<zetta::solutions::MonitorValue> parsed =
+            zetta::solutions::parse_monitor_value(value);
+        if (parsed) {
+            monitors.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& monitor : monitors_) {
+        local_ids.push_back(monitor->id());
+    }
+    for (const std::string& id : local_ids) {
+        if (reconciliation_includes_key(changed_keys, catalog::monitor_key(id)) &&
+            !monitors.contains(id)) {
+            materialize_drop_monitor(id);
+        }
+    }
+    for (auto& [id, value] : monitors) {
+        auto monitor = find_monitor(id);
+        if (!monitor) {
+            materialize_monitor(id, std::move(value));
+        } else if (monitor->metadata() != zetta::solutions::to_json(value)) {
+            monitor->apply_value(std::move(value));
+        }
+    }
+}
+
+void Node::reconcile_workspace_profiles(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Workspace profiles (top-level, no parent): profile:<id> -> the value.
     // Decode + validate the desired set at the boundary (a malformed CRDT value
     // is ignored, not trusted), then drop / add / update the local projection to
@@ -3908,7 +6082,11 @@ void Node::reconcile_workspace_profiles(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& profile : workspace_profiles_) local_ids.push_back(profile->id());
     for (const std::string& id : local_ids) {
-        if (!profiles.contains(id)) materialize_drop_workspace_profile(id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::workspace_profile_key(id)) &&
+            !profiles.contains(id)) {
+            materialize_drop_workspace_profile(id);
+        }
     }
     for (auto& [id, value] : profiles) {
         auto profile = find_workspace_profile(id);
@@ -3920,7 +6098,9 @@ void Node::reconcile_workspace_profiles(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_plans(const nlohmann::json& snapshot) {
+void Node::reconcile_plans(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Plans (top-level, no parent): plan:<id> -> the value. Decode + validate at
     // the boundary (a malformed CRDT value is ignored), then drop / add / update
     // the local projection to match — with no re-capture.
@@ -3936,7 +6116,10 @@ void Node::reconcile_plans(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& plan : plans_) local_ids.push_back(plan->id());
     for (const std::string& id : local_ids) {
-        if (!plans.contains(id)) materialize_drop_plan(id);
+        if (reconciliation_includes_key(changed_keys, catalog::plan_key(id)) &&
+            !plans.contains(id)) {
+            materialize_drop_plan(id);
+        }
     }
     for (auto& [id, value] : plans) {
         auto plan = find_plan(id);
@@ -3948,7 +6131,9 @@ void Node::reconcile_plans(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_indexes(const nlohmann::json& snapshot) {
+void Node::reconcile_indexes(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Indexes (top-level, no parent): index:<id> -> the index value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is ignored,
     // not trusted), then drop / add / update the local projection to match — with
@@ -3965,7 +6150,11 @@ void Node::reconcile_indexes(const nlohmann::json& snapshot) {
     std::vector<std::string> local_index_ids;
     for (const auto& index : indexes_) local_index_ids.push_back(index->id());
     for (const std::string& index_id : local_index_ids) {
-        if (!indexes.contains(index_id)) materialize_drop_index(index_id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::index_key(index_id)) &&
+            !indexes.contains(index_id)) {
+            materialize_drop_index(index_id);
+        }
     }
     for (auto& [id, value] : indexes) {
         auto index = find_index(id);
@@ -3977,7 +6166,9 @@ void Node::reconcile_indexes(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_jobs(const nlohmann::json& snapshot) {
+void Node::reconcile_jobs(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Compute jobs (top-level, no parent): job:<id> -> the job value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is ignored,
     // not trusted), then drop / add / update the local projection to match — with
@@ -3996,7 +6187,10 @@ void Node::reconcile_jobs(const nlohmann::json& snapshot) {
     std::vector<std::string> local_job_ids;
     for (const auto& job : jobs_) local_job_ids.push_back(job->id());
     for (const std::string& job_id : local_job_ids) {
-        if (!compute_jobs.contains(job_id)) materialize_drop_job(job_id);
+        if (reconciliation_includes_key(changed_keys, catalog::job_key(job_id)) &&
+            !compute_jobs.contains(job_id)) {
+            materialize_drop_job(job_id);
+        }
     }
     for (auto& [id, value] : compute_jobs) {
         auto job = find_job(id);
@@ -4008,7 +6202,9 @@ void Node::reconcile_jobs(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_partitions(const nlohmann::json& snapshot) {
+void Node::reconcile_partitions(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Dataset partitions (top-level, no parent): part:<id> -> the partition value.
     // The catalog is replicate-to-all, so each node materializes the same set.
     // Decode + validate the desired set at the boundary (a malformed CRDT value is
@@ -4029,7 +6225,9 @@ void Node::reconcile_partitions(const nlohmann::json& snapshot) {
         local_partition_ids.push_back(partition->id());
     }
     for (const std::string& partition_id : local_partition_ids) {
-        if (!partitions.contains(partition_id)) {
+        if (reconciliation_includes_key(
+                changed_keys, catalog::partition_key(partition_id)) &&
+            !partitions.contains(partition_id)) {
             materialize_drop_dataset_partition(partition_id);
         }
     }
@@ -4044,7 +6242,9 @@ void Node::reconcile_partitions(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_principals(const nlohmann::json& snapshot) {
+void Node::reconcile_principals(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Principals (top-level, no parent): principal:<id> -> { kind, name,
     // created }. Decode the desired set, then drop / add / update the local
     // projection to match the document — no re-capture.
@@ -4071,7 +6271,9 @@ void Node::reconcile_principals(const nlohmann::json& snapshot) {
         local_principal_ids.push_back(principal->id());
     }
     for (const std::string& principal_id : local_principal_ids) {
-        if (!principals.contains(principal_id)) {
+        if (reconciliation_includes_key(
+                changed_keys, catalog::principal_key(principal_id)) &&
+            !principals.contains(principal_id)) {
             materialize_drop_principal(principal_id);
         }
     }
@@ -4087,7 +6289,9 @@ void Node::reconcile_principals(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
+void Node::reconcile_access_keys(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Access keys (owned by a principal): key:<id> -> { principal, scope,
     // created }. Keys are immutable credentials (never edited), so reconcile only
     // adds them under their owning principal and drops the ones a peer removed.
@@ -4128,8 +6332,10 @@ void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
         }
         for (const std::string& key_id : local_key_ids) {
             const auto it = access_keys.find(key_id);
-            if (it == access_keys.end() ||
-                it->second.principal_id != principal->id()) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::access_key_key(key_id)) &&
+                (it == access_keys.end() ||
+                 it->second.principal_id != principal->id())) {
                 principal->materialize_drop_key(key_id);
             }
         }
@@ -4145,26 +6351,22 @@ void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_audit_events(const nlohmann::json& snapshot) {
-    // Audit events (top-level, no parent): audit:<id> -> the event value. The
-    // trail is immutable + append-only, so reconcile only *adds* events the
-    // document has that we don't (a peer's, merged in via gossip) and never
-    // removes or edits one. Each value is validated at the boundary — a
-    // malformed CRDT value is ignored, not trusted into the trail.
+void Node::reconcile_ledger_entries(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
+    // Like the audit trail, ledger records are immutable and append-only.
+    // An incremental bucket may add records, never edit or remove history.
     for (const auto& [key, value] : snapshot.items()) {
-        std::string id = catalog::id_after(key, catalog::kAuditPrefix);
-        if (id.empty()) continue;
-        if (std::optional<zetta::governance::AuditEventValue> parsed =
-                zetta::governance::parse_audit_event_value(value)) {
-            materialize_audit_event(std::move(id), std::move(*parsed));
+        std::string id = catalog::id_after(key, catalog::kLedgerPrefix);
+        if (id.empty() || !reconciliation_includes_key(changed_keys, key)) {
+            continue;
+        }
+        const std::optional<zetta::solutions::LedgerEntryValue> parsed =
+            zetta::solutions::parse_audit_ledger_entry(value);
+        if (parsed) {
+            materialize_ledger_entry(std::move(id), *parsed);
         }
     }
-    // Keep the trail in chronological order after merging peer events in.
-    std::sort(audit_events_.begin(), audit_events_.end(),
-              [](const auto& a, const auto& b) {
-                  if (a->time() != b->time()) return a->time() < b->time();
-                  return a->id() < b->id();
-              });
 }
 
 IntegrityReport Node::check_integrity() const {
@@ -4285,8 +6487,15 @@ std::string Node::status_line() const {
         uptime_seconds(), static_cast<unsigned long long>(ticks_),
         databases_.size(), projects_.size(), deployments_.size(),
         runs_.size(), models_.size(), principals_.size(),
-        audit_events_.size());
-    return buf;
+        audit_event_count());
+    std::string result = buf;
+    const auto memory = memory_snapshot();
+    result += " | mem rss " + zetta::memory::format_bytes(memory.allocator.rss_bytes);
+    if (!memory.subsystems.empty()) {
+        result += " top " + memory.subsystems.front().name + " " +
+                  zetta::memory::format_bytes(memory.subsystems.front().bytes);
+    }
+    return result;
 }
 
 }  // namespace zetta

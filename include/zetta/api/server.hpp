@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -30,7 +31,15 @@ namespace zetta::api {
 struct ServerOptions {
     std::string listen_address = "127.0.0.1";  // loopback by default
     unsigned short port = 4800;                // 0 = pick an ephemeral port
-    int worker_coroutines = 32;  // the SPA fetches many assets in parallel (Chrome opens 6+ connections)
+    // Sessions are allocated on accept, independently of held long polls. Cache
+    // only this many idle parser/serializer objects; this is not a concurrency
+    // cap. Cached sessions hold no socket descriptors (#1076).
+    std::size_t idle_connection_cache = 32;
+    // Explicit admission cap. Accept continues at capacity and answers new
+    // connections with HTTP 503 / busy, rather than waiting for a session slot.
+    std::size_t max_connections = 4096;
+    // Pending kernel handshakes, not admitted sessions; the OS may clamp this.
+    int listen_backlog = 1024;
     // The built Studio web app (the design repo's React bundle). When set, the
     // node serves it statically at /app with an SPA fallback to index.html —
     // the app's only data path is the /v1 surface. Empty = /app is 404.
@@ -69,6 +78,12 @@ public:
 
     // Bind + start serving on the io thread. False on failure (see reason()).
     bool start();
+    // Stop accepting new connections while leaving the io_context alive so
+    // callers can wake request waiters and keep draining owner work before
+    // stop() joins the server thread (#1077).
+    void stop_accepting();
+    // Call on the Node owner thread: closes admitted sockets, wakes held polls
+    // and drains their queued owner work before joining the IO thread (#1076).
     void stop();
     bool running() const;
 
@@ -87,6 +102,10 @@ public:
     // Register a wakeup the owning loop provides so it drains on enqueue (headed:
     // push an SDL event so its event wait returns early). Call before start().
     void set_wakeup(std::function<void()> wakeup);
+
+    // Wake the owning loop now, from any thread, so its next tick runs without
+    // waiting out the idle interval (Node::set_owner_wakeup, #1063).
+    void wake();
 
     Registry& registry();
     // The node's span ring (convenience passthrough to Node::span_recorder()).

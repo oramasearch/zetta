@@ -3,6 +3,8 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json.hpp>
+
 // Internal (not a public header): the flat-key scheme that encodes the database
 // catalog into the replicated CRDT document. The CRDT is the source of truth;
 // the on-disk store + in-memory Node tree are a projection of these keys.
@@ -39,12 +41,26 @@
 //   run:<run_uuid>     -> { project, graph, status, created, updated, logs,
 //                          outputs, lineage }  (one execution of a deployed
 //                          graph — a top-level entity; see run.hpp)
+//   study:<study_uuid> -> { spec, status, trials, spent_cost, stop_reason,
+//                          promoted_model, created, updated }  (one AutoML
+//                          search; each nested trial names its Run; #1138)
 //   model:<model_uuid> -> { name, kind, project, run, feature_schema, metrics,
 //                          created, weights:{ size, sha256 } }  (a trained model
 //                          — a top-level entity; the serialized weights body is
 //                          NOT in the document — like a large object it lives on
 //                          disk and transfers peer-to-peer, verified against
 //                          weights.size + weights.sha256; see model.hpp)
+//   experiment:<uuid> -> { name, seed, allocations, created }  (a holdout /
+//                          experiment definition; see solutions/experiment.hpp)
+//   experiment_assignment:<experiment-uuid>:<entity-digest>
+//                       -> { experiment, entity, allocation, tier, propensity,
+//                            bucket, exempt, exemption_reason, exemption_actor,
+//                            assigned_at }  (one independently convergent
+//                            assignment and uplift-training row per entity)
+//   monitor:<monitor_uuid> -> { solution, inputs, scores?, calibration, cohorts,
+//                          guardrails, breaches, retrain_requested, created,
+//                          updated }  (one drift and guardrail monitor per
+//                          solution; see solutions/monitor.hpp)
 //   job:<job_uuid>     -> { kind, status, project, graph, run, scaling_policy,
 //                          created, updated, detail }  (a compute job — one unit
 //                          of native distributed accelerated compute (ARC-11 /
@@ -53,7 +69,7 @@
 //                          index over a table — search / vector / feature; a
 //                          top-level entity with no parent (ENT-39 / ENT-40);
 //                          metadata only — building the index is the IndexBackend
-//                          seam's job; see index/index.hpp)
+//                          index subsystem's job; see index/index.hpp)
 //   principal:<uuid>   -> { kind, name, created }          (an authenticated
 //                          actor — user/service/node; a top-level entity with
 //                          no parent — see principal.hpp)
@@ -62,11 +78,18 @@
 //                          the V1 key-scoped access model (RULE-3) and its
 //                          capabilities are the deny-by-default rights model
 //                          (ENT-22); see access_key.hpp / capability.hpp)
-//   audit:<uuid>       -> { action, actor, target, allowed, detail, time }
+//   audit:<uuid>       -> legacy only; migrated locally and retired on open (#1164)
 //                          (an immutable, append-only audit event — a graph
 //                          change / deploy / data-access decision; a top-level
 //                          entity with no parent, never edited or removed; see
 //                          audit_event.hpp)
+//   ledger:<uuid>      -> an immutable action or outcome record in the
+//                          solutions reward ledger (#1107); action records carry
+//                          score, decision, versions, cell, cost and timestamps,
+//                          while outcome records reference the action id
+//   roi_readout:<uuid>  -> { id, solution, version, project, graph, experiment,
+//                          roi_model, created_by, created }  (one immutable
+//                          customer-supplied ROI configuration version; #1108)
 //   user:<uuid>        -> { name, status, created }        (an authenticatable
 //                          identity — conceptually a Principal of kind User in
 //                          the FEAT-9 access model; a top-level entity — see
@@ -87,6 +110,13 @@
 //                          Postgres-style RLS: a USING read filter + a WITH CHECK
 //                          write filter, evaluated by the SQL WHERE engine against
 //                          the acting identity; see governance/policy.hpp / #748)
+//   decision_policy:<uuid> -> { id, name, current_version, versions, created,
+//                          updated }  (the immutable version history for one
+//                          score-to-action policy; see decision_policy.hpp)
+//   decision:<uuid>    -> { id, policy_id, policy_version, entity_id, score,
+//                          action, autonomy, status, actionable, ... }  (one
+//                          durable policy result, stamped with its exact policy
+//                          version; see decision_policy.hpp)
 //   vtable:<name>      -> { name, prefix, columns:[{name,type,tier,key}] }  (a
 //                          user-declared VIRTUAL TABLE over a CRDT key-family —
 //                          CREATE VIRTUAL TABLE (#809 slice 3). Keyed by its
@@ -113,6 +143,21 @@
 //                          by the node that completed the write, so the key has
 //                          exactly one writer — see data/dataset_manifest.hpp /
 //                          docs/data/partition-manifest.md)
+//   record_collection:<name> -> { name, indexes, retention_ms?, created }  (a keyed
+//                          record collection's definition — #1231; the records
+//                          themselves live in each node's record log, never here,
+//                          see data/record_store.hpp)
+//   metric:<name>      -> { name, kind, resolution_ms, retention_ms?, created }
+//                          (a labelled counter or gauge — #1231; its buckets live in
+//                          the record log, see data/metric_store.hpp)
+//   object_bucket:<name> -> { name, quota_bytes?, rf?, created }  (an object bucket's
+//                          definition — #1005; the object bytes live in each owner's
+//                          node-local object log, never here, see data/object_store.hpp)
+//   object_lease:<name> -> { holder, fence, expires, version }  (the bucket's owner
+//                          lease; its fence guards every mutation — #1005)
+//   methodology:<W-id> -> a workspace methodology (#1261): its interface, where its
+//                          Python lives, its image and validation; the code runs in
+//                          Lake's runner, never here (ml/workspace_methodology.hpp)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -129,15 +174,23 @@ inline constexpr std::string_view kInputPrefix = "input:";
 inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
+inline constexpr std::string_view kStudyPrefix = "study:";
 inline constexpr std::string_view kModelPrefix = "model:";
+inline constexpr std::string_view kMonitorPrefix = "monitor:";
 inline constexpr std::string_view kWorkspaceProfilePrefix = "profile:";
 inline constexpr std::string_view kPlanPrefix = "plan:";
+inline constexpr std::string_view kExperimentPrefix = "experiment:";
+inline constexpr std::string_view kExperimentAssignmentPrefix =
+    "experiment_assignment:";
 inline constexpr std::string_view kAgentPrefix = "agent:";
+inline constexpr std::string_view kWorkspaceMethodologyPrefix = "methodology:";
 inline constexpr std::string_view kJobPrefix = "job:";
 inline constexpr std::string_view kIndexPrefix = "index:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
+inline constexpr std::string_view kLedgerPrefix = "ledger:";
+inline constexpr std::string_view kRoiReadoutPrefix = "roi_readout:";
 inline constexpr std::string_view kPartitionPrefix = "part:";
 inline constexpr std::string_view kManifestPrefix = "mfst:";
 inline constexpr std::string_view kUserPrefix = "user:";
@@ -145,7 +198,13 @@ inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
 inline constexpr std::string_view kUserRolePrefix = "user_role:";
 inline constexpr std::string_view kPolicyPrefix = "policy:";
+inline constexpr std::string_view kDecisionPolicyPrefix = "decision_policy:";
+inline constexpr std::string_view kDecisionPrefix = "decision:";
 inline constexpr std::string_view kVirtualTablePrefix = "vtable:";
+inline constexpr std::string_view kRecordCollectionPrefix = "record_collection:";
+inline constexpr std::string_view kMetricPrefix = "metric:";
+inline constexpr std::string_view kObjectBucketPrefix = "object_bucket:";
+inline constexpr std::string_view kObjectLeasePrefix = "object_lease:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -177,8 +236,14 @@ inline std::string deployment_key(const std::string& deployment_id) {
 inline std::string run_key(const std::string& run_id) {
     return std::string(kRunPrefix) + run_id;
 }
+inline std::string study_key(const std::string& study_id) {
+    return std::string(kStudyPrefix) + study_id;
+}
 inline std::string model_key(const std::string& model_id) {
     return std::string(kModelPrefix) + model_id;
+}
+inline std::string monitor_key(const std::string& monitor_id) {
+    return std::string(kMonitorPrefix) + monitor_id;
 }
 inline std::string workspace_profile_key(const std::string& workspace_profile_id) {
     return std::string(kWorkspaceProfilePrefix) + workspace_profile_id;
@@ -186,8 +251,20 @@ inline std::string workspace_profile_key(const std::string& workspace_profile_id
 inline std::string plan_key(const std::string& plan_id) {
     return std::string(kPlanPrefix) + plan_id;
 }
+inline std::string experiment_key(const std::string& experiment_id) {
+    return std::string(kExperimentPrefix) + experiment_id;
+}
+inline std::string experiment_assignment_key(
+    const std::string& experiment_id,
+    const std::string& assignment_id) {
+    return std::string(kExperimentAssignmentPrefix) + experiment_id + ":" +
+           assignment_id;
+}
 inline std::string agent_key(const std::string& agent_id) {
     return std::string(kAgentPrefix) + agent_id;
+}
+inline std::string workspace_methodology_key(const std::string& methodology_id) {
+    return std::string(kWorkspaceMethodologyPrefix) + methodology_id;
 }
 inline std::string job_key(const std::string& job_id) {
     return std::string(kJobPrefix) + job_id;
@@ -201,8 +278,20 @@ inline std::string principal_key(const std::string& principal_id) {
 inline std::string access_key_key(const std::string& access_key_id) {
     return std::string(kAccessKeyPrefix) + access_key_id;
 }
+inline std::string decision_policy_key(const std::string& policy_id) {
+    return std::string(kDecisionPolicyPrefix) + policy_id;
+}
+inline std::string decision_key(const std::string& decision_id) {
+    return std::string(kDecisionPrefix) + decision_id;
+}
 inline std::string audit_key(const std::string& audit_id) {
     return std::string(kAuditPrefix) + audit_id;
+}
+inline std::string ledger_key(const std::string& ledger_id) {
+    return std::string(kLedgerPrefix) + ledger_id;
+}
+inline std::string roi_readout_key(const std::string& readout_id) {
+    return std::string(kRoiReadoutPrefix) + readout_id;
 }
 inline std::string partition_key(const std::string& partition_id) {
     return std::string(kPartitionPrefix) + partition_id;
@@ -239,6 +328,26 @@ inline std::string id_after(std::string_view key, std::string_view prefix) {
         return {};
     }
     return std::string(key.substr(prefix.size()));
+}
+
+// Visit every entry of a replicated snapshot whose key starts with `prefix`, in
+// key order, as `visit(key, value)`. The snapshot is a JSON object backed by an
+// ordered map, so this seeks to the first matching key and stops at the first
+// key past the prefix: the cost is the matching range, not the whole catalogue
+// (#1227 — `list_agents` copied every key, `row:` keys included, and then scanned
+// all of them to find a handful of `agent:` keys). Pair it with
+// ReplicationManager::shared_snapshot(), which hands back the immutable view
+// without copying it.
+template <typename Visitor>
+void for_each_with_prefix(const nlohmann::json& snapshot, std::string_view prefix,
+                          Visitor&& visit) {
+    if (!snapshot.is_object()) return;
+    const auto& entries = snapshot.get_ref<const nlohmann::json::object_t&>();
+    for (auto entry = entries.lower_bound(prefix);
+         entry != entries.end() && std::string_view(entry->first).starts_with(prefix);
+         ++entry) {
+        visit(entry->first, entry->second);
+    }
 }
 
 }  // namespace zetta::catalog

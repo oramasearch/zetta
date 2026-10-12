@@ -310,7 +310,7 @@ name with the same arguments object:
 ```sh
 curl -s -X POST "$ZETTA/mcp" -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
-       "params":{"name":"compile_intent","arguments":{"project":"churn"}}}'
+       "params":{"name":"compile_intent","arguments":{"project":"churn","name":"churn skeleton"}}}'
 ```
 
 ### 4.0 · The one that will cost him an hour: reads are GET, actions are POST
@@ -436,9 +436,10 @@ before a connection is opened, which is the other claim a security reviewer will
   laptop Postgres on local `trust` auth cannot be connected until a password is set on the
   role.
 - **The node's SQL is a Postgres *subset*, and it is not the query you just sent to
-  Postgres.** `LIMIT` is not supported (`expected ';' after statement, got 'LIMIT'`), and a
-  bare `count(*)` is refused with `aggregate functions require a GROUP BY clause`.
-  Projection and `WHERE` work. The full `SELECT` inside `create_dataset_from_query` runs on
+  Postgres.** At the time of this delivery `LIMIT` was not supported (`expected ';' after
+  statement, got 'LIMIT'`) and a bare `count(*)` was refused with `aggregate functions require
+  a GROUP BY clause`; both work now (`ORDER BY`/`LIMIT`/`OFFSET`, and whole-table aggregates
+  since zetta#1218 — see [the query layer](../data/query.md)). Projection and `WHERE` work. The full `SELECT` inside `create_dataset_from_query` runs on
   **Postgres** and can use anything Postgres understands; only the read *back out of the
   node* goes through the subset. Worth saying explicitly, because hitting the subset right
   after a rich source query reads as the product being broken.
@@ -450,20 +451,17 @@ then partitioning what it got. Correct, and single-node.
 
 #### Shape the source query for the model, not just for the read
 
-Two column rules are enforced deep in the run — at the `connect` step, *after* the dataset
-has landed — so a query that ingests happily still fails the pipeline minutes later with a
-message that does not obviously point back here. Both are fixed in the **source** query,
-which is why this belongs in §4.1 and not §4.3.
+The dataset contract validates column roles before the Run starts. Ordinary warehouse
+text identifiers and boolean targets need no source-query workaround.
 
 | Rule | What you see if you miss it | Fix in the SELECT |
 |---|---|---|
-| The **entity column must be a 64-bit integer** | `run` refuses immediately: ``dataset: the entity column 'account_id' holds non-integer values; entities are keyed by a 64-bit integer`` | derive one — `('x'\|\|substr(md5(account_id),1,8))::bit(32)::bigint AS account_key` |
-| The **label (and every feature) must be numeric** | the run reaches `running`, then fails: ``connect step 'Load customer accounts' failed: … row 0 field 'churned' is not a number`` | cast it — `churned::int AS churned` |
+| The **entity column must be an integer or non-empty text value** | mixed or empty values are refused before the Run starts | keep the warehouse business id; every output restores it |
+| The **label must be numeric/boolean 0/1; features numeric/boolean** | contract resolution names a non-numeric column and its cast | cast only other representations |
 
-A Postgres `boolean` is the common way to trip the second one, and a text/UUID/Salesforce
-account id is the common way to trip the first — **both of which his real `accounts` table
-almost certainly has.** String entity keys are a known limitation, not a bug
-([`docs/data/dataset-path.md`](../data/dataset-path.md) — *"String entity keys"*).
+A Postgres `boolean` loads as 0/1. A text/UUID/Salesforce account id receives a stable,
+collision-checked internal key and remains unchanged in outputs
+([`docs/data/dataset-path.md`](../data/dataset-path.md)).
 
 **The query that satisfies both, measured end to end on 600 rows:**
 
@@ -557,7 +555,7 @@ P create_project '{"name":"churn","description":"Which accounts are about to lea
 P capture_intent '{"project":"churn",
   "text":"predict which accounts are likely to churn, with calibrated scores and explanations"}'
 
-P compile_intent '{"project":"churn"}'
+P compile_intent '{"project":"churn","name":"churn skeleton"}'
 ```
 
 `compile_intent` returns the Pipeline it built. **Measured — a 7-step graph, 6 edges:**
@@ -567,7 +565,7 @@ connect  Load customer accounts
 connect  Load usage & billing activity
 clean    Build churn features
 model    Train churn-risk model
-index    Index churn scores
+index    Score and index customer accounts
 serve    Serve churn scores & reasons
 act      Trigger retention outreach
 ```
@@ -581,8 +579,9 @@ P approve_plan '{"project":"churn","graph":"churn skeleton"}'
 P gate         '{"project":"churn","graph":"churn skeleton"}'
 ```
 
-**Measured — verdict `pass`, `block_deploy: false`, four checks:** `non_empty_graph`,
-`schema_type`, `data_leakage`, `entity_resolution`. Read the *reasons*, not just the
+**Measured — verdict `pass`, `block_deploy: false`, six checks:** `non_empty_graph`,
+`schema_type`, `data_leakage`, `language_grounding`, `language_training_access`, and
+`entity_resolution`. Read the *reasons*, not just the
 statuses: on a skeleton with no declared features, `data_leakage` passes because there was
 nothing to check — *"no ML step declares features to check for leakage"*. That is an
 honest pass, not a clean bill of health, and the report says so.
@@ -596,9 +595,8 @@ P run '{"project":"churn","graph":"churn skeleton",
         "holdout_fraction":0.3}'
 ```
 
-`account_key` and `accounts_ml`, not `account_id` and `accounts` — see
-[§4.1](#shape-the-source-query-for-the-model-not-just-for-the-read). A text entity column
-is refused here, and a boolean label gets past this call and fails inside the run.
+The source `account_id` and boolean label are valid directly; see
+[§4.1](#shape-the-source-query-for-the-model-not-just-for-the-read).
 
 **Set `holdout_fraction`.** Without it every metric in the report is in-sample — scored on
 the rows the model trained on — and they flatter. This is not theoretical: an in-sample AUC
@@ -772,7 +770,7 @@ nothing Charles can use yet.
 > **Phase 2 (when it earns its keep):** the operator, once there is a reason — several
 > Zetta slices across clusters joined into one CRDT cluster, elastic capacity, or the
 > operator using Zetta as its own datastore. It already has its own Helm chart
-> (`orama-cloud-v1-operator/chart/`), so it packages the same way when the time comes.
+> (`orama-operator/chart/`), so it packages the same way when the time comes.
 
 This is also the honest form of the **no-privilege deployment mode** we already owe him
 ([§8](#8--checklist-for-today)): phase 1 *is* that mode, and shipping it first proves the

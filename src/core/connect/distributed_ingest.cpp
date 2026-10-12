@@ -302,12 +302,18 @@ LaunchOutcome run_connector_fetch_launch(
         return decline("no saved connection named '" + connection +
                        "' on this node");
     }
+    if (saved->credential == CredentialState::Unreadable) {
+        return decline("the credential of connection '" + connection +
+                       "' does not open on this node (" + saved->credential_error +
+                       ")");
+    }
 
     std::shared_ptr<data::Table> table = node.adopt_replicated_table(
         payload.at("database").get<std::string>(),
         payload.at("database_name").get<std::string>(),
         payload.at("table").get<std::string>(),
-        payload.at("table_name").get<std::string>(), /*partition_only=*/true);
+        payload.at("table_name").get<std::string>(), /*partition_only=*/true,
+        saved->config.type);
     if (!table) return decline("could not adopt the ingest's target table");
     std::shared_ptr<data::Database> database =
         node.find_database(payload.at("database_name").get<std::string>());
@@ -485,6 +491,9 @@ DistributedIngestResult run_single_shot_connector_ingest(
     // already here.
     add.partition_only = true;
     add.fetch_affinity_owner = node.node_id();
+    // What the rows were loaded from (#1221): the connector, not the `jsonl`
+    // shape its in-memory rows take.
+    add.source_format = config.type;
 
     data::AddDatasetResult added =
         data::add_dataset_rows(node, pulled.data.rows, add);
@@ -579,9 +588,12 @@ DistributedIngestResult run_distributed_connector_ingest(
         options.table_name.empty() ? "dataset" : options.table_name;
     // Partition-only from birth: the marker is fixed at create time and rides in
     // the `tbl:` value, so every participant reads the table the same way before
-    // a single row is written.
+    // a single row is written. The connector type is what the rows were loaded
+    // from (#1221); each participant records the same, from its own copy of the
+    // saved connection.
     std::shared_ptr<data::Table> table = database->create_table(
-        unique_table_name(*database, base), std::nullopt, /*partition_only=*/true);
+        unique_table_name(*database, base), std::nullopt, /*partition_only=*/true,
+        config.type);
     if (!table) {
         result.error = "could not create the target table";
         return result;

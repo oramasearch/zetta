@@ -45,6 +45,15 @@ Two things also had to line up for *the catalog blueprint* specifically:
    `index` step so the blueprint is `connect×2 → clean → model → index → serve →
    act`, matching the real pipeline. (The blueprint still passes the
    [gate](../pipeline/gate.md); no test pins its shape.)
+
+   **The index step builds a real search index (#1241).** On a landed table
+   (`run_churn_solution_on_table`, lake's `run_pipeline`) the step records a
+   Search `Index` over that table — every column the dataset contract names,
+   with the ranked `oramacore_fulltext` backend when this build has it — and
+   `reconcile_search_indexes` builds each node's sub-indexes over the partitions
+   it owns. The run's `index` output is that index's id, so `list_indexes` lists
+   it and `search` targets it; a re-run reuses it. When nothing can be indexed
+   the step says why in the run log instead of skipping silently.
 2. The fixture → numeric encoding lived inline in the test harness. #398 promotes it
    to a first-class, reusable core surface so the wiring is legible and testable, and
    so the headed Deploy panel and the acceptance test share one path.
@@ -59,6 +68,12 @@ Two things also had to line up for *the catalog blueprint* specifically:
 | `default_churn_gbdt_params()` | The proven, fast [GBDT](../ml/gbdt.md) config (30 trees / depth 3 / 16 bins / lr 0.3) — light enough to run on a click. |
 | `run_churn_solution_on_node(node, device, graph, dataset, options)` | THE runner: resolve `node.job_coordinator()` → encode → build the pipeline config → inject a `ChurnStepExecutor` into a `GraphExecutor` → execute `graph`. Returns the Run plus the real artifacts. |
 | `demo_churn_dataset()` | A small, deterministic, in-memory churn dataset (no files) with a clean failed-payments churn signal — the data the headed "Run over the cluster" action trains on. |
+
+`ChurnSolutionOptions` retains the churn result defaults but can name the
+result database, table prefix, entity column, and score column. Composed
+solutions use those additive fields to publish a domain-specific M-1 artifact;
+S-9 writes outbound response scores instead of presenting a churn-named
+decision source.
 
 `run_churn_solution_on_node` returns a `ChurnSolutionResult`:
 

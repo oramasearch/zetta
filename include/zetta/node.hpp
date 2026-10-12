@@ -10,8 +10,10 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "zetta/governance/access_key.hpp"
@@ -22,9 +24,13 @@
 #include "zetta/cloud/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/connect/credential_seal.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/metric_store.hpp"
+#include "zetta/data/object_store.hpp"
+#include "zetta/data/record_store.hpp"
 #include "zetta/data/virtual_table.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_controller.hpp"
@@ -32,6 +38,9 @@
 #include "zetta/index/index_registry.hpp"
 #include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/study.hpp"
+#include "zetta/memory/accounting.hpp"
+#include "zetta/solutions/monitor.hpp"
 #include "zetta/workspace/workspace_profile.hpp"
 #include "zetta/billing/plan.hpp"
 #include "zetta/cluster/node_metrics.hpp"
@@ -39,6 +48,7 @@
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/solutions/audit_ledger.hpp"
 #include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/role.hpp"
@@ -48,6 +58,8 @@
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/governance/scope.hpp"
+#include "zetta/solutions/experiment.hpp"
+#include "zetta/pubsub/dispatcher.hpp"
 
 namespace zetta::cluster { class Cluster; }
 namespace zetta::pipeline { struct ExecutionResult; }
@@ -56,6 +68,7 @@ namespace zetta::compute { class JobCoordinator; }
 namespace zetta::compute { class CoordinatedLaunchListener; }
 
 namespace zetta::cluster { class ReplicationManager; }
+namespace zetta::pubsub { class PubSub; }
 
 
 
@@ -78,6 +91,35 @@ struct NodeConfig {
     // a gated capability executes like any other call and the bypass is
     // audited. `--governance` (or ZETTA_GOVERNANCE=1) turns enforcement on.
     bool enforce_consent = false;
+    // In-memory pub/sub (#1024, docs/pubsub/). On by default; its limits are
+    // detected from the environment and logged at start. Topic names matching
+    // one of these prefixes are auto-created on first use (D16); empty = off.
+    bool pubsub = true;
+    std::vector<std::string> pubsub_auto_create_prefixes;
+    zetta::pubsub::DispatchMode pubsub_dispatch_mode =
+        zetta::pubsub::DispatchMode::Pool;
+    std::size_t pubsub_topics_per_thread = 250;
+    std::size_t pubsub_dispatch_min_threads = 1;
+    std::optional<std::size_t> pubsub_dispatch_max_threads;
+    // Ordinary audit events and window summaries have separate retention
+    // windows. A non-positive value disables that class's expiration for a
+    // test or an explicitly archival node (#1154, #1169).
+    std::chrono::hours audit_retention = std::chrono::hours(24 * 30);
+    std::chrono::hours audit_summary_retention = std::chrono::hours(24 * 365);
+    std::chrono::milliseconds audit_summary_window = std::chrono::minutes(5);
+    std::size_t audit_recent_events = 2'048;
+    // Linux-only, opt-in allocator release. Zero disables it. A periodic memory
+    // sample calls malloc_trim(0) when allocator-held free bytes reach this.
+    std::uint64_t malloc_trim_threshold_bytes = 0;
+    // The root secret saved connector credentials are sealed under (#1230). main
+    // passes the cluster join token, so every member of one cluster derives the
+    // same sealing key and can open what another sealed — and the key is never
+    // in the replicated catalogue. Empty (a library / test node): the node
+    // creates a node-local root secret under <data_dir>/security/ on first use.
+    std::string connection_root_secret;
+    // Root secrets of earlier join tokens. Credentials sealed under them still
+    // open, and start() re-seals them under the current secret.
+    std::vector<std::string> retired_connection_root_secrets;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -120,11 +162,11 @@ struct IntegrityReport {
 // Replication: when constructed with a ReplicationManager, the **CRDT document
 // is the source of truth** and the on-disk store + this in-memory tree are a
 // projection of it. Local DDL/row mutations are captured into the document; on
-// each tick the node reconciles the projection to match the document (applying
-// changes merged from peers) and persists the document to disk. With no
-// ReplicationManager (the default), a Node is a standalone local store.
+// each tick the node reconciles changed keys into the projection and marks the
+// document for at-most-once-per-second persistence; stop() forces a final save.
+// With no ReplicationManager (the default), a Node is a standalone local store.
 //
-// A Node is also the **audit sink** (FEAT-9): it owns the immutable, append-only
+// A Node is also the **audit sink** (FEAT-9): it owns the immutable, retained
 // audit trail and records a governed action (graph change / deploy / data
 // access) as an AuditEvent. It implements AuditSink so the entities it owns (a
 // Project's graph CRUD) can append events without depending on Node directly.
@@ -171,9 +213,15 @@ public:
     // apps tick from their first loop pass, before any background action
     // exists, so interactive runs always gate). Once a loop HAS adopted the
     // node it must keep ticking (or drain) while gated workers run. The wait
-    // rides the runtime seam (async_event + block_on) — no caller-facing
+    // rides the runtime interface (async_event + block_on) — no caller-facing
     // condition variables.
     void run_on_owner(const std::function<void()>& work);
+    // How run_on_owner wakes an idle owner loop so the queued work runs now,
+    // not after the loop's idle wait (#1063: every offloaded API call's gate
+    // and the pub/sub authorizer queue here). Called under the queue's lock, so
+    // clearing it ({}) guarantees no call is in flight afterwards. Unset = the
+    // work waits for the next tick.
+    void set_owner_wakeup(std::function<void()> wakeup);
 
     // True when the calling thread is the node's owner thread (adopted at
     // the first tick(), refreshed every tick so a node handed to another
@@ -188,7 +236,11 @@ public:
     void drain_owner_work();
 
     // Bring the node down cleanly (flush, close). Safe to call when stopped.
+    // Flushes pub/sub topics first, within their shutdown budget (#1031).
     void stop();
+
+    // The node's pub/sub (#1024); null while stopped or when disabled.
+    zetta::pubsub::PubSub* pubsub() const { return pubsub_.get(); }
 
     // CRUD for databases. create/rename yield an empty handle / false on an
     // empty name or a name clash; the UI surfaces that inline. An optional
@@ -212,10 +264,12 @@ public:
     // thread that would otherwise deliver the `tbl:` key — so it cannot wait
     // for gossip, and creating its own table would mint a second id for one
     // logical dataset. Idempotent; safe to call after the key has arrived.
+    // `source_format` is what the rows are loaded from (#1221) — the participant
+    // writes the same value the initiator did, so the two copies agree.
     std::shared_ptr<zetta::data::Table> adopt_replicated_table(
         const std::string& database_id, const std::string& database_name,
         const std::string& table_id, const std::string& table_name,
-        bool partition_only);
+        bool partition_only, const std::string& source_format = {});
 
     bool rename_database(const std::string& from, const std::string& to);
     std::vector<std::string> database_names() const;
@@ -225,12 +279,32 @@ public:
     // project.hpp / docs/pipeline/projects.md), mirroring the database CRUD shape.
     // create stamps created/updated and takes an optional owner key;
     // create/rename yield an empty handle / false on an empty name or a clash.
+    // `internal` creates a project that holds one standalone model (lake#654):
+    // it is never listed by project_names(), and is found by its id.
     std::shared_ptr<zetta::pipeline::Project> create_project(std::string name,
                                             std::string owner = {},
-                                            std::string description = {});
+                                            std::string description = {},
+                                            bool internal = false);
     std::shared_ptr<zetta::pipeline::Project> find_project(const std::string& name) const;
+    // By uuid, internal projects included; empty handle on a miss.
+    std::shared_ptr<zetta::pipeline::Project> project_by_id(const std::string& id) const {
+        return find_project_by_id(id);
+    }
+    // Turn an internal project into one people see, under `name` (lake#654,
+    // "Move into a project"). Replicates. false when it is not internal, or the
+    // name is empty or taken.
+    bool reveal_project(const std::string& id, const std::string& name);
+    std::vector<std::shared_ptr<zetta::pipeline::Project>> projects() const {
+        return projects_;
+    }
+    // drop removes the project with its inputs and graphs — from the replicated
+    // document (so every peer drops them) and from disk. Runs and models are
+    // NOT touched: they are records of what happened, keep the project's id as
+    // a plain label, and stay listed (#1009, docs/pipeline/projects.md).
     bool drop_project(const std::string& name);
     bool rename_project(const std::string& from, const std::string& to);
+    // The names of the projects people see: every project except an internal
+    // one (a standalone model's, lake#654).
     std::vector<std::string> project_names() const;
     std::size_t project_count() const { return projects_.size(); }
 
@@ -274,7 +348,7 @@ public:
     }
 
     // This node's `run.launch` listener (#601) — the coordinated cross-process
-    // SPMD launch seam, wired by attach_cluster as the coordinator's signal
+    // SPMD launch path, wired by attach_cluster as the coordinator's signal
     // fallback and drained from tick(). An initiator fans a launch out through
     // it; each peer's copy co-runs the registered kind on its owner thread.
     // nullptr when no cluster is attached (like job_coordinator()). See
@@ -303,7 +377,8 @@ public:
     // docs/pipeline/runs.md). Runs have no human name: they are keyed by id, so find /
     // drop take the id. create stamps created/updated, starts Pending, and takes
     // optional project + graph + deployment references (the deployment ref ties a
-    // run to the placement the reconcile loop is keeping alive). The "update"
+    // run to the placement the reconcile loop is keeping alive). Resolved refs
+    // are canonicalized to ids and their display names are captured. The "update"
     // half of the slice is the mutators on the returned Run handle (set_status /
     // add_log / set_outputs / set_lineage), which capture into the CRDT and
     // persist. runs() is in a stable order (created, then id).
@@ -311,24 +386,84 @@ public:
                                     std::string graph = {},
                                     std::string deployment = {});
     std::shared_ptr<zetta::pipeline::Run> find_run(const std::string& id) const;
+    // The tables a run of `graph` on `project` reads (zetta#1258): every
+    // connect step naming an existing `source`.`table`, plus `dataset_path`
+    // (`database.table`) when it names an existing table. create_run records
+    // the graph's; a caller that hands the run another dataset adds it with
+    // Run::add_reads. Unknown refs and missing tables are skipped.
+    std::vector<zetta::pipeline::TableRead> tables_read(
+        const std::string& project, const std::string& graph,
+        const std::string& dataset_path = {}) const;
     bool drop_run(const std::string& id);
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
+
+    // AutoML studies (#1138, #1158). The Study is replicated configuration and
+    // lifecycle state; each StudyTrial names exactly one Run. delete_study
+    // refuses a running Study, removes non-promoted trial Runs with their
+    // embedded metrics, and keeps the promoted Model's producing Run.
+    std::shared_ptr<zetta::ml::Study> create_study(
+        zetta::ml::StudySpec spec, std::string* error = nullptr);
+    std::shared_ptr<zetta::ml::Study> find_study(
+        const std::string& id_or_name) const;
+    std::optional<zetta::ml::StudyDeleteResult> delete_study(
+        const std::string& id_or_name, std::string* error = nullptr);
+    bool drop_study(const std::string& id);
+    std::vector<std::shared_ptr<zetta::ml::Study>> studies() const {
+        return studies_;
+    }
+    std::size_t study_count() const { return studies_.size(); }
+    void request_stop_study_work(const std::string& study_id,
+                                 const std::string& run_id = {});
+
+    // Run experiment tracking (#1137). These owner-thread entry points update
+    // the replicated Run record. Metric batches also sample available host
+    // gauges and publish JSON to exposed topic run-metrics.<run>.
+    //
+    // `coalesce` is for a trainer logging every round (#1217): the Run's
+    // replicated capture is written at most once per
+    // pipeline::Run::kCaptureInterval, and the tick (or stop) writes the
+    // last one. Live topic batches still publish on every call.
+    bool log_run_metrics(const std::string& run, std::uint64_t step,
+                         std::map<std::string, double> values,
+                         std::string time = {}, std::string* error = nullptr,
+                         bool coalesce = false);
+    bool log_run_params(const std::string& run, nlohmann::json params,
+                        std::string* error = nullptr);
+    bool log_run_artifact(const std::string& run, nlohmann::json artifact,
+                          std::string* error = nullptr);
 
     // CRUD for models (a trained model registered on the node — see model.hpp /
     // docs/ml/models.md; ENT-14 / FEAT-6). Models are keyed by id (like runs), so
     // find / drop take the id; the registry is models() + the
     // system.models SQL table. create stamps `created` and requires a
     // non-empty `kind` (empty handle otherwise); the caller fills the rest of the
-    // ModelValue (name / feature_schema / metrics / project / run). Weights are
+    // ModelValue (name / feature_schema / metrics / project / run). Producing
+    // Run lineage supplies the page-ready names and explicit run_id. Weights are
     // attached separately via the returned Model handle's set_weights (the body
     // is stored on disk + fingerprinted, then transfers peer-to-peer over the
-    // large-object body seam). models() is in a stable order (created, then id).
+    // large-object body transfer path). models() is in a stable order (created, then id).
     std::shared_ptr<zetta::ml::Model> create_model(zetta::ml::ModelValue value);
     std::shared_ptr<zetta::ml::Model> find_model(const std::string& id) const;
     bool drop_model(const std::string& id);
     std::vector<std::shared_ptr<zetta::ml::Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
+
+    // One replicated drift and guardrail monitor per solution (#1106). create
+    // validates histogram baselines and declared bounds, stamps its timestamps,
+    // and refuses a duplicate solution. find accepts either the monitor uuid or
+    // the solution name. Monitor mutations publish new breach transitions to
+    // the node's internal solution-events topic.
+    std::shared_ptr<zetta::solutions::Monitor> create_monitor(
+        zetta::solutions::MonitorSpec spec,
+        std::string* error = nullptr);
+    std::shared_ptr<zetta::solutions::Monitor> find_monitor(
+        const std::string& id_or_solution) const;
+    bool drop_monitor(const std::string& id);
+    std::vector<std::shared_ptr<zetta::solutions::Monitor>> monitors() const {
+        return monitors_;
+    }
+    std::size_t monitor_count() const { return monitors_.size(); }
 
     // CRUD for Workspace Profiles (the "Discover Opportunities" input — see
     // workspace_profile.hpp / docs/workspace/; #886). A top-level replicated
@@ -357,11 +492,48 @@ public:
     std::vector<std::shared_ptr<zetta::billing::Plan>> plans() const { return plans_; }
     std::size_t plan_count() const { return plans_.size(); }
 
+    // The shared holdout / experiment manager (#1105): replicated experiment
+    // definitions and per-entity assignments, decide-before-action enforcement,
+    // balance checks, erosion, and uplift-training rows. The Node's owner-thread
+    // rule applies to every call.
+    zetta::solutions::ExperimentManager& experiment_manager() {
+        return experiment_manager_;
+    }
+    const zetta::solutions::ExperimentManager& experiment_manager() const {
+        return experiment_manager_;
+    }
+
     // The node's CRDT document manager (null when standalone/unreplicated). Exposed
     // so a new replicated entity kind — agents (`agent:<id>`) — can capture + read
     // its keys via `agent::AgentStore` without a bespoke method per verb here. Prefer
     // a typed accessor above where one exists; a served node always has one (main.cpp).
     zetta::cluster::ReplicationManager* replication() { return replication_; }
+
+    // The keyed record store and the labelled time series (#1231,
+    // docs/data/record-store.md, docs/data/time-series.md). Both live in the
+    // replicated catalogue, so both are null on a standalone node. Thread-safe:
+    // the registry calls them from its blocking pool.
+    zetta::data::RecordStore* record_store() { return record_store_.get(); }
+
+    // How the replicated catalogue's once-a-second save is behaving: how many
+    // saves ran, the last one's duration and size, and whether one is running
+    // now (readable from any thread). The record-store soak uses it to time
+    // reads that overlap a save (#1231).
+    struct ReplicationPersistStats {
+        std::uint64_t saves = 0;
+        double last_ms = 0.0;
+        std::uint64_t last_bytes = 0;
+    };
+    ReplicationPersistStats replication_persist_stats() const { return persist_stats_; }
+    bool persisting_replication() const {
+        return persisting_.load(std::memory_order_acquire);
+    }
+    zetta::data::MetricStore* metric_store() { return metric_store_.get(); }
+
+    // The object capability (#1005, docs/data/object-store.md): buckets of byte
+    // objects in node-local logs, placed on rf owners. Null on a standalone node,
+    // like the record store. Thread-safe: the API calls it from its blocking pool.
+    zetta::data::ObjectStore* object_store() { return object_store_.get(); }
 
     // CRUD for indexes (a registered index over a table — search / vector /
     // feature; ENT-39 / ENT-40, see index/index.hpp / docs/indexing/index-backend.md). Like
@@ -370,7 +542,7 @@ public:
     // `created` and requires a non-empty `table` / `backend` and at least one field
     // (empty handle otherwise — the IndexValue is validated at the schema boundary
     // on persist/reconcile). An index is metadata only: this records its
-    // definition; building it is the IndexBackend seam's job (index_backend.hpp).
+    // definition; building it is the IndexBackend implementation's job.
     // indexes() is in a stable order (created, then id).
     std::shared_ptr<zetta::index::Index> create_index(zetta::index::IndexValue value);
     std::shared_ptr<zetta::index::Index> find_index(const std::string& id) const;
@@ -427,7 +599,7 @@ public:
     // The IndexBackend the distributed fulltext machinery builds its
     // per-partition sub-indexes into. Set BEFORE attach_cluster to override the
     // default (OramaCoreFulltextIndex when compiled in, else the exact-match
-    // InMemoryIndexBackend) — the seam tests inject a reference scorer through.
+    // InMemoryIndexBackend) — tests inject a reference scorer through it.
     void set_search_backend(std::shared_ptr<zetta::index::IndexBackend> backend) {
         search_backend_ = std::move(backend);
     }
@@ -559,8 +731,13 @@ public:
     // CPU + network gauges are rates measured against the previous sample, which
     // the sampler updates each call. The storage gauge is taken over the node's
     // `data_dir` filesystem.
-    zetta::cluster::NodeMetrics sample_node_metrics() {
-        return node_metrics_sampler_.sample(config_.data_dir);
+    zetta::cluster::NodeMetrics sample_node_metrics();
+
+    zetta::memory::Snapshot memory_snapshot() const {
+        return memory_accounting_.snapshot();
+    }
+    zetta::memory::MemoryAccounting& memory_accounting() {
+        return memory_accounting_;
     }
 
     // The **cluster-wide** live telemetry snapshot: this node plus every peer
@@ -575,6 +752,17 @@ public:
         if (!telemetry_) return {};
         return telemetry_->snapshot();
     }
+
+    // How often a clustered node measures its storage census (docs/data/storage-census.md,
+    // zetta#1259) on the blocking pool, to carry it in its telemetry; and how old a member's
+    // census may be before a cluster answer names it `stale` instead of counting it.
+    static constexpr std::chrono::seconds kStorageCensusInterval{60};
+    static constexpr std::chrono::seconds kStorageCensusStaleAfter{3 * kStorageCensusInterval};
+
+    // Every member of the attached cluster by id (the replicated node-list, this node included);
+    // just this node when no cluster is attached. Thread-safe (Cluster::membership() is), so the
+    // blocking pool may call it.
+    std::vector<std::string> cluster_member_ids() const;
 
     // Record one near-data compute job's **live pipeline instrumentation** (its
     // local-vs-wire byte counters — see pipeline_instrumentation.hpp). The
@@ -632,23 +820,53 @@ public:
     // iff the key permits it. Deny-by-default — an unknown/empty key id denies.
     //
     // Every decision is recorded as a `data_access` AuditEvent (allow/deny + the
-    // reason), so authorize is the data-access seam of the audit trail (FEAT-9) —
+    // reason), so authorize is the data-access boundary of the audit trail (FEAT-9) —
     // which is why it is non-const (it appends to the immutable trail).
     zetta::governance::AccessDecision authorize(const std::string& key_id,
                              const zetta::governance::Resource& resource);
 
-    // The immutable, append-only audit trail (ENT-23 / FEAT-9). Graph changes,
+    // The immutable, retained audit trail (ENT-23 / FEAT-9). Graph changes,
     // deploys, and data-access decisions each record an AuditEvent; the events
-    // can be listed in chronological order. Events are never edited or removed.
-    // record_audit_event is the public append seam (also the AuditSink override):
-    // it stamps a fresh id + time, persists the event, captures it into the CRDT
-    // when replicated, and appends it to the trail. The (future) request path
-    // calls it to record data accesses at real read/write points.
+    // can be listed in chronological order. Events are never edited; retention
+    // may expire old detail while preserving summaries.
+    // record_audit_event is the public append API (also the AuditSink override):
+    // it stamps a fresh id + time and appends to the local segment log, whose
+    // per-origin ranges replicate without entering the CRDT (#1164).
     void record_audit_event(zetta::governance::AuditEventValue value) override;
-    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const {
-        return audit_events_;
+    std::optional<std::size_t> purge_audit_before(
+        const std::string& before, std::string actor,
+        std::string* error = nullptr);
+    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const;
+    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> recent_audit_events() const;
+    std::size_t audit_event_count() const;
+    nlohmann::json audit_watermarks() const;
+    std::size_t audit_memory_bytes() const;
+
+    // Registry policy for authorised polling reads (#1154). The first call for
+    // an actor/capability/scope records a session start; calls and delivered
+    // events or returned data then land in five-minute summaries and are
+    // flushed on stop. Empty windows add no summary row.
+    void record_authorized_read(std::string actor, std::string capability,
+                                std::string scope,
+                                std::uint64_t events_delivered,
+                                bool returned_data);
+    void flush_audit_summaries();
+
+    // The solutions reward ledger (#1107). Both methods append a fresh,
+    // immutable record; outcomes reference an existing action and never update
+    // it. There is deliberately no mutation or deletion API.
+    std::shared_ptr<zetta::solutions::LedgerEntry> record_action(
+        zetta::solutions::ActionLedgerValue value);
+    std::shared_ptr<zetta::solutions::LedgerEntry> record_outcome(
+        zetta::solutions::OutcomeLedgerValue value);
+    std::shared_ptr<zetta::solutions::LedgerEntry> find_ledger_entry(
+        const std::string& id) const;
+    std::vector<std::shared_ptr<zetta::solutions::LedgerEntry>> ledger_entries() const {
+        return ledger_entries_;
     }
-    std::size_t audit_event_count() const { return audit_events_.size(); }
+    std::size_t ledger_entry_count() const {
+        return ledger_entries_.size();
+    }
 
     // The capability decision (ENT-22): `operation` is allowed iff the key holds
     // a matching, unexpired capability as of the current time. Deny-by-default —
@@ -862,7 +1080,7 @@ public:
     // Resolve a bearer secret to the user it authenticates as, or an empty handle
     // when no live token matches (deny-by-default). Hashes + constant-time
     // compares against every non-revoked, unexpired token, and requires the
-    // owning user to exist and be active. This is the seam issue #2's gate calls.
+    // owning user to exist and be active. This is the boundary issue #2's gate calls.
     std::shared_ptr<zetta::governance::User> authenticate_token(std::string_view secret) const;
 
     // The outcome of bootstrap_owner: whether an owner was minted this call, and
@@ -905,6 +1123,14 @@ public:
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
 
+    // The keyring saved connector credentials are sealed and opened with
+    // (#1230; connect/credential_seal.hpp). Built on first use from
+    // NodeConfig::connection_root_secret, or the node-local root secret when
+    // that is empty. Null, with the reason in `*reason`, when neither can be had
+    // (an unwritable data_dir): nothing is sealed or opened then.
+    const zetta::connect::CredentialKeyring* connection_keyring(
+        std::string* reason = nullptr) const;
+
     // Seconds since start(); 0 when stopped.
     double uptime_seconds() const;
 
@@ -922,6 +1148,10 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
+
+    // connection_keyring()'s lazily built value, or the reason it failed.
+    mutable std::optional<zetta::connect::CredentialKeyring> connection_keyring_;
+    mutable std::string connection_keyring_error_;
 
     // Rebuild databases_ by scanning config_.data_dir. Called from start().
     void load_databases();
@@ -948,8 +1178,25 @@ private:
     // Rebuild runs_ by scanning config_.data_dir. Called from start().
     void load_runs();
 
+    // Rebuild studies_ by scanning config_.data_dir. Called from start().
+    void load_studies();
+
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
+
+    // Fill display names on records written before #1184 and keep them current
+    // when their owning Project or Pipeline is renamed.
+    void backfill_denormalized_names();
+    void update_project_display_name(const std::string& project_id,
+                                     const std::string& old_name,
+                                     const std::string& new_name);
+    void update_pipeline_display_name(const std::string& project_id,
+                                      const std::string& pipeline_id,
+                                      const std::string& old_name,
+                                      const std::string& new_name);
+
+    // Rebuild monitors_ by scanning config_.data_dir. Called from start().
+    void load_monitors();
 
     // Rebuild workspace_profiles_ by scanning config_.data_dir. Called from start().
     void load_workspace_profiles();
@@ -969,10 +1216,26 @@ private:
     // only, like every other tree walk.
     void flush_stores();
 
-    // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
-    // start(). Malformed event files are skipped at the boundary (schema).
-    void load_audit_events();
+    // Open the segmented audit projection and migrate legacy event files.
+    bool load_audit_events();
     std::filesystem::path audit_dir() const;
+    void flush_due_audit_summaries();
+    void apply_audit_retention();
+    void register_memory_probes();
+    void report_memory(bool force);
+    zetta::memory::ProbeSample audit_memory_usage() const;
+    zetta::memory::ProbeSample pubsub_memory_usage() const;
+    zetta::memory::ProbeSample replication_memory_usage() const;
+    zetta::memory::ProbeSample dataset_memory_usage() const;
+    zetta::memory::ProbeSample registry_memory_usage() const;
+    zetta::memory::ProbeSample runtime_memory_usage() const;
+    zetta::memory::ProbeSample model_memory_usage() const;
+    zetta::memory::ProbeSample run_job_memory_usage() const;
+    void sync_audit_log();
+
+    // Rebuild the immutable solutions ledger from data_dir/ledger.
+    void load_ledger_entries();
+    std::filesystem::path ledger_dir() const;
 
     // Rebuild principals_ by scanning config_.data_dir. Called from start().
     void load_principals();
@@ -989,11 +1252,14 @@ private:
 
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
-    void load_replication();           // read the persisted CRDT document
-    void persist_replication() const;  // write the CRDT document to disk
+    bool load_replication();           // read the persisted CRDT document
+    void persist_replication();        // write the CRDT document to disk
     void migrate_to_replication();     // capture local-only data into the CRDT
     // apply the CRDT document (the given snapshot) to the projection
     void reconcile_from_replication(const nlohmann::json& snapshot);
+    void reconcile_replication_changes(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>& changed_keys);
     // Between-jobs partition rebalance on a cluster membership change (#517):
     // membership lives in the document as node:<id> keys, so a join/leave shows
     // up here. When the set differs from the last observed membership, recompute
@@ -1001,33 +1267,67 @@ private:
     // which captures the new owner_nodes into the document so the bodies move to
     // their new owners. No-op on the first observation (it sets the baseline) and
     // when membership is unchanged.
-    void rebalance_partitions_on_membership_change(const nlohmann::json& snapshot);
-    // Per-entity reconcile passes, called by reconcile_from_replication() in the
-    // order parent entities precede their children. Each scans the same CRDT
-    // snapshot for its keys, drops local entries the document no longer has, and
-    // materializes new/changed ones. reconcile_databases also covers tables, rows,
-    // and large objects — they decode in one shared pass and their removals nest
-    // under their owning database, so they don't split cleanly.
-    void reconcile_databases(const nlohmann::json& snapshot);
-    void reconcile_projects(const nlohmann::json& snapshot);
-    void reconcile_inputs(const nlohmann::json& snapshot);
-    void reconcile_graphs(const nlohmann::json& snapshot);
-    void reconcile_deployments(const nlohmann::json& snapshot);
-    void reconcile_runs(const nlohmann::json& snapshot);
-    void reconcile_models(const nlohmann::json& snapshot);
-    void reconcile_workspace_profiles(const nlohmann::json& snapshot);
-    void reconcile_plans(const nlohmann::json& snapshot);
-    void reconcile_indexes(const nlohmann::json& snapshot);
-    void reconcile_jobs(const nlohmann::json& snapshot);
-    void reconcile_partitions(const nlohmann::json& snapshot);
-    void reconcile_principals(const nlohmann::json& snapshot);
-    void reconcile_access_keys(const nlohmann::json& snapshot);
-    void reconcile_audit_events(const nlohmann::json& snapshot);
-    void reconcile_users(const nlohmann::json& snapshot);
-    void reconcile_roles(const nlohmann::json& snapshot);
-    void reconcile_tokens(const nlohmann::json& snapshot);
-    void reconcile_user_roles(const nlohmann::json& snapshot);
-    void reconcile_policies(const nlohmann::json& snapshot);
+    void rebalance_partitions_on_membership_change(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    // Per-entity reconcile passes run in parent-before-child order. A null key
+    // list applies a complete snapshot; an incremental call receives only its
+    // prefix bucket and scopes removals to those keys. reconcile_databases also
+    // covers tables, rows, manifests, and large objects because their removals
+    // nest under their owning database.
+    void reconcile_databases(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_projects(const nlohmann::json& snapshot,
+                            const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_inputs(const nlohmann::json& snapshot,
+                          const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_graphs(const nlohmann::json& snapshot,
+                          const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_deployments(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_runs(const nlohmann::json& snapshot,
+                        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_studies(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_models(const nlohmann::json& snapshot,
+                          const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_monitors(const nlohmann::json& snapshot,
+                            const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_workspace_profiles(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_plans(const nlohmann::json& snapshot,
+                         const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_indexes(const nlohmann::json& snapshot,
+                           const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_jobs(const nlohmann::json& snapshot,
+                        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_partitions(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_principals(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_access_keys(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_ledger_entries(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_users(const nlohmann::json& snapshot,
+                         const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_roles(const nlohmann::json& snapshot,
+                         const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_tokens(const nlohmann::json& snapshot,
+                          const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_user_roles(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_policies(const nlohmann::json& snapshot,
+                            const std::vector<std::string>* changed_keys = nullptr);
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<zetta::data::Database> materialize_database(
         std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
@@ -1037,7 +1337,8 @@ private:
                                                  std::string created,
                                                  std::string updated,
                                                  std::string owner,
-                                                 std::string description = {});
+                                                 std::string description = {},
+                                                 bool internal = false);
     bool materialize_drop_project(const std::string& id);
     std::shared_ptr<zetta::pipeline::Deployment> materialize_deployment(
         std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,
@@ -1046,8 +1347,16 @@ private:
     bool materialize_drop_deployment(const std::string& id);
     std::shared_ptr<zetta::pipeline::Run> materialize_run(std::string id, zetta::pipeline::RunValue value);
     bool materialize_drop_run(const std::string& id);
+    std::shared_ptr<zetta::ml::Study> materialize_study(
+        std::string id, zetta::ml::StudyValue value);
+    bool materialize_drop_study(const std::string& id);
     std::shared_ptr<zetta::ml::Model> materialize_model(std::string id, zetta::ml::ModelValue value);
     bool materialize_drop_model(const std::string& id);
+    std::shared_ptr<zetta::solutions::Monitor> materialize_monitor(
+        std::string id,
+        zetta::solutions::MonitorValue value);
+    bool materialize_drop_monitor(const std::string& id);
+    void publish_monitor_breach(const zetta::solutions::MonitorBreach& breach);
     std::shared_ptr<zetta::workspace::WorkspaceProfile> materialize_workspace_profile(
         std::string id, zetta::workspace::WorkspaceProfileValue value);
     bool materialize_drop_workspace_profile(const std::string& id);
@@ -1084,15 +1393,33 @@ private:
     std::shared_ptr<zetta::governance::Policy> materialize_policy(
         std::string id, zetta::governance::PolicyValue value);
     bool materialize_drop_policy(const std::string& id);
-    // Apply a replicated audit event (a peer's, or one rebuilt from the document)
-    // by id, without capturing. Append-only — there is no drop counterpart.
-    std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
-                                                        zetta::governance::AuditEventValue value);
+    void flush_audit_summary(const std::string& key);
+    std::shared_ptr<zetta::solutions::LedgerEntry> materialize_ledger_entry(
+        std::string id, zetta::solutions::LedgerEntryValue value);
 
     NodeConfig config_;
     zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
     std::string node_id_;              // this node's stable UUID (set by start())
-    std::string last_seen_version_;    // CRDT version last reconciled/persisted
+    std::string last_seen_version_;    // CRDT version last reconciled
+    std::uint64_t last_replication_change_token_ = 0;
+    Clock::time_point last_replication_persist_{};
+    bool replication_persist_pending_ = false;
+    std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
+    std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
+    std::unique_ptr<zetta::data::ObjectStore> object_store_;  // null when standalone
+    // The object store's upkeep (maintenance, and anti-entropy every five
+    // seconds) runs on the pool, one round at a time (#1005).
+    struct ObjectUpkeepRound;
+    std::shared_ptr<ObjectUpkeepRound> object_upkeep_;
+    Clock::time_point last_object_maintenance_{};
+    Clock::time_point last_object_anti_entropy_{};
+    Clock::time_point last_record_sweep_{};
+    // The record anti-entropy round in flight on the pool, if any (#1231).
+    struct RecordAntiEntropyRound;
+    std::shared_ptr<RecordAntiEntropyRound> record_anti_entropy_;
+    Clock::time_point last_record_anti_entropy_{};
+    ReplicationPersistStats persist_stats_;
+    std::atomic<bool> persisting_{false};
     std::vector<std::string> last_membership_;  // node:<id> set last seen (#517)
     IntegrityReport integrity_;        // last preflight result
     bool running_ = false;
@@ -1102,10 +1429,18 @@ private:
     std::vector<std::shared_ptr<zetta::pipeline::Project>> projects_;        // insertion order
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
+    // Runs holding a coalesced metric capture not yet written (#1217); the
+    // tick writes each once its interval has passed, stop() writes them all.
+    std::set<std::string> pending_run_captures_;
+    void flush_pending_captures(bool force);
+    std::vector<std::shared_ptr<zetta::ml::Study>> studies_;           // sorted (created, id)
+    std::unique_ptr<zetta::ml::StudyDriver> study_driver_;
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::solutions::Monitor>> monitors_; // sorted (created, id)
     std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
         workspace_profiles_;                                          // sorted (created, id)
     std::vector<std::shared_ptr<zetta::billing::Plan>> plans_;         // sorted (created, id)
+    zetta::solutions::ExperimentManager experiment_manager_;
     std::vector<std::shared_ptr<zetta::index::Index>> indexes_;           // sorted (created, id)
     std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<std::shared_ptr<zetta::data::DatasetPartition>>
@@ -1114,6 +1449,11 @@ private:
     std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
     zetta::governance::ConsentLedger consent_ledger_;                     // ephemeral; not replicated (#621)
     zetta::cluster::NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
+    zetta::memory::MemoryAccounting memory_accounting_;
+    Clock::time_point last_memory_check_{};
+    Clock::time_point last_memory_log_{};
+    Clock::time_point last_malloc_trim_{};
+    std::uint64_t last_rss_step_ = 0;
     // Live near-data pipeline instrumentation (#589): a bounded, in-memory ring of
     // the most-recent recorded jobs' local-vs-wire counters, the source for the
     // `system.pipeline_jobs` view. Ephemeral / observed; NOT replicated. Guarded by
@@ -1128,7 +1468,7 @@ private:
     // contained cross-thread handoff of the queue itself (the cluster-outbox
     // pattern the coroutines-first convention sanctions) — never exposed.
     // `signal_completed` type-erases the waiter's runtime::async_event so this
-    // header stays free of the runtime seam's backend headers.
+    // header stays free of the runtime adapter's backend headers.
     struct OwnerWork {
         std::function<void()> work;
         std::function<void()> signal_completed;
@@ -1136,8 +1476,25 @@ private:
     std::atomic<std::thread::id> owner_thread_;
     mutable std::mutex owner_work_mutex_;
     std::deque<OwnerWork> owner_work_queue_;
+    std::function<void()> owner_wakeup_;  // guarded by owner_work_mutex_
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
-    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
+    std::unique_ptr<zetta::governance::AuditTrail> audit_trail_;
+    std::size_t audit_received_since_relief_ = 0;
+    struct AuditSummaryWindow {
+        std::string actor;
+        std::string capability;
+        std::string scope;
+        std::string started;
+        Clock::time_point opened_at;
+        std::uint64_t calls = 0;
+        std::uint64_t events_delivered = 0;
+        bool returned_data = false;
+    };
+    std::map<std::string, AuditSummaryWindow> audit_summary_windows_;
+    Clock::time_point last_audit_retention_{};
+    std::map<std::string, Clock::time_point> audit_requests_;
+    std::vector<std::shared_ptr<zetta::solutions::LedgerEntry>>
+        ledger_entries_;  // sorted (recorded_at, id)
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
     std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials
@@ -1155,6 +1512,8 @@ private:
     // the cluster, so its handler unwind never touches a dead cluster.
     zetta::cluster::Cluster* cluster_ = nullptr;
     unsigned compute_workers_ = 0;
+    // In-memory pub/sub (#1024): created in start(), flushed + destroyed in stop().
+    std::unique_ptr<zetta::pubsub::PubSub> pubsub_;
     // Cluster-wide live telemetry over the signal plane (#584): the cache of this
     // node's + peers' `node.metrics` events, wired as the coordinator's signal
     // handler fallback. Declared BEFORE coordinator_ so it outlives it (the
@@ -1164,8 +1523,18 @@ private:
     // replicated.
     std::unique_ptr<zetta::cluster::NodeTelemetryExchange> telemetry_;
     std::chrono::steady_clock::time_point last_telemetry_sample_{};
+    // The storage census this node carries in its telemetry (zetta#1259): measured on the
+    // blocking pool every kStorageCensusInterval, one round at a time; tick() takes a finished
+    // round's result (owner thread only) and attaches it to each sample with its age.
+    struct StorageCensusRound;
+    std::shared_ptr<StorageCensusRound> storage_census_round_;
+    std::chrono::steady_clock::time_point last_storage_census_{};
+    bool storage_census_measured_ = false;
+    zetta::data::StorageCensus storage_census_;
+    std::string storage_census_measured_at_;
+    std::chrono::steady_clock::time_point storage_census_taken_{};
     // The coordinated cross-process launch listener (#601): the `run.launch`
-    // seam, wired as the coordinator's signal-handler fallback (delegating
+    // listener, wired as the coordinator's signal-handler fallback (delegating
     // everything else to telemetry_, which is why it is declared between the
     // two: it must outlive the coordinator that points at it and die before
     // the telemetry it points at). Created in start_coordinator() with the

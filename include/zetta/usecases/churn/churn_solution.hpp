@@ -30,7 +30,7 @@
 // playbook pipeline instead of the stubbed DefaultStepExecutor.
 //
 // The real per-step compute already exists as zetta::usecases::churn::ChurnStepExecutor (#396),
-// but it is driven *by injection* into a GraphExecutor and needs a lot the seam
+// but it is driven *by injection* into a GraphExecutor and needs context the interface
 // can't supply on its own: a started JobCoordinator, a ComputeDevice, and this
 // node's NUMERIC input shards (the churn pipeline operates purely on numeric DDF
 // columns). This module is that glue, factored out of the test harness so the
@@ -112,6 +112,12 @@ struct ChurnSolutionOptions {
     std::string model_name = "churn_model";  // the registered Model's human name
     std::string project;                     // labels the Run + every ComputeJob
     std::string graph;                       // graph id label
+    std::string run_id;                      // reuse this Run for a study trial
+    ml::TrainProgressCallback training_progress;
+    std::string result_database = "churn_results";
+    std::string result_table_prefix = "at_risk_";
+    std::string result_entity_column = "account";
+    std::string result_score_column = "risk";
     // Fan the run out to the live membership when the cluster has peers (#601).
     // False = run this node's copy alone — only correct on a single-member
     // cluster (a lone submitter fails the SPMD collective rounds otherwise).
@@ -192,10 +198,26 @@ inline constexpr std::string_view kTableEntityColumn = "entity";
 
 struct ChurnTableInput {
     std::string table_id;  // a `Table::id()` — what the partition catalog records
+    // The `database.table` the caller named: what the run's lineage says it read.
+    std::string dataset_name;
+    // What resolving the dataset decided (resolve_dataset's notes), including the columns
+    // it could not use and why; they are logged on the run and shown in its report.
+    std::vector<std::string> notes;
     // What the table's columns MEAN. Resolve it from a `dataset_path` with
     // zetta::data::resolve_dataset, which infers what the caller left unsaid and
     // reports every inference.
     zetta::data::DatasetContract contract;
+
+    // S-1 trains on rolling forward-labelled examples derived from the source
+    // history while scoring the current snapshot named above. The rows use an
+    // internal sample key because one business entity contributes at multiple
+    // cutoffs. Other M-1 callers leave this empty and train on `table_id`.
+    std::vector<nlohmann::json> forward_label_rows;
+    zetta::data::DatasetContract forward_label_contract;
+    std::string forward_label_source;
+    std::size_t forward_label_censored = 0;
+    std::size_t forward_label_inactive = 0;
+    bool score_active_only = false;
 
     bool empty() const { return table_id.empty(); }
 };
@@ -203,7 +225,9 @@ struct ChurnTableInput {
 // The DDF schema of the accounts shard for `contract`: the entity key as Int64,
 // each feature column as Float64, the label as Int64, and the time column (when
 // set) as Float64. Pure — the encoder's output contract in table form.
-ddf::DataFrameSchema table_accounts_schema(const zetta::data::DatasetContract& contract);
+ddf::DataFrameSchema table_accounts_schema(
+    const zetta::data::DatasetContract& contract,
+    bool continuous_label = false);
 
 // The featurization for `contract`: **static carry-through mode** — no windowed
 // event features, the contract's feature columns carried through, the label as the

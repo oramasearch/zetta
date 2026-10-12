@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -8,6 +9,13 @@
 #include "zetta/storage/lazy_row.hpp"
 
 namespace zetta::storage {
+
+struct StorageMemoryUsage {
+    std::uint64_t bytes = 0;
+    std::uint64_t items = 0;
+    std::uint64_t cache_bytes = 0;
+    std::uint64_t cache_items = 0;
+};
 
 // Interface for a node's storage engine.
 //
@@ -43,6 +51,12 @@ public:
 
     // Number of rows currently held.
     virtual std::size_t size() const = 0;
+
+    // Cheap resident-memory counters for system.memory. Engines with caches or
+    // fully resident rows override this; the fallback covers container nodes.
+    virtual StorageMemoryUsage memory_usage() const {
+        return StorageMemoryUsage{size() * 64, size(), 0, 0};
+    }
 
     // The row at index i — its data and its id — as a handle that keeps the row
     // alive for as long as the caller holds it (`ParquetLazyPtr`, which for an

@@ -116,6 +116,7 @@ constexpr std::string_view label_of(zetta::pipeline::StepPlacement placement) {
 
 constexpr std::string_view label_of(zetta::pipeline::CheckStatus status) {
     switch (status) {
+        case zetta::pipeline::CheckStatus::NotApplicable: return "Did not apply";
         case zetta::pipeline::CheckStatus::Pass: return "Pass";
         case zetta::pipeline::CheckStatus::Warn: return "Warning";
         case zetta::pipeline::CheckStatus::Fail: return "Fail";

@@ -1,15 +1,37 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdio>
 #include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
+#include "temp_dir.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/node.hpp"
 #include "zetta/util/uuid.hpp"
 
 using zetta::cluster::ReplicationManager;
 using zetta::cluster::ReplicationPolicy;
+
+namespace {
+
+zetta::NodeConfig config_for(const zetta::test::TempDir& temporary_directory) {
+    zetta::NodeConfig config;
+    config.data_dir = temporary_directory.path().string();
+    return config;
+}
+
+nlohmann::json audit_value(std::string target) {
+    zetta::governance::AuditEventValue value;
+    value.target = std::move(target);
+    value.time = "2026-09-27T00:00:00Z";
+    return zetta::governance::to_json(value);
+}
+
+}  // namespace
 
 TEST(Replication, DefaultPolicyReplicatesToAllNodes) {
     ReplicationManager manager{zetta::util::new_uuid()};
@@ -29,6 +51,58 @@ TEST(Replication, MergePropagatesState) {
     EXPECT_EQ(snapshot["title"], "hello");
     EXPECT_EQ(snapshot["count"], 3);
     EXPECT_EQ(snapshot["nested"]["b"], 2);
+}
+
+TEST(Replication, SharedSnapshotsAreImmutableAcrossWrites) {
+    ReplicationManager manager{zetta::util::new_uuid()};
+    manager.set("one", 1);
+    const auto before = manager.shared_snapshot();
+
+    manager.set("two", 2);
+    const auto after = manager.shared_snapshot();
+
+    ASSERT_TRUE(before);
+    ASSERT_TRUE(after);
+    EXPECT_EQ(before->size(), 1u);
+    EXPECT_FALSE(before->contains("two"));
+    EXPECT_EQ(after->at("two"), 2);
+}
+
+TEST(Replication, ChangesTrackLocalWritesAndRemovals) {
+    ReplicationManager manager{zetta::util::new_uuid()};
+    const auto initial = manager.changes_since(0);
+    ASSERT_TRUE(initial.full_resync);
+    ASSERT_TRUE(initial.snapshot);
+
+    manager.set("one", 1);
+    manager.set("two", 2);
+    const auto writes = manager.changes_since(initial.next_token);
+    EXPECT_FALSE(writes.full_resync);
+    EXPECT_EQ(writes.keys, (std::vector<std::string>{"one", "two"}));
+    ASSERT_TRUE(writes.snapshot);
+    EXPECT_EQ(writes.snapshot->size(), 2u);
+
+    manager.remove("one");
+    const auto removal = manager.changes_since(writes.next_token);
+    EXPECT_FALSE(removal.full_resync);
+    EXPECT_EQ(removal.keys, (std::vector<std::string>{"one"}));
+    ASSERT_TRUE(removal.snapshot);
+    EXPECT_FALSE(removal.snapshot->contains("one"));
+}
+
+TEST(Replication, ChangesTrackPeerMerges) {
+    ReplicationManager source{zetta::util::new_uuid()};
+    ReplicationManager replica{zetta::util::new_uuid()};
+    const auto baseline = replica.changes_since(0);
+
+    source.set("peer", nlohmann::json{{"value", 1}});
+    replica.merge(source.save());
+    const auto merged = replica.changes_since(baseline.next_token);
+
+    EXPECT_FALSE(merged.full_resync);
+    EXPECT_EQ(merged.keys, (std::vector<std::string>{"peer"}));
+    ASSERT_TRUE(merged.snapshot);
+    EXPECT_EQ(merged.snapshot->at("peer").at("value"), 1);
 }
 
 TEST(Replication, EntryCountAndVersionTrackTheDocument) {
@@ -141,4 +215,70 @@ TEST(Replication, AMeshOfThreeConvergesAfterConcurrentWrites) {
             << "node " << n << " holds different content than node 0";
     }
 }
-// appended temporarily to test_replication.cpp
+
+TEST(IncrementalReconcile, AppliesPeerLocalAndRemovalChangesInOneTick) {
+    zetta::test::TempDir temporary_directory;
+    ReplicationManager replication{zetta::util::new_uuid()};
+    for (int index = 0; index < 16; ++index) {
+        replication.set("fixture:seed-" + std::to_string(index),
+                        audit_value("seed"));
+    }
+    replication.set("db:removed", nlohmann::json{{"name", "removed"}});
+
+    zetta::Node node{config_for(temporary_directory), &replication};
+    ASSERT_TRUE(node.start());
+    ASSERT_TRUE(node.find_database("removed"));
+
+    ReplicationManager peer{zetta::util::new_uuid()};
+    peer.merge(replication.save());
+    peer.set("db:peer", nlohmann::json{{"name", "peer"}});
+    replication.merge(peer.save());
+    replication.set("db:local", nlohmann::json{{"name", "local"}});
+    replication.remove("db:removed");
+
+    node.tick();
+
+    EXPECT_TRUE(node.find_database("peer"));
+    EXPECT_TRUE(node.find_database("local"));
+    EXPECT_FALSE(node.find_database("removed"));
+    node.stop();
+}
+
+TEST(IncrementalReconcile, OneChangeStaysFastWithOneHundredThousandMigratedAuditEvents) {
+    zetta::test::TempDir temporary_directory;
+    ReplicationManager replication{zetta::util::new_uuid()};
+    constexpr int kExistingEvents = 100000;
+    constexpr int kTicks = 40;
+    for (int index = 0; index < kExistingEvents; ++index) {
+        replication.set("audit:existing-" + std::to_string(index),
+                        audit_value("existing"));
+    }
+
+    zetta::Node node{config_for(temporary_directory), &replication};
+    ASSERT_TRUE(node.start());
+    ASSERT_EQ(node.audit_event_count(),
+              static_cast<std::size_t>(kExistingEvents));
+    for (const auto& [key, value] : replication.snapshot().items()) {
+        EXPECT_FALSE(key.starts_with("audit:"));
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    for (int index = 0; index < kTicks; ++index) {
+        replication.set("fixture:tick", index);
+        zetta::governance::AuditEventValue event;
+        event.target = "tick";
+        node.record_audit_event(event);
+        node.tick();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    const auto elapsed_milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+    std::printf(
+        "zetta-test: %d one-change ticks with %d existing audit events: %lld ms\n",
+        kTicks, kExistingEvents,
+        static_cast<long long>(elapsed_milliseconds.count()));
+    EXPECT_LT(elapsed, std::chrono::seconds(4));
+    EXPECT_EQ(node.audit_event_count(),
+              static_cast<std::size_t>(kExistingEvents + kTicks));
+    node.stop();
+}

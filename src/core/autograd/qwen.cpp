@@ -1,15 +1,18 @@
 #include "zetta/autograd/qwen.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <set>
 #include <sstream>
 #include <string>
 #include <utility>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -18,6 +21,28 @@
 #include "zetta/runtime.hpp"
 
 namespace zetta::autograd {
+
+std::size_t QwenModel::resident_bytes() const {
+    std::size_t bytes = sizeof(QwenModel);
+    std::unordered_set<const Node*> seen;
+    for (const auto& parameter : parameters_) {
+        if (!parameter.valid() || !seen.insert(parameter.node().get()).second) {
+            continue;
+        }
+        const auto& node = *parameter.node();
+        bytes += sizeof(Node);
+        bytes += node.data.capacity() * sizeof(float);
+        bytes += node.grad.capacity() * sizeof(float);
+        bytes += node.shape.capacity() * sizeof(int);
+        bytes += node.parents.capacity() * sizeof(std::shared_ptr<Node>);
+    }
+    for (const auto& [name, index] : index_) {
+        (void)index;
+        bytes += sizeof(std::pair<const std::string, std::size_t>) +
+                 name.capacity();
+    }
+    return bytes;
+}
 
 namespace {
 
@@ -193,6 +218,65 @@ std::optional<QwenConfig> parse_qwen_config(std::string_view json,
                     "num_key_value_heads");
     }
     return config;
+}
+
+std::map<std::string, double> QwenFineTuneMetrics::values() const {
+    return {{"train.loss", loss},
+            {"train.learning_rate", learning_rate},
+            {"train.gradient_norm", gradient_norm},
+            {"train.tokens_per_second", tokens_per_second}};
+}
+
+std::optional<QwenFineTuneMetrics> fine_tune_qwen_step(
+    QwenModel& model, Adam& optimizer, const std::vector<int>& ids,
+    int first_scored, std::uint64_t step, const QwenMetricLogger& logger,
+    std::string* error) {
+    if (ids.size() < 2) {
+        if (error != nullptr) {
+            *error = "fine_tune_qwen_step: at least two tokens are required";
+        }
+        return std::nullopt;
+    }
+    const int predicted_rows = static_cast<int>(ids.size()) - 1;
+    if (first_scored < 0 || first_scored >= predicted_rows) {
+        if (error != nullptr) {
+            *error = "fine_tune_qwen_step: first_scored is out of range";
+        }
+        return std::nullopt;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    zero_grad(model.parameters());
+    const Tensor predicted = row_slice(model.forward(ids), 0, predicted_rows);
+    const std::vector<int> targets(ids.begin() + 1, ids.end());
+    Tensor loss = cross_entropy(predicted, targets, first_scored);
+    loss.backward();
+
+    double gradient_squared = 0.0;
+    for (const Tensor& parameter : model.parameters()) {
+        for (float gradient : parameter.grad()) {
+            gradient_squared += static_cast<double>(gradient) * gradient;
+        }
+    }
+    optimizer.step(model.parameters());
+
+    const double elapsed = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - started)
+                               .count();
+    QwenFineTuneMetrics metrics;
+    metrics.loss = loss.data()[0];
+    metrics.learning_rate = optimizer.learning_rate();
+    metrics.gradient_norm = std::sqrt(gradient_squared);
+    metrics.tokens_per_second =
+        static_cast<double>(predicted_rows - first_scored) /
+        std::max(elapsed, std::numeric_limits<double>::min());
+    if (logger && !logger(step, metrics.values())) {
+        if (error != nullptr) {
+            *error = "fine_tune_qwen_step: Run metric logging failed";
+        }
+        return std::nullopt;
+    }
+    return metrics;
 }
 
 QwenModel::QwenModel(const QwenConfig& config, std::uint64_t seed)

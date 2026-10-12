@@ -98,14 +98,14 @@ struct DropRoleStmt {
 // executor translates it into a governance::Resource, keeping the AST free of the
 // governance types. `RoleWide` (the default, no ON clause) is the pre-#747 flat
 // grant — the permission on every object.
-enum class GrantObjectKind { RoleWide, Database, Table, Columns, Blob, Tool };
+enum class GrantObjectKind { RoleWide, Database, Table, Columns, Blob, Tool, Collection, Bucket };
 
 struct GrantObject {
     GrantObjectKind kind = GrantObjectKind::RoleWide;
     std::string database;              // Database / Table / Columns
     std::string table;                 // Table / Columns
     std::vector<std::string> columns;  // Columns
-    std::string name;                  // Blob id-or-prefix / Tool name
+    std::string name;                  // Blob id-or-prefix / Tool name / Collection or Bucket prefix
 };
 
 // GRANT <perm>[, <perm>]* [ON <object>] TO ROLE <name> — add permissions from the
@@ -242,21 +242,39 @@ struct InsertStmt {
     std::vector<std::vector<nlohmann::json>> rows;   // one inner vector per VALUES tuple
 };
 
+// One ORDER BY key: a result column, ascending unless DESC. NULLs sort last
+// ascending and first descending, as in Postgres.
+struct OrderKey {
+    std::string column;
+    bool descending = false;
+};
+
 struct SelectStmt {
     TableRef table;
     bool all = false;                  // SELECT *
     std::vector<std::string> columns;  // projection when !all (and not grouped)
     std::optional<WhereClause> where;
 
-    // GROUP BY (the DDF aggregation path). `group_by` holds the grouping-key
-    // columns (the DDF engine groups by exactly one); `items` is the ordered
-    // select list for the grouped query (key passthroughs + aggregates), so result
-    // columns come back in the order written. Both are empty for a plain SELECT.
+    // Aggregation. `group_by` holds the grouping-key columns (one is supported;
+    // empty for a whole-table aggregate such as `SELECT count(*) FROM t`); `items`
+    // is the ordered select list of an aggregating query (key passthroughs +
+    // aggregates), so result columns come back in the order written. `items` is
+    // empty for a plain SELECT.
     std::vector<std::string> group_by;
     std::vector<GroupedItem> items;
 
-    // Whether this is an aggregating query (routes through the DDF engine).
-    bool grouped() const { return !group_by.empty(); }
+    // ORDER BY / LIMIT / OFFSET, applied to the finished result of every path
+    // (plain, grouped, system table, scattered over partitions). An ORDER BY key
+    // names a column of the result: a projected column, a GROUP BY key or an
+    // aggregate's alias; with SELECT *, any column.
+    std::vector<OrderKey> order_by;
+    std::optional<std::size_t> limit;
+    std::size_t offset = 0;
+
+    // Whether this is an aggregating query: it has a GROUP BY, an aggregate
+    // function in its select list, or both (#1218). With no GROUP BY the whole
+    // table is one group, and the answer is one row even over no rows.
+    bool aggregating() const { return !items.empty(); }
 };
 
 // One SET assignment in an UPDATE: column = value.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,11 @@ struct LoadedModel {
 
 class ModelCache {
 public:
+    struct MemoryUsage {
+        std::uint64_t bytes = 0;
+        std::uint64_t models = 0;
+    };
+
     // The process-wide instance (the serving path + the GUI share it).
     static ModelCache& instance();
 
@@ -43,6 +49,7 @@ public:
 
     std::vector<std::string> loaded() const;  // resident paths, most-recently-used first
     bool is_loaded(const std::string& path) const;
+    MemoryUsage memory_usage() const;
 
 private:
     ModelCache() = default;

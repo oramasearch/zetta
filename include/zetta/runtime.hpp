@@ -1,17 +1,19 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <type_traits>
 #include <utility>
 
 #include <boost/capy.hpp>
-#include <boost/capy/ex/async_event.hpp>
+#include <boost/capy/ex/run_async.hpp>
 #include <boost/capy/test/run_blocking.hpp>
 
-// zetta's async runtime seam.
+// zetta's async runtime interface.
 //
 // zetta code uses `zetta::runtime::*` and never names `boost::capy` /
 // `boost::corosio` directly. The coroutine/IO/networking backend is the C++
@@ -23,9 +25,29 @@
 // thread pools). Corosio (networking) is wired in here when zetta grows a server.
 namespace zetta::runtime {
 
+struct MemoryUsage {
+    std::uint64_t bytes = 0;
+    std::uint64_t coroutine_frames = 0;
+    std::uint64_t blocking_queue_depth = 0;
+    std::uint64_t thread_count = 0;
+    std::uint64_t thread_stack_bytes = 0;
+};
+
+MemoryUsage memory_usage() noexcept;
+void blocking_work_started() noexcept;
+void blocking_work_finished() noexcept;
+
 // A coroutine returning Value (void by default).
 template <class Value = void>
 using task = boost::capy::task<Value>;
+
+// Run on the caller's executor with an explicit cancellation token. An empty
+// token defers cancellation for completion waits that protect borrowed state
+// (#1077; docs/architecture/runtime.md).
+template <class Value>
+task<Value> with_stop_token(task<Value> coroutine, std::stop_token token) {
+    co_return co_await boost::capy::run(std::move(token))(std::move(coroutine));
+}
 
 // The `(error_code, values…)` pair every I/O awaitable in the stack yields, so a
 // caller writes `auto [error, value] = co_await …` and never throws across the
@@ -34,7 +56,7 @@ template <class... Values>
 using io_result = boost::capy::io_result<Values...>;
 
 // A coroutine yielding an `io_result<Values…>` (i.e. `task<io_result<Values…>>`).
-// This is the shape the composition primitives below require, so an async seam
+// This is the shape the composition primitives below require, so an async interface
 // meant to be fanned out (connect::AsyncHttpTransport) returns an io_task rather
 // than a bare task.
 template <class... Values>
@@ -73,12 +95,36 @@ using boost::capy::delay;
 // A pool of worker threads exposing an executor (`pool.get_executor()`).
 using thread_pool = boost::capy::thread_pool;
 
+// Launch on a specified executor (network adapters), retaining its work until
+// the coroutine completes. Unlike spawn(), this does not use the compute pool.
+using boost::capy::run_async;
+
+// Requeue this coroutine on its current executor so ready peers can run. This
+// is a scheduling boundary, not a timer or a thread-blocking sleep (#1076).
+task<> yield();
+
 // A coroutine-native one-shot event: awaiters suspend on `co_await
 // event.wait()` and are all resumed when any thread calls `set()` (each on
 // its own executor). The coroutine-first alternative to a condition
 // variable — the primitive cross-thread completion signaling goes through
-// (e.g. the API surface's MainThreadBridge).
-using async_event = boost::capy::async_event;
+// (e.g. the API surface's MainThreadBridge). The adapter serializes registration,
+// signaling and cancellation cleanup because the backend event itself permits
+// only one executor (#1076; docs/architecture/runtime.md).
+class async_event {
+public:
+    async_event();
+    async_event(const async_event&) = delete;
+    async_event& operator=(const async_event&) = delete;
+
+    io_task<> wait();
+    void set();
+    void clear();
+    bool is_set() const;
+
+private:
+    struct State;
+    std::shared_ptr<State> state_;
+};
 
 // Synchronous bridge: run `coroutine` to completion on the calling thread. Use
 // from non-coroutine code (main(), tests) to enter the async world. Backed by
@@ -101,11 +147,11 @@ Value block_on(task<Value> coroutine) {
 //
 // Schedule `coroutine` on the shared runtime pool and **return immediately** — the
 // coroutine runs concurrently while the caller keeps going. `on_complete` is
-// invoked once, when the coroutine finishes. This is the seam's off-the-caller-
+// invoked once, when the coroutine finishes. This is the runtime's off-the-caller-
 // thread primitive: it is how any long-running work (a provider CLI subprocess, a
 // network round-trip) is run without blocking a latency path such as the GUI
-// frame loop, WITHOUT any caller spawning a raw std::thread — the runtime seam is
-// that interface (see CLAUDE.md "async is coroutines, through the seam").
+// frame loop, WITHOUT any caller spawning a raw std::thread — the runtime is
+// that interface (see CLAUDE.md "async is coroutines, through the runtime").
 //
 // `on_complete` runs on a **pool worker thread**, so it must only touch
 // thread-safe state (atomics / a mutex) — never the UI or the Node directly. The
@@ -125,7 +171,7 @@ void spawn(task<> coroutine, std::function<void()> on_complete);
 // This is the bridge for a backend adapter that can ONLY block (a vendored C
 // driver like libpq): the blocking call runs on a pool thread, so the caller's
 // coroutine — and every zetta network/main thread — is never pinned. It is the
-// seam's answer to "wrap a blocking library in coroutines without touching a raw
+// runtime's answer to "wrap a blocking library in coroutines without touching a raw
 // std::thread". Confine such a callable to the one adapter TU that names the
 // backend library (the module-split rule).
 //
@@ -135,6 +181,9 @@ void spawn(task<> coroutine, std::function<void()> on_complete);
 template <class Callable, class Result>
 task<> detail_run_blocking(Callable callable,
                            std::shared_ptr<std::optional<Result>> slot) {
+    struct Activity {
+        ~Activity() { blocking_work_finished(); }
+    } activity;
     slot->emplace(callable());
     co_return;
 }
@@ -148,15 +197,23 @@ task<std::invoke_result_t<Callable>> offload(Callable callable) {
     using Result = std::invoke_result_t<Callable>;
     auto slot = std::make_shared<std::optional<Result>>();
     auto done = std::make_shared<async_event>();
+    blocking_work_started();
     spawn(detail_run_blocking<Callable, Result>(std::move(callable), slot),
           [done] { done->set(); });
     [[maybe_unused]] auto ready = co_await done->wait();  // io_result: completion only
     co_return std::move(**slot);
 }
 
+// Registry capabilities use the explicit blocking name so their declaration
+// and route make the scheduling contract visible at the call site.
+template <class Callable>
+task<std::invoke_result_t<Callable>> offload_blocking(Callable callable) {
+    co_return co_await offload(std::move(callable));
+}
+
 // --- Data parallelism: parallel_for over the shared runtime thread pool -------
 //
-// A blocking data-parallel primitive for CPU-bound work — the seam's answer to
+// A blocking data-parallel primitive for CPU-bound work — the runtime's answer to
 // "spread this loop across cores" without any caller naming `boost::capy`. The
 // heavy compute backend (zetta::compute::CpuDevice) and, later, the scheduler /
 // collectives are its consumers. It fans out onto one shared, process-wide
@@ -188,7 +245,7 @@ std::size_t parallel_chunks(std::size_t count,
 // thread with no pool dispatch.
 //
 // `body` must not throw. zetta-core compiles with -fexperimental-library and must
-// never unwind across a seam (the same discipline that makes compute operators
+// never unwind across a public boundary (the same discipline that makes compute operators
 // return ComputeStatus rather than throwing), so a body that raises an exception
 // is a contract violation and aborts the process rather than unwinding into the
 // coroutine backend.

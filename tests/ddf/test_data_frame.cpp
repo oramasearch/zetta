@@ -9,6 +9,7 @@
 #include "zetta/compute/compute_status.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/storage/json_store.hpp"
 #include "zetta/data/table.hpp"
@@ -92,6 +93,70 @@ TEST(DataFrame, IntegerColumnAcceptsFloatFeatureValues) {
     std::vector<float> values;
     ASSERT_TRUE(result.frame.to_host<float>("v", values).ok());
     EXPECT_EQ(values, (std::vector<float>{7.0f, 8.0f}));
+}
+
+TEST(DataFrame, BooleanColumnsLoadAsZeroAndOne) {
+    const zetta::storage::JsonStore store = make_store({
+        {{"label", false}, {"active", true}},
+        {{"label", true}, {"active", false}},
+    });
+    DataFrameSchema schema;
+    schema.columns = {
+        ColumnSchema{.name = "label", .dtype = DataType::Int64},
+        ColumnSchema{.name = "active", .dtype = DataType::Float64},
+    };
+    CpuDevice device;
+    auto result = load_data_frame(store, schema, device);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    std::vector<std::int64_t> labels;
+    std::vector<double> active;
+    ASSERT_TRUE(result.frame.to_host<std::int64_t>("label", labels).ok());
+    ASSERT_TRUE(result.frame.to_host<double>("active", active).ok());
+    EXPECT_EQ(labels, (std::vector<std::int64_t>{0, 1}));
+    EXPECT_EQ(active, (std::vector<double>{1.0, 0.0}));
+}
+
+TEST(DataFrame, TextEntityColumnLoadsThroughItsResolvedMapping) {
+    const zetta::storage::JsonStore store = make_store({
+        {{"customer_id", "c00041"}},
+        {{"customer_id", "c00042"}},
+    });
+    const auto mapped = zetta::data::derive_entity_key_mapping(
+        "customer_id", {"c00041", "c00042"});
+    ASSERT_TRUE(mapped.ok()) << mapped.error;
+    DataFrameSchema schema;
+    schema.columns = {ColumnSchema{.name = "entity",
+                                   .field = "customer_id",
+                                   .dtype = DataType::Int64,
+                                   .entity_keys = mapped.mapping}};
+    CpuDevice device;
+    auto result = load_data_frame(store, schema, device);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    std::vector<std::int64_t> entities;
+    ASSERT_TRUE(result.frame.to_host<std::int64_t>("entity", entities).ok());
+    ASSERT_EQ(entities.size(), 2u);
+    EXPECT_EQ(mapped.mapping->original(entities[0]), "c00041");
+    EXPECT_EQ(mapped.mapping->original(entities[1]), "c00042");
+}
+
+TEST(DataFrame, TimestampColumnNormalizesIsoAndEpochValues) {
+    const zetta::storage::JsonStore store = make_store({
+        {{"observed_at", "1970-01-01T00:00:01Z"}},
+        {{"observed_at", 2.5}},
+    });
+    DataFrameSchema schema;
+    schema.columns = {
+        ColumnSchema{.name = "observed_at",
+                     .dtype = DataType::Float64,
+                     .timestamp = true},
+    };
+
+    CpuDevice device;
+    auto result = load_data_frame(store, schema, device);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    std::vector<double> values;
+    ASSERT_TRUE(result.frame.to_host<double>("observed_at", values).ok());
+    EXPECT_EQ(values, (std::vector<double>{1.0, 2.5}));
 }
 
 // --- chunking ----------------------------------------------------------------
@@ -323,7 +388,9 @@ TEST(DataFrame, ToHostRejectsUnknownColumn) {
 TEST(DataFrameSchemaJson, RoundTrips) {
     DataFrameSchema schema;
     schema.columns = {
-        ColumnSchema{.name = "score", .dtype = DataType::Float64},
+        ColumnSchema{.name = "score",
+                     .dtype = DataType::Float64,
+                     .timestamp = true},
         ColumnSchema{.name = "value", .field = "raw_value", .dtype = DataType::Int32},
     };
     const auto parsed = DataFrameSchema::from_json(schema.to_json());
@@ -331,6 +398,7 @@ TEST(DataFrameSchemaJson, RoundTrips) {
     ASSERT_EQ(parsed->column_count(), 2u);
     EXPECT_EQ(parsed->columns[0].name, "score");
     EXPECT_EQ(parsed->columns[0].dtype, DataType::Float64);
+    EXPECT_TRUE(parsed->columns[0].timestamp);
     EXPECT_TRUE(parsed->columns[0].field.empty());
     EXPECT_EQ(parsed->columns[1].name, "value");
     EXPECT_EQ(parsed->columns[1].field, "raw_value");
@@ -362,6 +430,18 @@ TEST(DataFrameSchemaJson, RejectsBadInput) {
                      J{{"columns",
                         {{{"name", "x"}, {"dtype", "int32"}},
                          {{"name", "x"}, {"dtype", "float64"}}}}})
+                     .has_value());
+    EXPECT_FALSE(DataFrameSchema::from_json(
+                     J{{"columns",
+                        {{{"name", "x"},
+                          {"dtype", "int64"},
+                          {"timestamp", true}}}}})
+                     .has_value());
+    EXPECT_FALSE(DataFrameSchema::from_json(
+                     J{{"columns",
+                        {{{"name", "x"},
+                          {"dtype", "float32"},
+                          {"timestamp", true}}}}})
                      .has_value());
 }
 

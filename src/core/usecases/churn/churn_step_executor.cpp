@@ -25,6 +25,7 @@
 #include "zetta/ml/gbdt_score_job.hpp"
 #include "zetta/ml/gbdt_train_job.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -35,7 +36,7 @@ namespace {
 // Where a churn run publishes its at-risk list so SQL, Studio, and the agent can
 // read it (#915). One database for every churn pipeline's results; the per-pipeline
 // table inside it is replaced on each run.
-constexpr const char* kChurnResultsDatabase = "churn_results";
+constexpr const char* kLifetimeValueResultsDatabase = "clv_results";
 }  // namespace
 
 namespace {
@@ -44,6 +45,15 @@ namespace {
 // same convention the default orchestrator uses.
 std::string step_label(const ir::Node& step) {
     return step.name.empty() ? step.id : step.name;
+}
+
+std::string string_attribute(const ir::Node& step, const std::string& key,
+                             const std::string& fallback) {
+    const auto attribute = step.attributes.find(key);
+    if (attribute == step.attributes.end() || !attribute->is_string()) {
+        return fallback;
+    }
+    return attribute->get<std::string>();
 }
 
 // This node's slice of the global feature table: the rows whose entity is in
@@ -66,6 +76,27 @@ ddf::FeatureTable slice_feature_table(const ddf::FeatureTable& global,
         if (global.has_label()) slice.labels.push_back(global.labels[row]);
     }
     return slice;
+}
+
+ddf::FeatureTable active_feature_table(const ddf::FeatureTable& table) {
+    if (!table.has_label()) {
+        return table;
+    }
+    ddf::FeatureTable active;
+    active.feature_names = table.feature_names;
+    active.label_name = table.label_name;
+    active.features.resize(table.features.size());
+    for (std::size_t row = 0; row < table.row_count(); ++row) {
+        if (table.labels[row] > 0.5) {
+            continue;
+        }
+        active.entities.push_back(table.entities[row]);
+        for (std::size_t column = 0; column < table.features.size(); ++column) {
+            active.features[column].push_back(table.features[column][row]);
+        }
+        active.labels.push_back(table.labels[row]);
+    }
+    return active;
 }
 
 // The lineage source a connect step pulls from, read from its free-form attributes
@@ -112,6 +143,27 @@ std::vector<std::string> heaviest_features(const std::vector<std::string>& names
     return columns;
 }
 
+std::vector<std::pair<std::string, double>> reason_codes(
+    const ml::EntityExplanation& explanation,
+    const std::vector<std::string>& feature_names,
+    std::size_t count) {
+    std::vector<std::pair<std::string, double>> ranked;
+    const std::size_t available =
+        std::min(explanation.values.size(), feature_names.size());
+    ranked.reserve(available);
+    for (std::size_t index = 0; index < available; ++index) {
+        ranked.emplace_back(feature_names[index], explanation.values[index]);
+    }
+    std::stable_sort(
+        ranked.begin(), ranked.end(), [](const auto& left, const auto& right) {
+            return std::abs(left.second) > std::abs(right.second);
+        });
+    if (ranked.size() > count) {
+        ranked.resize(count);
+    }
+    return ranked;
+}
+
 // One entity's value for one feature. Read from the GLOBAL feature table, never
 // the sliced one: a node holds scores for every entity but features for only its
 // own shard, so the sliced table would leave most rows' evidence blank on a
@@ -134,14 +186,23 @@ std::optional<double> entity_feature(const ddf::FeatureTable& table,
 // The cross-step pipeline state (pImpl). One ChurnStepExecutor drives one execution,
 // so this accumulates each step's artifact for the steps downstream of it.
 struct ChurnStepExecutor::State {
+    std::string run_id;
+
+    // A table-backed run reads its one dataset once; the first connect step records it.
+    bool dataset_recorded = false;
     bool events_loaded = false;
     ddf::DataFrame events;
     bool accounts_loaded = false;
     ddf::DataFrame accounts;
+    bool training_accounts_loaded = false;
+    ddf::DataFrame training_accounts;
 
     bool features_ready = false;
     ddf::FeatureTable feature_table;
     ddf::DataFrame feature_frame;  // device-backed X+label, materialized once, reused
+    ddf::FeatureTable scoring_feature_table;
+    ddf::DataFrame scoring_feature_frame;
+    std::vector<double> validation_times;
 
     // The GLOBAL feature table, before it is sliced to this node's entities. The
     // featurize job broadcasts it identically to every node, so keeping it costs
@@ -149,6 +210,7 @@ struct ChurnStepExecutor::State {
     // place a node can read another shard's entity values, which the run report's
     // per-entity evidence needs (#958).
     ddf::FeatureTable global_table;
+    ddf::FeatureTable scoring_global_table;
     std::uint64_t dataset_events = 0;  // cluster-wide, from the featurize job
 
     bool model_ready = false;
@@ -176,6 +238,18 @@ ChurnStepExecutor::ChurnStepExecutor(Node& node,
       device_(device),
       config_(std::move(config)),
       state_(std::make_unique<State>()) {}
+
+void ChurnStepExecutor::bind_run(Node& node, const std::string& run_id) {
+    if (&node == &node_) {
+        state_->run_id = run_id;
+        if (config_.entity_keys) {
+            if (const std::shared_ptr<zetta::pipeline::Run> run =
+                    node_.find_run(run_id)) {
+                run->set_entity_key_mapping(config_.entity_keys->to_json());
+            }
+        }
+    }
+}
 
 ChurnStepExecutor::~ChurnStepExecutor() = default;
 
@@ -226,20 +300,34 @@ bool ChurnStepExecutor::ensure_inputs_loaded(std::string& error) const {
             }
             state.accounts = std::move(shard.frame);
             state.accounts_loaded = true;
-            return true;
+        } else {
+            if (config_.accounts_store == nullptr) {
+                error = "no accounts shard configured";
+                return false;
+            }
+            auto loaded = ddf::load_data_frame(*config_.accounts_store,
+                                               config_.accounts_schema,
+                                               device_);
+            if (!loaded.ok()) {
+                error = "load accounts to DDF: " + loaded.status.message;
+                return false;
+            }
+            state.accounts = std::move(loaded.frame);
+            state.accounts_loaded = true;
         }
-        if (config_.accounts_store == nullptr) {
-            error = "no accounts shard configured";
-            return false;
-        }
-        auto loaded = ddf::load_data_frame(*config_.accounts_store,
-                                           config_.accounts_schema, device_);
+    }
+    if (config_.training_accounts_store != nullptr &&
+        !state.training_accounts_loaded) {
+        auto loaded = ddf::load_data_frame(*config_.training_accounts_store,
+                                           config_.training_accounts_schema,
+                                           device_);
         if (!loaded.ok()) {
-            error = "load accounts to DDF: " + loaded.status.message;
+            error = "load forward-labelled rows to DDF: " +
+                    loaded.status.message;
             return false;
         }
-        state.accounts = std::move(loaded.frame);
-        state.accounts_loaded = true;
+        state.training_accounts = std::move(loaded.frame);
+        state.training_accounts_loaded = true;
     }
     return true;
 }
@@ -252,6 +340,42 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_connect(const ir::Node& step
     std::string error;
     if (!ensure_inputs_loaded(error)) {
         return zetta::pipeline::StepOutcome{/*ok=*/false, error, {}, {}};
+    }
+    if (!config_.accounts_table.empty()) {
+        // A table-backed run (#947) reads the dataset the caller named, not what the
+        // graph's connect steps describe. Say that, rather than report their sources as
+        // read (lake's UX review 2026-09-27: a run on datasets.x listed
+        // warehouse:customers and warehouse:events, and a step with no such table
+        // "succeeded").
+        const std::string dataset =
+            config_.accounts_dataset.empty() ? config_.accounts_table : config_.accounts_dataset;
+        if (!state_->dataset_recorded) {
+            state_->dataset_recorded = true;
+            outcome.sources.push_back("dataset:" + dataset);
+            outcome.outputs.push_back(zetta::pipeline::RunOutput{
+                "dataset", dataset, "connect:" + step.id});
+            if (config_.training_accounts_store != nullptr) {
+                const std::string training_dataset =
+                    config_.training_dataset.empty()
+                        ? dataset
+                        : config_.training_dataset;
+                outcome.sources.push_back("dataset:" + training_dataset);
+                outcome.notes.push_back(
+                    "dataset: trained on forward labels from " +
+                    training_dataset + "; scored active entities from " +
+                    dataset);
+            } else {
+                outcome.notes.push_back("dataset: trained on " + dataset);
+            }
+            for (const std::string& note : config_.dataset_notes) {
+                outcome.notes.push_back("dataset: " + note);
+            }
+        } else {
+            outcome.notes.push_back("connect: " + step_label(step) +
+                                    " reuses dataset " + dataset +
+                                    " already loaded by this run");
+        }
+        return outcome;
     }
     outcome.sources.push_back(connect_source(step));
     outcome.outputs.push_back(zetta::pipeline::RunOutput{
@@ -269,70 +393,134 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
         return zetta::pipeline::StepOutcome{/*ok=*/false, error, {}, {}};
     }
 
-    // Node-tree writes/reads gate onto the owner thread (#624) — this step may
-    // be computing on a background-action worker while the owner loop renders.
-    std::shared_ptr<zetta::compute::ComputeJob> job;
-    node_.run_on_owner([&] {
-        job = node_.create_job(zetta::compute::JobKind::Featurize,
-                               config_.project, config_.graph);
-    });
-    if (!job) {
-        return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create featurize job", {}, {}};
-    }
-    ddf::DistributedFeaturizeResult result = ddf::run_featurize_job(
-        coordinator_, *job, state.events, state.accounts, config_.featurize);
-    if (!result.ok()) {
-        std::string detail;
-        node_.run_on_owner([&] { detail = job->detail(); });
-        return zetta::pipeline::StepOutcome{/*ok=*/false,
-                           "featurize job failed: " + detail, {}, {}};
-    }
-    // The featurize job broadcasts the GLOBAL feature table (identical on every
-    // node), but the downstream jobs are SPMD over each node's OWN rows — train
-    // partials, per-entity scores, per-entity explanations all combine over the
-    // collectives. Keep only this node's slice: the entities of its accounts
-    // shard (disjoint across nodes, union == the global table — the #530
-    // near-data composition's slice step), so a coordinated multi-node run
-    // (#601) counts every entity exactly once. On a single node the shard IS
-    // the whole table, so this is the identity there.
-    //
-    // The shard is read from the LOADED FRAME, not from the store: a table-backed
-    // run (#947) has no store at all — its accounts came from this node's owned
-    // partitions — and slicing against an empty set drops every row, which surfaces
-    // much later and much less legibly as "no training rows".
-    std::unordered_set<std::int64_t> local_entities;
-    if (std::vector<std::int64_t> entities(state.accounts.row_count());
-        state.accounts.row_count() > 0 &&
-        state.accounts.to_host<std::int64_t>(config_.entity_column, entities).ok()) {
-        local_entities.insert(entities.begin(), entities.end());
-    }
-    if (local_entities.empty() && config_.accounts_store != nullptr) {
-        for (std::size_t row = 0; row < config_.accounts_store->size(); ++row) {
-            const zetta::storage::ParquetLazyPtr account =
-                config_.accounts_store->at(row);
-            if (!account) continue;
-            if (const auto entity = account->find(config_.entity_column);
-                entity != account->end() && entity->is_number_integer()) {
-                local_entities.insert(entity->get<std::int64_t>());
-            }
+    const auto make_job = [&]() {
+        std::shared_ptr<zetta::compute::ComputeJob> job;
+        node_.run_on_owner([&] {
+            job = node_.create_job(zetta::compute::JobKind::Featurize,
+                                   config_.project, config_.graph);
+        });
+        return job;
+    };
+    const auto local_entities = [&](const ddf::DataFrame& accounts) {
+        std::unordered_set<std::int64_t> entities_set;
+        std::vector<std::int64_t> entities(accounts.row_count());
+        if (accounts.row_count() > 0 &&
+            accounts.to_host<std::int64_t>(config_.entity_column,
+                                            entities).ok()) {
+            entities_set.insert(entities.begin(), entities.end());
         }
-    }
-    state.dataset_events = result.events_read;
-    state.global_table = std::move(result.table);
-    state.feature_table = slice_feature_table(state.global_table, local_entities);
+        return entities_set;
+    };
+    const auto collect_validation_times = [&](const ddf::DataFrame& accounts,
+                                              const ddf::FeaturizeSpec& spec) {
+        state.validation_times.clear();
+        if (spec.time_column.empty()) {
+            return;
+        }
+        std::vector<std::int64_t> entities(accounts.row_count());
+        std::vector<double> times(accounts.row_count());
+        if (!accounts.to_host<std::int64_t>(config_.entity_column,
+                                             entities).ok() ||
+            !accounts.to_host<double>(spec.time_column, times).ok()) {
+            return;
+        }
+        std::unordered_map<std::int64_t, double> time_by_entity;
+        for (std::size_t index = 0; index < entities.size(); ++index) {
+            time_by_entity[entities[index]] = times[index];
+        }
+        state.validation_times.reserve(state.feature_table.row_count());
+        for (const std::int64_t entity : state.feature_table.entities) {
+            const auto found = time_by_entity.find(entity);
+            if (found == time_by_entity.end()) {
+                state.validation_times.clear();
+                return;
+            }
+            state.validation_times.push_back(found->second);
+        }
+    };
 
-    auto frame = state.feature_table.to_data_frame(device_);
-    if (!frame.ok()) {
-        return zetta::pipeline::StepOutcome{/*ok=*/false,
-                           "materialize feature frame: " + frame.status.message,
-                           {}, {}};
+    const std::shared_ptr<zetta::compute::ComputeJob> scoring_job = make_job();
+    if (!scoring_job) {
+        return zetta::pipeline::StepOutcome{
+            /*ok=*/false, "could not create scoring-features job", {}, {}};
     }
-    state.feature_frame = std::move(frame.frame);
+    ddf::DistributedFeaturizeResult scoring = ddf::run_featurize_job(
+        coordinator_, *scoring_job, state.events, state.accounts,
+        config_.featurize);
+    if (!scoring.ok()) {
+        std::string detail;
+        node_.run_on_owner([&] { detail = scoring_job->detail(); });
+        return zetta::pipeline::StepOutcome{
+            /*ok=*/false, "scoring featurize job failed: " + detail, {}, {}};
+    }
+    state.dataset_events = scoring.events_read;
+    state.scoring_global_table =
+        config_.score_active_only
+            ? active_feature_table(scoring.table)
+            : std::move(scoring.table);
+    state.scoring_feature_table = slice_feature_table(
+        state.scoring_global_table, local_entities(state.accounts));
+    if (state.scoring_feature_table.row_count() == 0) {
+        return zetta::pipeline::StepOutcome{
+            /*ok=*/false, "S-1 scoring snapshot has no active entities", {}, {}};
+    }
+
+    std::shared_ptr<zetta::compute::ComputeJob> training_job = scoring_job;
+    if (config_.training_accounts_store != nullptr) {
+        training_job = make_job();
+        if (!training_job) {
+            return zetta::pipeline::StepOutcome{
+                /*ok=*/false, "could not create forward-label featurize job", {}, {}};
+        }
+        ddf::DistributedFeaturizeResult training = ddf::run_featurize_job(
+            coordinator_, *training_job, state.events,
+            state.training_accounts, config_.training_featurize);
+        if (!training.ok()) {
+            std::string detail;
+            node_.run_on_owner([&] { detail = training_job->detail(); });
+            return zetta::pipeline::StepOutcome{
+                /*ok=*/false,
+                "forward-label featurize job failed: " + detail, {}, {}};
+        }
+        state.dataset_events += training.events_read;
+        state.global_table = std::move(training.table);
+        state.feature_table = slice_feature_table(
+            state.global_table, local_entities(state.training_accounts));
+        collect_validation_times(state.training_accounts,
+                                 config_.training_featurize);
+    } else {
+        state.global_table = state.scoring_global_table;
+        state.feature_table = state.scoring_feature_table;
+        collect_validation_times(state.accounts, config_.featurize);
+    }
+    if (state.feature_table.row_count() == 0) {
+        return zetta::pipeline::StepOutcome{
+            /*ok=*/false, "forward-label training population is empty", {}, {}};
+    }
+
+    auto training_frame = state.feature_table.to_data_frame(device_);
+    if (!training_frame.ok()) {
+        return zetta::pipeline::StepOutcome{
+            /*ok=*/false,
+            "materialize training feature frame: " +
+                training_frame.status.message,
+            {}, {}};
+    }
+    state.feature_frame = std::move(training_frame.frame);
+    auto scoring_frame = state.scoring_feature_table.to_data_frame(device_);
+    if (!scoring_frame.ok()) {
+        return zetta::pipeline::StepOutcome{
+            /*ok=*/false,
+            "materialize scoring feature frame: " +
+                scoring_frame.status.message,
+            {}, {}};
+    }
+    state.scoring_feature_frame = std::move(scoring_frame.frame);
     state.features_ready = true;
 
     zetta::pipeline::StepOutcome outcome;
     outcome.outputs.push_back(zetta::pipeline::RunOutput{
-        "dataset", step_label(step), "features:" + job->id()});
+        "dataset", step_label(step), "features:" + training_job->id()});
     return outcome;
 }
 
@@ -358,7 +546,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
         coordinator_, *job, state.feature_frame,
         state.feature_table.feature_names, state.feature_table.label_name,
         config_.params, &node_, config_.model_name, /*round_tag=*/{},
-        config_.calibration);
+        config_.calibration, ml::kDefaultGbdtTimeout, {}, state.run_id,
+        config_.training_progress, state.validation_times);
     if (!result.ok()) {
         std::string detail;
         node_.run_on_owner([&] { detail = job->detail(); });
@@ -392,7 +581,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
             nlohmann::json metrics = model->metrics();
             metrics["dataset_accounts"] = accounts;
             metrics["dataset_events"] = state.dataset_events;
-            if (!labels.empty()) {
+            if (!labels.empty() &&
+                config_.params.objective != "squared_error") {
                 std::size_t positives = 0;
                 for (const double label : labels) {
                     if (label > 0.5) ++positives;
@@ -407,6 +597,12 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
                 metrics["dataset_majority_class_accuracy"] = std::max(rate, 1.0 - rate);
             }
             model->set_metrics(std::move(metrics));
+            if (config_.entity_keys) {
+                nlohmann::json feature_schema = model->feature_schema();
+                feature_schema["entity_key_mapping"] =
+                    config_.entity_keys->to_json();
+                model->set_feature_schema(std::move(feature_schema));
+            }
         });
     }
 
@@ -433,11 +629,73 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
                            "index step ran before the model was trained", {}, {}};
     }
 
-    // Build the real index first — over the accounts shard, keyed by the entity
-    // column, through the node's IndexBackend registry. The output references the
-    // real Index id when built. When no Search backend is registered the build is
-    // skipped (the at-risk list is still produced) — backward compatible.
     std::string index_ref;
+    std::vector<std::string> notes;
+
+    // A landed table (#1241): index the real table, as create_index does — record
+    // a Search Index entity over it and let every node build its sub-indexes over
+    // the partitions it owns (reconcile_search_indexes: per-partition, compute
+    // near data, scatter-gather at query time). The run then links to an index
+    // that list_indexes lists and search can target.
+    if (!config_.accounts_table.empty()) {
+        std::string reason;
+        node_.run_on_owner([&] {
+            std::shared_ptr<zetta::data::Table> table;
+            for (const std::string& name : node_.database_names()) {
+                if (const std::shared_ptr<zetta::data::Database> database =
+                        node_.find_database(name)) {
+                    table = database->find_table_by_id(config_.accounts_table);
+                    if (!table) table = database->find_table(config_.accounts_table);
+                    if (table) break;
+                }
+            }
+            if (!table) {
+                reason = "the table '" + config_.accounts_table + "' is not in the catalog";
+                return;
+            }
+            zetta::index::IndexValue value;
+            value.table = table->name();
+            value.kind = zetta::index::IndexKind::Search;
+            // The ranked full-text backend when this build has it, else the
+            // exact-match reference one.
+            value.backend = std::string(zetta::index::InMemoryIndexBackend::kName);
+            zetta::index::IndexValue ranked = value;
+            ranked.backend = "oramacore_fulltext";
+            if (node_.index_registry().resolve(ranked.spec())) value.backend = ranked.backend;
+            for (const zetta::ddf::ColumnSchema& column : config_.accounts_schema.columns) {
+                const std::string& field = column.field.empty() ? column.name : column.field;
+                if (!field.empty() &&
+                    std::ranges::find(value.fields, field) == value.fields.end()) {
+                    value.fields.push_back(field);
+                }
+            }
+            if (value.fields.empty()) {
+                reason = "the dataset names no columns to index";
+                return;
+            }
+            // A re-run reuses the index it made before, rather than adding one
+            // per run.
+            std::shared_ptr<zetta::index::Index> index;
+            const std::string key = value.spec().key();
+            for (const std::shared_ptr<zetta::index::Index>& existing : node_.indexes()) {
+                if (existing && existing->spec().key() == key) index = existing;
+            }
+            if (!index) index = node_.create_index(std::move(value));
+            if (!index) {
+                reason = "the index over '" + table->name() + "' could not be recorded";
+                return;
+            }
+            node_.reconcile_search_indexes();
+            index_ref = index->id();
+        });
+        if (index_ref.empty()) {
+            return zetta::pipeline::StepOutcome{
+                /*ok=*/false, "could not index the dataset: " + reason, {}, {}};
+        }
+    }
+
+    // The in-memory demo path: build a consolidated index over the accounts
+    // shard through the node's IndexBackend registry.
     zetta::index::IndexValue index_value;
     index_value.table = "churn_accounts";
     index_value.kind = zetta::index::IndexKind::Search;
@@ -446,7 +704,9 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
     std::shared_ptr<zetta::index::IndexBackend> backend;
     node_.run_on_owner(
         [&] { backend = node_.index_registry().resolve(index_value.spec()); });
-    if (backend && config_.accounts_store != nullptr) {
+    if (!index_ref.empty()) {
+        // Indexed above.
+    } else if (backend && config_.accounts_store != nullptr) {
         const std::vector<zetta::index::IndexPartition> partitions =
             zetta::index::read_index_partitions(*config_.accounts_store);
         const zetta::index::IndexStatus status = backend->build(index_value.spec(), partitions);
@@ -458,6 +718,11 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
         std::shared_ptr<zetta::index::Index> index;
         node_.run_on_owner([&] { index = node_.create_index(index_value); });
         if (index) index_ref = index->id();
+    } else {
+        // Never skip silently: the run log says why there is no index.
+        notes.push_back(
+            "no search index was built: the run has no dataset table to index" +
+            std::string(backend ? "" : " and no search backend is registered"));
     }
 
     std::shared_ptr<zetta::compute::ComputeJob> job;
@@ -469,7 +734,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
         return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create score job", {}, {}};
     }
     const ml::DistributedScoreResult result =
-        ml::run_score_job(coordinator_, *job, state.feature_frame, state.model,
+        ml::run_score_job(coordinator_, *job, state.scoring_feature_frame,
+                          state.model,
                           config_.entity_column, config_.top_k);
     if (!result.ok()) {
         std::string detail;
@@ -481,11 +747,13 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
     state.ranked_ready = true;
 
     zetta::pipeline::StepOutcome outcome;
-    // Prefer the real Index id; fall back to the at-risk-list handle when no index
-    // backend was registered (so the run output is always well-formed).
+    // Prefer the real Index id (list_indexes lists it; search targets it); fall
+    // back to the at-risk-list handle when no index was built (so the run output
+    // is always well-formed).
     outcome.outputs.push_back(zetta::pipeline::RunOutput{
         "index", step_label(step),
         index_ref.empty() ? "atrisk:" + job->id() : index_ref});
+    outcome.notes = std::move(notes);
     return outcome;
 }
 
@@ -507,7 +775,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_serve(const ir::Node& step) 
         return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create explain job", {}, {}};
     }
     const ml::DistributedExplainResult result =
-        ml::run_explain_job(coordinator_, *job, state.model, state.feature_frame,
+        ml::run_explain_job(coordinator_, *job, state.model,
+                            state.scoring_feature_frame,
                             config_.entity_column);
     if (!result.ok()) {
         std::string detail;
@@ -554,24 +823,43 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
         if (const auto it = by_entity.find(score.entity); it != by_entity.end()) {
             action.dominant_driver = it->second->dominant_feature;
             action.dominant_value = it->second->dominant_value;
+            action.reason_codes =
+                reason_codes(*it->second, state.feature_names, 3);
         }
         state.playbook.push_back(std::move(action));
     }
 
-    // Materialize the at-risk list as a REAL queryable table (#915). The pipeline
-    // computed the thing the whole use case exists for — who is most likely to churn
-    // and why — and it used to live only in this executor's memory, so SQL, the
-    // Studio Results tab, and the agent could not read it back. It is now a table in
-    // `churn_results`, named per pipeline and replaced on each run (a run supersedes
-    // its predecessor; keeping every run's copy would just accumulate stale lists).
+    const bool lifetime_value =
+        config_.params.objective == "squared_error";
+    const std::string result_database =
+        string_attribute(step, "result_database",
+                         lifetime_value ? kLifetimeValueResultsDatabase : config_.result_database);
+    const std::string table_prefix =
+        string_attribute(step, "result_table_prefix",
+                         lifetime_value ? "lifetime_value_" : config_.result_table_prefix);
+    const std::string entity_column =
+        string_attribute(step, "entity_output_column",
+                         lifetime_value ? "entity" : config_.result_entity_column);
+    const std::string score_column =
+        string_attribute(step, "score_output_column",
+                         lifetime_value ? "predicted_value" : config_.result_score_column);
+
+    // Materialize the ranked list as a real queryable table (#915). The output
+    // contract is supplied by the methodology shape so another domain can reuse
+    // the native scoring runner without publishing churn-named data.
     std::string at_risk_table;
     node_.run_on_owner([&] {
-        std::shared_ptr<data::Database> database = node_.find_database(kChurnResultsDatabase);
-        if (!database) database = node_.create_database(kChurnResultsDatabase);
-        if (!database) return;
+        std::shared_ptr<data::Database> database =
+            node_.find_database(result_database);
+        if (!database) {
+            database = node_.create_database(result_database);
+        }
+        if (!database) {
+            return;
+        }
         const std::string name =
-            "at_risk_" + (config_.graph.empty() ? std::string("pipeline")
-                                                : config_.graph.substr(0, 8));
+            table_prefix + (config_.graph.empty() ? std::string("pipeline")
+                                                  : config_.graph.substr(0, 8));
         database->drop_table(name);  // replace the previous run's list
         std::shared_ptr<data::Table> table = database->create_table(name);
         if (!table) return;
@@ -587,21 +875,30 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
             ++position;
             std::vector<std::pair<std::string, nlohmann::json>> cells = {
                 {"rank", position},
-                {"account", action.entity},
-                {"risk", action.risk},
+                {entity_column,
+                 config_.entity_keys
+                     ? config_.entity_keys->original(action.entity)
+                     : nlohmann::json(action.entity)},
+                {score_column, action.risk},
                 {"dominant_driver", action.dominant_driver},
                 {"driver_effect", action.dominant_value}};
             for (const std::string& column : evidence) {
                 if (const std::optional<double> value =
-                        entity_feature(state.global_table, action.entity, column)) {
+                        entity_feature(state.scoring_global_table,
+                                       action.entity, column)) {
                     cells.emplace_back(column, *value);
                 }
             }
             nlohmann::json row = nlohmann::json::object();
             for (auto& [key, value] : cells) row[key] = std::move(value);
+            row["reason_codes"] = nlohmann::json::array();
+            for (const auto& [reason, effect] : action.reason_codes) {
+                row["reason_codes"].push_back(
+                    {{"reason", reason}, {"effect", effect}});
+            }
             table->add_row(std::move(row));
         }
-        at_risk_table = kChurnResultsDatabase + std::string(".") + name;
+        at_risk_table = result_database + std::string(".") + name;
     });
 
     zetta::pipeline::StepOutcome outcome;

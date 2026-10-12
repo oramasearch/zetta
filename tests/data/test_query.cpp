@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -649,7 +650,7 @@ TEST(PostgresParser, ParsesGroupByWithAggregates) {
     ASSERT_TRUE(parsed.ok()) << parsed.error;
     const auto* stmt = std::get_if<SelectStmt>(&parsed.statements[0]);
     ASSERT_NE(stmt, nullptr);
-    EXPECT_TRUE(stmt->grouped());
+    EXPECT_TRUE(stmt->aggregating());
     ASSERT_EQ(stmt->group_by.size(), 1u);
     EXPECT_EQ(stmt->group_by[0], "segment");
     ASSERT_EQ(stmt->items.size(), 3u);
@@ -665,10 +666,47 @@ TEST(PostgresParser, ParsesGroupByWithAggregates) {
     EXPECT_EQ(stmt->where->op, CompareOp::Greater);
 }
 
-TEST(PostgresParser, RejectsAggregateWithoutGroupBy) {
+// An aggregate with no GROUP BY aggregates the whole table (#1218); `SELECT *`
+// still cannot be grouped.
+TEST(PostgresParser, ParsesAggregateWithoutGroupByAsWholeTableAggregate) {
     PostgresDialect pg;
-    EXPECT_FALSE(pg.parse("SELECT SUM(amount) FROM t;").ok());
+    const auto parsed = pg.parse("SELECT count(*), SUM(amount) AS total FROM t;");
+    ASSERT_TRUE(parsed.ok()) << parsed.error;
+    const auto* stmt = std::get_if<SelectStmt>(&parsed.statements[0]);
+    ASSERT_NE(stmt, nullptr);
+    EXPECT_TRUE(stmt->aggregating());
+    EXPECT_TRUE(stmt->group_by.empty());
+    ASSERT_EQ(stmt->items.size(), 2u);
+    EXPECT_EQ(stmt->items[1].alias, "total");
+
     EXPECT_FALSE(pg.parse("SELECT * FROM t GROUP BY a;").ok());
+}
+
+// A parse error says where it happened: the 1-based position of the token the
+// parser stopped on, and the token (#1218).
+TEST(PostgresParser, ParseErrorsPointAtTheOffendingToken) {
+    PostgresDialect pg;
+    const auto misspelt = pg.parse("SELEC 1");
+    ASSERT_FALSE(misspelt.ok());
+    EXPECT_NE(misspelt.error.find("at position 1, near 'SELEC'"), std::string::npos)
+        << misspelt.error;
+
+    const auto bad_clause = pg.parse("SELECT a FROM t WEHRE a = 1");
+    ASSERT_FALSE(bad_clause.ok());
+    EXPECT_NE(bad_clause.error.find("at position 17, near 'WEHRE'"),
+              std::string::npos)
+        << bad_clause.error;
+
+    const auto stray = pg.parse("SELECT a FROM t WHERE a = $1");
+    ASSERT_FALSE(stray.ok());
+    EXPECT_NE(stray.error.find("unexpected character '$'"), std::string::npos)
+        << stray.error;
+    EXPECT_NE(stray.error.find("at position 27"), std::string::npos) << stray.error;
+
+    const auto truncated = pg.parse("SELECT a FROM t WHERE");
+    ASSERT_FALSE(truncated.ok());
+    EXPECT_NE(truncated.error.find("at end of input"), std::string::npos)
+        << truncated.error;
 }
 
 TEST(QueryService, GroupByAggregatesThroughDdfEngine) {
@@ -795,22 +833,244 @@ TEST(QueryService, GroupByRejectsBadQueries) {
     svc.run("CREATE DATABASE d; CREATE TABLE d.t (region text, amount int);", "");
     svc.run("INSERT INTO d.t (region, amount) VALUES ('US', 5), ('EU', 3);", "");
 
-    // The grouping key is not a dense numeric column (DDF is numeric only).
-    EXPECT_FALSE(svc.run(
-        "SELECT region, SUM(amount) FROM d.t GROUP BY region;", "").ok());
-
     // A non-aggregated select column that is not the grouping key.
     svc.run("CREATE TABLE d.n (g int, v int);", "");
     svc.run("INSERT INTO d.n (g, v) VALUES (1, 2);", "");
-    EXPECT_FALSE(svc.run("SELECT g, v FROM d.n GROUP BY g;", "").ok());
+    const auto stray = svc.run("SELECT g, v FROM d.n GROUP BY g;", "");
+    EXPECT_FALSE(stray.ok());
+    EXPECT_NE(stray.error.find("\"v\" must appear in GROUP BY"), std::string::npos)
+        << stray.error;
 
-    // A non-numeric WHERE predicate in a grouped query.
-    EXPECT_FALSE(svc.run(
-        "SELECT g, SUM(v) FROM d.n WHERE g = 'x' GROUP BY g;", "").ok());
+    // ... and a bare column beside a whole-table aggregate, with no GROUP BY.
+    EXPECT_FALSE(svc.run("SELECT g, COUNT(*) FROM d.n;", "").ok());
 
-    // GROUP BY over a system table is not supported.
-    EXPECT_FALSE(svc.run(
-        "SELECT kind, COUNT(*) FROM system.jobs GROUP BY kind;", "").ok());
+    // Two keys.
+    EXPECT_FALSE(svc.run("SELECT g, v FROM d.n GROUP BY g, v;", "").ok());
+
+    node.stop();
+}
+
+// ---- #1218: the SQL a customer asks first ----------------------------------
+
+// `SELECT count(*) FROM t` needs no GROUP BY: the whole table is one group, and
+// the answer is one row even when no row matches.
+TEST(QueryService, CountWithoutGroupByAggregatesTheWholeTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.t (plan text, amount int);", "");
+
+    // An empty table counts 0; the other aggregates over nothing are NULL.
+    auto empty = svc.run("SELECT count(*), SUM(amount) FROM d.t;", "");
+    ASSERT_TRUE(empty.ok()) << empty.error;
+    ASSERT_EQ(empty.rows.size(), 1u);
+    EXPECT_EQ(empty.rows[0]["count"], 0);
+    EXPECT_TRUE(empty.rows[0]["sum_amount"].is_null());
+
+    svc.run("INSERT INTO d.t (plan, amount) VALUES ('pro', 5), ('free', 1), "
+            "('pro', 7), ('team', 2);", "");
+    auto all = svc.run("SELECT count(*) FROM d.t;", "");
+    ASSERT_TRUE(all.ok()) << all.error;
+    ASSERT_EQ(all.rows.size(), 1u);
+    EXPECT_EQ(all.rows[0]["count"], 4);
+    EXPECT_EQ(all.columns, std::vector<std::string>({"count"}));
+
+    auto several = svc.run(
+        "SELECT count(*) AS n, SUM(amount), MIN(amount), MAX(amount), AVG(amount) "
+        "FROM d.t WHERE plan = 'pro';", "");
+    ASSERT_TRUE(several.ok()) << several.error;
+    ASSERT_EQ(several.rows.size(), 1u);
+    EXPECT_EQ(several.rows[0]["n"], 2);
+    EXPECT_EQ(several.rows[0]["sum_amount"], 12);
+    EXPECT_EQ(several.rows[0]["min_amount"], 5);
+    EXPECT_EQ(several.rows[0]["max_amount"], 7);
+    EXPECT_DOUBLE_EQ(several.rows[0]["mean_amount"].get<double>(), 6.0);
+    EXPECT_EQ(several.columns,
+              std::vector<std::string>(
+                  {"n", "sum_amount", "min_amount", "max_amount", "mean_amount"}));
+
+    auto none = svc.run("SELECT count(*) FROM d.t WHERE amount > 100;", "");
+    ASSERT_TRUE(none.ok()) << none.error;
+    ASSERT_EQ(none.rows.size(), 1u);
+    EXPECT_EQ(none.rows[0]["count"], 0);
+
+    // COUNT(column) counts the non-null values.
+    svc.run("INSERT INTO d.t (plan) VALUES ('free');", "");
+    auto counted = svc.run("SELECT count(amount) AS priced, count(*) FROM d.t;", "");
+    ASSERT_TRUE(counted.ok()) << counted.error;
+    EXPECT_EQ(counted.rows[0]["priced"], 4);
+    EXPECT_EQ(counted.rows[0]["count"], 5);
+
+    // System tables aggregate the same way.
+    auto tables = svc.run("SELECT count(*) FROM system.tables;", "");
+    ASSERT_TRUE(tables.ok()) << tables.error;
+    ASSERT_EQ(tables.rows.size(), 1u);
+    EXPECT_EQ(tables.rows[0]["count"].get<std::size_t>(),
+              zetta::query::system_table_names().size());
+
+    node.stop();
+}
+
+// GROUP BY a text column groups by its values; a row without the key is the
+// NULL group, sorted first; a string WHERE filters a grouped query.
+TEST(QueryService, GroupByTextColumn) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.t (plan text, amount int);", "");
+    svc.run("INSERT INTO d.t (plan, amount) VALUES ('pro', 5), ('free', 1), "
+            "('pro', 7), ('team', 2);", "");
+
+    auto grouped = svc.run(
+        "SELECT plan, count(*), SUM(amount) FROM d.t GROUP BY plan;", "");
+    ASSERT_TRUE(grouped.ok()) << grouped.error;
+    EXPECT_EQ(grouped.columns,
+              std::vector<std::string>({"plan", "count", "sum_amount"}));
+    ASSERT_EQ(grouped.rows.size(), 3u);
+    EXPECT_EQ(grouped.rows[0]["plan"], "free");
+    EXPECT_EQ(grouped.rows[0]["count"], 1);
+    EXPECT_EQ(grouped.rows[1]["plan"], "pro");
+    EXPECT_EQ(grouped.rows[1]["count"], 2);
+    EXPECT_EQ(grouped.rows[1]["sum_amount"], 12);
+    EXPECT_EQ(grouped.rows[2]["plan"], "team");
+
+    // ORDER BY and LIMIT apply to the grouped answer.
+    auto top = svc.run(
+        "SELECT plan, count(*) AS n FROM d.t GROUP BY plan ORDER BY n DESC "
+        "LIMIT 1;", "");
+    ASSERT_TRUE(top.ok()) << top.error;
+    ASSERT_EQ(top.rows.size(), 1u);
+    EXPECT_EQ(top.rows[0]["plan"], "pro");
+
+    // A string WHERE on a grouped query.
+    auto filtered = svc.run(
+        "SELECT plan, SUM(amount) FROM d.t WHERE plan != 'free' GROUP BY plan;", "");
+    ASSERT_TRUE(filtered.ok()) << filtered.error;
+    EXPECT_EQ(filtered.rows.size(), 2u);
+
+    // A row with no plan is the NULL group.
+    svc.run("INSERT INTO d.t (amount) VALUES (9);", "");
+    auto with_null = svc.run("SELECT plan, count(*) FROM d.t GROUP BY plan;", "");
+    ASSERT_TRUE(with_null.ok()) << with_null.error;
+    ASSERT_EQ(with_null.rows.size(), 4u);
+    EXPECT_TRUE(with_null.rows[0]["plan"].is_null());
+    EXPECT_EQ(with_null.rows[0]["count"], 1);
+
+    // A numeric key over a column that is not dense (one row lacks it) groups
+    // over rows too, rather than failing.
+    auto sparse = svc.run("SELECT amount, count(*) FROM d.t GROUP BY amount;", "");
+    ASSERT_TRUE(sparse.ok()) << sparse.error;
+    EXPECT_EQ(sparse.rows.size(), 5u);
+
+    // GROUP BY over a system table.
+    auto jobs = svc.run("SELECT kind, COUNT(*) FROM system.jobs GROUP BY kind;", "");
+    EXPECT_TRUE(jobs.ok()) << jobs.error;
+
+    node.stop();
+}
+
+// A column no row carries is an error naming it — not a column of NULLs.
+TEST(QueryService, UnknownColumnIsAnErrorNamingIt) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.t (plan text, amount int);", "");
+    svc.run("INSERT INTO d.t (plan, amount) VALUES ('pro', 5);", "");
+    svc.run("INSERT INTO d.t (plan) VALUES ('free');", "");
+
+    const auto expect_unknown = [&](const std::string& sql) {
+        const auto outcome = svc.run(sql, "");
+        EXPECT_FALSE(outcome.ok()) << sql;
+        EXPECT_NE(outcome.error.find("column \"nope\" does not exist in d.t"),
+                  std::string::npos)
+            << sql << " -> " << outcome.error;
+        EXPECT_NE(outcome.error.find("(its columns: amount, plan)"), std::string::npos)
+            << outcome.error;
+        EXPECT_TRUE(outcome.rows.empty());
+    };
+    expect_unknown("SELECT nope FROM d.t;");
+    expect_unknown("SELECT plan, nope FROM d.t;");
+    expect_unknown("SELECT plan FROM d.t WHERE nope = 1;");
+    expect_unknown("SELECT nope, count(*) FROM d.t GROUP BY nope;");
+    expect_unknown("SELECT plan, SUM(nope) FROM d.t GROUP BY plan;");
+    expect_unknown("SELECT SUM(nope) FROM d.t;");
+
+    // A column some rows lack is a column: those rows read NULL.
+    auto sparse = svc.run("SELECT plan, amount FROM d.t;", "");
+    ASSERT_TRUE(sparse.ok()) << sparse.error;
+    ASSERT_EQ(sparse.rows.size(), 2u);
+    EXPECT_TRUE(sparse.rows[1]["amount"].is_null());
+
+    // A system table checks its columns too.
+    const auto system = svc.run("SELECT nope FROM system.tables;", "");
+    EXPECT_FALSE(system.ok());
+    EXPECT_NE(system.error.find("column \"nope\" does not exist in system.tables"),
+              std::string::npos)
+        << system.error;
+
+    node.stop();
+}
+
+// `columns` always names the result's columns — for SELECT * too, from the
+// columns the table's rows carry, even when the WHERE leaves no row.
+TEST(QueryService, SelectStarFillsColumns) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.t (plan text, amount int);", "");
+    svc.run("INSERT INTO d.t (plan, amount) VALUES ('pro', 5), ('free', 1);", "");
+    svc.run("INSERT INTO d.t (plan, amount, region) VALUES ('team', 2, 'EU');", "");
+
+    // A stored row keeps its keys in name order; across rows, first seen first.
+    const std::vector<std::string> expected{"amount", "plan", "region"};
+    auto limited = svc.run("SELECT * FROM d.t LIMIT 1;", "");
+    ASSERT_TRUE(limited.ok()) << limited.error;
+    EXPECT_EQ(limited.rows.size(), 1u);
+    EXPECT_EQ(limited.columns, expected);
+
+    auto none = svc.run("SELECT * FROM d.t WHERE amount > 100;", "");
+    ASSERT_TRUE(none.ok()) << none.error;
+    EXPECT_TRUE(none.rows.empty());
+    EXPECT_EQ(none.columns, expected);
+
+    auto system = svc.run("SELECT * FROM system.tables LIMIT 2;", "");
+    ASSERT_TRUE(system.ok()) << system.error;
+    EXPECT_EQ(system.columns, std::vector<std::string>({"description", "table"}));
+
+    node.stop();
+}
+
+// An unqualified table resolves against the default database, and an error
+// says which one that was — never `database "" does not exist`.
+TEST(QueryService, UnqualifiedTableErrorsNameTheDefaultDatabase) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    const auto no_default = svc.run("SELECT * FROM t;", "");
+    EXPECT_FALSE(no_default.ok());
+    EXPECT_NE(no_default.error.find("table \"t\" is not qualified and no default "
+                                    "database is set"),
+              std::string::npos)
+        << no_default.error;
+    EXPECT_EQ(no_default.error.find("database \"\""), std::string::npos);
+
+    const auto missing_default = svc.run("SELECT * FROM t;", "shop");
+    EXPECT_FALSE(missing_default.ok());
+    EXPECT_NE(missing_default.error.find("database \"shop\" does not exist (it is "
+                                         "the default database"),
+              std::string::npos)
+        << missing_default.error;
+
+    const auto qualified = svc.run("SELECT * FROM shop.t;", "");
+    EXPECT_FALSE(qualified.ok());
+    EXPECT_NE(qualified.error.find("database \"shop\" does not exist"),
+              std::string::npos);
 
     node.stop();
 }
@@ -971,6 +1231,11 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
 
     // An audit event (authorize records a data_access decision).
     node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "churn"});
+    node.record_authorized_read(
+        key->id(), "receive_events", "topic:idle", 0, false);
+    node.record_authorized_read(
+        key->id(), "receive_events", "topic:idle", 2, true);
+    node.flush_audit_summaries();
 
     // runs
     auto runs = svc.run("SELECT * FROM system.runs;", "");
@@ -1004,6 +1269,13 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
     ASSERT_TRUE(audit.ok()) << audit.error;
     ASSERT_GE(audit.rows.size(), 1u);
     EXPECT_EQ(audit.rows[0]["action"].get<std::string>(), "data_access");
+    const auto summary = std::ranges::find_if(audit.rows, [](const auto& row) {
+        return row["action"] == "data_access_summary";
+    });
+    ASSERT_NE(summary, audit.rows.end());
+    EXPECT_EQ((*summary)["calls"].get<std::uint64_t>(), 2u);
+    EXPECT_EQ((*summary)["events_delivered"].get<std::uint64_t>(), 2u);
+    EXPECT_EQ((*summary)["scope"].get<std::string>(), "topic:idle");
 
     // system.activity — the merged chronological feed (#622): the audit trail +
     // runs composed at query time, newest first. The run above contributes a
@@ -1159,6 +1431,16 @@ TEST(QueryService, SelectsNodeMetricsSystemTable) {
 
     // Network utilization needs a link cap, so it degrades to null.
     EXPECT_TRUE(row["net_percent"].is_null());
+    EXPECT_FALSE(row["process_rss_bytes"].is_null());
+    EXPECT_FALSE(row["allocator_in_use_bytes"].is_null());
+    EXPECT_TRUE(row.contains("unattributed_memory_bytes"));
+
+    EXPECT_EQ(row["pubsub_dispatch_mode"], "pool");
+    EXPECT_EQ(row["pubsub_dispatch_threads"], 1);
+    EXPECT_EQ(row["pubsub_dispatch_keys"], 0);
+    EXPECT_EQ(row["pubsub_topics_per_dispatch_thread"], 250);
+    EXPECT_EQ(row["pubsub_dispatch_min_threads"], 1);
+    EXPECT_GE(row["pubsub_dispatch_max_threads"].get<std::size_t>(), 1u);
 
     // Projection works like any system table.
     auto projected =
@@ -1166,6 +1448,97 @@ TEST(QueryService, SelectsNodeMetricsSystemTable) {
     ASSERT_TRUE(projected.ok()) << projected.error;
     ASSERT_EQ(projected.rows.size(), 1u);
     EXPECT_EQ(projected.rows[0]["node_id"].get<std::string>(), node.node_id());
+
+    node.stop();
+}
+
+TEST(QueryService, SelectsMemoryBySubsystemWithUnattributedRow) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService service{node};
+
+    auto result = service.run(
+        "SELECT subsystem, bytes, items, share_of_in_use, "
+        "allocator_in_use_bytes, allocator_free_held_bytes, rss_bytes "
+        "FROM system.memory;",
+        "");
+
+    ASSERT_TRUE(result.ok()) << result.error;
+    const auto audit = std::ranges::find_if(result.rows, [](const auto& row) {
+        return row.at("subsystem") == "audit";
+    });
+    const auto unattributed = std::ranges::find_if(result.rows, [](const auto& row) {
+        return row.at("subsystem") == "unattributed";
+    });
+    EXPECT_NE(audit, result.rows.end());
+    EXPECT_NE(unattributed, result.rows.end());
+    ASSERT_FALSE(result.rows.empty());
+    EXPECT_GT(result.rows.front().at("rss_bytes").get<std::uint64_t>(), 0u);
+
+    node.stop();
+}
+
+// ---- ORDER BY / LIMIT / OFFSET --------------------------------------------
+// Agents write ranked questions ("the ten riskiest accounts") as ORDER BY … LIMIT;
+// before these clauses every such query failed with "expected ';'".
+
+TEST(PostgresParser, ParsesOrderByLimitOffset) {
+    PostgresDialect pg;
+    auto parsed = pg.parse("SELECT a, b FROM t WHERE a > 1 ORDER BY b DESC, a LIMIT 5 OFFSET 2;");
+    ASSERT_TRUE(parsed.ok()) << parsed.error;
+    const auto& select = std::get<SelectStmt>(parsed.statements.at(0));
+    ASSERT_EQ(select.order_by.size(), 2u);
+    EXPECT_EQ(select.order_by[0].column, "b");
+    EXPECT_TRUE(select.order_by[0].descending);
+    EXPECT_FALSE(select.order_by[1].descending);
+    EXPECT_EQ(select.limit, 5u);
+    EXPECT_EQ(select.offset, 2u);
+    EXPECT_TRUE(pg.parse("SELECT * FROM t OFFSET 3 LIMIT 1").ok()) << "either order, no ';'";
+    EXPECT_TRUE(pg.parse("SELECT * FROM t LIMIT ALL;").ok());
+    EXPECT_FALSE(pg.parse("SELECT * FROM t LIMIT -1;").ok());
+    EXPECT_FALSE(pg.parse("SELECT * FROM t LIMIT 1.5;").ok());
+    EXPECT_FALSE(pg.parse("SELECT * FROM t ORDER a;").ok());
+}
+
+TEST(QueryService, OrderByLimitAndOffsetShapeTheResult) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.accounts (account text, risk int, plan text);", "");
+    svc.run("INSERT INTO d.accounts (account, risk, plan) VALUES ('a', 30, 'pro'), ('b', 90, 'free'),"
+            " ('c', 60, 'pro'), ('d', 90, 'pro');", "");
+
+    auto top = svc.run("SELECT account, risk FROM d.accounts ORDER BY risk DESC, account LIMIT 3", "");
+    ASSERT_TRUE(top.ok()) << top.error;
+    ASSERT_EQ(top.rows.size(), 3u);
+    EXPECT_EQ(top.rows[0]["account"], "b") << "ties keep the next key's order";
+    EXPECT_EQ(top.rows[1]["account"], "d");
+    EXPECT_EQ(top.rows[2]["account"], "c");
+
+    auto page = svc.run("SELECT * FROM d.accounts ORDER BY account OFFSET 1 LIMIT 2;", "");
+    ASSERT_TRUE(page.ok()) << page.error;
+    ASSERT_EQ(page.rows.size(), 2u);
+    EXPECT_EQ(page.rows[0]["account"], "b");
+    EXPECT_EQ(page.rows[1]["account"], "c");
+
+    auto filtered = svc.run("SELECT account FROM d.accounts WHERE plan = 'pro' LIMIT 10;", "");
+    ASSERT_TRUE(filtered.ok()) << filtered.error;
+    EXPECT_EQ(filtered.rows.size(), 3u) << "a LIMIT above the row count keeps every row";
+
+    auto grouped = svc.run("SELECT risk, COUNT(*) AS n FROM d.accounts GROUP BY risk ORDER BY n DESC LIMIT 1;", "");
+    ASSERT_TRUE(grouped.ok()) << grouped.error;
+    ASSERT_EQ(grouped.rows.size(), 1u);
+    EXPECT_EQ(grouped.rows[0]["risk"], 90);
+
+    auto unknown = svc.run("SELECT account FROM d.accounts ORDER BY risk;", "");
+    EXPECT_FALSE(unknown.ok());
+    EXPECT_NE(unknown.error.find("ORDER BY \"risk\""), std::string::npos) << unknown.error;
+
+    auto system = svc.run("SELECT * FROM system.tables ORDER BY name LIMIT 1;", "");
+    ASSERT_TRUE(system.ok()) << system.error;
+    EXPECT_LE(system.rows.size(), 1u);
 
     node.stop();
 }

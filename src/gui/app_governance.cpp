@@ -108,7 +108,7 @@ void render_principal_detail(const zetta::governance::Principal& principal) {
 // Render the immutable audit trail as a scrolling table: each governed action
 // (graph change / deploy / data access) with its time, actor, target, the
 // allow/deny outcome (color-coded), and the human-readable detail. Chronological,
-// matching Node::audit_events(); a read-only view over already-validated events.
+// matching Node::recent_audit_events(); a read-only view over validated events.
 // An App member so each target can render as an entity_link routed by its
 // action (#633): job events carry the job id, graph events the graph name,
 // deploys the deployed graph's name — the same routing the activity feed
@@ -362,10 +362,10 @@ void App::draw_admin() {
             ImGui::GetTextLineHeightWithSpacing() * 12.0f);
     }
 
-    // --- Audit log (the immutable, append-only trail) -----------------------
+    // --- Audit log (the immutable, retained trail) --------------------------
     ImGui::SeparatorText("Audit log");
     const std::vector<std::shared_ptr<zetta::governance::AuditEvent>> events =
-        node_.audit_events();
+        node_.recent_audit_events();
     if (events.empty()) {
         // A console statement is the nearest governed action: it runs
         // capability-scoped and lands in this trail.

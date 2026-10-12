@@ -23,6 +23,8 @@ exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 | `id` | `std::string` | UUIDv4; also the on-disk folder name. Never changes. |
 | `project` | `std::string` | Owning project uuid. Optional (empty until wired). |
 | `graph` | `std::string` | Executed graph id (free string). Optional. |
+| `project_name` | `std::string` | Project display name captured at creation and refreshed on rename. |
+| `pipeline_name` | `std::string` | Pipeline display name captured at creation and refreshed on rename. |
 | `deployment` | `std::string` | Owning deployment uuid. Optional — set when the run is the execution of a deployed graph. |
 | `status` | `RunStatus` | `Pending` → `Running` → `Succeeded` \| `Failed`. |
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
@@ -31,6 +33,10 @@ exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 | `logs` | `vector<RunLogEntry>` | Each `{ time, level, message }` — observability + diagnosis. |
 | `outputs` | `vector<RunOutput>` | Each `{ kind, name, ref }`; `kind` ∈ `dataset` / `model` / `index`. |
 | `lineage` | `RunLineage` | `{ sources[], steps[], freshness, confidence }`. |
+| `reads` | `vector<TableRead>` | The tables the run reads, each `{ database, table, table_id }`, recorded **when the run is created**, before it reads anything (zetta#1258): `Node::create_run` records its pipeline's connect steps that name an existing table, and `run` adds the `dataset_path` it was handed (`Run::add_reads`); an AutoML trial adds its Study's. Lineage says where a finished run's results came from; `reads` says what an unfinished one is reading, and [`delete_dataset`](../api/deletes.md#refusals) refuses a table a pending or running run reads. Absent when the run reads no table, so older records and peers keep their shape. |
+| `features` | JSON object | Accepted feature provenance: `used[{name, source[], transform, why}]` and `excluded[{name, why}]`; absent on old records means empty arrays (#1062). |
+| `metrics` | JSON object | Column-oriented step series, one-time flattened params, final/best summaries, and typed JSON artifacts. See [run metrics](../ml/run-metrics.md) (#1137). |
+| `entity_key_mapping` | JSON object | Present for a text-keyed dataset: the entity column plus collision-checked `{derived_id, original_value}` entries used to restore business ids in every output (#957). `get_run` answers `{column, entry_count}` in its place unless `include_entity_keys: true` (#1202): the entries grow with the row count (222 KB on 1,500 rows). |
 
 `status` is grounded in the run events: a run starts `Pending`, moves to
 `Running` (RunStarted), and ends `Succeeded` (RunSucceeded, with outputs +
@@ -39,9 +45,10 @@ lineage) or `Failed` (RunFailed; the failing step + reason live in `logs`).
 values always satisfy the schema. Stamps come from `zetta::util::now_iso8601()`
 (fixed-width, so they order chronologically as plain text).
 
-`project` / `graph` / `deployment` are **id-only references** (kept lightweight,
-like a project's future references to its inputs / graphs / runs) and are fixed at
-creation; the mutable fields change as the run progresses. `deployment` ties a run
+`project` / `graph` / `deployment` are stable references fixed at creation.
+`project_name` and `pipeline_name` are denormalized presentation values, so list
+clients do not need one Project lookup per row. Project and Pipeline renames
+refresh those names on every matching Run. `deployment` ties a run
 to the placement the [deployment controller](deployment-controller.md) is keeping
 alive — the link the reconcile loop follows from *desired* (the deployment) to
 *actual* (this run).
@@ -54,7 +61,7 @@ artifacts), so `find` / `drop` take the id:
 
 | Method | Returns | Behavior |
 |---|---|---|
-| `create_run(project = {}, graph = {}, deployment = {})` | `shared_ptr<Run>` | Stamps `created`/`updated`, starts `Pending`. Optional project + graph + deployment refs. |
+| `create_run(project = {}, graph = {}, deployment = {})` | `shared_ptr<Run>` | Stamps `created`/`updated`, starts `Pending`, and resolves Project/Pipeline display names when their refs exist. |
 | `find_run(id)` | `shared_ptr<Run>` | Empty handle on miss. |
 | `drop_run(id)` | `bool` | `true` if one was removed. |
 | `runs()` | `vector<shared_ptr<Run>>` | Stable order: by `created`, then `id`. |
@@ -63,6 +70,11 @@ artifacts), so `find` / `drop` take the id:
 The **update** half of the slice is the mutators on the `Run` handle. Each bumps
 `updated`, captures `run:<id>` into the CRDT (when replicated), then rewrites
 `run.json`:
+
+`set_features` validates the complete candidate record before persisting it. A
+malformed feature or missing reason returns false and leaves the Run unchanged.
+Methodology callbacks supply this provenance after their data-first preflight;
+[run-report.md](run-report.md) documents its read surface.
 
 ```cpp
 auto run = node.create_run("project-uuid", "graph-1");   // Pending
@@ -86,8 +98,8 @@ CRDT document is the source of truth, and the in-memory list + on-disk folder ar
 a **projection** of it ([replication.md](../cluster/replication.md)).
 
 - **Replicated state.** Each run is one flat key in the document:
-  `run:<uuid> → { project, graph, status, created, updated, logs, outputs,
-  lineage }` (`src/core/catalog.hpp`). The user-facing mutators capture into the
+  `run:<uuid> → { project, graph, project_name, pipeline_name, status, created, updated, logs, outputs,
+  lineage, metrics, entity_key_mapping }` (`src/core/catalog.hpp`). The user-facing mutators capture into the
   document; on each `tick()` the node **reconciles** the projection to match the
   document, so a peer's run (or a status / output update from a peer)
   materializes locally with **no re-capture** (`apply_value`, so no feedback
@@ -104,6 +116,19 @@ a **projection** of it ([replication.md](../cluster/replication.md)).
   `Node::start()` rebuilds the in-memory list by scanning the data dir
   (`load_runs()`) and — when replicated — reconciling from the CRDT document, so
   a run **survives restart** in both standalone and replicated nodes.
+
+Records written before `project_name` and `pipeline_name` existed remain valid.
+Startup resolves missing names from the loaded Project and Pipeline registries,
+persists only changed records, and then establishes the replication baseline.
+
+## List API
+
+`list_runs` returns each Run's stable refs, `project_name`, `pipeline_name`,
+status, `metric_summary`, privacy-suppression reason, creation/update stamps,
+and log/output counts. The summary is the stored final/best summary from the Run
+record. REST `GET /v1/list_runs` and the MCP `list_runs` tool use the same
+registry declaration and return the same value. A Runs page can therefore render
+its rows from this one call without joining Projects or fetching metrics per Run.
 
 ## Boundary validation (JSON Schema)
 
@@ -131,6 +156,14 @@ nlohmann/json zetta already uses and linked **PRIVATE** to `zetta-core` (it stay
 out of the public header surface). Validation failures are routed through the
 library's error-handler callback (not exceptions), so they never cross the
 library boundary as a thrown type.
+
+## AutoML trials
+
+Every [AutoML study](../ml/studies.md) trial is one Run. The Run carries the
+sampled parameters, study id, seed, intermediate objective series, logs, final
+status, and produced Model lineage. This keeps pruning, comparison, audit, and
+promotion on the existing execution record instead of creating a second trial
+recording system (#1138).
 
 ## GUI panel
 
@@ -216,4 +249,6 @@ objective/scaling controls — is the [Jobs panel](../gui/jobs-panel.md).
 query, confidence clamping, survival across a restart (both disk-only and
 CRDT-only), replication of a run + a later status change to a connected peer, the
 JSON-Schema boundary rejecting malformed values, and a malformed `run.json` being
-skipped on load.
+skipped on load. `tests/pipeline/test_project_graph.cpp` covers name capture,
+Project/Pipeline rename propagation, and startup backfill. API tests cover list
+summaries and exact REST/MCP parity.

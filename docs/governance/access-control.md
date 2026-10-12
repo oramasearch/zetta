@@ -98,7 +98,7 @@ node.authorize("no-such-key", {ResourceKind::Database, "churn"});// denied
 ```
 
 `zetta::governance::authorize(const AccessKey&, const Resource&)` is the pure decision over a
-known key; `Node::authorize(key_id, resource)` is the seam a request path calls.
+known key; `Node::authorize(key_id, resource)` is the boundary a request path calls.
 
 ## The capability decision (ENT-22)
 
@@ -137,7 +137,7 @@ node.authorize(key->id(), Operation{CapabilityDomain::Data, "write"});          
 pure decision (the injectable `now` makes TTL deterministic in tests). Its deny
 reason **distinguishes** a right that was never granted from one whose TTL has
 expired — context the audit trail will record.
-`Node::authorize(key_id, operation)` is the request-path seam; it resolves the key
+`Node::authorize(key_id, operation)` is the request-path boundary; it resolves the key
 (denying an unknown/empty id) and supplies the current time.
 
 > **TTL'd; audited.** A capability is the unit of authority for orchestration +
@@ -229,12 +229,15 @@ decision records an immutable `data_access` [`AuditEvent`](audit-trail.md). A
 later slice threads the login key through the request path (the query executor,
 the cluster protocol) so every data access is checked against `Node::authorize` —
 both the resource scope and the capability for the operation being performed — and
-thereby audited, not just the seam itself; **approval gates** for risky actions
+thereby audited, not just the boundary itself; **approval gates** for risky actions
 are their own slice, as is **granting a capability** as a first-class
 command/event (ENT-22 → `GrantCapability` / `CapabilityGranted`). The finer
-access **tiers** (team / partner / per-dataset) extend `ResourceKind` and
+access **tiers** (team / partner / per-dataset) extend `ResourceKind` (which already
+has `Topic` for pub/sub, a name-prefix grant like `Blob`, #1029, `Collection`
+for keyed record collections, also a name prefix, #1231, and `Bucket` for object
+buckets, a name prefix too, #1005) and
 `Scope`, and new rights extend `CapabilityDomain` / the open action taxonomy,
-without changing this seam. Principals + keys + their scope/capability grants are
+without changing this interface. Principals + keys + their scope/capability grants are
 now surfaced read-only in the headed [Admin & Settings panel](../gui/admin-panel.md)
 (SCR-7 / CMP-5); issuing keys and granting capabilities from the GUI is a later
 slice.
@@ -288,7 +291,7 @@ terms of the **permission vocabulary** (below), not raw capabilities:
 
 | role   | permissions |
 |--------|-------------|
-| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `serving:manage`, `cloud:manage` (#799) |
+| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `studies:promote`, `studies:delete`, `serving:manage`, `cloud:manage` (#799, #1138, #1158), **and the pub/sub atoms** `pubsub:*` (#1029) |
 | writer | `sql:read`, `sql:write`, `sql:ddl`, `mcp:call`, `serving:read` |
 | reader | `sql:read`, `serving:read`, `mcp:call` |
 
@@ -357,11 +360,11 @@ issued programmatically via `Node::create_token`.
 > The legacy anonymous HTTP path and the `--mcp-token` shared secret are **gone** from the binary — but the
 > in-process headed-GUI local session is **unaffected** (it authorizes in-process, not through the HTTP
 > gate; see below). The Orama operator injects `ZETTA_ADMIN_TOKEN` to seed the admin owner and renders
-> **no** `--cluster-plaintext` ([orama-cloud-v1-operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92)).
+> **no** `--cluster-plaintext` ([orama-operator#92](https://github.com/oramasearch/orama-operator/issues/92)).
 
 Every control surface — `/mcp`, `/v1/sql`, all `/v1/*` (REST + specs +
 openapi + llms.txt), and the governed serving endpoints — is fronted by **one
-auth gate**: a single middleware at the router seam (`src/core/api/http_server.cpp`,
+auth gate**: a single middleware at the router boundary (`src/core/api/http_server.cpp`,
 beside `router.use(cors())`), not a shared-secret check duplicated per handler.
 It resolves the acting identity **once** per request and hands it to the matched
 handler through the request's `route_data`; the handlers carry no auth logic of
@@ -455,7 +458,15 @@ can never disagree:
 | `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
 | `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |
 | `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
-| `pipelines:manage` | `orchestration:{create_project, add_dataset, capture_intent, import_n8n, compile_intent, compile_n8n, compile_python, gate, deploy, run, start_run, testsuite_run}` | drive the pipeline authoring → gate → deploy → run control surface over MCP/REST |
+| `audit:purge`   | `orchestration:purge_audit`   | remove audit rows before an explicit cutoff and record the purge (#1169) |
+| `pubsub:publish` / `pubsub:subscribe` / `pubsub:send_wildcard` | `data:pubsub_publish` / `data:pubsub_subscribe` / `data:pubsub_send_wildcard` | publish to, read from, and address wildcards in pub/sub (#1029, [../pubsub/governance.md](../pubsub/governance.md)) |
+| `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
+| `records:read` / `records:write` / `records:manage` | `data:records_read` / `data:records_write` / `orchestration:create_collection` | read, write and declare keyed record collections; object-scopable by collection name prefix, `ON COLLECTION <prefix>` (#1231, [../data/record-store.md](../data/record-store.md)) |
+| `metrics:read` / `metrics:write` | `data:metrics_read` / `data:metrics_write`, `orchestration:create_metric` | query, record and declare labelled time series (#1231, [../data/time-series.md](../data/time-series.md)) |
+| `objects:read` / `objects:write` / `objects:manage` | `data:objects_read` / `data:objects_write` / `orchestration:objects_manage` | read, write (and hold the owner lease of) and declare object buckets; object-scopable by bucket name prefix, `ON BUCKET <prefix>`; only `admin` holds them by default (#1005, [../data/object-store.md](../data/object-store.md#rights)) |
+| `pipelines:manage` | all pipeline, dataset/connector, snapshot, graph, agent/profile/plan, solution, decision-policy, experiment, and run-metric write operations, and the dataset, model, run and index deletes (lake#645) in `permission.cpp` | drive the authoring → gate → deploy → run → governed-action control surface over MCP/REST, including run parameters, metric series, and typed artifacts (#1102, #1103, #1104, #1105, #1137) |
+| `studies:promote`  | `orchestration:promote_trial` | register a complete trial's Model as the Study's promoted project version (#1138) |
+| `studies:delete`   | `orchestration:delete_study` | delete a stopped or complete Study and its non-promoted trial Runs while retaining promoted lineage (#1158) |
 | `serving:manage`   | `orchestration:{expose_model, unexpose_model, expose_index, unexpose_index}` | expose / unexpose models + indexes for governed serving |
 | `cloud:manage`     | `orchestration:{cloud_inspect, detect_provisioners, add_nodes, approve_consent, deny_consent}` | inspect targets, detect provisioners, add nodes, decide consent challenges |
 
@@ -466,8 +477,10 @@ needs, masking, RLS) is the scoped-grants / RLS work (#4 / #5). `mcp:call`
 (`api:query`) is what all read capabilities + the `sql` capability check today, so
 every built-in carries it.
 
-The three **orchestration atoms** (`pipelines:manage` / `serving:manage` /
-`cloud:manage`, #799) cover every registry **Orchestration** op — the pipeline
+The six **orchestration atoms** (`pipelines:manage` / `studies:promote` /
+`studies:delete` / `serving:manage` / `cloud:manage` / `audit:purge`, #799,
+#1138, #1158, #1169) cover every registry
+**Orchestration** op — the pipeline
 authoring/deploy/run flow, model+index exposure, and the cloud control surface.
 The capability model is exact-match (no wildcard), so each op must be named by some
 atom or **no** role could ever grant it. These went unwired while the only way to
@@ -475,7 +488,9 @@ reach orchestration over HTTP/MCP was the (now-removed) unauthenticated-local
 bypass, which skipped the capability check entirely; with **auth always on** the
 bootstrap owner (`admin` = the whole vocabulary) must actually hold them, so it can
 drive orchestration over HTTP/MCP/REST. **Only `admin` gets them** — `writer` and
-`reader` are unchanged. The admin-covers-every-registry-op invariant is guarded by a
+`reader` are unchanged. The dedicated study and audit atoms are likewise
+admin-only. The
+admin-covers-every-registry-op invariant is guarded by a
 test (`AdminRoleCoversRegistry` in `tests/api/test_mcp_server.cpp`).
 
 ### Custom roles + the SQL grammar
@@ -575,6 +590,8 @@ GRANT sql:read  ON sales.*                    TO ROLE reader;   -- a whole datab
 GRANT sql:write ON sales.customers(status)    TO ROLE editor;   -- writable columns
 GRANT mcp:call  ON TOOL search                TO ROLE reader;   -- one MCP tool
 GRANT blob:read ON BLOB 2026/                 TO ROLE archivist;-- a blob prefix
+GRANT records:write ON COLLECTION lake_       TO ROLE lake;     -- a record collection prefix
+GRANT objects:write ON BUCKET lake_           TO ROLE lake;     -- an object bucket prefix
 REVOKE sql:read ON sales.customers(email)     FROM ROLE reader;
 ```
 
@@ -597,7 +614,8 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
   grant is denied; columns the caller lacks `sql:read` on are **masked** to null in
   the output (both `SELECT *` and a projected list), and a `WHERE`/`GROUP BY` over a
   masked column is refused (no inference). An `INSERT` to a table or column with no
-  `sql:write` grant is **rejected**.
+  `sql:write` grant is **rejected**, and so is every other data-changing statement
+  without its right — see [per-statement enforcement](#per-statement-enforcement).
 - **MCP / REST** (`src/core/api/registry.cpp`): the invoke right for the capability
   surface is `mcp:call`, now scopable per tool. `tools/call` (and the REST
   `/v1/<capability>`, the same `Registry::call` choke point) checks
@@ -610,6 +628,59 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
 
 `system.roles` gains a **`scoped_grants`** column rendering each grant as
 `<perm> ON <object>` (e.g. `sql:read ON sales.customers(id, email)`).
+
+### Per-statement enforcement
+
+Until [#1229](https://github.com/oramasearch/zetta/issues/1229) only `INSERT`
+checked `sql:write`; `UPDATE`, `DELETE`, `TRUNCATE` and the DDL ran for any caller
+that could reach the `sql` capability, so a reader could change or destroy data.
+Every statement that changes data, schema or governance now checks its right in
+the executor before it touches anything:
+
+| Statement | Right | Scope |
+|---|---|---|
+| `INSERT`, `UPDATE` | `sql:write` | the table; a column grant admits only those columns (target / `SET` columns) |
+| `DELETE`, `TRUNCATE` | `sql:write` | the **whole** table (they remove whole rows) |
+| `CREATE TABLE`, `DROP TABLE` | `sql:ddl` | the whole table (a grant `ON db.*` or `ON db.t`) |
+| `CREATE DATABASE`, `DROP DATABASE` | `sql:ddl` | the database (`ON db.*` / `ON DATABASE db`) or flat |
+| `CREATE VIRTUAL TABLE` | `sql:ddl` | flat only: it is a global name over a replicated key family |
+| `CREATE USER` | `users:manage` | flat |
+| `CREATE TOKEN` | `tokens:manage` | flat — without it a caller could mint a token for the owner |
+| `CREATE/DROP ROLE`, `GRANT`/`REVOKE`, `CREATE/DROP POLICY` | `roles:manage` | flat (unchanged, #746) |
+
+A `WHERE` in `UPDATE` or `DELETE` over a column the caller may not read is
+refused, as for `SELECT` — the row count would otherwise reveal its values.
+
+Who is checked: a token-resolved user against its flat and object-scoped grants;
+a **legacy AccessKey** against its own flat capabilities (`data:write`,
+`data:ddl` — it used to skip the check because it has no object tier); the
+trusted local session (empty acting key: the library, the desktop app, internal
+engine queries) is allowed. The governed console runs a key session's SQL as
+that key (`QueryService::acting_as`), not as the local session.
+
+Row-level security applies to `UPDATE` and `DELETE` — see
+[Enforcement](#enforcement-deny-by-default-admin--unrestricted--local-bypass) below.
+
+The reserved `zetta_connect` database (saved connector credentials, #1230) is
+not reachable through SQL for anyone, the local session included; its governed
+surfaces are `system.connections` and the connection capabilities.
+
+**Audit.** The `sql` capability stays a read on the wire (`GET /v1/sql`), and the
+registry still records its per-call `data_access` row. In addition every
+data-changing statement records a **`data_changed`** action: the actor (`local`
+for the trusted session), the target (`sql:table:<db>.<table>`,
+`sql:database:<db>`, `sql:user:<name>`, `sql:token:<user>`, `sql:role:<name>`,
+`sql:policy:<name>`, `sql:virtual_table:<name>`), `allowed` (false for a
+refusal), and the statement's status line or error — never a value it wrote.
+See [audit trail](audit-trail.md).
+
+**Callers.** Every automated writer authenticates as the bootstrap `owner`
+(admin): the operator's schema Job and state sync, the e2e script's setup, and
+lake's control-plane writes. Lake's `workspace_sql` is `SELECT`/`WITH` only, and
+the agents reach Zetta through lake's proxy, which does not expose `sql`. A
+principal that wrote without `sql:write`/`sql:ddl` — a `reader`, a Clerk user
+auto-provisioned with no role, a custom role with only `sql:read` — is now
+refused and needs a grant (the built-in `writer` role carries both).
 
 ## Row-level security (FEAT-9 / #748 — closes epic #743)
 
@@ -679,7 +750,7 @@ access.
 
 ### Enforcement (deny-by-default; admin / unrestricted / local bypass)
 
-The executor is the one choke point — the same per-statement seam that #747 enforces
+The executor is the one choke point — the same per-statement boundary that #747 enforces
 column grants on:
 
 - On **`SELECT`**, the applicable policies' `USING` predicates are AND-ed into the
@@ -687,6 +758,18 @@ column grants on:
   applicable policies are **permissive** (OR-ed), as in Postgres.
 - On **`INSERT`**, each new row must satisfy an applicable `WITH CHECK` — a violating
   row **rejects** the statement.
+- On **`UPDATE`** (#1229), only rows the caller can see (the `SELECT`/`ALL`
+  policies' `USING`) **and** could have written (the `INSERT`/`UPDATE`/`ALL`
+  policies' `USING`, falling back to `WITH CHECK`) are matched — the rest are
+  untouched and uncounted — and every updated row must still satisfy `WITH CHECK`,
+  or the whole statement is refused. A caller can neither change a row it cannot
+  see nor hand its own row to someone else.
+- On **`DELETE`** (#1229), the same visibility and write-class filter decides
+  which rows are removed. There is no `FOR DELETE` command: the write-class
+  policies govern it.
+- **`TRUNCATE`** of a table with any read or write policy is refused for a
+  non-bypass caller — it would remove rows hidden from them; `DELETE` removes
+  exactly the rows they may.
 - **Deny-by-default**: RLS is *engaged* for a table as soon as any policy governs
   that table+command. On an engaged table, a caller with **no applicable policy**
   (its role set doesn't intersect any policy's `roles`) sees **no rows** / can write
@@ -714,6 +797,7 @@ user via `find_user_by_id` + `roles_for_user`.
 - `include/zetta/governance/grant.hpp` — scoped grants (#747): `ScopedGrant` (`{operation, object}`), `object_covers`, `column_access_for`, `object_permitted`, and `ColumnAccess`.
 - `include/zetta/node.hpp` — object decisions (#747): `Node::authorize_object` / `column_scope` / `may_call_tool` / `authorize_blob`, and `grant_scoped_permissions` / `revoke_scoped_permissions`.
 - `src/core/query/executor.cpp` — the SQL choke point that denies ungranted tables, masks ungranted columns on read, and rejects writes to ungranted columns (#747); `src/core/api/registry.cpp` (per-tool `mcp:call`), `src/core/api/http_server.cpp` (`tools/list` filter), `src/core/api/serving.cpp` (`serve_blob`).
+- `tests/query/test_sql_write_permissions.cpp` — per-statement enforcement (#1229): a reader refused and a writer allowed for every statement kind, object and column scope on `UPDATE`/`DELETE`, row security on `UPDATE`/`DELETE`/`TRUNCATE`, `users:manage`/`tokens:manage`, the legacy-AccessKey flat right, the `data_changed` audit, and the unreachable connection store.
 - `tests/governance/test_scoped_grants.cpp` + `tests/api/test_scoped_grants_api.cpp` — the scoped-grants coverage (#747): covering decision, column masking, table denial, write rejection, per-tool `mcp:call` + `tools/list` filter, blob-prefix serve, admin/local bypass.
 - `include/zetta/governance/policy.hpp` — row-level security (#748): `zetta::governance::Policy` / `PolicyValue` / `policy_value_from_json` / `policy_schema` (the `policy:<uuid>` entity + its trust boundary).
 - `include/zetta/query/ast.hpp` — the RLS predicate AST (#748): `PolicyPredicate` / `PolicyTerm` / `PolicyCommand` + `CreatePolicyStmt` / `DropPolicyStmt` (the dialect-neutral parsed form the executor evaluates with `compare_cell`).
@@ -725,7 +809,7 @@ user via `find_user_by_id` + `roles_for_user`.
 - `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
 - `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token` / `Node::authorize_user` (the token-resolved capability decision, #745).
 - `include/zetta/api/server.hpp` — the embedded `ApiServer` + `ServerOptions`; the auth gate is **unconditional** (#799 removed the `require_auth` and `bearer_token` options — a bearer that resolves to a user is required on every gated route).
-- `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router seam (`bearer → user`, else 401; #745).
+- `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router boundary (`bearer → user`, else 401; #745).
 - `tests/api/test_auth_gate.cpp` — the gate + `authorize_user` coverage (401 on every path without a token; the owner token opens them; per-user capability verdicts).
 - `include/zetta/governance/principal.hpp` — `zetta::governance::Principal` (ENT-20) + `PrincipalKind`.
 - `include/zetta/governance/access_key.hpp` — `zetta::governance::AccessKey` (ENT-21), `AccessDecision`,

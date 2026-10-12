@@ -86,6 +86,8 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--no-preflight` | skip the startup data integrity check |\n";
     out += "| `--log-cluster` | log cluster gossip to stderr (debugging) |\n";
     out += "| `--governance` | enforce consent gating on cloud-touching calls (off by default) |\n";
+    out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration |\n";
+    out += "| `--audit-summary-retention-days N` | keep audit summaries for N days (default 365); zero disables expiration |\n";
     out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
     out += "**Consent gating is off by default.** A consent-gated capability\n";
     out += "(`create_dataset_from_query`, `cloud_inspect`, `detect_provisioners`,\n";
@@ -93,6 +95,14 @@ std::string render_cli_md(std::string_view origin) {
     out += "is recorded as a `consent_bypassed` audit event naming what ran.\n";
     out += "`--governance` restores the challenge: the first call issues a\n";
     out += "one-time consent request that a **different** principal must approve.\n\n";
+
+    out += "## Pub/sub dispatch\n\n| Flag | Meaning |\n|---|---|\n";
+    out += "| `--pubsub-dispatch-mode MODE` | node-wide mode: `pool` (default), `auto`, `per_key` or `inline` |\n";
+    out += "| `--pubsub-topics-per-thread N` | active topic and inbox keys per pool worker (default 250) |\n";
+    out += "| `--pubsub-dispatch-threads N` | minimum shared-pool worker count (default 1) |\n";
+    out += "| `--pubsub-dispatch-max-threads N` | maximum shared-pool worker count (default detected CPU count) |\n\n";
+    out += "The default pool grows as active keys cross each topics-per-thread boundary and\n";
+    out += "shrinks with hysteresis. See [`docs/pubsub/dispatch.md`](docs/pubsub/dispatch.md).\n\n";
 
     out += "## Cluster\n\n| Flag | Meaning |\n|---|---|\n";
     out += "| `--peer HOST:PORT` | a node to connect to. Repeatable; all peers are equal |\n";
@@ -120,7 +130,13 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `ZETTA_SEED_PEER` | `--peer` (comma or space separated) |\n";
     out += "| `ZETTA_CLUSTER_TOKEN` | `--join-token` |\n";
     out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n";
-    out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n\n";
+    out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n";
+    out += "| `ZETTA_PUBSUB_DISPATCH_MODE` | `--pubsub-dispatch-mode` |\n";
+    out += "| `ZETTA_PUBSUB_TOPICS_PER_THREAD` | `--pubsub-topics-per-thread` |\n";
+    out += "| `ZETTA_PUBSUB_DISPATCH_THREADS` | `--pubsub-dispatch-threads` |\n";
+    out += "| `ZETTA_PUBSUB_DISPATCH_MAX_THREADS` | `--pubsub-dispatch-max-threads` |\n";
+    out += "| `ZETTA_AUDIT_RETENTION_DAYS` | `--audit-retention-days` |\n";
+    out += "| `ZETTA_AUDIT_SUMMARY_RETENTION_DAYS` | `--audit-summary-retention-days` |\n\n";
 
     out += "## See also\n\n";
     out += "- [`/mcp.md`](/mcp.md) — connect an MCP client to this node\n";

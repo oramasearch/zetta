@@ -140,6 +140,11 @@ public:
     // Pages the cache is holding right now.
     std::size_t resident_pages() const;
 
+    StorageMemoryUsage memory_usage() const override {
+        return StorageMemoryUsage{resident_bytes() + id_index_bytes(), size(),
+                                  resident_bytes(), resident_pages()};
+    }
+
     // How many times a page has actually been decoded off disk. A page
     // re-adopted through the cache's `weak_ptr` does not count — which is what
     // makes "no duplicate decode" an assertable property.

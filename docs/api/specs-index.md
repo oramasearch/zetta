@@ -23,7 +23,7 @@ Shipping this required completing the
 [#469](https://github.com/oramasearch/zetta/issues/469) fold: the ~38
 hand-mirrored `from_json` value types (cloud configs, DDF specs, governance
 records, churn shapes, …) each gained a real accessor embedding the schema in
-their owning TU (the `crash_report_schema` pattern), so all 62 boundary
+their owning TU (the `crash_report_schema` pattern), so all 86 boundary
 schemas are now code-owned and drift-checked — several stale private copies
 (steal messages, graph annotations, ddf partition) were deduplicated onto the
 public accessors in the process. See

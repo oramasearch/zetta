@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <stdexcept>
 #include <utility>
 
 #include <nlohmann/json-schema.hpp>
@@ -24,6 +25,35 @@ std::string_view to_string(CapabilityKind kind) {
 bool Registry::add(Capability capability) {
     if (capability.name.empty() || !capability.handler) return false;
     if (find(capability.name)) return false;
+    // An offloadable handler runs on a pool worker; the consent path and the
+    // activity hook touch owner-thread state after the gate, so neither may
+    // follow one (#1063).
+    if (capability.offloadable && (capability.requires_consent || capability.mutates)) {
+        return false;
+    }
+    // A retrying awaitable (#1005) may be a blocking, mutating action: each of
+    // its calls is a whole governed call, made on the pool.
+    const bool retrying = capability.awaitable_read && capability.awaitable_read->retry_within;
+    if (capability.blocks &&
+        (capability.offloadable || (capability.awaitable_read && !retrying) ||
+         capability.requires_consent)) {
+        return false;
+    }
+    if (capability.awaitable_read &&
+        (capability.offloadable || capability.requires_consent ||
+         !capability.awaitable_read->wait_for || !capability.awaitable_read->should_wait ||
+         (!retrying && (capability.kind != CapabilityKind::Read || capability.mutates)))) {
+        return false;
+    }
+    if (capability.audit_policy == AuditPolicy::SummarizeAuthorizedReads &&
+        (capability.kind != CapabilityKind::Read || capability.mutates ||
+         capability.requires_consent)) {
+        return false;
+    }
+    if (capability.audit_policy == AuditPolicy::HandlerRecordsSuccess &&
+        (capability.kind != CapabilityKind::Action || !capability.mutates)) {
+        return false;
+    }
     entries_.push_back(std::make_shared<const Capability>(std::move(capability)));
     return true;
 }
@@ -41,7 +71,7 @@ std::vector<std::shared_ptr<const Capability>> Registry::list() const {
 namespace {
 
 // Validate `input` against the entry's draft-07 schema. Violations are
-// collected through the validator's error_handler seam — never thrown across
+// collected through the validator's error callback — never thrown across
 // the library boundary (the run.cpp pattern; zetta-core does not unwind).
 class collecting_error_handler : public nlohmann::json_schema::error_handler {
 public:
@@ -52,24 +82,80 @@ public:
             reason_ = pointer.to_string().empty()
                           ? message
                           : pointer.to_string() + ": " + message;
+            path_ = pointer.to_string();
+            // A missing required property is reported at its parent; the
+            // field at fault is the property itself (#1217).
+            constexpr std::string_view kRequired = "required property '";
+            // So is a property the schema does not allow (#1220): the
+            // validator reports it at the object that holds it.
+            constexpr std::string_view kAdditional =
+                "validation failed for additional property '";
+            for (const std::string_view prefix : {kRequired, kAdditional}) {
+                if (!message.starts_with(prefix)) continue;
+                const std::size_t end = message.find('\'', prefix.size());
+                if (end != std::string::npos) {
+                    path_ += "/" + message.substr(prefix.size(),
+                                                  end - prefix.size());
+                }
+            }
         }
     }
     bool failed() const { return failed_; }
     const std::string& reason() const { return reason_; }
+    const std::string& path() const { return path_; }
 
 private:
     bool failed_ = false;
     std::string reason_;
+    std::string path_;
 };
 
+// `contentEncoding` (#1231): base64 is checked; any other encoding is refused,
+// so a schema never claims a check it does not get. A throw here is collected by
+// the validator as an error at the field.
+void check_content(const std::string& encoding, const std::string& /*media_type*/,
+                   const nlohmann::json& instance) {
+    if (encoding.empty()) return;
+    if (encoding != "base64") {
+        throw std::invalid_argument("contentEncoding '" + encoding + "' is not supported");
+    }
+    if (!instance.is_string()) throw std::invalid_argument("want a base64 string");
+    const std::string& text = instance.get_ref<const std::string&>();
+    std::size_t padding = 0;
+    bool valid = text.size() % 4 == 0;
+    for (const char character : text) {
+        if (!valid) break;
+        if (character == '=') {
+            ++padding;
+            continue;
+        }
+        valid = padding == 0 &&
+                ((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                 (character >= '0' && character <= '9') || character == '+' || character == '/');
+    }
+    if (!valid || padding > 2) throw std::invalid_argument("not valid base64");
+}
+
+// Validates `input`; on failure fills the reason and the JSON pointer of the
+// field at fault, so a schema rejection carries `path` like a handler's own.
+// Never throws: a schema the validator cannot compile (an unsupported keyword, a
+// bad pattern) is an invalid_input refusal naming the problem, not an exception
+// escaping Registry::call.
 bool validate_input(const nlohmann::json& schema, const nlohmann::json& input,
-                    std::string* reason) {
-    nlohmann::json_schema::json_validator validator;
-    validator.set_root_schema(schema);
-    collecting_error_handler handler;
-    validator.validate(input, handler);
-    if (handler.failed() && reason) *reason = handler.reason();
-    return !handler.failed();
+                    std::string* reason, std::string* path) {
+    try {
+        nlohmann::json_schema::json_validator validator(nullptr, nullptr, check_content);
+        validator.set_root_schema(schema);
+        collecting_error_handler handler;
+        validator.validate(input, handler);
+        if (handler.failed() && reason) *reason = handler.reason();
+        if (handler.failed() && path) *path = handler.path();
+        return !handler.failed();
+    } catch (const std::exception& error) {
+        if (reason) *reason = std::string("the input could not be checked against its schema: ") + error.what();
+        if (path) path->clear();
+        return false;
+    }
 }
 
 void audit_call(Node& node, const Capability& capability,
@@ -82,6 +168,21 @@ void audit_call(Node& node, const Capability& capability,
     event.allowed = allowed;
     event.detail = detail;
     node.record_audit_event(std::move(event));
+}
+
+bool audit_result_has_data(const Capability& capability,
+                           const ApiResult& result) {
+    if (!result.value.is_object() || capability.audit_result_field.empty()) {
+        return false;
+    }
+    const auto found = result.value.find(capability.audit_result_field);
+    if (found == result.value.end() || found->is_null()) {
+        return false;
+    }
+    if (found->is_array() || found->is_object() || found->is_string()) {
+        return !found->empty();
+    }
+    return true;
 }
 
 // The consent trail (#621): the challenge under the requester, the decision
@@ -104,6 +205,33 @@ std::string principal_of(Node& node, const std::string& acting_key) {
     if (acting_key.empty()) return {};
     if (auto key = node.find_access_key(acting_key)) return key->principal_id();
     return {};
+}
+
+}  // namespace
+
+namespace {
+
+// Run a handler, turning an exception into an engine_error result (#1007).
+//
+// Handlers are non-throwing by contract, but a handler reads replicated state a
+// peer or a customer's dataset wrote — a column of an unexpected type, a value of
+// the wrong shape — and nlohmann's typed accessors throw on that. An exception
+// escaping Registry::call unwinds through the owner-loop bridge: over REST the
+// caller gets no response at all, and on a headless node it terminates the
+// process. Contain it here, the one place every surface passes through, and
+// answer with the engine's reason like any other failure. (On macOS this relies
+// on linking Homebrew's libunwind — see the note in CMakeLists.txt.)
+ApiResult invoke_contained(const Capability& capability, const nlohmann::json& input,
+                           ApiContext& context) {
+    try {
+        return capability.handler(input, context);
+    } catch (const std::exception& error) {
+        return ApiResult::failure(
+            "engine_error", "'" + capability.name + "' failed: " + error.what());
+    } catch (...) {
+        return ApiResult::failure(
+            "engine_error", "'" + capability.name + "' failed with an unknown error");
+    }
 }
 
 }  // namespace
@@ -155,8 +283,17 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     }
 
     std::string reason;
-    if (!validate_input(capability->input_schema, effective_input, &reason)) {
-        return finish(ApiResult::failure("invalid_input", reason));
+    std::string path;
+    if (!validate_input(capability->input_schema, effective_input, &reason,
+                        &path)) {
+        if (capability->invalid_input_hint) {
+            if (const std::string hint =
+                    capability->invalid_input_hint(effective_input);
+                !hint.empty()) {
+                reason += "; " + hint;
+            }
+        }
+        return finish(ApiResult::failure("invalid_input", reason, path));
     }
 
     // Authorization (deny-by-default). Under the default-deny gate (#745) the
@@ -172,36 +309,53 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     // MORE-specific right than the bare invoke (the orchestration actions) also
     // requires that right; capabilities gated on {api,query} need only the
     // per-tool invoke right (may_call_tool subsumes the coarse check).
-    const zetta::governance::Operation kInvokeRight{
-        zetta::governance::CapabilityDomain::Api, "query"};
-    if (context.acting_is_user) {
-        if (!context.node.may_call_tool(context.acting_key,
-                                        /*acting_is_user=*/true, name)) {
-            const std::string reason = "no mcp:call grant for tool '" + name + "'";
-            audit_call(context.node, *capability, context.acting_key,
-                       /*allowed=*/false, reason);
-            return finish(ApiResult::failure("unauthorized", reason));
-        }
-        if (!(capability->required_operation == kInvokeRight)) {
-            auto decision = context.node.authorize_user(
-                context.acting_key, capability->required_operation);
+    //
+    // The gate reads the Node's keys and grants and appends to its audit trail,
+    // both owner-thread state that the tick reconciles. An offloadable
+    // capability reaches here on a pool worker, so the gate runs on the owner
+    // thread: without that, a worker's audit append raced the tick's audit
+    // reconciliation and crashed the node (#1063). run_on_owner runs inline
+    // when already on the owner thread.
+    std::optional<ApiResult> refused;
+    context.node.run_on_owner([&] { refused = [&]() -> std::optional<ApiResult> {
+        const zetta::governance::Operation kInvokeRight{
+            zetta::governance::CapabilityDomain::Api, "query"};
+        if (context.acting_is_user) {
+            if (!context.node.may_call_tool(context.acting_key,
+                                            /*acting_is_user=*/true, name)) {
+                const std::string reason = "no mcp:call grant for tool '" + name + "'";
+                audit_call(context.node, *capability, context.acting_key,
+                           /*allowed=*/false, reason);
+                return ApiResult::failure("unauthorized", reason);
+            }
+            if (!(capability->required_operation == kInvokeRight)) {
+                auto decision = context.node.authorize_user(
+                    context.acting_key, capability->required_operation);
+                const bool scoped = !decision && capability->authorize_scoped &&
+                    capability->authorize_scoped(effective_input, context);
+                if (!decision && !scoped) {
+                    audit_call(context.node, *capability, context.acting_key,
+                               /*allowed=*/false, decision.reason);
+                    return ApiResult::failure("unauthorized", decision.reason);
+                }
+            }
+        } else if (!context.acting_key.empty()) {
+            auto decision =
+                context.node.authorize(context.acting_key, capability->required_operation);
             if (!decision) {
                 audit_call(context.node, *capability, context.acting_key,
                            /*allowed=*/false, decision.reason);
-                return finish(ApiResult::failure("unauthorized", decision.reason));
+                return ApiResult::failure("unauthorized", decision.reason);
             }
         }
-    } else if (!context.acting_key.empty()) {
-        auto decision =
-            context.node.authorize(context.acting_key, capability->required_operation);
-        if (!decision) {
+        if (capability->audit_policy == AuditPolicy::PerCall) {
             audit_call(context.node, *capability, context.acting_key,
-                       /*allowed=*/false, decision.reason);
-            return finish(ApiResult::failure("unauthorized", decision.reason));
+                       /*allowed=*/true,
+                       std::string(to_string(capability->kind)) + " call");
         }
-    }
-    audit_call(context.node, *capability, context.acting_key, /*allowed=*/true,
-               std::string(to_string(capability->kind)) + " call");
+        return std::nullopt;
+    }(); });
+    if (refused) return finish(std::move(*refused));
 
     // Consent-gated capabilities never execute on a plain call (#621, the
     // cloud hard rule over the wire): when the input touches a cloud, issue a
@@ -272,12 +426,56 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     // agent tools, #904) calls back through this — same context, so the caller's
     // permissions and the audit trail apply to the inner call too.
     context.registry = this;
-    ApiResult result = capability->handler(effective_input, context);
+    ApiResult result = invoke_contained(*capability, effective_input, context);
+
+    if (capability->audit_policy == AuditPolicy::SummarizeAuthorizedReads) {
+        context.node.run_on_owner([&] {
+            if (result.ok) {
+                std::string scope = "*";
+                if (!capability->audit_scope_field.empty() &&
+                    effective_input.contains(capability->audit_scope_field) &&
+                    effective_input.at(capability->audit_scope_field).is_string()) {
+                    scope = effective_input.at(capability->audit_scope_field)
+                                .get<std::string>();
+                }
+                std::uint64_t events_delivered = 0;
+                if (result.value.is_object() &&
+                    result.value.contains("events") &&
+                    result.value.at("events").is_array()) {
+                    events_delivered = result.value.at("events").size();
+                }
+                context.node.record_authorized_read(
+                    context.acting_key, capability->name, std::move(scope),
+                    events_delivered,
+                    audit_result_has_data(*capability, result));
+            } else {
+                audit_call(context.node, *capability, context.acting_key,
+                           result.error.code != "unauthorized",
+                           result.error.code + ": " + result.error.message);
+            }
+        });
+    }
+
+    if (capability->audit_policy == AuditPolicy::HandlerRecordsSuccess &&
+        !result.ok) {
+        context.node.run_on_owner([&] {
+            audit_call(context.node, *capability, context.acting_key,
+                       result.error.code != "unauthorized",
+                       result.error.code + ": " + result.error.message);
+        });
+    }
 
     if (result.ok && capability->mutates && activity_) {
-        activity_(ActivityEvent{capability->name,
-                                context.acting_key.empty() ? "local"
-                                                           : context.acting_key});
+        const ActivityEvent event{
+            capability->name,
+            context.acting_key.empty() ? "local" : context.acting_key};
+        if (capability->blocks) {
+            context.node.run_on_owner([&] {
+                activity_(event);
+            });
+        } else {
+            activity_(event);
+        }
     }
     return finish(std::move(result));
 }

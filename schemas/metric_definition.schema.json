@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "A labelled time series (#1231): the replicated `metric:<name>` value. A counter's points are non-negative increments summed over a range; a gauge's points are readings. `resolution_ms` is the bucket width; `retention_ms`, when present, removes buckets older than it; `created` is milliseconds since the Unix epoch.",
+  "properties": {
+    "created": {
+      "type": "integer"
+    },
+    "kind": {
+      "enum": [
+        "counter",
+        "gauge"
+      ]
+    },
+    "name": {
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$",
+      "type": "string"
+    },
+    "resolution_ms": {
+      "maximum": 86400000,
+      "minimum": 1000,
+      "type": "integer"
+    },
+    "retention_ms": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "name",
+    "kind",
+    "resolution_ms",
+    "created"
+  ],
+  "title": "zetta.MetricDefinition",
+  "type": "object"
+}

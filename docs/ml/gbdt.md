@@ -1,9 +1,12 @@
 # Distributed histogram GBDT training (`zetta::ml`)
 
-Histogram gradient-boosted decision trees with a **binary logistic** objective —
-the native training engine for UC-1 churn (FEAT-6 / ENT-14, #390; part of the
-native distributed accelerated-compute pass, #264). This is the differentiator:
-zetta **trains a model on the customer's own data**, rather than running inference
+Histogram gradient-boosted decision trees with **binary logistic** and
+**squared-error** objectives. Binary logistic is the native training engine for
+UC-1 churn (FEAT-6 / ENT-14, #390; part of the native distributed
+accelerated-compute pass, #264), while squared error supports native forecasting.
+S-3 customer lifetime value also uses squared error for continuous net-value
+targets.
+Zetta **trains a model on the customer's own data**, rather than running inference
 over a rented model.
 
 It builds on everything that landed before it — the
@@ -22,14 +25,17 @@ and the [job coordinator](../compute/job-coordinator.md).
 ## What a histogram GBDT is, briefly
 
 A model is a base score plus an **ordered ensemble of small regression trees**.
-Each boosting round fits one tree to the gradient/Hessian of the binary log-loss
-at the current predictions:
+For binary logistic training, each boosting round fits one tree to the
+gradient/Hessian of the binary log-loss at the current predictions:
 
 ```
 p_i = sigmoid(raw_i)          # current predicted probability
 g_i = p_i - y_i               # gradient of the log-loss
 h_i = p_i (1 - p_i)           # Hessian
 ```
+
+Squared-error training uses the residual gradient and a unit Hessian while
+retaining the same distributed histogram and tree-building path.
 
 A tree is grown level by level. At every (tree-node, feature) the feature's values
 are **binned** into a small number of equal-width bins, and the per-bin sums of
@@ -55,8 +61,9 @@ each round:
    `allreduce(Min)` / `allreduce(Max)` makes the bin edges identical on every node
    (so a row bins the same way everywhere). A node with no rows contributes the
    identities (`+inf` / `-inf`).
-2. **Global base rate.** A node's `[Σy, n]` is `allreduce(Sum)`'d; the base score is
-   `logit(Σy / n)` over the whole cluster.
+2. **Global base score.** A node's `[Σy, n]` is `allreduce(Sum)`'d; the base score is
+   `logit(Σy / n)` for binary logistic or the continuous target mean `Σy / n`
+   for squared error over the whole cluster.
 3. **Gradient histograms.** At each tree level, each node builds the
    gradient/Hessian histograms over only its **local** rows, then those per-node
    histograms are **summed across the cluster** with one `allreduce(Sum)`.
@@ -97,9 +104,13 @@ return a `compute::ComputeStatus`.
   ([`schemas/gbdt_model.schema.json`](../../schemas/gbdt_model.schema.json), the
   pboettch draft-07 validator — like the Run record — because the body is read back
   from disk / a peer) plus the structural rule that every child index is in range.
-  `predict_raw` / `predict_proba` evaluate it.
+  `predict_raw` / `predict_proba` evaluate it. A node goes left when
+  `x < threshold`; a missing value (NaN) goes right unless the node's optional
+  `missing_left` says left, which only a model brought from another library sets
+  ([model-import.md](model-import.md), lake#681), so a trained body never carries it.
 - `GbdtMetrics` — `auc` (Mann-Whitney, ties at 0.5), `log_loss` (mean
-  cross-entropy), `accuracy@0.5`, via `evaluate_binary`. The shape stored in a
+  cross-entropy), `accuracy@0.5`, via `evaluate_binary`. Distributed
+  squared-error jobs instead report RMSE and MAE. Both shapes are stored in a
   Model's free-form `metrics`.
 
 ## Running it as a `train` ComputeJob → a Model
@@ -113,16 +124,26 @@ return a `compute::ComputeStatus`.
   loop, combining statistics with the round's `allreduce` (no new wire format — the
   histograms ride the schema-validated `CollectiveMessage`).
 - **Global metrics** are computed once: each node scores the rows it fit, the
-  `(probability, label)` pairs are gathered to the root, evaluated over the union,
+  `(prediction, label)` pairs are gathered to the root, evaluated over the union,
   and the scalars broadcast back — so every node ends with identical metrics.
-  When `holdout_fraction` is set, the held-out pairs ride that same gather and a
-  second set of metrics comes back beside the in-sample ones — see
+  Binary-logistic jobs report AUC, log loss, and accuracy; squared-error jobs
+  report RMSE and MAE. When `holdout_fraction` is set, the held-out pairs ride
+  that same gather and a second set of objective-appropriate metrics comes back
+  beside the in-sample ones — see
   [held-out-metrics.md](held-out-metrics.md) (#953).
+- When the job is attached to a pipeline Run, each committed boosting round
+  records globally reduced `train.log_loss` or `train.mean_squared_error`, row
+  throughput, host gauges, one-time parameters, and a live batch, and, when the
+  run held rows out, its held-out scores once at the end (#1239) and, for a
+  classifier, its held-out confusion matrix, ROC curve and calibration
+  artifacts (#1247). See
+  [run metrics](run-metrics.md) (#1137).
 - The deterministic collective **root** registers the trained model as a
-  `Model` (kind `classifier`): the GBDT weights body (the schema-validated JSON) is
-  attached via `set_weights` (fingerprinted + replicated peer-to-peer like any
-  large-object body), with the evaluation metrics in `metrics` and the per-feature
-  gains as the ranked `feature_schema.drivers` (explainability — read by
+  `Model` (kind `classifier` for binary logistic and `regressor` for squared
+  error): the GBDT weights body (the schema-validated JSON) is attached via
+  `set_weights` (fingerprinted + replicated peer-to-peer like any large-object
+  body), with the objective and ranked per-feature gains in `feature_schema` and
+  the matching evaluation metrics in `metrics` (explainability — read by
   `zetta::ml::ranked_drivers`, surfaced in the [Runs panel](../pipeline/runs.md)). One logical model
   is produced (at the root, which replicates to peers); deduping per-node
   registrations into a single record on every node is a later slice.
@@ -180,8 +201,8 @@ live in [docs/compute/job-checkpoint.md](../compute/job-checkpoint.md).
 
 ## Scope + what's next
 
-- **Objective:** binary logistic (log-loss) only. Other objectives (multiclass,
-  regression) extend `GbdtModel::objective` + the gradient/Hessian formulas.
+- **Objective:** binary logistic (log-loss) and squared-error regression.
+  Multiclass objectives remain out of scope.
 - **Histogram:** host-side reference today; a device-native weighted-histogram
   kernel (and the parent-minus-sibling subtraction trick) are later optimizations
   behind the same API.
@@ -202,6 +223,15 @@ live in [docs/compute/job-checkpoint.md](../compute/job-checkpoint.md).
   carrying feature as the dominant driver.
 - The distributed `train` job grows **equivalent trees** single-node vs multi-node
   (identical within a run; equal up to floating-point across shardings).
+- A squared-error `train` job registers a regressor with objective, RMSE, MAE,
+  held-out RMSE, and held-out MAE preserved across the Model boundary.
 - Trained on the synthetic [churn fixture](../use-cases/churn-dataset.md) (via featurization),
   it reaches a strong AUC, produces a registered `Model` whose weights re-validate
   against the schema, and surfaces `failed_payments` as a positive churn driver.
+
+## Metric isolation
+
+Metric hooks leave model bytes unchanged. Without an enabled hook, training
+performs no metric pass or metric allreduce. Distributed jobs agree on reporting
+before training; DP callers force suppression before reading private rows for
+metrics. See [run-metrics.md](run-metrics.md) (#1137).

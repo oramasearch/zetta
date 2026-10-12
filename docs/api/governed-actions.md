@@ -22,7 +22,7 @@ the GUI calls**, so RULE-1/RULE-3 cannot be bypassed by construction:
 | `approve_plan` | `Project::approve_graph` | review-before-build (#885): flips a proposed plan → approved; audits `graph_approved`; `gate`/`deploy` require it |
 | `gate` | `pipeline::default_gate().run` | returns the whole `ValidationReport` (checks + verdict + block_deploy); evaluation only, `mutates=false`; refuses a `proposed` plan with `not_approved` |
 | `deploy` | `Node::deploy_graph` | the engine self-gates (RULE-1) + self-audits both outcomes; the handler pre-runs the gate only to surface the failing check's reason verbatim |
-| `run` | `usecases::churn::run_churn_solution_on_node` (#637) via `AsyncChurnRun` · `Node::run_graph` | see below |
+| `run` | the resolved methodology's `run` callback, or `Node::run_graph` for structural graphs | see below |
 | `add_dataset` | `data::add_dataset_file` | placement over the live `cluster_members()`; audits `dataset_added` |
 | `testsuite_run` | `testkit::run_test_case` via `testkit::AsyncCaseRun` | see below |
 
@@ -43,14 +43,14 @@ gate on every member).
 
 ## Long-running work — `kind: job`, no new infrastructure
 
-`run` (churn-shaped graphs) and `testsuite_run` return **the engine's durable
+`run` and `testsuite_run` return **the engine's durable
 Run id immediately** and never block the request on engine work
 (registry-design.md → "reuse the durable handles"). Progress and outcome are
 polled through the read surface: `get_run` / `system.runs` for status + logs,
 `system.jobs` for the per-step compute jobs.
 
-- **`run`** — a churn-shaped graph (`is_churn_graph`) routes through THE
-  canonical runner (#637) on the node's **live** JobCoordinator, driven
+- **`run`** — a model graph resolves through the methodology registry. M-1
+  routes through the canonical churn runner (#637) on the node's **live** JobCoordinator, driven
   off-thread by `AsyncChurnRun` (#624): SPMD across the live membership via
   the coordinated launch (#601), the trained Model + ranked at-risk list +
   drivers landing on the node. The Run record is created by the worker
@@ -60,8 +60,14 @@ polled through the read surface: `get_run` / `system.runs` for status + logs,
   fails at submit, e.g. no live coordinator, surfaces its engine reason
   instead). The run's outputs carry the deliverables: the `model` output, the
   `index` output (the score/rank at-risk handle), and the `drivers:<job>`
-  dataset ref. A non-churn graph runs **structurally** (DefaultStepExecutor)
-  within the call and returns its run id + terminal status directly.
+  dataset ref. M-16 reads its graph's connected table, runs the native LP/MIP
+  solver, independently verifies the solution, and returns solver status plus
+  plan and constraint-table handles; `get_run_report` reads those tables and
+  the objective/feasibility/gap metrics. A graph without a model runs
+  **structurally** (DefaultStepExecutor) within the call and returns its run id
+  plus terminal status directly.
+  M-17 reads the connect step's own table, fits its grouped posterior, writes
+  the output table and Run synchronously, and returns the succeeded Run id.
 - **`testsuite_run`** — `testkit::AsyncCaseRun`
   (`include/zetta/testkit/async_case_run.hpp`) creates the Run on the owner
   thread (project label `testkit`, graph label = the case id) so the id is
@@ -103,7 +109,8 @@ index/drivers read back, the near-data trace read-back via the train job's
 (deploy AND run refused with the failing check's reason; read-backs prove
 nothing placed, nothing executed), import/compile n8n from the committed
 fixture, sim-Python compile, `add_dataset` with placement read-back,
-`testsuite_run` submit-then-poll, and the denied-key negative.
+`testsuite_run` submit-then-poll, the M-16 table→compile→run→report journey,
+and the denied-key negative.
 `tests/api/test_mcp_server.cpp` replays the dataset-ingest and gate-blocked
 tables unchanged over real JSON-RPC (layer 2). Deliberately later slices:
 the L2 protocol journey for job polling over real HTTP, the #621 L2 consent

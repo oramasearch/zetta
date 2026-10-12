@@ -197,6 +197,12 @@ nothing to reconcile. The same reasoning applies in reverse on failure: a peer
 that captured `tbl:<id>` must also capture its removal, because the initiator's
 `remove` is *concurrent with* the peer's `set`, not causally after it.
 
+The table's `source_format` (#1221) is the connector type (`postgres`,
+`snowflake`). The initiator writes it into `tbl:<id>`, and each participant
+writes the same value from the type of its own copy of the saved connection, so
+the identical-value rule above still holds without the launch carrying it. The
+single-shot path sets it through `AddDatasetOptions::source_format`.
+
 ## Row ranges are per node
 
 A partition's `row_range` is its cumulative slice **in the writing node's own
@@ -274,6 +280,11 @@ has its own in-app case,
 — and it needs no fault injection, because the case owns its own loopback nodes and
 a node is made idle by not giving it a tick loop rather than by wedging it
 ([#840](https://github.com/oramasearch/zetta/issues/840)).
+
+The non-Snowflake dispatch regression accepts both the core's `Postgres` diagnostic
+and the installed protocol runner's `postgres` diagnostic. API journeys can install
+the runner earlier in a full-suite process; capitalization must not make the test
+order-dependent. Neither form may mention Snowflake or call its transport.
 
 See also [connector-query.md](connector-query.md) (the connector + the credential
 contract), [partition-only-tables.md](partition-only-tables.md) (why nothing

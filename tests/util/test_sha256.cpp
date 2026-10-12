@@ -30,3 +30,22 @@ TEST(Sha256, MultiBlockAndBinary) {
     with_nul.push_back('b');
     EXPECT_EQ(sha256_hex(with_nul).size(), 64u);  // valid digest over binary
 }
+
+// The incremental digest (lake#690: weights sent in chunks) equals the one-shot
+// digest however the bytes are split, across block and padding boundaries.
+TEST(Sha256, InPiecesEqualsAtOnce) {
+    std::string input;
+    for (int i = 0; i < 3000; ++i) input.push_back(static_cast<char>(i * 37 % 256));
+    for (const std::size_t piece : {1u, 7u, 55u, 56u, 63u, 64u, 65u, 1000u}) {
+        zetta::util::Sha256 digest;
+        for (std::size_t offset = 0; offset < input.size(); offset += piece) {
+            digest.update(std::string_view(input).substr(offset, piece));
+        }
+        EXPECT_EQ(digest.hex(), sha256_hex(input)) << "piece " << piece;
+    }
+    for (const std::size_t length : {55u, 56u, 63u, 64u, 119u, 120u}) {
+        zetta::util::Sha256 digest;
+        digest.update(std::string(length, 'x'));
+        EXPECT_EQ(digest.hex(), sha256_hex(std::string(length, 'x'))) << "length " << length;
+    }
+}

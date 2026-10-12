@@ -79,6 +79,6 @@ and the cluster kept working when one machine went away and came back.
 - #114 `[ENV-5]`, #188 `[REL-3]`, #215 `[RUN-1]` — provisioning a managed cluster and
   one-action bring-up. Out of scope here: this script is the *manual* path on machines the
   customer already has.
-- `orama-cloud-v1-operator/docs/install.md` — the install runbook for the Kubernetes path.
+- `orama-operator/docs/install.md` — the install runbook for the Kubernetes path.
   Its first prerequisite is a Kubernetes cluster, which is exactly what this script must
   work **without**.

@@ -19,7 +19,9 @@ cluster. Realizes [../product/experience/serving.md](../product/experience/servi
   - `POST /v1/models/{name}/predict` — batch scoring: the body's `rows` run
     through the model's weights via the [batch-scoring path](../ml/gbdt-score.md)
     (`load_gbdt_model` + `score_gbdt`, the GBDT schema boundary re-validating
-    the weights body), returning the ranked at-risk list. The weights
+    the weights body), returning the ranked at-risk list. Boolean features load
+    as 0/1, and a model trained with text entity ids accepts and returns those
+    original values. The weights
     replicate, so **any node answers**.
   - `GET /v1/indexes/{name}/search?query=…` — [THE search entry point](../indexing/node-search.md)
     (`Node::search`, #641) underneath: the distributed per-partition
@@ -88,7 +90,8 @@ cluster. Realizes [../product/experience/serving.md](../product/experience/servi
   is refused AND audited → un-expose kills the route; the same for an index
   (served hits equal the `search` capability's); schema-boundary rejections
   (missing rows / missing model feature with the `/rows/N` pointer / ragged
-  entities); read-back through `get_model` / `get_index` and the system
+  entities), plus boolean features and reversible text entity ids; read-back
+  through `get_model` / `get_index` and the system
   views; idempotent expose/unexpose; `serve:*` spans in the ring.
 - [`tests/api/test_rest_server.cpp`](../../tests/api/test_rest_server.cpp)
   (`ServedModelAndIndexEndpointsOverHttp`) — the wire acceptance: real

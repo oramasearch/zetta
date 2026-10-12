@@ -146,16 +146,26 @@ ChurnSolutionResult run_churn_solution_with_coordinator(
     pipeline.entity_column = "entity";
     pipeline.top_k = options.top_k;
     pipeline.model_name = options.model_name;
+    pipeline.result_database = options.result_database;
+    pipeline.result_table_prefix = options.result_table_prefix;
+    pipeline.result_entity_column = options.result_entity_column;
+    pipeline.result_score_column = options.result_score_column;
     pipeline.project = options.project;
     pipeline.graph = options.graph;
+    pipeline.training_progress = options.training_progress;
 
     auto churn = std::make_shared<ChurnStepExecutor>(node, coordinator, device,
                                                      std::move(pipeline));
     zetta::pipeline::GraphExecutor executor{churn};
 
     ChurnSolutionResult result;
+    std::shared_ptr<zetta::pipeline::Run> run;
+    if (!options.run_id.empty()) {
+        node.run_on_owner([&] { run = node.find_run(options.run_id); });
+    }
     result.execution = executor.execute(node, graph, options.project,
-                                        options.graph, options.cancel);
+                                        options.graph, options.cancel,
+                                        std::move(run));
     result.model_id = churn->model_id();
     result.ranked = churn->ranked();
     result.drivers = churn->driver_ranking();
@@ -202,7 +212,11 @@ Json options_to_wire(const ChurnSolutionOptions& options) {
         {"top_k", options.top_k},
         {"model_name", options.model_name},
         {"project", options.project},
-        {"graph_label", options.graph}};
+        {"graph_label", options.graph},
+        {"result_database", options.result_database},
+        {"result_table_prefix", options.result_table_prefix},
+        {"result_entity_column", options.result_entity_column},
+        {"result_score_column", options.result_score_column}};
 }
 
 // Parse the (schema-validated) options object back. Returns nullopt + a reason
@@ -229,6 +243,10 @@ std::optional<ChurnSolutionOptions> options_from_wire(const Json& wire,
     options.model_name = wire.at("model_name").get<std::string>();
     if (wire.contains("project")) options.project = wire["project"].get<std::string>();
     if (wire.contains("graph_label")) options.graph = wire["graph_label"].get<std::string>();
+    options.result_database = wire.value("result_database", options.result_database);
+    options.result_table_prefix = wire.value("result_table_prefix", options.result_table_prefix);
+    options.result_entity_column = wire.value("result_entity_column", options.result_entity_column);
+    options.result_score_column = wire.value("result_score_column", options.result_score_column);
     options.coordinate = false;  // a co-launched run never re-fans-out
     return options;
 }
@@ -409,7 +427,9 @@ ChurnNumericShards encode_churn_dataset(const ChurnDataset& dataset) {
     return shards;
 }
 
-DataFrameSchema table_accounts_schema(const zetta::data::DatasetContract& contract) {
+DataFrameSchema table_accounts_schema(
+    const zetta::data::DatasetContract& contract,
+    bool continuous_label) {
     DataFrameSchema schema;
     // `field` is the JSON key read from the row, `name` the column in the frame.
     // The entity is renamed to the canonical `entity` on the way in: everything
@@ -418,7 +438,8 @@ DataFrameSchema table_accounts_schema(const zetta::data::DatasetContract& contra
     // would be a second name for one concept.
     schema.columns.push_back(ColumnSchema{.name = std::string(kTableEntityColumn),
                                           .field = contract.entity_column,
-                                          .dtype = DataType::Int64});
+                                          .dtype = DataType::Int64,
+                                          .entity_keys = contract.entity_keys});
     for (const std::string& feature : contract.feature_columns) {
         schema.columns.push_back(
             ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});
@@ -426,12 +447,15 @@ DataFrameSchema table_accounts_schema(const zetta::data::DatasetContract& contra
     if (!contract.label_column.empty()) {
         schema.columns.push_back(ColumnSchema{.name = contract.label_column,
                                               .field = contract.label_column,
-                                              .dtype = DataType::Int64});
+                                              .dtype = continuous_label
+                                                           ? DataType::Float64
+                                                           : DataType::Int64});
     }
     if (!contract.time_column.empty()) {
         schema.columns.push_back(ColumnSchema{.name = contract.time_column,
                                               .field = contract.time_column,
-                                              .dtype = DataType::Float64});
+                                              .dtype = DataType::Float64,
+                                              .timestamp = true});
     }
     return schema;
 }
@@ -488,26 +512,51 @@ ChurnSolutionResult run_churn_solution_on_table(
             "the in-memory dataset path.");
     }
 
+    const zetta::storage::JsonStore forward_labels =
+        make_store(input.forward_label_rows);
     ChurnPipelineConfig pipeline;
     pipeline.accounts_table = input.table_id;
-    pipeline.accounts_schema = table_accounts_schema(input.contract);
+    pipeline.accounts_dataset = input.dataset_name;
+    pipeline.dataset_notes = input.notes;
+    pipeline.entity_keys = input.contract.entity_keys;
+    pipeline.accounts_schema = table_accounts_schema(
+        input.contract, options.params.objective == "squared_error");
     pipeline.events_schema = churn_events_schema();  // empty frame; static mode
     pipeline.featurize = table_featurize_spec(input.contract);
+    if (!input.forward_label_rows.empty()) {
+        pipeline.training_accounts_store = &forward_labels;
+        pipeline.training_accounts_schema = table_accounts_schema(
+            input.forward_label_contract,
+            options.params.objective == "squared_error");
+        pipeline.training_featurize =
+            table_featurize_spec(input.forward_label_contract);
+        pipeline.training_dataset = input.forward_label_source;
+        pipeline.score_active_only = input.score_active_only;
+    }
     pipeline.params = options.params;
     pipeline.calibration = options.calibration;
     pipeline.entity_column = std::string(kTableEntityColumn);
     pipeline.top_k = options.top_k;
     pipeline.model_name = options.model_name;
+    pipeline.result_database = options.result_database;
+    pipeline.result_table_prefix = options.result_table_prefix;
+    pipeline.result_entity_column = options.result_entity_column;
+    pipeline.result_score_column = options.result_score_column;
     pipeline.project = options.project;
     pipeline.graph = options.graph;
+    pipeline.training_progress = options.training_progress;
 
     auto churn = std::make_shared<ChurnStepExecutor>(node, *coordinator, device,
                                                      std::move(pipeline));
     zetta::pipeline::GraphExecutor executor{churn};
 
     ChurnSolutionResult result;
+    std::shared_ptr<zetta::pipeline::Run> run;
+    if (!options.run_id.empty()) {
+        node.run_on_owner([&] { run = node.find_run(options.run_id); });
+    }
     result.execution = executor.execute(node, graph, options.project, options.graph,
-                                        options.cancel);
+                                        options.cancel, std::move(run));
     result.model_id = churn->model_id();
     result.ranked = churn->ranked();
     result.drivers = churn->driver_ranking();
@@ -629,7 +678,11 @@ const nlohmann::json& churn_coordinated_run_schema() {
             "top_k":       { "type": "integer", "minimum": 0 },
             "model_name":  { "type": "string", "minLength": 1 },
             "project":     { "type": "string" },
-            "graph_label": { "type": "string" }
+            "graph_label": { "type": "string" },
+            "result_database": { "type": "string", "minLength": 1 },
+            "result_table_prefix": { "type": "string", "minLength": 1 },
+            "result_entity_column": { "type": "string", "minLength": 1 },
+            "result_score_column": { "type": "string", "minLength": 1 }
           } }
       }
     })JSONSCHEMA");

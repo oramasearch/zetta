@@ -47,7 +47,8 @@ across heterogeneous devices.
 
 - **`tensor.hpp`** — `Node`, `Tensor`, `backward()`, and the transformer op set:
   `matmul` · `sum` · `add` · `mul` · `scale` · `add_bias` · `gelu` · `silu` ·
-  `row_softmax` · `rms_norm` · `transpose` · `embedding` · `cross_entropy` ·
+  `row_softmax` · `rms_norm` · `layer_norm` · `transpose` · `embedding` · `patch_embedding` ·
+  `cross_entropy` ·
   `row_slice` · `policy_gradient_loss` · `rope` · `col_slice` · `concat_cols`
   (the last two split/reassemble attention heads). Every op is gradient-checked.
 - **`transformer.hpp`** — `causal_self_attention`, `grouped_query_attention`
@@ -64,6 +65,9 @@ across heterogeneous devices.
   QK-norm, tied embeddings, and the Qwen3 RoPE base. `parse_qwen_config()` builds
   the matching `QwenConfig` from a checkpoint's Hugging Face `config.json` (so the
   right architecture is instantiated before its weights load).
+  `fine_tune_qwen_step` performs one completion-masked optimizer update and
+  reports loss, learning rate, gradient norm, and token throughput through the
+  shared [Run metrics](../ml/run-metrics.md) logger (#1137).
 - **`safetensors.hpp`** — a host-float `.safetensors` reader/writer
   (`parse_safetensors` / `read_safetensors_file`, decoding **F32 and BF16** to
   host floats; `serialize_safetensors` / `write_safetensors_file`). No MLX, no

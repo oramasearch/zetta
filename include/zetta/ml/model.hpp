@@ -49,7 +49,9 @@ struct ModelWeights {
 // `feature_schema` and `metrics` are free-form JSON: `feature_schema` describes
 // the model's input features (field → type / profile), `metrics` records the
 // evaluation scores (name → number, e.g. {"auc": 0.91}). `project` / `run` are
-// optional lineage refs to what produced the model. `weights` is present once a
+// optional lineage refs to what produced the model; `project_name`,
+// `pipeline_name`, and `run_id` are its page-ready display lineage. `weights` is
+// present once a
 // body has been attached (set_weights); absent on a freshly-created, body-less
 // model — and present-but-not-yet-on-disk on a peer awaiting body transfer.
 // `exposed` is the governed serving state (#648): true publishes the model's
@@ -61,6 +63,9 @@ struct ModelValue {
     std::string kind;     // e.g. "classifier" / "regressor" (required, non-empty)
     std::string project;  // optional producing/owning project uuid
     std::string run;      // optional producing run uuid
+    std::string project_name;   // denormalized display name (#1184)
+    std::string pipeline_name;  // denormalized producing Pipeline name (#1184)
+    std::string run_id;         // explicit producing Run id (#1184)
     nlohmann::json feature_schema = nlohmann::json::object();  // free-form
     nlohmann::json metrics = nlohmann::json::object();         // free-form (name→number)
     std::string created;  // ISO-8601 UTC stamp at creation
@@ -97,12 +102,13 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
 //
 // The serialized **weights** are deliberately NOT in the document: like a large
 // object's body they live on disk (`<model-uuid>/weights`) and move peer-to-peer
-// over the existing large-object body seam (BlobStore / LOREQ-LORES), verified
+// over the existing large-object body channel (BlobStore / LOREQ-LORES), verified
 // against the `size` + `sha256` in this model's metadata. The metadata replicates
-// today and the body follows over that seam.
+// today and the body follows over that channel.
 //
-// The id is the folder name and never changes; `kind` / lineage refs are fixed at
-// creation. set_weights / set_metrics capture into the CRDT (when replicated) and
+// The id is the folder name and never changes; `kind` / stable lineage refs are
+// fixed at creation. Display lineage follows Project/Pipeline renames.
+// set_weights / set_metrics capture into the CRDT (when replicated) and
 // rewrite model.json. Reconciliation uses apply_value(), which updates the
 // metadata projection from the document with NO capture (and never touches the
 // weights body). Lookups hand back shared_ptr handles, like Run / Project. See
@@ -117,6 +123,9 @@ public:
     const std::string& kind() const { return value_.kind; }
     const std::string& project() const { return value_.project; }
     const std::string& run() const { return value_.run; }
+    const std::string& project_name() const { return value_.project_name; }
+    const std::string& pipeline_name() const { return value_.pipeline_name; }
+    const std::string& run_id() const { return value_.run_id; }
     const nlohmann::json& feature_schema() const { return value_.feature_schema; }
     const nlohmann::json& metrics() const { return value_.metrics; }
 
@@ -153,16 +162,37 @@ public:
     // Attach (or replace) the serialized weights: compute the size + SHA-256,
     // write the body to disk atomically, then capture `model:<id>` into the CRDT
     // (when replicated) and rewrite model.json. The metadata (size + hash)
-    // replicates; peers fetch the body over the large-object body seam.
+    // replicates; peers fetch the body over the large-object body channel.
     bool set_weights(std::string_view bytes);
+    // The same for a body already on disk (lake#690: an artifact sent in
+    // chunks): move `staged` into place as the weights body, with the size and
+    // SHA-256 the caller verified. False (and `staged` left where it was) when
+    // it cannot be moved. Same filesystem as the model's directory expected; a
+    // copy is made otherwise.
+    bool adopt_weights_file(const std::filesystem::path& staged,
+                            std::uintmax_t size,
+                            std::string sha256);
+    // Up to `limit` bytes of the weights body from `offset` (lake#690: weights
+    // read back in chunks); nullopt if the body isn't present locally.
+    std::optional<std::string> read_weights_range(std::uintmax_t offset,
+                                                  std::size_t limit) const;
 
     // Update the evaluation metrics (free-form name→number object), then capture
     // + persist. The weights body is untouched.
     void set_metrics(nlohmann::json metrics);
+    // Update the free-form input contract metadata. Used after training when a
+    // table-backed run must attach its text entity-key map to the Model.
+    void set_feature_schema(nlohmann::json feature_schema);
+
+    // Refresh denormalized lineage after creation, startup backfill, or a
+    // rename. `run` remains populated for wire compatibility.
+    void set_display_lineage(std::string project_name,
+                             std::string pipeline_name,
+                             std::string run_id);
 
     // Replace the metadata to match a (replicated) document value, then rewrite
     // model.json — with NO capture and WITHOUT touching the weights body (used by
-    // reconciliation; the body arrives separately over the body seam).
+    // reconciliation; the body arrives separately over the body channel).
     void apply_value(ModelValue value);
 
     // Write this model's metadata (+ id) to dir/model.json.

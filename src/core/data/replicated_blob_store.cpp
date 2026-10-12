@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -37,22 +38,24 @@ namespace {
 std::unordered_map<std::string, std::vector<std::string>> partition_owner_index(
     const nlohmann::json& snapshot) {
     std::unordered_map<std::string, std::vector<std::string>> owners;
-    for (const auto& [key, value] : snapshot.items()) {
-        if (catalog::id_after(key, catalog::kPartitionPrefix).empty()) continue;
-        const std::optional<DatasetPartitionValue> partition =
-            parse_dataset_partition_value(value);
-        if (!partition || partition->owner_nodes.empty() ||
-            partition->blob_ref.empty()) {
-            continue;
-        }
-        const std::string bare =
-            catalog::id_after(partition->blob_ref, catalog::kLargeObjectPrefix);
-        const std::string& large_object_id =
-            bare.empty() ? partition->blob_ref : bare;
-        std::vector<std::string>& nodes = owners[large_object_id];
-        nodes.insert(nodes.end(), partition->owner_nodes.begin(),
-                     partition->owner_nodes.end());
-    }
+    catalog::for_each_with_prefix(
+        snapshot, catalog::kPartitionPrefix,
+        [&owners](const std::string& key, const nlohmann::json& value) {
+            if (catalog::id_after(key, catalog::kPartitionPrefix).empty()) return;
+            const std::optional<DatasetPartitionValue> partition =
+                parse_dataset_partition_value(value);
+            if (!partition || partition->owner_nodes.empty() ||
+                partition->blob_ref.empty()) {
+                return;
+            }
+            const std::string bare =
+                catalog::id_after(partition->blob_ref, catalog::kLargeObjectPrefix);
+            const std::string& large_object_id =
+                bare.empty() ? partition->blob_ref : bare;
+            std::vector<std::string>& nodes = owners[large_object_id];
+            nodes.insert(nodes.end(), partition->owner_nodes.begin(),
+                         partition->owner_nodes.end());
+        });
     return owners;
 }
 
@@ -113,36 +116,45 @@ std::optional<ReplicatedBlobStore::BlobTarget> ReplicatedBlobStore::resolve(
 }
 
 std::vector<std::string> ReplicatedBlobStore::missing_blobs() const {
-    const nlohmann::json snapshot = replication_.snapshot();
+    // The shared immutable view (#1227): the `part:`, `lo:` and `model:` key
+    // ranges are read in place, and nothing copies the catalogue.
+    const std::shared_ptr<const nlohmann::json> snapshot = replication_.shared_snapshot();
     const std::unordered_map<std::string, std::vector<std::string>> owners =
-        partition_owner_index(snapshot);
+        partition_owner_index(*snapshot);
     std::vector<std::string> missing;
-    for (const auto& [key, value] : snapshot.items()) {
-        std::error_code ec;
-        if (std::string id = catalog::id_after(key, catalog::kLargeObjectPrefix);
-            !id.empty() && value.is_object() && value.contains("db")) {
+    catalog::for_each_with_prefix(
+        *snapshot, catalog::kLargeObjectPrefix,
+        [&](const std::string& key, const nlohmann::json& value) {
+            std::string id = catalog::id_after(key, catalog::kLargeObjectPrefix);
+            if (id.empty() || !value.is_object() || !value.contains("db")) return;
             // Partition-aware placement: a partition's body is fetched only by
             // its owner nodes; a plain object (or unplaced partition) still
             // replicates to all.
-            if (!node_holds_partition_blob(owners, id)) continue;
+            if (!node_holds_partition_blob(owners, id)) return;
+            std::error_code ec;
             if (!fs::exists(blob_path(value["db"].get<std::string>(), id), ec)) {
                 missing.push_back(std::move(id));
             }
-        } else if (std::string model_id =
-                       catalog::id_after(key, catalog::kModelPrefix);
-                   !model_id.empty() && value.is_object() &&
-                   value.contains("weights") && value["weights"].is_object()) {
+        });
+    catalog::for_each_with_prefix(
+        *snapshot, catalog::kModelPrefix,
+        [&](const std::string& key, const nlohmann::json& value) {
+            std::string model_id = catalog::id_after(key, catalog::kModelPrefix);
+            if (model_id.empty() || !value.is_object() || !value.contains("weights") ||
+                !value["weights"].is_object()) {
+                return;
+            }
+            std::error_code ec;
             if (!fs::exists(weights_path(model_id), ec)) {
                 missing.push_back(std::move(model_id));
             }
-        }
-    }
+        });
     return missing;
 }
 
 std::optional<std::string> ReplicatedBlobStore::read_blob(
     const std::string& id) const {
-    const std::optional<BlobTarget> target = resolve(replication_.snapshot(), id);
+    const std::optional<BlobTarget> target = resolve(*replication_.shared_snapshot(), id);
     if (!target) return std::nullopt;
     std::ifstream in(target->path, std::ios::binary);
     if (!in) return std::nullopt;
@@ -152,14 +164,17 @@ std::optional<std::string> ReplicatedBlobStore::read_blob(
 
 bool ReplicatedBlobStore::store_blob(const std::string& id,
                                      const std::string& bytes) {
-    const nlohmann::json snapshot = replication_.snapshot();
-    const std::optional<BlobTarget> target = resolve(snapshot, id);
-    if (!target) return false;  // no metadata for this id — refuse
-    // Partition-aware placement: only a partition's owner nodes hold its body.
-    // Defense-in-depth — a non-owner never requests it, so this rejects only an
-    // unsolicited push, keeping a partition body off non-owners.
-    if (!node_holds_partition_blob(partition_owner_index(snapshot), id)) {
-        return false;
+    std::optional<BlobTarget> target;
+    {
+        const std::shared_ptr<const nlohmann::json> snapshot = replication_.shared_snapshot();
+        target = resolve(*snapshot, id);
+        if (!target) return false;  // no metadata for this id — refuse
+        // Partition-aware placement: only a partition's owner nodes hold its body.
+        // Defense-in-depth — a non-owner never requests it, so this rejects only an
+        // unsolicited push, keeping a partition body off non-owners.
+        if (!node_holds_partition_blob(partition_owner_index(*snapshot), id)) {
+            return false;
+        }
     }
     // Verify against the replicated metadata; a mismatch is dropped, not stored.
     if (target->has_size && bytes.size() != target->size) return false;

@@ -1,13 +1,129 @@
 #include "zetta/agent/agent_record.hpp"
 
+#include <algorithm>
+#include <array>
 #include <string>
+#include <string_view>
 
 namespace zetta::agent {
 
+namespace {
+
+template <std::size_t Size>
+bool one_of(const std::array<std::string_view, Size>& values, std::string_view value) {
+    return std::find(values.begin(), values.end(), value) != values.end();
+}
+
+constexpr std::array<std::string_view, 2> kKinds{"custom", "orama"};
+constexpr std::array<std::string_view, 3> kRuntimes{"native", "python", "service"};
+constexpr std::array<std::string_view, 3> kWorkAreas{"workspace", "project", "dataset"};
+constexpr std::array<std::string_view, 5> kStatuses{"idle", "running", "waiting", "completed",
+                                                    "failed"};
+
+// `mcp:<prefix>` grants the allowed tools of one of the workspace's MCP connections (lake#652): the
+// prefix Lake gives a connection, a letter then letters, digits and underscores, at most 24. Lake
+// checks the skill on every call of a connected tool; the engine only keeps it.
+bool mcp_connection_skill(std::string_view skill) {
+    constexpr std::string_view prefix = "mcp:";
+    if (!skill.starts_with(prefix)) return false;
+    const std::string_view name = skill.substr(prefix.size());
+    if (name.empty() || name.size() > 24 || name.front() < 'a' || name.front() > 'z') return false;
+    for (const char c : name) {
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    }
+    return true;
+}
+
+std::string definition_error(const AgentDefinition& definition) {
+    if (definition.source == "zetta") {
+        if (definition.instructions.empty()) {
+            return "agent.definition.instructions must be a non-empty string";
+        }
+        std::size_t total = definition.instructions.size();
+        for (const DefinitionFile& file : definition.files) {
+            if (file.path.empty() || file.path.front() == '/' ||
+                file.path.find("..") != std::string::npos) {
+                return "agent.definition.files: '" + file.path +
+                       "' must be a relative path inside the definition";
+            }
+            total += file.contents.size();
+        }
+        if (total > kMaxInlineDefinitionBytes) {
+            return "agent.definition is larger than 1 MiB; store the code in a lake repository "
+                   "(source: lake) instead";
+        }
+        return std::string();
+    }
+    if (definition.source == "lake") {
+        if (definition.repository_id.empty()) {
+            return "agent.definition.repository_id is required for source: lake";
+        }
+        if (definition.revision.empty()) {
+            return "agent.definition.revision is required for source: lake (a pinned revision, "
+                   "never a branch)";
+        }
+        return std::string();
+    }
+    return "agent.definition.source must be 'zetta' or 'lake'";
+}
+
+}  // namespace
+
 std::string AgentRecord::validation_error() const {
     if (name.empty()) return "agent.name must be a non-empty string";
-    if (model.empty()) return "agent.model must be a non-empty string";
+    if (!one_of(kKinds, kind)) return "agent.kind must be 'custom' or 'orama'";
+    if (!one_of(kRuntimes, runtime)) {
+        return "agent.runtime must be 'native', 'python' or 'service'";
+    }
+    if (runtime == "native" && model.empty()) return "agent.model must be a non-empty string";
+    if (runtime == "python") {
+        if (const std::string reason = definition_error(definition); !reason.empty()) {
+            return reason;
+        }
+    }
+    if (runtime == "service" && endpoint.empty()) {
+        return "agent.endpoint is required for runtime: service";
+    }
+    if (!one_of(kWorkAreas, work_area.kind)) {
+        return "agent.work_area.kind must be 'workspace', 'project' or 'dataset'";
+    }
+    for (const std::string& skill : skills) {
+        if (std::ranges::find(agent_skills(), skill) == agent_skills().end() &&
+            !mcp_connection_skill(skill)) {
+            std::string known;
+            for (const std::string& name : agent_skills()) {
+                known += (known.empty() ? "" : ", ") + name;
+            }
+            return "agent.skills: '" + skill + "' is not a skill (" + known +
+                   ", or mcp:<connection prefix>)";
+        }
+    }
+    if (!one_of(kStatuses, status)) {
+        return "agent.status must be idle, running, waiting, completed or failed";
+    }
+    for (const PipelineGrant& grant : pipelines) {
+        if (grant.project.empty() || grant.graph.empty()) {
+            return "agent.pipelines entries need a project and a graph";
+        }
+    }
     return std::string();
+}
+
+nlohmann::json agent_skill_schema() {
+    return {{"anyOf",
+             nlohmann::json::array({{{"type", "string"}, {"enum", agent_skills()}},
+                                    {{"type", "string"},
+                                     {"pattern", kMcpConnectionSkillPattern},
+                                     {"description",
+                                      "the allowed tools of the workspace's MCP connection "
+                                      "with this prefix in Lake"}}})}};
+}
+
+const std::vector<std::string>& agent_skills() {
+    static const std::vector<std::string> skills{
+        "search",      "generate-data", "train",    "summarize", "call-api",  "drives",
+        "transcripts", "repositories",  "datasets", "streams",   "pipelines", "usage"};
+    return skills;
 }
 
 const nlohmann::json& agent_schema() {
@@ -18,12 +134,28 @@ const nlohmann::json& agent_schema() {
       "description": "A served, named agent (zetta#849): a model + system prompt + tools a user can list, select, and chat with.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "model"],
+      "required": ["id", "name"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
-        "model": { "type": "string", "minLength": 1, "description": "checkpoint dir, model:<uuid>, or a HuggingFace repo id" },
+        "model": { "type": "string", "description": "native agents: checkpoint dir, model:<uuid>, or a HuggingFace repo id" },
+        "kind": { "type": "string", "enum": ["custom", "orama"] },
+        "runtime": { "type": "string", "enum": ["native", "python", "service"] },
+        "purpose": { "type": "string" },
+        "work_area": { "type": "object" },
+        "manifesto": { "type": "string" },
+        "goal": { "type": "string" },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "trigger": { "type": "string" },
+        "status": { "type": "string" },
+        "model_name": { "type": "string" },
+        "model_version": { "type": "string" },
+        "chat_capable": { "type": "boolean" },
+        "is_default": { "type": "boolean" },
+        "pipelines": { "type": "array", "items": { "type": "object" } },
+        "definition": { "type": "object" },
+        "endpoint": { "type": "string" },
         "system_prompt": { "type": "string" },
         "tools": { "type": "array", "items": { "type": "string" } },
         "training": { "type": "object", "description": "how and when this agent retrains" },
@@ -53,6 +185,42 @@ nlohmann::json to_json(const AgentRecord& agent) {
     nlohmann::json versions = nlohmann::json::array();
     for (const AgentVersion& version : agent.versions) versions.push_back(to_json(version));
     value["versions"] = std::move(versions);
+    value["kind"] = agent.kind;
+    value["runtime"] = agent.runtime;
+    value["purpose"] = agent.purpose;
+    value["work_area"] = {{"kind", agent.work_area.kind}, {"detail", agent.work_area.detail}};
+    value["manifesto"] = agent.manifesto;
+    value["goal"] = agent.goal;
+    value["skills"] = agent.skills;
+    value["trigger"] = agent.trigger;
+    value["status"] = agent.status;
+    value["model_name"] = agent.model_name;
+    value["model_version"] = agent.model_version;
+    value["chat_capable"] = agent.chat_capable;
+    value["is_default"] = agent.is_default;
+    nlohmann::json pipelines = nlohmann::json::array();
+    for (const PipelineGrant& grant : agent.pipelines) {
+        pipelines.push_back(
+            {{"project", grant.project}, {"graph", grant.graph}, {"version", grant.version}});
+    }
+    value["pipelines"] = std::move(pipelines);
+    if (agent.runtime == "python") {
+        nlohmann::json definition = {{"source", agent.definition.source},
+                                     {"entrypoint", agent.definition.entrypoint}};
+        if (agent.definition.source == "lake") {
+            definition["repository_id"] = agent.definition.repository_id;
+            definition["revision"] = agent.definition.revision;
+        } else {
+            definition["instructions"] = agent.definition.instructions;
+            nlohmann::json files = nlohmann::json::array();
+            for (const DefinitionFile& file : agent.definition.files) {
+                files.push_back({{"path", file.path}, {"contents", file.contents}});
+            }
+            definition["files"] = std::move(files);
+        }
+        value["definition"] = std::move(definition);
+    }
+    value["endpoint"] = agent.endpoint;
     value["created_at"] = agent.created_at;
     value["updated_at"] = agent.updated_at;
     return value;
@@ -67,7 +235,78 @@ std::string string_field(const nlohmann::json& value, const char* key) {
     return std::string();
 }
 
+bool bool_field(const nlohmann::json& value, const char* key, bool fallback) {
+    const auto found = value.find(key);
+    if (found != value.end() && found->is_boolean()) return found->get<bool>();
+    return fallback;
+}
+
 }  // namespace
+
+std::optional<std::string> apply_agent_fields(const nlohmann::json& value, AgentRecord& agent) {
+    const auto text = [&value](const char* key, std::string& field) {
+        if (value.contains(key) && value.at(key).is_string()) {
+            field = value.at(key).get<std::string>();
+        }
+    };
+    text("kind", agent.kind);
+    text("runtime", agent.runtime);
+    text("purpose", agent.purpose);
+    text("manifesto", agent.manifesto);
+    text("goal", agent.goal);
+    text("trigger", agent.trigger);
+    text("status", agent.status);
+    text("model_name", agent.model_name);
+    text("model_version", agent.model_version);
+    text("endpoint", agent.endpoint);
+    agent.chat_capable = bool_field(value, "chat_capable", agent.chat_capable);
+    agent.is_default = bool_field(value, "is_default", agent.is_default);
+    if (const auto area = value.find("work_area"); area != value.end()) {
+        if (!area->is_object()) return std::string("agent.work_area must be an object");
+        agent.work_area.kind = string_field(*area, "kind");
+        if (agent.work_area.kind.empty()) agent.work_area.kind = "workspace";
+        agent.work_area.detail = string_field(*area, "detail");
+    }
+    if (const auto skills = value.find("skills"); skills != value.end()) {
+        if (!skills->is_array()) return std::string("agent.skills must be an array of strings");
+        agent.skills.clear();
+        for (const nlohmann::json& skill : *skills) {
+            if (!skill.is_string()) return std::string("agent.skills entries must be strings");
+            agent.skills.push_back(skill.get<std::string>());
+        }
+    }
+    if (const auto pipelines = value.find("pipelines"); pipelines != value.end()) {
+        if (!pipelines->is_array()) return std::string("agent.pipelines must be an array");
+        agent.pipelines.clear();
+        for (const nlohmann::json& entry : *pipelines) {
+            if (!entry.is_object()) return std::string("agent.pipelines entries must be objects");
+            agent.pipelines.push_back(PipelineGrant{string_field(entry, "project"),
+                                                    string_field(entry, "graph"),
+                                                    string_field(entry, "version")});
+        }
+    }
+    if (const auto definition = value.find("definition"); definition != value.end()) {
+        if (!definition->is_object()) return std::string("agent.definition must be an object");
+        AgentDefinition parsed;
+        parsed.source = string_field(*definition, "source");
+        parsed.instructions = string_field(*definition, "instructions");
+        parsed.repository_id = string_field(*definition, "repository_id");
+        parsed.revision = string_field(*definition, "revision");
+        parsed.entrypoint = string_field(*definition, "entrypoint");
+        if (const auto files = definition->find("files"); files != definition->end()) {
+            if (!files->is_array()) return std::string("agent.definition.files must be an array");
+            for (const nlohmann::json& file : *files) {
+                if (!file.is_object()) {
+                    return std::string("agent.definition.files entries must be objects");
+                }
+                parsed.files.push_back(
+                    DefinitionFile{string_field(file, "path"), string_field(file, "contents")});
+            }
+        }
+        agent.definition = std::move(parsed);
+    }
+    return std::nullopt;
+}
 
 std::optional<AgentRecord> agent_from_json(const nlohmann::json& value, std::string* error) {
     const auto fail = [error](const std::string& reason) -> std::optional<AgentRecord> {
@@ -121,6 +360,10 @@ std::optional<AgentRecord> agent_from_json(const nlohmann::json& value, std::str
             if (!version) return fail("agent.versions: " + reason);
             agent.versions.push_back(*std::move(version));
         }
+    }
+
+    if (std::optional<std::string> reason = apply_agent_fields(value, agent)) {
+        return fail(*reason);
     }
 
     if (agent.id.empty()) return fail("agent.id must be a non-empty string");

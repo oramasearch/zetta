@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "zetta/ddf/data_frame.hpp"
@@ -15,7 +16,7 @@
 
 // The **real** per-step executor for the UC-1 churn pipeline (#396) — the slice
 // that replaces DefaultStepExecutor's logical-ref placeholders with actual
-// distributed accelerated compute, behind the same StepExecutor seam and WITHOUT
+// distributed accelerated compute, behind the same StepExecutor interface and WITHOUT
 // touching the orchestrator (GraphExecutor's walk is unchanged).
 //
 // DefaultStepExecutor (executor.hpp) derives a schema-valid Run from the graph's
@@ -35,13 +36,13 @@
 //   act     -> retention playbook (host-side join of the at-risk list with each
 //                                 entity's dominant SHAP driver — who to contact + why)
 //
-// **Stateful across steps, by design.** The StepExecutor seam is a pure function
+// **Stateful across steps, by design.** The StepExecutor interface is a pure function
 // of one step (`run_step(const ir::Node&) const`), but real churn compute threads
 // artifacts down the pipeline: the feature table feeds training, the trained model
 // feeds scoring + explanation, and the ranked list + drivers feed the playbook. So
 // this executor carries that pipeline state in a pImpl, mutated through a unique_ptr
 // member — `run_step` stays `const` and the orchestrator is untouched. It also holds
-// the dependencies the seam can't supply (the Node, a started JobCoordinator, a
+// the dependencies the interface can't supply (the Node, a started JobCoordinator, a
 // ComputeDevice, the input shards). Because it accumulates state, one instance drives
 // exactly one execution; construct a fresh one per run.
 //
@@ -79,6 +80,7 @@ struct RetentionAction {
     double risk = 0.0;             // its calibrated churn risk (predict_proba)
     std::string dominant_driver;   // the feature with the largest |phi| for this entity
     double dominant_value = 0.0;   // its signed phi (positive = pushed toward churn)
+    std::vector<std::pair<std::string, double>> reason_codes;
 };
 
 // Everything the churn pipeline needs beyond the ExecutionGraph: this node's two
@@ -109,6 +111,21 @@ struct ChurnPipelineConfig {
     // (`event_features` empty) and the events frame is empty. Setting this with a
     // windowed spec is a configuration error the featurize step reports.
     std::string accounts_table;
+    // That table as the caller named it (`database.table`), and what resolving it decided.
+    // A table-backed run's lineage names this dataset. Repeated connect steps explicitly
+    // report that they reuse the already-loaded source.
+    std::string accounts_dataset;
+    std::vector<std::string> dataset_notes;
+    std::shared_ptr<const data::EntityKeyMapping> entity_keys;
+
+    // Optional S-1 rolling examples. Training reads this source while scoring
+    // continues to read `accounts_table`, keeping future outcomes out of the
+    // current feature snapshot.
+    const zetta::storage::StorageEngine* training_accounts_store = nullptr;
+    ddf::DataFrameSchema training_accounts_schema;
+    ddf::FeaturizeSpec training_featurize;
+    std::string training_dataset;
+    bool score_active_only = false;
 
     ddf::FeaturizeSpec featurize;        // the point-in-time (leakage-free) feature graph
     ml::GbdtParams params;               // the GBDT hyperparameters
@@ -117,11 +134,16 @@ struct ChurnPipelineConfig {
     std::string entity_column = "entity";   // the integer entity key (in both shards)
     std::size_t top_k = 0;                   // at-risk list / playbook cap (0 = all)
     std::string model_name = "churn_model";  // the registered Model's human name
+    std::string result_database = "churn_results";
+    std::string result_table_prefix = "at_risk_";
+    std::string result_entity_column = "account";
+    std::string result_score_column = "risk";
 
     // Optional refs stamped on every ComputeJob this executor creates (observability
     // in system.jobs); the Run is labelled separately via GraphExecutor.
     std::string project;
     std::string graph;
+    ml::TrainProgressCallback training_progress;
 };
 
 // The real churn StepExecutor. Construct with the node, a started JobCoordinator, a
@@ -142,6 +164,7 @@ public:
     // the artifacts it materialized (the Run's outputs) + lineage sources, or ok=false
     // with a reason on a compute failure (the orchestrator then fail-fasts the run).
     zetta::pipeline::StepOutcome run_step(const ir::Node& step) const override;
+    void bind_run(Node& node, const std::string& run_id) override;
 
     // --- Produced artifacts (populated as the matching step runs) ---------------
 

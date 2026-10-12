@@ -27,8 +27,8 @@ the token appears on no read surface, and a query comes back **typed**
 4. **Sweeps every read surface on every node** for the token:
    `SavedConnection::to_redacted_json()`, `ConnectorConfig::to_json()`, the
    `system.connections` SQL view, and the `list_connections` capability. It also
-   asserts the *one* serialization that must carry it — the store's own
-   `to_storage_json()` — still does.
+   asserts each node still **opens** the sealed credential (#1230) — the loopback
+   cluster shares one root secret, as `main` passes every member the join token.
 5. **Runs a read-only query** through a canned Snowflake SQL API v2 response
    carrying a text, a number, a boolean and two nulls.
 
@@ -66,8 +66,8 @@ ctest --test-dir build -R 'Testkit.ConnectorCasesRunOnARealCluster' --output-on-
   accepted.
 - **The credential is on no read surface.** On *every* node the token is absent
   from `to_redacted_json()`, `ConnectorConfig::to_json()`, the `system.connections`
-  row, and the `list_connections` capability output — while
-  `to_storage_json()` still carries it (the one place it lives).
+  row, and the `list_connections` capability output — while `find_connection`
+  still opens the sealed credential on every node (#1230).
 - **Cells come back typed.** `text` → string, `fixed` → number (`1200`, not
   `"1200"`), `boolean` → bool, `NULL` → JSON null — so a landed dataset is
   featurizable rather than a table of strings.

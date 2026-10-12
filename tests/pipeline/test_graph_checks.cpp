@@ -9,14 +9,27 @@
 #include "zetta/agent/end_state.hpp"
 #include "zetta/pipeline/graph_checks.hpp"
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/ml/methodology.hpp"
 #include "zetta/pipeline/validation.hpp"
 
 using zetta::pipeline::CheckResult;
 using zetta::pipeline::CheckStatus;
+using zetta::pipeline::CausalUpliftCheck;
+using zetta::pipeline::BanditPolicyCheck;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
+using zetta::pipeline::GraphEdgeTimeCheck;
+using zetta::pipeline::LanguageGroundingCheck;
+using zetta::pipeline::LanguageTrainingAccessCheck;
+using zetta::pipeline::EnsembleOutOfFoldCheck;
 using zetta::pipeline::SchemaTypeCheck;
+using zetta::pipeline::SnapshotLineageCheck;
+using zetta::pipeline::SurvivalCensoringCheck;
+using zetta::pipeline::SpeechConsentCheck;
+using zetta::pipeline::SpeechLocalAudioCheck;
+using zetta::pipeline::SpeechPiiRedactionCheck;
 using zetta::pipeline::ValidationReport;
+using zetta::pipeline::VisionSourceSplitCheck;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
@@ -31,6 +44,8 @@ ExecutionGraph clean_graph() {
     ExecutionGraph graph;
     graph.add_node(StepKind::Connect, "load_orders",
                    json{{"source", "postgres"},
+                        {"source_kind", "snapshot"},
+                        {"snapshot_as_of", "2024-01-01"},
                         {"schema", {{"customer_id", "int"},
                                     {"revenue", "float"},
                                     {"signup_date", "timestamp"}}}},
@@ -39,6 +54,9 @@ ExecutionGraph clean_graph() {
     graph.add_node(
         StepKind::Model, "churn_model",
         json{{"as_of", "2024-01-01"},
+             {"feature_window_end", "2024-01-01"},
+             {"label_window_start", "2024-01-08"},
+             {"blackout_gap_seconds", 604800},
              {"label", "churned"},
              {"requires", {{"customer_id", "int"}, {"revenue", "float"}}},
              {"features",
@@ -51,6 +69,53 @@ ExecutionGraph clean_graph() {
     return graph;
 }
 
+ExecutionGraph entity_resolution_graph() {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "resolve entities",
+        json{{"model_kind", "entity_resolution"},
+             {"blocking_keys", {"email", "phone", "name"}},
+             {"match_threshold", 0.82},
+             {"review_threshold", 0.55},
+             {"conflict_policy", "reject_verified_identifier_conflicts"}},
+        "resolve");
+    return graph;
+}
+
+ExecutionGraph uplift_graph(json overrides = json::object()) {
+    json attributes = {
+        {"model_kind", "uplift"},
+        {"treatment", "treated"},
+        {"outcome", "converted"},
+        {"label", "converted"},
+        {"treatment_time", "2024-01-15"},
+        {"as_of", "2024-01-15"},
+        {"overlap_lower", 0.05},
+        {"overlap_upper", 0.95},
+        {"features",
+         json::array({json{{"name", "tenure"},
+                            {"data_as_of", "2024-01-14"}}})}};
+    for (auto& [key, value] : overrides.items()) {
+        attributes[key] = value;
+    }
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "uplift", std::move(attributes),
+                   "uplift-model");
+    return graph;
+}
+
+ExecutionGraph rank_graph() {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "rank leads",
+        json{{"model_kind", "rank"},
+             {"group_column", "rep_id"},
+             {"split_strategy", "group"},
+             {"feature_availability", "ranking_time"}},
+        "rank-model");
+    return graph;
+}
+
 }  // namespace
 
 // ---- schema_type ------------------------------------------------------------
@@ -60,6 +125,15 @@ TEST(SchemaTypeCheck, CleanGraphPasses) {
     EXPECT_EQ(check.name(), "schema_type");
     const CheckResult result = check.evaluate(clean_graph());
     EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(SchemaTypeCheck, EpochAsOfAnnotationPasses) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+                   json{{"as_of", 1711929600.0}}, "n-model");
+
+    const CheckResult result = SchemaTypeCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::NotApplicable) << result.reason;
 }
 
 TEST(SchemaTypeCheck, MissingFieldFailsWithReason) {
@@ -114,7 +188,7 @@ TEST(SchemaTypeCheck, GraphWithoutRequirementsPasses) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Connect, "load_orders");  // no annotations at all
     const CheckResult result = SchemaTypeCheck{}.evaluate(graph);
-    EXPECT_EQ(result.status, CheckStatus::Pass);
+    EXPECT_EQ(result.status, CheckStatus::NotApplicable);
 }
 
 TEST(SchemaTypeCheck, MalformedRequiresAnnotationFails) {
@@ -139,6 +213,43 @@ TEST(DataLeakageCheck, CleanGraphPasses) {
     EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
 }
 
+TEST(SnapshotLineageCheck, CleanGraphPasses) {
+    const CheckResult result = SnapshotLineageCheck{}.evaluate(clean_graph());
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(SnapshotLineageCheck, RefusesFeatureLineageFromALiveTable) {
+    ExecutionGraph graph = clean_graph();
+    graph.find_node("n-load")->attributes["source_kind"] = "live";
+    graph.find_node("n-load")->attributes.erase("snapshot_as_of");
+
+    const CheckResult result = SnapshotLineageCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("live-table"), std::string::npos)
+        << result.reason;
+}
+
+TEST(SnapshotLineageCheck, RefusesSnapshotAfterPredictionTime) {
+    ExecutionGraph graph = clean_graph();
+    graph.find_node("n-load")->attributes["snapshot_as_of"] = "2024-01-02";
+
+    const CheckResult result = SnapshotLineageCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("after prediction"), std::string::npos)
+        << result.reason;
+}
+
+TEST(SnapshotLineageCheck, RefusesLabelWindowInsideBlackoutGap) {
+    ExecutionGraph graph = clean_graph();
+    graph.find_node("n-model")->attributes["label_window_start"] =
+        "2024-01-07";
+
+    const CheckResult result = SnapshotLineageCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("blackout gap"), std::string::npos)
+        << result.reason;
+}
+
 TEST(DataLeakageCheck, FeatureAfterCutoffFailsWithReason) {
     ExecutionGraph graph;
     graph.add_node(
@@ -155,6 +266,47 @@ TEST(DataLeakageCheck, FeatureAfterCutoffFailsWithReason) {
         << result.reason;
     EXPECT_NE(result.reason.find("spend_after_cutoff"), std::string::npos)
         << result.reason;
+}
+
+TEST(SurvivalGraphCheck, RefusesMissingCensoringGuarantees) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "survival",
+                   json{{"model_kind", "survival"},
+                        {"duration_column", "duration"},
+                        {"event_indicator", "event"}},
+                   "survival");
+
+    const CheckResult result = SurvivalCensoringCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("censoring_handled"), std::string::npos);
+}
+
+TEST(SurvivalGraphCheck, RefusesFeatureAfterCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "survival",
+        json{{"model_kind", "survival"},
+             {"as_of", "2024-01-01"},
+             {"features", json::array({json{{"name", "future_usage"},
+                                              {"data_as_of", "2024-02-01"}}})}},
+        "survival");
+
+    EXPECT_EQ(DataLeakageCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(SurvivalGraphCheck, AcceptsRequiredCensoringGuarantees) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "survival",
+                   json{{"model_kind", "survival"},
+                        {"duration_column", "duration"},
+                        {"event_indicator", "event"},
+                        {"censoring_handled", true},
+                        {"stop_after_event", true},
+                        {"point_in_time_features", true}},
+                   "survival");
+
+    EXPECT_EQ(SurvivalCensoringCheck{}.evaluate(graph).status,
+              CheckStatus::Pass);
 }
 
 TEST(DataLeakageCheck, FeatureAtCutoffPasses) {
@@ -239,7 +391,7 @@ TEST(DataLeakageCheck, FeatureFlaggedLeaksTargetFails) {
 TEST(DataLeakageCheck, GraphWithoutFeaturesPasses) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Model, "model");  // no leakage annotations
-    EXPECT_EQ(DataLeakageCheck{}.evaluate(graph).status, CheckStatus::Pass);
+    EXPECT_EQ(DataLeakageCheck{}.evaluate(graph).status, CheckStatus::NotApplicable);
 }
 
 TEST(DataLeakageCheck, MalformedFeatureAnnotationFails) {
@@ -272,15 +424,635 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
         << result.reason;
 }
 
+TEST(EntityResolutionGraphCheck, RefusesMissingBlockingKeys) {
+    ExecutionGraph graph = entity_resolution_graph();
+    graph.find_node("resolve")->attributes.erase("blocking_keys");
+
+    const CheckResult result =
+        zetta::pipeline::EntityResolutionGraphCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("blocking_keys"), std::string::npos);
+}
+
+TEST(EntityResolutionGraphCheck, RefusesUnstatedThresholds) {
+    ExecutionGraph graph = entity_resolution_graph();
+    graph.find_node("resolve")->attributes.erase("review_threshold");
+
+    const CheckResult result =
+        zetta::pipeline::EntityResolutionGraphCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("threshold"), std::string::npos);
+}
+
+TEST(EntityResolutionGraphCheck, RefusesUnsafeConflictPolicy) {
+    ExecutionGraph graph = entity_resolution_graph();
+    graph.find_node("resolve")->attributes["conflict_policy"] = "allow";
+
+    const CheckResult result =
+        zetta::pipeline::EntityResolutionGraphCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("verified identifier"), std::string::npos);
+}
+
+TEST(EntityResolutionGraphCheck, AcceptsTheM2Profile) {
+    const CheckResult result =
+        zetta::pipeline::EntityResolutionGraphCheck{}.evaluate(
+            entity_resolution_graph());
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(CausalUpliftGraphCheck, CleanGraphPasses) {
+    const CheckResult result = CausalUpliftCheck{}.evaluate(uplift_graph());
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(CausalUpliftGraphCheck, MissingTreatmentIsRefused) {
+    ExecutionGraph graph = uplift_graph();
+    graph.find_node("uplift-model")->attributes.erase("treatment");
+    const CheckResult result = CausalUpliftCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("treatment and outcome"), std::string::npos);
+}
+
+TEST(CausalUpliftGraphCheck, PostTreatmentFeatureIsRefused) {
+    const CheckResult result = CausalUpliftCheck{}.evaluate(uplift_graph(
+        {{"features", json::array({json{{"name", "after_contact"},
+                                        {"data_as_of", "2024-01-16"}}})}}));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("after treatment"), std::string::npos);
+}
+
+TEST(CausalUpliftGraphCheck, OutcomeNamedFeatureIsRefused) {
+    const CheckResult result = CausalUpliftCheck{}.evaluate(uplift_graph(
+        {{"features", json::array({json{{"name", "converted_30d"}}})}}));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("named like outcome"), std::string::npos);
+}
+
+TEST(CausalUpliftGraphCheck, UnsafeOverlapBoundsAreRefused) {
+    const CheckResult result =
+        CausalUpliftCheck{}.evaluate(uplift_graph({{"overlap_lower", 0.01}}));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("overlap"), std::string::npos);
+}
+TEST(GraphCheck, EdgeTimeFilterPassesWhenItMatchesTheModelCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "edges", json::object(), "source");
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("source", "filter");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Pass);
+}
+
+TEST(GraphCheck, RefusesAGraphWithoutAPredictionCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"}, {"time_column", "time"}},
+                   "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesADisabledEdgeTimeFilter) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", false}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesAFilterUsingAnotherCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 11.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesADisconnectedEdgeTimeFilter) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "unrelated filter",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(VisionSourceSplitCheck, AcceptsANamedSourceDisjointHoldout) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "vision"},
+                    {"source_disjoint", true},
+                    {"source_column", "camera_id"}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(VisionSourceSplitCheck, RefusesFrameLevelSplits) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "vision"},
+                    {"source_disjoint", false},
+                    {"source_column", "camera_id"}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("frames"), std::string::npos) << result.reason;
+}
+
+TEST(VisionSourceSplitCheck, RefusesAnUnnamedSourceGroup) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "computer_vision"},
+                    {"source_disjoint", true}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("source_column"), std::string::npos)
+        << result.reason;
+}
+
+TEST(LanguageGroundingGraphCheck, RefusesAnswersWithoutCitationPolicy) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    const CheckResult result = LanguageGroundingCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("citations"), std::string::npos);
+}
+
+TEST(LanguageGroundingGraphCheck, RefusesAnswersWithoutEmptyRetrievalPolicy) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"citations_required", true}},
+                   "language");
+    const CheckResult result = LanguageGroundingCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("refuse"), std::string::npos);
+}
+
+TEST(LanguageTrainingAccessGraphCheck, RefusesUncheckedTrainingText) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "text",
+                   {{"caller_read_required", true}}, "text");
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"citations_required", true},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    graph.add_edge("text", "language");
+    const CheckResult result = LanguageTrainingAccessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("authorize"), std::string::npos);
+}
+
+TEST(LanguageTrainingAccessGraphCheck, RefusesUnguardedTextSource) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "text", {}, "text");
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"governance_check", true},
+                    {"citations_required", true},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    graph.add_edge("text", "language");
+    const CheckResult result = LanguageTrainingAccessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("caller-read"), std::string::npos);
+}
+// ---- bandit_policy ----------------------------------------------------------
+
+TEST(BanditPolicyCheck, RefusesMissingExplorationFloor) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"default_arm_cap", 1.0}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("exploration_floor"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, RefusesAnArmCapBelowTheExplorationFloor) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"control", "guardrail"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 1.0},
+                        {"arm_caps", {{"guardrail", 0.05}}}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("guardrail"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, RefusesCapsThatCannotCarryTotalProbability) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"a", "b"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 0.4},
+                        {"arm_caps", json::object()}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("total probability"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"control", "best", "guardrail"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 0.8},
+                        {"arm_caps", {{"guardrail", 0.2}}}},
+                   "policy");
+    EXPECT_EQ(BanditPolicyCheck{}.evaluate(graph).status, CheckStatus::Pass);
+}
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 108u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "snapshot_lineage");
+    EXPECT_EQ(gate.checks()[4]->name(), "s1_point_in_time");
+    EXPECT_EQ(gate.checks()[5]->name(), "s1_label_window");
+    EXPECT_EQ(gate.checks()[6]->name(), "s1_temporal_validation");
+    EXPECT_EQ(gate.checks()[7]->name(), "s1_group_split");
+    EXPECT_EQ(gate.checks()[8]->name(), "s1_censoring");
+    EXPECT_EQ(gate.checks()[9]->name(), "s1_calibration");
+    EXPECT_EQ(gate.checks()[10]->name(), "s1_entity_resolution");
+    EXPECT_EQ(gate.checks()[11]->name(), "s1_leakage_review");
+    EXPECT_EQ(gate.checks()[12]->name(), "s1_level_composition");
+    EXPECT_EQ(gate.checks()[13]->name(), "s2_point_in_time_conversion");
+    EXPECT_EQ(gate.checks()[14]->name(), "s2_post_qualification_leakage");
+    EXPECT_EQ(gate.checks()[15]->name(), "s2_capacity_routing");
+    EXPECT_EQ(gate.checks()[16]->name(), "s3_short_tenure_censoring");
+    EXPECT_EQ(gate.checks()[17]->name(), "s3_value_horizon");
+    EXPECT_EQ(gate.checks()[18]->name(), "s3_entity_accounting");
+    EXPECT_EQ(gate.checks()[19]->name(), "s4_regulatory_contact");
+    EXPECT_EQ(gate.checks()[20]->name(), "s4_vulnerable_customer");
+    EXPECT_EQ(gate.checks()[21]->name(), "s4_promise_to_pay_point_in_time");
+    EXPECT_EQ(gate.checks()[22]->name(), "s12_no_automated_denial");
+    EXPECT_EQ(gate.checks()[23]->name(), "s12_fairness_review");
+    EXPECT_EQ(gate.checks()[24]->name(), "s12_document_confidence");
+    EXPECT_EQ(gate.checks()[25]->name(), "s12_level_composition");
+    EXPECT_EQ(gate.checks()[26]->name(), "b3_abstention_threshold");
+    EXPECT_EQ(gate.checks()[27]->name(), "b3_customer_taxonomy");
+    EXPECT_EQ(gate.checks()[28]->name(), "b3_closure_approval");
+    EXPECT_EQ(gate.checks()[29]->name(), "b3_new_ticket_type_drift");
+    EXPECT_EQ(gate.checks()[30]->name(), "b3_level_composition");
+    EXPECT_EQ(gate.checks()[31]->name(), "b6_equity_review");
+    EXPECT_EQ(gate.checks()[32]->name(), "b6_assistive_only");
+    EXPECT_EQ(gate.checks()[33]->name(), "b6_privacy_posture");
+    EXPECT_EQ(gate.checks()[34]->name(), "b6_phi_minimization");
+    EXPECT_EQ(gate.checks()[35]->name(), "s5_rolling_origin");
+    EXPECT_EQ(gate.checks()[36]->name(), "s5_future_covariates");
+    EXPECT_EQ(gate.checks()[37]->name(), "s5_hierarchy_consistency");
+    EXPECT_EQ(gate.checks()[38]->name(), "s5_level_composition");
+    EXPECT_EQ(gate.checks()[39]->name(), "s6_service_budget_constraints");
+    EXPECT_EQ(gate.checks()[40]->name(), "s6_lead_time_realism");
+    EXPECT_EQ(gate.checks()[41]->name(), "s6_order_approval");
+    EXPECT_EQ(gate.checks()[42]->name(), "s6_level_composition");
+    EXPECT_EQ(gate.checks()[43]->name(), "b1_elasticity_identification");
+    EXPECT_EQ(gate.checks()[44]->name(), "b1_margin_authority_policy");
+    EXPECT_EQ(gate.checks()[45]->name(), "b1_price_leakage");
+    EXPECT_EQ(gate.checks()[46]->name(), "b1_level_composition");
+    EXPECT_EQ(gate.checks()[47]->name(), "s7_causal_humility");
+    EXPECT_EQ(gate.checks()[48]->name(), "s7_alert_budget");
+    EXPECT_EQ(gate.checks()[49]->name(), "s7_seasonality_baseline");
+    EXPECT_EQ(gate.checks()[50]->name(), "s8_censoring");
+    EXPECT_EQ(gate.checks()[51]->name(), "s8_sensor_drift");
+    EXPECT_EQ(gate.checks()[52]->name(), "s8_post_failure_maintenance_leakage");
+    EXPECT_EQ(gate.checks()[53]->name(), "s9_consent_suppression");
+    EXPECT_EQ(gate.checks()[54]->name(), "s9_contact_caps");
+    EXPECT_EQ(gate.checks()[55]->name(), "s9_uplift_over_propensity");
+    EXPECT_EQ(gate.checks()[56]->name(), "s10_label_delay");
+    EXPECT_EQ(gate.checks()[57]->name(), "s10_declined_selection_bias");
+    EXPECT_EQ(gate.checks()[58]->name(), "s10_request_time_feature_parity");
+    EXPECT_EQ(gate.checks()[59]->name(), "s10_level_composition");
+    EXPECT_EQ(gate.checks()[60]->name(), "s11_logged_propensity");
+    EXPECT_EQ(gate.checks()[61]->name(), "s11_contact_consent");
+    EXPECT_EQ(gate.checks()[62]->name(), "s11_propensity_interpretation");
+    EXPECT_EQ(gate.checks()[63]->name(), "b8_alert_budget");
+    EXPECT_EQ(gate.checks()[64]->name(), "b8_graduated_authority");
+    EXPECT_EQ(gate.checks()[65]->name(), "b8_kill_switch");
+    EXPECT_EQ(gate.checks()[66]->name(), "b8_containment_bounds");
+    EXPECT_EQ(gate.checks()[67]->name(), "b2_minimum_group_size");
+    EXPECT_EQ(gate.checks()[68]->name(), "b2_aggregate_only");
+    EXPECT_EQ(gate.checks()[69]->name(), "b2_fairness_review");
+    EXPECT_EQ(gate.checks()[70]->name(), "b2_approval");
+    EXPECT_EQ(gate.checks()[71]->name(), "b2_people_leader_output");
+    EXPECT_EQ(gate.checks()[72]->name(), "temporal_validation");
+    EXPECT_EQ(gate.checks()[73]->name(), "entity_resolution_profile");
+    EXPECT_EQ(gate.checks()[74]->name(), "segmentation");
+    EXPECT_EQ(gate.checks()[75]->name(), "forecast_correctness");
+    EXPECT_EQ(gate.checks()[76]->name(), "survival_censoring");
+    EXPECT_EQ(gate.checks()[77]->name(), "causal_uplift");
+    EXPECT_EQ(gate.checks()[78]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[79]->name(), "next_best_action_correctness");
+    EXPECT_EQ(gate.checks()[80]->name(), "rank_correctness");
+    EXPECT_EQ(gate.checks()[81]->name(), "language_grounding");
+    EXPECT_EQ(gate.checks()[82]->name(), "language_training_access");
+    EXPECT_EQ(gate.checks()[83]->name(), "document_review");
+    EXPECT_EQ(gate.checks()[84]->name(), "graph_edge_time");
+    EXPECT_EQ(gate.checks()[85]->name(), "vision_source_split");
+    EXPECT_EQ(gate.checks()[86]->name(), "speech_consent");
+    EXPECT_EQ(gate.checks()[87]->name(), "speech_pii_redaction");
+    EXPECT_EQ(gate.checks()[88]->name(), "speech_local_audio");
+    EXPECT_EQ(gate.checks()[89]->name(), "bandit_policy");
+    EXPECT_EQ(gate.checks()[90]->name(), "optimization_contract");
+    EXPECT_EQ(gate.checks()[91]->name(), "uncertainty_validation");
+    EXPECT_EQ(gate.checks()[92]->name(), "ensemble_out_of_fold");
+    EXPECT_EQ(gate.checks()[93]->name(), "label_efficiency_gold_isolation");
+    EXPECT_EQ(gate.checks()[94]->name(), "privacy_budget");
+    EXPECT_EQ(gate.checks()[95]->name(), "streaming_correctness");
+    EXPECT_EQ(gate.checks()[96]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[97]->name(), "b4_per_field_confidence");
+    EXPECT_EQ(gate.checks()[98]->name(), "b4_review_queue");
+    EXPECT_EQ(gate.checks()[99]->name(), "b4_validated_workflow");
+    EXPECT_EQ(gate.checks()[100]->name(), "b5_point_in_time_external_data");
+    EXPECT_EQ(gate.checks()[101]->name(), "b5_post_event_supplier_leakage");
+    EXPECT_EQ(gate.checks()[102]->name(), "b5_flag_evidence");
+    EXPECT_EQ(gate.checks()[103]->name(), "b7_adverse_action_reasons");
+    EXPECT_EQ(gate.checks()[104]->name(), "b7_validation_pipeline");
+    EXPECT_EQ(gate.checks()[105]->name(), "b7_fairness_review");
+    EXPECT_EQ(gate.checks()[106]->name(), "b7_human_authority");
+    EXPECT_EQ(gate.checks()[107]->name(), "b7_level_composition");
+}
+
+TEST(RankGraphCheck, CorrectRankGraphPasses) {
+    const CheckResult result =
+        zetta::pipeline::RankCorrectnessCheck{}.evaluate(rank_graph());
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(RankGraphCheck, MissingGroupColumnFails) {
+    ExecutionGraph graph = rank_graph();
+    graph.find_node("rank-model")->attributes.erase("group_column");
+    const CheckResult result =
+        zetta::pipeline::RankCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("group_column"), std::string::npos);
+}
+
+TEST(RankGraphCheck, RowSplitFails) {
+    ExecutionGraph graph = rank_graph();
+    graph.find_node("rank-model")->attributes["split_strategy"] = "row";
+    const CheckResult result =
+        zetta::pipeline::RankCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("split_strategy"), std::string::npos);
+}
+
+TEST(RankGraphCheck, FeaturesUnavailableAtRankingTimeFail) {
+    ExecutionGraph graph = rank_graph();
+    graph.find_node("rank-model")->attributes["feature_availability"] =
+        "after_outcome";
+    const CheckResult result =
+        zetta::pipeline::RankCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("ranking_time"), std::string::npos);
+}
+
+namespace {
+
+ExecutionGraph document_graph(nlohmann::json attributes) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "documents", {}, "documents");
+    graph.add_node(StepKind::Model, "extract", std::move(attributes),
+                   "extract");
+    graph.add_node(StepKind::Act, "review", json{{"route", "review_queue"}},
+                   "review");
+    graph.add_edge("documents", "extract");
+    graph.add_edge("extract", "review");
+    return graph;
+}
+
+json valid_document_attributes() {
+    return {{"model_kind", "document_extraction"},
+            {"confidence_required", true},
+            {"retain_evidence", true},
+            {"route_low_confidence_to_review", true},
+            {"review_threshold", 0.8}};
+}
+
+}  // namespace
+
+TEST(DocumentReviewCheck, RefusesFieldsWithoutConfidence) {
+    json attributes = valid_document_attributes();
+    attributes["confidence_required"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("confidence"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesMistypedConfidenceRuleWithoutThrowing) {
+    json attributes = valid_document_attributes();
+    attributes["confidence_required"] = "yes";
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("confidence"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesFieldsWithoutSourceEvidence) {
+    json attributes = valid_document_attributes();
+    attributes["retain_evidence"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("page and box"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesSilentLowConfidenceAcceptance) {
+    json attributes = valid_document_attributes();
+    attributes["route_low_confidence_to_review"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("routed to review"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesMissingReviewQueueStep) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "extract", valid_document_attributes(),
+                   "extract");
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("review_queue"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesInvalidReviewThreshold) {
+    json attributes = valid_document_attributes();
+    attributes["review_threshold"] = 1.1;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("between 0 and 1"), std::string::npos);
+}
+
+TEST(SpeechGraphCheck, RefusesMissingConsentContract) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"redact_pii", true},
+                        {"audio_local_only", true}});
+    EXPECT_EQ(SpeechConsentCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(SpeechGraphCheck, RefusesDisabledPiiRedaction) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"consent_required", true},
+                        {"consent_column", "consent"},
+                        {"redact_pii", false},
+                        {"audio_local_only", true}});
+    EXPECT_EQ(SpeechPiiRedactionCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
+}
+
+TEST(SpeechGraphCheck, RefusesNonLocalAudio) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"consent_required", true},
+                        {"consent_column", "consent"},
+                        {"redact_pii", true},
+                        {"audio_local_only", false}});
+    EXPECT_EQ(SpeechLocalAudioCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, RefusesWeakLabelsAsGold) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "label_efficiency"},
+             {"weak_labels_are_gold", true},
+             {"gold_split", "disjoint"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("never be treated as gold"),
+              std::string::npos);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, RefusesOverlappingGoldSplit) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "weak_supervision"},
+             {"weak_labels_are_gold", false},
+             {"gold_split", "overlapping"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("must be disjoint"), std::string::npos);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, AcceptsDisjointGoldSplit) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "active_learning"},
+             {"weak_labels_are_gold", false},
+             {"gold_split", "disjoint"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass);
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesAMissingBudget) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+                   {{"model_kind", "synthetic_private"}}, "model");
+    const CheckResult result =
+        zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("epsilon"), std::string::npos);
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesABudgetAboveItsMaximum) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+        {{"model_kind", "synthetic_private"},
+         {"epsilon", 9.0},
+         {"delta", 1e-6},
+         {"maximum_epsilon", 8.0},
+         {"maximum_delta", 1e-5},
+         {"noise", "gaussian"},
+         {"clip_min", 0.0},
+         {"clip_max", 1.0},
+         {"privacy_evaluation", true}}, "model");
+    EXPECT_EQ(zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesPublishingWithoutPrivacyEvaluation) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+        {{"model_kind", "synthetic_private"},
+         {"epsilon", 4.0},
+         {"delta", 1e-6},
+         {"maximum_epsilon", 8.0},
+         {"maximum_delta", 1e-5},
+         {"noise", "gaussian"},
+         {"clip_min", 0.0},
+         {"clip_max", 1.0},
+         {"privacy_evaluation", false}}, "model");
+    EXPECT_EQ(zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -335,20 +1107,21 @@ TEST(MethodologyCheck, AnImplementedMethodologyPasses) {
     EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
 }
 
-TEST(MethodologyCheck, AnUnimplementedMethodologyFailsAndSaysWhatToDo) {
+TEST(MethodologyCheck, AnUnknownModelKindFailsAndSaysWhatToDo) {
     zetta::ir::ExecutionGraph graph;
     const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
     const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
-                                      nlohmann::json{{"model_kind", "survival"}});
+                                      nlohmann::json{{"model_kind", "unregistered_model_kind"}});
     graph.add_edge(connect->id, model->id);
 
     const zetta::pipeline::CheckResult result =
         zetta::pipeline::MethodologyCheck{}.evaluate(graph);
     ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
-    EXPECT_NE(result.reason.find("survival"), std::string::npos)
+    EXPECT_NE(result.reason.find("unregistered_model_kind"),
+              std::string::npos)
         << "the reason must name the methodology that was refused";
-    EXPECT_NE(result.reason.find("gbdt"), std::string::npos)
-        << "the reason must name what IS implemented, so the author knows the way forward";
+    EXPECT_NE(result.reason.find("Implemented today:"), std::string::npos);
+    EXPECT_NE(result.reason.find("#984"), std::string::npos);
 }
 
 TEST(MethodologyCheck, AModelStepWithNoMethodologyIsSkippedNotFailed) {
@@ -371,13 +1144,232 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
-    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "forecast"), implemented.end())
-        << "M-4 ships: train_forecast composes lag features, a temporal split, the squared-error "
-           "objective and a rolling-origin backtest";
-    for (const char* unshipped : {"anomaly", "uplift", "survival", "cluster"}) {
-        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
-            << unshipped << " is not implemented; listing it here would make the check a lie";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "uplift"),
+              implemented.end()) << "M-6 causal uplift ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "survival"),
+              implemented.end())
+        << "M-5 survival ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"),
+              implemented.end()) << "M-12 graph ML ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "optimization"),
+              implemented.end())
+        << "M-16 optimization ships today";
+    for (const char* shipped : {"speech", "audio", "bandit"}) {
+        EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
+                  implemented.end()) << shipped;
     }
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bayesian"),
+              implemented.end())
+        << "M-17 Bayesian uncertainty ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "ensemble"),
+              implemented.end())
+        << "M-18 out-of-fold stacking ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(),
+                        "label_efficiency"),
+              implemented.end())
+        << "M-19 label efficiency ships today";
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        EXPECT_TRUE(methodology.runnable) << methodology.id;
+        for (const std::string& kind : methodology.model_kinds) {
+            EXPECT_NE(std::find(implemented.begin(), implemented.end(), kind),
+                      implemented.end()) << methodology.id << ": " << kind;
+        }
+    }
+    EXPECT_EQ(std::find(implemented.begin(), implemented.end(), "unregistered_model_kind"),
+              implemented.end());
+}
+
+namespace {
+
+zetta::ir::ExecutionGraph optimization_graph(nlohmann::json attributes) {
+  zetta::ir::ExecutionGraph graph;
+  graph.add_node(zetta::ir::StepKind::Connect, "scenario table", {}, "source");
+  graph.add_node(zetta::ir::StepKind::Model, "optimization",
+                 std::move(attributes), "model");
+  graph.add_edge("source", "model");
+  return graph;
+}
+
+// --- UncertaintyValidationCheck (#1056, M-17) -------------------------------
+
+zetta::ir::ExecutionGraph uncertainty_graph(nlohmann::json attributes) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
+                                      std::move(attributes));
+    graph.add_edge(connect->id, model->id);
+    return graph;
+}
+
+} // namespace
+
+TEST(OptimizationGraphCheck, CompleteContractPasses) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(OptimizationGraphCheck, PointForecastShapeIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("scenario or quantile"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, UnverifiedPlanIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("independently verify"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, MissingSolverStatusIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("solver status"), std::string::npos)
+      << result.reason;
+}
+
+TEST(UncertaintyValidationCheck, MeasuredCoverageAndAssumptionPass) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable within group"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass)
+        << result.reason;
+}
+
+TEST(UncertaintyValidationCheck, UnmeasuredCoverageFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"exchangeability_assumption", "rows are exchangeable within group"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("coverage_checked"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, MissingExchangeabilityStatementFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("exchangeability"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, OverlappingConformalCalibrationFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "split_conformal_regression"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable"},
+         {"calibration_disjoint", false}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("disjoint"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, UnknownUncertaintyShapeFailsForAnAlias) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "probabilistic"},
+         {"uncertainty_kind", "unmeasured_guess"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("uncertainty_kind"), std::string::npos);
+}
+
+// --- EnsembleOutOfFoldCheck (#1057) -----------------------------------------
+
+namespace {
+
+ExecutionGraph ensemble_graph(nlohmann::json attributes) {
+    ExecutionGraph graph;
+    const auto source = graph.add_node(StepKind::Connect, "source");
+    const auto model =
+        graph.add_node(StepKind::Model, "ensemble", std::move(attributes));
+    graph.add_edge(source->id, model->id);
+    return graph;
+}
+
+}  // namespace
+
+TEST(EnsembleOutOfFoldCheck, CorrectProfilePasses) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 5},
+         {"base_refit", "all_training"},
+         {"time_column", "observed_at"},
+         {"fold_strategy", "time_ordered"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(EnsembleOutOfFoldCheck, InSampleStackingFails) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "in_sample"},
+         {"folds", 5},
+         {"base_refit", "all_training"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("out_of_fold"), std::string::npos);
+}
+
+TEST(EnsembleOutOfFoldCheck, TooFewFoldsFail) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 1},
+         {"base_refit", "all_training"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("at least 2"), std::string::npos);
+}
+
+TEST(EnsembleOutOfFoldCheck, TimeDataWithContentFoldsFails) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 5},
+         {"base_refit", "all_training"},
+         {"time_column", "observed_at"},
+         {"fold_strategy", "entity_hash"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("time_ordered"), std::string::npos);
 }
 
 // --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------
@@ -432,13 +1424,66 @@ TEST(TemporalValidationCheck, AForecastThatCalibratesFails) {
 TEST(TemporalValidationCheck, ChurnMayStillCalibrate) {
     const auto graph = model_graph({{"model_kind", "gbdt"}, {"calibrated", true}});
     const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
-    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::NotApplicable) << result.reason;
 }
 
 TEST(TemporalValidationCheck, AModelWithNoMethodologyIsSkipped) {
     const auto graph = model_graph(nlohmann::json::object());
     EXPECT_EQ(zetta::pipeline::TemporalValidationCheck{}.evaluate(graph).status,
-              zetta::pipeline::CheckStatus::Pass);
+              zetta::pipeline::CheckStatus::NotApplicable);
+}
+
+TEST(StreamingGraphCheck, CorrectEventTimeAndPrequentialPolicyPasses) {
+    const auto graph = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", true}});
+    const auto result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass)
+        << result.reason;
+}
+
+TEST(StreamingGraphCheck, RefusesAStreamingModelWithoutEventTimeOrdering) {
+    const auto graph = model_graph(
+        {{"model_kind", "streaming"},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", true}});
+    const auto result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("event_time_ordered"), std::string::npos);
+}
+
+TEST(StreamingGraphCheck, RefusesEarlyLabelsAndTrainThenTestMetrics) {
+    const auto early_label = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "use_on_arrival"},
+         {"prequential", true}});
+    const auto early_result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(early_label);
+    EXPECT_EQ(early_result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(early_result.reason.find("label_time_policy"), std::string::npos);
+
+    const auto train_then_test = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", false}});
+    const auto metric_result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(train_then_test);
+    EXPECT_EQ(metric_result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(metric_result.reason.find("prequential"), std::string::npos);
 }
 
 // The two checks together are what the corpus's neighbouring-solution negative control needs:
@@ -449,7 +1494,7 @@ TEST(TemporalValidationCheck, TheChurnShapeAndTheForecastShapeAreNotInterchangea
         model_graph({{"model_kind", "forecast"}, {"temporal_validation", true}});
 
     const zetta::pipeline::TemporalValidationCheck temporal;
-    EXPECT_EQ(temporal.evaluate(churn_shape).status, zetta::pipeline::CheckStatus::Pass);
+    EXPECT_EQ(temporal.evaluate(churn_shape).status, zetta::pipeline::CheckStatus::NotApplicable);
     EXPECT_EQ(temporal.evaluate(forecast_shape).status, zetta::pipeline::CheckStatus::Pass);
 
     // Now swap the methodologies onto the wrong shapes. Both must be refused.
@@ -496,14 +1541,10 @@ TEST(MethodologyEndToEnd, TheChurnShapeSurvivesFactsToGateVerdict) {
         << "the one methodology that ships must still pass end to end";
 }
 
-// The honest state of M-4 today. Its primitives exist and are tested — temporal split, backtest,
-// lag features, the squared-error objective — but nothing wires them into a run, so `forecast` is
-// deliberately NOT in MethodologyCheck::implemented(). The gate therefore refuses it, loudly,
-// with a reason that names what is implemented.
-//
-// A loud refusal is the honest outcome and the whole point of B1b: the alternative is the agent
-// proposing a forecast the engine silently runs as a classifier.
-TEST(MethodologyEndToEnd, AForecastNowPassesBecauseItsRunPathExists) {
+// Availability and temporal checks accept M-4. The default gate additionally
+// validates its complete executable shape through ForecastGraphCheck.
+TEST(MethodologyEndToEnd,
+     AForecastHasARegistryRunPathAndStillRequiresTemporalValidation) {
     zetta::agent::EndState facts;
     facts.set("connect", true);
     facts.set("model", true);
@@ -512,21 +1553,17 @@ TEST(MethodologyEndToEnd, AForecastNowPassesBecauseItsRunPathExists) {
     facts.set("temporal_validation", true);
 
     const auto graph = zetta::agent::build_solution_graph(facts);
-    // This test asserted a REFUSAL for most of this epic, and that was correct: forecast had no
-    // run path, so passing it would have meant silently running the churn path under a
-    // forecasting name. `train_forecast` landing is what changed the expected answer.
-    EXPECT_FALSE(gate_over(graph).block_deploy)
-        << "forecast is implemented now - lag features, temporal split, squared-error objective, "
-           "rolling-origin backtest";
+    EXPECT_FALSE(gate_over(graph).block_deploy);
 
-    // And the profile is still enforced: the same methodology WITHOUT temporal validation, or
-    // WITH calibration, is refused.
+    // And the profile is still enforced: the same methodology WITHOUT temporal
+    // validation, or WITH calibration, is refused.
     zetta::agent::EndState uncalibrated_but_unvalidated;
     uncalibrated_but_unvalidated.set("connect", true);
     uncalibrated_but_unvalidated.set("model", true);
     uncalibrated_but_unvalidated.set("serve", true);
     uncalibrated_but_unvalidated.set("model_kind", std::string("forecast"));
-    EXPECT_TRUE(gate_over(zetta::agent::build_solution_graph(uncalibrated_but_unvalidated))
+    EXPECT_TRUE(gate_over(zetta::agent::build_solution_graph(
+                              uncalibrated_but_unvalidated))
                     .block_deploy)
         << "shipping the run path must not relax the correctness profile";
 }
@@ -564,7 +1601,7 @@ TEST(MethodologyEndToEnd, TheTwoShapesAreNotInterchangeable) {
 
 // Criterion 1: a forecasting ask produces the forecasting pipeline; a churn ask still produces
 // the calibrated one. Before this epic both produced byte-identical graphs.
-TEST(EpicAcceptance, ForecastAndChurnProduceDifferentAcceptedPipelines) {
+TEST(EpicAcceptance, ForecastAndChurnProduceDifferentVerdicts) {
     const auto build = [](const std::string& model_kind, bool calibrated, bool temporal) {
         zetta::agent::EndState facts;
         facts.set("connect", true);
@@ -581,7 +1618,8 @@ TEST(EpicAcceptance, ForecastAndChurnProduceDifferentAcceptedPipelines) {
     const auto forecast = build("forecast", false, true);
 
     EXPECT_FALSE(gate_over(churn).block_deploy) << "churn calibrates and is accepted";
-    EXPECT_FALSE(gate_over(forecast).block_deploy) << "forecast is backtested and is accepted";
+    EXPECT_FALSE(gate_over(forecast).block_deploy)
+        << "M-4 has a registry runner and validates temporally";
 
     // And they are not interchangeable — the neighbouring shape under the other name is refused.
     EXPECT_TRUE(gate_over(build("forecast", true, true)).block_deploy)
@@ -598,9 +1636,27 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         zetta::pipeline::MethodologyCheck::implemented();
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
-    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "forecast"), implemented.end());
-    for (const char* unshipped : {"anomaly", "uplift", "survival", "cluster", "graph"}) {
-        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
-            << unshipped << " has no run path; listing it would make the gate a lie";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "uplift"),
+              implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "survival"),
+              implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bandit"),
+              implemented.end());
+    for (const char* shipped : {"speech", "audio", "optimization"}) {
+        EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
+                  implemented.end()) << shipped;
     }
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(),
+                        "label_efficiency"),
+              implemented.end());
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        EXPECT_TRUE(methodology.runnable) << methodology.id;
+        for (const std::string& kind : methodology.model_kinds) {
+            EXPECT_NE(std::find(implemented.begin(), implemented.end(), kind),
+                      implemented.end()) << methodology.id << ": " << kind;
+        }
+    }
+    EXPECT_EQ(std::find(implemented.begin(), implemented.end(), "unregistered_model_kind"),
+              implemented.end());
 }

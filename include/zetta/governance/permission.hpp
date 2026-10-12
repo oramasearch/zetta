@@ -34,6 +34,8 @@ namespace zetta::governance {
 //   roles:manage   — create/edit/drop roles and assign them to users
 //   tokens:manage  — issue/revoke bearer tokens
 //   cluster:admin  — cluster-wide administration
+//   pubsub:publish / pubsub:subscribe / pubsub:send_wildcard / pubsub:create /
+//   pubsub:manage — pub/sub rights (#1029; docs/pubsub/governance.md)
 //
 // The mapping onto Capability{domain,action} (the enforcement atoms actually
 // checked today; sql:*/serving:* names reserve the finer data rights that the
@@ -48,6 +50,9 @@ namespace zetta::governance {
 //   roles:manage   -> api:manage_roles
 //   tokens:manage  -> api:manage_tokens
 //   cluster:admin  -> api:cluster_admin
+//   audit:purge    -> orchestration:purge_audit
+//   pubsub:publish -> data:pubsub_publish (subscribe, send_wildcard alike);
+//   pubsub:create / pubsub:manage -> orchestration:pubsub_create / pubsub_manage
 
 // The canonical permission names, in a stable vocabulary order. This is THE list
 // custom roles pick from and the order the system.roles view renders in.

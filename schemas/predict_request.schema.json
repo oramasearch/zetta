@@ -5,15 +5,29 @@
     "entities": {
       "description": "optional entity key per row (defaults to the row index); must match rows in length",
       "items": {
-        "type": "integer"
+        "oneOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "string"
+          }
+        ]
       },
       "type": "array"
     },
     "rows": {
-      "description": "the batch to score: one object per entity mapping feature name to its numeric value; every feature the model was trained on must be present (extra features are ignored)",
+      "description": "the batch to score: one object per entity mapping feature name to its numeric or boolean value; every feature the model was trained on must be present (extra features are ignored)",
       "items": {
         "additionalProperties": {
-          "type": "number"
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
         },
         "type": "object"
       },

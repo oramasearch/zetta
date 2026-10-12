@@ -108,6 +108,33 @@ pure-virtual seam pattern as `StepExecutor` / `StorageEngine`. No backend or
 SDL/CUDA type lives in zetta-core; new hardware is a new backend, consumers
 unchanged — see [compute-device.md](../compute/compute-device.md).
 
+## Pub/sub
+
+`zetta::pubsub` ([../pubsub/](../pubsub/README.md); design and decisions in
+[../plans/pubsub/](../plans/pubsub/README.md)) is the node's in-memory message
+broker, used first by agents and agent tasks. Its shape:
+
+```
+publish(identity, request) ─► envelope stamped (from, sender stack) ─► governance (Authorizer)
+    │ to / cc / bcc, wildcards resolved through a cache
+    ├─► topic:<name>  ─► TopicRingStack (a deque of ring buffers; spills to disk) ─► subscriptions
+    ├─► agent:<id>    ─► that agent's inbox (a topic of its own; kept 24 h after a disconnect)
+    ├─► table: / function: / model: / … ─► the kind's InboxDrain on the dispatcher ─► reply-to
+    └─► no match, loop, expired ─► topic:dead-letter        failures ─► topic:errors.<kind>.<name>
+```
+
+It sits beside the cluster, not on it: **events are node-local messages, never
+replicated state**, and in stage 1 topic definitions are saved on the node that
+created them (the cluster behaviour is stage 2, designed later). It is the one
+subsystem that uses locks and condition variables instead of `zetta::runtime`
+awaitables (decision D1/D5): each queue owns its mutex and condition variables,
+and subscribers are threads. The node owns it (`Node::pubsub()`), starts it in
+`start()` (reloading what the last run flushed or spilled), flushes it in
+`stop()` within a budget sized for Kubernetes' SIGTERM grace period, governs it
+through `pubsub:*` permissions and `Topic` grants, and shows it as
+`system.pubsub_topics` plus a span per operation. Its limits are detected from
+cgroups, Downward API variables, host memory and free disk, and logged.
+
 ## Module map
 
 ```
@@ -138,6 +165,10 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   query/ast.hpp           generic, dialect-neutral statement AST
   query/dialect.hpp       Dialect interface + ParseResult
   query/postgres.hpp      PostgresDialect (parser)
+  pubsub/                 in-memory pub/sub (docs/pubsub/): address.hpp, event.hpp,
+                          store.hpp (TopicRingStack), delivery.hpp, authorizer.hpp,
+                          dispatcher.hpp, resources.hpp, pubsub.hpp (the PubSub facade),
+                          node_integration.hpp (the node adapters)
   query/executor.hpp      Executor — runs the AST against a Node
   query/service.hpp       QueryService — parse + execute facade
   ir/step_kind.hpp        StepKind — connect→clean→model→index→serve→act taxonomy

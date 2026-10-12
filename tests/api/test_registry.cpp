@@ -4,30 +4,39 @@
 // assertions over a real Node.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <fstream>
+#include <map>
+#include <set>
+#include <stdexcept>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/solutions/roi_readout.hpp"
 #include "zetta/version.hpp"
 
 namespace {
@@ -58,16 +67,92 @@ struct RegistryFixture : ::testing::Test {
     }
 };
 
+// The input check never throws past Registry::call (#1231). A schema with
+// contentEncoding made the validator throw "content checker was not set" out of
+// the call; base64 is now checked, and a schema the validator cannot compile is
+// an invalid_input refusal.
+TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
+    const auto echo = [](const nlohmann::json& input, zetta::api::ApiContext&) {
+        return ApiResult::success(input);
+    };
+    Capability encoded{"echo_encoded", "Echo", "Echo base64. No side effects.",
+                       {{"type", "object"},
+                        {"properties",
+                         {{"bytes", {{"type", "string"}, {"contentEncoding", "base64"}}}}}},
+                       {{"type", "object"}}, CapabilityKind::Read,
+                       zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                       false, false, echo};
+    ASSERT_TRUE(registry.add(std::move(encoded)));
+    Capability broken{"echo_broken", "Echo", "Echo with a bad pattern. No side effects.",
+                      {{"type", "object"},
+                       {"properties", {{"text", {{"type", "string"}, {"pattern", "(unclosed"}}}}}},
+                      {{"type", "object"}}, CapabilityKind::Read,
+                      zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                      false, false, echo};
+    ASSERT_TRUE(registry.add(std::move(broken)));
+
+    ApiResult result;
+    ASSERT_NO_THROW(result = call("echo_encoded", {{"bytes", "aGVsbG8="}}));
+    EXPECT_TRUE(result.ok) << result.error.message;
+    ASSERT_NO_THROW(result = call("echo_encoded", {{"bytes", "not base64!"}}));
+    EXPECT_EQ(result.error.code, "invalid_input");
+    EXPECT_EQ(result.error.path, "/bytes");
+    ASSERT_NO_THROW(result = call("echo_broken", {{"text", "x"}}));
+    EXPECT_EQ(result.error.code, "invalid_input");
+    EXPECT_NE(result.error.message.find("could not be checked"), std::string::npos)
+        << result.error.message;
+}
+
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 76u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
-                                      // +agent_training_status +set_training_schedule (#941), +score (#948),
-                                      // +get_run_report (#958), +explain (#960 item 5),
-                                      // +list_source_tables (#994)
+    EXPECT_EQ(
+        registry.size(),
+        163u); // +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+              // (#886), +3 plan (Conflict D), +agent_training_status
+              // +set_training_schedule (#941), +score (#948), +get_run_report
+              // (#958), +explain (#960 item 5), +list_source_tables (#994),
+              // +upload_dataset (#1008), +delete_project (#1009),
+              // +list_methodologies (#1061)
+    for (const char* name :
+         {"create_collection", "put_record", "get_record", "delete_record", "list_records",
+          "create_metric", "record_metric", "query_metric"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
+    for (const char* name :
+         {"create_bucket", "list_objects", "object_usage", "object_barrier", "delete_object",
+          "acquire_object_lease", "renew_object_lease", "release_object_lease"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
+    for (const char* name :
+         {"get_topic", "update_topic", "browse_topic", "update_event", "delete_events"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
+    // A remote caller can put data on the node without a file on its disk
+    // (#1008).
+    EXPECT_TRUE(registry.find("upload_dataset"));
+    // A mistaken project can be removed, not only created (#1009).
+    EXPECT_TRUE(registry.find("delete_project"));
     // Finding a table must not require ingesting one: browsing a source's
     // catalog used to mean running create_dataset_from_query against
     // information_schema, which materialized a dataset to read a catalog (#994).
     EXPECT_TRUE(registry.find("list_source_tables"));
     EXPECT_TRUE(registry.find("server_info"));
+    EXPECT_TRUE(registry.find("node_memory"));
+    EXPECT_TRUE(registry.find("purge_audit"));
+    EXPECT_TRUE(registry.find("create_experiment"));
+    EXPECT_TRUE(registry.find("assign"));
+    EXPECT_TRUE(registry.find("get_experiment"));
+    for (const char* name : {"log_run_metrics", "log_run_params",
+                             "log_run_artifact", "get_run_metrics",
+                             "compare_runs"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
+    for (const char* name : {"validate_study", "create_study", "get_study",
+                             "list_studies",
+                             "list_trials", "stop_study", "stop_trial",
+                             "promote_trial", "delete_study",
+                             "get_study_analysis"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
     // A run's report is readable through the control surface, not only from the
     // node that ran it (#958).
     EXPECT_TRUE(registry.find("get_run_report"));
@@ -95,21 +180,87 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_TRUE(registry.find("testsuite_list"));
     // The #616 read-parity slice: typed detail reads + list_* siblings.
     for (const char* name :
-         {"get_project", "get_run", "get_model", "get_job", "get_index",
+         {"get_project", "get_run", "get_model", "get_monitor", "get_roi_readout", "get_job", "get_index",
           "get_dataset", "list_runs", "list_models", "list_jobs",
-          "list_indexes", "list_datasets"}) {
+          "list_indexes", "list_datasets", "analyze_dataset", "plan_features",
+          "list_methodologies", "list_solutions", "get_solution", "list_ledger",
+          "get_policy"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
+    const ApiResult methodologies =
+        call("list_methodologies", nlohmann::json::object());
+    ASSERT_TRUE(methodologies.ok);
+    ASSERT_EQ(methodologies.value.at("methodologies").size(), 21u);
+    EXPECT_EQ(methodologies.value.at("methodologies").front().at("id"), "M-1");
+    EXPECT_TRUE(methodologies.value.at("methodologies").front().at("runnable"));
+    EXPECT_TRUE(methodologies.value.at("methodologies").front().at("studies"));
+    EXPECT_FALSE(methodologies.value.at("methodologies").front()
+                     .at("study_search_space")
+                     .is_null());
+    EXPECT_FALSE(methodologies.value.at("methodologies").at(1).at("studies"));
+    EXPECT_FALSE(methodologies.value.at("methodologies").at(1)
+                     .at("study_reason")
+                     .get<std::string>()
+                     .empty());
+    const ApiResult solutions = call("list_solutions", nlohmann::json::object());
+    ASSERT_TRUE(solutions.ok);
+    ASSERT_EQ(solutions.value.at("solutions").size(), 20u);
+    EXPECT_EQ(solutions.value.at("solutions").front().at("id"), "S-1");
+    EXPECT_TRUE(solutions.value.at("solutions").front().at("runnable"));
+    EXPECT_FALSE(solutions.value.at("solutions").front().contains(
+        "capability_levels"));
+    ASSERT_EQ(solutions.value.at("solutions").front().at("levels").size(),
+              4u);
+    EXPECT_EQ(solutions.value.at("solutions").front().at("levels").at(0).at(
+                  "level"),
+              1);
+    EXPECT_TRUE(solutions.value.at("solutions").front().at("missing_components").empty());
+    const auto b4 = std::find_if(
+        solutions.value.at("solutions").begin(),
+        solutions.value.at("solutions").end(),
+        [](const auto& solution) { return solution.at("id") == "B-4"; });
+    ASSERT_NE(b4, solutions.value.at("solutions").end());
+    EXPECT_EQ(b4->at("status"), "catalogue");
+    EXPECT_EQ(b4->at("runnable"), true);
+    EXPECT_EQ(b4->at("minimal_template"), false);
+    EXPECT_TRUE(b4->at("missing_components").empty());
+    EXPECT_FALSE(b4->at("promotion_condition").get<std::string>().empty());
+    EXPECT_EQ(solutions.value.at("solutions").back().at("id"), "B-8");
+    EXPECT_EQ(solutions.value.at("solutions").back().at("status"),
+              "catalogue");
+    EXPECT_TRUE(solutions.value.at("solutions").back().at("runnable"));
+    EXPECT_FALSE(solutions.value.at("solutions")
+                     .back()
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
+    const ApiResult healthcare =
+        call("get_solution", {{"solution", "B-6"}});
+    ASSERT_TRUE(healthcare.ok);
+    EXPECT_TRUE(healthcare.value.at("solution").at("runnable"));
+    EXPECT_EQ(healthcare.value.at("solution").at("status"), "catalogue");
+    EXPECT_FALSE(healthcare.value.at("solution")
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
     // The #617 action-parity slice: the rest of the governed product loop,
     // each requiring orchestration:<name>; run/testsuite_run are kind:job.
     // ...and the governed serving slice (#648): exposure is an
     // orchestration:<name> action like every other mutation.
     for (const char* name :
-         {"capture_intent", "import_n8n", "compile_intent", "compile_n8n",
-          "compile_python", "approve_plan", "gate", "deploy", "run",
-          "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
+         {"create_project", "delete_project", "capture_intent", "import_n8n",
+          "compile_intent", "compile_n8n", "compile_python", "approve_plan", "gate", "deploy", "run",
+          "add_dataset", "snapshot", "testsuite_run", "expose_model", "unexpose_model",
           "expose_index", "unexpose_index", "create_workspace_profile",
-          "update_workspace_profile", "create_plan", "update_plan"}) {
+          "update_workspace_profile", "create_plan", "update_plan",
+          "record_action", "record_outcome", "create_policy", "update_policy",
+          "decide", "approve_decision", "create_experiment", "assign",
+          "log_run_metrics", "log_run_params", "log_run_artifact",
+          "create_study", "stop_study", "stop_trial", "promote_trial",
+          "delete_study", "delete_dataset", "delete_model", "delete_run", "delete_index",
+          "train_model", "retrain_model", "register_model", "move_model_to_project",
+          "create_solution", "run_solution",
+          "publish_report", "enqueue_action_task", "deliver_action_task", "execute_closed_loop"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,
@@ -118,8 +269,118 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
         EXPECT_EQ(entry->required_operation.action, name);
     }
     EXPECT_EQ(registry.find("run")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("run_solution")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("train_model")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("retrain_model")->kind, CapabilityKind::Job);
     EXPECT_EQ(registry.find("testsuite_run")->kind, CapabilityKind::Job);
     EXPECT_FALSE(registry.find("no_such_tool"));
+}
+
+TEST(RoiReadoutCapability, JourneyReturnsUnclaimableWithoutHoldoutOutcomes) {
+    zetta::test::TempDir directory;
+    zetta::cluster::ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::Node node{{directory.path().string(), false}, &replication};
+    ASSERT_TRUE(node.start());
+    const auto project = node.create_project("renewal-project");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    ASSERT_TRUE(graph.add_node(zetta::ir::StepKind::Connect, "source"));
+    ASSERT_TRUE(project->create_graph("production", std::move(graph)));
+
+    zetta::solutions::ExperimentValue experiment_value;
+    experiment_value.name = "renewal-experiment";
+    experiment_value.seed = 1108;
+    experiment_value.allocations = {
+        {"holdout", zetta::solutions::ExperimentTier::Holdout, 0.5},
+        {"treatment", zetta::solutions::ExperimentTier::Treatment, 0.5},
+    };
+    const auto experiment = node.experiment_manager().create(
+        std::move(experiment_value));
+    ASSERT_TRUE(experiment);
+
+    zetta::solutions::RoiReadoutSpec spec;
+    spec.solution = "renewal-risk";
+    spec.project = project->id();
+    spec.graph = "production";
+    spec.experiment = experiment->id;
+    spec.roi_model = {"renewed", 100.0, 500.0, "USD"};
+    zetta::solutions::RoiReadoutStore store{replication};
+    std::string error;
+    ASSERT_TRUE(store.configure(std::move(spec), "owner", &error)) << error;
+
+    Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    ApiContext context{node};
+    const ApiResult result = registry.call(
+        "get_roi_readout",
+        nlohmann::json{{"solution", "renewal-risk"}},
+        context);
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.at("solution"), "renewal-risk");
+    EXPECT_FALSE(result.value.at("incrementality").at("claimable").get<bool>());
+    EXPECT_NE(
+        result.value.at("incrementality").at("reason").get<std::string>().find(
+            "no holdout outcomes"),
+        std::string::npos);
+    node.stop();
+}
+
+TEST_F(RegistryFixture, ExperimentJourneyProtectsHoldoutAndReportsExemptions) {
+    const ApiResult created = call(
+        "create_experiment",
+        {{"name", "retention-control"},
+         {"seed", 1105},
+         {"allocations",
+          {{{"name", "holdout"},
+            {"tier", "holdout"},
+            {"fraction", 0.5}},
+           {{"name", "treatment"},
+            {"tier", "treatment"},
+            {"fraction", 0.5}}}}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string experiment = created.value.at("id").get<std::string>();
+
+    std::string holdout_entity;
+    for (std::uint64_t index = 0; index < 100; ++index) {
+        const std::string entity = "account-" + std::to_string(index);
+        const ApiResult decision = call(
+            "assign", {{"experiment", experiment},
+                       {"entity", entity},
+                       {"proposed_action", "send-offer"}});
+        ASSERT_TRUE(decision.ok) << decision.error.message;
+        if (decision.value.at("assignment").at("tier") == "holdout") {
+            EXPECT_FALSE(decision.value.at("allowed").get<bool>());
+            EXPECT_TRUE(decision.value.at("action").get<std::string>().empty());
+            holdout_entity = entity;
+            break;
+        }
+    }
+    ASSERT_FALSE(holdout_entity.empty());
+
+    const ApiResult exempted = call(
+        "assign", {{"experiment", experiment},
+                   {"entity", holdout_entity},
+                   {"proposed_action", "send-required-notice"},
+                   {"exempt", true},
+                   {"exemption_reason", "contract requirement"}});
+    ASSERT_TRUE(exempted.ok) << exempted.error.message;
+    EXPECT_TRUE(exempted.value.at("allowed").get<bool>());
+    EXPECT_EQ(exempted.value.at("action"), "send-required-notice");
+    EXPECT_EQ(exempted.value.at("assignment").at("exemption_actor"), "local");
+    EXPECT_EQ(exempted.value.at("assignment").at("exemption_reason"),
+              "contract requirement");
+
+    const ApiResult report =
+        call("get_experiment", {{"experiment", experiment}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("sizes").at("exemptions"), 1);
+    EXPECT_EQ(report.value.at("sizes").at("holdout_exemptions"), 1);
+    EXPECT_GT(report.value.at("erosion").at("exemption_rate").get<double>(),
+              0.0);
+    EXPECT_GT(
+        report.value.at("erosion").at("holdout_erosion_rate").get<double>(),
+        0.0);
+    EXPECT_FALSE(report.value.at("training_rows").empty());
 }
 
 TEST_F(RegistryFixture, RejectsDuplicateAndHandlerlessEntries) {
@@ -132,6 +393,220 @@ TEST_F(RegistryFixture, RejectsDuplicateAndHandlerlessEntries) {
     EXPECT_FALSE(registry.add(Capability{"handlerless", "", "", {}, {},
                                          CapabilityKind::Read,
                                          {}, false, false, nullptr}));
+}
+
+TEST_F(RegistryFixture, JourneyReconstructsScoreActionOutcomeChain) {
+    const nlohmann::json action_input = {
+        {"subject", "account-42"},
+        {"score_id", "score-42"},
+        {"score", 0.91},
+        {"decision", "retain"},
+        {"action", "no_contact"},
+        {"actor_kind", "human"},
+        {"model_version", "churn-v7"},
+        {"policy_version", "retention-policy-v3"},
+        {"agent_version", "agent-v5"},
+        {"cell", "holdout"},
+        {"cost", 0.0},
+        {"currency", "USD"},
+        {"score_at", "2026-09-28T10:00:00.000Z"},
+        {"decision_at", "2026-09-28T10:00:01.000Z"},
+        {"action_at", "2026-09-28T10:00:02.000Z"}};
+
+    const ApiResult action = call("record_action", action_input);
+    ASSERT_TRUE(action.ok) << action.error.message;
+    EXPECT_EQ(action.value.at("kind"), "action");
+    EXPECT_EQ(action.value.at("actor"), "local");
+    const std::string action_id = action.value.at("id").get<std::string>();
+    const nlohmann::json immutable_action = action.value;
+
+    const ApiResult outcome = call(
+        "record_outcome",
+        {{"action_id", action_id},
+         {"outcome", "renewed"},
+         {"value", 1200.0},
+         {"currency", "USD"},
+         {"source", "connector"},
+         {"occurred_at", "2026-10-28T10:00:00.000Z"}});
+    ASSERT_TRUE(outcome.ok) << outcome.error.message;
+    EXPECT_EQ(outcome.value.at("action_id"), action_id);
+
+    const ApiResult listed = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(listed.value.at("entries").size(), 2u);
+    bool found_action = false;
+    bool found_outcome = false;
+    for (const auto& entry : listed.value.at("entries")) {
+        if (entry.at("kind") == "action") {
+            found_action = entry == immutable_action;
+        }
+        if (entry.at("kind") == "outcome") {
+            found_outcome = entry.at("action_id") == action_id;
+        }
+    }
+    EXPECT_TRUE(found_action);
+    EXPECT_TRUE(found_outcome);
+
+    const ApiResult sql = call(
+        "sql", {{"statement", "SELECT * FROM system.ledger;"}});
+    ASSERT_TRUE(sql.ok) << sql.error.message;
+    ASSERT_EQ(sql.value.at("rows").size(), 2u);
+
+    const ApiResult orphan = call(
+        "record_outcome",
+        {{"action_id", "missing"},
+         {"outcome", "renewed"},
+         {"value", 1200.0},
+         {"currency", "USD"},
+         {"source", "manual"},
+         {"occurred_at", "2026-10-28T10:00:00.000Z"}});
+    EXPECT_FALSE(orphan.ok);
+    EXPECT_EQ(orphan.error.code, "not_found");
+    EXPECT_EQ(node.ledger_entry_count(), 2u);
+}
+
+// #1007: a handler that throws must still produce an answer. The exception used
+// to unwind through the owner-loop bridge — over REST the caller got no response
+// at all, and on a headless node the process terminated.
+TEST_F(RegistryFixture, AThrowingHandlerAnswersWithAnEngineError) {
+    ASSERT_TRUE(registry.add(Capability{
+        "throws_on_read", "", "", nlohmann::json{{"type", "object"}}, {},
+        CapabilityKind::Read,
+        zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+        false, false,
+        [](const nlohmann::json&, ApiContext&) -> ApiResult {
+            // The shape of the real failure: a typed read of a null column.
+            const nlohmann::json row = {{"rank", nullptr}};
+            return ApiResult::success({{"rank", row.at("rank").get<int>()}});
+        }}));
+    const ApiResult result = call("throws_on_read", nlohmann::json::object());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.code, "engine_error");
+    EXPECT_NE(result.error.message.find("throws_on_read"), std::string::npos)
+        << result.error.message;
+    // Still a traced call, like every other failure.
+    EXPECT_EQ(result.trace_id.size(), 32u);
+}
+
+// #1063: an offloadable capability (receive_events' long poll) runs on a pool
+// worker, but the call's authorization + audit gate touches owner-thread state —
+// the audit trail the tick reconciles. The gate used to run on the worker, and
+// the lake bus's constant long polls crashed its Zetta every few minutes (a
+// double free, or a bad access inside the tick's reconciliation). Workers
+// hammer an offloadable read while this thread ticks: every call completes,
+// every call is audited, and the handler itself still runs on the worker.
+TEST_F(RegistryFixture, OffloadedCallsRunTheirGateOnTheOwnerThread) {
+    node.tick();  // adopt this thread as the owner
+    ASSERT_TRUE(node.on_owner_thread());
+    const std::thread::id owner = std::this_thread::get_id();
+    std::atomic<int> handled_off_owner{0};
+    Capability poll{"offloaded_poll", "", "", nlohmann::json{{"type", "object"}}, {},
+                    CapabilityKind::Read,
+                    zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                    false, false,
+                    [&](const nlohmann::json&, ApiContext&) -> ApiResult {
+                        if (std::this_thread::get_id() != owner) ++handled_off_owner;
+                        return ApiResult::success({});
+                    }};
+    poll.offloadable = true;
+    ASSERT_TRUE(registry.add(std::move(poll)));
+
+    constexpr int kWorkers = 8;
+    constexpr int kCalls = 200;
+    const auto audit_before = node.audit_event_count();
+    std::atomic<int> done{0};
+    std::atomic<int> failed{0};
+    std::vector<std::thread> workers;
+    for (int w = 0; w < kWorkers; ++w) {
+        workers.emplace_back([&] {
+            for (int i = 0; i < kCalls; ++i) {
+                ApiContext context{node, nullptr, "", trace, &node.span_recorder()};
+                if (!registry.call("offloaded_poll", nlohmann::json::object(), context).ok) {
+                    ++failed;
+                }
+            }
+            ++done;
+        });
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (done.load() < kWorkers && std::chrono::steady_clock::now() < deadline) {
+        node.tick();  // the tick reconciles the audit trail while the gates queue
+    }
+    for (auto& worker : workers) worker.join();
+    ASSERT_EQ(done.load(), kWorkers);
+    EXPECT_EQ(failed.load(), 0);
+    EXPECT_EQ(handled_off_owner.load(), kWorkers * kCalls)
+        << "the handler itself stays on the worker";
+    EXPECT_EQ(node.audit_event_count(), audit_before + kWorkers * kCalls)
+        << "every offloaded call is audited, once";
+}
+
+// The consent path and the activity hook follow the gate on the calling thread,
+// so an offloadable entry may do neither (#1063).
+TEST_F(RegistryFixture, RefusesAnOffloadableEntryThatMutatesOrNeedsConsent) {
+    for (const bool mutates : {true, false}) {
+        Capability entry{mutates ? "offloaded_write" : "offloaded_consent", "", "",
+                         nlohmann::json{{"type", "object"}}, {}, CapabilityKind::Read,
+                         {}, mutates, !mutates,
+                         [](const nlohmann::json&, ApiContext&) {
+                             return ApiResult::success({});
+                         }};
+        entry.offloadable = true;
+        EXPECT_FALSE(registry.add(std::move(entry)));
+    }
+}
+
+TEST_F(RegistryFixture, RefusesAnInvalidAwaitableRead) {
+    Capability entry{"awaitable_action", "", "",
+                     nlohmann::json{{"type", "object"}}, {},
+                     CapabilityKind::Action, {}, false, false,
+                     [](const nlohmann::json&, ApiContext&) {
+                         return ApiResult::success({});
+                     }};
+    entry.awaitable_read = zetta::api::AwaitableRead{
+        [](const nlohmann::json&) {
+            return std::chrono::milliseconds(1);
+        },
+        [](const ApiResult&) { return true; }};
+    EXPECT_FALSE(registry.add(std::move(entry)));
+}
+
+// A retrying awaitable (#1005, acquire_object_lease) may be a blocking action
+// that mutates: each wake makes a whole governed call. It still may not be
+// offloadable or consent-gated.
+TEST_F(RegistryFixture, AcceptsARetryingAwaitableActionThatBlocks) {
+    const auto entry = [](std::string name) {
+        Capability capability{std::move(name), "", "", nlohmann::json{{"type", "object"}}, {},
+                              CapabilityKind::Action, {}, /*mutates=*/true, false,
+                              [](const nlohmann::json&, ApiContext&) {
+                                  return ApiResult::success({});
+                              }};
+        capability.blocks = true;
+        capability.awaitable_read = zetta::api::AwaitableRead{
+            [](const nlohmann::json&) { return std::chrono::milliseconds(1); },
+            [](const ApiResult&) { return true; },
+            [](const ApiResult&) { return std::chrono::milliseconds(1); }};
+        return capability;
+    };
+    EXPECT_TRUE(registry.add(entry("retrying_action")));
+    Capability without_retry = entry("waiting_action");
+    without_retry.awaitable_read->retry_within = nullptr;
+    EXPECT_FALSE(registry.add(std::move(without_retry)));
+    Capability consent = entry("consent_action");
+    consent.blocks = false;
+    consent.requires_consent = true;
+    EXPECT_FALSE(registry.add(std::move(consent)));
+}
+
+TEST_F(RegistryFixture, RefusesReadSummariesOnStateChangingCapabilities) {
+    Capability entry{"summarized_action", "", "",
+                     nlohmann::json{{"type", "object"}}, {},
+                     CapabilityKind::Action, {}, true, false,
+                     [](const nlohmann::json&, ApiContext&) {
+                         return ApiResult::success({});
+                     }};
+    entry.audit_policy = zetta::api::AuditPolicy::SummarizeAuthorizedReads;
+    EXPECT_FALSE(registry.add(std::move(entry)));
 }
 
 TEST_F(RegistryFixture, UnknownCapabilityFailsClearly) {
@@ -172,11 +647,63 @@ TEST_F(RegistryFixture, KeyWithoutCapabilityIsDeniedAndAudited) {
     EXPECT_FALSE(events.back()->value().allowed);
 }
 
+TEST_F(RegistryFixture, DeniedAuditPurgesAreRecordedOneByOne) {
+    auto principal = node.create_principal(
+        "audit reader", zetta::governance::PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    auto key = principal->create_key(zetta::governance::unrestricted_scope());
+    ASSERT_TRUE(key);
+    ApiContext context{node, nullptr, key->id()};
+    const auto before = node.audit_event_count();
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto result = registry.call(
+            "purge_audit",
+            {{"before", "2026-01-01T00:00:00Z"}}, context);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, "unauthorized");
+    }
+    ASSERT_EQ(node.audit_event_count(), before + 2);
+    const auto events = node.audit_events();
+    EXPECT_FALSE(events[events.size() - 2]->allowed());
+    EXPECT_FALSE(events.back()->allowed());
+    EXPECT_EQ(events[events.size() - 2]->target(), "api:purge_audit");
+    EXPECT_EQ(events.back()->target(), "api:purge_audit");
+}
+
 TEST_F(RegistryFixture, SqlReadsTheSystemViews) {
     auto result =
         call("sql", nlohmann::json{{"statement", "SELECT * FROM system.datasets;"}});
     ASSERT_TRUE(result.ok) << result.error.message;
     EXPECT_TRUE(result.value.contains("rows"));
+}
+
+TEST_F(RegistryFixture, SnapshotMaterializesAReplicatedPointInTimeTable) {
+    const auto database = node.create_database("features");
+    ASSERT_TRUE(database);
+    const auto events = database->create_table("events");
+    ASSERT_TRUE(events);
+    events->add_row({{"account", "a"}, {"observed_at", 1}, {"value", 10}});
+    events->add_row({{"account", "a"}, {"observed_at", 3}, {"value", 30}});
+
+    const ApiResult result = call(
+        "snapshot",
+        {{"database", "features"},
+         {"source_table", "events"},
+         {"target_table", "account_snapshots"},
+         {"entity_column", "account"},
+         {"time_column", "observed_at"},
+         {"as_of", 2}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.at("materialized_rows"), 1u);
+    EXPECT_EQ(result.value.at("future_rows_excluded"), 1u);
+    const auto snapshots = database->find_table("account_snapshots");
+    ASSERT_TRUE(snapshots);
+    ASSERT_EQ(snapshots->row_count(), 1u);
+    const auto row = snapshots->store().at(0);
+    ASSERT_TRUE(row) << row.error();
+    EXPECT_EQ(row->at("value"), 10);
+    EXPECT_EQ(row->at("entity_id"), "a");
+    EXPECT_EQ(row->at("as_of"), 2);
 }
 
 // Journey: seed a table + Search index, then `search` — the capability is a
@@ -285,6 +812,352 @@ TEST_F(RegistryFixture, JourneyCreateProjectThenReadBack) {
     EXPECT_EQ(activity_count.load(), 1);  // no hook on failure
 }
 
+// #1009 journey: delete a project and read the deletion back. Its inputs and
+// graphs go with it; its runs and models are kept, stay listed, and the answer
+// says how many were left behind.
+TEST_F(RegistryFixture, JourneyDeleteProjectThenReadBack) {
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "mistake"}}).ok);
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "keeper"}}).ok);
+    auto captured = call("capture_intent",
+                         nlohmann::json{{"project", "mistake"},
+                                        {"text", "predict which accounts churn"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    auto compiled = call("compile_intent",
+                         nlohmann::json{{"project", "mistake"},
+                                        {"input_id", captured.value.at("input_id")}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    const std::string project_id = node.find_project("mistake")->id();
+
+    // A finished run and a model labelled with the project.
+    auto run = node.create_run(project_id);
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    zetta::ml::ModelValue model_value;
+    model_value.kind = "classifier";
+    model_value.name = "mistake-model";
+    model_value.project = project_id;
+    auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+
+    auto deleted = call("delete_project", nlohmann::json{{"name", "mistake"}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
+    EXPECT_EQ(deleted.value.at("name"), "mistake");
+    EXPECT_EQ(deleted.value.at("id"), project_id);
+    EXPECT_EQ(deleted.value.at("removed").at("inputs"), 1u);
+    EXPECT_EQ(deleted.value.at("removed").at("graphs"), 1u);
+    EXPECT_EQ(deleted.value.at("kept").at("runs"), 1u);
+    EXPECT_EQ(deleted.value.at("kept").at("models"), 1u);
+
+    // Read back: gone from list_projects, the other project untouched...
+    auto listed = call("list_projects", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok);
+    const auto projects = listed.value.at("projects");
+    EXPECT_EQ(std::find(projects.begin(), projects.end(), "mistake"), projects.end());
+    EXPECT_NE(std::find(projects.begin(), projects.end(), "keeper"), projects.end());
+    auto get = call("get_project", nlohmann::json{{"name", "mistake"}});
+    EXPECT_FALSE(get.ok);
+    EXPECT_EQ(get.error.code, "not_found");
+
+    // ...and the run + model still listed, still labelled.
+    auto runs = call("get_run", nlohmann::json{{"run_id", run->id()}});
+    ASSERT_TRUE(runs.ok) << runs.error.message;
+    EXPECT_EQ(runs.value.at("project"), project_id);
+    auto models = call("get_model", nlohmann::json{{"model_id", model->id()}});
+    ASSERT_TRUE(models.ok) << models.error.message;
+
+    // Deleting it again, or anything missing, is not_found.
+    auto again = call("delete_project", nlohmann::json{{"name", "mistake"}});
+    EXPECT_FALSE(again.ok);
+    EXPECT_EQ(again.error.code, "not_found");
+    auto missing = call("delete_project", nlohmann::json{{"name", "never-was"}});
+    EXPECT_FALSE(missing.ok);
+    EXPECT_EQ(missing.error.code, "not_found");
+
+    // The name is free again.
+    EXPECT_TRUE(call("create_project", nlohmann::json{{"name", "mistake"}}).ok);
+}
+
+// A project whose run is still in flight is not deleted out from under it.
+TEST_F(RegistryFixture, DeleteProjectRefusesWhileARunIsInProgress) {
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "busy"}}).ok);
+    auto run = node.create_run(node.find_project("busy")->id());
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Running);
+
+    auto refused = call("delete_project", nlohmann::json{{"name", "busy"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_NE(refused.error.message.find("running"), std::string::npos)
+        << refused.error.message;
+    EXPECT_TRUE(node.find_project("busy"));
+
+    run->set_status(zetta::pipeline::RunStatus::Failed);
+    EXPECT_TRUE(call("delete_project", nlohmann::json{{"name", "busy"}}).ok);
+    EXPECT_FALSE(node.find_project("busy"));
+}
+
+// lake#645: a dataset is deleted with its partitions and every index built over
+// it; a dry run answers the same list and changes nothing.
+TEST_F(RegistryFixture, DeleteDatasetRemovesItsPartitionsAndIndexes) {
+    auto database = node.create_database("data");
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    table->add_row({{"id", 1}, {"note", "first"}});
+    table->add_row({{"id", 2}, {"note", "second"}});
+    const std::string table_id = table->id();
+    auto keeper = database->create_table("customers");
+    ASSERT_TRUE(keeper);
+
+    zetta::data::DatasetPartitionValue partition_value;
+    partition_value.table = table_id;
+    partition_value.row_range = {0, 2};
+    auto partition = node.create_dataset_partition(std::move(partition_value));
+    ASSERT_TRUE(partition);
+
+    zetta::index::IndexValue over_orders;
+    over_orders.table = "orders";
+    over_orders.backend = "memory_search";
+    over_orders.fields = {"note"};
+    auto index = node.create_index(over_orders);
+    ASSERT_TRUE(index);
+    zetta::index::IndexValue over_customers = over_orders;
+    over_customers.table = "customers";
+    auto other_index = node.create_index(over_customers);
+    ASSERT_TRUE(other_index);
+
+    auto preview = call("delete_dataset", {{"dataset", "data.orders"}, {"dry_run", true}});
+    ASSERT_TRUE(preview.ok) << preview.error.code << ": " << preview.error.message;
+    EXPECT_EQ(preview.value.at("dataset"), "orders");
+    EXPECT_EQ(preview.value.at("database"), "data");
+    EXPECT_EQ(preview.value.at("table_id"), table_id);
+    EXPECT_TRUE(preview.value.at("dry_run").get<bool>());
+    EXPECT_EQ(preview.value.at("removed").at("partitions"), 1u);
+    EXPECT_EQ(preview.value.at("removed").at("indexes"),
+              nlohmann::json::array({index->id()}));
+    // Nothing changed.
+    EXPECT_TRUE(database->find_table("orders"));
+    EXPECT_TRUE(node.find_index(index->id()));
+    EXPECT_TRUE(node.find_dataset_partition(partition->id()));
+
+    auto deleted = call("delete_dataset", {{"dataset", "orders"}, {"database", "data"}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
+    EXPECT_FALSE(deleted.value.at("dry_run").get<bool>());
+    EXPECT_EQ(deleted.value.at("removed"), preview.value.at("removed"));
+    EXPECT_FALSE(database->find_table("orders"));
+    EXPECT_FALSE(node.find_index(index->id()));
+    EXPECT_FALSE(node.find_dataset_partition(partition->id()));
+    // The other dataset and its index are untouched.
+    EXPECT_TRUE(database->find_table("customers"));
+    EXPECT_TRUE(node.find_index(other_index->id()));
+    auto read = call("get_dataset", {{"dataset", "orders"}});
+    EXPECT_EQ(read.error.code, "not_found");
+
+    auto again = call("delete_dataset", {{"dataset", "orders"}});
+    EXPECT_FALSE(again.ok);
+    EXPECT_EQ(again.error.code, "not_found");
+    // By table id too.
+    auto by_id = call("delete_dataset", {{"dataset", keeper->id()}, {"dry_run", true}});
+    ASSERT_TRUE(by_id.ok) << by_id.error.message;
+    EXPECT_EQ(by_id.value.at("dataset"), "customers");
+}
+
+// zetta#1258: a run records the tables it reads when it is created (its
+// pipeline's connect steps, and a dataset it is handed), a study records its
+// dataset, and delete_dataset refuses the dataset while any of them is in
+// flight, its dry run too, naming them.
+TEST_F(RegistryFixture, DeleteDatasetRefusesWhileARunOrAStudyReadsIt) {
+    auto database = node.create_database("data");
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    ASSERT_TRUE(database->create_table("customers"));
+
+    auto project = node.create_project("reader");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    ASSERT_TRUE(connect);
+    connect->attributes = {{"source", "data"}, {"table", "orders"}};
+    auto pipeline = project->create_graph("training", std::move(graph));
+    ASSERT_TRUE(pipeline);
+
+    // The pipeline's run records the table before it reads anything.
+    auto run = node.create_run(project->id(), pipeline->id());
+    ASSERT_TRUE(run);
+    ASSERT_EQ(run->reads().size(), 1u);
+    EXPECT_EQ(run->reads().front().database, "data");
+    EXPECT_EQ(run->reads().front().table, "orders");
+    EXPECT_EQ(run->reads().front().table_id, table->id());
+    // ...and it survives the replicated/on-disk round trip.
+    const auto parsed = zetta::pipeline::parse_run_value(run->metadata());
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed->reads, run->reads());
+    // A table it does not read is not recorded.
+    EXPECT_FALSE(zetta::pipeline::reads_table(run->reads(), "data", "customers", ""));
+
+    for (const bool dry_run : {true, false}) {
+        auto refused = call("delete_dataset", {{"dataset", "data.orders"}, {"dry_run", dry_run}});
+        EXPECT_FALSE(refused.ok);
+        EXPECT_EQ(refused.error.code, "engine_error");
+        EXPECT_NE(refused.error.message.find(run->id()), std::string::npos)
+            << refused.error.message;
+        EXPECT_NE(refused.error.message.find("pending"), std::string::npos)
+            << refused.error.message;
+    }
+    EXPECT_TRUE(database->find_table("orders"));
+    // A dataset the run does not read is deleted as before.
+    EXPECT_TRUE(call("delete_dataset", {{"dataset", "data.customers"}, {"dry_run", true}}).ok);
+
+    run->set_status(zetta::pipeline::RunStatus::Running);
+    EXPECT_EQ(call("delete_dataset", {{"dataset", "data.orders"}}).error.code, "engine_error");
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+
+    // A run handed the dataset (no pipeline of its own) records it too.
+    auto handed = node.create_run("");
+    ASSERT_TRUE(handed);
+    EXPECT_TRUE(handed->reads().empty());
+    handed->add_reads(node.tables_read({}, {}, "data.orders"));
+    handed->add_reads(node.tables_read({}, {}, "data.orders"));  // once
+    ASSERT_EQ(handed->reads().size(), 1u);
+    handed->set_status(zetta::pipeline::RunStatus::Running);
+    auto by_handed = call("delete_dataset", {{"dataset", table->id()}, {"dry_run", true}});
+    EXPECT_EQ(by_handed.error.code, "engine_error");
+    EXPECT_NE(by_handed.error.message.find(handed->id()), std::string::npos)
+        << by_handed.error.message;
+    handed->set_status(zetta::pipeline::RunStatus::Failed);
+
+    // A running study on the dataset keeps it, though no trial is in flight.
+    zetta::ml::StudySpec spec;
+    spec.name = "orders-tuning";
+    spec.dataset = "data.orders";
+    spec.methodology = "M-1";
+    spec.objective.metric = "validation.score";
+    spec.objective.validation_split = "validation";
+    zetta::ml::StudyParameter parameter;
+    parameter.name = "x";
+    parameter.minimum = 0.0;
+    parameter.maximum = 1.0;
+    spec.search_space = {parameter};
+    std::string error;
+    auto study = node.create_study(std::move(spec), &error);
+    ASSERT_TRUE(study) << error;
+    ASSERT_EQ(study->value().reads.size(), 1u);
+    EXPECT_EQ(study->value().reads.front().table_id, table->id());
+    const auto study_parsed = zetta::ml::parse_study_value(study->metadata());
+    ASSERT_TRUE(study_parsed);
+    EXPECT_EQ(study_parsed->reads, study->value().reads);
+    auto by_study = call("delete_dataset", {{"dataset", "data.orders"}, {"dry_run", true}});
+    EXPECT_EQ(by_study.error.code, "engine_error");
+    EXPECT_NE(by_study.error.message.find("orders-tuning"), std::string::npos)
+        << by_study.error.message;
+    study->stop("done");
+
+    // Nothing in flight reads it: the delete goes through.
+    auto deleted = call("delete_dataset", {{"dataset", "data.orders"}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
+    EXPECT_FALSE(database->find_table("orders"));
+}
+
+TEST_F(RegistryFixture, DeleteModelStopsServingItAndKeepsItsRun) {
+    auto run = node.create_run("");
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    zetta::ml::ModelValue value;
+    value.kind = "classifier";
+    value.name = "churn-model";
+    value.run = run->id();
+    auto model = node.create_model(std::move(value));
+    ASSERT_TRUE(model);
+    model->set_exposed(true);
+
+    auto preview = call("delete_model", {{"model_id", "churn-model"}, {"dry_run", true}});
+    ASSERT_TRUE(preview.ok) << preview.error.code << ": " << preview.error.message;
+    EXPECT_EQ(preview.value.at("model_id"), model->id());
+    EXPECT_EQ(preview.value.at("name"), "churn-model");
+    EXPECT_TRUE(preview.value.at("removed").at("was_exposed").get<bool>());
+    EXPECT_EQ(preview.value.at("kept").at("run"), run->id());
+    EXPECT_TRUE(node.find_model(model->id()));
+    EXPECT_TRUE(model->exposed());
+
+    const std::string id = model->id();
+    auto deleted = call("delete_model", {{"model_id", id}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.message;
+    EXPECT_FALSE(node.find_model(id));
+    EXPECT_TRUE(node.find_run(run->id()));
+    EXPECT_EQ(call("get_model", {{"model_id", id}}).error.code, "not_found");
+    EXPECT_EQ(call("delete_model", {{"model_id", id}}).error.code, "not_found");
+}
+
+TEST_F(RegistryFixture, DeleteModelByNameRefusesAnAmbiguousName) {
+    for (int i = 0; i < 2; ++i) {
+        zetta::ml::ModelValue value;
+        value.kind = "classifier";
+        value.name = "twin";
+        ASSERT_TRUE(node.create_model(std::move(value)));
+    }
+    auto refused = call("delete_model", {{"model_id", "twin"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_EQ(node.models().size(), 2u);
+}
+
+TEST_F(RegistryFixture, DeleteRunRefusesWhileInFlightAndKeepsItsModels) {
+    auto run = node.create_run("");
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Running);
+    zetta::ml::ModelValue value;
+    value.kind = "classifier";
+    value.run = run->id();
+    auto model = node.create_model(std::move(value));
+    ASSERT_TRUE(model);
+
+    auto refused = call("delete_run", {{"run_id", run->id()}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_NE(refused.error.message.find("running"), std::string::npos)
+        << refused.error.message;
+    EXPECT_TRUE(node.find_run(run->id()));
+
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    auto preview = call("delete_run", {{"run_id", run->id()}, {"dry_run", true}});
+    ASSERT_TRUE(preview.ok) << preview.error.message;
+    EXPECT_EQ(preview.value.at("removed").at("status"), "succeeded");
+    EXPECT_EQ(preview.value.at("kept").at("models"), nlohmann::json::array({model->id()}));
+    EXPECT_TRUE(node.find_run(run->id()));
+
+    const std::string id = run->id();
+    auto deleted = call("delete_run", {{"run_id", id}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.message;
+    EXPECT_EQ(deleted.value.at("run_id"), id);
+    EXPECT_FALSE(node.find_run(id));
+    EXPECT_TRUE(node.find_model(model->id()));
+    EXPECT_EQ(call("delete_run", {{"run_id", id}}).error.code, "not_found");
+}
+
+TEST_F(RegistryFixture, DeleteIndexStopsServingItAndKeepsTheDataset) {
+    auto database = node.create_database("data");
+    ASSERT_TRUE(database->create_table("articles"));
+    zetta::index::IndexValue value;
+    value.table = "articles";
+    value.backend = "memory_search";
+    value.fields = {"title"};
+    auto index = node.create_index(value);
+    ASSERT_TRUE(index);
+    index->set_exposed(true);
+
+    auto preview = call("delete_index", {{"index_id", index->id()}, {"dry_run", true}});
+    ASSERT_TRUE(preview.ok) << preview.error.message;
+    EXPECT_EQ(preview.value.at("table"), "articles");
+    EXPECT_TRUE(preview.value.at("removed").at("was_exposed").get<bool>());
+    EXPECT_TRUE(node.find_index(index->id()));
+
+    const std::string id = index->id();
+    auto deleted = call("delete_index", {{"index_id", id}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.message;
+    EXPECT_FALSE(node.find_index(id));
+    EXPECT_TRUE(database->find_table("articles"));
+    EXPECT_EQ(call("delete_index", {{"index_id", id}}).error.code, "not_found");
+}
+
 // Journey (#616): create a project, capture an intent input and a graph, then
 // get_project reads the full detail back — by name AND by uuid (the handle a
 // run/job/model carries) — inputs and graphs included; a miss is not_found.
@@ -335,6 +1208,17 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     auto model = node.create_model(std::move(model_value));
     ASSERT_TRUE(model);
 
+    zetta::solutions::MonitorSpec monitor_spec;
+    monitor_spec.solution = "renewal-risk";
+    monitor_spec.inputs = {
+        {"tenure", {12.0}, {0.5, 0.5}},
+    };
+    monitor_spec.guardrails = {
+        {"cost", 0.0, 100.0},
+    };
+    auto monitor = node.create_monitor(std::move(monitor_spec));
+    ASSERT_TRUE(monitor);
+
     auto job = node.create_job(zetta::compute::JobKind::Featurize, "proj-uuid");
     ASSERT_TRUE(job);
 
@@ -355,6 +1239,7 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     const DetailCase cases[] = {
         {"get_run", "run_id", run->id(), run->metadata()},
         {"get_model", "model_id", model->id(), model->metadata()},
+        {"get_monitor", "solution", monitor->id(), monitor->metadata()},
         {"get_job", "job_id", job->id(), job->metadata()},
         {"get_index", "index_id", index->id(), index->metadata()},
     };
@@ -379,18 +1264,38 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     EXPECT_EQ(fetched_run.value.at("status"), "running");
     ASSERT_EQ(fetched_run.value.at("logs").size(), 1u);
     EXPECT_EQ(fetched_run.value.at("logs")[0].at("message"), "step one");
+
+    auto monitor_by_solution = call(
+        "get_monitor",
+        nlohmann::json{{"solution", "renewal-risk"}});
+    ASSERT_TRUE(monitor_by_solution.ok) << monitor_by_solution.error.message;
+    EXPECT_EQ(monitor_by_solution.value.at("id"), monitor->id());
 }
 
 // Journey (#616): the list_* siblings return compact structured rows over the
 // same live registries the system.* views compute from, with the ids feeding
 // the get_* detail reads.
 TEST_F(RegistryFixture, JourneyListReadsReturnCompactRows) {
-    auto run = node.create_run();
+    const auto project = node.create_project("churn-list");
+    ASSERT_TRUE(project);
+    const auto pipeline = project->create_graph(
+        "training", zetta::ir::ExecutionGraph{});
+    ASSERT_TRUE(pipeline);
+    auto run = node.create_run(project->id(), pipeline->id());
     ASSERT_TRUE(run);
+    std::string error;
+    ASSERT_TRUE(run->log_metrics(1, {{"validation.auc", 0.91}}, {}, &error))
+        << error;
     zetta::ml::ModelValue model_value;
+    model_value.name = "churn-model";
     model_value.kind = "classifier";
+    model_value.project = project->id();
+    model_value.run = run->id();
+    model_value.metrics = {{"auc", 0.91}};
+    model_value.feature_schema = {{"features", {"age", "tenure"}}};
     auto model = node.create_model(std::move(model_value));
     ASSERT_TRUE(model);
+    model->set_exposed(true);
     auto job = node.create_job(zetta::compute::JobKind::Train);
     ASSERT_TRUE(job);
     zetta::index::IndexValue index_value;
@@ -405,6 +1310,12 @@ TEST_F(RegistryFixture, JourneyListReadsReturnCompactRows) {
     ASSERT_EQ(runs.value.at("runs").size(), 1u);
     EXPECT_EQ(runs.value.at("runs")[0].at("id"), run->id());
     EXPECT_EQ(runs.value.at("runs")[0].at("status"), "pending");
+    EXPECT_EQ(runs.value.at("runs")[0].at("project_name"), "churn-list");
+    EXPECT_EQ(runs.value.at("runs")[0].at("pipeline_name"), "training");
+    EXPECT_EQ(runs.value.at("runs")[0].at("metric_summary")
+                  .at("validation.auc")
+                  .at("final"),
+              0.91);
 
     // testsuite_list serves the whole in-app test-suite catalog (independent of
     // node state): every case with its id / category / name + tunable options,
@@ -428,6 +1339,14 @@ TEST_F(RegistryFixture, JourneyListReadsReturnCompactRows) {
     ASSERT_TRUE(models.ok) << models.error.message;
     ASSERT_EQ(models.value.at("models").size(), 1u);
     EXPECT_EQ(models.value.at("models")[0].at("id"), model->id());
+    EXPECT_EQ(models.value.at("models")[0].at("project_name"), "churn-list");
+    EXPECT_EQ(models.value.at("models")[0].at("pipeline_name"), "training");
+    EXPECT_EQ(models.value.at("models")[0].at("run_id"), run->id());
+    EXPECT_EQ(models.value.at("models")[0].at("metrics").at("auc"), 0.91);
+    EXPECT_EQ(models.value.at("models")[0].at("feature_schema")
+                  .at("features").size(),
+              2u);
+    EXPECT_TRUE(models.value.at("models")[0].at("exposed").get<bool>());
     EXPECT_FALSE(models.value.at("models")[0].at("has_weights").get<bool>());
 
     auto jobs = call("list_jobs", nlohmann::json::object());
@@ -485,6 +1404,293 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
                                                         {"database", "data"}});
     ASSERT_TRUE(qualified.ok) << qualified.error.message;
     EXPECT_EQ(qualified.value.at("rows"), 2u);
+
+    // #1221: database.table, the form analyze_dataset takes, names the same
+    // dataset; a database field that disagrees with it is refused.
+    auto dotted = call("get_dataset", nlohmann::json{{"dataset", "data.events"}});
+    ASSERT_TRUE(dotted.ok) << dotted.error.message;
+    EXPECT_EQ(dotted.value.at("database"), "data");
+    EXPECT_EQ(dotted.value.at("rows"), 2u);
+    auto staged = call("get_dataset", nlohmann::json{{"dataset", "staging.events"},
+                                                     {"database", "staging"}});
+    ASSERT_TRUE(staged.ok) << staged.error.message;
+    EXPECT_EQ(staged.value.at("database"), "staging");
+    auto disagree = call("get_dataset", nlohmann::json{{"dataset", "data.events"},
+                                                       {"database", "staging"}});
+    EXPECT_FALSE(disagree.ok);
+    EXPECT_EQ(disagree.error.code, "invalid_input");
+    EXPECT_EQ(disagree.error.path, "/database");
+    auto no_such = call("get_dataset", nlohmann::json{{"dataset", "data.nothing"}});
+    EXPECT_FALSE(no_such.ok);
+    EXPECT_EQ(no_such.error.code, "not_found");
+    // A table whose own name holds a dot is still found by that name.
+    ASSERT_TRUE(database->create_table("v1.events"));
+    auto exact = call("get_dataset", nlohmann::json{{"dataset", "v1.events"}});
+    ASSERT_TRUE(exact.ok) << exact.error.message;
+    EXPECT_EQ(exact.value.at("name"), "v1.events");
+}
+
+TEST_F(RegistryFixture, AnalyzeAndPlanFeatureReadsUseLandedDatasetRows) {
+    std::vector<nlohmann::json> rows;
+    for (int index = 0; index < 80; ++index) {
+        rows.push_back({{"customer_id", index + 1},
+                        {"plan", index % 3 == 0 ? "pro" : "basic"},
+                        {"spend", index % 20},
+                        {"signup_at", "2025-01-01"},
+                        {"churned", index % 4 == 0 ? 1 : 0}});
+    }
+    zetta::data::AddDatasetOptions options;
+    options.database = "features";
+    options.table_name = "accounts";
+    options.partitioned = false;
+    const auto added = zetta::data::add_dataset_rows(node, std::move(rows), options);
+    ASSERT_TRUE(added.ok()) << added.error;
+
+    const auto analyzed = call("analyze_dataset", {{"dataset", "features.accounts"},
+                                                    {"label", "churned"},
+                                                    {"as_of", "2025-12-31"}});
+    ASSERT_TRUE(analyzed.ok) << analyzed.error.message;
+    EXPECT_EQ(analyzed.value.at("grain"), "entity");
+    EXPECT_EQ(analyzed.value.at("columns").size(), 5u);
+
+    const auto planned = call("plan_features", {{"dataset", "features.accounts"},
+                                                {"methodology", "M-1"},
+                                                {"label", "churned"},
+                                                {"as_of", "2025-12-31"}});
+    ASSERT_TRUE(planned.ok) << planned.error.message;
+    EXPECT_EQ(planned.value.at("status"), "ready");
+    EXPECT_FALSE(planned.value.at("entries").empty());
+    EXPECT_TRUE(planned.value.at("transform_required").is_null());
+}
+
+// #1008: upload_dataset lands a file's TEXT from the request through the same
+// decode + table creation + placement as add_dataset, and the table then reads
+// back through list_datasets — the path a remote caller (lake's Train -> Data
+// page) has, since it cannot write the node's filesystem.
+TEST_F(RegistryFixture, UploadDatasetLandsCsvAndJsonlAndListsThem) {
+    auto csv = call("upload_dataset",
+                    nlohmann::json{{"table_name", "accounts"},
+                                   {"format", "csv"},
+                                   {"content", "account,plan,mrr\n1,pro,500\n2,free,0\n"
+                                               "3,\"pro, annual\",1200\n"}});
+    ASSERT_TRUE(csv.ok) << csv.error.code << ": " << csv.error.message;
+    EXPECT_EQ(csv.value.at("database"), "datasets");
+    EXPECT_EQ(csv.value.at("table"), "accounts");
+    EXPECT_EQ(csv.value.at("format"), "csv");
+    EXPECT_EQ(csv.value.at("rows"), 3u);
+    EXPECT_FALSE(csv.value.at("partitions").empty());
+
+    auto jsonl = call("upload_dataset",
+                      nlohmann::json{{"table_name", "events"},
+                                     {"format", "jsonl"},
+                                     {"database", "uploads"},
+                                     {"replication_factor", 1},
+                                     {"content", "{\"account\":1,\"event\":\"login\"}\n"
+                                                 "\n"
+                                                 "{\"account\":2,\"event\":\"churn\"}\n"}});
+    ASSERT_TRUE(jsonl.ok) << jsonl.error.code << ": " << jsonl.error.message;
+    EXPECT_EQ(jsonl.value.at("database"), "uploads");
+    EXPECT_EQ(jsonl.value.at("format"), "jsonl");
+    EXPECT_EQ(jsonl.value.at("rows"), 2u);
+
+    // The cells were type-inferred exactly as add_dataset infers a csv file's,
+    // and the quoted comma stayed inside its cell.
+    auto accounts = node.find_database("datasets")->find_table("accounts");
+    ASSERT_TRUE(accounts);
+    bool quoted_cell_kept = false;
+    for (std::size_t index = 0; index < accounts->store().size(); ++index) {
+        const auto row = accounts->store().at(index);
+        ASSERT_TRUE(row);
+        EXPECT_TRUE(row->at("mrr").is_number()) << row->dump();
+        if (row->at("plan") == "pro, annual") quoted_cell_kept = true;
+    }
+    EXPECT_TRUE(quoted_cell_kept);
+
+    // Both read back through the dataset reads.
+    auto listed = call("list_datasets", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    std::set<std::string> names;
+    for (const auto& dataset : listed.value.at("datasets")) {
+        names.insert(dataset.at("database").get<std::string>() + "." +
+                     dataset.at("name").get<std::string>());
+    }
+    EXPECT_TRUE(names.contains("datasets.accounts")) << listed.value.dump();
+    EXPECT_TRUE(names.contains("uploads.events")) << listed.value.dump();
+
+    // Audited like add_dataset.
+    std::size_t audited = 0;
+    for (const auto& event : node.audit_events()) {
+        if (event->action() == zetta::governance::AuditAction::DatasetAdded) ++audited;
+    }
+    EXPECT_EQ(audited, 2u);
+
+    // A second upload under a taken name is refused (#1221) unless the caller
+    // asks for the next free name, and then the output says which it asked for.
+    auto taken = call("upload_dataset",
+                      nlohmann::json{{"table_name", "accounts"},
+                                     {"format", "csv"},
+                                     {"content", "account\n9\n"}});
+    ASSERT_FALSE(taken.ok);
+    EXPECT_EQ(taken.error.code, "conflict");
+    EXPECT_EQ(taken.error.path, "/table_name");
+    EXPECT_EQ(taken.error.message,
+              "a dataset named 'accounts' already exists in datasets; choose another "
+              "name, or pass if_exists: \"rename\" to save it under the next free name");
+    auto again = call("upload_dataset",
+                      nlohmann::json{{"table_name", "accounts"},
+                                     {"format", "csv"},
+                                     {"if_exists", "rename"},
+                                     {"content", "account\n9\n"}});
+    ASSERT_TRUE(again.ok) << again.error.message;
+    EXPECT_EQ(again.value.at("table"), "accounts_2");
+    EXPECT_EQ(again.value.at("renamed_from"), "accounts");
+    EXPECT_FALSE(csv.value.contains("renamed_from"));
+}
+
+// #1221: upload_dataset applies lake's rules (lake PR #459) in lake's words: a
+// table or database name SQL can query unquoted, and a CSV whose every row has
+// the header's field count — a ragged row is refused with its line, never
+// padded with nulls or cut short. Nothing is created by a refusal.
+TEST_F(RegistryFixture, UploadDatasetRefusesUnsafeNamesAndRaggedCsv) {
+    const auto upload = [&](const std::string& table, const std::string& content,
+                            const std::string& database = "datasets") {
+        return call("upload_dataset", nlohmann::json{{"table_name", table},
+                                                     {"database", database},
+                                                     {"format", "csv"},
+                                                     {"content", content}});
+    };
+    const auto refused = [](const ApiResult& result, const std::string& path,
+                            const std::string& message) {
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, "invalid_input");
+        EXPECT_EQ(result.error.path, path);
+        EXPECT_EQ(result.error.message, message);
+    };
+    refused(upload("my-table", "a\n1\n"), "/table_name",
+            "table_name: 'my-table' can hold only letters, digits and underscores "
+            "(not '-'), so SQL can query it");
+    refused(upload("1st", "a\n1\n"), "/table_name",
+            "table_name: '1st' must start with a letter or an underscore");
+    refused(upload("Select", "a\n1\n"), "/table_name",
+            "table_name: 'Select' is a SQL keyword; choose another name");
+    refused(upload(std::string(64, 'a'), "a\n1\n"), "/table_name",
+            "table_name: a name is at most 63 characters");
+    refused(upload("fine", "a\n1\n", "my db"), "/database",
+            "database: 'my db' can hold only letters, digits and underscores "
+            "(not ' '), so SQL can query it");
+
+    refused(upload("short_row", "a,b\n1,2\n3\n"), "/content",
+            "the CSV file is malformed: line 3: 1 fields, but the header has 2 columns");
+    refused(upload("long_row", "a,b\r\n1,2\r\n\r\n3,4,5\r\n"), "/content",
+            "the CSV file is malformed: line 4: 3 fields, but the header has 2 columns");
+    refused(upload("unnamed", "a,,c\n1,2,3\n"), "/content",
+            "the CSV file is malformed: line 1: header column 2 has no name");
+    refused(upload("twice", "a,b,a\n1,2,3\n"), "/content",
+            "the CSV file is malformed: line 1: the header names column 'a' twice");
+    refused(upload("open_quote", "a,b\n\"1,2\n"), "/content",
+            "the CSV file is malformed: line 2: a quoted field is not closed (a row must "
+            "stay on one line)");
+
+    EXPECT_FALSE(node.find_database("datasets"));
+    EXPECT_FALSE(node.find_database("my db"));
+
+    // A quoted comma is one field, so this row matches its header and lands.
+    auto quoted = upload("_quoted_ok2", "a,b\n\"x, y\",2\n");
+    ASSERT_TRUE(quoted.ok) << quoted.error.message;
+    EXPECT_EQ(quoted.value.at("rows"), 1u);
+}
+
+// #1221: a table records what its rows were loaded from. The storage format
+// (`format`) is JSON rows for every table, so the upload's own format is kept
+// as `source_format` — on get_dataset, list_datasets and system.datasets.
+TEST_F(RegistryFixture, UploadedDatasetKeepsItsSourceFormat) {
+    ASSERT_TRUE(call("upload_dataset", nlohmann::json{{"table_name", "from_csv"},
+                                                      {"format", "csv"},
+                                                      {"content", "a\n1\n"}})
+                    .ok);
+    ASSERT_TRUE(call("upload_dataset", nlohmann::json{{"table_name", "from_jsonl"},
+                                                      {"format", "jsonl"},
+                                                      {"content", "{\"a\":1}\n"}})
+                    .ok);
+    node.create_database("plain")->create_table("by_sql")->add_row({{"a", 1}});
+
+    auto csv = call("get_dataset", nlohmann::json{{"dataset", "from_csv"}});
+    ASSERT_TRUE(csv.ok) << csv.error.message;
+    EXPECT_EQ(csv.value.at("source_format"), "csv");
+    EXPECT_EQ(csv.value.at("format"), "jsonl");
+    auto jsonl = call("get_dataset", nlohmann::json{{"dataset", "from_jsonl"}});
+    ASSERT_TRUE(jsonl.ok) << jsonl.error.message;
+    EXPECT_EQ(jsonl.value.at("source_format"), "jsonl");
+    auto plain = call("get_dataset", nlohmann::json{{"dataset", "by_sql"}});
+    ASSERT_TRUE(plain.ok) << plain.error.message;
+    EXPECT_EQ(plain.value.at("source_format"), "");
+
+    auto listed = call("list_datasets", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    std::map<std::string, std::string> listed_formats;
+    for (const auto& dataset : listed.value.at("datasets")) {
+        listed_formats[dataset.at("name").get<std::string>()] =
+            dataset.at("source_format").get<std::string>();
+    }
+    EXPECT_EQ(listed_formats["from_csv"], "csv");
+    EXPECT_EQ(listed_formats["from_jsonl"], "jsonl");
+
+    auto view = call("sql", nlohmann::json{{"statement",
+                                            "SELECT dataset, source_format FROM "
+                                            "system.datasets WHERE dataset = 'from_csv';"}});
+    ASSERT_TRUE(view.ok) << view.error.message;
+    ASSERT_EQ(view.value.at("rows").size(), 1u) << view.value.dump();
+    EXPECT_NE(view.value.at("rows").dump().find("\"csv\""), std::string::npos)
+        << view.value.dump();
+}
+
+TEST_F(RegistryFixture, UploadDatasetRefusesOversizeBadFormatAndMalformedContent) {
+    // Over the 16 MiB cap: a clear invalid_input naming the cap, and nothing made.
+    const std::string oversize(zetta::data::kMaxDatasetContentBytes + 1, 'x');
+    auto too_big = call("upload_dataset",
+                        nlohmann::json{{"table_name", "huge"},
+                                       {"format", "csv"},
+                                       {"content", oversize}});
+    EXPECT_FALSE(too_big.ok);
+    EXPECT_EQ(too_big.error.code, "invalid_input");
+    EXPECT_NE(too_big.error.message.find("16 MiB"), std::string::npos)
+        << too_big.error.message;
+
+    // A format outside csv|jsonl is refused by the input schema.
+    auto parquet = call("upload_dataset",
+                        nlohmann::json{{"table_name", "binary"},
+                                       {"format", "parquet"},
+                                       {"content", "PAR1"}});
+    EXPECT_FALSE(parquet.ok);
+    EXPECT_EQ(parquet.error.code, "invalid_input");
+    EXPECT_NE(parquet.error.message.find("format"), std::string::npos)
+        << parquet.error.message;
+
+    // Missing required fields are refused by the schema too.
+    auto no_table = call("upload_dataset",
+                         nlohmann::json{{"format", "csv"}, {"content", "a\n1\n"}});
+    EXPECT_FALSE(no_table.ok);
+    EXPECT_EQ(no_table.error.code, "invalid_input");
+
+    // Malformed jsonl names the line, like a malformed file does.
+    auto malformed = call("upload_dataset",
+                          nlohmann::json{{"table_name", "broken"},
+                                         {"format", "jsonl"},
+                                         {"content", "{\"a\":1}\n{not json}\n"}});
+    EXPECT_FALSE(malformed.ok);
+    EXPECT_EQ(malformed.error.code, "engine_error");
+    EXPECT_NE(malformed.error.message.find("line 2"), std::string::npos)
+        << malformed.error.message;
+
+    // A csv with a header and no rows has nothing to land.
+    auto header_only = call("upload_dataset",
+                            nlohmann::json{{"table_name", "empty"},
+                                           {"format", "csv"},
+                                           {"content", "a,b\n"}});
+    EXPECT_FALSE(header_only.ok);
+
+    // None of the refusals created a table.
+    EXPECT_FALSE(node.find_database("datasets"));
 }
 
 // #833 section 9: promote_dataset raises a cached result set's replication
@@ -580,6 +1786,49 @@ zetta::runtime::task<> await_bridge_work(zetta::api::MainThreadBridge& bridge,
 }
 }  // namespace
 
+// #1063: a poke releases the owning loop's idle wait at once, so work queued
+// outside the bridge (Node::run_on_owner) runs on the next tick instead of
+// after the idle interval.
+TEST(MainThreadBridge, APokeReleasesTheIdleWaitAtOnce) {
+    zetta::api::MainThreadBridge bridge;
+    std::thread poker([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        bridge.poke();
+    });
+    const auto started = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::seconds(10));
+    const auto waited = std::chrono::steady_clock::now() - started;
+    poker.join();
+    EXPECT_LT(waited, std::chrono::seconds(5)) << "the poke must end the idle wait";
+    // The poke is consumed: the next idle wait runs its full (short) interval.
+    const auto again = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::milliseconds(50));
+    EXPECT_GE(std::chrono::steady_clock::now() - again, std::chrono::milliseconds(40));
+}
+
+// Node::run_on_owner calls the owner wakeup when it queues work, so an idle
+// loop is woken rather than left to its next timed tick (#1063).
+TEST(NodeOwnerWakeup, QueuedOwnerWorkWakesTheLoop) {
+    zetta::test::TempDir dir;
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    ASSERT_TRUE(node.start());
+    node.tick();  // adopt this thread as the owner
+    zetta::api::MainThreadBridge bridge;
+    node.set_owner_wakeup([&bridge] { bridge.poke(); });
+    std::atomic<bool> ran{false};
+    std::thread worker([&] { node.run_on_owner([&] { ran = true; }); });
+    const auto started = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::seconds(10));  // the loop's idle wait
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(5))
+        << "queued owner work must wake the idle loop";
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!ran.load() && std::chrono::steady_clock::now() < deadline) node.tick();
+    worker.join();
+    EXPECT_TRUE(ran.load());
+    node.set_owner_wakeup({});
+    node.stop();
+}
+
 TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
     zetta::api::MainThreadBridge bridge;
     std::atomic<bool> work_ran{false};
@@ -601,6 +1850,91 @@ TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
     }
     EXPECT_TRUE(work_ran.load());
     EXPECT_TRUE(coroutine_resumed.load());
+    EXPECT_EQ(bridge.pending(), 0u);
+}
+
+TEST(MainThreadBridge, CancellationWaitsForQueuedOwnerWork) {
+    for (const bool cancel_before_queueing : {false, true}) {
+        SCOPED_TRACE(cancel_before_queueing);
+        zetta::api::MainThreadBridge bridge;
+        std::atomic<bool> work_ran{false};
+        std::atomic<bool> coroutine_resumed{false};
+        std::atomic<bool> completed{false};
+        std::stop_source cancellation;
+        if (cancel_before_queueing) cancellation.request_stop();
+
+        zetta::runtime::spawn(
+            zetta::runtime::with_stop_token(
+                await_bridge_work(bridge, work_ran, coroutine_resumed),
+                cancellation.get_token()),
+            [&] { completed.store(true); });
+        const auto queued_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (bridge.pending() == 0 &&
+               std::chrono::steady_clock::now() < queued_deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_EQ(bridge.pending(), 1u);
+        cancellation.request_stop();
+        const auto cancelled_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        while (!completed.load() &&
+               std::chrono::steady_clock::now() < cancelled_deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_FALSE(coroutine_resumed.load())
+            << "cancellation must not release borrowed request state";
+        EXPECT_FALSE(work_ran.load());
+
+        bridge.drain();
+        const auto completed_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!completed.load() &&
+               std::chrono::steady_clock::now() < completed_deadline) {
+            bridge.drain();
+            std::this_thread::yield();
+        }
+        EXPECT_TRUE(completed.load());
+        EXPECT_TRUE(work_ran.load());
+        EXPECT_TRUE(coroutine_resumed.load());
+        EXPECT_EQ(bridge.pending(), 0u);
+    }
+}
+
+zetta::runtime::task<> await_throwing_bridge_work(zetta::api::MainThreadBridge& bridge,
+                                                  std::atomic<bool>& coroutine_resumed) {
+    co_await bridge.run_on_owner([] { throw std::runtime_error("work threw"); });
+    coroutine_resumed = true;
+}
+
+// #1007: work that throws on the owning loop must not park its awaiter forever
+// (a REST request that never gets a response), nor take the rest of the batch —
+// or the owner loop itself — down with it.
+TEST(MainThreadBridge, ThrowingWorkStillResumesItsAwaiterAndTheRestOfTheBatch) {
+    zetta::api::MainThreadBridge bridge;
+    std::atomic<bool> thrower_resumed{false};
+    std::atomic<bool> later_work_ran{false};
+    std::atomic<bool> later_resumed{false};
+
+    zetta::runtime::spawn(await_throwing_bridge_work(bridge, thrower_resumed), [] {});
+    for (int attempt = 0; attempt < 100 && bridge.pending() < 1; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    zetta::runtime::spawn(await_bridge_work(bridge, later_work_ran, later_resumed),
+                          [] {});
+    for (int attempt = 0; attempt < 100 && bridge.pending() < 2; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(bridge.pending(), 2u);
+
+    EXPECT_NO_THROW(bridge.drain());
+    for (int attempt = 0;
+         attempt < 1000 && !(thrower_resumed && later_resumed); ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(thrower_resumed.load());
+    EXPECT_TRUE(later_work_ran.load());
+    EXPECT_TRUE(later_resumed.load());
     EXPECT_EQ(bridge.pending(), 0u);
 }
 

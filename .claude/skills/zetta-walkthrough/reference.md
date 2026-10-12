@@ -31,7 +31,10 @@ grep -A1 "SAVE THIS" "$SCRATCH/node.log" | tail -1 | tr -d ' \t\n' > "$SCRATCH/t
   ([#954](https://github.com/oramasearch/zetta/issues/954) was filed on a
   near-identical misreading.)
 - **Read capabilities are `GET`; actions are `POST`.** Probing a read with POST
-  returns an empty reply that looks exactly like a hang.
+  answers 405 naming the method it takes, and an unknown capability 404 (#1007).
+  A node built before that fix returns NO reply for either, which looks exactly
+  like a hang — against a deployed image, suspect the image is older than the
+  capability before suspecting the capability.
 - **The token races the log.** `grep` immediately after launch can return an empty
   string. Wait for the API, then extract, then check the length.
 - **A stale node holds the port.** `pkill -9 -f "bin/zetta"` before starting, and

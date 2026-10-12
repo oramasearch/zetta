@@ -88,6 +88,21 @@ TEST(DatasetContract, InfersEntityLabelAndFeaturesFromAFlatTable) {
     EXPECT_FALSE(result.notes.empty());
 }
 
+TEST(DatasetContract, AColumnItCannotUseIsSaidOutLoud) {
+    // lake's UX review 2026-09-27: a categorical `plan` column vanished from the features
+    // with nothing saying so (#957 is categorical support itself).
+    const std::vector<std::string> columns{"account_id", "plan", "spend", "churned"};
+    const std::vector<Json> sample{
+        {{"account_id", 1}, {"plan", "pro"}, {"spend", 80.0}, {"churned", 0}},
+        {{"account_id", 2}, {"plan", "basic"}, {"spend", 20.0}, {"churned", 1}}};
+    const auto inferred = zetta::data::infer_dataset_contract(columns, sample, {});
+    ASSERT_TRUE(inferred.ok()) << inferred.error;
+    EXPECT_EQ(inferred.contract.feature_columns, (std::vector<std::string>{"spend"}));
+    EXPECT_TRUE(std::ranges::any_of(inferred.notes, [](const std::string& note) {
+        return note.starts_with("not used: 'plan'");
+    }));
+}
+
 // The label and entity are never carried into X — that would leak the answer.
 TEST(DatasetContract, TheLabelAndEntityAreNeverFeatures) {
     const auto result = infer_dataset_contract(kAccountColumns, accounts_sample());
@@ -112,11 +127,10 @@ TEST(DatasetContract, ANonBinaryLabelColumnIsRejectedByName) {
     EXPECT_FALSE(result.ok());
     EXPECT_NE(result.error.find("label"), std::string::npos);
     EXPECT_NE(result.error.find("not binary"), std::string::npos);
+    EXPECT_NE(result.error.find("label::int"), std::string::npos);
 }
 
-// A string account id is the common warehouse shape and the one the ML path cannot
-// key on. It must fail HERE, naming the remedy — not deep inside a training job.
-TEST(DatasetContract, AStringEntityColumnFailsWithTheRemedy) {
+TEST(DatasetContract, AStringEntityColumnGetsAStableReversibleKey) {
     std::vector<Json> sample;
     for (int index = 0; index < 6; ++index) {
         sample.push_back(Json{{"account_id", "acct_" + std::to_string(index)},
@@ -125,9 +139,64 @@ TEST(DatasetContract, AStringEntityColumnFailsWithTheRemedy) {
     }
     const auto result =
         infer_dataset_contract({"account_id", "mrr", "churned"}, sample);
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_TRUE(result.contract.entity_keys);
+    const auto key = result.contract.entity_keys->derived("acct_3");
+    ASSERT_TRUE(key);
+    EXPECT_EQ(zetta::data::entity_output(result.contract, *key), "acct_3");
+    EXPECT_TRUE(std::ranges::any_of(result.notes, [](const std::string& note) {
+        return note == "entity column 'account_id' (text; keyed by a derived id, "
+                       "outputs carry the original value)";
+    }));
+}
+
+TEST(DatasetContract, AForcedDerivedKeyCollisionFailsClearly) {
+    const auto result = zetta::data::derive_entity_key_mapping(
+        "customer_id", {"c00041", "c00042"},
+        [](std::string_view) {
+            return std::uint64_t{7};
+        });
     EXPECT_FALSE(result.ok());
-    EXPECT_NE(result.error.find("entity_column"), std::string::npos);
-    EXPECT_NE(result.error.find("64-bit integer"), std::string::npos);
+    EXPECT_NE(result.error.find("collision"), std::string::npos);
+    EXPECT_NE(result.error.find("c00041"), std::string::npos);
+    EXPECT_NE(result.error.find("c00042"), std::string::npos);
+}
+
+TEST(DatasetContract, BooleanLabelsAndFeaturesAreAcceptedAsNumeric) {
+    const std::vector<Json> sample{
+        {{"customer_id", "c00041"}, {"active", true}, {"churned", false}},
+        {{"customer_id", "c00042"}, {"active", false}, {"churned", true}}};
+    const auto result = infer_dataset_contract(
+        {"customer_id", "active", "churned"}, sample);
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.contract.label_column, "churned");
+    EXPECT_EQ(result.contract.feature_columns,
+              (std::vector<std::string>{"active"}));
+}
+
+TEST(DatasetContract, AnExplicitTextLabelIsRejectedWithACastRemedy) {
+    DatasetContract overrides;
+    overrides.label_column = "churned";
+    const std::vector<Json> sample{
+        {{"customer_id", "c00041"}, {"spend", 10}, {"churned", "no"}},
+        {{"customer_id", "c00042"}, {"spend", 20}, {"churned", "yes"}}};
+    const auto result = infer_dataset_contract(
+        {"customer_id", "spend", "churned"}, sample, overrides);
+    EXPECT_FALSE(result.ok());
+    EXPECT_NE(result.error.find("label column 'churned'"), std::string::npos);
+    EXPECT_NE(result.error.find("churned::int"), std::string::npos);
+}
+
+TEST(DatasetContract, AnExplicitContinuousNumericLabelRemainsAccepted) {
+    DatasetContract overrides;
+    overrides.label_column = "demand";
+    const std::vector<Json> sample{
+        {{"account_id", 1}, {"price", 10.0}, {"demand", 42.5}},
+        {{"account_id", 2}, {"price", 11.0}, {"demand", 38.0}}};
+    const auto result = infer_dataset_contract(
+        {"account_id", "price", "demand"}, sample, overrides);
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.contract.label_column, "demand");
 }
 
 // Warehouses hand NUMBER columns back as doubles; a whole-valued double is still an
@@ -248,6 +317,16 @@ TEST(DatasetContract, JsonRoundTrips) {
     const auto parsed = zetta::data::dataset_contract_from_json(to_json(contract), &error);
     ASSERT_TRUE(parsed.has_value()) << error;
     EXPECT_EQ(*parsed, contract);
+}
+
+TEST(DatasetContract, IsoCutoffNormalizesToEpochSeconds) {
+    std::string error;
+    const auto parsed = zetta::data::dataset_contract_from_json(
+        nlohmann::json{{"time_column", "observed_at"},
+                       {"as_of", "1970-01-01T00:00:03.500Z"}},
+        &error);
+    ASSERT_TRUE(parsed) << error;
+    EXPECT_DOUBLE_EQ(parsed->as_of, 3.5);
 }
 
 // A cutoff column with no cutoff decides nothing, and inferring one would decide the

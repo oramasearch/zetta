@@ -6,9 +6,13 @@
 #include "../catalog.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <mutex>
+#include <numeric>
+#include <set>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -25,6 +29,143 @@ double clamp_confidence(double confidence) {
     return std::clamp(confidence, 0.0, 1.0);
 }
 
+constexpr std::size_t kMetricPointsCap = 10'000;
+constexpr std::size_t kMetricPointsAfterCompaction = 5'000;
+
+bool lower_is_better(std::string_view name) {
+    static constexpr std::string_view fragments[] = {
+        "loss", "error", "rmse", "mae", "mape", "latency", "perplexity"};
+    return std::ranges::any_of(fragments, [&](std::string_view fragment) {
+        return name.find(fragment) != std::string_view::npos;
+    });
+}
+
+std::vector<std::size_t> lttb_indices(const std::vector<double>& values,
+                                      std::size_t threshold) {
+    const std::size_t count = values.size();
+    if (threshold >= count || threshold == 0) {
+        std::vector<std::size_t> all(count);
+        std::iota(all.begin(), all.end(), 0);
+        return all;
+    }
+    if (threshold < 3) {
+        return {0, count - 1};
+    }
+
+    std::vector<std::size_t> selected;
+    selected.reserve(threshold);
+    selected.push_back(0);
+    const double bucket_width =
+        static_cast<double>(count - 2) / static_cast<double>(threshold - 2);
+    std::size_t anchor = 0;
+    for (std::size_t bucket = 0; bucket < threshold - 2; ++bucket) {
+        const std::size_t average_begin = std::min(
+            count - 1,
+            static_cast<std::size_t>(std::floor((bucket + 1) * bucket_width)) + 1);
+        const std::size_t average_end = std::min(
+            count,
+            static_cast<std::size_t>(std::floor((bucket + 2) * bucket_width)) + 1);
+        double average_x = 0.0;
+        double average_y = 0.0;
+        const std::size_t average_count =
+            std::max<std::size_t>(1, average_end - average_begin);
+        for (std::size_t index = average_begin; index < average_end; ++index) {
+            average_x += static_cast<double>(index);
+            average_y += values[index];
+        }
+        average_x /= static_cast<double>(average_count);
+        average_y /= static_cast<double>(average_count);
+
+        const std::size_t range_begin = std::min(
+            count - 1,
+            static_cast<std::size_t>(std::floor(bucket * bucket_width)) + 1);
+        const std::size_t range_end = std::min(
+            count - 1,
+            static_cast<std::size_t>(std::floor((bucket + 1) * bucket_width)) + 1);
+        double largest_area = -1.0;
+        std::size_t next_anchor = range_begin;
+        for (std::size_t index = range_begin; index <= range_end; ++index) {
+            const double area = std::abs(
+                (static_cast<double>(anchor) - average_x) *
+                    (values[index] - values[anchor]) -
+                (static_cast<double>(anchor) - static_cast<double>(index)) *
+                    (average_y - values[anchor]));
+            if (area > largest_area) {
+                largest_area = area;
+                next_anchor = index;
+            }
+        }
+        selected.push_back(next_anchor);
+        anchor = next_anchor;
+    }
+    selected.push_back(count - 1);
+    return selected;
+}
+
+std::vector<std::size_t> envelope_lttb_indices(
+    const std::vector<double>& values, std::size_t threshold) {
+    if (values.size() <= threshold) {
+        return lttb_indices(values, values.size());
+    }
+    const auto minimum = static_cast<std::size_t>(
+        std::distance(values.begin(), std::ranges::min_element(values)));
+    const auto maximum = static_cast<std::size_t>(
+        std::distance(values.begin(), std::ranges::max_element(values)));
+    const std::set<std::size_t> required = {0, values.size() - 1, minimum, maximum};
+    std::set<std::size_t> selected(required);
+    for (const std::size_t index : lttb_indices(values, threshold)) {
+        selected.insert(index);
+    }
+    while (selected.size() > threshold) {
+        auto removable = std::find_if(selected.rbegin(), selected.rend(),
+                                      [&](std::size_t index) {
+                                          return !required.contains(index);
+                                      });
+        if (removable == selected.rend()) {
+            break;
+        }
+        selected.erase(*removable);
+    }
+    if (selected.size() < threshold) {
+        for (std::size_t index = 0;
+             index < values.size() && selected.size() < threshold; ++index) {
+            selected.insert(index);
+        }
+    }
+    return {selected.begin(), selected.end()};
+}
+
+void retain_indices(nlohmann::json& series,
+                    const std::vector<std::size_t>& indices) {
+    nlohmann::json steps = nlohmann::json::array();
+    nlohmann::json values = nlohmann::json::array();
+    nlohmann::json times = nlohmann::json::array();
+    for (const std::size_t index : indices) {
+        steps.push_back(series["steps"][index]);
+        values.push_back(series["values"][index]);
+        times.push_back(series["times"][index]);
+    }
+    series["steps"] = std::move(steps);
+    series["values"] = std::move(values);
+    series["times"] = std::move(times);
+}
+
+bool validate_metric_columns(const nlohmann::json& metrics,
+                             std::string* error) {
+    for (const auto& [name, series] : metrics.at("series").items()) {
+        const std::size_t steps = series.at("steps").size();
+        if (series.at("values").size() != steps ||
+            series.at("times").size() != steps) {
+            if (error != nullptr) {
+                *error = "/metrics/series/" + name +
+                         ": steps, values and times must have equal lengths";
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 // The Run JSON Schema (draft-07). One declarative source of truth for the value
 // shape carried by run.json (with an optional `id`) and the `run:<uuid>` CRDT
 // value (without it). `status`/`kind` are closed enums and `confidence` is
@@ -38,12 +179,185 @@ const nlohmann::json& schema_document() {
         "id":         { "type": "string" },
         "project":    { "type": "string" },
         "graph":      { "type": "string" },
+        "project_name":  { "type": "string" },
+        "pipeline_name": { "type": "string" },
         "deployment": { "type": "string" },
         "status":  { "type": "string",
                      "enum": ["pending", "running", "succeeded", "failed"] },
         "created": { "type": "string" },
         "updated": { "type": "string" },
         "trace_id": { "type": "string" },
+        "entity_key_mapping": {
+          "type": "object",
+          "required": ["column", "entries"],
+          "additionalProperties": false,
+          "properties": {
+            "column": {"type": "string", "minLength": 1},
+            "entries": {"type": "array", "items": {
+              "type": "object",
+              "required": ["derived_id", "original_value"],
+              "additionalProperties": false,
+              "properties": {
+                "derived_id": {"type": "integer"},
+                "original_value": {"type": "string", "minLength": 1}
+              }
+            }}
+          }
+        },
+        "metrics_suppressed": { "type": "string",
+                                "enum": ["differential_privacy"] },
+        "features": {
+          "type": "object",
+          "required": ["used", "excluded"],
+          "additionalProperties": false,
+          "properties": {
+            "used": { "type": "array", "items": {
+              "type": "object", "required": ["name", "source", "transform", "why"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "source": { "type": "array", "minItems": 1,
+                            "items": { "type": "string", "minLength": 1 } },
+                "transform": { "type": "string", "minLength": 1 },
+                "why": { "type": "string", "minLength": 1 }
+              }
+            } },
+            "excluded": { "type": "array", "items": {
+              "type": "object", "required": ["name", "why"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "why": { "type": "string", "minLength": 1 }
+              }
+            } }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "required": ["params", "series", "summary", "artifacts"],
+          "additionalProperties": false,
+          "properties": {
+            "params": {
+              "type": "object",
+              "patternProperties": {
+                "^[A-Za-z0-9_.-]{1,128}$": {
+                  "type": ["string", "number", "integer", "boolean", "null"]
+                }
+              },
+              "additionalProperties": false
+            },
+            "series": {
+              "type": "object",
+              "patternProperties": {
+                "^[A-Za-z0-9_.-]{1,128}$": {
+                  "type": "object",
+                  "required": ["steps", "values", "times"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "steps": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+                    "values": {"type": "array", "items": {"type": "number"}},
+                    "times": {"type": "array", "items": {"type": "string"}}
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "summary": {
+              "type": "object",
+              "patternProperties": {
+                "^[A-Za-z0-9_.-]{1,128}$": {
+                  "type": "object",
+                  "required": ["final", "final_step", "best", "best_step", "direction"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "final": {"type": "number"},
+                    "final_step": {"type": "integer", "minimum": 0},
+                    "best": {"type": "number"},
+                    "best_step": {"type": "integer", "minimum": 0},
+                    "direction": {"type": "string", "enum": ["min", "max"]}
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["type", "name", "time", "data"],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {"type": "string", "enum": ["confusion_matrix", "roc_curve", "pr_curve", "calibration", "feature_importance", "sample_predictions"]},
+                  "name": {"type": "string", "minLength": 1},
+                  "time": {"type": "string"},
+                  "data": {"type": "object"}
+                },
+                "allOf": [
+                  {
+                    "if": {"properties": {"type": {"const": "confusion_matrix"}}},
+                    "then": {"properties": {"data": {
+                      "required": ["labels", "matrix"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "labels": {"type": "array", "items": {"type": "string"}},
+                        "matrix": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}}
+                      }
+                    }}}
+                  },
+                  {
+                    "if": {"properties": {"type": {"enum": ["roc_curve", "pr_curve"]}}},
+                    "then": {"properties": {"data": {
+                      "required": ["x", "y", "thresholds"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "x": {"type": "array", "items": {"type": "number"}},
+                        "y": {"type": "array", "items": {"type": "number"}},
+                        "thresholds": {"type": "array", "items": {"type": "number"}}
+                      }
+                    }}}
+                  },
+                  {
+                    "if": {"properties": {"type": {"const": "calibration"}}},
+                    "then": {"properties": {"data": {
+                      "required": ["predicted", "observed", "counts"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "predicted": {"type": "array", "items": {"type": "number"}},
+                        "observed": {"type": "array", "items": {"type": "number"}},
+                        "counts": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+                      }
+                    }}}
+                  },
+                  {
+                    "if": {"properties": {"type": {"const": "feature_importance"}}},
+                    "then": {"properties": {"data": {
+                      "required": ["features", "values"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "features": {"type": "array", "items": {"type": "string"}},
+                        "values": {"type": "array", "items": {"type": "number"}}
+                      }
+                    }}}
+                  },
+                  {
+                    "if": {"properties": {"type": {"const": "sample_predictions"}}},
+                    "then": {"properties": {"data": {
+                      "required": ["rows"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "rows": {"type": "array", "items": {
+                          "type": "object",
+                          "patternProperties": {"^.{1,128}$": {"type": ["string", "number", "integer", "boolean", "null"]}},
+                          "additionalProperties": false
+                        }}
+                      }
+                    }}}
+                  }
+                ]
+              }
+            }
+          }
+        },
         "logs": {
           "type": "array",
           "items": {
@@ -68,6 +382,19 @@ const nlohmann::json& schema_document() {
               "ref":  { "type": "string" }
             },
             "required": ["kind"],
+            "additionalProperties": false
+          }
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "database": { "type": "string" },
+              "table":    { "type": "string" },
+              "table_id": { "type": "string" }
+            },
+            "required": ["database", "table"],
             "additionalProperties": false
           }
         },
@@ -146,14 +473,18 @@ nlohmann::json to_json(const RunValue& value) {
                            {"name", output.name},
                            {"ref", output.ref}});
     }
-    return nlohmann::json{
+    nlohmann::json output{
         {"project", value.project},
         {"graph", value.graph},
+        {"project_name", value.project_name},
+        {"pipeline_name", value.pipeline_name},
         {"deployment", value.deployment},
         {"status", to_string(value.status)},
         {"created", value.created},
         {"updated", value.updated},
         {"trace_id", value.trace_id},
+        {"features", value.features},
+        {"metrics", value.metrics},
         {"logs", std::move(logs)},
         {"outputs", std::move(outputs)},
         {"lineage",
@@ -161,9 +492,65 @@ nlohmann::json to_json(const RunValue& value) {
           {"steps", value.lineage.steps},
           {"freshness", value.lineage.freshness},
           {"confidence", clamp_confidence(value.lineage.confidence)}}}};
+    if (!value.metrics_suppressed.empty()) {
+        output["metrics_suppressed"] = value.metrics_suppressed;
+    }
+    if (!value.entity_key_mapping.empty()) {
+        output["entity_key_mapping"] = value.entity_key_mapping;
+    }
+    // Only when there is one, so a run that reads nothing keeps the shape an
+    // older peer accepts.
+    if (!value.reads.empty()) output["reads"] = to_json(value.reads);
+    return output;
 }
 
 const nlohmann::json& run_value_schema() { return schema_document(); }
+
+bool reads_table(const std::vector<TableRead>& reads, std::string_view database,
+                 std::string_view table, std::string_view table_id) {
+    return std::ranges::any_of(reads, [&](const TableRead& read) {
+        if (!table_id.empty() && !read.table_id.empty()) return read.table_id == table_id;
+        return read.database == database && read.table == table;
+    });
+}
+
+bool merge_table_reads(std::vector<TableRead>& reads,
+                       const std::vector<TableRead>& added) {
+    bool changed = false;
+    for (const TableRead& read : added) {
+        if (read.database.empty() || read.table.empty()) continue;
+        if (reads_table(reads, read.database, read.table, read.table_id)) continue;
+        reads.push_back(read);
+        changed = true;
+    }
+    return changed;
+}
+
+nlohmann::json to_json(const std::vector<TableRead>& reads) {
+    nlohmann::json output = nlohmann::json::array();
+    for (const TableRead& read : reads) {
+        nlohmann::json entry{{"database", read.database}, {"table", read.table}};
+        if (!read.table_id.empty()) entry["table_id"] = read.table_id;
+        output.push_back(std::move(entry));
+    }
+    return output;
+}
+
+std::vector<TableRead> table_reads_from_json(const nlohmann::json& value) {
+    std::vector<TableRead> reads;
+    if (!value.is_array()) return reads;
+    for (const nlohmann::json& entry : value) {
+        if (!entry.is_object()) continue;
+        reads.push_back({entry.value("database", std::string{}),
+                         entry.value("table", std::string{}),
+                         entry.value("table_id", std::string{})});
+    }
+    return reads;
+}
+
+const nlohmann::json& run_features_schema() {
+    return schema_document().at("properties").at("features");
+}
 
 bool validate_run_value(const nlohmann::json& value, std::string* error) {
     collecting_error_handler handler;
@@ -184,6 +571,8 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
     RunValue parsed;
     parsed.project = value.value("project", std::string{});
     parsed.graph = value.value("graph", std::string{});
+    parsed.project_name = value.value("project_name", std::string{});
+    parsed.pipeline_name = value.value("pipeline_name", std::string{});
     parsed.deployment = value.value("deployment", std::string{});
     parsed.status =
         run_status_from_string(value.value("status", std::string{"pending"}))
@@ -191,6 +580,15 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
     parsed.created = value.value("created", std::string{});
     parsed.updated = value.value("updated", std::string{});
     parsed.trace_id = value.value("trace_id", std::string{});
+    parsed.entity_key_mapping =
+        value.value("entity_key_mapping", nlohmann::json::object());
+    parsed.features = value.value("features", parsed.features);
+    parsed.metrics = value.value("metrics", parsed.metrics);
+    parsed.metrics_suppressed =
+        value.value("metrics_suppressed", std::string{});
+    if (!validate_metric_columns(parsed.metrics, error)) {
+        return std::nullopt;
+    }
 
     if (const auto logs = value.find("logs"); logs != value.end()) {
         for (const auto& entry : *logs) {
@@ -205,6 +603,9 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
                                       output.value("name", std::string{}),
                                       output.value("ref", std::string{})});
         }
+    }
+    if (const auto reads = value.find("reads"); reads != value.end()) {
+        parsed.reads = table_reads_from_json(*reads);
     }
     if (const auto lineage = value.find("lineage"); lineage != value.end()) {
         parsed.lineage.sources =
@@ -250,9 +651,274 @@ void Run::set_lineage(RunLineage lineage) {
     capture_and_persist();
 }
 
+void Run::add_reads(const std::vector<TableRead>& reads) {
+    if (merge_table_reads(value_.reads, reads)) capture_and_persist();
+}
+
 void Run::set_trace_id(std::string trace_id) {
     value_.trace_id = std::move(trace_id);
     capture_and_persist();
+}
+
+bool Run::set_entity_key_mapping(nlohmann::json mapping,
+                                 std::string* error) {
+    nlohmann::json candidate = metadata();
+    candidate["entity_key_mapping"] = mapping;
+    if (!validate_run_value(candidate, error)) {
+        return false;
+    }
+    value_.entity_key_mapping = std::move(mapping);
+    capture_and_persist();
+    return true;
+}
+
+bool Run::set_features(nlohmann::json features, std::string* error) {
+    auto candidate = metadata();
+    candidate["features"] = features;
+    if (!validate_run_value(candidate, error)) {
+        return false;
+    }
+    value_.features = std::move(features);
+    capture_and_persist();
+    return true;
+}
+
+void Run::suppress_metrics_for_privacy() {
+    value_.metrics_suppressed = "differential_privacy";
+    capture_and_persist();
+}
+
+void Run::set_display_names(std::string project_name,
+                            std::string pipeline_name) {
+    if (value_.project_name == project_name &&
+        value_.pipeline_name == pipeline_name) {
+        return;
+    }
+    value_.project_name = std::move(project_name);
+    value_.pipeline_name = std::move(pipeline_name);
+    if (replication_ != nullptr) {
+        replication_->set(catalog::run_key(id_), metadata());
+    }
+    persist_meta();
+}
+
+bool Run::log_metrics(std::uint64_t step,
+                      const std::map<std::string, double>& values,
+                      std::string time, std::string* error) {
+    return log_metrics_with_system_sample(step, values, {}, std::move(time),
+                                          error);
+}
+
+namespace {
+
+bool append_metric_sample(nlohmann::json& candidate,
+                          std::uint64_t natural_step,
+                          const std::map<std::string, double>& values,
+                          const std::string& time, bool automatic,
+                          std::string* error) {
+    for (const auto& [name, value] : values) {
+        if (name.empty() || !std::isfinite(value)) {
+            if (error != nullptr) {
+                *error = name.empty() ? "/values: metric names may not be empty"
+                                      : "/values/" + name + ": value must be finite";
+            }
+            return false;
+        }
+        nlohmann::json& series = candidate["series"][name];
+        if (series.is_null()) {
+            series = {{"steps", nlohmann::json::array()},
+                      {"values", nlohmann::json::array()},
+                      {"times", nlohmann::json::array()}};
+        }
+        std::uint64_t step = natural_step;
+        if (!series["steps"].empty()) {
+            const auto last_step = series["steps"].back().get<std::uint64_t>();
+            if (step <= last_step) {
+                if (!automatic ||
+                    last_step == std::numeric_limits<std::uint64_t>::max()) {
+                    if (error != nullptr) {
+                        *error = "/step: must be greater than the last step for metric '" +
+                                 name + "'";
+                    }
+                    return false;
+                }
+                step = last_step + 1;
+            }
+        }
+        series["steps"].push_back(step);
+        series["values"].push_back(value);
+        series["times"].push_back(time);
+        nlohmann::json& summary = candidate["summary"][name];
+        const bool minimize = lower_is_better(name);
+        if (summary.is_null()) {
+            summary = {{"final", value},
+                       {"final_step", step},
+                       {"best", value},
+                       {"best_step", step},
+                       {"direction", minimize ? "min" : "max"}};
+        } else {
+            summary["final"] = value;
+            summary["final_step"] = step;
+            const double best = summary["best"].get<double>();
+            if ((minimize && value < best) || (!minimize && value > best)) {
+                summary["best"] = value;
+                summary["best_step"] = step;
+            }
+        }
+        if (series["values"].size() > kMetricPointsCap) {
+            const std::vector<double> stored =
+                series["values"].get<std::vector<double>>();
+            retain_indices(series, envelope_lttb_indices(
+                                       stored, kMetricPointsAfterCompaction));
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool Run::log_metrics_with_system_sample(
+    std::uint64_t natural_step,
+    const std::map<std::string, double>& values,
+    const std::map<std::string, double>& system_values,
+    std::string time, std::string* error, bool coalesce) {
+    if (values.empty() && system_values.empty()) {
+        if (error != nullptr) {
+            *error = "/values: at least one metric is required";
+        }
+        return false;
+    }
+    if (time.empty()) {
+        time = zetta::util::now_iso8601();
+    }
+    nlohmann::json candidate = value_.metrics;
+    if (!append_metric_sample(candidate, natural_step, values, time, false, error) ||
+        !append_metric_sample(candidate, natural_step, system_values, time, true,
+                              error)) {
+        return false;
+    }
+    nlohmann::json run_candidate = metadata();
+    run_candidate["metrics"] = candidate;
+    if (!validate_run_value(run_candidate, error) ||
+        !validate_metric_columns(candidate, error)) {
+        return false;
+    }
+    value_.metrics = std::move(candidate);
+    if (coalesce && std::chrono::steady_clock::now() - last_capture_ <
+                        kCaptureInterval) {
+        value_.updated = zetta::util::now_iso8601();
+        capture_pending_ = true;
+        return true;
+    }
+    capture_and_persist();
+    return true;
+}
+
+bool Run::flush_capture(bool force) {
+    if (!capture_pending_) return true;
+    if (!force &&
+        std::chrono::steady_clock::now() - last_capture_ < kCaptureInterval) {
+        return false;
+    }
+    capture_and_persist();
+    return true;
+}
+
+bool Run::log_params(nlohmann::json params, std::string* error) {
+    if (!params.is_object() || params.empty()) {
+        if (error != nullptr) {
+            *error = "/params: a non-empty object is required";
+        }
+        return false;
+    }
+    if (!value_.metrics.at("params").empty()) {
+        if (error != nullptr) {
+            *error = "/params: run parameters have already been recorded";
+        }
+        return false;
+    }
+    nlohmann::json run_candidate = metadata();
+    run_candidate["metrics"]["params"] = params;
+    if (!validate_run_value(run_candidate, error)) {
+        return false;
+    }
+    value_.metrics["params"] = std::move(params);
+    capture_and_persist();
+    return true;
+}
+
+void Run::reset_metrics_for_retry() {
+    value_.metrics["series"] = nlohmann::json::object();
+    value_.metrics["summary"] = nlohmann::json::object();
+    value_.metrics["artifacts"] = nlohmann::json::array();
+    capture_and_persist();
+}
+
+bool Run::log_artifact(nlohmann::json artifact, std::string* error) {
+    if (!artifact.is_object()) {
+        if (error != nullptr) {
+            *error = "/artifact: an object is required";
+        }
+        return false;
+    }
+    if (!artifact.contains("time")) {
+        artifact["time"] = zetta::util::now_iso8601();
+    }
+    nlohmann::json run_candidate = metadata();
+    run_candidate["metrics"]["artifacts"].push_back(artifact);
+    if (!validate_run_value(run_candidate, error)) {
+        return false;
+    }
+    value_.metrics["artifacts"].push_back(std::move(artifact));
+    capture_and_persist();
+    return true;
+}
+
+nlohmann::json Run::get_metrics(
+    const std::vector<std::string>& names, std::uint64_t from_step,
+    std::optional<std::size_t> max_points) const {
+    const std::set<std::string> selected_names(names.begin(), names.end());
+    nlohmann::json series_output = nlohmann::json::array();
+    nlohmann::json summary_output = nlohmann::json::object();
+    for (const auto& [name, stored] : value_.metrics.at("series").items()) {
+        if (!selected_names.empty() && !selected_names.contains(name)) {
+            continue;
+        }
+        std::vector<std::uint64_t> steps;
+        std::vector<double> values;
+        std::vector<std::string> times;
+        for (std::size_t index = 0; index < stored.at("steps").size(); ++index) {
+            const std::uint64_t step = stored.at("steps")[index].get<std::uint64_t>();
+            if (step < from_step) {
+                continue;
+            }
+            steps.push_back(step);
+            values.push_back(stored.at("values")[index].get<double>());
+            times.push_back(stored.at("times")[index].get<std::string>());
+        }
+        std::vector<std::size_t> indices(values.size());
+        std::iota(indices.begin(), indices.end(), 0);
+        if (max_points && values.size() > *max_points) {
+            indices = envelope_lttb_indices(values, *max_points);
+        }
+        nlohmann::json points = nlohmann::json::array();
+        for (const std::size_t index : indices) {
+            points.push_back({{"step", steps[index]},
+                              {"value", values[index]},
+                              {"time", times[index]}});
+        }
+        series_output.push_back({{"name", name}, {"points", std::move(points)}});
+        summary_output[name] = value_.metrics.at("summary").at(name);
+    }
+    nlohmann::json output = {{"run", id_},
+            {"params", value_.metrics.at("params")},
+            {"summary", std::move(summary_output)},
+            {"artifacts", value_.metrics.at("artifacts")},
+            {"series", std::move(series_output)}};
+    if (!value_.metrics_suppressed.empty()) {
+        output["metrics_suppressed"] = value_.metrics_suppressed;
+    }
+    return output;
 }
 
 void Run::apply_value(RunValue value) {
@@ -263,6 +929,8 @@ void Run::apply_value(RunValue value) {
 
 void Run::capture_and_persist() {
     value_.updated = zetta::util::now_iso8601();
+    capture_pending_ = false;
+    last_capture_ = std::chrono::steady_clock::now();
     // CRDT first (the source of truth), then the on-disk projection.
     if (replication_) replication_->set(catalog::run_key(id_), metadata());
     persist_meta();

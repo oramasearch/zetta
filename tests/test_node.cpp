@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <set>
 #include <thread>
 
 #include <nlohmann/json.hpp>
@@ -9,6 +10,8 @@
 #include "temp_dir.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/node.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/data/table.hpp"
 
 using nlohmann::json;
@@ -166,6 +169,96 @@ TEST(NodeOwnerGate, GatesWorkerWorkOntoTheTickingThread) {
     EXPECT_EQ(ran_on, std::this_thread::get_id())
         << "gated work must execute on the ticking (owner) thread";
 
+    node.stop();
+}
+
+// ---- the audit trail under replication (#1070) -------------------------------
+
+namespace {
+
+bool trail_is_sorted_and_unique(const Node& node) {
+    std::set<std::string> ids;
+    const auto& events = node.audit_events();
+    for (std::size_t i = 0; i < events.size(); ++i) {
+        if (!ids.insert(events[i]->id()).second) return false;
+        if (i > 0) {
+            const auto& a = events[i - 1];
+            const auto& b = events[i];
+            if (b->time() < a->time()) return false;
+        }
+    }
+    return true;
+}
+
+zetta::governance::AuditEventValue audit_value(std::string target, std::string time) {
+    zetta::governance::AuditEventValue value;
+    value.target = std::move(target);
+    value.time = std::move(time);
+    return value;
+}
+
+}  // namespace
+
+// Legacy catalog rows migrate once; subsequent audit: writes are refused.
+TEST(NodeAuditTrail, MigrationOrdersLegacyEventsAndRefusesCatalogRecapture) {
+    TempDir tmp;
+    zetta::cluster::ReplicationManager replication{"audit-node"};
+    Node node{config_for(tmp), &replication};
+    replication.set("audit:peer-old", zetta::governance::to_json(
+                                          audit_value("peer", "2000-01-01T00:00:00Z")));
+    replication.set("audit:peer-new", zetta::governance::to_json(
+                                          audit_value("peer", "2999-01-01T00:00:00Z")));
+    ASSERT_TRUE(node.start());
+    for (int index = 0; index < 5; ++index) {
+        node.record_audit_event(audit_value("local", ""));
+    }
+    node.tick();
+    ASSERT_EQ(node.audit_event_count(), 7u);
+    EXPECT_EQ(node.audit_events().front()->id(), "peer-old");
+    EXPECT_EQ(node.audit_events().back()->id(), "peer-new");
+    EXPECT_TRUE(trail_is_sorted_and_unique(node));
+
+    // More local events, and the document reconciled again: still ordered, no
+    // duplicates.
+    for (int i = 0; i < 3; ++i) node.record_audit_event(audit_value("local", ""));
+    node.tick();
+    node.tick();
+    replication.set("audit:rejected", zetta::governance::to_json(audit_value("old-peer", "")));
+    node.tick();
+    EXPECT_EQ(node.audit_event_count(), 10u);
+    EXPECT_FALSE(replication.knows_key("audit:peer-old"));
+    EXPECT_FALSE(replication.knows_key("audit:peer-new"));
+    EXPECT_FALSE(replication.knows_key("audit:rejected"));
+    EXPECT_TRUE(trail_is_sorted_and_unique(node));
+    node.stop();
+}
+
+// A long segment trail must not add historical parsing or sorting to tick.
+// Audit appends do not create catalog changes or reconciliation work (#1164).
+TEST(NodeAuditTrail, TickingALongTrailStaysCheap) {
+    TempDir tmp;
+    zetta::cluster::ReplicationManager replication{"audit-node"};
+    Node node{config_for(tmp), &replication};
+    ASSERT_TRUE(node.start());
+    constexpr int kEvents = 8000;
+    for (int i = 0; i < kEvents; ++i) node.record_audit_event(audit_value("load", ""));
+    node.tick();
+    ASSERT_GE(node.audit_event_count(), static_cast<std::size_t>(kEvents));
+
+    // Forty ticks, each adding one event, without catalog reconciliation.
+    const auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < 40; ++i) {
+        node.record_audit_event(audit_value("tick", ""));
+        node.tick();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    std::printf("zetta-test: 40 ticks of a %d-event trail: %lld ms\n", kEvents,
+                static_cast<long long>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(2500))
+        << "40 ticks of a " << kEvents << "-event trail took "
+        << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " ms";
+    EXPECT_TRUE(trail_is_sorted_and_unique(node));
     node.stop();
 }
 

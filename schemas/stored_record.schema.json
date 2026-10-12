@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "One keyed record (#1231), as a record-log frame holds it and a record.* signal carries it. `rev` is the record's revision: a copy is kept only when it is newer. `value` is the caller's opaque bytes as base64 (an engine-internal collection keeps its own text); `index` maps a declared index to the record's value in it; `order` orders records within an index value; `updated` and `expires` are milliseconds since the Unix epoch. A deletion keeps `rev`, `updated` and `deleted: true` until its grace period ends.",
+  "properties": {
+    "deleted": {
+      "type": "boolean"
+    },
+    "expires": {
+      "type": "integer"
+    },
+    "index": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "order": {
+      "type": "string"
+    },
+    "rev": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "updated": {
+      "type": "integer"
+    },
+    "value": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "rev",
+    "updated"
+  ],
+  "title": "zetta.StoredRecord",
+  "type": "object"
+}

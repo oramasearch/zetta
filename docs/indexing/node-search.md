@@ -49,6 +49,24 @@ zetta::index::SearchResult result = node.search(request, recorder, &trace);
    scatter-gather made visible, plus `wire_bytes_moved` and which `path`
    answered.
 
+## Each hit carries its row's fields (#1243)
+
+A hit's `row_id` is the engine's internal row id, which no outside caller can
+look up. So every hit also carries `fields`: the matched row's values for the
+index's own fields by default, or for the ones `SearchRequest::fields` names
+(each must be one of the index's fields, else `InvalidArgument` naming the
+ones it has; an empty list returns ids and scores only).
+
+- **Distributed path:** the node that owns a row's partition attaches its
+  values to its own hits before it answers (`return_fields` on the
+  `fulltext.query` request, `fields` on each returned hit). A row never crosses
+  the wire twice, and the coordinator never fetches a row from another node.
+  The values come from what the node indexed: `build_local` keeps each row's
+  values for the index's fields beside its sub-indexes, because the network
+  thread that answers a peer cannot read the node's partition bodies.
+- **Consolidated path:** the values are read from the table the consolidated
+  index was built over, on this node.
+
 ## One trace per search
 
 With a `SpanRecorder` (+ optional parent `TraceContext`), the whole search is
@@ -87,8 +105,8 @@ machinery:
 ## Surfaces (no second path)
 
 - **MCP/REST:** the `search` capability (`src/core/api/capabilities.cpp`) —
-  input schema `{target, query, field?, top_k?}` validated at the boundary;
-  output = ranked hits + per-node provenance (each node's `hits`,
+  input schema `{target, query, field?, fields?, top_k?}` validated at the
+  boundary; output = ranked hits (`{id, score, fields}`) + per-node provenance (each node's `hits`,
   `sub_indexes`, `latency_ms`, `wire_bytes`) + path + trace ids on the
   `ApiResult`. `list_indexes` (#642) is the discovery step: the index registry
   (`Node::indexes()`, the `system.indexes` source) as a tool, so an agent

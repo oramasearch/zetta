@@ -2,7 +2,9 @@
 
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <format>
+#include <string>
 
 namespace zetta::util {
 
@@ -80,6 +82,26 @@ std::optional<double> parse_iso8601_seconds(std::string_view stamp) {
     return static_cast<double>(
                duration_cast<std::chrono::seconds>(whole_seconds).count()) +
            fraction;
+}
+
+std::optional<double> parse_time_seconds(const nlohmann::json& value) {
+    if (value.is_number()) {
+        const double seconds = value.get<double>();
+        if (std::isfinite(seconds)) {
+            return seconds;
+        }
+        return std::nullopt;
+    }
+    if (!value.is_string()) {
+        return std::nullopt;
+    }
+    std::string stamp = value.get<std::string>();
+    if (stamp.size() == 10) {
+        stamp += "T00:00:00Z";
+    } else if (!stamp.ends_with('Z')) {
+        stamp += 'Z';
+    }
+    return parse_iso8601_seconds(stamp);
 }
 
 }  // namespace zetta::util

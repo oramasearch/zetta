@@ -64,6 +64,11 @@ if (response.ok) use(response.payload);
 cluster.send_event(peer_node_id, "heartbeat", payload);   // unicast
 cluster.broadcast_event("epoch-start", payload);          // to every peer
 cluster.send_task(peer_node_id, "map-shard", payload);    // a work envelope
+
+// The same request to several peers at once (#1231): all leave on the next
+// outbox flush, and the call returns when every one answered, failed or timed out.
+std::vector<zetta::cluster::SignalResponse> answers =
+    cluster.request_each(peer_ids, "record.apply", payload, std::chrono::seconds(2));
 ```
 
 `SignalHandler` has a safe default for each method, so a handler overrides only
@@ -72,6 +77,7 @@ replies with a clear `"no handler"` error rather than hanging the caller.
 
 ### Threading model
 
+- **Swapping a handler waits out calls still inside the old one (#1131).** Off the network thread, `set_signal_handler` returns only after any dispatch that already loaded the previous handler has finished, so a component that restores its predecessor may then be destroyed safely. That is the restore-then-destroy order every chained handler (select, fulltext, collectives, the scheduler, the coordinated-launch listener) follows at stop. Called on the network thread, from inside a dispatch, it does not wait.
 - **Handlers run on the cluster's network thread.** Keep them cheap and
   thread-safe; offload heavy work to another executor — e.g. the
   [work-stealing scheduler](../compute/work-stealing-scheduler.md), whose `steal` /
@@ -190,7 +196,18 @@ broadcasts (#584) so the headed cluster view can animate every node's resource
 gauges, and the **`run.launch`** Task — the first consumer of the Task kind —
 that the [coordinated cross-process SPMD launch](../compute/coordinated-launch.md)
 fans out so every member co-runs an interactive run against its own shard
-(#601). Each rides a schema-validated payload (the
+(#601), and the [record store's](../data/record-store.md) `record.put` (a write
+forwarded to the key's owner), `record.apply` (a committed record installed on
+every live peer before the write is acknowledged), and the anti-entropy requests
+`record.digest`, `record.keys` and `record.fetch` (#1231), and the
+[object capability's](../data/object-store.md) `object.*` methods (#1005): `object.write`
+(a mutation forwarded to the key's primary owner), `object.apply` and `object.stage`
+(a decided version and an upload's parts installed on the other owners),
+`object.abort`, `object.barrier`, `object.read` / `object.stat` / `object.list` /
+`object.usage`, the anti-entropy `object.digest` and `object.keys`, and
+`object.lease` / `object.lease_apply` / `object.define`. Their payloads are a JSON
+header line (the `object_signal` schema) followed by raw bytes, so object bytes are
+base64ed once, by the envelope. Each rides a schema-validated payload (the
 [collective message](collectives.md) / telemetry boundary pattern); none adds a new
 wire verb beyond `ZETTA/1 SIGNAL`.
 

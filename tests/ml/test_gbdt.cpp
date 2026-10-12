@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -28,6 +29,7 @@
 #include "zetta/ml/gbdt_train_job.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/storage/json_store.hpp"
 
 // Distributed histogram GBDT training (binary log-loss) -> Model (#390): the unit
@@ -251,6 +253,46 @@ TEST(GbdtTrain, RejectsSingleClass) {
     EXPECT_FALSE(trained.ok());
 }
 
+TEST(GbdtTrain, MetricHookPreservesModelBytesAndTrainingReductions) {
+    const Synthetic data = make_synthetic(60);
+    GbdtParams params;
+    params.num_trees = 8;
+    std::vector<std::string> training_rounds;
+    std::vector<std::string> metric_rounds;
+    const zetta::ml::AllReduce reduce = [&](const std::string& tag,
+                                            const std::vector<double>& local,
+                                            zetta::ml::GbdtReduce) {
+        if (tag.ends_with(".metrics")) {
+            metric_rounds.push_back(tag);
+        } else {
+            training_rounds.push_back(tag);
+        }
+        return local;
+    };
+    const auto baseline = train_gbdt(data.columns, data.names, data.labels,
+                                      params, reduce, "metrics-equivalence");
+    ASSERT_TRUE(baseline.ok()) << baseline.status.message;
+    EXPECT_TRUE(metric_rounds.empty());
+    const auto baseline_rounds = training_rounds;
+    training_rounds.clear();
+    int reported = 0;
+    zetta::ml::TrainHooks hooks;
+    hooks.on_metrics = [&](int step, const auto& values) {
+        EXPECT_EQ(step, ++reported);
+        EXPECT_TRUE(values.contains("train.log_loss"));
+        EXPECT_TRUE(std::isfinite(values.at("train.log_loss")));
+        return true;
+    };
+    const auto tracked = train_gbdt(data.columns, data.names, data.labels,
+                                     params, reduce, "metrics-equivalence", hooks);
+    ASSERT_TRUE(tracked.ok()) << tracked.status.message;
+    EXPECT_EQ(tracked.model.to_json().dump(), baseline.model.to_json().dump());
+    EXPECT_EQ(tracked.feature_importances, baseline.feature_importances);
+    EXPECT_EQ(training_rounds, baseline_rounds);
+    EXPECT_EQ(reported, params.num_trees);
+    EXPECT_EQ(metric_rounds.size(), static_cast<std::size_t>(params.num_trees));
+}
+
 // =====================================================================
 // Distributed `train` ComputeJob — the loopback cluster harness
 // =====================================================================
@@ -342,7 +384,8 @@ zetta::ml::DistributedTrainResult run_distributed_train(
     const std::vector<Json>& rows, const std::vector<std::string>& features,
     const std::string& label, const GbdtParams& params, std::size_t node_count,
     std::uint16_t base_port, bool register_model,
-    zetta::ml::CalibrationConfig calibration = {}) {
+    zetta::ml::CalibrationConfig calibration = {}, bool track_metrics = false,
+    const std::vector<double>& validation_times = {}) {
     const std::vector<std::string> ids = {"node-a", "node-b", "node-c"};
     std::vector<std::unique_ptr<ComputeNode>> nodes;
     for (std::size_t index = 0; index < node_count; ++index) {
@@ -364,6 +407,7 @@ zetta::ml::DistributedTrainResult run_distributed_train(
 
     std::vector<std::unique_ptr<CpuDevice>> devices;
     std::vector<DataFrame> frames;
+    std::vector<std::vector<double>> time_shards;
     const std::size_t per = (rows.size() + node_count - 1) / node_count;
     for (std::size_t index = 0; index < node_count; ++index) {
         devices.push_back(std::make_unique<CpuDevice>());
@@ -372,9 +416,15 @@ zetta::ml::DistributedTrainResult run_distributed_train(
             training_schema(features, label), *devices[index]);
         EXPECT_TRUE(frame.ok()) << frame.status.message;
         frames.push_back(std::move(frame.frame));
+        const std::size_t begin = std::min(index * per, validation_times.size());
+        const std::size_t end =
+            std::min((index + 1) * per, validation_times.size());
+        time_shards.emplace_back(validation_times.begin() + begin,
+                                 validation_times.begin() + end);
     }
 
     std::vector<zetta::ml::DistributedTrainResult> results(node_count);
+    const auto metric_run = track_metrics ? nodes[0]->node.create_run() : nullptr;
     std::vector<std::shared_ptr<ComputeJob>> jobs(node_count);
     std::vector<std::thread> threads;
     for (std::size_t index = 0; index < node_count; ++index) {
@@ -382,8 +432,11 @@ zetta::ml::DistributedTrainResult run_distributed_train(
         threads.emplace_back([&, index] {
             results[index] = run_train_job(
                 nodes[index]->coordinator, *jobs[index], frames[index], features,
-                label, params, register_model ? &nodes[index]->node : nullptr, {},
-                {}, calibration);
+                label, params,
+                register_model || track_metrics ? &nodes[index]->node : nullptr, {},
+                {}, calibration, zetta::ml::kDefaultGbdtTimeout, {},
+                index == 0 && metric_run ? metric_run->id() : std::string{},
+                {}, time_shards[index]);
         });
     }
     for (auto& thread : threads) thread.join();
@@ -400,6 +453,14 @@ zetta::ml::DistributedTrainResult run_distributed_train(
             << "node " << index;
     }
     EXPECT_TRUE(results[0].is_root);
+    if (metric_run) {
+        const auto metrics = metric_run->get_metrics({"train.log_loss"});
+        EXPECT_EQ(metrics.at("series").size(), 1u);
+        if (!metrics.at("series").empty()) {
+            EXPECT_EQ(metrics.at("series").front().at("points").size(),
+                      static_cast<std::size_t>(params.num_trees));
+        }
+    }
 
     auto out = std::move(results[0]);
     // Keep the root node alive long enough to read its registered model.
@@ -450,6 +511,23 @@ TEST(GbdtDistributed, SingleNodeMatchesMultiNode) {
             << "row " << r;
     }
     EXPECT_NEAR(single.metrics.auc, multi.metrics.auc, 1e-9);
+}
+
+TEST(GbdtDistributed, RootMetricHookPreservesTheDistributedModel) {
+    const Synthetic data = make_synthetic(60);
+    const auto rows = synthetic_rows(data, "y");
+    GbdtParams params;
+    params.num_trees = 4;
+    params.max_depth = 2;
+    const auto baseline =
+        run_distributed_train(rows, data.names, "y", params, 2, 22280, false);
+    const auto tracked =
+        run_distributed_train(rows, data.names, "y", params, 2, 22290, false,
+                              {}, true);
+    ASSERT_TRUE(baseline.ok());
+    ASSERT_TRUE(tracked.ok());
+    EXPECT_EQ(tracked.model.to_json().dump(), baseline.model.to_json().dump());
+    EXPECT_EQ(tracked.feature_importances, baseline.feature_importances);
 }
 
 TEST(GbdtDistributed, CalibratesProducedModel) {
@@ -822,6 +900,84 @@ TEST(GbdtHoldout, RegisteredModelMetricsSurviveTheEntityBoundary) {
     cn.cluster.stop();
 }
 
+// #1239: the held-out scores reach the Run, so get_run_metrics' summary and
+// compare_runs carry the figure that decides between runs, not only the Model.
+TEST(GbdtHoldout, HeldOutScoresAreLoggedOnTheRun) {
+    const Synthetic data = make_synthetic(120);
+    GbdtParams params;
+    params.num_trees = 8;
+    params.holdout_fraction = 0.3;
+
+    ComputeNode cn("node-hold-run", 22480, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    CpuDevice device;
+    auto frame = load_data_frame(make_store(synthetic_rows(data, "y")),
+                                 training_schema(data.names, "y"), device);
+    ASSERT_TRUE(frame.ok()) << frame.status.message;
+    const auto run = cn.node.create_run();
+    ASSERT_TRUE(run);
+    std::shared_ptr<ComputeJob> job = cn.node.create_job(JobKind::Train);
+    const auto result = run_train_job(
+        cn.coordinator, *job, frame.frame, data.names, "y", params, &cn.node,
+        "holdout-run-model", {}, {}, zetta::ml::kDefaultGbdtTimeout, {}, run->id());
+    ASSERT_TRUE(result.ok());
+    ASSERT_TRUE(result.has_held_out);
+
+    const nlohmann::json& summary = run->value().metrics.at("summary");
+    ASSERT_TRUE(summary.contains("held_out_auc")) << summary.dump();
+    EXPECT_DOUBLE_EQ(summary["held_out_auc"]["final"].get<double>(), result.held_out.auc);
+    EXPECT_EQ(summary["held_out_auc"]["direction"], "max");
+    EXPECT_DOUBLE_EQ(summary["held_out_log_loss"]["final"].get<double>(),
+                     result.held_out.log_loss);
+    EXPECT_EQ(summary["held_out_log_loss"]["direction"], "min");
+    EXPECT_DOUBLE_EQ(summary["held_out_accuracy"]["final"].get<double>(),
+                     result.held_out.accuracy);
+    EXPECT_DOUBLE_EQ(summary["held_out_rows"]["final"].get<double>(),
+                     static_cast<double>(result.held_out_rows));
+    EXPECT_TRUE(summary.contains("train.log_loss")) << "the training curve is still there";
+
+    // The held-out charts are logged on the run (#1247), over the held-out rows.
+    const nlohmann::json& artifacts = run->value().metrics.at("artifacts");
+    std::map<std::string, nlohmann::json> by_type;
+    for (const nlohmann::json& artifact : artifacts) {
+        EXPECT_EQ(artifact.at("name"), "held_out");
+        by_type[artifact.at("type").get<std::string>()] = artifact.at("data");
+    }
+    ASSERT_TRUE(by_type.contains("confusion_matrix")) << artifacts.dump();
+    ASSERT_TRUE(by_type.contains("roc_curve")) << artifacts.dump();
+    ASSERT_TRUE(by_type.contains("calibration")) << artifacts.dump();
+    std::uint64_t confusion_total = 0;
+    for (const auto& row : by_type["confusion_matrix"].at("matrix")) {
+        for (const auto& cell : row) confusion_total += cell.get<std::uint64_t>();
+    }
+    EXPECT_EQ(confusion_total, result.held_out_rows);
+    const nlohmann::json& roc = by_type["roc_curve"];
+    EXPECT_DOUBLE_EQ(roc.at("x").front().get<double>(), 0.0);
+    EXPECT_DOUBLE_EQ(roc.at("y").back().get<double>(), 1.0);
+    EXPECT_DOUBLE_EQ(roc.at("x").back().get<double>(), 1.0);
+    std::uint64_t calibrated_rows = 0;
+    for (const auto& count : by_type["calibration"].at("counts")) {
+        calibrated_rows += count.get<std::uint64_t>();
+    }
+    EXPECT_EQ(calibrated_rows, result.held_out_rows);
+
+    // A run with no holdout gets no held-out entry, never a zero.
+    GbdtParams in_sample = params;
+    in_sample.holdout_fraction = 0.0;
+    const auto plain_run = cn.node.create_run();
+    std::shared_ptr<ComputeJob> plain_job = cn.node.create_job(JobKind::Train);
+    const auto plain = run_train_job(
+        cn.coordinator, *plain_job, frame.frame, data.names, "y", in_sample, &cn.node,
+        "in-sample-model", {}, {}, zetta::ml::kDefaultGbdtTimeout, {}, plain_run->id());
+    ASSERT_TRUE(plain.ok());
+    EXPECT_FALSE(plain_run->value().metrics.at("summary").contains("held_out_auc"));
+    EXPECT_TRUE(plain_run->value().metrics.at("artifacts").empty());
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
 // The holdout is decided by a content hash of the row, so WHICH rows are held out
 // does not depend on how the rows were spread over nodes. Two shardings of the
 // same data therefore report the same held-out figure — without this, a run's
@@ -845,6 +1001,88 @@ TEST(GbdtHoldout, HoldoutIsShardingInvariant) {
     EXPECT_EQ(single.train_rows, multi.train_rows);
     EXPECT_NEAR(single.held_out.auc, multi.held_out.auc, 1e-9);
     EXPECT_NEAR(single.held_out.log_loss, multi.held_out.log_loss, 1e-9);
+}
+
+TEST(GbdtHoldout, TemporalHoldoutUsesOneGlobalCutoffAcrossShards) {
+    const Synthetic data = make_noise(101);
+    const std::vector<Json> rows = synthetic_rows(data, "y");
+    std::vector<double> validation_times(rows.size());
+    for (std::size_t index = 0; index < validation_times.size(); ++index) {
+        validation_times[index] = static_cast<double>(index);
+    }
+    GbdtParams params;
+    params.num_trees = 12;
+    params.max_depth = 4;
+    params.holdout_fraction = 0.2;
+
+    const auto single = run_distributed_train(
+        rows, data.names, "y", params, 1, 22460, false, {}, false,
+        validation_times);
+    const auto multi = run_distributed_train(
+        rows, data.names, "y", params, 3, 22470, false, {}, false,
+        validation_times);
+
+    ASSERT_TRUE(single.has_held_out);
+    ASSERT_TRUE(multi.has_held_out);
+    EXPECT_EQ(single.held_out_rows, 21u);
+    EXPECT_EQ(single.held_out_rows, multi.held_out_rows);
+    EXPECT_EQ(single.train_rows, multi.train_rows);
+    EXPECT_NEAR(single.held_out.auc, multi.held_out.auc, 1e-9);
+    EXPECT_NEAR(single.held_out.log_loss, multi.held_out.log_loss, 1e-9);
+}
+
+TEST(GbdtRegressionJob, RegistersRegressorWithContinuousMetrics) {
+    Synthetic data = make_synthetic(120);
+    for (std::size_t index = 0; index < data.labels.size(); ++index) {
+        data.labels[index] = 250.0 + 900.0 * data.columns[0][index] +
+                             50.0 * data.columns[1][index];
+    }
+    GbdtParams params;
+    params.objective = "squared_error";
+    params.num_trees = 20;
+    params.holdout_fraction = 0.2;
+
+    ComputeNode cn("node-regression", 22450, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    CpuDevice device;
+    auto frame = load_data_frame(make_store(synthetic_rows(data, "future_value")),
+                                 training_schema(data.names, "future_value"),
+                                 device);
+    ASSERT_TRUE(frame.ok()) << frame.status.message;
+    std::shared_ptr<ComputeJob> job = cn.node.create_job(JobKind::Train);
+    const auto result = run_train_job(
+        cn.coordinator, *job, frame.frame, data.names, "future_value", params,
+        &cn.node, "lifetime-value-regressor");
+    ASSERT_TRUE(result.ok());
+    ASSERT_TRUE(result.regression);
+    EXPECT_GT(result.rmse, 0.0);
+    EXPECT_GT(result.mae, 0.0);
+    EXPECT_TRUE(result.has_held_out);
+    EXPECT_GT(result.held_out_rmse, 0.0);
+    EXPECT_GT(result.held_out_mae, 0.0);
+
+    const std::shared_ptr<Model> registered =
+        cn.node.find_model(result.model_id);
+    ASSERT_TRUE(registered);
+    EXPECT_EQ(registered->kind(), "regressor");
+    EXPECT_EQ(registered->feature_schema().at("objective"),
+              "squared_error");
+    EXPECT_DOUBLE_EQ(registered->metrics().at("rmse").get<double>(),
+                     result.rmse);
+    EXPECT_DOUBLE_EQ(registered->metrics().at("mae").get<double>(),
+                     result.mae);
+    EXPECT_DOUBLE_EQ(registered->metrics()
+                         .at("held_out_rmse")
+                         .get<double>(),
+                     result.held_out_rmse);
+    EXPECT_DOUBLE_EQ(registered->metrics()
+                         .at("held_out_mae")
+                         .get<double>(),
+                     result.held_out_mae);
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
 }
 
 }  // namespace
@@ -983,4 +1221,41 @@ TEST(GbdtRegression, TheDefaultObjectiveIsUnchangedWhenAbsent) {
     const auto decoded = zetta::ml::GbdtParams::from_json(value);
     ASSERT_TRUE(decoded.has_value()) << "objective is optional; omitting it must still parse";
     EXPECT_EQ(decoded->objective, "binary_logistic");
+}
+
+// The held-out chart math (#1247), on four rows worked by hand.
+TEST(GbdtHoldout, HeldOutChartsAreWorkedOutFromTheHeldOutRows) {
+    const std::vector<double> probabilities{0.9, 0.8, 0.3, 0.1};
+    const std::vector<double> targets{1.0, 0.0, 1.0, 0.0};
+    const std::vector<nlohmann::json> charts =
+        zetta::ml::held_out_chart_artifacts(probabilities, targets);
+    ASSERT_EQ(charts.size(), 3u);
+
+    EXPECT_EQ(charts[0].at("type"), "confusion_matrix");
+    EXPECT_EQ(charts[0].at("data").at("labels"), (nlohmann::json{"0", "1"}));
+    // rows = actual, columns = predicted at 0.5: TN FP / FN TP
+    EXPECT_EQ(charts[0].at("data").at("matrix"), (nlohmann::json{{1, 1}, {1, 1}}));
+
+    EXPECT_EQ(charts[1].at("type"), "roc_curve");
+    EXPECT_EQ(charts[1].at("data").at("x"), (nlohmann::json{0.0, 0.0, 0.5, 0.5, 1.0}));
+    EXPECT_EQ(charts[1].at("data").at("y"), (nlohmann::json{0.0, 0.5, 0.5, 1.0, 1.0}));
+    EXPECT_EQ(charts[1].at("data").at("thresholds"),
+              (nlohmann::json{1.0, 0.9, 0.8, 0.3, 0.1}));
+
+    EXPECT_EQ(charts[2].at("type"), "calibration");
+    EXPECT_EQ(charts[2].at("data").at("counts"), (nlohmann::json{1, 1, 1, 1}));
+    EXPECT_EQ(charts[2].at("data").at("observed"), (nlohmann::json{0.0, 1.0, 0.0, 1.0}));
+
+    // A long curve is thinned, keeping both ends.
+    std::vector<double> many_probabilities, many_targets;
+    for (int i = 0; i < 1000; ++i) {
+        many_probabilities.push_back(i / 1000.0);
+        many_targets.push_back(i % 3 == 0 ? 1.0 : 0.0);
+    }
+    const auto thinned =
+        zetta::ml::held_out_chart_artifacts(many_probabilities, many_targets, 51);
+    EXPECT_EQ(thinned[1].at("data").at("x").size(), 51u);
+    EXPECT_DOUBLE_EQ(thinned[1].at("data").at("x").back().get<double>(), 1.0);
+
+    EXPECT_TRUE(zetta::ml::held_out_chart_artifacts({}, {}).empty());
 }

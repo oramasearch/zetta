@@ -1,0 +1,37 @@
+{
+  "$id": "https://oramasearch.github.io/zetta/schemas/next_best_action_launch.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "entity_key_mapping": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "graph": {
+      "type": "object"
+    },
+    "graph_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "model_name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "project_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "graph",
+    "project_id",
+    "graph_id",
+    "model_name",
+    "entity_key_mapping"
+  ],
+  "title": "zetta.NextBestActionLaunch",
+  "type": "object"
+}

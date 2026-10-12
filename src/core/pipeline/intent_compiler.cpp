@@ -1,19 +1,16 @@
 #include "zetta/pipeline/intent_compiler.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <string>
+#include <vector>
 
-#include <nlohmann/json.hpp>
-
-#include "zetta/ir/step_kind.hpp"
+#include "zetta/ml/methodology.hpp"
+#include "zetta/ml/workspace_methodology.hpp"
 
 namespace zetta::pipeline {
 namespace {
 
-// A lowercase copy of `text`, so the keyword heuristic is case-insensitive. ASCII
-// is enough here — the signal words are all ASCII.
 std::string to_lower(std::string_view text) {
     std::string lowered(text);
     std::transform(lowered.begin(), lowered.end(), lowered.begin(),
@@ -23,132 +20,225 @@ std::string to_lower(std::string_view text) {
     return lowered;
 }
 
-// Does the intent read like a churn / retention problem? The heuristic is a plain
-// substring scan for the signal words that name this use case (UC-1). It is
-// intentionally simple and transparent — the point of this slice is a *templated*
-// mapping, not language understanding; a richer parser plugs in later behind the
-// same compile_intent front door without changing its contract.
-bool looks_like_churn(const std::string& lowered_intent) {
-    static constexpr std::array<std::string_view, 11> kSignals = {
-        "churn",   "retention", "retain",      "attrition", "cancel",
-        "renew",   "renewal",   "subscriber",  "lapse",     "downgrade",
-        "win-back"};
-    return std::any_of(kSignals.begin(), kSignals.end(),
-                       [&](std::string_view signal) {
-                           return lowered_intent.find(signal) !=
-                                  std::string::npos;
+bool contains_keyword(const std::string& lowered_intent,
+                      const std::vector<std::string>& keywords) {
+    return std::any_of(keywords.begin(), keywords.end(),
+                       [&](const std::string& keyword) {
+                           return lowered_intent.contains(to_lower(keyword));
                        });
 }
 
-// The full churn pipeline skeleton (connect→clean→model→index→serve→act), laid
-// out as a senior data+AI engineer would seed it: two connect sources feeding a
-// feature build, a churn-risk model, an index over its scores, a serving step,
-// and a retention action. Every node is named + typed + editable; the attributes
-// are starting-point hints (the `note` explains each step for review), all of
-// which the user is expected to refine in the Graph Workspace.
-ir::ExecutionGraph build_churn_skeleton() {
-    using nlohmann::json;
-    ir::ExecutionGraph graph;
-
-    graph.add_node(ir::StepKind::Connect, "Load customer accounts",
-                   json{{"source", "warehouse"},
-                        {"table", "customers"},
-                        {"note", "active accounts to score for churn risk"}},
-                   "load_customers");
-    graph.add_node(ir::StepKind::Connect, "Load usage & billing activity",
-                   json{{"source", "warehouse"},
-                        {"table", "events"},
-                        {"note", "engagement + payment signals per account"}},
-                   "load_activity");
-    graph.add_node(
-        ir::StepKind::Clean, "Build churn features",
-        json{{"note", "point-in-time features; keep out post-cutoff leakage"}},
-        "build_features");
-    graph.add_node(ir::StepKind::Model, "Train churn-risk model",
-                   json{{"algo", "gradient_boosting"},
-                        {"target", "churned"},
-                        {"note", "predict probability each account churns"}},
-                   "train_churn_model");
-    graph.add_node(ir::StepKind::Index, "Index churn scores",
-                   json{{"kind", "feature"},
-                        {"note", "make scores fast to look up at serve time"}},
-                   "index_scores");
-    graph.add_node(ir::StepKind::Serve, "Serve churn scores & reasons",
-                   json{{"note", "expose per-account risk + top drivers"}},
-                   "serve_scores");
-    graph.add_node(ir::StepKind::Act, "Trigger retention outreach",
-                   json{{"note", "notify retention on high-risk accounts"}},
-                   "notify_retention");
-
-    graph.add_edge("load_customers", "build_features");
-    graph.add_edge("load_activity", "build_features");
-    graph.add_edge("build_features", "train_churn_model");
-    graph.add_edge("train_churn_model", "index_scores");
-    graph.add_edge("index_scores", "serve_scores");
-    graph.add_edge("serve_scores", "notify_retention");
-    return graph;
+bool looks_like_supervised_prediction(const std::string& lowered_intent) {
+    static const std::vector<std::string> signals = {
+        "predict whether", "classification", "classify", "score",
+        "likelihood",      "probability",    "risk of"};
+    return contains_keyword(lowered_intent, signals);
 }
 
-// A generic-but-complete skeleton for an intent the heuristic doesn't recognize:
-// one node per pipeline stage, chained linearly. It is still well-formed and
-// editable, so an unrecognized intent yields a usable starting point rather than
-// nothing (the user reshapes it in the workspace).
-ir::ExecutionGraph build_generic_skeleton() {
-    using nlohmann::json;
-    ir::ExecutionGraph graph;
+const ml::Methodology* resolve_methodology(const std::string& lowered_intent,
+                                           const IntentCompileOptions& options,
+                                           std::string* error) {
+    if (!options.methodology.empty()) {
+        const ml::Methodology* methodology =
+            ml::find_methodology(options.methodology);
+        if (methodology == nullptr && error != nullptr) {
+            *error =
+                "unknown methodology '" + options.methodology +
+                "'. Runnable methodologies: " + ml::runnable_methodologies();
+        }
+        return methodology;
+    }
+    if (!options.solution.empty()) {
+        const ml::Methodology* methodology =
+            ml::find_methodology(options.solution);
+        if (methodology == nullptr && error != nullptr) {
+            *error =
+                "unknown solution '" + options.solution +
+                "'. Runnable methodologies: " + ml::runnable_methodologies();
+        }
+        return methodology;
+    }
+    for (const ml::Methodology& methodology : ml::methodologies()) {
+        if (contains_keyword(lowered_intent, methodology.keywords)) {
+            return &methodology;
+        }
+    }
+    if (looks_like_supervised_prediction(lowered_intent)) {
+        return ml::find_methodology("M-1");
+    }
+    if (error != nullptr) {
+        *error = "intent does not match a supported methodology. Runnable "
+                 "methodologies: " +
+                 ml::runnable_methodologies();
+    }
+    return nullptr;
+}
 
-    graph.add_node(ir::StepKind::Connect, "Connect data source",
-                   json{{"note", "pull in the data this project needs"}},
-                   "connect_source");
-    graph.add_node(ir::StepKind::Clean, "Clean & prepare data",
-                   json{{"note", "normalize, dedupe, validate, reshape"}},
-                   "clean_data");
-    graph.add_node(ir::StepKind::Model, "Build model",
-                   json{{"note", "train / evaluate / apply a model"}},
-                   "build_model");
-    graph.add_node(ir::StepKind::Index, "Build index",
-                   json{{"note", "build a search / vector / feature index"}},
-                   "build_index");
-    graph.add_node(ir::StepKind::Serve, "Serve results",
-                   json{{"note", "expose results behind a query / API"}},
-                   "serve_results");
-    graph.add_node(ir::StepKind::Act, "Take action",
-                   json{{"note", "notify / write back / trigger downstream"}},
-                   "take_action");
-
-    graph.add_edge("connect_source", "clean_data");
-    graph.add_edge("clean_data", "build_model");
-    graph.add_edge("build_model", "build_index");
-    graph.add_edge("build_index", "serve_results");
-    graph.add_edge("serve_results", "take_action");
-    return graph;
+std::string template_name(const ml::Methodology& methodology,
+                          const IntentCompileOptions& options) {
+    if (!options.solution.empty()) {
+        return "the " + options.solution + " template";
+    }
+    if (methodology.id == "M-1") {
+        return "the M-1 churn template";
+    }
+    return "the " + methodology.id + " " + methodology.name + " template";
 }
 
 }  // namespace
 
+std::string intent_pipeline_name(std::string_view intent) {
+    constexpr std::size_t max_words = 8;
+    constexpr std::size_t max_length = 60;
+    std::vector<std::string> words;
+    std::string word;
+    const auto flush = [&] {
+        // Trim the dashes and apostrophes a word may end or start with.
+        while (!word.empty() && (word.back() == '-' || word.back() == '\'')) {
+            word.pop_back();
+        }
+        while (!word.empty() && (word.front() == '-' || word.front() == '\'')) {
+            word.erase(word.begin());
+        }
+        if (!word.empty()) {
+            words.push_back(std::move(word));
+        }
+        word.clear();
+    };
+    for (const char character : intent) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (std::isalnum(byte) != 0 || character == '-' || character == '\'' ||
+            character == '_' || byte >= 0x80) {
+            word += character;
+        } else {
+            flush();
+        }
+        if (words.size() == max_words) {
+            break;
+        }
+    }
+    if (words.size() < max_words) {
+        flush();
+    }
+    std::string name;
+    for (const std::string& next : words) {
+        if (!name.empty() && name.size() + 1 + next.size() > max_length) {
+            break;
+        }
+        name += (name.empty() ? "" : " ") + next;
+    }
+    if (name.size() > max_length) {
+        name.resize(max_length);
+        // Never leave half of a UTF-8 character at the cut.
+        while (!name.empty() &&
+               (static_cast<unsigned char>(name.back()) & 0xC0) == 0x80) {
+            name.pop_back();
+        }
+        if (!name.empty() && static_cast<unsigned char>(name.back()) >= 0xC0) {
+            name.pop_back();
+        }
+    }
+    // A cut phrase does not end on a joining word ("… next quarter and").
+    static const std::vector<std::string> joining = {
+        "a",  "an", "and", "by",  "for", "from", "in",   "of",
+        "on", "or", "the", "to",  "with", "into", "that", "which"};
+    while (true) {
+        const std::size_t space = name.rfind(' ');
+        if (space == std::string::npos) {
+            break;
+        }
+        const std::string last = to_lower(std::string_view(name).substr(space + 1));
+        if (std::find(joining.begin(), joining.end(), last) == joining.end()) {
+            break;
+        }
+        name.resize(space);
+    }
+    if (!name.empty()) {
+        name.front() = static_cast<char>(
+            std::toupper(static_cast<unsigned char>(name.front())));
+    }
+    return name;
+}
+
 std::string_view to_string(IntentShape shape) {
     switch (shape) {
-        case IntentShape::Churn:   return "churn";
-        case IntentShape::Generic: return "generic";
+    case IntentShape::Churn:
+        return "churn";
+    case IntentShape::Generic:
+        return "generic";
     }
     return "unknown";
 }
 
 std::optional<CompiledIntent> compile_intent(std::string_view intent,
                                              std::string* error) {
-    // Reject empty / whitespace-only intent: there is nothing to compile, so we
-    // return no graph (mirroring Project::capture_intent's rejection of empty
-    // intent at ingestion). The caller decides what to do with the empty result.
+    return compile_intent(intent, IntentCompileOptions{}, error);
+}
+
+std::optional<CompiledIntent>
+compile_intent(std::string_view intent, const IntentCompileOptions& options,
+               std::string* error) {
     if (intent.find_first_not_of(" \t\r\n\f\v") == std::string_view::npos) {
-        if (error) *error = "intent is empty";
+        if (error != nullptr)
+            *error = "intent is empty";
         return std::nullopt;
     }
 
-    const std::string lowered = to_lower(intent);
-    if (looks_like_churn(lowered)) {
-        return CompiledIntent{build_churn_skeleton(), IntentShape::Churn};
+    if (options.workspace_methodology != nullptr) {
+        const nlohmann::json& entry = *options.workspace_methodology;
+        ml::ShapeRequest request;
+        request.project = options.project;
+        request.intent = std::string(intent);
+        request.solution = options.solution;
+        request.hints = options.hints;
+        const std::string id = entry.at("id").get<std::string>();
+        const std::string entry_name = entry.at("name").get<std::string>();
+        std::string name = intent_pipeline_name(intent);
+        if (name.empty()) {
+            name = options.project.empty() ? entry_name + " pipeline"
+                                           : options.project + " pipeline";
+        }
+        return CompiledIntent{ml::build_workspace_methodology_shape(entry, request),
+                              IntentShape::Generic, id, std::move(name),
+                              "the " + id + " " + entry_name +
+                                  " workspace methodology template"};
     }
-    return CompiledIntent{build_generic_skeleton(), IntentShape::Generic};
+    if (ml::is_workspace_methodology_id(options.methodology)) {
+        if (error != nullptr) {
+            *error = "unknown methodology '" + options.methodology +
+                     "': no workspace methodology has that id";
+        }
+        return std::nullopt;
+    }
+
+    const ml::Methodology* methodology =
+        resolve_methodology(to_lower(intent), options, error);
+    if (methodology == nullptr)
+        return std::nullopt;
+    if (!methodology->runnable || !methodology->build_shape) {
+        if (error != nullptr) {
+            *error = ml::unsupported_methodology_message(*methodology);
+        }
+        return std::nullopt;
+    }
+
+    ml::ShapeRequest request;
+    request.project = options.project;
+    request.intent = std::string(intent);
+    request.solution = options.solution;
+    request.hints = options.hints;
+    const IntentShape shape =
+        methodology->id == "M-1" ? IntentShape::Churn : IntentShape::Generic;
+    // Named for what the person asked, not for the template (#1238); an
+    // intent with no words falls back to the project's or methodology's name.
+    std::string name = intent_pipeline_name(intent);
+    if (name.empty()) {
+        name = options.project.empty() ? methodology->name + " pipeline"
+                                       : options.project + " pipeline";
+    }
+    return CompiledIntent{methodology->build_shape(request), shape,
+                          methodology->id, std::move(name),
+                          template_name(*methodology, options)};
 }
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

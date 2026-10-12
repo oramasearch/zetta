@@ -49,6 +49,10 @@ now" is not one.**
   saturates all of them. A raw `std::mutex` is permitted only as the lowest
   cross-thread handoff *inside* a backend adapter (the one TU that names the
   backend library) — contained, commented, never in a public API.
+  **One deliberate exception: `zetta::pubsub`** (Steve, 2026-09-27, decisions
+  D1/D5 in `docs/plans/pubsub/decisions.md`): its queues use a mutex and
+  condition variables per queue and its subscribers are threads, by design, in
+  stage 1. Do not extend the exception to other code.
 - **Cluster-native.** A node is an equal peer in a cluster, not a server that
   happens to replicate. State is replicated state; work is *placed*, not
   centralized.
@@ -269,6 +273,7 @@ level can be trusted — a stale card is worse than none.
 | **The report a run produces**, and asking a finished run what it found | [`docs/pipeline/run-report.md`](docs/pipeline/run-report.md) (the artifact + `get_run_report`) · [`docs/pipeline/run-report-prompt.md`](docs/pipeline/run-report-prompt.md) + the **run-report** skill · [`docs/agent/chatting-with-results.md`](docs/agent/chatting-with-results.md) · regenerate: [`docs/runbooks/regenerating-the-run-report.md`](docs/runbooks/regenerating-the-run-report.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
+| Pub/sub: topics, inboxes, the envelope, delivery options, drains, limits and spilling, flush/reload, exposure | [`docs/pubsub/`](docs/pubsub/README.md) (what is built) · [`docs/plans/pubsub/`](docs/plans/pubsub/README.md) (the design, every decision with its cost, the as-built differences) |
 | Provisioners, cloud burst, cloud inspector | [`docs/cloud/`](docs/cloud/README.md) |
 | Access control, audit, governed console | [`docs/governance/`](docs/governance/README.md) |
 | Any GUI change | [`docs/gui/`](docs/gui/README.md) — design system + rendering notes are mandatory reads |
@@ -277,7 +282,7 @@ level can be trusted — a stale card is worse than none.
 
 ## Deployment under the Orama operator (One Orama)
 
-Zetta is deployed + operated by the **orama-cloud-v1-operator** (One Orama,
+Zetta is deployed + operated by the **orama-operator** (One Orama,
 [orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)) as an `OramaZettaCluster` —
 a StatefulSet of headless nodes + a headless peer Service (:7777) + a client Service (:4800). Two facts
 shape how the engine is used there:
@@ -289,7 +294,7 @@ shape how the engine is used there:
   sync spreads across all their uplinks — aggregate bandwidth); **dial-out-only** nodes (NAT / private
   pods) advertise no dialable address and only reach outbound. Peer traffic is **always mTLS** — one
   shared join token per cluster; there is **no plaintext mode** (the `--cluster-plaintext` escape hatch
-  was removed as a security hole, [operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92)).
+  was removed as a security hole, [operator#92](https://github.com/oramasearch/orama-operator/issues/92)).
   A dial-out-only node must **never advertise its private pod IP**, and peers must **never dial it** — else,
   when two clusters share a pod CIDR (e.g. k0s + AKS both `10.244.0.x`), the dial hits the wrong node and
   undercounts membership ([#803](https://github.com/oramasearch/zetta/issues/803)); it syncs via its one
@@ -297,9 +302,9 @@ shape how the engine is used there:
 - **Zetta is the operators' datastore.** Each operator provisions its own schema (`orama_control` /
   `orama_data`) over `/v1/sql` and syncs its observed state into it, namespaced by a per-operator id so a
   shared store never collides. See the operator's
-  [`docs/zetta-datastore.md`](https://github.com/oramasearch/orama-cloud-v1-operator/blob/main/docs/zetta-datastore.md).
+  [`docs/zetta-datastore.md`](https://github.com/oramasearch/orama-operator/blob/main/docs/zetta-datastore.md).
   Planned: Zetta signals the operator for elastic capacity (→ Karpenter → more nodes,
-  [operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69)).
+  [operator#69](https://github.com/oramasearch/orama-operator/issues/69)).
 
 ## Repository shape: bridge + modules
 
@@ -327,17 +332,22 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   on-disk store + in-memory `Node` tree are a **projection** of it. Never keep a
   parallel copy synced by hand. New shared state = a new key/shape in the
   document; a new *kind* of agreement = a new `ReplicationPolicy` — never a
-  bespoke sync path. (Known migration debt: cluster membership still lives in
+  bespoke sync path. Audit history is an approved durable-log exception (#1164):
+  per-origin segment ranges, never `audit:` CRDT entries; see
+  [`docs/governance/audit-trail.md`](docs/governance/audit-trail.md).
+  (Two other deliberate exceptions, both *messages* rather
+  than state: the signal plane and pub/sub — see below.) (Known migration debt: cluster membership still lives in
   the `Cluster` peer table — move things *toward* this rule, never away.) See
   [`docs/cluster/replication.md`](docs/cluster/replication.md).
 
 - **Capture / gossip / apply.** Local mutations are **captured** into the CRDT
   at the data-model layer (`Node`/`Database`/`Table`/stores hold a
   `ReplicationManager*`), so *every* write path replicates. Peers **gossip**
-  `save()`/`merge()` blobs. `Node::tick()` **reconciles** the on-disk projection
-  from the document (materialize-only, never re-capture — no feedback loop) and
-  persists it. Reconcile paths never emit audit events (a peer's action arrives
-  already-audited).
+  `save()`/`merge()` blobs. `Node::tick()` **reconciles** changed keys into the
+  on-disk projection (materialize-only, never re-capture — no feedback loop),
+  falls back to a full pass for startup/journal gaps/large batches, and saves a
+  dirty document at most once per second plus on `stop()`. Reconcile paths never
+  emit audit events (a peer's action arrives already-audited).
 
 - **Thread safety:** the cluster's **network thread** may only touch thread-safe
   things (`ReplicationManager` is mutex-guarded; `BlobStore` works off the CRDT
@@ -362,6 +372,30 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   **signal plane** (the one deliberate exception to "everything is replicated":
   a signal is a *message*, not *state*).
 
+- **Pub/sub is node-local messaging, not replicated state** (`zetta::pubsub`,
+  [`docs/pubsub/`](docs/pubsub/README.md); design + decisions D1–D39 in
+  [`docs/plans/pubsub/`](docs/plans/pubsub/README.md)). The node owns one
+  `PubSub` (`Node::pubsub()`): topics, an inbox per addressable entity
+  (`kind:name` — `topic:`, `agent:`, `table:<db>.<table>`, …), email-style
+  envelopes (from + sender stack, to/cc/bcc, reply-to, correlation id), delivery
+  options layered message > subscription > topic, limits detected from the
+  environment, spill to disk, a flush on `stop()` and a reload on `start()`.
+  Events are **messages held on one node** — never CRDT keys — and in stage 1
+  topic definitions are saved on the creating node only (replicating them is
+  stage 2, #1038). It is not the signal plane: the signal plane moves engine
+  signals between peers; pub/sub is an application-level broker agents use.
+  Rules that bind it: it locks, by decision (see the first principle); the
+  library never names `zetta::Node` — `src/core/pubsub/node_integration.cpp` is
+  the one TU that does (governance, the table drain, `system.pubsub_topics`);
+  rights are `topics:read`, `topics:write`, `events:write`, and the existing
+  `pubsub:*` subscription/legacy permissions + `Topic` prefix grants, decided on the
+  owner thread via `run_on_owner`; a new delivery target is a new `InboxDrain`
+  for its address kind, never a special case in the router; every topic is
+  engine-internal unless created `exposed` (the ten pub/sub capabilities
+  reach only exposed topics). Node-local CRUD includes non-consuming browse,
+  revision-checked edits, deletion, and REST/MCP async long polls (#1136;
+  `docs/pubsub/crud.md`); clustered behaviour remains deferred under D39.
+
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking through `zetta::runtime::net`,
   included **only** by the two networking adapters —
@@ -379,6 +413,8 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   per-peer outbox, a bounded telemetry ring) — contained, commented, and never
   visible in a public API. If the runtime seam lacks a primitive you need,
   extend the seam (one alias/adapter in `runtime.hpp`), don't work around it.
+  (The one exception is `zetta::pubsub`, locks and condition variables by
+  decision D1/D5 — see the first principle above.)
 
 - **Observability first (RULE: every operation is observable).** Every
   operation captures its **intent** (what the caller asked for, verbatim),
@@ -452,6 +488,7 @@ include/zetta/   zetta-core PUBLIC API (no SDL/ImGui)
   ir/ query/ input/               ExecutionGraph IR · dialect-agnostic SQL · language frontends
   compute/ ddf/ ml/ index/        devices+schedulers · dataframes · native ML · indexes
   agent/ dataset/                 RLVR agent (action, prompt, solution-graph bridge, grader) · native corpus generators
+  pubsub/                         in-memory pub/sub: addresses + envelope, TopicRingStack, PubSub facade, drains, node adapters
   parquet/ repl/ testkit/ checks/ native Parquet · console · in-app tests · gate checks
 src/core/        zetta-core impl (catalog.hpp = internal CRDT key scheme)
 src/gui/         App — links SDL3 + ImGui; app.hpp forward-declares, only app.cpp
@@ -698,8 +735,11 @@ This is not bureaucracy. Three failures it prevents, all of which have happened:
   capability added to one by hand is a capability the other silently lacks.
 
 **Read capabilities are `GET`, actions are `POST`.** Worth stating because
-probing a read with POST returns an empty reply that looks exactly like a hung
-node, and a whole issue was filed on that misreading (#954).
+probing a read with POST used to return no reply at all, which looks exactly
+like a hung node — a whole issue was filed on that misreading (#954). It now
+answers 405 naming the right method, and an unknown `/v1/<name>` answers 404
+(#1007); a node *older* than the fix still goes silent, so on a deployed image
+a silent route usually means the capability predates the image.
 
 When a capability is added, the same change updates: the registry entry, the
 regenerated `schemas/openapi.json` (`ZETTA_WRITE_SCHEMAS=1`), the capability-count

@@ -113,6 +113,7 @@ counting, and make it something a tester can report without interpretation:
 
 | Script | Issue | Status |
 |---|---|---|
+| [`audit-off-catalog`](audit-off-catalog.md) | [#1164](https://github.com/oramasearch/zetta/issues/1164) — segment-log audit replication and memory | not yet run |
 | [`env-3-on-prem-cluster`](env-3-on-prem-cluster.md) | [#112](https://github.com/oramasearch/zetta/issues/112) — `[ENV-3]` Customer VPC / on-prem | not yet runnable |
 | [`env-4-ephemeral-burst`](env-4-ephemeral-burst.md) | [#113](https://github.com/oramasearch/zetta/issues/113) — `[ENV-4]` Ephemeral burst | not yet runnable — step 9 known flaky ([#824](https://github.com/oramasearch/zetta/issues/824)) |
 | [`env-5-managed-cloud`](env-5-managed-cloud.md) | [#114](https://github.com/oramasearch/zetta/issues/114) — `[ENV-5]` Managed cloud | not yet runnable — creating a managed cluster does not exist |
@@ -125,3 +126,4 @@ counting, and make it something a tester can report without interpretation:
 | [`tc-2-no-egress-capture`](tc-2-no-egress-capture.md) | [#249](https://github.com/oramasearch/zetta/issues/249) — `[TC-2]` No egress under network capture | **Part 1 runnable now**; Part 2 needs [#75](https://github.com/oramasearch/zetta/issues/75) |
 | [`tc-5-jailbreak-attempt`](tc-5-jailbreak-attempt.md) | [#252](https://github.com/oramasearch/zetta/issues/252) — `[TC-5]` Sandbox escape / over-scope denied | **fails today** — known escapes open ([#793](https://github.com/oramasearch/zetta/issues/793), [#819](https://github.com/oramasearch/zetta/issues/819), [#759](https://github.com/oramasearch/zetta/issues/759)) |
 | [`tc-8-intent-to-deployed`](tc-8-intent-to-deployed.md) | [#255](https://github.com/oramasearch/zetta/issues/255) — `[TC-8]` Intent→deployed latency | not yet run — path is built, never timed |
+| [`solution-registry`](solution-registry.md) | [#1102](https://github.com/oramasearch/zetta/issues/1102), [#1128](https://github.com/oramasearch/zetta/issues/1128) — executable solution catalogue and governed retention journey | automated native journey passes; human walkthrough not yet run |

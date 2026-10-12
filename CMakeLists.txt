@@ -51,8 +51,18 @@ project(zetta
 # disable them.
 if(APPLE AND CMAKE_CXX_COMPILER MATCHES "^(/opt/homebrew/opt/llvm[^/]*)/")
   set(ZETTA_HOMEBREW_LLVM_PREFIX "${CMAKE_MATCH_1}")
+  # Homebrew's libc++abi must unwind with Homebrew's libunwind, not the system
+  # one (the keg's own caveat). Linked against the system unwinder, a thrown
+  # exception is sometimes not caught by a matching handler and std::terminate()s
+  # instead — a catch that works in a toy program and fails in a real frame. It
+  # made the registry's exception containment (#1007) a no-op on macOS, and is
+  # likely also what the postgres.cpp "-O1 miscompile" note below describes (that
+  # workaround is left in place until it is re-verified without it).
   add_link_options(-L${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++
-                   -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++)
+                   -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++
+                   -L${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/unwind
+                   -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/unwind
+                   -lunwind)
   add_compile_definitions(_LIBCPP_DISABLE_AVAILABILITY)
 endif()
 
@@ -200,6 +210,7 @@ if(APPLE)
   list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/openssl@3)
 endif()
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
 set(BOOST_COROSIO_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(BOOST_COROSIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BOOST_COROSIO_BUILD_PERF     OFF CACHE BOOL "" FORCE)
@@ -232,6 +243,9 @@ add_subdirectory(modules/http EXCLUDE_FROM_ALL)
 set(BOOST_BEAST2_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(BOOST_BEAST2_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/beast2 EXCLUDE_FROM_ALL)
+# Beast2 compiles its HTTPS server into boost_beast2, so a shared Beast2
+# library must resolve Corosio's OpenSSL stream symbols itself (#1096).
+target_link_libraries(boost_beast2 PRIVATE Boost::corosio_openssl)
 
 # automerge-cpp — a CRDT (conflict-free replicated data type) for the replicated
 # DDL/metadata/rows. From-scratch C++23, no Rust. It vendors nlohmann/json under
@@ -344,7 +358,7 @@ endif()
 # -----------------------------------------------------------------------------
 # zetta-compute (the accelerated-compute backends — no SDL/ImGui, no CUDA leak)
 # -----------------------------------------------------------------------------
-# The zetta::compute ComputeDevice seam (ADR-27 / ARC-9) and its backends live in
+# The zetta::compute ComputeDevice interface (ADR-27 / ARC-9) and its backends live in
 # their own static library, linked into zetta-core like any other adapter. This is
 # where the optional CUDA backend lands: CUDA headers + kernels stay inside this
 # target's .cu translation unit and never reach zetta-core — the same discipline
@@ -473,6 +487,16 @@ endif()
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
+  src/core/memory/accounting.cpp
+  src/core/pubsub/address.cpp
+  src/core/pubsub/event.cpp
+  src/core/pubsub/store.cpp
+  src/core/pubsub/delivery.cpp
+  src/core/pubsub/dispatcher.cpp
+  src/core/pubsub/resources.cpp
+  src/core/pubsub/topic.cpp
+  src/core/pubsub/pubsub.cpp
+  src/core/pubsub/node_integration.cpp
   src/core/observability/activity.cpp
   src/core/observability/trace.cpp
   src/core/observability/crash.cpp
@@ -480,6 +504,15 @@ add_library(zetta-core STATIC
   src/core/api/background.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
+  src/core/api/pubsub_capabilities.cpp
+  src/core/api/run_metrics_capabilities.cpp
+  src/core/api/record_capabilities.cpp
+  src/core/api/object_capabilities.cpp
+  src/core/api/storage_capabilities.cpp
+  src/core/api/study_capabilities.cpp
+  src/core/api/decision_policy_capabilities.cpp
+  src/core/api/solution_capabilities.cpp
+  src/core/api/action_capabilities.cpp
   src/core/api/cloud_capabilities.cpp
   src/core/api/llms.cpp
   src/core/api/mcp_docs.cpp
@@ -490,6 +523,8 @@ add_library(zetta-core STATIC
   src/core/api/specs.cpp
   src/core/api/web_ui.cpp
   src/core/schemas/registry.cpp
+  src/core/solutions/decision_policy.cpp
+  src/core/solutions/action_integration.cpp
   src/core/cluster/cluster.cpp
   src/core/cluster/security.cpp
   src/core/cluster/signal.cpp
@@ -534,9 +569,55 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_provider.cpp
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
+  src/core/solutions/monitor.cpp
+  src/core/solutions/roi_readout.cpp
+  src/core/solutions/solution_templates.cpp
+  src/core/solutions/solution_foundation.cpp
+  src/core/solutions/solution_execution.cpp
+  src/core/ml/ensemble.cpp
+  src/core/ml/ensemble_methodology.cpp
+  src/core/ml/ensemble_runner.cpp
+  src/core/ml/ensemble_train_job.cpp
+  src/core/ml/methodology.cpp
+  src/core/ml/metric_names.cpp
+  src/core/ml/study.cpp
+  src/core/ml/methodology_optimization.cpp
+  src/core/ml/methodology_table.cpp
+  src/core/ml/workspace_methodology.cpp
+  src/core/ml/workspace_study.cpp
+  src/core/ml/solution_table.cpp
+  src/core/ml/entity_resolution.cpp
+  src/core/ml/entity_resolution_job.cpp
+  src/core/ml/entity_resolution_methodology.cpp
+  src/core/ml/graph.cpp
+  src/core/ml/graph_job.cpp
+  src/core/ml/graph_methodology.cpp
+  src/core/ml/graph_runner.cpp
+  src/core/ml/vision_methodology.cpp
+  src/core/ml/document_methodology.cpp
+  src/core/ml/document_extraction.cpp
+  src/core/ml/speech_audio.cpp
+  src/core/ml/speech_whisper.cpp
+  src/core/ml/speech_train_job.cpp
+  src/core/ml/speech_runner.cpp
+  src/core/ml/speech_methodology.cpp
+  src/core/ml/bandit_methodology.cpp
+  src/core/ml/optimization.cpp
+  src/core/ml/bayesian.cpp
+  src/core/ml/bayesian_methodology.cpp
+  src/core/ml/label_efficiency.cpp
+  src/core/ml/label_efficiency_methodology.cpp
+  src/core/ml/label_efficiency_runner.cpp
+  src/core/ml/synthetic_private.cpp
+  src/core/ml/synthetic_private_methodology.cpp
+  src/core/ml/synthetic_private_job.cpp
+  src/core/ml/streaming_methodology.cpp
   src/core/ml/model.cpp
+  src/core/ml/survival.cpp
+  src/core/ml/survival_methodology.cpp
   src/core/workspace/workspace_profile.cpp
   src/core/billing/plan.cpp
+  src/core/solutions/experiment.cpp
   src/core/index/index.cpp
   src/core/index/index_registry.cpp
   src/core/index/index_step_executor.cpp
@@ -567,6 +648,7 @@ add_library(zetta-core STATIC
   src/core/governance/token.cpp
   src/core/governance/user_role.cpp
   src/core/governance/policy.cpp
+  src/core/solutions/audit_ledger.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
   src/core/data/partition_body.cpp
@@ -579,6 +661,8 @@ add_library(zetta-core STATIC
   src/core/pipeline/validation.cpp
   src/core/pipeline/gate.cpp
   src/core/pipeline/graph_checks.cpp
+  src/core/pipeline/next_best_action_graph_check.cpp
+  src/core/solutions/snapshot.cpp
   src/core/usecases/churn/entity_resolution_check.cpp
   src/core/usecases/churn/entity_resolution.cpp
   src/core/pipeline/executor.cpp
@@ -593,9 +677,19 @@ add_library(zetta-core STATIC
   src/core/data/replicated_blob_store.cpp
   src/core/data/import.cpp
   src/core/data/virtual_table.cpp
+  src/core/data/record_store.cpp
+  src/core/data/record_log.cpp
+  src/core/data/metric_store.cpp
+  src/core/data/object_store.cpp
+  src/core/data/storage_census.cpp
+  src/core/data/object_log.cpp
   src/core/data/add_dataset.cpp
   src/core/data/dataset_path.cpp
+  src/core/data/analyze_dataset.cpp
+  src/core/data/featurize_plan.cpp
+  src/core/ml/run_features.cpp
   src/core/connect/connection_store.cpp
+  src/core/connect/credential_seal.cpp
   src/core/connect/connector.cpp
   src/core/connect/postgres_runner.cpp
   src/core/connect/distributed_fetch.cpp
@@ -631,17 +725,57 @@ add_library(zetta-core STATIC
   src/core/ddf/featurize_job.cpp
   src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
+  src/core/ml/model_import.cpp
+  src/core/ml/uplift.cpp
+  src/core/ml/uplift_job.cpp
+  src/core/ml/uplift_methodology.cpp
+  src/core/ml/uplift_runner.cpp
+  src/core/ml/next_best_action.cpp
+  src/core/ml/next_best_action_execution.cpp
+  src/core/ml/next_best_action_job.cpp
+  src/core/ml/next_best_action_methodology.cpp
+  src/core/ml/next_best_action_table.cpp
+  src/core/ml/rank.cpp
+  src/core/ml/rank_train_job.cpp
+  src/core/ml/rank_runner.cpp
+  src/core/ml/rank_methodology.cpp
+  src/core/ml/language.cpp
+  src/core/ml/language_train_job.cpp
+  src/core/ml/language_runner.cpp
+  src/core/ml/language_methodology.cpp
+  src/core/ml/bandit.cpp
+  src/core/ml/bandit_train_job.cpp
+  src/core/ml/bandit_runner.cpp
+  src/core/ml/streaming.cpp
   src/core/ml/backtest.cpp
   src/core/ml/forecast.cpp
+  src/core/ml/anomaly.cpp
+  src/core/ml/anomaly_job.cpp
+  src/core/ml/anomaly_table.cpp
+  src/core/ml/anomaly_plan.cpp
+  src/core/ml/anomaly_methodology.cpp
+  src/core/ml/forecast_runner.cpp
+  src/core/ml/forecast_methodology.cpp
+  src/core/ml/forecast_execution.cpp
+  src/core/pipeline/forecast_graph_check.cpp
   src/core/ml/lag_features.cpp
   src/core/ml/temporal_split.cpp
   src/core/ml/gbdt_train_job.cpp
+  src/core/ml/vision.cpp
+  src/core/ml/vision_image.cpp
+  src/core/ml/vision_runner.cpp
+  src/core/ml/vision_train_job.cpp
+  src/core/ml/vision_vit.cpp
   src/core/ml/calibration.cpp
   src/core/ml/tree_shap.cpp
   src/core/ml/gbdt_explain_job.cpp
   src/core/ml/gbdt_score.cpp
   src/core/ml/explain_row.cpp
   src/core/ml/score_table.cpp
+  src/core/ml/segmentation.cpp
+  src/core/ml/segmentation_job.cpp
+  src/core/ml/segmentation_graph.cpp
+  src/core/ml/segmentation_methodology.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp
   src/core/ml/local_featurize_train_job.cpp
@@ -768,7 +902,7 @@ target_include_directories(zetta-core PUBLIC
 
 # PUBLIC: zetta::Node's interface exposes nlohmann::json (add_object) and the
 # storage headers include it, so consumers (the GUI) get it transitively.
-# Boost::capy backs the zetta::runtime async seam (include/zetta/runtime.hpp), also PUBLIC.
+# Boost::capy backs the zetta::runtime async interface (include/zetta/runtime.hpp), also PUBLIC.
 # zetta-compute houses the zetta::compute ComputeDevice backends (its public
 # headers live in include/zetta/compute and are part of zetta-core's surface);
 # PUBLIC so consumers linking zetta-core get the backend symbols + the optional
@@ -784,6 +918,7 @@ target_link_libraries(zetta-core PRIVATE
   Boost::corosio
   Boost::corosio_openssl
   OpenSSL::Crypto
+  ZLIB::ZLIB
   automerge-cpp::automerge-cpp
   nlohmann_json_schema_validator)
 

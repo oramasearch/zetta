@@ -41,7 +41,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   contracts; surface changes update the affected page same-commit).
 - **Foundations (conventions)**:
   [architecture/coding-conventions.md](architecture/coding-conventions.md) —
-  namespaces==directories, no-throw boundaries, schema-as-code, seams;
+  namespaces==directories, no-throw boundaries, schema-as-code, interfaces;
   **coroutines-first**, **observability-first**
   ([architecture/observability.md](architecture/observability.md): intent ·
   plan · performance · result shape on every operation), **distributed-first**
@@ -62,6 +62,202 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   skill-writer.
 
 ## Current state (refresh me when it changes)
+
+- **Workspace object storage for lake (#1005):** the object capability — buckets
+  (`create_bucket` with a quota and `rf`), raw byte routes `PUT`/`PATCH`/`GET
+  /v1/objects/<bucket>/<key>` (atomic put, put-if-absent, append at an exact offset
+  that a retry cannot double, streamed ranged reads), list, barrier, usage, and an
+  owner lease whose fence every mutation carries (`acquire_object_lease` waits for a
+  release or expiry). Bytes live in node-local segmented logs placed on `rf` owners
+  with anti-entropy repair, never in the replicated document; the six latency
+  budgets are failing tests. Lake's liquid `store_backend` for workspace stores
+  (liquid-bridge decision 54) calls it. See [data/object-store.md](data/object-store.md).
+
+- **Workspace records for lake (#1231):** a keyed record store
+  (`create_collection`, `put_record` with `if_absent`/`if_revision`, `get_record`,
+  `delete_record`, `list_records` over a declared index) whose writes are ordered by
+  each key's owner, fsynced to a node-local record log and installed on every live
+  peer before they are acknowledged, with anti-entropy catch-up (records stay out of
+  the replicated document, which keeps every write in its history); labelled
+  counters and gauges (`create_metric`,
+  `record_metric`, `query_metric`); and `sql` over a JSON-body POST. See
+  [data/record-store.md](data/record-store.md) and
+  [data/time-series.md](data/time-series.md).
+
+- **Audit replication (#1164):** segment logs carry per-origin sequences and
+  watermarks, not per-event CRDT entries. Legacy catalog history migrates locally
+  and is compacted; upgrades are all-nodes-together. Native two-process memory
+  and convergence coverage lives in [testing/audit-replication.md](testing/audit-replication.md).
+
+- **S-1 Churn & Retention (#1110)** — runnable at levels 1–4 with composed
+  M-2/M-1/M-3 foundations, M-5 survival timing, M-6 positive-only uplift
+  targeting, and M-8 treatment arbitration. The bound gate enforces eight
+  domain rules; governed actions carry reason codes and decision cells, preserve
+  tier holdouts and no-contact decisions, publish a driver report, and feed the
+  retention ROI readout. See [solutions/S-1.md](solutions/S-1.md).
+
+- **S-2 Lead & Opportunity Scoring (#1111)** — runnable at levels 1–4 with
+  M-2/M-1/M-3 and optional M-6, full routing policy and holdout defaults,
+  point-in-time conversion labels, post-qualification leakage refusal,
+  rep-capacity-aware CRM queues with SLAs, and a conversion ROI readout. See
+  [solutions/S-2.md](solutions/S-2.md).
+
+- **S-3 Customer Lifetime Value (#1112)** — runnable at levels 1–4 with native
+  continuous-value M-1 prediction, M-2 stable-entity accounting, M-3 segments,
+  optional M-5 tenure survival, and M-6 causal allocation. Three bound checks
+  refuse immature uncensored labels, an unstated or mismatched value horizon,
+  and duplicate entity value. Governed audience syncs, A1 budget approvals,
+  permanent value-band holdouts, allocation reports, and net-value outcome
+  evidence feed the ROI readout. See [solutions/S-3.md](solutions/S-3.md).
+
+- **S-4 Collections Prioritization (#1113)** — runnable at levels 1–4 with
+  M-2/M-1/M-3 foundations and M-6 uplift selection. The composed correctness
+  gate refuses missing regulatory contact limits, unsafe vulnerable-customer
+  handling, and promise-to-pay labels that are not frozen at prediction time.
+  Governed digital and dialer delivery preserves a permanent holdout and feeds
+  the net-recovery readout. See [solutions/S-4.md](solutions/S-4.md).
+
+- **S-12 Claims Triage & Fraud Referral (#1121)** — runnable at levels 1–4
+  with M-2/M-11/M-1 and optional M-3. Claim-specific scores drive fast-track,
+  adjuster, and SIU tasks; denial remains human-only. Document confidence,
+  fairness review, protected holdouts, and measured referral outcomes are
+  covered by [solutions/S-12.md](solutions/S-12.md).
+
+- **B-2 Employee Attrition (aggregate-first) (#1176)** — runnable at levels
+  1–4 with M-1/M-7 aggregate cohort scoring, a minimum group size of five,
+  completed fairness review, recorded legal or works-council approval,
+  people-leader-only output, a protected holdout, and measured aggregate
+  attrition outcomes. See [solutions/B-2.md](solutions/B-2.md).
+- **B-3 Ticket Triage & Service Automation (#1177)** — runnable at levels 1–4
+  with M-10/M-19, customer-owned taxonomy routing, confidence abstention,
+  approval-only closure, new-ticket-type drift monitoring, action delivery,
+  protected holdout measurement, and a resolution-quality readout. The
+  customer-offering promotion condition remains recorded. See
+  [solutions/B-3.md](solutions/B-3.md).
+- **B-6 Healthcare Operations (#1180)** — runnable at levels 1–4 with native
+  M-1 operational-risk scoring for assistive scheduling and revenue-cycle work.
+  The gate refuses missing equity review, care-access restrictions, unapproved
+  privacy posture, and PHI beyond an approved minimum. Protected holdouts,
+  governed work queues, and operational-resolution outcomes feed the ROI
+  readout. Its customer-promotion condition remains recorded independently of
+  engineering readiness. See [solutions/B-6.md](solutions/B-6.md).
+
+- **S-6 Replenishment & Inventory Action (#1115)** — runnable at levels 1–4
+  with M-4 lead-time forecasting, M-16 constrained planning, optional M-5
+  time-to-stockout, complete policy and holdout defaults, bounded ERP release,
+  five observed guardrails, and a service-level ROI readout. See
+  [solutions/S-6.md](solutions/S-6.md).
+- **B-1 Dynamic Pricing & Discount Governance (#1175)** — runnable at levels
+  1–4 with M-4/M-6/M-16, identifiable price-effect evidence, margin and
+  authority policy limits, controlled experiments, protected holdouts, A1
+  approval above the automatic band, governed price publication, and a
+  net-margin readout. Its customer-offering promotion condition remains
+  recorded. See [solutions/B-1.md](solutions/B-1.md).
+- **S-11 Next-Best-Action (#1120)** — runnable at levels 1–4 with
+  M-2/M-1/M-6/M-8/M-15, complete request-time policy and uplift-cell defaults,
+  exploit/explore arbitration, durable selection propensities, cross-channel
+  consent/contact enforcement, action delivery, and a net-value ROI readout.
+  See [solutions/S-11.md](solutions/S-11.md).
+
+- **B-5 Supplier Risk & Procurement Intelligence (#1179)** — runnable at
+  levels 1–4 with M-4 forecast context and supplier-specific M-1 risk flags.
+  Three bound checks enforce point-in-time external data, exclude post-event
+  supplier records, and require evidence on every flag. Governed procurement
+  tasks preserve tier holdouts and feed the disruption-avoidance ROI readout.
+  The customer-offering condition remains recorded independently. See
+  [solutions/B-5.md](solutions/B-5.md).
+
+- **B-8 IT & Security Operations (#1182)** — runnable at levels 1–4 with
+  M-12 dependency context and exact-budget M-7 anomaly scoring. Four named
+  refusals enforce the alert cap, graduated A0/A1/bounded-A2 authority, a hard
+  kill switch, and approved single-asset containment. Complete policy,
+  holdout, action, guardrail, and planted incident-avoidance measurement paths
+  are covered by [solutions/B-8.md](solutions/B-8.md).
+
+- **Workspace solution integration (#1128)** — `deploy/workspace` combines the
+  solution foundations with the bus/engine fixes and #1131's in-flight signal
+  handler protection. Solution monitors, experiments/assignments and ledger
+  additions participate in #1086's incremental reconciliation; policies,
+  decisions and ROI definitions remain direct CRDT reads. The audit ID index
+  and owner wake-up callback are retained. See
+  [cluster/solution-reconciliation.md](cluster/solution-reconciliation.md).
+
+- **S-5 Demand Forecasting (#1114)** — runnable at levels 1–4 with
+  M-2/M-4/M-3 and optional M-5, rolling-origin and past-only checks,
+  bottom-level hierarchy consistency, complete policy and holdout defaults,
+  prediction-interval exception tasks, planner reports, observed FVA
+  guardrails, and an explicitly non-causal FVA readout. See
+  [solutions/S-5.md](solutions/S-5.md).
+
+- **S-7 KPI Anomaly & Driver Analysis (#1116)** — runnable at levels 1–4 with
+  M-7/M-1/M-3 and optional M-4 context, causal seasonal baselines, an exact
+  alert budget, associational driver evidence, protected forum routing, a
+  decision log, and honest phased measurement. See
+  [solutions/S-7.md](solutions/S-7.md).
+
+- **S-8 Predictive Maintenance (#1117)** — runnable at levels 1–4 with
+  M-2/M-1/M-5 and optional M-7, full maintenance policy and holdout defaults,
+  censoring, sensor-drift, and post-failure leakage refusals, governed CMMS
+  work-order payloads, and a failure-avoidance ROI readout. See
+  [solutions/S-8.md](solutions/S-8.md).
+
+- **S-9 Automated Outbound (#1118)** — runnable at levels 1–4 with
+  M-1/M-3/M-2, optional M-6/M-8/M-10 stages, consent and suppression
+  eligibility, persisted contact limits, positive-uplift targeting, capped
+  journey delivery, tier holdouts, and a response ROI readout. See
+  [solutions/S-9.md](solutions/S-9.md).
+- **S-10 Fraud & Financial-Crime Decisioning (#1119)** — runnable at levels
+  1–4 with M-2 identity, M-12 time-bounded graph features, fraud-specific M-1
+  authorization scores, and M-5 timing at levels 3 and 4. Full policy,
+  champion/challenger exploration, request-time and case-management actions,
+  five observed guardrails, delayed-label/selection-bias/feature-parity
+  refusals, and a planted fraud-loss readout ship as module defaults. See
+  [solutions/S-10.md](solutions/S-10.md).
+
+- **Solution monitoring (#1106)** — a replicated monitor per solution records
+  input and score PSI, calibration, closed-window cohort performance, and
+  declared guardrails. New breach transitions publish to
+  `topic:solution-events`; configured monitors also set a durable retrain
+  request. See [solutions/monitor.md](solutions/monitor.md).
+
+- **Point-in-time solution foundation (#1103)** — `snapshot` materializes
+  replicated `(entity_id, as_of)` tables, the public row-level as-of join picks
+  only snapshots visible at each decision time, and `snapshot_lineage` blocks
+  live feature sources, future cutoffs, and feature/label windows that violate
+  their configured blackout. See
+  [solutions/point-in-time-snapshots.md](solutions/point-in-time-snapshots.md).
+
+- **Methodology registry (#1061)** — one 21-entry table drives discovery,
+  intent compilation, and run dispatch. All 21 methodologies are runnable on the
+  methodology integration branch (#1082), with all method-specific checks,
+  runners and reports retained. S-11 resolves to M-8; M-6 remains selectable
+  by methodology ID and model kind. M-17 through M-21 add Bayesian uncertainty,
+  stacking, label efficiency, privacy and streaming. Unknown model kinds remain
+  explicit refusals. All 21 callbacks enforce the
+  [data-first feature plan](data/featurization.md) and report actual used/excluded
+  inputs with reasons; transform-first data is refused before execution (#1062).
+  See [ml/integration.md](ml/integration.md).
+  [ml/methodologies.md](ml/methodologies.md) defines the extension contract and
+  [ml/README.md](ml/README.md#methodology-portfolio) contains the generated table.
+
+- **Decision-policy engine (#1104)** — native versioned policy config between
+  scores and actions, with thresholds, tiers, budgets, caps, eligibility,
+  exclusions, A0–A3 approval behavior, and a kill-switch. Policies and decisions
+  replicate through the node catalog; all decisions retain their exact policy
+  version. Five registry capabilities expose single-entity and table decisions,
+  bounded tuning, and A1 approval over MCP and REST. See
+  [solutions/decision-policy.md](solutions/decision-policy.md).
+
+- **In review (PR [#1035](https://github.com/oramasearch/zetta/pull/1035), stacked on the
+  design PR [#1023](https://github.com/oramasearch/zetta/pull/1023)) — pub/sub stage 1**
+  (epic [#1024](https://github.com/oramasearch/zetta/issues/1024)): an in-memory,
+  addressed, governed pub/sub in `zetta::pubsub`, owned by the node. Design and decisions:
+  [plans/pubsub/](plans/pubsub/README.md); what is built: [pubsub/](pubsub/README.md). One
+  node only (the cluster is stage 2, designed later); locks and condition variables by
+  decision D1/D5 (the one exception to the coroutine rule).
+  Issue #1136 adds node-local topic/message CRUD with revision checking,
+  hash-only mutation audit and non-consuming browse over REST/MCP async long
+  polls; [pubsub/crud.md](pubsub/crud.md). D39 still defers clustered pub/sub.
 
 - **In flight (branch `feat/dataset-from-connector-query`) — Parquet bodies, partition-only
   datasets, scatter-gather SQL**: [#833](https://github.com/oramasearch/zetta/issues/833)
@@ -313,7 +509,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   multi-node + one root Model replicated everywhere over a real replicated
   3-member loopback cluster
   ([docs/compute/coordinated-launch.md](compute/coordinated-launch.md)).
-  Near-data (#531) cross-process launch on this seam is the follow-on.
+  Near-data (#531) cross-process launch on this boundary is the follow-on.
 - **Observability build-out (#640, closed) — PR #665 in flight**: all six
   slices on one branch — system.traces/spans/crashes read views over the
   Node-owned span ring (`Node::span_recorder()`, RULE-7 one source), crash
@@ -360,7 +556,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   ([api/llms-endpoints.md](api/llms-endpoints.md)).
 - **#646 spec index built** (and the #469 fold completed with it):
   `GET /v1/specs` + `/v1/specs/<name>` and the `list_specs`/`get_spec` tools
-  serve the OpenAPI document + every capability schema + all 62 boundary
+  serve the OpenAPI document + every capability schema + all 86 boundary
   schemas from their C++ accessors; the shared table is
   `zetta::schemas::boundary_schemas()`, drift-checked by `test_schemas`
   ([api/specs-index.md](api/specs-index.md)).

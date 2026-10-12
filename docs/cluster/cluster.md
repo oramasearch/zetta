@@ -19,6 +19,15 @@ advertises the one it actually bound — so a second local node grabs `7778`. Po
 a node at others with `--peer HOST:PORT` (repeatable; all peers are equal — a
 seed is just somewhere to start).
 
+When a strict bind is refused, startup stops the cluster and node, then joins the
+process-wide outbound HTTP worker before the node's state is destroyed (#1078).
+The process exits normally with status 1; it does not defer that worker to static
+destruction and abort after printing `zetta: node stopped`. The standalone CTest
+`zetta-refused-start-exit` holds a real loopback port, launches the production
+binary, and asserts both the exit status and the absence of cleanup exceptions.
+This changes no cluster wire message or JSON format, and no refused-start
+behavior is deferred.
+
 All inter-node traffic runs **mutual TLS**, and joining needs the cluster's
 **join token** (the first node generates it; the printed join command carries
 it) — see [security.md](security.md).
@@ -161,7 +170,7 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   advertised address — never a silent drift
   ([#738](https://github.com/oramasearch/zetta/issues/738)).
 - **Symmetric handshake** (line protocol): each side sends
-  `ZETTA/1 HELLO <node-id> <endpoint[,endpoint,…]|-> [wan|dial-out]` and records
+  `ZETTA/1 HELLO <node-id> <endpoint[,endpoint,…]|-> [wan|dial-out] [audit-protocol]` and records
   the other; the dialer speaks first, the acceptor replies. The trailing
   reachability token is **optional** — absent or `wan` means wan-accessible
   (back-compat with older nodes), `dial-out` means the node advertises no dialable
@@ -169,6 +178,13 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   connection stays open; dropping it drops the live link. Peers are keyed by
   **reached address** — one entry per address — so a node that restarts (new id,
   same address) **replaces** its stale entry instead of leaving a ghost.
+- **Audit protocol** (#1164, #1169): upgraded peers advertise version `2`; an omitted
+  field is legacy version `0`. A mismatch refuses audit status/ranges and logs
+  the upgrade requirement while ordinary catalog replication continues. Incoming
+  legacy `audit:` catalog operations are filtered before merge. Compatible
+  peers exchange `AUSTATUS` watermarks (high, ordinary low, and summary low),
+  `AUREQ` origin/cursor requests and `AURES` checksummed frame pages. See
+  [audit replication](../governance/audit-trail.md).
 - **A node advertises a SET of candidate endpoints, not one address** (#739). The
   HELLO carries a comma-separated set — the reachable listen address(es) plus any
   `--advertise HOST:PORT[,…]` extras (a node behind NAT / a load balancer lists its
@@ -215,7 +231,7 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   `node_type`) overlaid at query time with ephemeral per-node liveness + replication status
   (`directly_connected`, `status`, sync state) that is never written back to the CRDT. For aggregate
   cross-cluster bandwidth, each PERMANENT wan-accessible node should advertise its OWN address (per-node
-  LB, orama-cloud-v1-operator#104) so sync spreads across every node's uplink instead of funnelling
+  LB, orama-operator#104) so sync spreads across every node's uplink instead of funnelling
   through one shared rendezvous.
 - **Self-healing links.** Each peer sends traffic every ~0.5s — replication
   gossip when a `ReplicationManager` is wired in, otherwise a lightweight `PING`

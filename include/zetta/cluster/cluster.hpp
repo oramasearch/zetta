@@ -6,9 +6,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
 
 #include "zetta/cluster/security.hpp"
 #include "zetta/cluster/signal.hpp"
+#include "zetta/governance/audit_event.hpp"
 
 namespace zetta::data { class BlobStore; }
 
@@ -44,6 +46,7 @@ struct ClusterPeer {
     // pod CIDR). It is a pure initiator; its one outbound link carries CRDT sync
     // both ways. False = wan-accessible (a routable rendezvous others dial out to).
     bool dial_out_only = false;
+    unsigned audit_protocol_version = 0;
 };
 
 // A node's replication state, as last learned over the gossip exchange. For the
@@ -66,6 +69,7 @@ struct NodeStatus {
     bool is_self = false;
     bool connected = false;  // membership (always true for self)
     NodeReplication replication;
+    unsigned audit_protocol_version = 0;
 };
 
 // One row of the FULL cluster membership from the replicated node-list (#800):
@@ -85,6 +89,8 @@ struct ClusterMember {
 };
 
 struct ClusterConfig {
+    // Zero models a legacy peer in protocol tests. The binary always uses 1.
+    unsigned audit_protocol_version = zetta::governance::kAuditProtocolVersion;
     // Bind all interfaces by default (the wildcard 0.0.0.0) so a plain node is
     // reachable from other machines out of the box; listen_addresses() expands
     // it to the host's real LAN IPs. Set a specific host (e.g. "127.0.0.1") to
@@ -156,6 +162,16 @@ struct ClusterConfig {
     // "plaintext" default is reached only by embedding a bare Cluster in a
     // test/host. See docs/cluster/security.md.
     ClusterSecurity security;
+};
+
+// Bounded cross-thread handoff. The network adapter queues wire messages; the
+// Node owner loop reads/writes segment files and validates their event frames.
+struct AuditMessage {
+    enum class Kind { Status, Request, Response };
+    Kind kind = Kind::Status;
+    std::string peer;
+    std::map<std::string, zetta::governance::AuditWatermark> watermarks;
+    zetta::governance::AuditLogBatch batch;
 };
 
 // Cluster membership over TCP — mutual TLS 1.3 when ClusterConfig::security
@@ -246,6 +262,11 @@ public:
     // Kept at parity by the per-node-id link registry — see #739.
     std::size_t connection_count() const;
 
+    void publish_audit_watermarks(
+        const std::map<std::string, zetta::governance::AuditWatermark>& watermarks);
+    std::vector<AuditMessage> take_audit_messages();
+    bool send_audit(const AuditMessage& message);
+
     // Every node and its replication status, for the "list of all nodes" view:
     // this node first (is_self), then each member with the replication state it
     // last reported. This is the membership view — it applies hysteresis (#739): a
@@ -272,7 +293,9 @@ public:
     // runs on the cluster's network thread, so it must be cheap and thread-safe
     // (offload heavy work). Pass nullptr to clear. Thread-safe; may be called
     // before start() or at any time after. The handler must outlive the Cluster
-    // (or be cleared first).
+    // (or be cleared first). Called off the network thread, it returns only after
+    // any dispatch already inside the previous handler has finished, so the
+    // previous handler may be destroyed once this returns (#1131).
     void set_signal_handler(SignalHandler* handler);
 
     // The currently registered signal handler (nullptr when none) — what a
@@ -288,6 +311,16 @@ public:
     // called from the network thread (the handler thread), which would deadlock.
     SignalResponse request(
         const std::string& node_id, const std::string& method,
+        const std::string& payload,
+        std::chrono::milliseconds timeout = std::chrono::seconds(5));
+
+    // Send the same RPC request to several peers at once and block until every
+    // one has answered, failed or the shared `timeout` has elapsed. Responses are
+    // in `node_ids` order. One round trip instead of one per peer: the requests
+    // leave together on each link's next outbox flush (#1231, the record store's
+    // synchronous replication). Same threading rule as request().
+    std::vector<SignalResponse> request_each(
+        const std::vector<std::string>& node_ids, const std::string& method,
         const std::string& payload,
         std::chrono::milliseconds timeout = std::chrono::seconds(5));
 

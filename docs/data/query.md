@@ -49,14 +49,29 @@ SELECT sku, qty FROM shop.items WHERE qty >= 3;
 Values: single-quoted strings (`''` escapes a quote), integers, decimals,
 optional leading `-`, `true` / `false` / `null`.
 
-### Aggregation (GROUP BY)
-
-A `SELECT … GROUP BY` runs through the **[DDF engine](../ddf/ddf.md)** (ARC-12 /
-API-2): the table is loaded into a typed, columnar `DataFrame`, the `WHERE` is
-applied with the DDF `filter` op, and `group_by` computes the per-group
-aggregates, materialized back into result rows.
+### Ordering and paging (ORDER BY, LIMIT, OFFSET)
 
 ```sql
+SELECT account, risk FROM churn.accounts ORDER BY risk DESC, account LIMIT 10;
+SELECT * FROM shop.items ORDER BY sku OFFSET 20 LIMIT 10;   -- either order; LIMIT ALL = none
+SELECT segment, COUNT(*) AS n FROM churn.events GROUP BY segment ORDER BY n DESC LIMIT 1;
+```
+
+They apply to the finished result of every path (a plain scan, a `GROUP BY`, a `system`
+table, a partition-only table scattered to its owners), in that order: sort, skip `OFFSET`,
+keep `LIMIT`. An `ORDER BY` key names a column of the result — a selected column, a
+`GROUP BY` key or an aggregate's alias (any column with `SELECT *`); another name is an
+error that says so. Numbers sort numerically, then booleans, then strings; `NULL` sorts
+last ascending and first descending, as in Postgres; ties keep the next key's order, then
+scan order. The whole result is still read before it is cut: `LIMIT` bounds what is
+returned, not what is scanned.
+
+### Aggregation (aggregates, GROUP BY)
+
+```sql
+SELECT count(*) FROM churn.events;                       -- the whole table is one group
+SELECT count(*) AS n, SUM(amount) FROM churn.events WHERE plan = 'pro';
+SELECT plan, count(*) FROM churn.accounts GROUP BY plan; -- a text key
 SELECT segment, SUM(amount), COUNT(*) FROM churn.events GROUP BY segment;
 SELECT segment, SUM(amount) AS total, MIN(amount), MAX(amount)
   FROM churn.events WHERE amount >= 10 GROUP BY segment;
@@ -64,30 +79,69 @@ SELECT segment, AVG(score) AS avg_score FROM churn.events GROUP BY segment;
 SELECT segment FROM churn.events GROUP BY segment;   -- distinct keys (no aggregate)
 ```
 
-Aggregate functions: `COUNT(*)`, `SUM(col)`, `MIN(col)`, `MAX(col)`,
-`AVG(col)` / `MEAN(col)` (mapped to the DDF op set; `AVG` → `mean`). The default
-result-column name follows DDF's convention — `count`, `sum_amount`,
-`min_amount`, `mean_score`, … — overridable per item with `AS alias`.
+Aggregate functions: `COUNT(*)`, `COUNT(col)` (the non-null values), `SUM(col)`,
+`MIN(col)`, `MAX(col)`, `AVG(col)` / `MEAN(col)`. The default result-column name
+is `count`, `sum_amount`, `min_amount`, `max_amount`, `mean_score`, …,
+overridable per item with `AS alias`.
+
+**An aggregate needs no `GROUP BY`** (#1218): without one the whole table is a
+single group, and the answer is **one row even when no row matches** —
+`count(*)` is `0` and `SUM`/`MIN`/`MAX`/`AVG` over nothing are `NULL`, as in
+Postgres. A bare column beside an aggregate must be the `GROUP BY` key
+(`column "x" must appear in GROUP BY or be aggregated`).
+
+**The key may be any column** — text, number, boolean. Rows without the key form
+the `NULL` group. Groups come back in key order: `NULL`, booleans, numbers, then
+strings. `SUM`/`MIN`/`MAX`/`AVG` read the numeric values of their column; other
+values add nothing.
+
+Two engines answer, and they agree on the result. A `GROUP BY` whose key, every
+aggregated column and the `WHERE` are **dense numeric** (present and numeric in
+every row) runs columnar through the **[DDF engine](../ddf/ddf.md)** (ARC-12 /
+API-2): the table is loaded into a typed `DataFrame`, filtered with the DDF
+`filter` op, and grouped with `group_by`. Every other aggregating `SELECT` — a
+text key, a whole-table aggregate, a sparse column, a string `WHERE`, a `system`
+or virtual table — folds the rows through `zetta::query::GroupAccumulator`, the
+same accumulator and merge a [partition-only table's owners](scatter-gather-select.md)
+use, so one query answers the same way on every path.
 
 ## Semantics
 
 - `INSERT` requires an explicit column list (the store is schemaless JSON); each
   `VALUES` tuple becomes one JSON row `{col: value, ...}`.
-- `SELECT *` returns whole rows; `SELECT a, b` projects to those keys (missing
-  keys come back as `null`).
+- **A table's columns are the keys its rows carry.** The store is schemaless
+  (`CREATE TABLE` column types are parsed, not stored), so a column exists when
+  at least one row has it. Naming any other column — in the select list, the
+  `WHERE`, the `GROUP BY` or an aggregate — is an error naming it and the
+  columns the table does have: `column "nope" does not exist in shop.items (its
+  columns: qty, sku)` (#1218). A row that lacks a column that exists reads
+  `null` there. A table with no rows has no columns to check against, so nothing
+  is refused on it. Over a partition-only table the owners report the columns
+  their rows carry, and the coordinator checks against their union.
+- `SELECT *` returns whole rows, and **`columns` names them**: every column the
+  table's rows carry — a row keeps its keys in name order, and a column first
+  seen in a later row comes after — filled even when `LIMIT` or the
+  `WHERE` leaves fewer rows (or none). `SELECT a, b` projects to those keys;
+  `columns` is always the result's column list, on every path.
 - `WHERE` supports a single `column <op> value` predicate, where `<op>` is one of
   `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`. Equality/inequality work over any value;
   the ordering comparisons apply numerically (numbers) or lexicographically
   (strings). A row lacking the column never matches.
-- **`GROUP BY`** routes through the DDF engine: it groups by **exactly one
-  numeric key column** and aggregates the referenced numeric columns. Because the
-  DataFrame is numeric only, the grouping key, every aggregated column, and a
-  `WHERE` column must be **dense numeric** fields (present + numeric in every row);
-  otherwise the query returns a clear error. Integer columns return whole numbers
-  as JSON integers; means and float columns return doubles. Groups come back in
-  ascending key order. (Not supported over `system` tables — they are computed,
-  non-numeric rows.) Building a new table from a grouped result (`CREATE TABLE AS`)
-  is a later slice.
+- **`GROUP BY`** takes **exactly one key column** of any type (see
+  [Aggregation](#aggregation-aggregates-group-by)). Integer columns return whole
+  numbers as JSON integers; means and float columns return doubles. It works over
+  `system` and virtual tables too. Building a new table from a grouped result
+  (`CREATE TABLE AS`) is a later slice.
+- **An unqualified table** resolves against the default database (the
+  `database` input of the `sql` capability, `current_database` of
+  `QueryService::run`), and the error says which one: `database "shop" does not
+  exist (it is the default database the unqualified table "t" resolves
+  against)`, or, with none set, `table "t" is not qualified and no default
+  database is set — write <database>.t or pass a default database` (#1218).
+- **A parse error points at the token** (#1218): it ends with the 1-based
+  character position the parser stopped at and the token there — `expected ';'
+  after statement, got 'WEHRE' (at position 17, near 'WEHRE')` — or
+  `(at end of input)` when the statement ran out.
 - A `SELECT` over a **[partition-only table](partition-only-tables.md)** is not
   answered from the local store at all: it is
   **[scattered to the partition owners and merged](scatter-gather-select.md)**,
@@ -95,6 +149,14 @@ result-column name follows DDF's convention — `count`, `sum_amount`,
   concatenated, and an unreachable owner failing the query. The SQL is identical
   and the result columns are named identically — only the path differs.
 - Statements run in order; the first failure stops the batch and is reported.
+- **Every statement that changes data or schema is authorized on its own**
+  (#1229): `INSERT`, `UPDATE`, `DELETE` and `TRUNCATE` need `sql:write`, `CREATE`
+  and `DROP` need `sql:ddl`, at table or database scope; column grants and row
+  security apply to `UPDATE` and `DELETE` as to `SELECT` and `INSERT`. A refusal
+  reads `permission denied: …` and changes nothing, and every such statement is
+  audited as `data_changed`. The reserved `zetta_connect` database is not
+  reachable through SQL. See
+  [per-statement enforcement](../governance/access-control.md#per-statement-enforcement).
 
 ## The `system` database
 
@@ -195,7 +257,7 @@ SELECT model_id, kind FROM system.models WHERE kind = 'classifier';
 Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
 `metrics`, `created`, `has_weights`, `weights_size`, `weights_sha256`,
 `weights_present`, `exposed`, `endpoint`. The serialized weights body itself
-isn't in the registry (it's a large binary on the body seam); its fingerprint
+isn't in the registry (it's a large binary on the body path); its fingerprint
 and local presence are. `exposed` / `endpoint` are the governed serving state
 ([../api/serving.md](../api/serving.md), #648). Qualified name only (no bare
 alias), like `system.deployments`.
@@ -241,7 +303,7 @@ it never triggers a cloud call** — it only reflects inspects the user already 
 (and consented to) in the Cloud Inspector panel, so it is empty until then; the
 cache is ephemeral (in-memory, not replicated). Both are qualified-name only.
 
-Four more tables surface the run + governance state as read views (RULE-7 — the
+Five more tables surface run, governance, and solution state as read views (RULE-7 — the
 queryable counterpart of the GUI Runs / Admin panels, so SQL and the GUI never
 diverge), each computed at query time from the live `Node` accessors:
 
@@ -256,14 +318,24 @@ diverge), each computed at query time from the live `Node` accessors:
   `orchestration:start_run`, an `@<ttl>` suffix when time-bounded); a key record
   carries no secret material, so this exposes nothing the Admin panel doesn't.
 - **`system.audit`** — the immutable audit trail (`Node::audit_events()`).
-  Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`.
+  Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`,
+  plus nullable summary fields `calls`, `events_delivered`, `scope`,
+  `window_started`, `window_ended`. See the
+  [windowed read policy](../governance/audit-trail.md#audit-policy).
+- **`system.ledger`** — the immutable, replicated solutions reward ledger
+  (`Node::ledger_entries()`). Action rows carry score, decision, action, actor,
+  versions, experiment cell, cost, currency, and timestamps. Outcome rows carry
+  their referenced `action_id`, outcome value, source, currency, and timestamps.
+  Every row also carries `ledger_id` and `kind`. See
+  [audit-ledger.md](../solutions/audit-ledger.md).
 
 ```sql
 SELECT run_id, status FROM system.runs WHERE status = 'failed';
 SELECT action, actor, target FROM system.audit WHERE allowed = false;
+SELECT * FROM system.ledger WHERE subject = 'account-42';
 ```
 
-All four are qualified-name only.
+All five are qualified-name only.
 
 Layered over those sources is **`system.activity`** — the merged, newest-first
 activity feed (#622; [../gui/activity-feed.md](../gui/activity-feed.md)): the
@@ -335,8 +407,12 @@ returns exactly **one row** — the node the query hits. Columns: `node_id`,
 `memory_percent`, `gpu_present`, `gpu_percent`, `vram_used_bytes`,
 `vram_total_bytes`, `storage_used_bytes`, `storage_total_bytes`,
 `storage_percent`, `net_rx_bytes_per_sec`, `net_tx_bytes_per_sec`, `net_percent`,
-`sampled_at`. Counters a host can't report are `null` (graceful degradation — the
-GPU group is absent in a CPU-only core build). Like `system.checkpoints` /
+`sampled_at`, `pubsub_dispatch_mode`, `pubsub_dispatch_threads`,
+`pubsub_dispatch_keys`, `pubsub_topics_per_dispatch_thread`,
+`pubsub_dispatch_min_threads`, and `pubsub_dispatch_max_threads`. The pub/sub
+columns report the current shared-pool size and its configured sizing bounds;
+they are `null` when pub/sub is disabled. Counters a host can't report are `null`
+(graceful degradation — the GPU group is absent in a CPU-only core build). Like `system.checkpoints` /
 `system.cloud_status` it is **ephemeral, observed, NOT replicated** (no CRDT
 backing). Qualified-name only.
 
@@ -418,10 +494,13 @@ magnitude — ns, µs, ms, s, min, h, d, wk — e.g. `(523 ns)`, `(1.500 ms)`,
 ## Limitations (today)
 
 `WHERE` is a single-column predicate (no `AND`/`OR`); `GROUP BY` takes exactly
-one numeric key (no multi-key grouping, `HAVING`, or aggregating over `system`
-tables); no joins, ordering (`ORDER BY`), `UPDATE`, `DELETE`, multi-table queries,
-or `CREATE TABLE AS`; column types are parsed but not stored or enforced. These
-land behind the same AST/executor seam.
+one key (no multi-key grouping or `HAVING`); `ORDER BY` takes result columns
+only (no expressions); no joins, `DISTINCT`, multi-table queries, or
+`CREATE TABLE AS`; column types are parsed but not stored or enforced, so an
+empty table has no known columns (`SELECT *` over it reports `columns: []`, and
+no column name is refused). `GROUP BY` or an aggregate over a table with a
+row-security policy is refused for a non-bypass caller. These land in the same
+AST and executor.
 
 ## Adding a dialect
 

@@ -45,12 +45,17 @@ does not: parquet carries names and physical types, never which column is the la
 `DatasetContract` is that missing statement.
 
 ```
-entity_column     the integer key of the thing being scored, one row per entity
-label_column      the {0,1} training target — never a feature
+entity_column     the integer or text business key, one row per entity
+label_column      the numeric or boolean target (inferred only for {0,1}) — never a feature
 time_column       optional point-in-time cutoff column (requires as_of)
-as_of             only rows with time_column <= as_of contribute
-feature_columns   the numeric columns to train on
+as_of             ISO-8601 timestamp or epoch seconds; only earlier rows contribute
+feature_columns   the numeric or boolean columns to train on
 ```
+
+When the time role is present, `as_of` and every value in `time_column` may use
+either ISO-8601 text or finite epoch seconds. Resolution converts both forms to
+epoch seconds before comparison. A dataset must use one representation
+consistently, and a row strictly after the inclusive cutoff is excluded.
 
 Every field is optional. What is omitted is **inferred**, and every inference is
 reported back in `notes` — a caller shows them, so nobody discovers an assumption
@@ -64,9 +69,9 @@ inside a trained model.
   called `label` holding free text is not a training target, and training on it would
   fail deep inside the GBDT rather than here, where the reason is still legible.
 - **entity** — the first of `entity` / `entity_id` / `account_id` / `customer_id` / …
-  / `id` that is present **and integer-valued**. Most specific first: a table carrying
+  / `id` that is present and integer-valued or text. Most specific first: a table carrying
   both `account_id` and `id` means the account, not the row.
-- **features** — every remaining column whose sampled values are numeric, in catalog
+- **features** — every remaining column whose sampled values are numeric or boolean, in catalog
   order, excluding the entity, label, and time columns. At least one is required: a
   label with no features is not a training set.
 - **time / as_of** — **never inferred.**
@@ -82,21 +87,41 @@ dimension applies only when the caller names it, and with no time column the row
 taken as already point-in-time correct, which is the shape a connector query actually
 produces (the windowing happened in the warehouse SQL).
 
-### Why the entity key must be an integer
+### Text entity keys
 
-Entities are keyed by `std::int64_t` the whole way through the ML path
-(`ml::EntityScore::entity`). A ranked at-risk list keyed by a number that joins back to
-nothing is worse than a clear failure, so a string id column is reported as exactly
-that, with the remedy (add an integer key column, or name one explicitly). A
-whole-valued **double** is accepted: warehouses hand `NUMBER` columns back as doubles,
-and refusing them would fail on the most common warehouse shape there is.
+Numeric algorithms remain keyed by `std::int64_t`. For a text entity column, contract
+resolution hashes each distinct value deterministically into the exact-integer range used
+by native grouping and refuses a collision within the dataset. The resolved contract keeps
+both directions of the mapping. Frame
+loading supplies the derived key to numeric operators; score tables, rankings, segment
+assignments, methodology outputs, decisions, action deliveries and reports restore the
+original business value. Runs and Models persist the mapping for audit and later scoring.
+Integer keys continue unchanged and carry no mapping. A whole-valued **double** is also
+accepted because warehouses commonly return `NUMBER` columns as doubles.
+
+M-8 deterministically compacts derived keys to dense ALS indices while training, then
+restores the derived keys before applying the dataset mapping. The recommendation table
+and downstream policy therefore still expose only the original business value.
+
+The contract note is explicit: `entity column 'customer_id' (text; keyed by a derived
+id, outputs carry the original value)`.
+
+### Boolean labels and features
+
+JSON booleans in a label or feature column load as `false = 0` and `true = 1`. Any
+other non-numeric label is refused during contract resolution, before a Run starts, with
+the column name and a cast remedy such as `churned::int`. Methodologies that declare
+text or categorical feature roles retain their existing methodology-specific validation.
+Explicit continuous numeric targets remain valid; only inferred labels must be binary.
 
 ## Resolution
 
-`resolve_dataset` resolves a Table-form path against the live catalog
+`sample_dataset` resolves a Table-form path against the live catalog
 (`Node::datasets()` — recomputed from the node tree joined with the partition catalog,
-never a stored copy), samples it, and infers the contract. It fails, non-throwing and
-with a path-qualified reason, when:
+never a stored copy) and samples it. `resolve_dataset` builds the training contract
+from that shared result; [`analyze_dataset`](featurization.md) builds semantic and
+table-shape evidence from it. Both fail, non-throwing and with a path-qualified reason,
+when:
 
 - the path is the Directory form (it says so rather than pretending);
 - no such database/table exists — naming the near-misses, or what the cluster does have;
@@ -105,16 +130,17 @@ with a path-qualified reason, when:
   fraction of the rows while looking perfectly healthy;
 - the table has no rows, or the contract cannot be inferred.
 
-Reading rows for typing goes through the injected `DatasetSampler`, so the inference is
-unit-testable against rows built in a test. The default reads through
+Reading rows for typing goes through the injected `DatasetSampler`, so contract and
+semantic inference are unit-testable against rows built in a test. The default reads through
 `query::QueryService`, which routes a partition-only table through the
 [scatter-gather select](scatter-gather-select.md).
 
 ## Boundaries
 
-**No new JSON format.** `DatasetContract` is a value-type DTO with a hand-written
+`DatasetContract` is a value-type DTO with a hand-written
 non-throwing `dataset_contract_from_json` mirroring `dataset_contract_schema()` — the
-boundary rule for value types. Nothing here throws.
+boundary rule for value types. Its optional `entity_key_mapping` carries the derived id,
+original value pairs for a text entity column. Nothing here throws.
 
 ## Running on the resolved table
 
@@ -132,9 +158,8 @@ arithmetic on a shape that does not exist. When the contract names a time column
 universe is still cut at `as_of`, so the point-in-time guarantee holds where it applies.
 
 The entity is renamed to the canonical `entity` on the way into the frame (via the column
-schema's `field`), because the feature frame, the score job, and the ranked list all name
-it that — threading a per-customer spelling through them would be a second name for one
-concept.
+schema's `field`). For text ids that numeric column contains the derived key internally;
+every persisted or delivered entity field resolves it back to the original value.
 
 ## Over the API
 
@@ -169,6 +194,3 @@ inside a trained model.
   `LIMIT` yet. The catalog already records each body's column types
   ([#837](https://github.com/oramasearch/zetta/issues/837)), so typing from it — reading
   no rows at all — is the follow-up.
-- **String entity keys.** Supporting them needs a derived integer column at frame-load
-  time, plus a way to resolve keys back to business ids for the report. Until then the
-  failure names the remedy.

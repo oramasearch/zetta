@@ -7,7 +7,7 @@ execution (status, logs, outputs, lineage). This is an atomic slice of **FEAT-5*
 ExecutionGraph IR (*what* to run) and the Run record (*the result*).
 
 This page documents the **orchestrator**: `zetta::pipeline::GraphExecutor` and the
-`zetta::pipeline::StepExecutor` seam it runs each step through.
+`zetta::pipeline::StepExecutor` interface it runs each step through.
 
 ```
 include/zetta/pipeline/executor.hpp   GraphExecutor, StepExecutor, DefaultStepExecutor,
@@ -21,9 +21,9 @@ This slice **orchestrates** execution; it does not train a real model or build a
 real index. A `DefaultStepExecutor` derives a faithful, schema-valid `Run` from
 the graph's structure — exactly the same altitude as the rest of R1 (a
 [deployment](deployments.md) records a *summary*, a run records *outputs*). Real
-per-step compute plugs in behind the `StepExecutor` seam **without touching the
-orchestrator**, the same shape as the gate's `Check` seam ([gate.md](gate.md))
-and the `StorageEngine` seam ([storage.md](../data/storage.md)).
+per-step compute plugs in behind the `StepExecutor` interface **without touching the
+orchestrator**, the same shape as the gate's `Check` interface ([gate.md](gate.md))
+and the `StorageEngine` interface ([storage.md](../data/storage.md)).
 
 ## Running a graph
 
@@ -58,15 +58,18 @@ zetta::pipeline::GraphExecutor executor{std::make_shared<MyStepExecutor>()};
 zetta::pipeline::ExecutionResult result = executor.execute(node, graph, project, graph_id);
 ```
 
-The `Run` is created on the node, so it is owned, persisted, and (when the node
-is replicated) captured into the CRDT exactly like any other run — both
-standalone and replicated nodes are supported.
+The `Run` is normally created on the node, so it is owned, persisted, and (when
+the node is replicated) captured into the CRDT exactly like any other run. A
+caller may instead pass an existing Run as the final argument. The Study driver
+uses this form so the Run admitted as a trial is the same Run that receives
+graph logs, metrics, outputs, and terminal status.
 
 Since #624 `execute` may be driven from a **background worker**: every
 node-tree write (the Run creation + the Run's mutators) gates through
 `Node::run_on_owner` ([../architecture/owner-gate.md](../architecture/owner-gate.md);
 inline for owner-thread callers), and an optional `cancel` flag (the last
-parameter) is checked **between steps** — a cancelled run ends Failed with a
+parameter before the optional existing Run) is checked before and after steps —
+a cancelled run ends Failed with a
 "run cancelled by user" log line and `error`.
 
 ## What execution does
@@ -154,20 +157,29 @@ steps are skipped, the failure is diagnosable), the empty/cyclic guards, that th
 produced run is schema-valid and survives a restart, and that a custom
 `StepExecutor` is honoured.
 
-## Real per-step compute (the churn pipeline)
+## Methodology run dispatch
 
-The first **real** `StepExecutor` is `zetta::usecases::churn::ChurnStepExecutor` (#396) — it replaces
-`DefaultStepExecutor`'s logical-ref placeholders with actual distributed accelerated
-compute for the UC-1 churn pipeline, **behind this same seam and without touching the
-orchestrator**. Each heavy step runs as a recorded `ComputeJob`
+The public `run` capability resolves the graph through the
+[methodology registry](../ml/methodologies.md). A model step with an unknown model kind is refused.
+A model step owned by a registered but unavailable methodology is refused with
+that methodology's tracking issue. A graph with no model step may still use the
+structural executor described above.
+
+M-1's `run` callback uses `zetta::usecases::churn::ChurnStepExecutor` (#396). It
+replaces `DefaultStepExecutor`'s logical-ref placeholders with actual distributed
+accelerated compute for the UC-1 churn pipeline. Each heavy step runs as a recorded `ComputeJob`
 (`connect`→load to DDF, `clean`→featurize, `model`→train GBDT + calibrate,
 `index`→score/rank, `serve`→explain via TreeSHAP, `act`→retention playbook), so
-`run_graph`'s churn graph produces a `Run` whose outputs reference a **real** `Model`
-+ ranked at-risk list + drivers. Because the seam's `run_step` is a pure-per-step
+the run produces a `Run` whose outputs reference a **real** `Model`, ranked
+at-risk list, and drivers. Because `run_step` is a pure-per-step
 function but the pipeline threads artifacts (feature table → model → ranked list →
 drivers), the executor is constructed with its dependencies (the node, a started job
 coordinator, a compute device, the input shards) and used by injection into a
 `GraphExecutor`. See [churn-step-executor.md](../use-cases/churn-step-executor.md).
+
+The API handler contains no M-1-specific dispatch. Later methodologies install
+their own graph ownership and run callbacks in the registry without editing the
+handler.
 
 The **`index` step** has its own real `StepExecutor` —
 [`zetta::index::IndexStepExecutor`](../indexing/index-step-executor.md) (#528) — which resolves the
@@ -178,7 +190,7 @@ so a built index is queryable. See [index-step-executor.md](../indexing/index-st
 
 ## What's next (later slices)
 
-- **More real per-step compute** behind the `StepExecutor` seam for the other use
+- **More real per-step compute** behind `StepExecutor` for the other use
   cases — materializing datasets as real tables/large objects, the distributed
   (fan-across-nodes) index build, and recording their real refs in the run's outputs.
 - **Wiring the correctness gate** ([gate.md](gate.md)) as a pre-execution
@@ -198,3 +210,30 @@ executor writes, so the two are tested together (`tests/pipeline/test_run_progre
 
 See also [runs.md](runs.md), [execution-graph.md](execution-graph.md),
 [deployments.md](deployments.md), and [architecture.md](../architecture/architecture.md).
+
+## What a run says it read (2026-09-27)
+
+Found by lake's UX review (https://github.com/oramasearch/lake/issues/251,
+https://github.com/oramasearch/lake/issues/253):
+
+- **A table-backed churn run** (`dataset_path = "<database>.<table>"`, #947) records the dataset
+  as its only lineage source (`dataset:<database>.<table>`) on its first connect step and logs
+  `dataset: trained on <database>.<table>` plus each of `resolve_dataset`'s notes. Every other
+  connect step logs `connect: <name> reuses dataset <database>.<table> already loaded by this run`
+  instead of reporting the graph's own `source:table` as read. `StepOutcome::notes` carries these
+  lines. Single-table S-1 graphs compose one connect step, so they do not imply a second source.
+- **A run given no `dataset_path` reads its pipeline's own table** when there is one: the first
+  connect step whose `source` + `table` attributes name a dataset this node holds, with the first
+  model step's `target` as the label (`dataset.label_column`). It logs `dataset: read from the
+  pipeline's connect step '<name>': <database>.<table>, label '<target>'` and `run` answers it in
+  `dataset_notes`. Only a pipeline that names no existing table trains on the built-in demo
+  dataset, as before. lake points a project's pipeline at a table this way (a project made from an
+  Opportunity, *Build a Pipeline* from a dataset), and such runs used to train on the demo data
+  silently. Verify: `Uc1Journey.ARunWithoutADatasetReadsItsPipelinesTable`.
+- **Columns the model cannot use** are said: inference notes `not used: '<column>' (not numeric;
+  categorical columns are not supported yet)` (#957 is categorical support), and
+  `get_run_report`'s `dataset` adds `source` and `not_used` (from the run's lineage and logs; a
+  model's metrics hold numbers only). A table-backed report drops `events`, which it has none of.
+- **A structural run** (a graph with no model step) logs a `warn`, `structural: … its steps
+  ran without training or scoring anything …` (and that a given `dataset_path` was not read), and
+  `run`'s answer carries the same sentence as `note`.

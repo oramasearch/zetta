@@ -96,4 +96,16 @@ bool ModelCache::is_loaded(const std::string& path) const {
     return models_.find(path) != models_.end();
 }
 
+ModelCache::MemoryUsage ModelCache::memory_usage() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    MemoryUsage usage;
+    usage.models = models_.size();
+    for (const auto& [path, loaded] : models_) {
+        usage.bytes += sizeof(LoadedModel) + path.capacity();
+        usage.bytes += loaded->model.resident_bytes();
+        usage.bytes += loaded->tokenizer.resident_bytes();
+    }
+    return usage;
+}
+
 }  // namespace zetta::agent

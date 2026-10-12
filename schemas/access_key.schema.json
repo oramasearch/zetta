@@ -51,7 +51,10 @@
             "table",
             "column",
             "blob",
-            "tool"
+            "tool",
+            "topic",
+            "collection",
+            "bucket"
           ],
           "type": "string"
         },

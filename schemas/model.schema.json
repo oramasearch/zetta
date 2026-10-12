@@ -27,10 +27,19 @@
     "name": {
       "type": "string"
     },
+    "pipeline_name": {
+      "type": "string"
+    },
     "project": {
       "type": "string"
     },
+    "project_name": {
+      "type": "string"
+    },
     "run": {
+      "type": "string"
+    },
+    "run_id": {
       "type": "string"
     },
     "weights": {

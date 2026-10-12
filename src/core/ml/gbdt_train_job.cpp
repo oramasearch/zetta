@@ -1,6 +1,7 @@
 #include "zetta/ml/gbdt_train_job.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include "zetta/compute/compute_status.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/run.hpp"
 
 #include "feature_columns.hpp"
 
@@ -25,6 +27,28 @@ using compute::ComputeStatus;
 using compute::JobRound;
 using detail::read_column_as_double;
 using Outcome = compute::JobCoordinator::Outcome;
+
+struct RegressionMetrics {
+    double rmse = 0.0;
+    double mae = 0.0;
+};
+
+RegressionMetrics evaluate_regression(
+    const std::vector<double>& predictions,
+    const std::vector<double>& targets) {
+    if (predictions.empty() || predictions.size() != targets.size()) {
+        return {};
+    }
+    double squared_error = 0.0;
+    double absolute_error = 0.0;
+    for (std::size_t index = 0; index < predictions.size(); ++index) {
+        const double residual = predictions[index] - targets[index];
+        squared_error += residual * residual;
+        absolute_error += std::abs(residual);
+    }
+    const double count = static_cast<double>(predictions.size());
+    return {std::sqrt(squared_error / count), absolute_error / count};
+}
 
 // A deterministic, spec-derived collective tag — the default round_tag. Same
 // label + feature ordering -> same tag on every node, so SPMD callers meet in the
@@ -123,7 +147,9 @@ DistributedTrainResult run_train_job(
     const std::string& label_column, const GbdtParams& params, Node* node,
     const std::string& model_name, const std::string& round_tag,
     CalibrationConfig calibration, std::chrono::milliseconds timeout,
-    TrainCheckpointConfig checkpoint) {
+    TrainCheckpointConfig checkpoint, const std::string& run_id,
+    TrainProgressCallback progress,
+    const std::vector<double>& validation_times) {
     DistributedTrainResult out;
     const std::string tag =
         round_tag.empty() ? default_round_tag(feature_columns, label_column)
@@ -164,6 +190,61 @@ DistributedTrainResult run_train_job(
         std::vector<double> eval_labels;
         const bool wants_eval_holdout = params.holdout_fraction > 0.0;
         const bool splitting = calibration.enabled || wants_eval_holdout;
+        std::vector<bool> temporal_eval(shard_rows, false);
+        bool temporal_split = false;
+        if (wants_eval_holdout) {
+            const double local_has_times =
+                validation_times.size() == shard_rows &&
+                        (shard_rows == 0 || !validation_times.empty())
+                    ? 1.0
+                    : 0.0;
+            const auto agreed = round.allreduce(
+                tag + ".validation_times.enabled", {local_has_times},
+                zetta::cluster::CollectiveOp::Minimum, timeout);
+            if (!agreed || agreed->size() != 1) {
+                return {.ok = false,
+                        .detail = "gbdt validation times: agreement failed"};
+            }
+            temporal_split = agreed->front() == 1.0;
+        }
+        if (temporal_split) {
+            const auto gathered = round.gather(
+                tag + ".validation_times.gather", validation_times, timeout);
+            if (!gathered) {
+                return {.ok = false,
+                        .detail = "gbdt validation times: gather failed"};
+            }
+            std::vector<double> cutoff_wire;
+            if (round.is_root()) {
+                std::vector<double> global_times;
+                for (const std::vector<double>& member : *gathered) {
+                    global_times.insert(global_times.end(), member.begin(),
+                                        member.end());
+                }
+                if (global_times.size() > 1) {
+                    std::ranges::stable_sort(global_times);
+                    const std::size_t held_out = std::clamp<std::size_t>(
+                        static_cast<std::size_t>(std::ceil(
+                            static_cast<double>(global_times.size()) *
+                            params.holdout_fraction)),
+                        1, global_times.size() - 1);
+                    cutoff_wire.push_back(
+                        global_times[global_times.size() - held_out]);
+                }
+            }
+            const auto cutoff = round.broadcast(
+                tag + ".validation_times.cutoff", cutoff_wire, timeout);
+            if (!cutoff) {
+                return {.ok = false,
+                        .detail = "gbdt validation times: broadcast failed"};
+            }
+            temporal_split = cutoff->size() == 1;
+            if (temporal_split) {
+                for (std::size_t row = 0; row < shard_rows; ++row) {
+                    temporal_eval[row] = validation_times[row] >= cutoff->front();
+                }
+            }
+        }
         if (splitting) {
             train_columns.assign(feature_columns.size(), {});
             holdout_columns.assign(feature_columns.size(), {});
@@ -173,7 +254,10 @@ DistributedTrainResult run_train_job(
                 // same rows whether or not calibration is on.
                 const bool evaluate =
                     wants_eval_holdout &&
-                    row_is_holdout(columns, r, labels[r], params.holdout_fraction);
+                    (temporal_split
+                         ? temporal_eval[r]
+                         : row_is_holdout(columns, r, labels[r],
+                                          params.holdout_fraction));
                 // The hash input is unchanged from what calibration has always
                 // used. Disjointness comes from `!evaluate`; perturbing the input
                 // would change WHICH rows calibrate, and so the calibrated
@@ -215,6 +299,69 @@ DistributedTrainResult run_train_job(
         // the trees up to a given round are identical on every node, so truncating to
         // the agreed round is safe).
         TrainHooks hooks;
+        // Why the metrics hook stopped training, when it did: train_gbdt's
+        // status names only the tree, the hook knows the reason.
+        std::string metrics_stop;
+        // The root owns the Run; peers still participate in metric reductions.
+        const auto metrics_enabled = round.broadcast(
+            tag + ".metrics.enabled",
+            {node != nullptr && (!run_id.empty() || progress) ? 1.0 : 0.0},
+            timeout);
+        if (!metrics_enabled || metrics_enabled->size() != 1) {
+            return {.ok = false,
+                    .detail = "gbdt run metrics: participant agreement failed"};
+        }
+        if (metrics_enabled->front() != 0.0) {
+            hooks.on_metrics = [](int, const std::map<std::string, double>&) {
+                return true;
+            };
+        }
+        if (round.is_root() && node != nullptr && !run_id.empty()) {
+            nlohmann::json run_params = params.to_json();
+            run_params["trainer"] = "gbdt";
+            run_params["features"] = feature_columns.size();
+            bool params_logged = false;
+            node->run_on_owner([&] {
+                const std::shared_ptr<pipeline::Run> run =
+                    node->find_run(run_id);
+                if (run && !run->value().metrics.at("params").empty()) {
+                    params_logged = true;
+                } else {
+                    params_logged = node->log_run_params(run_id, run_params);
+                }
+            });
+            if (!params_logged) {
+                return {.ok = false,
+                        .detail = "gbdt run metrics: parameters could not be logged"};
+            }
+            hooks.on_metrics = [node, &run_id, &progress, &metrics_stop](
+                                   int step,
+                                   const std::map<std::string, double>& values) {
+                if (!run_id.empty()) {
+                    std::string error;
+                    bool logged = false;
+                    node->run_on_owner([&] {
+                        // One batch per tree: coalesce the Run's
+                        // replicated capture (#1217).
+                        logged = node->log_run_metrics(
+                            run_id, static_cast<std::uint64_t>(step), values,
+                            {}, &error, /*coalesce=*/true);
+                    });
+                    if (!logged) {
+                        metrics_stop = "run metric logging failed at tree " +
+                                       std::to_string(step) +
+                                       (error.empty() ? "" : ": " + error);
+                        return false;
+                    }
+                }
+                if (progress && !progress(step, values)) {
+                    metrics_stop = "training stopped by its caller after tree " +
+                                   std::to_string(step);
+                    return false;
+                }
+                return true;
+            };
+        }
         if (checkpoint.store != nullptr) {
             std::optional<GbdtCheckpointPayload> resumed;
             std::uint64_t local_round = 0;
@@ -275,7 +422,10 @@ DistributedTrainResult run_train_job(
                                              fit_labels, params, allreduce, tag,
                                              hooks);
         if (!trained.ok()) {
-            return {.ok = false, .detail = "gbdt train: " + trained.status.message};
+            return {.ok = false,
+                    .detail = "gbdt train: " + (metrics_stop.empty()
+                                                    ? trained.status.message
+                                                    : metrics_stop)};
         }
         out.model = std::move(trained.model);
         out.feature_importances = std::move(trained.feature_importances);
@@ -328,9 +478,9 @@ DistributedTrainResult run_train_job(
         }
 
         // 3. Global metrics: each node scores the rows it fit — plus any it held
-        // out — the (prob, label) pairs are gathered to the root, evaluated once
-        // over the union, and the scalars broadcast back, so every node ends with
-        // identical metrics.
+        // out — the (prediction, label) pairs are gathered to the root, evaluated
+        // once over the union, and the scalars broadcast back, so every node ends
+        // with identical objective-appropriate metrics.
         //
         // Both sets of pairs ride THIS ONE gather, length-prefixed (#953). The
         // obvious shape — a second gather/broadcast guarded by
@@ -391,35 +541,68 @@ DistributedTrainResult run_train_job(
                     (held ? held_targets : targets).push_back(node_pairs[i + 1]);
                 }
             }
-            const GbdtMetrics metrics = evaluate_binary(probabilities, targets);
-            // An empty holdout is reported as absent, never as zeros — a zeroed
-            // AUC reads as a model that ranks backwards.
             const bool measured = !held_targets.empty();
-            const GbdtMetrics held =
-                measured ? evaluate_binary(held_probabilities, held_targets)
-                         : GbdtMetrics{};
-            metric_wire = {metrics.auc,
-                           metrics.log_loss,
-                           metrics.accuracy,
-                           measured ? 1.0 : 0.0,
-                           held.auc,
-                           held.log_loss,
-                           held.accuracy,
-                           static_cast<double>(targets.size()),
-                           static_cast<double>(held_targets.size())};
+            if (params.objective == "squared_error") {
+                const RegressionMetrics metrics =
+                    evaluate_regression(probabilities, targets);
+                const RegressionMetrics held =
+                    measured ? evaluate_regression(held_probabilities,
+                                                   held_targets)
+                             : RegressionMetrics{};
+                metric_wire = {metrics.rmse,
+                               metrics.mae,
+                               0.0,
+                               measured ? 1.0 : 0.0,
+                               held.rmse,
+                               held.mae,
+                               0.0,
+                               static_cast<double>(targets.size()),
+                               static_cast<double>(held_targets.size())};
+            } else {
+                const GbdtMetrics metrics =
+                    evaluate_binary(probabilities, targets);
+                // An empty holdout is reported as absent, never as zeros — a
+                // zeroed AUC reads as a model that ranks backwards.
+                const GbdtMetrics held =
+                    measured
+                        ? evaluate_binary(held_probabilities, held_targets)
+                        : GbdtMetrics{};
+                // The held-out charts exist only here, on the root (#1247).
+                if (measured) {
+                    out.held_out_artifacts =
+                        held_out_chart_artifacts(held_probabilities, held_targets);
+                }
+                metric_wire = {metrics.auc,
+                               metrics.log_loss,
+                               metrics.accuracy,
+                               measured ? 1.0 : 0.0,
+                               held.auc,
+                               held.log_loss,
+                               held.accuracy,
+                               static_cast<double>(targets.size()),
+                               static_cast<double>(held_targets.size())};
+            }
         }
         const std::optional<std::vector<double>> result_wire =
             round.broadcast(tag + ".metrics.result", metric_wire, timeout);
         if (!result_wire || result_wire->size() != 9) {
             return {.ok = false, .detail = "gbdt metrics: broadcast failed"};
         }
-        out.metrics.auc = (*result_wire)[0];
-        out.metrics.log_loss = (*result_wire)[1];
-        out.metrics.accuracy = (*result_wire)[2];
+        out.regression = params.objective == "squared_error";
+        if (out.regression) {
+            out.rmse = (*result_wire)[0];
+            out.mae = (*result_wire)[1];
+            out.held_out_rmse = (*result_wire)[4];
+            out.held_out_mae = (*result_wire)[5];
+        } else {
+            out.metrics.auc = (*result_wire)[0];
+            out.metrics.log_loss = (*result_wire)[1];
+            out.metrics.accuracy = (*result_wire)[2];
+            out.held_out.auc = (*result_wire)[4];
+            out.held_out.log_loss = (*result_wire)[5];
+            out.held_out.accuracy = (*result_wire)[6];
+        }
         out.has_held_out = (*result_wire)[3] != 0.0;
-        out.held_out.auc = (*result_wire)[4];
-        out.held_out.log_loss = (*result_wire)[5];
-        out.held_out.accuracy = (*result_wire)[6];
         out.train_rows = static_cast<std::uint64_t>((*result_wire)[7]);
         out.held_out_rows = static_cast<std::uint64_t>((*result_wire)[8]);
 
@@ -429,7 +612,10 @@ DistributedTrainResult run_train_job(
                           " nodes -> " +
                           std::to_string(out.model.tree_count()) + " trees, " +
                           std::to_string(out.model.feature_count()) +
-                          " features, auc " + std::to_string(out.metrics.auc) +
+                          " features, " +
+                          (out.regression
+                               ? "rmse " + std::to_string(out.rmse)
+                               : "auc " + std::to_string(out.metrics.auc)) +
                           (out.calibrated
                                ? ", calibrated (" +
                                      to_string(calibration.method) + ")"
@@ -440,10 +626,14 @@ DistributedTrainResult run_train_job(
     // to peers). Each node still ran its own ComputeJob (recorded above).
     if (out.status == zetta::compute::JobStatus::Succeeded && out.is_root && node != nullptr) {
         ModelValue value;
-        value.name = model_name.empty() ? "gbdt-binary-logistic" : model_name;
-        value.kind = "classifier";
+        value.name = model_name.empty()
+                         ? (out.regression ? "gbdt-squared-error"
+                                           : "gbdt-binary-logistic")
+                         : model_name;
+        value.kind = out.regression ? "regressor" : "classifier";
         value.project = job.project();
-        value.run = job.run();
+        value.run = run_id.empty() ? job.run() : run_id;
+        value.run_id = value.run;
         nlohmann::json drivers = nlohmann::json::array();
         for (std::size_t index = 0; index < feature_columns.size() &&
                                     index < out.feature_importances.size();
@@ -451,7 +641,7 @@ DistributedTrainResult run_train_job(
             drivers.push_back({{"feature", feature_columns[index]},
                                {"importance", out.feature_importances[index]}});
         }
-        value.feature_schema = {{"objective", "binary_logistic"},
+        value.feature_schema = {{"objective", params.objective},
                                 {"features", feature_columns},
                                 {"drivers", std::move(drivers)}};
         // The Model's `metrics` is what `system.models`, `get_model`, the chat
@@ -468,18 +658,31 @@ DistributedTrainResult run_train_job(
         // fails to materialize anywhere else. The symptom is a model that "does
         // not resolve on every member", nowhere near the code that wrote it.
         //
-        // Which figure to quote is therefore answered by PRESENCE: when
-        // `held_out_auc` is here, that is the one. When it is absent no holdout
-        // was asked for, and the only numbers available are the flattering ones.
-        nlohmann::json metrics = out.metrics.to_json();
-        metrics["in_sample_auc"] = out.metrics.auc;
-        metrics["in_sample_log_loss"] = out.metrics.log_loss;
-        metrics["in_sample_accuracy"] = out.metrics.accuracy;
+        // Which figure to quote is therefore answered by PRESENCE: a held-out
+        // objective metric takes precedence over its in-sample counterpart. When
+        // it is absent no evaluation holdout was asked for.
+        nlohmann::json metrics = nlohmann::json::object();
+        if (out.regression) {
+            metrics["rmse"] = out.rmse;
+            metrics["mae"] = out.mae;
+            metrics["in_sample_rmse"] = out.rmse;
+            metrics["in_sample_mae"] = out.mae;
+        } else {
+            metrics = out.metrics.to_json();
+            metrics["in_sample_auc"] = out.metrics.auc;
+            metrics["in_sample_log_loss"] = out.metrics.log_loss;
+            metrics["in_sample_accuracy"] = out.metrics.accuracy;
+        }
         metrics["in_sample_rows"] = out.train_rows;
         if (out.has_held_out) {
-            metrics["held_out_auc"] = out.held_out.auc;
-            metrics["held_out_log_loss"] = out.held_out.log_loss;
-            metrics["held_out_accuracy"] = out.held_out.accuracy;
+            if (out.regression) {
+                metrics["held_out_rmse"] = out.held_out_rmse;
+                metrics["held_out_mae"] = out.held_out_mae;
+            } else {
+                metrics["held_out_auc"] = out.held_out.auc;
+                metrics["held_out_log_loss"] = out.held_out.log_loss;
+                metrics["held_out_accuracy"] = out.held_out.accuracy;
+            }
             metrics["held_out_rows"] = out.held_out_rows;
         }
         value.metrics = std::move(metrics);
@@ -491,6 +694,44 @@ DistributedTrainResult run_train_job(
             if (model) model->set_weights(out.model.to_json().dump());
         });
         if (model) out.model_id = model->id();
+
+        // The held-out scores are what decides between runs (#1239): log them on
+        // the Run as well, one point at the last tree, so get_run_metrics'
+        // summary and compare_runs carry them beside the training curves.
+        // Before, only the Model and get_run_report had them. A run whose
+        // metrics are suppressed for differential privacy gets none.
+        if (out.has_held_out && !run_id.empty()) {
+            std::map<std::string, double> held_out;
+            if (out.regression) {
+                held_out["held_out_rmse"] = out.held_out_rmse;
+                held_out["held_out_mae"] = out.held_out_mae;
+            } else {
+                held_out["held_out_auc"] = out.held_out.auc;
+                held_out["held_out_log_loss"] = out.held_out.log_loss;
+                held_out["held_out_accuracy"] = out.held_out.accuracy;
+            }
+            held_out["held_out_rows"] = static_cast<double>(out.held_out_rows);
+            std::erase_if(held_out, [](const auto& metric) {
+                return !std::isfinite(metric.second);
+            });
+            node->run_on_owner([&] {
+                const std::shared_ptr<pipeline::Run> run = node->find_run(run_id);
+                if (!run || !run->value().metrics_suppressed.empty()) return;
+                std::string error;
+                const auto step = static_cast<std::uint64_t>(
+                    std::max<std::size_t>(out.model.tree_count(), 1));
+                // A failed write leaves the model and its report intact; the
+                // run just lacks the summary entry, as before #1239.
+                static_cast<void>(node->log_run_metrics(run_id, step, held_out,
+                                                        {}, &error));
+                // The held-out charts (#1247), on the same terms: best effort,
+                // and none for a run suppressed for differential privacy.
+                for (nlohmann::json& artifact : out.held_out_artifacts) {
+                    static_cast<void>(
+                        node->log_run_artifact(run_id, std::move(artifact), &error));
+                }
+            });
+        }
     }
 
     // Training fully completed — the model is durable as a Model entity, so the
@@ -500,6 +741,99 @@ DistributedTrainResult run_train_job(
         checkpoint.store->clear(tag);
     }
     return out;
+}
+
+std::vector<nlohmann::json> held_out_chart_artifacts(
+    const std::vector<double>& probabilities, const std::vector<double>& targets,
+    std::size_t max_points) {
+    const std::size_t rows = std::min(probabilities.size(), targets.size());
+    if (rows == 0) return {};
+    std::vector<nlohmann::json> artifacts;
+
+    // Confusion matrix at 0.5: rows are the actual class, columns the predicted.
+    std::uint64_t true_negative = 0, false_positive = 0;
+    std::uint64_t false_negative = 0, true_positive = 0;
+    for (std::size_t i = 0; i < rows; ++i) {
+        const bool actual = targets[i] >= 0.5;
+        const bool predicted = probabilities[i] >= 0.5;
+        if (actual) {
+            (predicted ? true_positive : false_negative) += 1;
+        } else {
+            (predicted ? false_positive : true_negative) += 1;
+        }
+    }
+    artifacts.push_back(
+        {{"type", "confusion_matrix"},
+         {"name", "held_out"},
+         {"data",
+          {{"labels", {"0", "1"}},
+           {"matrix",
+            {{true_negative, false_positive}, {false_negative, true_positive}}}}}});
+
+    // ROC: walk the rows by score, highest first, emitting one point per
+    // distinct score, then thin to at most max_points (keeping both ends).
+    const std::uint64_t positives = true_positive + false_negative;
+    const std::uint64_t negatives = true_negative + false_positive;
+    if (positives > 0 && negatives > 0) {
+        std::vector<std::size_t> order(rows);
+        for (std::size_t i = 0; i < rows; ++i) order[i] = i;
+        std::ranges::sort(order, [&](std::size_t a, std::size_t b) {
+            return probabilities[a] > probabilities[b];
+        });
+        std::vector<double> x{0.0}, y{0.0}, thresholds{1.0};
+        std::uint64_t seen_positive = 0, seen_negative = 0;
+        for (std::size_t k = 0; k < rows; ++k) {
+            const std::size_t row = order[k];
+            (targets[row] >= 0.5 ? seen_positive : seen_negative) += 1;
+            if (k + 1 < rows && probabilities[order[k + 1]] == probabilities[row]) {
+                continue;  // one point per distinct score
+            }
+            x.push_back(static_cast<double>(seen_negative) / static_cast<double>(negatives));
+            y.push_back(static_cast<double>(seen_positive) / static_cast<double>(positives));
+            thresholds.push_back(probabilities[row]);
+        }
+        if (max_points >= 2 && x.size() > max_points) {
+            std::vector<double> thin_x, thin_y, thin_thresholds;
+            for (std::size_t p = 0; p < max_points; ++p) {
+                const std::size_t index = p * (x.size() - 1) / (max_points - 1);
+                thin_x.push_back(x[index]);
+                thin_y.push_back(y[index]);
+                thin_thresholds.push_back(thresholds[index]);
+            }
+            x = std::move(thin_x);
+            y = std::move(thin_y);
+            thresholds = std::move(thin_thresholds);
+        }
+        artifacts.push_back({{"type", "roc_curve"},
+                             {"name", "held_out"},
+                             {"data", {{"x", x}, {"y", y}, {"thresholds", thresholds}}}});
+    }
+
+    // Calibration: ten equal-width bins over [0, 1]; empty bins are left out.
+    constexpr std::size_t kBins = 10;
+    std::vector<double> predicted_sum(kBins, 0.0), observed_sum(kBins, 0.0);
+    std::vector<std::uint64_t> counts(kBins, 0);
+    for (std::size_t i = 0; i < rows; ++i) {
+        const double probability = std::clamp(probabilities[i], 0.0, 1.0);
+        const std::size_t bin =
+            std::min(kBins - 1, static_cast<std::size_t>(probability * kBins));
+        predicted_sum[bin] += probability;
+        observed_sum[bin] += targets[i] >= 0.5 ? 1.0 : 0.0;
+        counts[bin] += 1;
+    }
+    std::vector<double> predicted, observed;
+    std::vector<std::uint64_t> bin_counts;
+    for (std::size_t bin = 0; bin < kBins; ++bin) {
+        if (counts[bin] == 0) continue;
+        predicted.push_back(predicted_sum[bin] / static_cast<double>(counts[bin]));
+        observed.push_back(observed_sum[bin] / static_cast<double>(counts[bin]));
+        bin_counts.push_back(counts[bin]);
+    }
+    artifacts.push_back(
+        {{"type", "calibration"},
+         {"name", "held_out"},
+         {"data", {{"predicted", predicted}, {"observed", observed}, {"counts", bin_counts}}}});
+    return artifacts;
 }
 
 }  // namespace zetta::ml

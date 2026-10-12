@@ -8,6 +8,28 @@ renderings, zero drift**. Realizes the rendering the design settled in
 
 ## The route table — derived, never authored
 
+Read capabilities may declare `post_alias` to also accept a JSON-body
+`POST /v1/<name>` without changing read classification or removing GET.
+The router and OpenAPI derive both from that registry flag. Pub/sub get/list/browse
+declare it (#1136), and so do `sql`, `get_record`, `list_records` and `query_metric`
+(#1231); aliases use `<name>_post` as their distinct OpenAPI operation id. A `sql`
+statement in a body is not bound by the ~4 KiB request line the GET form travels in;
+whichever form it arrives in, the executor authorizes each statement and audits a
+data-changing one as `data_changed` (#1229).
+Revision conflicts use HTTP 409. See [pub/sub CRUD](../pubsub/crud.md).
+
+The object capability (#1005) adds the routes the registry rendering cannot
+express: `PUT`, `PATCH` and `GET /v1/objects/<bucket>/<key>` move raw bodies
+(`application/octet-stream`, streamed a slice at a time), and the bucket routes
+`GET /v1/objects/<bucket>`, `GET …:usage`, `POST …:barrier`, `POST
+…:acquire|:renew|:release` and `DELETE …/<key>` are aliases of the
+`list_objects`, `object_usage`, `object_barrier`, lease and `delete_object`
+capabilities. Their OpenAPI operations come from `object_route_paths()`, beside
+the capabilities. The error codes they add map to HTTP as `fenced`, `held` and
+`incarnation_changed` (lake#543) 409, `range_not_satisfiable` 416 and
+`quota_exceeded` 507. See
+[the object capability](../data/object-store.md).
+
 `zetta::api` (`include/zetta/api/rest.hpp`, `src/core/api/rest.cpp` — HTTP-free
 zetta-core) derives everything mechanically from each registry entry:
 
@@ -40,8 +62,32 @@ envelope `structuredContent` carries over MCP:
 
 Domain failures keep the engine's reason verbatim and map onto HTTP statuses
 (`rest_status`): `invalid_input` → 400 · `unauthorized` / `consent_required`
-→ 403 · `not_found` / `unknown_capability` → 404 · `engine_error` → 422 ·
-`busy` → 503.
+→ 403 · `not_found` / `unknown_capability` → 404 · `conflict` → 409 (a taken
+name, e.g. `upload_dataset` without `if_exists: "rename"`, #1221) · `engine_error`
+→ 422 · `busy` → 503.
+
+**Every request gets an answer — never silence (#1007).** Three ways a request
+used to get *no* response, each of which reads exactly like a hung node (curl: 0
+bytes until its own timeout; through a proxy, "Empty reply from server"):
+
+- **No route matched.** The router fell through and the worker wrote nothing. A
+  terminal handler (`serve_unrouted`, the last registration) now answers:
+  `/v1/<name>` for a capability called with the wrong method → **405**
+  `method_not_allowed` with an `Allow` header and the method it takes (reads are
+  `GET`, actions/jobs `POST` — the misreading #954 was filed on); `/v1/<name>` for
+  no capability → **404** `unknown_capability` (a node image older than the
+  capability you asked for answers this way); any other path → **404**
+  `not_found`. The connection closes after it, since the request body was not
+  read.
+- **A handler threw.** `Registry::call` runs the handler inside
+  `invoke_contained`, which turns an exception into an `engine_error` (422) naming
+  the capability — a handler reading a column of an unexpected type from
+  replicated state answers instead of dying. `MainThreadBridge::drain` also
+  contains a throw from any owner-loop work item and still resumes its awaiter,
+  so nothing is parked forever and the rest of the batch runs.
+- **The body could not be serialized.** Response bodies are written with
+  `wire_dump`, which replaces invalid UTF-8 (a customer's Latin-1 column) with
+  U+FFFD rather than throwing out of the route.
 
 ```bash
 curl 'http://127.0.0.1:4800/v1/server_info'
@@ -97,4 +143,7 @@ parameters or a request body from the input schema **plus the reserved
 Tests: `tests/api/test_openapi.cpp` (route derivation, query coercion, status
 mapping, document ↔ registry, the added-once rule, the drift check) and
 `tests/api/test_rest_server.cpp` (loopback HTTP: the GET read journey, POST →
-read-back, error statuses, the served document, the bearer gate).
+read-back, error statuses, the served document, the bearer gate, unrouted
+requests answered with 404/405, and #1007's dataset-less run → `get_run_report`
+path end to end). Its test client bounds every read at 10 s, so a server that
+never answers fails the test instead of hanging the suite.

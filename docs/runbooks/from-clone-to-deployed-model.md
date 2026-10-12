@@ -228,7 +228,7 @@ same arguments object:
 ```sh
 curl -s -X POST "$ZETTA/mcp" -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
-       "params":{"name":"compile_intent","arguments":{"project":"churn"}}}'
+       "params":{"name":"compile_intent","arguments":{"project":"churn","name":"churn skeleton"}}}'
 ```
 
 ### 4.2 · Land the data
@@ -328,18 +328,17 @@ aggregate-bandwidth path — do not present it as one.
 
 #### Shape the source query for the model, not just for the read
 
-Two column rules are enforced at the `connect` step — *after* the dataset lands — so a
-query that ingests happily can still fail the pipeline later with a message that does not
-point back here. Both are fixed in the **source** query.
+The dataset contract validates column roles before the Run starts. Ordinary warehouse
+text identifiers and boolean targets need no source-query workaround.
 
 | Rule | What you see if you miss it | Fix in the SELECT |
 |---|---|---|
-| The **entity column must be a 64-bit integer** | `run` refuses: ``dataset: the entity column 'account_id' holds non-integer values; entities are keyed by a 64-bit integer`` | derive one — `('x'\|\|substr(md5(account_id),1,8))::bit(32)::bigint AS account_key` |
-| The **label and every feature must be numeric** | the run starts, then fails: ``connect step … row 0 field 'churned' is not a number`` | cast it — `churned::int AS churned` |
+| The **entity column must be an integer or non-empty text value** | mixed or empty entity values are refused during contract resolution | keep the warehouse business id; text ids resolve back on every output |
+| The **label must be numeric/boolean 0/1; features numeric/boolean** | contract resolution names a non-numeric column and its cast | cast only other representations |
 
-A Postgres `boolean` label and a text/UUID primary key are the two common ways to hit
-these, and most real tables have both. String entity keys are a known limitation, not a
-defect ([`../data/dataset-path.md`](../data/dataset-path.md) — *"String entity keys"*).
+A Postgres `boolean` label loads as 0/1. Text and UUID primary keys receive stable,
+collision-checked internal keys while reports retain their original values
+([`../data/dataset-path.md`](../data/dataset-path.md)).
 
 **Measured end to end on 600 rows**, the source query that satisfies both:
 
@@ -395,7 +394,7 @@ P() { curl -s -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: applicat
 
 P create_project  '{"name":"churn","description":"Which accounts are about to leave, and why"}'
 P capture_intent  '{"project":"churn","text":"predict which accounts are likely to churn, with calibrated scores and explanations"}'
-P compile_intent  '{"project":"churn"}'
+P compile_intent  '{"project":"churn","name":"churn skeleton"}'
 ```
 
 **Measured** — `compile_intent` returns a 7-step Pipeline, 6 edges:
@@ -405,7 +404,7 @@ connect  Load customer accounts
 connect  Load usage & billing activity
 clean    Build churn features
 model    Train churn-risk model
-index    Index churn scores
+index    Score and index customer accounts
 serve    Serve churn scores & reasons
 act      Trigger retention outreach
 ```
@@ -419,7 +418,7 @@ P approve_plan '{"project":"churn","graph":"churn skeleton"}'
 P gate         '{"project":"churn","graph":"churn skeleton"}'
 ```
 
-**Measured** — verdict `pass`, `block_deploy: false`, four checks. **Read the reasons, not
+**Measured** — verdict `pass`, `block_deploy: false`, six checks. **Read the reasons, not
 the statuses.** On a skeleton with no declared features, `data_leakage` passes because
 there was nothing to check — *"no ML step declares features to check for leakage"*. That is
 an honest pass, not a clean bill of health, and the report says which it is.
@@ -431,8 +430,7 @@ P run '{"project":"churn","graph":"churn skeleton",
         "holdout_fraction":0.3}'
 ```
 
-`account_key`, not the table's own text id — a text entity column is refused here and a
-boolean label fails inside the run. See
+The table's own text id and boolean label are valid here. See
 [§4.2](#shape-the-source-query-for-the-model-not-just-for-the-read).
 
 **Set `holdout_fraction`.** Without it every metric is in-sample — scored on the rows the
@@ -559,7 +557,7 @@ posture.
 
 ## 5b · Whether to ship the operator too
 
-`orama-cloud-v1-operator`'s `OramaZettaCluster` CRD creates **exactly** what
+`orama-operator`'s `OramaZettaCluster` CRD creates **exactly** what
 `deployment_profile` describes by hand: a StatefulSet of equal peers, a headless Service
 for peer DNS on 7777, a client Service on 4800, a per-node PVC at `/data`, and two Secrets
 (the cluster join token and the seeded admin token).

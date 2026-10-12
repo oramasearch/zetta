@@ -4,6 +4,8 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json.hpp>
+
 namespace zetta::util {
 
 // The current UTC time as an ISO-8601 string with millisecond precision and a
@@ -24,5 +26,10 @@ std::string iso8601_seconds_ago(long long seconds_ago);
 // boundary: nullopt when the text doesn't match the shape or names an
 // impossible date/time.
 std::optional<double> parse_iso8601_seconds(std::string_view stamp);
+
+// Parse a methodology time value as finite epoch seconds. Numeric epoch values
+// pass through unchanged; UTC ISO-8601 dates and date-times are normalized to
+// the same numeric representation (#1199). Non-throwing at JSON boundaries.
+std::optional<double> parse_time_seconds(const nlohmann::json& value);
 
 }  // namespace zetta::util

@@ -197,6 +197,9 @@ struct Member {
         NodeConfig config;
         config.data_dir = dir.path().string();
         config.preflight = false;
+        // Every member shares the root secret, as main() passes each the cluster
+        // join token: a credential one member sealed, every member opens (#1230).
+        config.connection_root_secret = "distributed-ingest-test-cluster-secret";
         return config;
     }
     static ClusterConfig cluster_config(std::uint16_t port,
@@ -394,12 +397,13 @@ TEST(DistributedIngest, ANonSnowflakeConfigNeverTakesTheSnowflakeProtocol) {
     const DistributedIngestResult result =
         run_distributed_connector_ingest(members[0]->node, postgres, options);
 
-    // zetta-core installs no Postgres runner (that is zetta-api's job), so this
-    // fails — the assertion is about WHICH failure. A mention of Snowflake here
-    // means the type dispatch is gone again.
+    // An isolated core test has no Postgres runner; an earlier API journey can
+    // install one for the process. Both failures must name the right connector,
+    // regardless of capitalization. Snowflake here means dispatch is wrong.
     EXPECT_EQ(result.error.find("snowflake"), std::string::npos) << result.error;
     EXPECT_EQ(result.error.find("Snowflake"), std::string::npos) << result.error;
-    EXPECT_NE(result.error.find("Postgres"), std::string::npos) << result.error;
+    EXPECT_TRUE(result.error.find("Postgres") != std::string::npos ||
+                result.error.find("postgres") != std::string::npos) << result.error;
     EXPECT_EQ(source.submits, 0)
         << "the Snowflake protocol was entered for a postgres config";
 }

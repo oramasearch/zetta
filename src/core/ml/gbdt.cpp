@@ -1,6 +1,7 @@
 #include "zetta/ml/gbdt.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -73,7 +74,10 @@ const nlohmann::json& model_schema_document() {
       "title": "zetta.ml.GbdtModel",
       "type": "object",
       "properties": {
-        "objective": { "type": "string", "enum": ["binary_logistic"] },
+        "objective": {
+          "type": "string",
+          "enum": ["binary_logistic", "squared_error", "lambdamart"]
+        },
         "base_score": { "type": "number" },
         "learning_rate": { "type": "number" },
         "feature_names": { "type": "array", "items": { "type": "string" } },
@@ -93,7 +97,8 @@ const nlohmann::json& model_schema_document() {
                     "left":      { "type": "integer" },
                     "right":     { "type": "integer" },
                     "value":     { "type": "number" },
-                    "cover":     { "type": "number" }
+                    "cover":     { "type": "number" },
+                    "missing_left": { "type": "boolean" }
                   },
                   "required": ["feature", "threshold", "left", "right", "value",
                                "cover"],
@@ -293,7 +298,10 @@ std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
     if (const auto objective = value.find("objective"); objective != value.end()) {
         if (!objective->is_string()) return std::nullopt;
         const std::string named = objective->get<std::string>();
-        if (named != "binary_logistic" && named != "squared_error") return std::nullopt;
+        if (named != "binary_logistic" && named != "squared_error" &&
+            named != "lambdamart") {
+            return std::nullopt;
+        }
         params.objective = named;
     }
     return params;
@@ -317,7 +325,7 @@ const nlohmann::json& gbdt_params_schema() {
     "l2_regularization": { "type": "number", "minimum": 0 },
     "min_split_gain": { "type": "number", "minimum": 0 },
     "min_child_hessian": { "type": "number", "minimum": 0 },
-    "objective": { "type": "string", "enum": ["binary_logistic", "squared_error"] },
+    "objective": { "type": "string", "enum": ["binary_logistic", "squared_error", "lambdamart"] },
     "holdout_fraction": { "type": "number", "minimum": 0, "maximum": 1 }
   },
   "additionalProperties": false
@@ -328,14 +336,17 @@ const nlohmann::json& gbdt_params_schema() {
 
 // --- RegressionTree / GbdtModel ----------------------------------------------
 
+int TreeNode::child_for(double value) const noexcept {
+    if (std::isnan(value)) return missing_left ? left : right;
+    return value < threshold ? left : right;
+}
+
 double RegressionTree::predict(const std::vector<double>& features) const {
     if (nodes.empty()) return 0.0;
     int cursor = 0;
     while (!nodes[cursor].is_leaf()) {
         const TreeNode& node = nodes[cursor];
-        cursor = features[static_cast<std::size_t>(node.feature)] < node.threshold
-                     ? node.left
-                     : node.right;
+        cursor = node.child_for(features[static_cast<std::size_t>(node.feature)]);
     }
     return nodes[cursor].value;
 }
@@ -351,7 +362,7 @@ double GbdtModel::predict_proba(const std::vector<double>& features) const {
     // A regression model's output IS the prediction. Squashing it through a sigmoid would turn
     // a forecast of 143.7 units into 1.0, silently — and calibrating it would be worse, since a
     // regression has no probability to calibrate (see TemporalValidationCheck).
-    if (objective == "squared_error") return raw;
+    if (objective == "squared_error" || objective == "lambdamart") return raw;
     if (calibration) return calibration->calibrate(raw);
     return sigmoid(raw);
 }
@@ -361,12 +372,15 @@ nlohmann::json GbdtModel::to_json() const {
     for (const RegressionTree& tree : trees) {
         nlohmann::json nodes_json = nlohmann::json::array();
         for (const TreeNode& node : tree.nodes) {
-            nodes_json.push_back({{"feature", node.feature},
-                                  {"threshold", node.threshold},
-                                  {"left", node.left},
-                                  {"right", node.right},
-                                  {"value", node.value},
-                                  {"cover", node.cover}});
+            nlohmann::json node_json{{"feature", node.feature},
+                                     {"threshold", node.threshold},
+                                     {"left", node.left},
+                                     {"right", node.right},
+                                     {"value", node.value},
+                                     {"cover", node.cover}};
+            // Written only when set, so a trained model's body is unchanged.
+            if (node.missing_left) node_json["missing_left"] = true;
+            nodes_json.push_back(std::move(node_json));
         }
         trees_json.push_back({{"nodes", std::move(nodes_json)}});
     }
@@ -405,6 +419,7 @@ std::optional<GbdtModel> GbdtModel::from_json(const nlohmann::json& value,
             node.right = node_json.at("right").get<int>();
             node.value = node_json.at("value").get<double>();
             node.cover = node_json.at("cover").get<double>();
+            node.missing_left = node_json.value("missing_left", false);
             // Structural rule the schema can't express: an internal node's
             // children must be valid, distinct, forward indices in this tree.
             if (!node.is_leaf()) {
@@ -564,40 +579,57 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
     const std::vector<double> global_max =
         reduce("edges.max", local_max, GbdtReduce::Max);
 
-    // 2. Global base rate: local [Σy, n] -> allreduce Sum.
-    double local_pos = 0.0;
-    for (const double label : labels) local_pos += label >= 0.5 ? 1.0 : 0.0;
-    const std::vector<double> base =
-        reduce("base", {local_pos, static_cast<double>(local_rows)},
-               GbdtReduce::Sum);
-    if (collective_failed) {
-        result.status = ComputeStatus::backend_error(
-            "train_gbdt: a collective round failed (peer unreachable or timeout)");
+    const bool regression_objective = params.objective == "squared_error";
+    const bool custom_objective = static_cast<bool>(hooks.objective_gradient);
+    if (params.objective == "lambdamart" && !custom_objective) {
+        result.status = ComputeStatus::invalid_argument(
+            "train_gbdt: lambdamart requires an objective gradient callback");
         return result;
     }
-    const double global_pos = base[0];
+
+    // 2. Global starting point: local [sum/count, n] -> allreduce Sum.
+    // Ranking starts at zero because only within-group score differences matter.
+    double local_total = 0.0;
+    if (!custom_objective) {
+        for (const double label : labels) {
+            local_total += regression_objective ? label
+                                                : (label >= 0.5 ? 1.0 : 0.0);
+        }
+    }
+    const std::vector<double> base =
+        reduce("base", {local_total, static_cast<double>(local_rows)},
+               GbdtReduce::Sum);
+    if (collective_failed) {
+        result.status =
+            ComputeStatus::backend_error("train_gbdt: a collective round failed "
+                                         "(peer unreachable or timeout)");
+        return result;
+    }
+    const double global_total = base[0];
     const double global_count = base[1];
     if (global_count <= 0.0) {
         result.status =
             ComputeStatus::invalid_argument("train_gbdt: no training rows");
         return result;
     }
-    // "A single class" is a classification concept. Regression labels are continuous, so
-    // `global_pos` is their SUM and this guard would reject perfectly good data — a forecast of
-    // daily revenue would fail because every value is positive.
-    const bool regression_objective = params.objective == "squared_error";
-    if (!regression_objective && (global_pos <= 0.0 || global_pos >= global_count)) {
+    // "A single class" is a classification concept. Regression labels are
+    // continuous, so `global_total` is their SUM and this guard would reject
+    // perfectly good data — a forecast of daily revenue would fail because
+    // every value is positive.
+    if (!regression_objective && !custom_objective &&
+        (global_total <= 0.0 || global_total >= global_count)) {
         result.status = ComputeStatus::invalid_argument(
             "train_gbdt: training labels are a single class");
         return result;
     }
-    // The starting point the trees correct from: the mean label for regression, its logit for
-    // classification. Starting a regression at the logit of a mean revenue figure would make the
-    // first several trees do nothing but climb back to the right order of magnitude.
+    // The starting point the trees correct from: the mean label for regression,
+    // its logit for classification. Starting a regression at the logit of a
+    // mean revenue figure would make the first several trees do nothing but
+    // climb back to the right order of magnitude.
     const double mean = regression_objective
-                            ? global_pos / global_count
-                            : std::clamp(global_pos / global_count, kProbEpsilon,
-                                         1.0 - kProbEpsilon);
+                            ? global_total / global_count
+                            : std::clamp(global_total / global_count,
+                                         kProbEpsilon, 1.0 - kProbEpsilon);
 
     // Establish the bin layout, then pre-bin every local row per feature.
     FeatureBins binner;
@@ -621,7 +653,9 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
     // Initialize the model + per-row running raw scores.
     GbdtModel& model = result.model;
     model.objective = params.objective;
-    model.base_score = regression_objective ? mean : logit(mean);
+    model.base_score = custom_objective
+                           ? 0.0
+                           : (regression_objective ? mean : logit(mean));
     model.learning_rate = params.learning_rate;
     model.feature_names = feature_names;
     result.feature_importances.assign(feature_count, 0.0);
@@ -660,12 +694,25 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
     const bool regression = params.objective == "squared_error";
     for (int tree_index = start_tree; tree_index < params.num_trees;
          ++tree_index) {
+        const auto round_started = std::chrono::steady_clock::now();
         // Gradients + Hessians at the current predictions.
         // The objective decides the gradient and Hessian, and nothing else in the tree-growing
         // machinery changes — histogram building, split finding and the allreduce are identical.
         // That is why forecasting (#984, M-4) does not need a second learner: it needs squared
         // error, where the residual IS the gradient and the Hessian is constant.
-        if (regression) {
+        if (custom_objective) {
+            const ComputeStatus objective_status = hooks.objective_gradient(
+                raw, labels, gradient, hessian);
+            if (!objective_status.ok()) {
+                result.status = objective_status;
+                return result;
+            }
+            if (gradient.size() != local_rows || hessian.size() != local_rows) {
+                result.status = ComputeStatus::invalid_argument(
+                    "train_gbdt: objective gradient callback returned the wrong row count");
+                return result;
+            }
+        } else if (regression) {
             for (std::size_t row = 0; row < local_rows; ++row) {
                 gradient[row] = raw[row] - labels[row];
                 hessian[row] = 1.0;
@@ -797,6 +844,52 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
             raw[row] += predict_local_row(tree.nodes, columns, row);
         }
         model.trees.push_back(std::move(tree));
+
+        if (hooks.on_metrics && !hooks.suppress_metrics) {
+            double local_loss = 0.0;
+            for (std::size_t row = 0; row < local_rows; ++row) {
+                if (regression) {
+                    const double residual = raw[row] - labels[row];
+                    local_loss += residual * residual;
+                } else {
+                    const double probability =
+                        std::clamp(sigmoid(raw[row]), kProbEpsilon,
+                                   1.0 - kProbEpsilon);
+                    local_loss -= labels[row] * std::log(probability) +
+                                  (1.0 - labels[row]) *
+                                      std::log(1.0 - probability);
+                }
+            }
+            const std::vector<double> global_loss = reduce(
+                "t" + std::to_string(tree_index) + ".metrics",
+                {local_loss, static_cast<double>(local_rows)}, GbdtReduce::Sum);
+            if (collective_failed || global_loss.size() != 2 ||
+                global_loss[1] <= 0.0) {
+                result.status = ComputeStatus::backend_error(
+                    "train_gbdt: a metric allreduce failed");
+                return result;
+            }
+            const std::string metric = regression ? "train.mean_squared_error"
+                                                  : "train.log_loss";
+            const double elapsed = std::chrono::duration<double>(
+                                       std::chrono::steady_clock::now() -
+                                       round_started)
+                                       .count();
+            const std::map<std::string, double> values{
+                {metric, global_loss[0] / global_loss[1]},
+                {"train.rows", global_loss[1]},
+                {"train.rows_per_second",
+                 global_loss[1] /
+                     std::max(elapsed, std::numeric_limits<double>::min())}};
+            if (!hooks.on_metrics(static_cast<int>(model.trees.size()), values)) {
+                // The hook owns the reason (a failed metric write, a pruned or
+                // cancelled trial, a spent budget); the caller reports it.
+                result.status = ComputeStatus::backend_error(
+                    "train_gbdt: the metrics hook stopped training after tree " +
+                    std::to_string(model.trees.size()));
+                return result;
+            }
+        }
 
         // Checkpoint hook (RULE-5 / #468): record the partial model after this tree.
         // Returning false stops early with the partial model (a graceful drain).

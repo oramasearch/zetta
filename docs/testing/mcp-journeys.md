@@ -61,15 +61,69 @@ read-backs proving nothing placed and nothing executed), **dataset ingest**
 (add_dataset → placement visible in `get_dataset` AND the
 `system.dataset_partitions` read-back). `tests/api/test_action_journeys.cpp`
 runs them at layer 1 (plus n8n import+compile, sim-Python compile,
+the M-16 knapsack table→compile→run→report journey,
 testsuite_run submit-then-poll, and the denied-key negative);
 `tests/api/test_mcp_server.cpp` replays dataset-ingest and gate-blocked over
 the wire; see [../api/governed-actions.md](../api/governed-actions.md).
+
+The methodology registry journey in `test_action_journeys.cpp` discovers all
+21 entries, compiles S-1 through M-1 and M-3 through explicit selection or keywords,
+verifies that all 21 methodologies are runnable, rejects an unmatched non-predictive intent,
+and refuses an incomplete segmentation graph at the correctness gate. Graph and
+project views expose `methodology` plus `runnable` (#1061).
+
+The solution journeys discover 20 runnable catalogue modules and
+creates S-1 CL-1 with explicit snapshot/delivery/economics inputs and executable
+defaults (#1128). It reads the policy, experiment and ROI definition, runs
+M-2/M-1/M-3 over the real snapshot, verifies protected holdout and ledger rows,
+then records a synthetic 0.2 treatment effect and recovers it inside the readout's
+95% confidence interval. The B-1 journey also runs M-4/M-6/M-16, verifies
+margin and authority enforcement, and recovers planted net margin. The CRM and
+pricing HTTP boundaries alone are substituted; the core
+engines and replicated records are real. Run `SolutionJourney.*`.
+The B-3 journey composes M-10 and M-19, verifies explicit confidence/new-type
+abstention, customer-taxonomy queue and draft payloads, approval-only closure,
+six observed guardrails, protected holdout, and recovery of a planted 0.16
+resolution-quality effect (#1177).
+The B-4 solution journey lands synthetic invoice documents, verifies uncertain
+fields enter an owned review queue, verifies only fully validated structured
+documents reach workflow handoff, protects holdouts, and recovers a planted
+0.18 workflow-completion effect inside its 95% confidence interval (#1178).
+The B-5 journey additionally runs native M-4/M-1 supplier analysis, proves the
+future external publication is absent, checks evidence-bearing procurement
+payloads and tier holdouts, then recovers its planted disruption-avoidance
+effect inside the readout interval.
+
+The B-8 journey additionally executes M-12 and M-7, verifies graduated bounded
+containment and all guardrails, and recovers a planted incident-avoidance effect.
+`Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
+table, creates a project, captures and compiles M-3, runs without a dataset
+override, polls the Run and reads separation metrics, input/exclusion facts and
+assignment/profile tables back through `get_run_report` (#1042).
+
+Feature-plan journeys read used/excluded names, sources, transforms and reasons
+back for every runnable family. M-17–M-21 cover grouped observations, fitted
+out-of-fold bases, weak labelling votes, clipped private-model inputs and streaming
+window features. Selected label copies are refused before Run creation; the
+long-measurement fixture asserts all 21 callbacks require an explicit pivot and
+leave no Run or Model behind (#1062).
+
+The M-7 journey lands a label-free table, creates and reads back a project,
+captures intent, compiles the anomaly methodology, runs without a dataset
+override, waits for completion, and verifies report metrics, exact alert count,
+ranked findings, excluded columns, output tables, and lineage. It also compiles
+S-7 and refuses label/feature overrides before starting a Run (#1046).
+`AnomalyMethodology.OneRegistryRunLaunchesOwnedPartitionsOnBothMembers` adds a
+real two-member registry run to prove coordinated launch and primary ownership.
+
+The M-16 journey compiles optimization explicitly, runs its own scenario table,
+and reads solver status, the plan, and independently verified constraints.
 
 ## Rules
 
 - Journeys run against **real engine state** (temp data_dir, loopback
   cluster) — no mocks of zetta itself; fakes only at the CommandRunner-style
-  outer seams (cloud CLIs).
+  outer boundaries (cloud CLIs).
 - Multi-node journeys follow the patient-convergence rule (poll with a
   deadline, never a fixed count).
 - Every new capability lands with at least one journey step exercising it

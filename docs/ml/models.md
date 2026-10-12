@@ -10,7 +10,7 @@ same reason: the **metadata replicates** in the CRDT document (flat key
 `model:<uuid>`) so every node agrees on what models exist and what they are,
 while the **serialized weights body** — a large binary that would bloat every
 node's document — stays **off the CRDT**. It lives on disk and transfers
-peer-to-peer over the existing large-object body seam, verified against the
+peer-to-peer over the existing large-object body channel, verified against the
 size + SHA-256 recorded in the metadata.
 
 This page documents the **storage + data model**: the `Model` type, its
@@ -31,7 +31,10 @@ value (`ModelValue`):
 | `kind` | `std::string` | **Required, non-empty** — e.g. `classifier`, `regressor`. |
 | `project` | `std::string` | Optional producing/owning project uuid (lineage). |
 | `run` | `std::string` | Optional producing run uuid (lineage). |
-| `feature_schema` | `nlohmann::json` | Free-form object: input features (field → type / profile). |
+| `project_name` | `std::string` | Denormalized producing Project display name. |
+| `pipeline_name` | `std::string` | Denormalized producing Pipeline display name. |
+| `run_id` | `std::string` | Producing Run uuid; `run` remains the compatible legacy field. |
+| `feature_schema` | `nlohmann::json` | Free-form object: input features (field → type / profile), plus `entity_key_mapping` when text business ids are represented by derived int64 keys during compute. `get_model` and `list_models` answer the mapping as `{column, entry_count}`; `get_model` with `include_entity_keys: true` returns the entries (#1202). The stored record keeps them. |
 | `metrics` | `nlohmann::json` | Free-form object: evaluation scores (name → **number**, e.g. `{"auc": 0.91}`). |
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
 | `weights` | `optional<ModelWeights>` | `{ size, sha256 }` — set once a weights body is attached. |
@@ -68,11 +71,16 @@ auto all    = node.models();                    // the registry (created, then i
 bool gone   = node.drop_model(model->id());     // remove from CRDT + disk
 ```
 
+When a producing Run is present, creation derives `project_name`,
+`pipeline_name`, and `run_id` from it. A Project or Pipeline rename refreshes
+the denormalized values on matching Models. Startup fills missing values on
+older records from their Run and Project refs and persists only changed records.
+
 The mutators (`set_weights`, `set_metrics`) capture `model:<id>` into the CRDT
 (when replicated) then rewrite `model.json` — the CRDT is the source of truth,
 disk is its projection. Reconciliation uses `apply_value()`, which updates the
 metadata projection from the document with **no capture** and **without touching
-the weights body** (the body arrives separately over the body seam).
+the weights body** (the body arrives separately over the body channel).
 
 ## On disk
 
@@ -82,8 +90,9 @@ entity, like a run), holding the metadata projection and the raw weights:
 ```
 data_dir/
   <model-uuid>/
-    model.json   { id, name, kind, project, run, feature_schema, metrics,
-                   created, weights: { size, sha256 } }
+    model.json   { id, name, kind, project, run, project_name, pipeline_name,
+                   run_id, feature_schema, metrics, created,
+                   weights: { size, sha256 } }
     weights      raw serialized bytes (NOT in the CRDT; like a large-object body)
 ```
 
@@ -100,7 +109,7 @@ goes through `ReplicationManager` like every other entity:
   gossips between peers; `Node` captures local creates/edits and reconciles peer
   changes into the on-disk projection on each `tick()`.
 - **Weights body** does **not** ride in the document. It moves over the same
-  large-object body seam as `lo:` bodies: the cluster's `LOREQ`/`LORES` exchange
+  large-object body channel as `lo:` bodies: the cluster's `LOREQ`/`LORES` exchange
   through the `BlobStore`. `ReplicatedBlobStore` serves and stores model weights
   alongside large objects — it enumerates any `model:` entry carrying a `weights`
   descriptor whose body file is missing, requests it from a peer, and **verifies
@@ -177,15 +186,27 @@ SELECT * FROM system.models;
 SELECT model_id, kind FROM system.models WHERE kind = 'classifier';
 ```
 
-Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
+Columns: `model_id`, `name`, `kind`, `project`, `project_name`,
+`pipeline_name`, `run`, `run_id`, `feature_schema`,
 `metrics`, `created`, `has_weights`, `weights_size`, `weights_sha256`,
 `weights_present`, `exposed`, `endpoint`. The serialized body itself is not in
-the registry (it's a large binary on the body seam); its fingerprint and local
+the registry (it's a large binary on the body channel); its fingerprint and local
 presence are, so the registry shows what is trained and whether its weights
 have landed on this node. `exposed` / `endpoint` surface the governed serving
 state ([../api/serving.md](../api/serving.md), #648): whether the model's HTTP
 predict route is published, and at which path (`endpoint` is null while
 unexposed).
+
+A **standalone model** (lake#654) is made on its own rather than by a project's pipeline:
+`train_model`, `retrain_model`, `register_model` and `move_model_to_project`, through an internal
+project that is never listed. `list_models` marks each version `standalone`. See
+[standalone-models.md](standalone-models.md). A brought model may be an ONNX, XGBoost or LightGBM
+file, and `export_model` downloads any model's weights ([model-import.md](model-import.md), lake#681).
+
+The `list_models` capability returns those display names and producing Run id
+alongside `name`, `kind`, `metrics`, `feature_schema`, `exposed`, `created`, and
+weight availability. REST and MCP share this output schema, so a Models page
+does not need `get_project` or `get_model` calls for each listed version.
 
 ## What this slice is (and isn't)
 
@@ -206,6 +227,6 @@ bytes the caller already has.
   (`App::draw_models`): list + detail over this registry, plus the inline
   register/import affordance.
 - [runs.md](../pipeline/runs.md) — the sibling top-level entity this is modeled on.
-- [large-objects.md](../data/large-objects.md) — the body-transfer seam the weights reuse.
+- [large-objects.md](../data/large-objects.md) — the body-transfer channel the weights reuse.
 - [replication.md](../cluster/replication.md) — the CRDT data plane.
 - [query.md](../data/query.md) — the system-table mechanism behind `system.models`.

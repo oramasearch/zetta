@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "database": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "notes": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "output_node": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "output_suffix": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": false,
+      "properties": {
+        "address_column": {
+          "type": "string"
+        },
+        "date_column": {
+          "type": "string"
+        },
+        "email_column": {
+          "type": "string"
+        },
+        "email_verified_column": {
+          "type": "string"
+        },
+        "keyed_entity_column": {
+          "type": "string"
+        },
+        "keyed_source": {
+          "type": "string"
+        },
+        "match_threshold": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "mode": {
+          "enum": [
+            "fuzzy",
+            "keyed"
+          ],
+          "type": "string"
+        },
+        "name_column": {
+          "type": "string"
+        },
+        "one_record_per_source": {
+          "type": "boolean"
+        },
+        "phone_column": {
+          "type": "string"
+        },
+        "phone_verified_column": {
+          "type": "string"
+        },
+        "record_id_column": {
+          "type": "string"
+        },
+        "review_threshold": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "seed": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sorted_neighbourhood_window": {
+          "minimum": 2,
+          "type": "integer"
+        },
+        "source_column": {
+          "type": "string"
+        },
+        "truth_entity_column": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seed",
+        "sorted_neighbourhood_window",
+        "match_threshold",
+        "review_threshold",
+        "one_record_per_source",
+        "mode",
+        "keyed_entity_column",
+        "keyed_source",
+        "source_column",
+        "record_id_column",
+        "name_column",
+        "address_column",
+        "email_column",
+        "phone_column",
+        "date_column",
+        "email_verified_column",
+        "phone_verified_column",
+        "truth_entity_column"
+      ],
+      "type": "object"
+    },
+    "rows": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "table": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "table_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "database",
+    "table",
+    "table_id",
+    "rows",
+    "notes",
+    "params",
+    "output_suffix",
+    "output_node"
+  ],
+  "title": "zetta.EntityResolutionLaunch",
+  "type": "object"
+}

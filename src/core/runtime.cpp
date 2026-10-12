@@ -1,15 +1,20 @@
 #include "zetta/runtime.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <exception>
 #include <latch>
+#include <mutex>
 #include <thread>
 
+#include <pthread.h>
+
+#include <boost/capy/ex/async_event.hpp>
 #include <boost/capy/ex/run_async.hpp>
 #include <boost/capy/ex/thread_pool.hpp>
 
-// The data-parallel slice of the runtime seam (parallel_for / parallel_chunks).
+// The data-parallel slice of the runtime interface (parallel_for / parallel_chunks).
 //
 // This is the one place — alongside the rest of runtime.hpp — that names the
 // Capy backend for fan-out work, so callers (zetta::compute::CpuDevice today)
@@ -18,7 +23,101 @@
 // calling thread blocks until every chunk has run.
 namespace zetta::runtime {
 
+// The backend event's intrusive waiter list is single-executor state. Pub/sub
+// publishers, cancellation and HTTP waiters can run on different threads, so
+// every access to that list is serialized here. The mutex never spans a wait.
+struct async_event::State {
+    std::mutex mutex;
+    boost::capy::async_event event;
+
+    struct Waiter {
+        State& state;
+        std::optional<boost::capy::async_event::wait_awaiter> waiter;
+
+        explicit Waiter(State& event_state)
+            : state(event_state), waiter(std::in_place, &state.event) {}
+
+        Waiter(Waiter&&) = default;
+
+        ~Waiter() {
+            std::lock_guard lock(state.mutex);
+            waiter.reset();
+        }
+
+        bool await_ready() const noexcept {
+            return false;
+        }
+
+        std::coroutine_handle<> await_suspend(
+            std::coroutine_handle<> continuation,
+            const boost::capy::io_env* environment) noexcept {
+            std::lock_guard lock(state.mutex);
+            // Checking the signal and registering are one critical section:
+            // a publish between await_ready and await_suspend cannot be lost.
+            if (waiter->await_ready()) return continuation;
+            return waiter->await_suspend(continuation, environment);
+        }
+
+        io_result<> await_resume() noexcept {
+            std::lock_guard lock(state.mutex);
+            return waiter->await_resume();
+        }
+    };
+
+    static io_task<> wait(std::shared_ptr<State> state) {
+        co_return co_await Waiter(*state);
+    }
+};
+
+async_event::async_event() : state_(std::make_shared<State>()) {}
+
+io_task<> async_event::wait() {
+    return State::wait(state_);
+}
+
+void async_event::set() {
+    std::lock_guard lock(state_->mutex);
+    state_->event.set();
+}
+
+void async_event::clear() {
+    std::lock_guard lock(state_->mutex);
+    state_->event.clear();
+}
+
+bool async_event::is_set() const {
+    std::lock_guard lock(state_->mutex);
+    return state_->event.is_set();
+}
+
+task<> yield() {
+    struct Yield {
+        boost::capy::continuation continuation;
+
+        bool await_ready() const noexcept {
+            return false;
+        }
+
+        std::coroutine_handle<> await_suspend(
+            std::coroutine_handle<> coroutine,
+            const boost::capy::io_env* environment) noexcept {
+            continuation.h = coroutine;
+            environment->executor.post(continuation);
+            return std::noop_coroutine();
+        }
+
+        void await_resume() const noexcept {
+        }
+    };
+    co_await Yield{};
+}
+
 namespace {
+
+std::atomic<std::uint64_t> active_coroutines{0};
+std::atomic<std::uint64_t> queued_coroutines{0};
+std::atomic<std::uint64_t> blocking_work{0};
+std::atomic<bool> pool_started{false};
 
 // One shared worker pool for the whole process. Created on first use with one
 // worker per hardware thread; its destructor (at program exit) joins the
@@ -26,6 +125,7 @@ namespace {
 // creation/teardown on every parallel_for.
 boost::capy::thread_pool& shared_pool() {
     static boost::capy::thread_pool pool(0);  // 0 => hardware_concurrency
+    pool_started.store(true, std::memory_order_relaxed);
     return pool;
 }
 
@@ -45,7 +145,7 @@ constexpr std::size_t kMinItemsPerChunk = 4096;
 // blocks on the latch before returning.
 //
 // Bodies must not throw: zetta-core compiles with -fexperimental-library and
-// "must never unwind across a seam" (the same rule that makes compute operators
+// "must never unwind across a public boundary" (the same rule that makes compute operators
 // return ComputeStatus instead of throwing). A throwing body is a contract
 // violation, so it is turned into a loud, immediate abort here rather than left
 // to unwind into the coroutine backend with backend-defined consequences.
@@ -63,6 +163,28 @@ boost::capy::task<> run_chunk(
     co_return;
 }
 
+task<> tracked_coroutine(task<> coroutine) {
+    queued_coroutines.fetch_sub(1, std::memory_order_relaxed);
+    active_coroutines.fetch_add(1, std::memory_order_relaxed);
+    struct Activity {
+        ~Activity() {
+            active_coroutines.fetch_sub(1, std::memory_order_relaxed);
+        }
+    } activity;
+    co_await std::move(coroutine);
+}
+
+std::uint64_t default_thread_stack_bytes() noexcept {
+    pthread_attr_t attributes;
+    if (pthread_attr_init(&attributes) != 0) {
+        return 0;
+    }
+    std::size_t bytes = 0;
+    const int result = pthread_attr_getstacksize(&attributes, &bytes);
+    pthread_attr_destroy(&attributes);
+    return result == 0 ? bytes : 0;
+}
+
 }  // namespace
 
 void spawn(task<> coroutine, std::function<void()> on_complete) {
@@ -72,12 +194,35 @@ void spawn(task<> coroutine, std::function<void()> on_complete) {
     // pool worker — it just forwards to on_complete, which the caller keeps
     // thread-safe. run_async owns the coroutine frame + the completion until the
     // task completes, so spawn can return immediately.
+    queued_coroutines.fetch_add(1, std::memory_order_relaxed);
     auto executor = shared_pool().get_executor();
     boost::capy::run_async(
         executor,
         [callback = std::move(on_complete)](auto&&...) noexcept {
             if (callback) callback();
-        })(std::move(coroutine));
+        })(tracked_coroutine(std::move(coroutine)));
+}
+
+MemoryUsage memory_usage() noexcept {
+    MemoryUsage usage;
+    usage.coroutine_frames = active_coroutines.load(std::memory_order_relaxed) +
+                             queued_coroutines.load(std::memory_order_relaxed);
+    usage.blocking_queue_depth = blocking_work.load(std::memory_order_relaxed);
+    usage.thread_count = pool_started.load(std::memory_order_relaxed)
+                             ? worker_count()
+                             : 0;
+    usage.thread_stack_bytes = usage.thread_count * default_thread_stack_bytes();
+    usage.bytes = usage.coroutine_frames * 512 +
+                  usage.blocking_queue_depth * 256;
+    return usage;
+}
+
+void blocking_work_started() noexcept {
+    blocking_work.fetch_add(1, std::memory_order_relaxed);
+}
+
+void blocking_work_finished() noexcept {
+    blocking_work.fetch_sub(1, std::memory_order_relaxed);
 }
 
 std::size_t parallel_chunks(std::size_t count,

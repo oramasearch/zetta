@@ -6,7 +6,7 @@ break. `CLAUDE.md` and `docs/*.md` remain authoritative for behavior.
 
 ## Subsystem map
 
-| Subsystem | Key files | Doc | Seam / invariant |
+| Subsystem | Key files | Doc | Boundary / invariant |
 |---|---|---|---|
 | Run modes / wiring | `src/main.cpp`, `include/zetta/headless.hpp`, `src/core/headless.cpp` | architecture/architecture.md | main builds `ReplicationManager` → `Node` → `ReplicatedBlobStore` → `Cluster`, then dispatches headed (`gui::App`) or headless (`run_headless`). One UUID = node id = actor id. |
 | Integrity | `Node::check_integrity()` → `IntegrityReport` (node.hpp), `sha256.hpp` | data/storage.md | Preflight on `start()` (default; `--no-preflight`): re-hash local LO bodies vs recorded sha256, flag dangling catalog refs. `report.ok()`. |
@@ -15,11 +15,11 @@ break. `CLAUDE.md` and `docs/*.md` remain authoritative for behavior.
 | Project inputs | `project_input.hpp`, `src/core/pipeline/project_input.cpp`, `sha256.hpp`, `timestamp.hpp` | pipeline/project-inputs.md | A `Project` owns inputs like a `Database` owns tables. `create_input/find_input/drop_input` (immutable — no rename). Metadata (`input:` key, incl. `content_hash`+`size`) replicates; **payload body does not** — on disk at `<project>/inputs/<id>/payload`, P2P transfer is a later slice. `content_hash` computed at boundary. |
 | Deployments | `deployment_target.hpp`, `deployment.hpp`, `src/core/deployment{,_target}.cpp`, `ir/execution_graph.hpp` | pipeline/deployments.md | `Node::deploy_graph(graph, target, name)` places a validated graph onto a `DeploymentTarget` (ENT-6; R1 `Local` only) + `find_deployment`/`deployments`. Top-level entity: graph_name+target+node+counts+created (graph recorded as a summary). Replicated (`deployment:` key) + `<uuid>/deployment.json`. Queryable via `system.deployments`. `Node::node_id()` = actor id (or `data_dir/node_id` standalone). |
 | Runs | `run.hpp`, `src/core/pipeline/run.cpp`, `timestamp.hpp` | pipeline/runs.md | One graph execution: status/logs/outputs/lineage (+ optional project/graph refs). Top-level entity, **keyed by id** (no name): `Node` `create_run/find_run/drop_run/runs`; "update" = handle mutators (`set_status/add_log/set_outputs/set_lineage`). Replicated (`run:` key) + `<uuid>/run.json`. **Validated against a JSON Schema** (`parse_run_value`) at both boundaries (disk + CRDT) via pboettch/json-schema-validator (PRIVATE to zetta-core, `-fexperimental-library` to match ABI). |
-| Models | `model.hpp`, `src/core/ml/model.cpp`, `replicated_blob_store.{hpp,cpp}`, `sha256.hpp` | ml/models.md | A trained model (ENT-14/FEAT-6): metadata (name/kind/feature_schema/metrics/created + optional project/run refs). Top-level, **keyed by id**: `Node` `create_model`(requires non-empty `kind`)/`find_model/drop_model/models`; handle mutators `set_weights/set_metrics`. Replicated metadata (`model:` key) + `<uuid>/model.json`; **serialized weights body NOT in CRDT** — on disk `<uuid>/weights`, transfers P2P over the **same LO body seam** (`ReplicatedBlobStore` resolves `model:` weights too), verified vs `weights:{size,sha256}`. **JSON-Schema validated** (`parse_model_value`). Registry = `Node::models()` + `system.models`. |
-| Access control | `principal.hpp`, `access_key.hpp`, `scope.hpp`, `src/core/{principal,access_key,scope}.cpp` | governance/access-control.md | `Principal` (kind/name) owns immutable `AccessKey`s, each carrying a deny-by-default `Scope` of `Resource`s. `Node::authorize(key_id, resource)` = the seam (deny on unknown key); `zetta::governance::authorize(key, resource)` = pure decision. Replicated (`principal:`/`key:` keys) + `<uuid>/principal.json` + `keys/<id>/key.json`. RULE-3 / ENT-20/21. |
-| Audit trail | `audit_event.hpp`, `src/core/governance/audit_event.cpp`, `timestamp.hpp` | governance/audit-trail.md | Immutable, **append-only** `AuditEvent` (action/actor/target/allowed/detail/time) for every graph change / deploy / data access. Top-level, **no mutator/no drop** (CRDT set only grows). `Node` is the `AuditSink`: `record_audit_event` (append) + `audit_events()` (list). Emitted at `Project::create_graph`/`drop_graph` (via `AuditSink*` threaded into a project), `Node::deploy_graph`, `Node::authorize` (→ **non-const**); `materialize_*` never emits. Replicated (`audit:` key) + `audit/<uuid>.json` (one file per event). **JSON-Schema validated** (`parse_audit_event_value`, same validator as Run). ENT-23 / FEAT-9. |
+| Models | `model.hpp`, `src/core/ml/model.cpp`, `replicated_blob_store.{hpp,cpp}`, `sha256.hpp` | ml/models.md | A trained model (ENT-14/FEAT-6): metadata (name/kind/feature_schema/metrics/created + optional project/run refs). Top-level, **keyed by id**: `Node` `create_model`(requires non-empty `kind`)/`find_model/drop_model/models`; handle mutators `set_weights/set_metrics`. Replicated metadata (`model:` key) + `<uuid>/model.json`; **serialized weights body NOT in CRDT** — on disk `<uuid>/weights`, transfers P2P over the **same LO body path** (`ReplicatedBlobStore` resolves `model:` weights too), verified vs `weights:{size,sha256}`. **JSON-Schema validated** (`parse_model_value`). Registry = `Node::models()` + `system.models`. |
+| Access control | `principal.hpp`, `access_key.hpp`, `scope.hpp`, `src/core/{principal,access_key,scope}.cpp` | governance/access-control.md | `Principal` (kind/name) owns immutable `AccessKey`s, each carrying a deny-by-default `Scope` of `Resource`s. `Node::authorize(key_id, resource)` is the authorization boundary (deny on unknown key); `zetta::governance::authorize(key, resource)` is the pure decision. Replicated (`principal:`/`key:` keys) + `<uuid>/principal.json` + `keys/<id>/key.json`. RULE-3 / ENT-20/21. |
+| Audit trail | `audit_event.hpp`, `src/core/governance/audit_event.cpp`, `timestamp.hpp` | governance/audit-trail.md | Immutable schema-validated records. Registry writes, denials and failures are per-call; selected polling reads use actor/capability/scope summaries. `Node` owns the sink, windows and retention. Per-origin segment ranges replicate independently of the catalog, with durable high/low watermarks and a bounded recent window. Startup migrates legacy JSON/catalog events locally and compacts audit history; legacy records never ship. ENT-23 / FEAT-9 / #1154 / #1164. |
 | Storage engine | `include/zetta/storage/{engine,jsonl_store,json_store}.hpp`, `src/core/data/jsonl_store.cpp` | data/storage.md | `StorageEngine` interface: `add(id,doc)`/`contains`/`size`/`at`/`id_at`. Rows carry a UUID (the CRDT key). JSONL line = `{"_zid":id,"doc":row}`. |
-| Large objects | `large_object.hpp`, `src/core/data/large_object.cpp`, `blob_store.hpp`, `replicated_blob_store.hpp`, `src/core/data/replicated_blob_store.cpp`, `sha256.hpp` | data/large-objects.md | Metadata (`lo:` key, incl. `size`+`sha256`) replicates in the CRDT; **body does not** — it transfers P2P and is verified against the hash. `BlobStore` is the transfer seam (`ReplicatedBlobStore` also serves model `weights` bodies — see Models). |
+| Large objects | `large_object.hpp`, `src/core/data/large_object.cpp`, `blob_store.hpp`, `replicated_blob_store.hpp`, `src/core/data/replicated_blob_store.cpp`, `sha256.hpp` | data/large-objects.md | Metadata (`lo:` key, incl. `size`+`sha256`) replicates in the CRDT; **body does not** — it transfers P2P and is verified against the hash. `BlobStore` is the transfer interface (`ReplicatedBlobStore` also serves model `weights` bodies — see Models). |
 | Query layer | `include/zetta/query/{ast,dialect,executor,postgres,service}.hpp`, `src/core/query/*.cpp` | data/query.md | text → `Dialect.parse()` → generic `Statement` variant → `Executor`(Node). Executor is dialect-neutral. `WHERE` is a single comparison predicate (`=`/`!=`/`<>`/`<`/`<=`/`>`/`>=`); a `SELECT … GROUP BY` routes through the **DDF engine** (`ddf::scan`/`filter`/`group_by`) and materializes back to rows (#386, numeric only). Virtual read-only **`system`** database holds computed system tables (`system.nodes`, `system.deployments`, `system.models`, `system.jobs`); `system` is reserved. |
 | Import | `import.hpp`, `src/core/data/import.cpp` | data/large-objects.md | `.json`/`.jsonl` → rows via `Table::add_row` (so it replicates). |
 | n8n import | `n8n_import.hpp`, `src/core/pipeline/n8n_import.cpp`, `project.hpp` (`create_input`) | pipeline/n8n-import.md | `import_n8n_workflow`/`import_n8n_workflow_file` → artifact `ProjectInput`. **Schema-validated at boundary** (`validate_n8n_workflow`/`n8n_workflow_schema`, draft-07: requires `nodes` array of `{name,type}` objects + `connections` object; extras allowed) via pboettch/json-schema-validator (model on run.cpp). Stores raw bytes byte-for-byte (round-trips); SHA-256 via `create_input`. Storage+validation only — compile is a separate step; not GUI-wired. |
@@ -27,7 +27,7 @@ break. `CLAUDE.md` and `docs/*.md` remain authoritative for behavior.
 | Cluster | `cluster.hpp`, `src/core/cluster/cluster.cpp` (the one Corosio user) | cluster/cluster.md | Equal peers over TCP; line protocol `HELLO/SYNC/STATUS/LOREQ/LORES`. Self-healing (keepalive + reconnect + replace-by-address). `nodes()` = status view. Mutual TLS 1.3 per link when `ClusterConfig::security` is enabled (#466). |
 | Cluster security | `cluster/security.hpp`, `src/core/cluster/security.cpp` (the one OpenSSL-libcrypto user) | cluster/security.md | CTL-2/TB-3 (#466): join token → deterministic Ed25519 cluster CA → per-node CA-signed identity; `load_or_create_cluster_security` persists under `<data_dir>/security/` (schema-validated secret file). Token-gated join enforced at the TLS handshake; **always on** (#799 removed the `--cluster-plaintext` opt-out — no plaintext peer mode). |
 | Replication (CRDT) | `replication.hpp`, `src/core/cluster/replication.cpp` (the one automerge-cpp user), `src/core/catalog.hpp` (internal key scheme) | cluster/replication.md | `ReplicationManager`: `set`/`remove`/`snapshot`/`save`/`merge`/`entry_count`/`version`. Document = source of truth. Thread-safe (mutex). |
-| Async/net seams | `runtime.hpp`, `runtime/net.hpp` | architecture/runtime.md, research/coroutines.md | `zetta::runtime` (Capy) + `zetta::runtime::net` (Corosio). Backend names confined to adapters. |
+| Async/net adapters | `runtime.hpp`, `runtime/net.hpp` | architecture/runtime.md, research/coroutines.md | `zetta::runtime` (Capy) + `zetta::runtime::net` (Corosio). Backend names confined to adapters. |
 | GUI | `src/gui/app.hpp` (forward-declares SDL/ImGui), `src/gui/app.cpp` | architecture/architecture.md | Thin renderer over a `Node`+`Cluster`. Only `app.cpp` pulls heavy headers. |
 | Utilities | `uuid.hpp`, `sha256.hpp`, `bytes.hpp`, `duration.hpp`, `signals.hpp`, `version.hpp` | — | `new_uuid`, `sha256_hex`, `format_bytes`, `format_duration`. |
 
@@ -50,11 +50,13 @@ deployment:<dep_uuid> -> { graph_name, target, node, node_count, edge_count, cre
                                                        a graph placed onto a target
 run:<run_uuid>        -> { project, graph, status, created, updated, logs, outputs, lineage }
                                                        a run (top-level; JSON-Schema validated)
+experiment:<uuid>     -> { name, seed, allocations, created }
+                                                       a holdout experiment (#1105)
+experiment_assignment:<experiment>:<entity_digest>
+                      -> { entity, allocation, tier, propensity, bucket, exempt, assigned_at }
+                                                       an independent uplift row (#1105)
 principal:<uuid>      -> { kind, name, created }       an authenticated actor (no parent)
 key:<uuid>            -> { principal, scope, created }  an access key (owned by a principal)
-audit:<uuid>          -> { action, actor, target, allowed, detail, time }
-                                                       an audit event (top-level; immutable,
-                                                       append-only; JSON-Schema validated)
 ```
 
 `Node::reconcile_from_replication()` decodes these into desired state and
@@ -97,7 +99,7 @@ handle it in `apply_gossip` (read pump) and/or `gossip_writer` (write pump) in
 drain. Big payloads use base64 in one line (bounded by `kMaxLineBytes`).
 
 **Transfer bytes peer-to-peer** — model on large objects: metadata in the CRDT,
-bytes through a `BlobStore`-style seam that works off the CRDT + disk paths only
+bytes through a `BlobStore`-style interface that works off the CRDT + disk paths only
 (so it's network-thread-safe), verified by hash before write.
 
 **Add a test** — new file in `tests/`, then add it to the explicit list in
@@ -144,10 +146,10 @@ tests: short `ClusterConfig` timeouts + patient polling.
 - **pipeline/deployments.md** — placing a validated graph onto a `DeploymentTarget` (R1 local), recorded + queryable.
 - **pipeline/runs.md** — the Run (`zetta::pipeline::Run`) record: status/logs/outputs/lineage + JSON-Schema boundary validation.
 - **ml/models.md** — the Model (`zetta::ml::Model`) entity: `model:` metadata + weights as a P2P large-object body (sha256) + `system.models` (ENT-14/FEAT-6).
-- **data/storage.md** — on-disk layout, JSONL `_zid`/`doc` line format, engine seam.
+- **data/storage.md** — on-disk layout, JSONL `_zid`/`doc` line format, engine interface.
 - **data/query.md** — dialect-agnostic layer, Postgres subset, the `system` database (`system.nodes`, `system.deployments`, `system.models`).
 - **data/large-objects.md** — LO API, metadata-in-CRDT + body-P2P-with-hash, import.
-- **architecture/runtime.md** — `zetta::runtime` async seam + migration plan.
+- **architecture/runtime.md** — `zetta::runtime` async interface + migration plan.
 - **cluster/cluster.md** — equal peers, reachable-address banner, self-healing links, status view.
 - **cluster/replication.md** — CRDT, "everything is replicated", consistency model + leadership (design), data replication.
 - **build.md** — build/run/test, compilers, submodules.

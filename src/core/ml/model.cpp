@@ -37,6 +37,9 @@ const nlohmann::json& schema_document() {
         "kind":    { "type": "string", "minLength": 1 },
         "project": { "type": "string" },
         "run":     { "type": "string" },
+        "project_name":  { "type": "string" },
+        "pipeline_name": { "type": "string" },
+        "run_id":        { "type": "string" },
         "feature_schema": { "type": "object" },
         "metrics": {
           "type": "object",
@@ -93,6 +96,9 @@ nlohmann::json to_json(const ModelValue& value) {
         {"kind", value.kind},
         {"project", value.project},
         {"run", value.run},
+        {"project_name", value.project_name},
+        {"pipeline_name", value.pipeline_name},
+        {"run_id", value.run_id},
         {"feature_schema", value.feature_schema},
         {"metrics", value.metrics},
         {"created", value.created},
@@ -130,6 +136,9 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
     parsed.kind = value.value("kind", std::string{});
     parsed.project = value.value("project", std::string{});
     parsed.run = value.value("run", std::string{});
+    parsed.project_name = value.value("project_name", std::string{});
+    parsed.pipeline_name = value.value("pipeline_name", std::string{});
+    parsed.run_id = value.value("run_id", parsed.run);
     if (const auto it = value.find("feature_schema"); it != value.end()) {
         parsed.feature_schema = *it;
     }
@@ -193,8 +202,64 @@ bool Model::set_weights(std::string_view bytes) {
     return true;
 }
 
+bool Model::adopt_weights_file(const fs::path& staged, std::uintmax_t size,
+                               std::string sha256) {
+    std::error_code ec;
+    fs::create_directories(dir_, ec);
+    const fs::path path = weights_path();
+    fs::rename(staged, path, ec);
+    if (ec) {
+        // Another filesystem: copy beside the body, then publish atomically.
+        const fs::path tmp = path.string() + ".tmp";
+        ec.clear();
+        fs::copy_file(staged, tmp, fs::copy_options::overwrite_existing, ec);
+        if (ec) return false;
+        fs::rename(tmp, path, ec);
+        if (ec) return false;
+        fs::remove(staged, ec);
+    }
+    ModelWeights weights;
+    weights.size = size;
+    weights.sha256 = std::move(sha256);
+    value_.weights = weights;
+    capture_and_persist();
+    return true;
+}
+
+std::optional<std::string> Model::read_weights_range(std::uintmax_t offset,
+                                                     std::size_t limit) const {
+    std::ifstream in(weights_path(), std::ios::binary);
+    if (!in) return std::nullopt;
+    in.seekg(static_cast<std::streamoff>(offset));
+    if (!in) return std::string();
+    std::string chunk(limit, '\0');
+    in.read(chunk.data(), static_cast<std::streamsize>(limit));
+    chunk.resize(static_cast<std::size_t>(std::max<std::streamsize>(in.gcount(), 0)));
+    return chunk;
+}
+
 void Model::set_metrics(nlohmann::json metrics) {
     value_.metrics = std::move(metrics);
+    capture_and_persist();
+}
+
+void Model::set_feature_schema(nlohmann::json feature_schema) {
+    value_.feature_schema = std::move(feature_schema);
+    capture_and_persist();
+}
+
+void Model::set_display_lineage(std::string project_name,
+                                std::string pipeline_name,
+                                std::string run_id) {
+    if (value_.project_name == project_name &&
+        value_.pipeline_name == pipeline_name && value_.run_id == run_id &&
+        value_.run == run_id) {
+        return;
+    }
+    value_.project_name = std::move(project_name);
+    value_.pipeline_name = std::move(pipeline_name);
+    value_.run_id = std::move(run_id);
+    value_.run = value_.run_id;
     capture_and_persist();
 }
 

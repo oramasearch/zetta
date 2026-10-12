@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -11,6 +12,7 @@
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/consent.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/runtime.hpp"
 
 namespace zetta {
 class Node;
@@ -42,7 +44,12 @@ namespace zetta::api {
 struct ApiError {
     std::string code;     // "invalid_input" | "unauthorized" | "not_found" |
                           // "engine_error" | "unknown_capability" | "busy" |
-                          // "consent_required"
+                          // "consent_required" | "conflict" (a name already
+                          // taken, e.g. upload_dataset without if_exists rename) |
+                          // "forbidden" (read-only by design: Orama's catalogue
+                          // methodologies, zetta#1261) | "runner_required" (a
+                          // workspace methodology's pipeline runs in Lake's runner;
+                          // `details` says what to run, zetta#1261)
     std::string message;  // the engine's reason, verbatim where one exists
     std::string path;     // JSON pointer / field path when the input is at fault
     // Structured payload riding with the failure — the consent challenge for
@@ -83,13 +90,19 @@ struct ApiResult {
 // (registry-design.md → "no new job infrastructure").
 enum class CapabilityKind { Read, Action, Job };
 
+enum class AuditPolicy {
+    PerCall,
+    SummarizeAuthorizedReads,
+    HandlerRecordsSuccess,
+};
+
 std::string_view to_string(CapabilityKind kind);
 
 class BackgroundActions;
 
 // Resolves a provision target id ("local", "azure", …) to the configured
 // Provisioner the embedding wired for it — the consent-gated `add_nodes`
-// capability's backend seam. Null function or null result = that target has
+// capability's backend interface. Null function or null result = that target has
 // no provisioner wired here (the handler fails with a clear reason; nothing
 // is provisioned). The returned pointer is non-owning and must outlive the
 // server (the same contract as App::set_provisioner).
@@ -149,6 +162,12 @@ struct ApiContext {
     // permissions and the audit trail apply to the inner call exactly as they
     // would to a direct one. Null outside a registry call.
     const Registry* registry = nullptr;
+
+    // REST and MCP supply this one-shot event for an awaitable read. The handler
+    // registers it before its no-wait read, so a publish between that read and
+    // the route's co_await cannot be missed (#1076). In-process callers leave it
+    // empty and receive the same immediate answer as wait_ms 0.
+    std::shared_ptr<runtime::async_event> wait_event;
 };
 
 using CapabilityHandler =
@@ -161,6 +180,22 @@ using CapabilityHandler =
 // without a challenge — the same input-aware gate the headed GUI applies.
 using ConsentDescriber = std::function<std::optional<governance::ConsentAction>(
     const nlohmann::json& input, ApiContext& context)>;
+
+// REST-only execution policy for a registry read that may suspend without
+// holding a thread. Registry::call remains the one governed call path: the
+// route calls it once for the initial no-wait read and, only when should_wait
+// says the result is empty, once after the event or timeout (#1076).
+struct AwaitableRead {
+    std::function<std::chrono::milliseconds(const nlohmann::json& input)> wait_for;
+    std::function<bool(const ApiResult& result)> should_wait;
+    // Optional (#1005): a call whose answer changes with time as well as with
+    // the event. When set, the route keeps waiting until wait_for elapses — each
+    // wake (the event, or retry_within(result) passing) makes one more governed
+    // call with a fresh event — instead of making one final call. Such an entry
+    // may be an action that mutates and blocks (acquire_object_lease waits out
+    // another holder's lease this way); offloadable and consent-gated ones may not.
+    std::function<std::chrono::milliseconds(const ApiResult& result)> retry_within;
+};
 
 // One entry on the control surface. `input_schema` is draft-07 JSON Schema
 // (schema-as-code — declared next to the handler, validated at the boundary
@@ -188,8 +223,36 @@ struct Capability {
     // (runtime::offload), instead of marshaling it onto the owning loop. ONLY safe
     // for a handler that touches no main-thread-only Node state — just the
     // thread-safe ReplicationManager + pure compute (e.g. chat: model inference).
-    // Keeps a long CPU/GPU decode from pinning the tick loop (#731).
+    // Keeps a long CPU/GPU decode from pinning the tick loop (#731). Registry::call
+    // still runs its authorization + audit gate on the owner thread (#1063), and
+    // add() refuses an offloadable entry that mutates or requires consent.
     bool offloadable = false;
+    // An empty REST or MCP read may suspend on a runtime event, bounded by wait_for,
+    // then make one final governed call. No thread is held while it waits.
+    std::optional<AwaitableRead> awaitable_read;
+    // Also accept a JSON-body POST for a read, retaining its GET route and read classification.
+    bool post_alias = false;
+    // Object-tier fallback when there is no global operation grant. Runs on
+    // the owner thread after the per-tool gate; handlers still check each
+    // addressed object, including every item in a filtered listing.
+    std::function<bool(const nlohmann::json&, const ApiContext&)> authorize_scoped;
+    // High-frequency successful reads may be summarized by actor, capability,
+    // and one input scope. Denials and failures remain per-call (#1154).
+    AuditPolicy audit_policy = AuditPolicy::PerCall;
+    std::string audit_scope_field;
+    // The output field that carries accessed data. An empty array/object/string
+    // means an idle read; a present scalar means data was returned. This keeps
+    // empty polling windows out of the audit log without hiding successful
+    // reads that returned topic metadata (#1169).
+    std::string audit_result_field;
+    // The handler performs blocking storage work against internally guarded
+    // state. REST and MCP run it through runtime::offload_blocking after the
+    // registry has completed its owner-thread authorization gate.
+    bool blocks = false;
+    // Appended to an input-schema rejection when it returns non-empty text:
+    // the capability's one-step way past the error for this input (e.g.
+    // create_study offers from_defaults, #1217). Empty = the reason alone.
+    std::function<std::string(const nlohmann::json& input)> invalid_input_hint;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh

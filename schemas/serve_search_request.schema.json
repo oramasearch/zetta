@@ -6,6 +6,13 @@
       "description": "restrict matching to one indexed field (optional)",
       "type": "string"
     },
+    "fields": {
+      "description": "the row fields each hit carries back (default: the index's own fields; [] = ids and scores only). Each must be one of the index's fields.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "query": {
       "description": "the free-text query",
       "minLength": 1,

@@ -14,6 +14,7 @@ cost control, or the Add-nodes path; the GUI control is
 - [provisioner-detection.md](provisioner-detection.md) — detect cloud targets from the operator's own local CLIs (no credentials) → `system.provisioners` + injected provisioners.
 - [node-bootstrap-env.md](node-bootstrap-env.md) — the node consumes the injected provisioning env on boot: `ZETTA_SEED_PEER`→`--peer`, `ZETTA_CLUSTER_TOKEN`→`--join-token`, `ZETTA_DATA_DIR`→`--data-dir`, as defaults beneath explicit flags, so a provisioned node auto-joins a secure cluster with no manual flags (`apply_bootstrap_env`, #749; resolves the env→flag half of Gap A).
 - [burst-identity.md](burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node, bulk-revoke on teardown, audited (`BurstIdentityManager`, #375).
+- [../governance/audit-trail.md](../governance/audit-trail.md) — burst audit records ship through segment ranges without catalog event entries (#1164).
 - [burst-approval-gate.md](burst-approval-gate.md) — the large-burst cost-cap approval gate: a `Provisioner` decorator that blocks over-cap bursts pending approval (APR-3 / RSK-9, #379).
 - [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows: the four pieces, shared `CommandRunner`, the lifecycle→CLI mapping. CLI for now.
 - [azure-provisioner.md](azure-provisioner.md) — the reference cloud-burst backend: VMSS / Spot via the `az` CLI, mint + teardown + revoke (`AzureProvisioner`, ADR-20, #376).

@@ -24,6 +24,8 @@ Capability {
   mutates         // fires the activity hook; tells GUIs to refresh
   requires_consent     // cloud-touching: returns a consent challenge
   handler         // std::function<ApiResult(const json&, ApiContext&)>
+  awaitable_read  // optional REST/MCP event wait between at most two registry
+                  // calls, or (retry_within) one call per wake until wait_for
 }
 ```
 
@@ -54,19 +56,104 @@ The `Node` tree is **main-thread-only** (the same invariant the network thread
 obeys). The HTTP server runs on its own thread, so **no handler may touch the
 `Node` directly**. The bridge:
 
-- `zetta::api::MainThreadBridge` — a mutex-guarded queue of packaged tasks.
+- `zetta::api::MainThreadBridge` — a mutex-guarded queue of owner-thread closures.
   The owning loop **drains it**: `run_headless`'s tick loop and the headed
   app's frame loop both call `bridge.drain()` right where `Node::tick()`
-  already runs. An HTTP handler posts a closure and blocks on its future with
-  a timeout (default 10 s; a saturated loop returns a clear busy error, never
-  a hang).
-- Consequence: handler latency is bounded by the loop cadence (≤ ~100 ms
-  headless at 10 Hz, one frame headed). That is the correct price for never
-  violating the ownership invariant — the alternative (locking the tree) is
-  against the architecture and is not on the table.
+  already runs. An HTTP handler posts a closure and suspends on its completion
+  event. It resumes only after the closure has run, including during transport
+  cancellation, because the closure can borrow the request frame (#1077).
+- Enqueueing wakes the owner loop, which drains work before its next timed tick.
+  Handlers keep the Node ownership invariant without blocking the I/O thread.
 - Everything routes through the bridge, including reads that could arguably
   go direct — uniformity beats cleverness here; the thread-safety table lives
   in one place.
+- **The one exception: an `offloadable` capability** (`chat`) runs its *handler*
+  on a pool worker so it never pins the loop. The
+  call's authorization + audit gate still runs on the owner thread, through
+  `Node::run_on_owner`: the gate reads the access keys and appends to the audit
+  trail, which the tick reconciles. Running the gate on the worker
+  crashed lake's bus Zetta every few minutes (#1063). An offloadable handler may
+  touch only thread-safe state (the replication store, `PubSub`), and
+  `Registry::add` refuses an offloadable entry that mutates or requires consent,
+  because the activity hook and the consent ledger run after the gate.
+- **Awaitable reads do not offload.** `receive_events` and `browse_topic` register a topic event
+  inside their first owner-loop call, return an immediate read, and let the REST
+  or MCP coroutine suspend on that event under `runtime::timeout`. Publish, edit or close
+  wakes it; the route makes one final owner-loop call. A long poll therefore
+  holds no thread and makes at most two authorized registry calls. Those reads
+  share an audit session and contribute to its five-minute totals (#1076,
+  #1136, #1154).
+- **A retrying await** (#1005): an `AwaitableRead` with `retry_within` keeps
+  waiting until `wait_for` passes — each wake, the event or `retry_within(result)`
+  elapsing, makes one more whole governed call with a fresh event. Such an entry
+  may be a blocking action that mutates (`Registry::add` still refuses it
+  offloadable or consent-gated); its calls run on the blocking pool.
+  `acquire_object_lease` waits out another holder's lease this way: the event is
+  a lease change, `retry_within` the holder's expiry.
+- **Object-scoped operation grants** (#1136): an entry may declare an
+  `authorize_scoped` owner-thread fallback when there is no global operation
+  grant. The per-tool gate still runs first. Pub/sub resolves concrete topic
+  addresses through the object tier; listings accept a topic-prefix grant and
+  filter every result through it. A global grant still covers all objects.
+- **Owner hops wake the loop.** Work a pool worker queues with
+  `Node::run_on_owner` (that gate, the pub/sub authorizer, background actions)
+  wakes the idle loop through `Node::set_owner_wakeup` (the API server's
+  `wake()`, a `MainThreadBridge::poke`), and the loop drains it on that wake,
+  not only inside the 10 Hz `tick()`. Without both, each hop waited out a tick:
+  `receive_events` took ~205 ms with no wait at all; it now takes under 1 ms.
+
+## Connection admission
+
+The HTTP adapter owns its accept loop and uses Beast2's HTTP parser/session logic
+for each admitted socket. It does not use the fixed TCP worker pool: that pool
+waited for an idle worker before accepting, so held long polls could fill the
+listen backlog and make new TCP connections time out (#1076).
+
+Sessions are created on demand. `ServerOptions::idle_connection_cache` controls
+only reuse of finished parser/serializer objects; `max_connections` is the
+separate, explicit admission cap. At that cap the listener still accepts and
+answers HTTP 503 / `busy` with `Retry-After: 1`, without entering the registry.
+`listen_backlog` requests the kernel's pending-connection queue size. Defaults,
+OS resource limits and the 500-held-polls/20-new-connections regression are in
+[pub/sub exposure](../pubsub/exposure.md#exposure-on-mcp-and-rest).
+
+Session sockets are closed on completion, including cached sessions. Shutdown
+closes the listener and sockets on their IO executor, signals pending poll events,
+and keeps draining owner work until all session coroutines finish. This preserves
+the lifetime of queued bridge callbacks. No capability schema or new JSON format
+is added.
+
+## Ordered shutdown
+
+`ApiServer::stop_accepting()` closes the listener before terminal node shutdown
+begins. `main` then calls `PubSub::shutdown()` so every `receive_events` wait is
+woken, and calls `ApiServer::stop()` while the `Node` and its owner thread still
+exist. `stop()` closes the admitted session sockets on the I/O executor and keeps
+`MainThreadBridge` and `Node::run_on_owner` work draining until every REST
+capability coroutine has returned, with a five-second upper bound. Only then does
+it release the `io_context` work hold, join the I/O thread and allow the server
+context to be destroyed (#1077).
+
+The work hold matters for offloaded calls: while a long poll is running on the
+blocking pool there may briefly be no completion queued on the I/O executor.
+Without the hold, `io_context::run()` can return before the pool posts the
+completion, leaving the request coroutine to be destroyed while its stop
+callback is still running. No new wire or JSON format is introduced.
+
+With the awaitable long polls from #1076, shutdown cancellation can also resume a
+bridge wait before its queued closure has run. That closure borrows the route's
+`ApiResult` and input; letting the route finish first leaves dangling references
+for the owner drain. `MainThreadBridge::run_on_owner` therefore masks cancellation
+only while waiting for queued work to complete. Topic waits remain cancellable,
+and `PubSub::shutdown()` signals them while the topics, Node and API context are
+still alive. Their final owner-thread reads complete before the routes finish and
+the request count reaches zero. The bridge regression covers cancellation both
+before queueing and while queued (#1077, stacked on #1100).
+
+`Shutdown.SigtermWithLongPollsInFlightExitsPromptly` starts a real headless
+node, opens eleven 30-second REST long polls, and requires a normal exit within
+one second of SIGTERM. Its child environment excludes cloud CLIs, and cleanup
+reaps the child before joining clients so a regression cannot strand the suite.
 
 ## Auth, governance, audit — nothing new
 
@@ -83,12 +170,16 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   the gate is unconditional. The in-process headed-GUI governed console still runs as
   a trusted local session because it authorizes **in-process**, not through this HTTP
   gate.
-- Every call runs `Node::authorize(key, required_operation)` — deny-by-default
-  capability check **and** the audit record in one motion. Convention: reads
+- Every call runs the deny-by-default capability check and the registry applies
+  its declared audit policy. Writes, denials, failures, and ordinary reads stay
+  per-call. Successful `receive_events`, `browse_topic`, `get_topic`, and
+  `list_topics` calls use an actor/capability/scope session plus five-minute
+  totals; see [the audit policy](../governance/audit-trail.md#audit-policy).
+  Convention: reads
   require `api:query`; each action requires `orchestration:<name>`
   (`orchestration:create_project`). Handlers that reach the gate/deploy/run
-  seams inherit those seams' own enforcement too (RULE-1 cannot be bypassed
-  by construction, because handlers call the same engine entry points the GUI
+  entry points inherit their enforcement too (RULE-1 cannot be bypassed by
+  construction, because handlers call the same engine entry points the GUI
   calls).
 - **Consent (shipped, #621 — [consent.md](consent.md)):** a `requires_consent`
   capability NEVER executes on first call — it returns a structured consent
@@ -128,6 +219,16 @@ message, path} }`:
 
 - Malformed JSON-RPC / unknown tool → JSON-RPC protocol errors (−32700/−32601/−32602).
 - Schema-invalid tool input → −32602 with the validator's path-qualified reason.
+  The check itself never throws (#1231): `contentEncoding: base64` is validated,
+  any other encoding is refused at its field, and a schema the validator cannot
+  compile answers `invalid_input` naming the problem instead of escaping
+  `Registry::call`.
+  The `ApiError.path` carries the field at fault as a JSON pointer — for a
+  missing required property, the property itself (`/name`), not its parent —
+  so a schema rejection has a `path` exactly like a handler's own failure.
+  A capability may set `invalid_input_hint` to append its one-step way past
+  the error for that input (`create_study` offers `from_defaults: true`,
+  [#1217](https://github.com/oramasearch/zetta/issues/1217)).
 - **Domain failures (gate blocked, authorize denied, engine status) are NOT
   protocol errors** — they return a successful `tools/call` whose result
   carries `isError: true` + the engine's actual reason verbatim (the MCP

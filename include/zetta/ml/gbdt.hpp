@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -92,7 +93,7 @@ struct GbdtParams {
     //
     // Nothing else in the learner changes — histogram building, split finding and the allreduce
     // are objective-agnostic. That is why M-4 needed an objective, not a second learner.
-    std::string objective = "binary_logistic";  // or "squared_error"
+    std::string objective = "binary_logistic";  // squared_error or lambdamart
     double holdout_fraction = 0.0;
 
     // The JSON form (only the fields above; all optional with the defaults).
@@ -130,8 +131,16 @@ struct TreeNode {
     int right = -1;
     double value = 0.0;     // leaf raw-score contribution
     double cover = 0.0;     // training weight (Σ Hessian) reaching this node — for SHAP
+    // Where a missing value (NaN) goes. False sends it right, which is what the
+    // strict `<` does with NaN and how every model trained here behaves. A model
+    // brought from elsewhere (model_import.hpp) records its source's own choice:
+    // XGBoost's default direction, LightGBM's missing type, ONNX's
+    // nodes_missing_value_tracks_true (lake#681).
+    bool missing_left = false;
 
     bool is_leaf() const noexcept { return feature < 0; }
+    // The child a feature value takes at this internal node.
+    int child_for(double value) const noexcept;
 };
 
 // A single regression tree: nodes[0] is the root.
@@ -149,7 +158,8 @@ struct RegressionTree {
 // (schemas/gbdt_model.schema.json, the pboettch draft-07 validator — like the Run
 // record — because the body is read back from disk / a peer).
 struct GbdtModel {
-    std::string objective = "binary_logistic";  // the only objective today
+    // binary_logistic or squared_error
+    std::string objective = "binary_logistic";
     double base_score = 0.0;       // initial raw score (logit of the base rate)
     double learning_rate = 0.3;    // recorded for provenance (already baked into leaves)
     std::vector<std::string> feature_names;     // the fixed feature ordering
@@ -220,6 +230,15 @@ using AllReduce =
 // scratch, no hook" — exactly the unchanged loop, so existing callers are unaffected.
 // See docs/compute/job-checkpoint.md.
 struct TrainHooks {
+    // Optional objective callback evaluated before every boosting round. It
+    // receives this shard's current raw scores and labels and fills one
+    // gradient/Hessian pair per row. Ranking uses this to supply group-local
+    // LambdaMART derivatives while reusing the distributed GBDT core (#1048).
+    std::function<compute::ComputeStatus(
+        const std::vector<double>& raw, const std::vector<double>& labels,
+        std::vector<double>& gradient, std::vector<double>& hessian)>
+        objective_gradient;
+
     // Seed the ensemble from a previously-checkpointed partial model + its
     // accumulated per-feature gains: training resumes at tree index
     // resume_model->trees.size() (the running predictions are recomputed from those
@@ -238,6 +257,18 @@ struct TrainHooks {
     std::function<bool(int trees_built, const GbdtModel& partial,
                        const std::vector<double>& importances)>
         on_round;
+
+    // Called after each committed tree with globally reduced training metrics.
+    // All participants must enable this together (non-root hooks may be no-ops).
+    // No hook means no metric computation or collective. DP callers force
+    // suppress_metrics so private training data never enters this path (#1137).
+    // Returning false stops training with an error so a lost metric batch is not
+    // silently reported as a fully tracked run. The status names only the tree
+    // it stopped after: the hook knows why (a failed write, a pruned or
+    // cancelled trial, a spent budget) and its owner reports that reason.
+    std::function<bool(int step, const std::map<std::string, double>& values)>
+        on_metrics;
+    bool suppress_metrics = false;
 };
 
 // The outcome of training: the model, the per-feature total split gain (the
@@ -250,10 +281,11 @@ struct GbdtTrainResult {
     bool ok() const noexcept { return status.ok(); }
 };
 
-// Train a histogram GBDT (binary logistic) over this node's shard.
+// Train a histogram GBDT over this node's shard. The objective is selected by
+// GbdtParams: binary logistic classification or squared-error regression.
 //   columns[f][r] = feature f's value for local row r (host memory),
 //   feature_names = the feature ordering (same on every node),
-//   labels[r]     = the {0,1} target for local row r.
+//   labels[r]     = the classification or regression target for local row r.
 // `allreduce` combines per-node statistics (global bin edges, the base label rate,
 // the gradient/Hessian histograms at each tree level) across the cluster; `tag`
 // namespaces those rounds. With an identity `allreduce` this is exactly the

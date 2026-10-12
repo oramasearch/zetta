@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <optional>
 #include <random>
 #include <string>
@@ -19,6 +21,8 @@
 // a later slice). Parameters are autograd leaves, so the same model trains (overfit
 // / RLVR) and runs inference with no framework.
 namespace zetta::autograd {
+
+class Adam;
 
 // The architecture hyperparameters. Defaults are a tiny test-sized model; a real
 // Qwen3 checkpoint sets them from its config.json.
@@ -67,6 +71,8 @@ public:
     // optimizer's per-parameter moments line up across steps).
     std::vector<Tensor>& parameters() { return parameters_; }
     const std::vector<Tensor>& parameters() const { return parameters_; }
+
+    std::size_t resident_bytes() const;
 
     // Look up a parameter by its HF name. Returns an invalid Tensor if absent.
     Tensor weight(const std::string& name) const;
@@ -123,6 +129,25 @@ private:
     std::vector<Tensor> parameters_;                     // canonical, ordered
     std::unordered_map<std::string, std::size_t> index_; // HF name -> position
 };
+
+struct QwenFineTuneMetrics {
+    double loss = 0.0;
+    double learning_rate = 0.0;
+    double gradient_norm = 0.0;
+    double tokens_per_second = 0.0;
+
+    std::map<std::string, double> values() const;
+};
+
+using QwenMetricLogger =
+    std::function<bool(std::uint64_t, const std::map<std::string, double>&)>;
+
+// Perform one completion-masked next-token fine-tuning step and report the
+// standard trainer metrics through the supplied Run logger.
+std::optional<QwenFineTuneMetrics> fine_tune_qwen_step(
+    QwenModel& model, Adam& optimizer, const std::vector<int>& ids,
+    int first_scored, std::uint64_t step,
+    const QwenMetricLogger& logger = {}, std::string* error = nullptr);
 
 // Load a Qwen model from a Hugging Face checkpoint directory: read
 // `<directory>/config.json` for the architecture (parse_qwen_config) and

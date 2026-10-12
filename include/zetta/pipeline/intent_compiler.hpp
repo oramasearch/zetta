@@ -4,58 +4,66 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/ir/execution_graph.hpp"
 
-// Compile a natural-language **intent** into a reviewable ExecutionGraph skeleton
-// (an atomic slice of FEAT-2 / #311). This turns a stored intent — the text a
-// `Project::capture_intent` recorded (FEAT-1) — into the first draft of an
-// execution graph laid out over the connect→clean→model→index→serve→act taxonomy,
-// using a **templated, heuristic** mapping rather than an opaque model.
+// Compile a natural-language intent into the runnable methodology shape
+// selected by the methodology registry (#1061). Explicit methodology and
+// solution selectors take precedence over keyword routing; unsupported
+// methodologies are refused.
 //
-// The output is the ExecutionGraph IR itself (ir/execution_graph.hpp): a
-// well-formed graph of named, typed, editable steps. It is **not a black box** —
-// once stored under a Project (`create_graph`) it is the same record the Graph
-// Workspace panel renders and lets the user edit, add to, and delete from. The
-// compiler only seeds a sensible starting point; review + edit is expected.
+// The output is the ExecutionGraph IR itself: a well-formed graph of named,
+// typed, editable steps. The compiler only seeds a starting point; review and
+// editing remain expected.
 //
-// Altitude: this slice is **templated mapping**, not language understanding. The
-// heuristic recognizes the churn shape (the R1 use case, UC-1) from a handful of
-// signal words and emits the full churn pipeline; anything else falls back to a
-// generic-but-complete six-stage skeleton so the result is always well-formed and
-// editable. Real NL parsing / LLM-driven synthesis plugs in later behind the same
-// `compile_intent` front door without changing its contract.
+// See docs/pipeline/intent-compiler.md and docs/ml/methodologies.md.
 namespace zetta::pipeline {
 
-// The template the heuristic mapped an intent onto — recorded so a caller (and a
-// test) can see *why* a given skeleton was produced, keeping the mapping
-// inspectable rather than magic.
+// Retained for source compatibility with existing callers. The methodology id
+// on CompiledIntent is the authoritative identity for new callers.
 enum class IntentShape {
-    Churn,    // a churn / retention / attrition intent → the churn pipeline
-    Generic,  // anything else → a generic connect→…→act skeleton
+    Churn,
+    Generic,
 };
 
-// The lowercase canonical name of an intent shape ("churn", "generic"). Used for
-// labels, log lines, and test output.
 std::string_view to_string(IntentShape shape);
 
-// The result of compiling an intent: the skeleton graph plus the template that
-// produced it. Returned by value; the graph is the editable artifact.
 struct CompiledIntent {
-    ir::ExecutionGraph graph;  // the templated skeleton (connect→…→act)
-    IntentShape shape;         // which template the heuristic selected
+    ir::ExecutionGraph graph;
+    IntentShape shape;
+    std::string methodology;
+    // The pipeline's name, from the intent's own words (#1238): "Predict which
+    // customers will cancel next month", never a fixed template name.
+    std::string name;
+    // The template the steps started from, said plainly so a person knows the
+    // step names are the template's until they edit them (#1238): "the M-1
+    // churn template", "the S-2 template", "the M-3 Segmentation / clustering
+    // template".
+    std::string template_name;
 };
 
-// Compile a natural-language intent into a templated ExecutionGraph skeleton.
-//
-// Returns std::nullopt for an intent that is empty or only whitespace (it carries
-// no meaning — nothing to compile), mirroring `Project::capture_intent`'s
-// rejection; when `error` is non-null it is set to a human-readable reason. On
-// success the returned graph is always well-formed (it is built through the IR's
-// structure-guarding API, so it round-trips through ir::to_json/from_json and
-// passes the baseline correctness gate) and carries one node per pipeline stage
-// joined by data-flow edges. Deterministic: the same intent yields an identical
-// graph (stable ids, names, and insertion order).
+// A pipeline name from an intent's words (#1238): its first words, up to
+// eight and about sixty characters, punctuation dropped, the first letter
+// capitalized. Empty when the intent has no words.
+std::string intent_pipeline_name(std::string_view intent);
+
+struct IntentCompileOptions {
+    std::string project;
+    std::string solution;
+    std::string methodology;
+    nlohmann::json hints = nlohmann::json::object();
+    // A workspace methodology's stored entry (zetta#1261), resolved by the
+    // caller from the replicated registry when `methodology` is a `W-` id. Its
+    // shape is built from the entry; the code runs in Lake's runner.
+    const nlohmann::json* workspace_methodology = nullptr;
+};
+
 std::optional<CompiledIntent> compile_intent(std::string_view intent,
                                              std::string* error = nullptr);
 
-}  // namespace zetta::pipeline
+std::optional<CompiledIntent>
+compile_intent(std::string_view intent, const IntentCompileOptions& options,
+               std::string* error = nullptr);
+
+} // namespace zetta::pipeline

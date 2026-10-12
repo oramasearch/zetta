@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "zetta/cluster/node_metrics.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
@@ -23,6 +25,15 @@ zetta::cluster::NodeMetrics make_full_sample() {
     metrics.memory_used_bytes = 12ull * 1024 * 1024 * 1024;
     metrics.memory_total_bytes = 32ull * 1024 * 1024 * 1024;
     metrics.memory_percent = 37.5;
+    metrics.process_memory_available = true;
+    metrics.process_rss_bytes = 812ull * 1024 * 1024;
+    metrics.process_peak_rss_bytes = 900ull * 1024 * 1024;
+    metrics.allocator_memory_available = true;
+    metrics.allocator_in_use_bytes = 790ull * 1024 * 1024;
+    metrics.allocator_free_held_bytes = 22ull * 1024 * 1024;
+    metrics.attributed_memory_bytes = 750ull * 1024 * 1024;
+    metrics.unattributed_memory_bytes = 40ull * 1024 * 1024;
+    metrics.memory_explained_percent = 94.9367;
     metrics.storage_available = true;
     metrics.storage_used_bytes = 210ull * 1024 * 1024 * 1024;
     metrics.storage_total_bytes = 500ull * 1024 * 1024 * 1024;
@@ -54,6 +65,14 @@ TEST(NodeTelemetryWire, RoundTripsAvailableGroups) {
     EXPECT_EQ(m.memory_used_bytes, original.memory_used_bytes);
     EXPECT_EQ(m.memory_total_bytes, original.memory_total_bytes);
     EXPECT_DOUBLE_EQ(m.memory_percent, 37.5);
+    EXPECT_TRUE(m.process_memory_available);
+    EXPECT_EQ(m.process_rss_bytes, original.process_rss_bytes);
+    EXPECT_TRUE(m.allocator_memory_available);
+    EXPECT_EQ(m.allocator_in_use_bytes, original.allocator_in_use_bytes);
+    EXPECT_EQ(m.unattributed_memory_bytes,
+              original.unattributed_memory_bytes);
+    EXPECT_DOUBLE_EQ(m.memory_explained_percent,
+                     original.memory_explained_percent);
     EXPECT_TRUE(m.storage_available);
     EXPECT_EQ(m.storage_used_bytes, original.storage_used_bytes);
     EXPECT_DOUBLE_EQ(m.storage_percent, 42.0);
@@ -76,6 +95,8 @@ TEST(NodeTelemetryWire, UnavailableGroupsDegradeGracefully) {
     EXPECT_EQ(decoded->metrics.cpu_cores, 4u);
     EXPECT_FALSE(decoded->metrics.cpu_percent_available);
     EXPECT_FALSE(decoded->metrics.memory_available);
+    EXPECT_FALSE(decoded->metrics.process_memory_available);
+    EXPECT_FALSE(decoded->metrics.allocator_memory_available);
     EXPECT_FALSE(decoded->metrics.gpu_available);
     EXPECT_FALSE(decoded->metrics.storage_available);
     EXPECT_FALSE(decoded->metrics.network_available);
@@ -169,4 +190,134 @@ TEST(NodeTelemetryExchange, ExpiresStaleEntries) {
 
     // A negative window is degenerate but must not resurrect anything.
     EXPECT_TRUE(exchange.snapshot(std::chrono::duration<double>(-1.0)).empty());
+}
+
+// --- The storage census in the exchange (zetta#1259) -------------------------
+
+namespace {
+
+zetta::cluster::NodeMetrics with_census(std::uint64_t datasets, std::uint64_t bucket_bytes,
+                                        double age_seconds) {
+    zetta::cluster::NodeMetrics metrics;
+    metrics.sampled_at = "2026-10-11T12:00:00Z";
+    metrics.storage_census_available = true;
+    for (const std::string_view kind : zetta::data::storage_kinds()) {
+        metrics.storage_census.kinds[std::string(kind)] = 0;
+    }
+    metrics.storage_census.kinds["datasets"] = datasets;
+    metrics.storage_census.kinds["buckets"] = bucket_bytes;
+    metrics.storage_census.buckets["photos"] = bucket_bytes;
+    metrics.storage_census.total_bytes = datasets + bucket_bytes;
+    metrics.storage_census_measured_at = "2026-10-11T11:59:30Z";
+    metrics.storage_census_age_seconds = age_seconds;
+    return metrics;
+}
+
+zetta::cluster::NodeTelemetrySample sample_of(std::string node_id,
+                                              zetta::cluster::NodeMetrics metrics,
+                                              double age_seconds = 0.5) {
+    zetta::cluster::NodeTelemetrySample sample;
+    sample.node_id = std::move(node_id);
+    sample.metrics = std::move(metrics);
+    sample.age_seconds = age_seconds;
+    return sample;
+}
+
+}  // namespace
+
+TEST(NodeTelemetryWire, CarriesTheStorageCensus) {
+    const auto original = with_census(1000, 4096, 12.5);
+    std::string error;
+    const auto decoded =
+        zetta::cluster::decode_node_metrics(encode_node_metrics(original, "node-a"), &error);
+    ASSERT_TRUE(decoded.has_value()) << error;
+    const auto& metrics = decoded->metrics;
+    ASSERT_TRUE(metrics.storage_census_available);
+    EXPECT_EQ(metrics.storage_census.total_bytes, 5096u);
+    EXPECT_EQ(metrics.storage_census.kinds.at("datasets"), 1000u);
+    EXPECT_EQ(metrics.storage_census.buckets.at("photos"), 4096u);
+    EXPECT_EQ(metrics.storage_census_measured_at, "2026-10-11T11:59:30Z");
+    EXPECT_DOUBLE_EQ(metrics.storage_census_age_seconds, 12.5);
+    EXPECT_EQ(metrics.storage_census_buckets_omitted, 0u);
+
+    // Without a census the payload carries none, and the receiver says so.
+    const auto bare = zetta::cluster::decode_node_metrics(
+        encode_node_metrics(zetta::cluster::NodeMetrics{}, "node-b"));
+    ASSERT_TRUE(bare.has_value());
+    EXPECT_FALSE(bare->metrics.storage_census_available);
+}
+
+TEST(NodeTelemetryWire, CapsTheListedBucketsAndKeepsTheirBytes) {
+    auto metrics = with_census(0, 0, 0);
+    metrics.storage_census.buckets.clear();
+    std::uint64_t total = 0;
+    for (std::size_t index = 0; index < zetta::cluster::kMaxWireCensusBuckets + 10; ++index) {
+        const std::uint64_t bytes = index + 1;
+        metrics.storage_census.buckets["b" + std::to_string(index)] = bytes;
+        total += bytes;
+    }
+    metrics.storage_census.kinds["buckets"] = total;
+    metrics.storage_census.total_bytes = total;
+    std::string error;
+    const auto decoded =
+        zetta::cluster::decode_node_metrics(encode_node_metrics(metrics, "node-a"), &error);
+    ASSERT_TRUE(decoded.has_value()) << error;
+    EXPECT_EQ(decoded->metrics.storage_census.buckets.size(), zetta::cluster::kMaxWireCensusBuckets);
+    EXPECT_EQ(decoded->metrics.storage_census_buckets_omitted, 10u);
+    EXPECT_EQ(decoded->metrics.storage_census.kinds.at("buckets"), total);
+    // The smallest ten were left out, so the largest is still listed.
+    EXPECT_TRUE(decoded->metrics.storage_census.buckets.contains(
+        "b" + std::to_string(zetta::cluster::kMaxWireCensusBuckets + 9)));
+    EXPECT_FALSE(decoded->metrics.storage_census.buckets.contains("b0"));
+}
+
+TEST(NodeTelemetryWire, RejectsAMalformedCensus) {
+    std::string error;
+    EXPECT_FALSE(zetta::cluster::decode_node_metrics(
+                     R"({"node_id":"n","sampled_at":"t","storage_census":{"measured_at":"t",)"
+                     R"("age_seconds":1,"total_bytes":-5,"kinds":{},"buckets":[]}})",
+                     &error)
+                     .has_value());
+    EXPECT_FALSE(error.empty());
+    EXPECT_FALSE(zetta::cluster::decode_node_metrics(
+                     R"({"node_id":"n","sampled_at":"t","storage_census":{"measured_at":"t",)"
+                     R"("age_seconds":1,"total_bytes":5,"kinds":{"datasets":"many"},"buckets":[]}})")
+                     .has_value());
+}
+
+// A three-node cluster: two members with a fresh census are summed; a member whose census is
+// stale, one that has not measured yet and one that does not report are named, never zero.
+TEST(StorageCensusFold, SumsFreshMembersAndNamesTheRest) {
+    using namespace std::chrono_literals;
+    auto local = sample_of("node-a", with_census(1000, 100, 0));
+    local.is_local = true;
+    const std::vector<zetta::cluster::NodeTelemetrySample> samples{
+        local,
+        sample_of("node-b", with_census(2000, 50, 30)),
+        sample_of("node-c", with_census(4000, 0, 179.8), 0.5),  // 180.3 s old: stale
+        sample_of("node-d", zetta::cluster::NodeMetrics{}),      // reports, no census yet
+    };
+    const auto folded = zetta::cluster::fold_storage_census(
+        {"node-a", "node-b", "node-c", "node-d", "node-e"}, samples, 180s);
+
+    ASSERT_EQ(folded.nodes.size(), 2u);
+    EXPECT_EQ(folded.nodes[0].node_id, "node-a");
+    EXPECT_TRUE(folded.nodes[0].is_local);
+    EXPECT_EQ(folded.nodes[1].node_id, "node-b");
+    EXPECT_DOUBLE_EQ(folded.nodes[1].age_seconds, 30.5);
+    EXPECT_EQ(folded.total.kinds.at("datasets"), 3000u);
+    EXPECT_EQ(folded.total.kinds.at("buckets"), 150u);
+    EXPECT_EQ(folded.total.buckets.at("photos"), 150u);  // physical: each copy counts
+    EXPECT_EQ(folded.total.total_bytes, 3150u);
+    for (const std::string_view kind : zetta::data::storage_kinds()) {
+        EXPECT_TRUE(folded.total.kinds.contains(std::string(kind))) << kind;
+    }
+
+    ASSERT_EQ(folded.missing.size(), 3u);
+    EXPECT_EQ(folded.missing[0].node_id, "node-c");
+    EXPECT_EQ(folded.missing[0].reason, "stale");
+    EXPECT_EQ(folded.missing[1].node_id, "node-d");
+    EXPECT_EQ(folded.missing[1].reason, "not_measured");
+    EXPECT_EQ(folded.missing[2].node_id, "node-e");
+    EXPECT_EQ(folded.missing[2].reason, "not_reporting");
 }

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -59,6 +61,47 @@ std::optional<NodeTelemetrySample> decode_node_metrics(
 // truth**; `schemas/node_metrics.schema.json` is generated from it and
 // drift-checked by `tests/test_schemas.cpp`.
 const nlohmann::json& node_metrics_wire_schema();
+
+// The most buckets one `node.metrics` payload lists by name (zetta#1259). A node with more
+// sends the largest ones and counts the rest in `buckets_omitted`; their bytes stay in
+// `kinds.buckets` and `total_bytes`, so the cluster's totals never lose them.
+inline constexpr std::size_t kMaxWireCensusBuckets = 256;
+
+// One member's census in a cluster answer (zetta#1259).
+struct MemberStorageCensus {
+    std::string node_id;
+    bool is_local = false;
+    zetta::data::StorageCensus census;
+    std::string measured_at;     // ISO-8601 UTC, by the measuring node's clock
+    double age_seconds = 0.0;    // how old the census is now, by this node's clock
+    std::uint64_t buckets_omitted = 0;
+};
+
+// A member that is not in the cluster's total, and why: `not_reporting` (no telemetry from it
+// within the freshness window: it is down, partitioned, or older than the census), `not_measured`
+// (it reports telemetry but has not measured its disk yet) or `stale` (its census is older than
+// the stale limit).
+struct MissingStorageCensus {
+    std::string node_id;
+    std::string reason;
+};
+
+// A whole cluster's disk by kind: every member with a fresh census, summed, and the members
+// without one named, never counted as zero. Bytes are physical: a replicated dataset or bucket
+// counts once on every member that holds a copy.
+struct ClusterStorageCensus {
+    zetta::data::StorageCensus total;  // kinds, buckets by name and total_bytes, summed
+    std::vector<MemberStorageCensus> nodes;
+    std::vector<MissingStorageCensus> missing;
+};
+
+// Folds the telemetry samples into a cluster census. `members` is the cluster membership (every
+// node id the replicated node-list knows); a sampled node outside it still counts. A census whose
+// age (its age when sampled plus the sample's age) is at least `stale_after` is `stale`. Nodes and
+// missing members are node-id ascending.
+ClusterStorageCensus fold_storage_census(const std::vector<std::string>& members,
+                                         const std::vector<NodeTelemetrySample>& samples,
+                                         std::chrono::duration<double> stale_after);
 
 // The cluster-wide telemetry cache fed by the signal plane. It is a SignalHandler
 // wired as the JobCoordinator's **fallback** (so it coexists with the steal /

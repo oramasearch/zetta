@@ -94,6 +94,7 @@ TEST(RestRendering, ErrorCodesMapToHttpStatuses) {
     EXPECT_EQ(zetta::api::rest_status(ApiResult::failure("engine_error", "")),
               422);
     EXPECT_EQ(zetta::api::rest_status(ApiResult::failure("busy", "")), 503);
+    EXPECT_EQ(zetta::api::rest_status(ApiResult::failure("incarnation_changed", "")), 409);
     EXPECT_EQ(zetta::api::rest_status(ApiResult::failure("novel_code", "")),
               500);
 }
@@ -151,6 +152,28 @@ TEST(RestRendering, EveryCapabilityHasValidInputAndOutputSchemas) {
     }
 }
 
+TEST(OpenApi, RunReportSchemaPreservesMethodologyOutputShapes) {
+    const Registry registry = core_registry();
+    const auto report = registry.find("get_run_report");
+    ASSERT_TRUE(report);
+    const nlohmann::json& properties = report->output_schema.at("properties");
+    for (const char* field : {"uncertainty", "meta_model_weights", "privacy", "topics"}) {
+        EXPECT_TRUE(properties.contains(field)) << field;
+    }
+    nlohmann::json_schema::json_validator validator;
+    validator.set_root_schema(report->output_schema);
+    nlohmann::json facts = {{"run", nlohmann::json::object()},
+                            {"model", nlohmann::json::object()},
+                            {"features", {{"used", nlohmann::json::array()},
+                                          {"excluded", nlohmann::json::array()}}},
+                            {"outputs", nlohmann::json::array()}};
+    EXPECT_NO_THROW(validator.validate(facts));
+    facts["outputs"] = {{"survival", "survival_results.curves"}};
+    EXPECT_NO_THROW(validator.validate(facts));
+    facts.erase("features");
+    EXPECT_THROW(validator.validate(facts), std::invalid_argument);
+}
+
 TEST(OpenApi, DocumentMatchesTheRegistry) {
     const Registry registry = core_registry();
     const nlohmann::json document = zetta::api::openapi_document(registry);
@@ -165,8 +188,18 @@ TEST(OpenApi, DocumentMatchesTheRegistry) {
 
     const nlohmann::json& paths = document.at("paths");
     // One path per registry entry, plus the two path-templated serving routes
-    // (#648) the registry rendering cannot express.
-    EXPECT_EQ(paths.size(), registry.size() + 2);
+    // (#648) and the object capability's seven (#1005: the byte routes and the
+    // bucket aliases) that the registry rendering cannot express.
+    EXPECT_EQ(paths.size(), registry.size() + 2 + 7);
+    for (const char* path : {"/v1/objects/{bucket}/{key}", "/v1/objects/{bucket}",
+                             "/v1/objects/{bucket}:usage", "/v1/objects/{bucket}:barrier",
+                             "/v1/objects/{bucket}:acquire", "/v1/objects/{bucket}:renew",
+                             "/v1/objects/{bucket}:release"}) {
+        EXPECT_TRUE(paths.contains(path)) << path;
+    }
+    for (const char* method : {"put", "patch", "get", "delete"}) {
+        EXPECT_TRUE(paths.at("/v1/objects/{bucket}/{key}").contains(method)) << method;
+    }
     for (const auto& capability : registry.list()) {
         const std::string path = zetta::api::rest_path(*capability);
         ASSERT_TRUE(paths.contains(path)) << path;
@@ -256,6 +289,64 @@ TEST(OpenApi, DocumentMatchesTheRegistry) {
                   .at("application/json").at("schema").at("properties")
                   .at("value"),
               zetta::api::search_response_schema());
+}
+
+TEST(OpenApi, RunMetricCapabilitiesHaveRestSchemaParity) {
+    const Registry registry = core_registry();
+    const nlohmann::json document = zetta::api::openapi_document(registry);
+    for (const char* name : {"log_run_metrics", "log_run_params",
+                             "log_run_artifact", "get_run_metrics",
+                             "compare_runs"}) {
+        const auto capability = registry.find(name);
+        ASSERT_TRUE(capability) << name;
+        const std::string method =
+            capability->kind == CapabilityKind::Read ? "get" : "post";
+        const nlohmann::json& operation =
+            document["paths"]["/v1/" + std::string(name)][method];
+        EXPECT_EQ(operation["responses"]["200"]["content"]
+                           ["application/json"]["schema"]["properties"]
+                           ["value"],
+                  capability->output_schema)
+            << name;
+        if (method == "post") {
+            nlohmann::json actual = operation["requestBody"]["content"]
+                                             ["application/json"]["schema"]
+                                             ["properties"];
+            actual.erase("intent");
+            EXPECT_EQ(actual, capability->input_schema["properties"])
+                << name;
+        }
+    }
+}
+
+TEST(OpenApi, StudyCapabilitiesHaveRestSchemaParity) {
+    const Registry registry = core_registry();
+    const nlohmann::json document = zetta::api::openapi_document(registry);
+    for (const char* name : {"validate_study", "create_study", "get_study",
+                             "list_studies",
+                             "list_trials", "stop_study", "stop_trial",
+                             "promote_trial", "delete_study",
+                             "get_study_analysis"}) {
+        const auto capability = registry.find(name);
+        ASSERT_TRUE(capability) << name;
+        const std::string method =
+            capability->kind == CapabilityKind::Read ? "get" : "post";
+        const nlohmann::json& operation =
+            document["paths"]["/v1/" + std::string(name)][method];
+        EXPECT_EQ(operation["responses"]["200"]["content"]
+                           ["application/json"]["schema"]["properties"]
+                           ["value"],
+                  capability->output_schema)
+            << name;
+        if (method == "post") {
+            nlohmann::json actual = operation["requestBody"]["content"]
+                                             ["application/json"]["schema"]
+                                             ["properties"];
+            actual.erase("intent");
+            EXPECT_EQ(actual, capability->input_schema["properties"])
+                << name;
+        }
+    }
 }
 
 // The acceptance rule (#618): a registry entry added once appears in the REST

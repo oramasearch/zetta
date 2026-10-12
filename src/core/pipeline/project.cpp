@@ -24,7 +24,8 @@ namespace fs = std::filesystem;
 Project::Project(std::string id, std::string name, std::string created,
                  std::string updated, std::string owner, fs::path dir,
                  zetta::cluster::ReplicationManager* replication, zetta::governance::AuditSink* audit,
-                 std::string description)
+                 std::string description,
+                 PipelineRenameObserver pipeline_rename_observer)
     : id_(std::move(id)),
       name_(std::move(name)),
       created_(std::move(created)),
@@ -33,10 +34,16 @@ Project::Project(std::string id, std::string name, std::string created,
       description_(std::move(description)),
       dir_(std::move(dir)),
       replication_(replication),
-      audit_(audit) {}
+      audit_(audit),
+      pipeline_rename_observer_(std::move(pipeline_rename_observer)) {}
 
 void Project::set_description(std::string description) {
     description_ = std::move(description);
+    persist_meta();
+}
+
+void Project::set_internal(bool internal) {
+    internal_ = internal;
     persist_meta();
 }
 
@@ -52,11 +59,13 @@ void Project::set_metadata(std::string name, std::string created,
 }
 
 nlohmann::json Project::metadata() const {
-    return nlohmann::json{{"name", name_},
-                          {"created", created_},
-                          {"updated", updated_},
-                          {"owner", owner_},
-                          {"description", description_}};
+    nlohmann::json value{{"name", name_},
+                         {"created", created_},
+                         {"updated", updated_},
+                         {"owner", owner_},
+                         {"description", description_}};
+    if (internal_) value["internal"] = true;
+    return value;
 }
 
 void Project::persist_meta() const {
@@ -276,6 +285,7 @@ std::shared_ptr<ProjectGraph> Project::update_graph(const std::string& name,
                                                     std::string new_name) {
     auto stored = find_graph(name);
     if (!stored) return nullptr;  // no graph by that name to update
+    const std::string old_name = stored->name();
     std::string final_name =
         new_name.empty() ? stored->name() : std::move(new_name);
     if (final_name.empty()) return nullptr;  // a graph must keep a name
@@ -291,6 +301,10 @@ std::shared_ptr<ProjectGraph> Project::update_graph(const std::string& name,
     stored->set_contents(std::move(final_name), std::move(graph));
     if (replication_) {
         replication_->set(catalog::graph_key(stored->id()), stored->record());
+    }
+    if (pipeline_rename_observer_ && old_name != stored->name()) {
+        pipeline_rename_observer_(id_, stored->id(), old_name,
+                                  stored->name());
     }
     return stored;
 }
@@ -318,8 +332,11 @@ std::shared_ptr<ProjectGraph> Project::approve_graph(const std::string& name,
     return stored;
 }
 
-std::shared_ptr<ProjectGraph> Project::compile_intent_to_graph(
-    const std::string& input_id, std::string name) {
+std::shared_ptr<ProjectGraph>
+Project::compile_intent_to_graph(const std::string& input_id, std::string name,
+                                 const IntentCompileOptions& options,
+                                 std::string* error,
+                                 std::string* template_name) {
     // Resolve the stored intent input. It must exist, be an Intent (not an
     // artifact), and have its payload body present locally (a peer may hold the
     // metadata before body transfer — there is nothing to compile from then).
@@ -328,13 +345,22 @@ std::shared_ptr<ProjectGraph> Project::compile_intent_to_graph(
     const std::optional<std::string> text = input->read_payload();
     if (!text) return nullptr;  // body not present locally
 
-    // Compile through the same templated front door the API exposes. An empty
-    // intent yields no graph (compile_intent rejects it), so we hand back nothing.
-    const std::optional<CompiledIntent> compiled = compile_intent(*text);
+    IntentCompileOptions resolved_options = options;
+    resolved_options.project = name_;
+    const std::optional<CompiledIntent> compiled =
+        compile_intent(*text, resolved_options, error);
     if (!compiled) return nullptr;
 
     if (name.empty()) {
-        name = std::string(to_string(compiled->shape)) + " skeleton";
+        // The intent's own words (#1238). The same intent compiled again in
+        // this project gets a numbered name rather than a collision.
+        name = compiled->name;
+        for (int copy = 2; find_graph(name); ++copy) {
+            name = compiled->name + " (" + std::to_string(copy) + ")";
+        }
+    }
+    if (template_name != nullptr) {
+        *template_name = compiled->template_name;
     }
     // create_graph rejects an empty/colliding name and captures the new graph
     // into the CRDT, so the compiled skeleton replicates + is editable in the
@@ -401,4 +427,4 @@ std::vector<std::string> Project::graph_names() const {
     return names;
 }
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

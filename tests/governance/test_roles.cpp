@@ -78,6 +78,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
               (std::vector<Operation>{{CapabilityDomain::Api, "manage_tokens"}}));
     EXPECT_EQ(permission_operations("cluster:admin"),
               (std::vector<Operation>{{CapabilityDomain::Api, "cluster_admin"}}));
+    EXPECT_EQ(permission_operations("audit:purge"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration,
+                                       "purge_audit"}}));
 
     // Orchestration atoms (#799): the pipeline authoring/deploy/run + serving +
     // cloud control surface, so the admin/owner can drive it under always-on auth.
@@ -102,14 +105,84 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // authoring trio create/update/delete_agent, #849; approve_plan, #885;
     // create/update_workspace_profile, #886; create/update_plan, Conflict D;
     // agent_training_status + set_training_schedule, #941;
-    // list_source_tables, #994).
-    EXPECT_EQ(permission_operations("pipelines:manage").size(), 30u);
+    // list_source_tables, #994; delete_project, #1009;
+    // create_solution + run_solution, #1102; snapshot, #1103; policy operations, #1104;
+    // experiment creation and assignment, #1105; publish/enqueue/deliver/closed-loop, #1109;
+    // delete_dataset/model/run/index, lake#645; train/retrain/register_model and
+    // move_model_to_project, lake#654).
+    const std::vector<Operation> pipeline_operations =
+        permission_operations("pipelines:manage");
+    EXPECT_EQ(pipeline_operations.size(), 65u);  // +4 workspace methodology actions (zetta#1261), +append_methodology_artifact (lake#690)
+    EXPECT_TRUE(std::ranges::contains(
+        pipeline_operations,
+        Operation{CapabilityDomain::Orchestration, "create_solution"}));
+    EXPECT_TRUE(std::ranges::contains(
+        pipeline_operations,
+        Operation{CapabilityDomain::Orchestration, "run_solution"}));
+    EXPECT_TRUE(zetta::governance::capabilities_for_permissions(
+                    {"pipelines:manage"})
+                    .permits({CapabilityDomain::Orchestration, "snapshot"},
+                             "2026-09-28T00:00:00.000Z"));
+    EXPECT_FALSE(zetta::governance::capabilities_for_permissions(
+                     {"pipelines:manage"})
+                     .permits({CapabilityDomain::Orchestration,
+                               "promote_trial"},
+                              "2026-09-28T00:00:00.000Z"));
+    EXPECT_EQ(permission_operations("studies:promote"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration,
+                                       "promote_trial"}}));
+    EXPECT_EQ(permission_operations("studies:delete"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration,
+                                       "delete_study"}}));
+    EXPECT_FALSE(zetta::governance::capabilities_for_permissions(
+                     {"pipelines:manage"})
+                     .permits({CapabilityDomain::Orchestration,
+                               "delete_study"},
+                              "2026-09-29T00:00:00.000Z"));
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 
-    // The canonical list carries the #746 atoms, blob:read (#747), and the three
-    // Orchestration atoms (#799).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 13u);
+    // Pub/sub (#1029): publish, subscribe and send_wildcard are data rights,
+    // create and manage orchestration.
+    EXPECT_EQ(permission_operations("pubsub:publish"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "pubsub_publish"}}));
+    EXPECT_EQ(permission_operations("pubsub:subscribe"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "pubsub_subscribe"}}));
+    EXPECT_EQ(permission_operations("pubsub:send_wildcard"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "pubsub_send_wildcard"}}));
+    EXPECT_EQ(permission_operations("pubsub:create"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration, "pubsub_create"}}));
+    EXPECT_EQ(permission_operations("pubsub:manage"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration, "pubsub_manage"}}));
+
+    // The record store and time series (#1231): records:* are object-scopable
+    // by collection prefix; metrics:write also declares metrics.
+    EXPECT_EQ(permission_operations("records:read"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "records_read"}}));
+    EXPECT_EQ(permission_operations("records:write"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "records_write"}}));
+    EXPECT_EQ(permission_operations("records:manage"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration, "create_collection"}}));
+    EXPECT_EQ(permission_operations("metrics:read"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "metrics_read"}}));
+    EXPECT_EQ(permission_operations("metrics:write"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "metrics_write"},
+                                      {CapabilityDomain::Orchestration, "create_metric"}}));
+
+    // The object capability (#1005): objects:* are object-scopable by bucket
+    // prefix; objects:write covers the owner lease.
+    EXPECT_EQ(permission_operations("objects:read"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "objects_read"}}));
+    EXPECT_EQ(permission_operations("objects:write"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "objects_write"}}));
+    EXPECT_EQ(permission_operations("objects:manage"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration, "objects_manage"}}));
+
+    // The canonical list carries the #746 atoms, blob:read (#747), six
+    // orchestration atoms, eight pub/sub atoms (#1029/#1136), study promotion
+    // (#1138), study deletion (#1158), five record-store and time-series atoms
+    // (#1231), and three object atoms (#1005).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 32u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {
