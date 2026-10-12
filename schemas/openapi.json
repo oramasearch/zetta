@@ -35214,9 +35214,23 @@
     },
     "/v1/storage_usage": {
       "get": {
-        "description": "Report the bytes this node holds on its disk, by kind: datasets, files, models, indexes, runs, buckets (and each bucket), streams, records, catalogue and system. Walks the data directory; no side effects. Requires api:query.",
+        "description": "Report the bytes this node holds on its disk, by kind: datasets, files, models, indexes, runs, buckets (and each bucket), streams, records, catalogue and system. Walks the data directory; no side effects. With scope cluster, every member's census from the telemetry exchange, summed (physical bytes), and the members without a fresh one named in missing. Requires api:query.",
         "operationId": "storage_usage",
         "parameters": [
+          {
+            "description": "node (the default): the disk of the node that answers; cluster: every member's census from the telemetry exchange, summed",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "description": "node (the default): the disk of the node that answers; cluster: every member's census from the telemetry exchange, summed",
+              "enum": [
+                "node",
+                "cluster"
+              ],
+              "type": "string"
+            }
+          },
           {
             "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
             "in": "query",
@@ -35268,6 +35282,13 @@
                             "type": "object"
                           },
                           "type": "array"
+                        },
+                        "bytes": {
+                          "description": "a replicated dataset or bucket counts once on every member that holds a copy",
+                          "enum": [
+                            "physical"
+                          ],
+                          "type": "string"
                         },
                         "kinds": {
                           "additionalProperties": false,
@@ -35327,13 +35348,159 @@
                           ],
                           "type": "object"
                         },
+                        "missing": {
+                          "description": "members not in the total, never counted as zero",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "node_id": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "enum": [
+                                  "not_reporting",
+                                  "not_measured",
+                                  "stale"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "node_id",
+                              "reason"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "node_id": {
+                          "description": "the node that answered",
                           "type": "string"
                         },
+                        "nodes": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "age_seconds": {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "buckets": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "bucket": {
+                                      "type": "string"
+                                    },
+                                    "bytes": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "bucket",
+                                    "bytes"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "buckets_omitted": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "kinds": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "buckets": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "catalogue": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "datasets": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "files": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "indexes": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "models": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "records": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "runs": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "streams": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "system": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  }
+                                },
+                                "required": [
+                                  "datasets",
+                                  "files",
+                                  "models",
+                                  "indexes",
+                                  "runs",
+                                  "buckets",
+                                  "streams",
+                                  "records",
+                                  "catalogue",
+                                  "system"
+                                ],
+                                "type": "object"
+                              },
+                              "local": {
+                                "type": "boolean"
+                              },
+                              "measured_at": {
+                                "description": "by the member's clock",
+                                "type": "string"
+                              },
+                              "node_id": {
+                                "type": "string"
+                              },
+                              "total_bytes": {
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "node_id",
+                              "local",
+                              "measured_at",
+                              "age_seconds",
+                              "total_bytes",
+                              "kinds",
+                              "buckets",
+                              "buckets_omitted"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "scope": {
-                          "description": "the disk of the node that answered",
+                          "description": "node: the disk of the node that answered; cluster: every member in `nodes`, summed",
                           "enum": [
-                            "node"
+                            "node",
+                            "cluster"
                           ],
                           "type": "string"
                         },

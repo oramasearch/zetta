@@ -833,6 +833,44 @@ zetta::runtime::task<> run_object_upkeep(zetta::data::ObjectStore* store, bool a
 
 }  // namespace
 
+struct Node::StorageCensusRound {
+    zetta::runtime::async_event done;
+    std::atomic<bool> finished{false};
+    zetta::data::StorageCensus census;  // written by the pool before `finished`
+    std::string measured_at;
+    std::chrono::steady_clock::time_point taken{};
+};
+
+namespace {
+
+// One storage census, off the owner loop: it walks the data directory (zetta#1259).
+// The round that owns the outputs stays alive until this finishes: the completion holds it.
+zetta::runtime::task<> run_storage_census(zetta::data::StorageCensus* census,
+                                          std::string* measured_at,
+                                          std::chrono::steady_clock::time_point* taken,
+                                          std::filesystem::path data_dir) {
+    [[maybe_unused]] const bool measured =
+        co_await zetta::runtime::offload([census, measured_at, taken, data_dir] {
+            *census = zetta::data::measure_storage(data_dir);
+            *measured_at = zetta::util::now_iso8601();
+            *taken = std::chrono::steady_clock::now();
+            return true;
+        });
+}
+
+}  // namespace
+
+std::vector<std::string> Node::cluster_member_ids() const {
+    std::vector<std::string> ids;
+    if (cluster_) {
+        for (const zetta::cluster::ClusterMember& member : cluster_->membership()) {
+            ids.push_back(member.node_id);
+        }
+    }
+    if (std::ranges::find(ids, node_id()) == ids.end()) ids.push_back(node_id());
+    return ids;
+}
+
 void Node::tick() {
     // 0. The owner-thread gate (#624): the loop that ticks IS the owner —
     //    adopt this thread, then execute any node-tree work queued by
@@ -924,10 +962,40 @@ void Node::tick() {
         using namespace std::chrono;
         constexpr duration<double> kTelemetryInterval{1.0};
         const steady_clock::time_point now = steady_clock::now();
+        // The storage census (zetta#1259): take a finished round, start the next when due.
+        if (storage_census_round_ &&
+            storage_census_round_->finished.load(std::memory_order_acquire)) {
+            storage_census_ = std::move(storage_census_round_->census);
+            storage_census_measured_at_ = std::move(storage_census_round_->measured_at);
+            storage_census_taken_ = storage_census_round_->taken;
+            storage_census_measured_ = true;
+            storage_census_round_.reset();
+        }
+        if (!storage_census_round_ &&
+            (last_storage_census_.time_since_epoch().count() == 0 ||
+             now - last_storage_census_ >= kStorageCensusInterval)) {
+            last_storage_census_ = now;
+            storage_census_round_ = std::make_shared<StorageCensusRound>();
+            zetta::runtime::spawn(run_storage_census(&storage_census_round_->census,
+                                                     &storage_census_round_->measured_at,
+                                                     &storage_census_round_->taken,
+                                                     config_.data_dir),
+                                  [round = storage_census_round_] {
+                                      round->finished.store(true, std::memory_order_release);
+                                      round->done.set();
+                                  });
+        }
         if (last_telemetry_sample_.time_since_epoch().count() == 0 ||
             now - last_telemetry_sample_ >= kTelemetryInterval) {
             last_telemetry_sample_ = now;
-            const zetta::cluster::NodeMetrics metrics = sample_node_metrics();
+            zetta::cluster::NodeMetrics metrics = sample_node_metrics();
+            if (storage_census_measured_) {
+                metrics.storage_census_available = true;
+                metrics.storage_census = storage_census_;
+                metrics.storage_census_measured_at = storage_census_measured_at_;
+                metrics.storage_census_age_seconds =
+                    std::max(0.0, duration<double>(now - storage_census_taken_).count());
+            }
             telemetry_->record_local(node_id(), metrics);
             cluster_->broadcast_event(
                 std::string(zetta::cluster::NodeTelemetryExchange::kMethod),
@@ -1082,6 +1150,14 @@ void Node::stop() {
                 [[maybe_unused]] auto finished = co_await round->done.wait();
             }(record_anti_entropy_));
         record_anti_entropy_.reset();
+    }
+    // The storage census round walks the data directory (zetta#1259).
+    if (storage_census_round_) {
+        zetta::runtime::block_on(
+            [](std::shared_ptr<StorageCensusRound> round) -> zetta::runtime::task<> {
+                [[maybe_unused]] auto finished = co_await round->done.wait();
+            }(storage_census_round_));
+        storage_census_round_.reset();
     }
     // The object store's upkeep round likewise (#1005).
     if (object_upkeep_) {
