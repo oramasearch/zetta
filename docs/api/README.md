@@ -149,7 +149,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `query_metric` | read | data:metrics_read (`metrics:read`) | sum a counter or aggregate a gauge over a range, filtered, grouped and stepped; also POST ([time-series.md](../data/time-series.md)) |
 | `list_objects` | read | data:objects_read (`objects:read`, scopable `ON BUCKET`) | a bucket's keys and sizes by key, paged; also POST and `GET /v1/objects/<bucket>` ([object-store.md](../data/object-store.md)) |
 | `object_usage` | read | data:objects_read | a bucket's objects, bytes and quota; also `GET /v1/objects/<bucket>:usage` |
-| `storage_usage` | read | api:query | the bytes this node holds on its disk, by kind (datasets, files, models, indexes, runs, buckets and each bucket, streams, records, catalogue, system); walks the data directory on the blocking pool ([storage-census.md](../data/storage-census.md)) |
+| `storage_usage` | read | api:query | the bytes this node holds on its disk, by kind (datasets, files, models, indexes, runs, buckets and each bucket, streams, records, catalogue, system); walks the data directory on the blocking pool; `scope: "cluster"` sums every member's census from the telemetry exchange and names the members missing ([storage-census.md](../data/storage-census.md)) |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |

@@ -35,6 +35,11 @@ stays the single-host read view) nor the CRDT — telemetry is a measurement, no
 durable agreement, so it rides the ephemeral signal plane and goes stale in
 seconds.
 
+Each event also carries the node's **storage census** (its disk by kind, measured on the blocking
+pool every 60 s; [storage census](../data/storage-census.md#the-whole-cluster-scope-cluster),
+zetta#1259) as `storage_census`, which `storage_usage` with `scope: "cluster"` folds into one
+answer for the whole cluster. It is not a `system.node_metrics` column.
+
 The freshness window (`snapshot(ttl)`, 8 s by default) is **half-open**: an entry is
 returned while its age is `< ttl` and dropped once it reaches `>= ttl`. The boundary
 is only observable at `ttl == 0`, which means *keep nothing* — the reading that makes
