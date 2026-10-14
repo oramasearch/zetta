@@ -808,6 +808,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   solutions/test_experiment.cpp deterministic balance and restart stability, protected actions, attributed exemptions, malformed boundaries, and concurrent peer convergence (#1105)
   temp_dir.hpp              per-test isolated data_dir helper
   cluster/test_refused_start_exit.cpp  process test: an occupied --listen port exits 1 without an abort (#1078)
+  cluster/test_peer_gateway.cpp  two dial-out-only Zetta nodes with overlapping private endpoints replicate through two opaque TCP gateway fixtures while retaining end-to-end mutual TLS (#1282)
   api/journey.hpp           the shared MCP-journey driver (#619): Journey/JourneyStep{tool, input, expect} DATA tables + saved-value flow + patient Poll, run by one transport-agnostic driver (layer 1 in-process / layer 2 JSON-RPC); failures name the offending step + assertion
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
   api/test_study_driver.cpp  server-level real Study journeys: dataset and Pipeline trials, published-space round trips, validation/create agreement, restart recovery, stop propagation, budgets, curves, analysis and actual-model promotion (#1205/#1207)
