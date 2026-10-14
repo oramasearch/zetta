@@ -271,6 +271,7 @@ add_executable(zetta-tests
   cluster/test_listen_port.cpp
   cluster/test_cluster_routing.cpp
   cluster/test_cluster_security.cpp
+  cluster/test_peer_gateway.cpp
   cluster/test_signal.cpp
   cluster/test_collectives.cpp
   cluster/test_replication.cpp

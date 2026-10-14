@@ -8,3 +8,7 @@ The incremental-reconcile load case migrates 100,000 legacy audit records, then
 checks ordinary catalog ticks while new audit records append outside the catalog.
 `ReKeyingRetiresTheEarlierToken` covers the bounded retired-token list a
 `--join-token` re-key keeps for the connector-credential key (#1230).
+`PeerGateway.OverlappingPrivateNodesReplicateThroughOpaqueGateways` models the
+two zetta-tunnel gateway hops with byte-forwarding fixtures and proves that
+dial-out-only nodes with overlapping private addresses retain end-to-end mutual
+TLS and bidirectional CRDT convergence (#1282).

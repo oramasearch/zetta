@@ -88,7 +88,9 @@ What's inside, by domain (each links to that domain's docs):
   revocable, table/topic-scoped credential per app connection (#1280), plus
   retained, schema-validated connection/grant history, tunnel sessions, and
   zetta-tunnel gateway/mesh decisions. Governed REST/MCP calls stay in that
-  workspace's Zetta (#1281).
+  workspace's Zetta (#1281). Zetta nodes with overlapping private address
+  ranges link through named peer-gateway imports while keeping node-to-node
+  mutual TLS end to end (#1282).
 - **[Distributed compute](docs/compute/README.md)** — the `ComputeDevice`
   accelerator interface (CPU always; CUDA opt-in), a **work-stealing scheduler**
   (local + cross-node, elastic mid-job), the **job coordinator** (SPMD job
