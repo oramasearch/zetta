@@ -150,16 +150,19 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
 
 ## How it works
 
-- Networking is **Corosio** (coroutine-native TCP), confined to the adapter
-  `src/core/cluster/cluster.cpp` behind the `zetta::runtime::net` seam — `Cluster`'s
-  public API (`include/zetta/cluster/cluster.hpp`) exposes no backend types.
+- Networking is **Corosio** (coroutine-native TCP). The reusable
+  [`zetta::transport`](transport-library.md) target owns TLS 1.3 credential
+  validation and newline framing; `src/core/cluster/cluster.cpp` owns the
+  cluster listener, dialer, and protocol through `zetta::runtime::net`.
+  `Cluster`'s public API exposes no backend types.
 - **Every connection runs mutual TLS 1.3 first** (Corosio's OpenSSL provider)
   whenever `ClusterConfig::security` is set — the handshake precedes any
   `ZETTA/1` line, so an unenrolled peer never reaches `HELLO`. The zetta binary
   **always** sets it (inter-node mTLS is non-optional; the old
   `--cluster-plaintext` opt-out was removed in #799). The only unsecured path is
   an embedded bare `Cluster` with empty `ClusterSecurity` (tests/hosts). See
-  [security.md](security.md).
+  [security.md](security.md). The shared `FramedStream` preserves the existing
+  newline wire bytes and 64 MiB frame bound (#1283).
 - `Cluster` binds the first free port in `[listen_port, listen_port + port_range)`
   synchronously at `start()`, then runs an `io_context` on a background thread:
   an accept loop plus one dial coroutine per `--peer`. `port_range` defaults to

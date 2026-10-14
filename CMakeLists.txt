@@ -111,6 +111,45 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   )
 endif()
 
+# Build only the reusable transport when Zetta is consumed as a dependency.
+# The mode avoids configuring the product, GUI, database, tests, and unrelated
+# vendored modules. See docs/cluster/transport-library.md.
+option(ZETTA_TRANSPORT_ONLY
+  "Configure only the reusable Corosio mutual-TLS transport" OFF)
+
+# Capy + Corosio are pinned submodules. The OpenSSL provider supplies the TLS
+# stream while zetta_transport validates PEM credentials through libcrypto.
+set(BOOST_CAPY_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(BOOST_CAPY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BOOST_CAPY_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/capy EXCLUDE_FROM_ALL)
+
+if(APPLE)
+  list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/openssl@3)
+endif()
+find_package(OpenSSL REQUIRED)
+set(BOOST_COROSIO_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(BOOST_COROSIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BOOST_COROSIO_BUILD_PERF     OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/corosio EXCLUDE_FROM_ALL)
+
+add_library(zetta_transport
+  src/transport/security.cpp
+  src/transport/framed_stream.cpp)
+add_library(zetta::transport ALIAS zetta_transport)
+target_compile_features(zetta_transport PUBLIC cxx_std_26)
+target_include_directories(zetta_transport PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(zetta_transport
+  PUBLIC Boost::capy Boost::corosio Boost::corosio_openssl
+  PRIVATE OpenSSL::Crypto)
+
+if(ZETTA_TRANSPORT_ONLY)
+  return()
+endif()
+
+find_package(ZLIB REQUIRED)
+
 # -----------------------------------------------------------------------------
 # Fetched dependencies (FetchContent — no brew install ritual needed)
 # -----------------------------------------------------------------------------
@@ -191,30 +230,8 @@ endif()
 # -----------------------------------------------------------------------------
 # Vendored modules (git submodules under modules/)
 # -----------------------------------------------------------------------------
-# zetta is a "bridge"-style repo: third-party dependencies we want pinned and
-# locally readable (vs FetchContent) live as git submodules in modules/. Capy
-# is the C++ Alliance coroutine foundation; Corosio (networking, also vendored)
-# is wired in when zetta grows a server. Both need Clang 17+ (see the
-# pre-project() toolchain block above).
-set(BOOST_CAPY_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-set(BOOST_CAPY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BOOST_CAPY_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
-add_subdirectory(modules/capy EXCLUDE_FROM_ALL)
-
-# Corosio — coroutine-native networking (needs Capy above). Its OpenSSL TLS
-# provider backs the cluster's inter-node mutual TLS (CTL-2, #466), so OpenSSL
-# is REQUIRED (scripts/install-deps.sh installs it; keg-only on Homebrew).
-# Found here at the top level so both Corosio's provider and zetta-core's
-# certificate minting (src/core/cluster/security.cpp) see the same targets.
-if(APPLE)
-  list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/openssl@3)
-endif()
-find_package(OpenSSL REQUIRED)
-find_package(ZLIB REQUIRED)
-set(BOOST_COROSIO_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-set(BOOST_COROSIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BOOST_COROSIO_BUILD_PERF     OFF CACHE BOOL "" FORCE)
-add_subdirectory(modules/corosio EXCLUDE_FROM_ALL)
+# Capy, Corosio, OpenSSL, and zetta_transport were configured above so the same
+# targets serve both the transport-only consumer mode and the full product.
 
 # --- The API surface's HTTP stack (docs/api/registry-design.md, #615) --------
 # beast2 (coroutine-native HTTP/1 server) + http (sans-I/O HTTP + router) ride
@@ -912,14 +929,14 @@ target_include_directories(zetta-core PUBLIC
 # ZETTA_WITH_CUDA define, while CUDA headers stay confined to that library.
 target_link_libraries(zetta-core PUBLIC
   nlohmann_json::nlohmann_json Boost::capy zetta-compute)
-# Corosio (networking) + its OpenSSL TLS provider (inter-node mTLS, CTL-2),
-# OpenSSL libcrypto (certificate minting in src/core/cluster/security.cpp),
+# The reusable transport owns Corosio framing + its OpenSSL TLS provider.
+# OpenSSL libcrypto remains here for certificate minting in
+# src/core/cluster/security.cpp,
 # automerge-cpp (the replication CRDT), and the JSON-Schema validator (boundary
 # validation in src/core/pipeline/run.cpp) are used only by zetta-core's
 # adapters — PRIVATE so they stay out of zetta-core's public surface and the GUI.
 target_link_libraries(zetta-core PRIVATE
-  Boost::corosio
-  Boost::corosio_openssl
+  zetta_transport
   OpenSSL::Crypto
   ZLIB::ZLIB
   automerge-cpp::automerge-cpp
