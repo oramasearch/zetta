@@ -524,6 +524,7 @@ add_library(zetta-core STATIC
   src/core/api/pubsub_capabilities.cpp
   src/core/api/run_metrics_capabilities.cpp
   src/core/api/record_capabilities.cpp
+  src/core/api/network_capabilities.cpp
   src/core/api/object_capabilities.cpp
   src/core/api/storage_capabilities.cpp
   src/core/api/study_capabilities.cpp
@@ -695,6 +696,7 @@ add_library(zetta-core STATIC
   src/core/data/import.cpp
   src/core/data/virtual_table.cpp
   src/core/data/record_store.cpp
+  src/core/network/records.cpp
   src/core/data/record_log.cpp
   src/core/data/metric_store.cpp
   src/core/data/object_store.cpp

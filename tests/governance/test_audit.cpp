@@ -29,6 +29,7 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
+#include "zetta/network/records.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/service.hpp"
@@ -688,16 +689,20 @@ TEST(AuditTrail, CatalogMigrationDiscardsOneHundredThousandAuditHistories) {
     ASSERT_TRUE(node.start());
     EXPECT_EQ(node.audit_event_count(), 100'000u);
     EXPECT_EQ(node.audit_watermarks().at("legacy").at("high"), 100'000u);
-    EXPECT_EQ(replication.entry_count(), 1u);
+    const std::size_t startup_definition_count =
+        zetta::network::network_record_collections().size();
+    EXPECT_EQ(replication.entry_count(), 1u + startup_definition_count);
     const auto migrated_usage = replication.memory_usage();
     ReplicationManager fresh_measurement(zetta::util::new_uuid());
     ASSERT_TRUE(fresh_measurement.restore(replication.save()));
     const auto fresh_usage = fresh_measurement.memory_usage();
-    EXPECT_EQ(migrated_usage.bytes, fresh_usage.bytes);
+    EXPECT_EQ(migrated_usage.bytes,
+              fresh_usage.bytes + migrated_usage.pending_change_bytes);
     EXPECT_EQ(migrated_usage.items, fresh_usage.items);
-    EXPECT_EQ(migrated_usage.pending_change_bytes,
-              fresh_usage.pending_change_bytes);
-    EXPECT_EQ(migrated_usage.pending_changes, fresh_usage.pending_changes);
+    EXPECT_GT(migrated_usage.pending_change_bytes, 0u);
+    EXPECT_EQ(migrated_usage.pending_changes, startup_definition_count);
+    EXPECT_EQ(fresh_usage.pending_change_bytes, 0u);
+    EXPECT_EQ(fresh_usage.pending_changes, 0u);
     EXPECT_EQ(migrated_usage.audit_bytes, fresh_usage.audit_bytes);
     EXPECT_EQ(migrated_usage.audit_items, fresh_usage.audit_items);
     EXPECT_LT(migrated_usage.bytes, 1024u * 1024u);
@@ -727,7 +732,7 @@ TEST(AuditTrail, CatalogMigrationDiscardsOneHundredThousandAuditHistories) {
     Node reloaded{config_for(temporary), &reloaded_replication};
     ASSERT_TRUE(reloaded.start());
     EXPECT_EQ(reloaded.audit_event_count(), 100'000u);
-    EXPECT_EQ(reloaded_replication.entry_count(), 1u);
+    EXPECT_EQ(reloaded_replication.entry_count(), 1u + startup_definition_count);
     reloaded_replication.set("fixture:after-restart", {{"value", 18}});
     ReplicationManager peer(zetta::util::new_uuid());
     peer.merge(reloaded_replication.save());

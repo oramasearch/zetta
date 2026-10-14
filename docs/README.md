@@ -51,6 +51,7 @@ independent schedule, and supports an admin-only recorded purge, with
 | [cloud/](cloud/README.md) | The `Provisioner` interface, the seven provisioner backends (local / Azure / AWS / GCP / OCI / k8s / bare-metal), the CLI control-plane pattern, burst identity, cost-cap approval, the cloud inspector. |
 | [governance/](governance/README.md) | Key-scoped access control, the audit trail, the governed console. |
 | [workspace/](workspace/README.md) | The Workspace Profile — the environment/role/daily-work + approved-source-refs entity behind the "Discover Opportunities" pathway (#886). |
+| [network/](network/README.md) | Retained workspace network records: connection/grant history, tunnel sessions, and zetta-tunnel gateway/mesh activity (#1281). |
 | [billing/](billing/README.md) | Metered usage + plan: the live `system.usage` snapshot (metered from engine state) and the Plan quota/tier entity it is measured against (Conflict D). No payment processor — on-prem. |
 | [ops/](ops/README.md) | Operator diagnostics and tuning: per-subsystem memory ownership, allocator truth, RSS, periodic reporting, and allocator guidance. |
 | [solutions/](solutions/README.md) | Shared solution components: deterministic experimental assignment, protected holdouts, treatment/exploration cells, exemptions, and uplift-training records. |

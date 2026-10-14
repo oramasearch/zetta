@@ -1,0 +1,415 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "A workspace network record (#1281): Lake connection/grant history or a zetta-tunnel relay session/gateway decision.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "connection_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "credential_scope": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "event": {
+          "enum": [
+            "connection_declared",
+            "connection_updated",
+            "connection_removed"
+          ]
+        },
+        "ports": {
+          "items": {
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema": {
+          "const": 1
+        },
+        "source_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "source_kind": {
+          "enum": [
+            "app",
+            "service",
+            "agent",
+            "tunnel"
+          ]
+        },
+        "target_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "target_kind": {
+          "enum": [
+            "service",
+            "app"
+          ]
+        },
+        "timestamp": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "workspace": {
+          "maxLength": 253,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "event",
+        "timestamp",
+        "workspace",
+        "connection_id",
+        "actor_id",
+        "source_kind",
+        "source_id",
+        "target_kind",
+        "target_id",
+        "ports"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "event": {
+          "enum": [
+            "grant_created",
+            "grant_revoked",
+            "grant_expired"
+          ]
+        },
+        "expires_at": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "grant_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "revoked_at": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema": {
+          "const": 1
+        },
+        "target_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "target_kind": {
+          "enum": [
+            "service",
+            "app"
+          ]
+        },
+        "timestamp": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "user_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "workspace": {
+          "maxLength": 253,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "event",
+        "timestamp",
+        "workspace",
+        "grant_id",
+        "actor_id",
+        "user_id",
+        "target_kind",
+        "target_id",
+        "port",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "bytes_down": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_up": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "endpoint": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "event": {
+          "enum": [
+            "session_start",
+            "session_end",
+            "refusal"
+          ]
+        },
+        "grant_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "peer": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 128,
+          "type": "string"
+        },
+        "role": {
+          "const": "relay"
+        },
+        "schema": {
+          "const": 1
+        },
+        "session_id": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "started_at": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "timestamp": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "workspace": {
+          "maxLength": 253,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "event",
+        "role",
+        "session_id",
+        "timestamp",
+        "started_at",
+        "grant_id",
+        "workspace",
+        "peer",
+        "endpoint",
+        "reason",
+        "bytes_up",
+        "bytes_down"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "enum": [
+            "allow",
+            "deny"
+          ]
+        },
+        "dns_name": {
+          "maxLength": 253,
+          "minLength": 1,
+          "type": "string"
+        },
+        "event": {
+          "const": "egress_decision"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "protocol": {
+          "enum": [
+            "https_sni",
+            "explicit"
+          ]
+        },
+        "reason": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "resolved_address": {
+          "maxLength": 512,
+          "type": "string"
+        },
+        "role": {
+          "const": "egress"
+        },
+        "rule_id": {
+          "pattern": "^$|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "schema": {
+          "const": 1
+        },
+        "source": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "started_at": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "timestamp": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "workspace": {
+          "maxLength": 253,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "event",
+        "role",
+        "timestamp",
+        "started_at",
+        "decision",
+        "reason",
+        "rule_id",
+        "workspace",
+        "source",
+        "dns_name",
+        "port",
+        "protocol",
+        "resolved_address"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "bytes_down": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_up": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "deny"
+          ]
+        },
+        "destination": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "event": {
+          "enum": [
+            "peer_decision",
+            "ingress_decision",
+            "mesh_decision"
+          ]
+        },
+        "protocol": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "peer_gateway",
+            "ingress_gateway",
+            "mesh"
+          ]
+        },
+        "schema": {
+          "const": 1
+        },
+        "source": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "started_at": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "timestamp": {
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+          "type": "string"
+        },
+        "workspace": {
+          "maxLength": 253,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "event",
+        "role",
+        "timestamp",
+        "started_at",
+        "decision",
+        "reason",
+        "workspace",
+        "source",
+        "destination",
+        "protocol",
+        "bytes_up",
+        "bytes_down"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "zetta.NetworkRecord"
+}

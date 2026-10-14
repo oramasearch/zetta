@@ -23,6 +23,7 @@
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/ml/next_best_action_methodology.hpp"
+#include "zetta/network/records.hpp"
 #ifdef ZETTA_WITH_ORAMACORE
 #include "zetta/index/oramacore_fulltext_index.hpp"
 #endif
@@ -665,6 +666,15 @@ bool Node::start() {
         if (!record_store_->open(&record_log_error)) {
             std::fprintf(stderr, "zetta: cannot open the record log: %s\n",
                          record_log_error.c_str());
+            running_ = false;
+            return false;
+        }
+        std::string network_record_error;
+        if (!zetta::network::initialize_network_record_collections(
+                *record_store_, &network_record_error)) {
+            std::fprintf(stderr,
+                         "zetta: cannot initialize network record collections: %s\n",
+                         network_record_error.c_str());
             running_ = false;
             return false;
         }
