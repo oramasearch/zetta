@@ -19,23 +19,21 @@
 // member impersonation needs the CSR-enrollment upgrade.
 
 #include <cstddef>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include <nlohmann/json.hpp>
+#include "zetta/transport/credentials.hpp"
 
 namespace zetta::cluster {
 
 // Everything the cluster transport needs to run mutual TLS: the token (so the
 // join command can hand it to the next node), the trust anchor, and this
 // node's own identity. All-empty (a default ClusterSecurity) means plaintext.
-struct ClusterSecurity {
-    std::string join_token;          // 64 lowercase hex chars — the cluster secret
-    std::string ca_certificate_pem;  // the derived cluster CA (trust anchor)
-    std::string certificate_pem;     // this node's identity cert (CN = node id)
-    std::string private_key_pem;     // this node's private key (keep on disk 0600)
+struct ClusterSecurity : zetta::transport::TlsCredentials {
+    std::string join_token;  // 64 lowercase hex chars — the cluster secret
     // Earlier join tokens this node ran under, newest first (at most
     // kMaxRetiredJoinTokens). Kept so secrets derived from a token — the
     // connector-credential sealing key (#1230) — can still open what was sealed
@@ -43,8 +41,7 @@ struct ClusterSecurity {
     std::vector<std::string> retired_join_tokens;
 
     bool enabled() const {
-        return !join_token.empty() && !ca_certificate_pem.empty() &&
-               !certificate_pem.empty() && !private_key_pem.empty();
+        return !join_token.empty() && complete();
     }
 };
 
@@ -62,9 +59,9 @@ bool valid_join_token(std::string_view token);
 // deterministic cluster CA (same token -> same CA on every node) plus a fresh
 // per-node keypair + CA-signed certificate (CN = node_id). Empty optional with
 // a reason on a malformed token or an OpenSSL failure. Pure — no file access.
-std::optional<ClusterSecurity> derive_cluster_security(
-    const std::string& join_token, const std::string& node_id,
-    std::string* reason = nullptr);
+std::optional<ClusterSecurity> derive_cluster_security(const std::string& join_token,
+                                                       const std::string& node_id,
+                                                       std::string* reason = nullptr);
 
 // Load this node's security material from `<data_dir>/security/`, creating
 // whatever is missing: the secret file (schema-validated JSON holding the join

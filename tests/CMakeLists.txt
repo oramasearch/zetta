@@ -23,6 +23,7 @@ endif()
 
 add_executable(zetta-tests
   memory/test_accounting.cpp
+  transport/test_security.cpp
   api/test_registry.cpp
   api/test_agent_api.cpp
   api/test_workspace_methodology_api.cpp
@@ -355,7 +356,7 @@ target_link_libraries(zetta-audit-proof PRIVATE zetta-core)
 target_compile_features(zetta-audit-proof PRIVATE cxx_std_26)
 add_dependencies(zetta-tests zetta-audit-proof)
 target_link_libraries(zetta-tests
-  PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
+  PRIVATE zetta-api PRIVATE zetta-core zetta_transport GTest::gtest_main
   # The boundary validator, so schema-as-code tests can assert every
   # registered input/output schema actually loads (test_openapi.cpp).
   PRIVATE nlohmann_json_schema_validator
