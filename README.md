@@ -84,10 +84,11 @@ What's inside, by domain (each links to that domain's docs):
   the source of truth, disk is its projection); an ephemeral **signal plane**
   (RPC / events / tasks) carries **collectives** (allreduce / broadcast /
   barrier / gather) and cluster-wide telemetry.
-- **[Workspace network records](docs/network/README.md)** — retained,
-  schema-validated connection/grant history, tunnel sessions, and
-  zetta-tunnel gateway/mesh decisions. Tunnel writes and Lake reads use one
-  governed REST/MCP contract; records stay in that workspace's Zetta (#1281).
+- **[Workspace network access](docs/network/README.md)** — one hashed,
+  revocable, table/topic-scoped credential per app connection (#1280), plus
+  retained, schema-validated connection/grant history, tunnel sessions, and
+  zetta-tunnel gateway/mesh decisions. Governed REST/MCP calls stay in that
+  workspace's Zetta (#1281).
 - **[Distributed compute](docs/compute/README.md)** — the `ComputeDevice`
   accelerator interface (CPU always; CUDA opt-in), a **work-stealing scheduler**
   (local + cross-node, elastic mid-job), the **job coordinator** (SPMD job

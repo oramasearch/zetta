@@ -11,6 +11,7 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/query/service.hpp"
@@ -161,4 +162,116 @@ TEST_F(NetworkCapabilities, AnotherWorkspaceZettaHasNoRecordsFromThisOne) {
   ASSERT_TRUE(records.ok) << records.error.message;
   EXPECT_TRUE(records.value.at("records").empty());
   other_node.stop();
+}
+
+TEST_F(NetworkCapabilities, AppCredentialIsReadOnlyScopedAuditedAndRevocable) {
+  zetta::query::QueryService sql(node);
+  for (const char *statement :
+       {"CREATE DATABASE app;", "CREATE TABLE app.orders (id int);",
+        "CREATE TABLE app.private_orders (id int);",
+        "INSERT INTO app.orders (id) VALUES (1);",
+        "INSERT INTO app.private_orders (id) VALUES (2);"}) {
+    const auto result = sql.run(statement, "");
+    ASSERT_TRUE(result.ok()) << statement << ": " << result.error;
+  }
+  ASSERT_TRUE(
+      call("create_topic", {{"topic", "app-one.orders"}, {"exposed", true}})
+          .ok);
+  ASSERT_TRUE(
+      call("create_topic", {{"topic", "app-two.orders"}, {"exposed", true}})
+          .ok);
+
+  auto administrator = node.create_user("network-credential-administrator");
+  auto unrelated = node.create_user("network-credential-unrelated");
+  ASSERT_TRUE(administrator);
+  ASSERT_TRUE(unrelated);
+  ASSERT_TRUE(
+      node.assign_role(administrator->id(), node.find_role("admin")->id()));
+
+  const nlohmann::json first_request{
+      {"connection_id", "11111111-1111-4111-8111-111111111111"},
+      {"credential_scope",
+       {{"access", "read"},
+        {"schema", "app"},
+        {"tables", {"orders"}},
+        {"topics", {"app-one."}}}}};
+  EXPECT_EQ(call_as(unrelated->id(), "issue_app_credential", first_request)
+                .error.code,
+            "unauthorized");
+  const ApiResult issued =
+      call_as(administrator->id(), "issue_app_credential", first_request);
+  ASSERT_TRUE(issued.ok) << issued.error.message;
+  const std::string credential = issued.value.at("credential");
+  const std::string app_user_id = issued.value.at("user_id");
+  const auto app_user = node.authenticate_token(credential);
+  ASSERT_TRUE(app_user);
+  EXPECT_EQ(app_user->id(), app_user_id);
+
+  const auto select_own =
+      call_as(app_user_id, "sql", {{"statement", "SELECT * FROM app.orders;"}});
+  ASSERT_TRUE(select_own.ok) << select_own.error.message;
+  ASSERT_EQ(select_own.value.at("rows").size(), 1u);
+  EXPECT_EQ(select_own.value.at("rows")[0].at("id"), 1);
+  EXPECT_FALSE(
+      call_as(app_user_id, "sql",
+              {{"statement", "INSERT INTO app.orders (id) VALUES (3);"}})
+          .ok);
+  EXPECT_FALSE(call_as(app_user_id, "sql",
+                       {{"statement", "SELECT * FROM app.private_orders;"}})
+                   .ok);
+
+  EXPECT_TRUE(
+      call_as(app_user_id, "browse_topic", {{"topic", "app-one.orders"}}).ok);
+  EXPECT_EQ(call_as(app_user_id, "browse_topic", {{"topic", "app-two.orders"}})
+                .error.code,
+            "unauthorized");
+  EXPECT_EQ(call_as(app_user_id, "publish_event",
+                    {{"topic", "app-one.orders"}, {"payload", "no"}})
+                .error.code,
+            "unauthorized");
+
+  const ApiResult duplicate =
+      call_as(administrator->id(), "issue_app_credential", first_request);
+  EXPECT_EQ(duplicate.error.code, "conflict");
+
+  std::size_t audited_uses = 0;
+  for (const auto &event : node.audit_events()) {
+    if (event->actor() == app_user_id &&
+        (event->target() == "api:sql" ||
+         event->target() == "api:browse_topic" ||
+         event->target() == "api:publish_event")) {
+      ++audited_uses;
+    }
+  }
+  EXPECT_GE(audited_uses, 6u);
+
+  const ApiResult revoked =
+      call_as(administrator->id(), "revoke_app_credential",
+              {{"connection_id", first_request.at("connection_id")}});
+  ASSERT_TRUE(revoked.ok) << revoked.error.message;
+  EXPECT_EQ(revoked.value.at("revoked"), 1);
+  EXPECT_FALSE(node.authenticate_token(credential));
+  EXPECT_EQ(
+      call_as(app_user_id, "sql", {{"statement", "SELECT * FROM app.orders;"}})
+          .error.code,
+      "unauthorized");
+
+  const ApiResult revoked_again =
+      call_as(administrator->id(), "revoke_app_credential",
+              {{"connection_id", first_request.at("connection_id")}});
+  ASSERT_TRUE(revoked_again.ok) << revoked_again.error.message;
+  EXPECT_EQ(revoked_again.value.at("revoked"), 0);
+}
+
+TEST_F(NetworkCapabilities, AppCredentialScopeRejectsAmbiguousTables) {
+  auto administrator = node.create_user("network-scope-administrator");
+  ASSERT_TRUE(administrator);
+  ASSERT_TRUE(
+      node.assign_role(administrator->id(), node.find_role("admin")->id()));
+  const ApiResult result = call_as(
+      administrator->id(), "issue_app_credential",
+      {{"connection_id", "22222222-2222-4222-8222-222222222222"},
+       {"credential_scope", {{"access", "read"}, {"tables", {"orders"}}}}});
+  EXPECT_EQ(result.error.code, "invalid_input");
+  EXPECT_EQ(result.error.path, "/credential_scope/tables/0");
 }

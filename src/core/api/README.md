@@ -67,6 +67,14 @@ checked, and a schema the validator cannot compile is an `invalid_input` refusal
 (`registry.cpp`, #1231). See [the record store](../../../docs/data/record-store.md) and
 [time series](../../../docs/data/time-series.md).
 
+`network_capabilities.cpp` also owns the app-connection credential lifecycle
+(#1280). Issuance requires `api:manage_tokens`, builds a connection-owned user
+and least-privilege role through `network/app_credential.cpp`, and returns one
+plaintext bearer whose salted hash is persisted. Revocation removes the role
+assignment and revokes every token for that connection. The issued
+identity reaches only its table/database and topic-prefix grants and their
+specific tools. See [scoped app access](../../../docs/network/scoped-app-access.md).
+
 The object capability (`object_capabilities.cpp`, #1005) registers the bucket and
 lease operations as `blocks` capabilities scoped `ON BUCKET`, and
 `object_route_paths()` documents the byte routes in OpenAPI. `http_server.cpp`
