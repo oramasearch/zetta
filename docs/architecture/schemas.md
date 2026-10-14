@@ -17,7 +17,7 @@ returning the schema as `nlohmann::json`:
 const nlohmann::json& zetta::pipeline::run_value_schema();          // src/core/pipeline/run.cpp
 const nlohmann::json& zetta::compute::compute_job_value_schema();  // src/core/compute/compute_job.cpp
 const nlohmann::json& zetta::ml::gbdt_model_schema();     // src/core/ml/gbdt.cpp
-// … all 86: the full table is zetta::schemas::boundary_schemas()
+// … every registered boundary: the full table is zetta::schemas::boundary_schemas()
 ```
 
 The one aggregation point is **`zetta::schemas::boundary_schemas()`**

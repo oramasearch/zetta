@@ -53,6 +53,7 @@
 #include "zetta/governance/consent.hpp"
 #include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
+#include "zetta/network/records.hpp"
 #include "zetta/governance/role.hpp"
 #include "zetta/governance/token.hpp"
 #include "zetta/governance/user.hpp"
@@ -214,6 +215,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::data::stored_record_schema},
         {"record_signal", "record_signal.schema.json",
          &zetta::data::record_signal_schema},
+        {"network_record", "network_record.schema.json",
+         &zetta::network::network_record_schema},
         {"metric_definition", "metric_definition.schema.json",
          &zetta::data::metric_definition_schema},
         {"metric_bucket", "metric_bucket.schema.json",

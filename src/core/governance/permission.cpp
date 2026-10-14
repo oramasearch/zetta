@@ -48,6 +48,9 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"metrics:read", {{CapabilityDomain::Data, "metrics_read"}}},
         {"metrics:write", {{CapabilityDomain::Data, "metrics_write"},
                            {CapabilityDomain::Orchestration, "create_metric"}}},
+        // Workspace network history (#1281): zetta-tunnel writes and Lake reads.
+        {"network:read", {{CapabilityDomain::Data, "network_records_read"}}},
+        {"network:write", {{CapabilityDomain::Data, "network_records_write"}}},
         // The object capability (#1005). objects:* are object-scopable by bucket
         // name prefix (ON BUCKET <prefix>); objects:write covers the owner lease.
         {"objects:read", {{CapabilityDomain::Data, "objects_read"}}},

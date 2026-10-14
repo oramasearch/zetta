@@ -45,6 +45,7 @@ add_executable(zetta-tests
   api/test_serving.cpp
   api/test_scoped_grants_api.cpp
   api/test_record_capabilities.cpp
+  api/test_network_capabilities.cpp
   api/test_storage_capabilities.cpp
   api/test_object_routes.cpp
   api/test_row_security_api.cpp
@@ -70,6 +71,7 @@ add_executable(zetta-tests
   data/test_database.cpp
   data/test_replication_strategy.cpp
   data/test_record_store.cpp
+  network/test_network_records.cpp
   data/test_metric_store.cpp
   data/test_record_soak.cpp
   data/test_object_store.cpp
