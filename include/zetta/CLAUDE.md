@@ -12,9 +12,11 @@ it in the same commit when adding, moving, or renaming a header.
   `compute/cuda_device.hpp` is CUDA-free (no `<cuda_runtime.h>`); the
   oramacore-cpp engine hides behind a pImpl; nlohmann/json is allowed (it is
   part of the core's vocabulary).
-- **Backend names stay behind the seams.** `boost::capy` / `boost::corosio`
-  appear only in `runtime.hpp` / `runtime/net.hpp` (and their adapters in
-  `src/core/`). Consumers program against `zetta::runtime` / the seam
+- **Backend names stay behind their owning interfaces.** Engine headers name
+  `boost::capy` / `boost::corosio` only in `runtime.hpp` / `runtime/net.hpp`.
+  The explicit exception is `zetta/transport/`: that independent public target
+  is Corosio-specific by contract and accepts a connected Corosio socket.
+  Other consumers program against `zetta::runtime` / the abstract
   interfaces (`StorageEngine`, `ComputeDevice`, `IndexBackend`, `Provisioner`,
   `Dialect`, `StepExecutor`, `LanguageFrontend`, …) — extending zetta means
   implementing one of these, not widening a consumer.
@@ -27,7 +29,7 @@ it in the same commit when adding, moving, or renaming a header.
   `std::string` / `std::string_view`.
 - **Non-throwing boundaries:** public parse/validate entry points return
   `std::optional` / status types with a path-qualified reason; nothing throws
-  across the zetta-core seam.
+  across the zetta-core boundary.
 - `zetta/pubsub/` is the one public domain whose API is thread-safe with locks
   (decision D1/D5, docs/pubsub/); `node_integration.hpp` is its only header that
   forward-declares `zetta::Node`.

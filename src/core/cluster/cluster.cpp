@@ -21,7 +21,6 @@
 #include <mutex>
 #include <optional>
 #include <set>
-#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -36,6 +35,8 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/runtime/net.hpp"
 #include "zetta/cluster/signal.hpp"
+#include "zetta/transport/framed_stream.hpp"
+#include "zetta/transport/security.hpp"
 #include "zetta/util/uuid.hpp"
 
 #include "../base64.hpp"
@@ -49,27 +50,15 @@ namespace zetta::cluster {
 namespace capy = boost::capy;
 namespace net = zetta::runtime::net;
 
-// One peer connection: the socket (or its TLS layer), shared between the read pump
-// and the per-link write pump. `initiate` records whether we dialed it (true) or
-// accepted it (false) — used to pick a single canonical link when both sides
-// connect to each other (the min-node-id-initiator wins), so duplicate links reap.
+// One peer connection, shared between the read pump and per-link write pump.
+// `initiate` records whether we dialed it (true) or accepted it (false) — used
+// to pick a single canonical link when both sides connect to each other (the
+// min-node-id-initiator wins), so duplicate links reap.
 struct GossipLink {
-    std::shared_ptr<net::tcp_socket> socket;
-    std::unique_ptr<net::openssl_stream> tls;  // engaged when security is on
-    net::any_stream stream;                    // the protocol's transport
+    std::shared_ptr<zetta::transport::FramedStream> stream;
     bool alive = true;
     bool initiate = false;  // did we dial this link (true) or accept it (false)?
     std::chrono::steady_clock::time_point last_activity{};  // last line received
-    // Serializes read vs. write on a TLS `stream` (#786). openssl_stream's SSL
-    // object and BIO scratch buffers are NOT safe for a read pump and a write pump
-    // to drive concurrently across co_await points — interleaved SSL_read/SSL_write
-    // corrupt the record stream and the peer drops the link ("end of stream"). This
-    // cooperative async mutex (single-threaded io_context) makes a read and a write
-    // never overlap on the one SSL object; the read pump takes it only AFTER the raw
-    // socket is readable (see read_line_serialized), so it's never held while idle
-    // and writes are never blocked waiting for the peer — no deadlock. Unused on a
-    // plaintext link (raw socket is full-duplex safe; keeps that path lock-free).
-    capy::async_mutex io_lock;
 };
 
 struct Cluster::State {
@@ -491,111 +480,6 @@ bool parse_host_port(const std::string& text, net::ipv4_address& address,
     return true;
 }
 
-// Cap on a single line, generous enough for a gossiped (base64) document blob or
-// a transferred large-object body, but bounded so a misbehaving peer can't make
-// us buffer without limit. base64 inflates ~4/3, so this admits ~48 MiB bodies;
-// larger objects would need chunked transfer (a future step).
-constexpr std::size_t kMaxLineBytes = 64 * 1024 * 1024;
-
-// Read one '\n'-terminated line (without the newline) from the stream, using a
-// PERSISTENT `pending` buffer that carries bytes past the newline to the next
-// call. This is essential: one `read_some` routinely returns several lines
-// coalesced (Nagle, MTU batching on a real link), and dropping the remainder
-// would silently lose every line after the first — exactly the framing bug that
-// stalled cross-machine gossip. Empty optional on EOF/error or overflow.
-capy::task<std::optional<std::string>> read_line(net::any_stream& stream,
-                                                 std::string& pending) {
-    for (;;) {
-        if (const auto newline = pending.find('\n');
-            newline != std::string::npos) {
-            std::string line = pending.substr(0, newline);
-            pending.erase(0, newline + 1);  // keep everything after the '\n'
-            co_return line;
-        }
-        if (pending.size() > kMaxLineBytes) co_return std::nullopt;
-        char buffer[4096];
-        net::mutable_buffer chunk(buffer, sizeof buffer);
-        auto [ec, n] = co_await stream.read_some(std::span(&chunk, 1));
-        if (ec || n == 0) co_return std::nullopt;
-        pending.append(buffer, n);
-    }
-}
-
-// Returns whether the whole line was written (false on a closed/broken stream).
-capy::task<bool> write_line(net::any_stream& stream, std::string line) {
-    line.push_back('\n');
-    auto [ec, written] =
-        co_await net::write(stream, net::const_buffer(line.data(), line.size()));
-    co_return !ec && written == line.size();
-}
-
-// Read one line, serializing against the write pump on a TLS link (#786). A read
-// and a write must never drive the one SSL object at the same time (interleaved
-// SSL_read/SSL_write corrupt the record stream), but the read must NOT hold the
-// per-link lock while merely waiting for the peer — that would deadlock (both peers'
-// readers holding their lock, neither writer able to send, so no data ever flows).
-// So: wait for the RAW socket to be readable WITHOUT the lock (writes flow freely
-// meanwhile), and only once data is available take the lock to pump bytes through
-// the TLS engine. Any bytes already buffered in `pending` (e.g. left by the
-// handshake, or a coalesced read) are returned before waiting. Empty optional on
-// EOF/error or overflow — same contract as read_line.
-capy::task<std::optional<std::string>> read_line_serialized(
-    std::shared_ptr<GossipLink> link, std::string& pending) {
-    // One TLS record decrypts to at most 16 KiB; sizing the drain buffer to a full
-    // record means one read_some pulls a whole record out of OpenSSL's internal buffer,
-    // instead of stranding the tail of an over-4 KiB record inside the SSL engine where
-    // the raw socket then looks not-readable (the sync stall the naive gate caused, #786).
-    char buffer[16384];
-    for (;;) {
-        if (const auto newline = pending.find('\n');
-            newline != std::string::npos) {
-            std::string line = pending.substr(0, newline);
-            pending.erase(0, newline + 1);
-            co_return line;
-        }
-        if (pending.size() > kMaxLineBytes) co_return std::nullopt;
-        // Wait for the first byte on the RAW socket WITHOUT the lock, so the write pump
-        // runs freely while we're idle — the lock is only ever taken when data is actually
-        // available, which is what keeps the serialization deadlock-free (#786).
-        if (auto [wait_error] =
-                co_await link->socket->wait(net::wait_type::read);
-            wait_error) {
-            co_return std::nullopt;
-        }
-        // Data arrived: take the lock and DRAIN what's immediately available through the
-        // TLS engine — read repeatedly so a decrypted record (or several coalesced records)
-        // is fully pulled out of OpenSSL before we release and wait on the socket again. A
-        // short read means we've caught up to the buffered data, so we stop the drain there
-        // rather than block on genuinely-new bytes while holding the lock (which would
-        // deadlock two idle peers). A read and a write thus never drive the one SSL object
-        // at once, and sync no longer stalls on data stranded inside OpenSSL (#786).
-        auto [lock_error, guard] = co_await link->io_lock.scoped_lock();
-        if (lock_error) co_return std::nullopt;
-        for (;;) {
-            net::mutable_buffer chunk(buffer, sizeof buffer);
-            auto [read_error, n] =
-                co_await link->stream.read_some(std::span(&chunk, 1));
-            if (read_error || n == 0) co_return std::nullopt;
-            pending.append(buffer, n);
-            if (pending.find('\n') != std::string::npos) break;  // a full line is ready
-            if (n < sizeof buffer) break;  // drained what was buffered — release + re-wait
-        }
-    }
-}
-
-// Write one line, serializing against the read pump on a TLS link (#786): hold the
-// per-link I/O lock across the write so it never overlaps a read on the one SSL
-// object. On a plaintext link the raw socket is full-duplex safe, so it writes
-// directly with no lock (keeping that path's concurrent read+write). Returns whether
-// the whole line was written.
-capy::task<bool> write_line_serialized(std::shared_ptr<GossipLink> link,
-                                       std::string line) {
-    if (!link->tls) co_return co_await write_line(link->stream, std::move(line));
-    auto [lock_error, guard] = co_await link->io_lock.scoped_lock();
-    if (lock_error) co_return false;
-    co_return co_await write_line(link->stream, std::move(line));
-}
-
 // Split a comma-separated endpoint list into its parts, trimming surrounding
 // spaces and dropping empties. A single `host:port` (no comma) yields one element —
 // so an old single-address HELLO or `--peer` entry still parses as a one-element set.
@@ -907,11 +791,9 @@ constexpr std::chrono::milliseconds kGossipInterval{500};
 // Per-link output pump: flush this peer's queued signals every tick, push our
 // replicated document + status (or a PING keepalive) and request missing
 // large-object bodies every ~0.5s, and drop the link if the peer goes silent —
-// until the connection dies. Runs alongside the read pump: on a plaintext link a
-// socket is full-duplex, so read and write overlap freely; on a TLS link
-// write_line_serialized takes the per-link io_lock so a write never overlaps a read
-// on the one SSL object (#786). Always spawned (the signal plane is always
-// available), even with no replication/blobs.
+// until the connection dies. FramedStream preserves full-duplex plaintext and
+// serializes access to the TLS engine (#786). Always spawned (the signal plane
+// is always available), even with no replication/blobs.
 capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
                          std::string peer_node_id) {
     using namespace std::chrono_literals;
@@ -925,14 +807,14 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
         // that unblocks the read pump, which removes the peer.
         if (Clock::now() - link->last_activity > self->idle_timeout) {
             log_event(self, "keepalive timeout — dropping idle peer connection");
-            link->socket->close();
+            link->stream->close();
             break;
         }
         // Flush queued signals (RPC requests/responses, events, tasks) and any
         // large-object bodies a peer asked us for — promptly, every tick.
         bool flushed = true;
         for (std::string& line : self->take_outbound(peer_node_id)) {
-            if (!co_await write_line_serialized(link, std::move(line))) {
+            if (!co_await link->stream->write_frame(std::move(line))) {
                 flushed = false;
                 break;
             }
@@ -942,13 +824,13 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
         if (Clock::now() - last_gossip >= kGossipInterval) {
             last_gossip = Clock::now();
             if (self->replication) {
-                if (!co_await write_line_serialized(
-                        link, sync_line(*self->replication)) ||
-                    !co_await write_line_serialized(
-                        link, status_line(*self->replication))) {
+                if (!co_await link->stream->write_frame(
+                        sync_line(*self->replication)) ||
+                    !co_await link->stream->write_frame(
+                        status_line(*self->replication))) {
                     break;
                 }
-            } else if (!co_await write_line_serialized(link, ping_line())) {
+            } else if (!co_await link->stream->write_frame(ping_line())) {
                 // No gossip to send — a PING keeps the link alive.
                 break;
             }
@@ -968,7 +850,7 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
                 }
             }
             if (audit_compatible && !audit_status.empty() &&
-                !co_await write_line_serialized(link, std::move(audit_status))) {
+                !co_await link->stream->write_frame(std::move(audit_status))) {
                 break;
             }
             // Request bodies we lack, but don't re-ask the same peer too often
@@ -981,7 +863,7 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
                     if (it != requested.end() && now - it->second < 2s) continue;
                     requested[id] = now;
                     log_event(self, "-> LOREQ " + short_id(id));
-                    if (!co_await write_line_serialized(link, loreq_line(id))) {
+                    if (!co_await link->stream->write_frame(loreq_line(id))) {
                         requested_ok = false;
                         break;
                     }
@@ -1011,51 +893,49 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
                                 std::vector<std::string> my_endpoints,
                                 bool initiate, std::string dialed_endpoint,
                                 std::string seed_key) {
-    // The connection's transport, built before any line is exchanged: the raw
-    // socket, or the TLS layer over it. Lives in the link so the writer pump
-    // shares it (and so the keepalive can still close the raw socket).
+    // The connection's framed transport is built before any protocol byte is
+    // exchanged and shared with the writer pump.
     auto link = std::make_shared<GossipLink>();
-    link->socket = std::make_shared<net::tcp_socket>(std::move(socket));
     link->initiate = initiate;
     if (self->tls) {
-        link->tls = std::make_unique<net::openssl_stream>(link->socket.get(),
-                                                          *self->tls);
-        auto [handshake_error] = co_await link->tls->handshake(
-            initiate ? net::tls_stream::client : net::tls_stream::server);
+        link->stream = std::make_shared<zetta::transport::FramedStream>(
+            std::move(socket), *self->tls);
+        const std::error_code handshake_error = co_await link->stream->handshake(
+            initiate ? zetta::transport::HandshakeRole::Client
+                     : zetta::transport::HandshakeRole::Server);
         if (handshake_error) {
             log_event(self, std::string("TLS handshake failed (") +
                                 (initiate ? "dialed" : "accepted") +
                                 "): " + handshake_error.message());
-            link->socket->close();
+            link->stream->close();
             co_return;
         }
-        link->stream = net::any_stream(link->tls.get());
     } else {
-        link->stream = net::any_stream(link->socket.get());
+        link->stream =
+            std::make_shared<zetta::transport::FramedStream>(std::move(socket));
     }
 
-    // One read buffer for the whole connection — the handshake read and the
-    // read pump must share it, or bytes the peer sent right after HELLO are lost.
-    std::string pending;
+    // FramedStream owns the persistent receive buffer shared by the HELLO and
+    // steady-state read pump.
     std::optional<std::string> their_hello;
     if (initiate) {
-        co_await write_line(link->stream,
-                            hello_line(my_node_id, my_endpoints, self->dial_out_only,
-                                       self->audit_protocol_version));
-        their_hello = co_await read_line(link->stream, pending);
+        co_await link->stream->write_frame(
+            hello_line(my_node_id, my_endpoints, self->dial_out_only,
+                       self->audit_protocol_version));
+        their_hello = co_await link->stream->read_frame();
     } else {
-        their_hello = co_await read_line(link->stream, pending);
-        co_await write_line(link->stream,
-                            hello_line(my_node_id, my_endpoints, self->dial_out_only,
-                                       self->audit_protocol_version));
+        their_hello = co_await link->stream->read_frame();
+        co_await link->stream->write_frame(
+            hello_line(my_node_id, my_endpoints, self->dial_out_only,
+                       self->audit_protocol_version));
     }
     if (!their_hello) {
-        link->socket->close();
+        link->stream->close();
         co_return;
     }
     const ClusterPeer peer = parse_hello(*their_hello);
     if (peer.node_id.empty() || peer.node_id == my_node_id) {
-        link->socket->close();  // malformed, or we dialed ourselves
+        link->stream->close();  // malformed, or we dialed ourselves
         co_return;
     }
     // Record which node id this seed resolved to BEFORE dedup, so the reconnect loop
@@ -1069,10 +949,10 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // to one before we register the peer or spawn its pumps.
     std::shared_ptr<GossipLink> superseded;
     if (!self->register_link(peer.node_id, link, my_node_id, superseded)) {
-        link->socket->close();  // a canonical link already holds this peer
+        link->stream->close();  // a canonical link already holds this peer
         co_return;
     }
-    if (superseded) superseded->socket->close();  // we displaced a stale link
+    if (superseded) superseded->stream->close();  // displaced a stale link
     self->live_connections.fetch_add(1, std::memory_order_relaxed);
     // The endpoint we reached this peer on, from THIS vantage point: the address we
     // dialed (the reachable candidate) or, when we accepted, its advertised front.
@@ -1106,15 +986,10 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
 
     // Read pump: merge gossiped state, record peer status, serve/receive
     // large-object bodies, dispatch signals, until disconnect (or the writer's
-    // keepalive closes the socket, which surfaces here as a read error). On a TLS
-    // link, read_line_serialized takes the per-link io_lock only after the raw
-    // socket is readable, so a read never overlaps a write on the one SSL object
-    // (#786) yet the write pump is never blocked while we wait for the peer.
-    // Plaintext keeps the lock-free full-duplex read.
+    // keepalive closes the socket, which surfaces here as a read error).
+    // FramedStream owns buffering and TLS read/write serialization.
     for (;;) {
-        std::optional<std::string> line =
-            link->tls ? co_await read_line_serialized(link, pending)
-                      : co_await read_line(link->stream, pending);
+        std::optional<std::string> line = co_await link->stream->read_frame();
         if (!line) break;  // peer disconnected / link timed out
         link->last_activity = std::chrono::steady_clock::now();
         apply_gossip(self, *line, peer.node_id);
@@ -1135,7 +1010,7 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
                             " (connection closed)");
     }
     self->live_connections.fetch_sub(1, std::memory_order_relaxed);
-    link->socket->close();
+    link->stream->close();
 }
 
 capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
@@ -1392,23 +1267,17 @@ void Cluster::start() {
     // credential doesn't load, the node runs no networking at all rather than
     // falling back to plaintext.
     if (config_.security.enabled()) {
-        net::tls_context tls;
-        const bool credentials_ok =
-            !tls.use_certificate(config_.security.certificate_pem,
-                                 net::tls_file_format::pem) &&
-            !tls.use_private_key(config_.security.private_key_pem,
-                                 net::tls_file_format::pem) &&
-            !tls.add_certificate_authority(
-                config_.security.ca_certificate_pem) &&
-            !tls.set_verify_mode(net::tls_verify_mode::require_peer) &&
-            !tls.set_min_protocol_version(net::tls_version::tls_1_3);
-        if (!credentials_ok) {
+        std::string reason;
+        std::optional<net::tls_context> tls =
+            zetta::transport::make_mutual_tls_context(config_.security, &reason);
+        if (!tls) {
             std::fprintf(stderr,
                          "zetta: cluster security credentials failed to load; "
-                         "refusing to start networking\n");
+                         "refusing to start networking: %s\n",
+                         reason.c_str());
             return;
         }
-        state_->tls = std::move(tls);
+        state_->tls = std::move(*tls);
     }
 
     // Bind the first free port in the range, synchronously, so listen_address()
@@ -1420,7 +1289,7 @@ void Cluster::start() {
     // --listen port while the previous process's accepted sockets still linger
     // in TIME_WAIT, instead of the OS refusing the bind. Set between open() and
     // bind(). set_option throws on failure; keep start() non-throwing (the
-    // seam's boundary discipline) — a failure here only forfeits the fast
+    // public API's boundary discipline) — a failure here only forfeits the fast
     // rebind, so log and carry on rather than abort startup.
     try {
         state_->acceptor->set_option(net::reuse_address(true));

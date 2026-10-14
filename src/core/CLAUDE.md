@@ -51,7 +51,7 @@ touched domain's `docs/<domain>/README.md` before changing its code.
 
 ## Boundaries and errors
 
-- **No exceptions across zetta-core seams** (the lib builds with
+- **No exceptions across zetta-core boundaries** (the lib builds with
   `-fexperimental-library`; nothing may unwind across it). Boundary functions
   are non-throwing: `std::optional` / status types + a path-qualified reason.
   `runtime::parallel_for` bodies must not throw (a throwing body aborts).
@@ -66,9 +66,9 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   source of truth; `schemas/*.json` is generated + drift-checked. See
   [docs/architecture/schemas.md](../../docs/architecture/schemas.md).
 
-## Seams (extend, don't special-case)
+## Interfaces (extend, don't special-case)
 
-New capability = a new implementation of an existing seam: `StorageEngine`,
+New capability = a new implementation of an existing interface: `StorageEngine`,
 `Dialect` (the `Executor` stays dialect-neutral), `StepExecutor`, `Check`,
 `ComputeDevice`, `IndexBackend`, `Partitioner`, `Provisioner` +
 `<Vendor>ControlPlane` (CLI via the shared `CommandRunner`, no cloud SDK),
@@ -77,16 +77,18 @@ New capability = a new implementation of an existing seam: `StorageEngine`,
 zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
 
 - Exactly two TUs name Corosio (via `zetta::runtime::net`):
-  `src/core/cluster/cluster.cpp` for inbound/peer traffic — including the TLS
-  surface, #466 — and `src/core/api/native_http_transport.cpp` for outbound
+  `src/core/cluster/cluster.cpp` for listener/dialer traffic and
+  `src/core/api/native_http_transport.cpp` for outbound
   client traffic (the native coroutine HTTPS client behind
   `connect::HttpTransport`, #827; it lives in the `zetta-api` target because it
-  also needs Boost.HTTP, which zetta-core must never link).
-  OpenSSL libcrypto is named by exactly two
+  also needs Boost.HTTP, which zetta-core must never link). The shared TLS 1.3
+  context and framed stream live outside zetta-core in `src/transport/` and the
+  independent `zetta_transport` target (#1283).
+  Within `src/core`, OpenSSL libcrypto is named by exactly two
   TUs — `src/core/cluster/security.cpp` (join-token/CA/cert minting) and
   `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/constant-time
   compare, #744); only `src/core/cluster/replication.cpp` names automerge-cpp.
-  Everything else goes through `zetta::runtime` / the public seams — never
+  Everything else goes through `zetta::runtime` / the public interfaces — never
   `boost::capy`/`boost::corosio`/`openssl/*`.
 - **Pub/sub (`src/core/pubsub/`)** keeps its dependencies injected: `Authorizer`
   (rights, delivery bounds, delegation), `InboxDrain` (one per address kind),
