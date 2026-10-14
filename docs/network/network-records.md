@@ -133,8 +133,9 @@ a query tenant key. Records written to workspace A's Zetta do not exist in
 workspace B's record log or replicated catalogue, and the acceptance test
 starts two independent workspace nodes to prove that separation.
 
-Per-connection credentials for apps are #1280. Zetta-to-Zetta peer links are
-#1282. Neither is implemented here.
+Per-connection credentials for apps are implemented separately in
+[scoped app access](scoped-app-access.md) (#1280). Zetta-to-Zetta peer links
+remain #1282 and are not implemented here.
 
 ## Boundaries and tests
 

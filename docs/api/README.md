@@ -192,6 +192,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
+| `issue_app_credential` | action | api:manage_tokens (`tokens:manage`) | create one connection-owned user, least-privilege role, and hashed token; return its plaintext once; refuse a second live token for the same connection ([scoped app access](../network/scoped-app-access.md), #1280) |
+| `revoke_app_credential` | action | api:manage_tokens (`tokens:manage`) | revoke every token for one connection and remove its role assignment; idempotent (#1280) |
 | `create_collection` | action | orchestration:create_collection (`records:manage`) | declare a record collection, its indexes and retention; idempotent for an identical definition |
 | `put_record` | action | data:records_write (`records:write`) | conditional (`if_absent` / `if_revision`, 409 otherwise) keyed write, durable and on every live node before it returns |
 | `write_network_record` | action | data:network_records_write (`network:write`) | validate and durably store a Lake connection/grant history object or zetta-tunnel session/gateway decision in this workspace's Zetta ([network records](../network/network-records.md)) |

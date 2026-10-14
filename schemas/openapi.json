@@ -20470,6 +20470,218 @@
         ]
       }
     },
+    "/v1/issue_app_credential": {
+      "post": {
+        "description": "Issue one revocable bearer credential for an app Connection, limited to the requested schema/tables and topic prefixes. Returns the plaintext credential once and mutates replicated governance state. Requires api:manage_tokens.",
+        "operationId": "issue_app_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connection_id": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "credential_scope": {
+                    "additionalProperties": false,
+                    "anyOf": [
+                      {
+                        "required": [
+                          "schema"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "tables"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "topics"
+                        ]
+                      }
+                    ],
+                    "properties": {
+                      "access": {
+                        "enum": [
+                          "read",
+                          "write"
+                        ]
+                      },
+                      "schema": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "tables": {
+                        "items": {
+                          "maxLength": 257,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "topics": {
+                        "items": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      }
+                    },
+                    "required": [
+                      "access"
+                    ],
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "connection_id",
+                  "credential_scope"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection_id": {
+                          "type": "string"
+                        },
+                        "credential": {
+                          "description": "plaintext bearer returned once and never stored",
+                          "type": "string"
+                        },
+                        "credential_scope": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "access": {
+                              "enum": [
+                                "read",
+                                "write"
+                              ]
+                            },
+                            "schema": {
+                              "type": "string"
+                            },
+                            "tables": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "topics": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "access",
+                            "schema",
+                            "tables",
+                            "topics"
+                          ],
+                          "type": "object"
+                        },
+                        "role_id": {
+                          "type": "string"
+                        },
+                        "token_id": {
+                          "type": "string"
+                        },
+                        "user_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "connection_id",
+                        "user_id",
+                        "role_id",
+                        "token_id",
+                        "credential",
+                        "credential_scope"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Issue an app connection credential",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/list_agents": {
       "get": {
         "description": "Read every agent on this node (id, name, model, tools). No side effects. Requires api:query.",
@@ -34769,6 +34981,119 @@
         "summary": "Retrain a model",
         "tags": [
           "job"
+        ]
+      }
+    },
+    "/v1/revoke_app_credential": {
+      "post": {
+        "description": "Revoke every bearer token for one app Connection and remove its least-privilege role assignment. Idempotent and mutates replicated governance state. Requires api:manage_tokens.",
+        "operationId": "revoke_app_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connection_id": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "connection_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection_id": {
+                          "type": "string"
+                        },
+                        "revoked": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "revoked_token_ids": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "connection_id",
+                        "revoked",
+                        "revoked_token_ids"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Revoke an app connection credential",
+        "tags": [
+          "action"
         ]
       }
     },

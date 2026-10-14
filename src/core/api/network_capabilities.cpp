@@ -1,11 +1,13 @@
-// Workspace network records on the control surface (#1281,
-// docs/network/network-records.md). zetta-tunnel writes validated records;
-// Lake reads decoded pages. Both operations use the shared RecordStore.
+// Workspace network controls on the control surface (#1280/#1281,
+// docs/network/). Lake issues and revokes one least-privilege credential per
+// app Connection; zetta-tunnel writes validated records and Lake reads decoded
+// pages.
 
 #include <utility>
 
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
+#include "zetta/network/app_credential.hpp"
 #include "zetta/network/records.hpp"
 #include "zetta/node.hpp"
 
@@ -99,6 +101,130 @@ const nlohmann::json &list_output_schema() {
   return schema;
 }
 
+const nlohmann::json &issue_credential_schema() {
+  static const nlohmann::json schema = [] {
+    nlohmann::json scope = object_schema(
+        {{"access", {{"enum", {"read", "write"}}}},
+         {"schema", {{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
+         {"tables",
+          {{"type", "array"},
+           {"minItems", 1},
+           {"maxItems", 128},
+           {"uniqueItems", true},
+           {"items",
+            {{"type", "string"}, {"minLength", 1}, {"maxLength", 257}}}}},
+         {"topics",
+          {{"type", "array"},
+           {"minItems", 1},
+           {"maxItems", 128},
+           {"uniqueItems", true},
+           {"items",
+            {{"type", "string"}, {"minLength", 1}, {"maxLength", 256}}}}}},
+        {"access"});
+    scope["anyOf"] = {{{"required", {"schema"}}},
+                      {{"required", {"tables"}}},
+                      {{"required", {"topics"}}}};
+    return object_schema(
+        {{"connection_id",
+          {{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
+         {"credential_scope", std::move(scope)}},
+        {"connection_id", "credential_scope"});
+  }();
+  return schema;
+}
+
+nlohmann::json credential_scope_output_schema() {
+  return object_schema(
+      {{"access", {{"enum", {"read", "write"}}}},
+       {"schema", {{"type", "string"}}},
+       {"tables", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+       {"topics", {{"type", "array"}, {"items", {{"type", "string"}}}}}},
+      {"access", "schema", "tables", "topics"});
+}
+
+const nlohmann::json &issue_credential_output_schema() {
+  static const nlohmann::json schema = object_schema(
+      {{"connection_id", {{"type", "string"}}},
+       {"user_id", {{"type", "string"}}},
+       {"role_id", {{"type", "string"}}},
+       {"token_id", {{"type", "string"}}},
+       {"credential",
+        {{"type", "string"},
+         {"description", "plaintext bearer returned once and never stored"}}},
+       {"credential_scope", credential_scope_output_schema()}},
+      {"connection_id", "user_id", "role_id", "token_id", "credential",
+       "credential_scope"});
+  return schema;
+}
+
+const nlohmann::json &revoke_credential_schema() {
+  static const nlohmann::json schema = object_schema(
+      {{"connection_id",
+        {{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}}},
+      {"connection_id"});
+  return schema;
+}
+
+const nlohmann::json &revoke_credential_output_schema() {
+  static const nlohmann::json schema =
+      object_schema({{"connection_id", {{"type", "string"}}},
+                     {"revoked", {{"type", "integer"}, {"minimum", 0}}},
+                     {"revoked_token_ids",
+                      {{"type", "array"}, {"items", {{"type", "string"}}}}}},
+                    {"connection_id", "revoked", "revoked_token_ids"});
+  return schema;
+}
+
+ApiResult handle_issue_credential(const nlohmann::json &input,
+                                  ApiContext &context) {
+  const nlohmann::json &scope_input = input.at("credential_scope");
+  zetta::network::AppCredentialRequest request;
+  request.connection_id = input.at("connection_id").get<std::string>();
+  request.scope.access = scope_input.at("access") == "write"
+                             ? zetta::network::AppCredentialAccess::Write
+                             : zetta::network::AppCredentialAccess::Read;
+  request.scope.schema = scope_input.value("schema", std::string{});
+  request.scope.tables =
+      scope_input.value("tables", std::vector<std::string>{});
+  request.scope.topics =
+      scope_input.value("topics", std::vector<std::string>{});
+  const zetta::network::AppCredentialIssue issue =
+      zetta::network::issue_app_credential(context.node, request);
+  if (!issue.ok()) {
+    return ApiResult::failure(
+        std::string(zetta::network::to_string(issue.status)), issue.message,
+        issue.path);
+  }
+  return ApiResult::success({{"connection_id", request.connection_id},
+                             {"user_id", issue.user_id},
+                             {"role_id", issue.role_id},
+                             {"token_id", issue.token_id},
+                             {"credential", issue.credential},
+                             {"credential_scope",
+                              {{"access", std::string(zetta::network::to_string(
+                                              request.scope.access))},
+                               {"schema", request.scope.schema},
+                               {"tables", request.scope.tables},
+                               {"topics", request.scope.topics}}}});
+}
+
+ApiResult handle_revoke_credential(const nlohmann::json &input,
+                                   ApiContext &context) {
+  const std::string connection_id =
+      input.at("connection_id").get<std::string>();
+  const zetta::network::AppCredentialRevocation revocation =
+      zetta::network::revoke_app_credential(context.node, connection_id);
+  if (!revocation.ok()) {
+    return ApiResult::failure(
+        std::string(zetta::network::to_string(revocation.status)),
+        revocation.message, revocation.path);
+  }
+  return ApiResult::success(
+      {{"connection_id", connection_id},
+       {"revoked", revocation.revoked_token_ids.size()},
+       {"revoked_token_ids", revocation.revoked_token_ids}});
+}
+
 ApiResult handle_write(const nlohmann::json &input, ApiContext &context) {
   zetta::data::RecordStore *store = context.node.record_store();
   if (!store) {
@@ -168,6 +294,26 @@ ApiResult handle_list(const nlohmann::json &input, ApiContext &context) {
 } // namespace
 
 void register_network_capabilities(Registry &registry) {
+  registry.add(Capability{
+      "issue_app_credential", "Issue an app connection credential",
+      "Issue one revocable bearer credential for an app Connection, limited "
+      "to the requested schema/tables and topic prefixes. Returns the "
+      "plaintext credential once and mutates replicated governance state.",
+      issue_credential_schema(), issue_credential_output_schema(),
+      CapabilityKind::Action, Operation{CapabilityDomain::Api, "manage_tokens"},
+      /*mutates=*/true,
+      /*requires_consent=*/false, handle_issue_credential});
+
+  registry.add(Capability{
+      "revoke_app_credential", "Revoke an app connection credential",
+      "Revoke every bearer token for one app Connection and remove its "
+      "least-privilege role assignment. Idempotent and mutates replicated "
+      "governance state.",
+      revoke_credential_schema(), revoke_credential_output_schema(),
+      CapabilityKind::Action, Operation{CapabilityDomain::Api, "manage_tokens"},
+      /*mutates=*/true,
+      /*requires_consent=*/false, handle_revoke_credential});
+
   Capability write{
       "write_network_record",
       "Write a workspace network record",

@@ -80,8 +80,10 @@ void register_pubsub_capabilities(Registry& registry);
 //   query_metric       read    sum / aggregate over a range, grouped and stepped
 void register_record_capabilities(Registry& registry);
 
-// Workspace network records (#1281, docs/network/network-records.md):
+// Workspace network controls (#1280/#1281, docs/network/):
 //
+//   issue_app_credential   action  one app/connection-scoped bearer credential
+//   revoke_app_credential  action  revoke every token for that connection
 //   write_network_record  action  validated Lake/zetta-tunnel record write
 //   list_network_records  read    decoded, indexed, retained record pages
 void register_network_capabilities(Registry& registry);

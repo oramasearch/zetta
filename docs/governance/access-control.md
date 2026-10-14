@@ -343,6 +343,18 @@ issued programmatically via `Node::create_token`.
 > (`user.json` / `role.json` / `token.json` / `user_role.json`). A token's hash
 > replicates in full; the plaintext never enters the document.
 
+### Connection-owned app credentials (#1280)
+
+[`issue_app_credential`](../network/scoped-app-access.md) composes this store
+with the fine-grained grants below. It creates one implementation-owned user
+and role for a Lake connection and app, grants only the selected tables or
+database and topic prefixes, grants only the tools needed to use those
+resources, and returns one hashed-at-rest API token. `read` grants no mutation;
+`write` includes read and write on the same resources but no DDL or
+administration. `revoke_app_credential` revokes the user's tokens and removes
+the role assignment. Calls made with the token use the ordinary capability,
+per-statement SQL, pub/sub, and audit paths.
+
 > **What's next.** The *store* above is the foundation; the **default-deny gate**
 > below (#745, always on since #799) consumes it, and **RBAC role management** (the
 > permission vocabulary, custom roles, user↔role assignment — #746) is the section

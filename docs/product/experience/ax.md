@@ -54,6 +54,13 @@ relay it to a person.
   details carry the live revision, so the next attempt needs no extra read, and
   ownership moving between nodes is a `busy` that says to retry
   ([record-store.md](../../data/record-store.md), #1231).
+- **App credentials are explicit and least-privilege**:
+  `issue_app_credential` returns the plaintext once and publishes the exact
+  read/write, schema/table, and topic-prefix scope in its schema. A duplicate
+  live credential is a `conflict` that tells the agent to revoke first;
+  `revoke_app_credential` is safe to repeat. The issued bearer can discover and
+  call only the tools needed for its resources
+  ([scoped app access](../../network/scoped-app-access.md), #1280).
 - **Object writes a client can retry**: an append at the object's size repeated
   with the same bytes succeeds and changes nothing; any other range is a `conflict`
   whose details carry the object's size, a stale lease is `fenced` with the current
