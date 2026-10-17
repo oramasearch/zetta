@@ -935,6 +935,10 @@ struct RestClusterFixture : RestServerFixture {
         cluster.start();
         node.attach_cluster(cluster, /*worker_count=*/2);
         ASSERT_NE(node.job_coordinator(), nullptr);
+        // Adopt this thread as the owner loop, as the apps do. Without an owner,
+        // run_on_owner runs work inline on the calling thread, so the churn thread
+        // wrote the Run while this thread read it (a use-after-free on its log).
+        node.tick();
     }
 };
 
