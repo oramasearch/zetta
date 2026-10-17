@@ -276,7 +276,13 @@ TEST(WebUiReports, ReportsIsOneItemInTheWorkspaceGroup) {
 // This reads main.cpp and asserts every `--flag` it offers is documented — so
 // adding a flag there fails here until /cli.md mentions it.
 TEST(CliDocs, EveryFlagMainOffersIsDocumented) {
+    // The environment variable overrides; otherwise the repo root the test was built
+    // from (a compile definition), so the check also runs under ctest, whose working
+    // directory is the build tree.
     const char* source = std::getenv("ZETTA_SOURCE_DIR");
+#ifdef ZETTA_SOURCE_DIR
+    if (source == nullptr) source = ZETTA_SOURCE_DIR;
+#endif
     const std::filesystem::path main_cpp =
         std::filesystem::path(source ? source : ".") / "src" / "main.cpp";
     if (!std::filesystem::exists(main_cpp)) {

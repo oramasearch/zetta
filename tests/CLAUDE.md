@@ -22,7 +22,9 @@ exercise the headless core, never the GUI. Run:
   `ZETTA_WRITE_SCHEMAS=1`; pyarrow fixtures via
   `scripts/gen-parquet-fixture.py`) — the generators are never build/CI
   dependencies. `tests/test_schemas.cpp` drift-checks `schemas/*.json` against
-  the schema-as-code accessors.
+  the schema-as-code accessors. `tests/test_release.cpp` holds the version
+  together: `kVersion`, the CMake project version, the committed OpenAPI
+  `info.version`, and `docs/releases/v<version>.md` listed in its index.
 - The **in-app test suite** (`zetta::testkit`, headless-runnable, rendered by
   the Operations → Test suite panel) is the catalog for engine-level canned
   cases — each new case gets a runbook under

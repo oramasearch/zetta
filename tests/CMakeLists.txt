@@ -332,6 +332,7 @@ add_executable(zetta-tests
   compute/test_mlx_transformer.cpp
   compute/test_safetensors.cpp
   test_integrity.cpp
+  test_release.cpp
   test_schemas.cpp
 )
 
@@ -352,6 +353,7 @@ target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_BINARY="$<TARGET_FILE:zetta>"
   ZETTA_AUDIT_PROOF_BINARY="$<TARGET_FILE:zetta-audit-proof>"
   ZETTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  ZETTA_PROJECT_VERSION="${PROJECT_VERSION}"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
 add_dependencies(zetta-tests zetta)
 add_executable(zetta-audit-proof governance/audit_proof.cpp)

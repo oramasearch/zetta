@@ -37,7 +37,7 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT ZETTA_USE_SYSTEM_COMPILER)
 endif()
 
 project(zetta
-  VERSION 0.0.1
+  VERSION 0.3.0
   DESCRIPTION "A database; runs headless or with an SDL3 + Dear ImGui UI"
   LANGUAGES C CXX
 )

@@ -4,6 +4,11 @@ One page per tagged release, newest first. A page states what changed, **what it
 someone upgrading**, and what is knowingly still broken — a release note that lists only
 wins is marketing, and the next reader rediscovers the gap expensively.
 
+- [v0.3.0](v0.3.0.md) — 2026-10-17. Zetta's part of secure networking: a workspace's
+  network records (connections, grants, tunnel sessions, activity), one scoped and
+  revocable credential per app connection, Zetta peer links through zetta-tunnel peer
+  gateways, and the cluster's mutual-TLS transport as a library zetta-tunnel links. No
+  behaviour change for a `v0.2.0` caller. Image: `oramasearch/zetta:v0.3.0`.
 - [v0.2.0](v0.2.0.md) — 2026-10-12. The engine a hosted workspace runs on: 21 methodologies
   behind one registry, composed solutions, AutoML studies, pub/sub inside the node, a keyed
   record store and an object store, and an audit trail outside the replicated catalogue.
@@ -26,8 +31,10 @@ Steve names the version. A release is finished when the Git tag, the GitHub rele
 tag all exist and the cluster runs that image.
 
 1. **On a branch off `dev`**, write `docs/releases/vX.Y.Z.md`, add it to the list above, and move
-   `kVersion` in `include/zetta/version.hpp` and `info.version` in `schemas/openapi.json`. Build
-   and run the full suite, and put the counts in the page. Open the pull request into `dev`.
+   `kVersion` in `include/zetta/version.hpp`, `project(... VERSION ...)` in `CMakeLists.txt` and
+   `info.version` in `schemas/openapi.json`. `tests/test_release.cpp` (`ReleaseVersion.*`) fails
+   until all three agree and this page exists and is listed. Build and run the full suite, and
+   put the counts in the page. Open the pull request into `dev`.
 2. **Promote `dev` to `main`** with a pull request titled `release: vX.Y.Z — ...`, merged with a
    merge commit, never a squash. `dev` is kept.
 3. **Tag the merge commit** `vX.Y.Z` (a lightweight tag, like the earlier releases) and publish
