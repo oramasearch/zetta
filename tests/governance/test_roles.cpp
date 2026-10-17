@@ -168,6 +168,10 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     EXPECT_EQ(permission_operations("metrics:write"),
               (std::vector<Operation>{{CapabilityDomain::Data, "metrics_write"},
                                       {CapabilityDomain::Orchestration, "create_metric"}}));
+    EXPECT_EQ(permission_operations("network:read"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "network_records_read"}}));
+    EXPECT_EQ(permission_operations("network:write"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "network_records_write"}}));
 
     // The object capability (#1005): objects:* are object-scopable by bucket
     // prefix; objects:write covers the owner lease.
@@ -181,8 +185,8 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // The canonical list carries the #746 atoms, blob:read (#747), six
     // orchestration atoms, eight pub/sub atoms (#1029/#1136), study promotion
     // (#1138), study deletion (#1158), five record-store and time-series atoms
-    // (#1231), and three object atoms (#1005).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 32u);
+    // (#1231), three object atoms (#1005), and two network-record atoms (#1281).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 34u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

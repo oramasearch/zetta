@@ -35,7 +35,7 @@ independent schedule, and supports an admin-only recorded purge, with
 | [product/](product/README.md) | What Orama Zetta is: the read-first framing + vision (Intelligence Velocity), personas, positioning, the use-case catalog, control surfaces, and the per-audience experience contracts (UX · DX · AX · serving). |
 | [architecture/](architecture/README.md) | The node, run modes, module map, the code map, schema-as-code, the async runtime interface, true hybrid, the living codebase health audit. |
 | [data/](data/README.md) | Storage engines and the on-disk format, large objects, datasets, partitioning (interface, write path, rebalance, sharded placement), the native Parquet reader, the query layer. |
-| [cluster/](cluster/README.md) | Equal-peer clustering, CRDT replication, the signal plane, collectives, per-node telemetry. |
+| [cluster/](cluster/README.md) | Equal-peer clustering, the reusable mutual-TLS Corosio transport library, CRDT replication, the signal plane, collectives, per-node telemetry. |
 | [compute/](compute/README.md) | The `ComputeDevice` accelerator interface and backends, work-stealing scheduler, job coordinator, compute jobs, autoscaling, checkpoints, compute-near-data. |
 | [ddf/](ddf/README.md) | The distributed dataframe: the frame core and its local + distributed ops (scan/filter/project, sort, join, group-by, as-of, featurize). |
 | [ml/](ml/README.md) | Native ML: histogram GBDT, document extraction, calibration, batch scoring / rank-at-risk, exact TreeSHAP, page-ready Model/Study listings, live Run metrics, and the native correctness oracle. |
@@ -51,6 +51,7 @@ independent schedule, and supports an admin-only recorded purge, with
 | [cloud/](cloud/README.md) | The `Provisioner` interface, the seven provisioner backends (local / Azure / AWS / GCP / OCI / k8s / bare-metal), the CLI control-plane pattern, burst identity, cost-cap approval, the cloud inspector. |
 | [governance/](governance/README.md) | Key-scoped access control, the audit trail, the governed console. |
 | [workspace/](workspace/README.md) | The Workspace Profile — the environment/role/daily-work + approved-source-refs entity behind the "Discover Opportunities" pathway (#886). |
+| [network/](network/README.md) | Retained workspace network records: connection/grant history, tunnel sessions, and zetta-tunnel gateway/mesh activity (#1281). |
 | [billing/](billing/README.md) | Metered usage + plan: the live `system.usage` snapshot (metered from engine state) and the Plan quota/tier entity it is measured against (Conflict D). No payment processor — on-prem. |
 | [ops/](ops/README.md) | Operator diagnostics and tuning: per-subsystem memory ownership, allocator truth, RSS, periodic reporting, and allocator guidance. |
 | [solutions/](solutions/README.md) | Shared solution components: deterministic experimental assignment, protected holdouts, treatment/exploration cells, exemptions, and uplift-training records. |

@@ -4,8 +4,9 @@ Blueprint **CTL-2** for trust boundary **TB-3** (the inter-node boundary), #466:
 every inter-node connection runs **mutual TLS 1.3**, every node holds a
 **cryptographic identity** (its own keypair + certificate), and joining the
 cluster is **gated on a join token**. Built on Corosio's OpenSSL TLS provider
-over the same equal-peer transport ([cluster.md](cluster.md)); the surface is
-`zetta::cluster::ClusterSecurity` (`include/zetta/cluster/security.hpp`) and
+over the same equal-peer transport ([cluster.md](cluster.md)); generic TLS and
+framing live in [`zetta::transport`](transport-library.md), while the
+cluster-specific surface is `zetta::cluster::ClusterSecurity` and
 `ClusterConfig::security`.
 
 ## Trust model — the join token is the trust root
@@ -24,18 +25,21 @@ characters. Everything else derives from it:
 2. **Each node mints its own identity**: a fresh random Ed25519 keypair in a
    CA-signed certificate whose `CN` is the node id, persisted next to the token
    (below) so the identity is stable across restarts.
-3. **The transport enforces it**: `Cluster::start()` builds one TLS context —
-   this node's identity + the cluster CA as the **only** trust anchor,
-   `require_peer` verification in **both** directions, TLS 1.3 minimum, no
+3. **The transport enforces it**: `Cluster::start()` asks
+   `zetta::transport::make_mutual_tls_context` to verify the PEM bundle and
+   build one context — this node's identity + the cluster CA as the **only**
+   trust anchor, `require_peer` verification in **both** directions, TLS 1.3
+   only, no
    hostname check (membership is proven by the CA, not by an address). The TLS
    handshake runs **before** any `ZETTA/1` protocol line, so an unenrolled or
    plaintext dialer is dropped before it even reaches `HELLO`. Credentials that
    fail to load **fail closed** — the node runs no networking rather than
    falling back to plaintext.
-4. **One TLS stream, serialized I/O.** A link's read pump and write pump share
-   **one** OpenSSL stream, whose `SSL` object + scratch buffers can't be driven
-   concurrently (interleaved `SSL_read`/`SSL_write` corrupt the record stream). A
-   per-link async mutex serializes them: the read pump waits for socket
+4. **One shared framed TLS stream, serialized I/O.** A link's read pump and
+   write pump share one `zetta::transport::FramedStream` over an OpenSSL stream,
+   whose `SSL` object + scratch buffers cannot be driven concurrently
+   (interleaved `SSL_read`/`SSL_write` corrupt the record stream). The reusable
+   transport's async mutex serializes them: the read pump waits for socket
    readability *off* the lock, then drains the decrypted bytes *under* it, so a
    read and a write never overlap on the one `SSL` object (#786). A plaintext link
    keeps lock-free full-duplex I/O. Gossip currently re-ships the full document
@@ -74,9 +78,9 @@ flag or env selects it.
 ### Provisioned / burst nodes (#670)
 
 A cloud-burst node can't be handed these flags interactively, so the provisioner
-seam injects them at boot. Each `<Vendor>ControlPlane` puts the cluster's seed
+interface injects them at boot. Each `<Vendor>ControlPlane` puts the cluster's seed
 address in **`ZETTA_SEED_PEER`** and — when the cluster is secure — its join token
-in **`ZETTA_CLUSTER_TOKEN`**, on the same per-cloud delivery seam (an AWS instance
+in **`ZETTA_CLUSTER_TOKEN`**, through the same per-cloud delivery path (an AWS instance
 tag / Azure cloud-init custom-data / GCP + OCI metadata / a Kubernetes pod env / a
 container `--env`), so the node's bootstrap comes up with the equivalent of
 `zetta --peer <seed> --join-token <token>` and joins the **mTLS** cluster (the
@@ -86,10 +90,10 @@ wire time, from this node's own live cluster security — `main.cpp` passes
 per-cloud config that didn't set its own. The token is the cluster secret, so
 unlike the seed peer it is **never** part of the config's JSON boundary: it is not
 serialized into the node's detected provisioner config or the `system.provisioners`
-table, and rides only the bootstrap seam. A `Cluster` with empty security (an
+table, and rides only the bootstrap path. A `Cluster` with empty security (an
 embedded bare `Cluster` in a test/host, the only unsecured path — #799) has an
 empty token, so nothing is injected. (The reference control planes carry the token illustratively
-on the same visible seam as the seed; a production control plane sources it from a
+through the same visible path as the seed; a production control plane sources it from a
 per-cloud secret store rather than a describe-able tag / literal.)
 
 ## On disk — `<data_dir>/security/`
@@ -118,15 +122,17 @@ previous one; its next start re-seals those entries under the current token. See
   token), `generate_join_token` / `valid_join_token`,
   `derive_cluster_security` (pure), `load_or_create_cluster_security`
   (persistence), `cluster_secret_schema()`.
+- `include/zetta/transport/` — the independent public transport surface:
+  verified PEM credentials, mutual TLS 1.3 context creation, and the framed
+  Corosio stream. See [transport-library.md](transport-library.md).
+- `src/transport/` — the `zetta_transport` implementation: OpenSSL credential
+  validation and the shared framing/TLS I/O coordination (#1283).
 - `src/core/cluster/security.cpp` — the **one TU allowed to name OpenSSL
-  libcrypto** (key generation, X509 minting, PEM), the way `cluster.cpp` is the
-  one TU naming Corosio.
-- `src/core/cluster/cluster.cpp` — the transport: the TLS context in
-  `Cluster::State`, the per-link `openssl_stream` (via `zetta::runtime::net`
-  aliases), the line protocol over a type-erased `any_stream` (plaintext or
-  TLS behind one code path). The read-pump + link-writer full-duplex pattern is
-  preserved — the TLS session supports exactly one in-flight read + one
-  in-flight write.
+  libcrypto for cluster identity generation** (key generation, X509 minting,
+  PEM). Generic PEM verification lives in `src/transport/security.cpp`.
+- `src/core/cluster/cluster.cpp` — cluster connection lifecycle and protocol;
+  it creates the shared context and wraps every socket in `FramedStream` before
+  HELLO. The read-pump + link-writer pattern and line bytes are unchanged.
 - `tests/cluster/test_cluster_security.cpp` — token/derivation/persistence
   units + real-TCP mTLS convergence, wrong-token rejection, plaintext
   rejection.
@@ -151,17 +157,8 @@ fallback path).
   (re-key every node). Token rotation is manual (`--join-token` on each node);
   each node re-seals the saved connector credentials on its first start under
   the new token.
-- **Burst nodes** (cloud provisioners) now **consume** `ZETTA_CLUSTER_TOKEN`
-  (and `ZETTA_SEED_PEER`) from the environment on boot — the binary maps them to
-  `--join-token` / `--peer` as defaults beneath explicit flags, so a provisioned
-  node whose env carries the token derives the cluster CA + its mTLS identity and
-  auto-joins the secure cluster with no manual flags (#749;
-  [../cloud/node-bootstrap-env.md](../cloud/node-bootstrap-env.md)). The
-  remaining gap is the **injection** side: the provisioner seam still hands the
-  VM only `ZETTA_SEED_PEER` today, so until the join-token plumbing lands
-  (#670/#742) a burst node's env carries no token and it comes up unable to join
-  a TLS cluster. The consuming side is ready for it.
-
 **Closed by #670:** burst nodes now receive the join token too — the provisioner
-seam injects `ZETTA_CLUSTER_TOKEN` alongside `ZETTA_SEED_PEER`, so a provisioned
-node joins a secure (non-plaintext) cluster (see "Provisioned / burst nodes" above).
+interface injects `ZETTA_CLUSTER_TOKEN` alongside `ZETTA_SEED_PEER`, so a provisioned
+node maps it with `ZETTA_SEED_PEER` to the CLI defaults, derives the cluster CA
+and identity, and joins a secure cluster with no manual flags (see "Provisioned
+/ burst nodes" above and [node bootstrap](../cloud/node-bootstrap-env.md)).

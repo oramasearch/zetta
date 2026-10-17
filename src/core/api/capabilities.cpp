@@ -12489,6 +12489,7 @@ void register_core_capabilities(Registry& registry) {
     register_pubsub_capabilities(registry);
     register_run_metrics_capabilities(registry);
     register_record_capabilities(registry);
+    register_network_capabilities(registry);
     register_object_capabilities(registry);
     register_storage_capabilities(registry);
     register_study_capabilities(registry);

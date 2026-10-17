@@ -60,7 +60,7 @@
   "info": {
     "description": "The capability registry rendered as plain HTTP routes: reads are GET /v1/<name> (input in the query string), actions and jobs are POST /v1/<name> (input as the JSON body). The same registry is served as MCP tools on POST /mcp — one registry, two renderings, zero drift. Every response carries a trace_id; read the full trace back with get_trace.",
     "title": "Orama Zetta control surface",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -20470,6 +20470,218 @@
         ]
       }
     },
+    "/v1/issue_app_credential": {
+      "post": {
+        "description": "Issue one revocable bearer credential for an app Connection, limited to the requested schema/tables and topic prefixes. Returns the plaintext credential once and mutates replicated governance state. Requires api:manage_tokens.",
+        "operationId": "issue_app_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connection_id": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "credential_scope": {
+                    "additionalProperties": false,
+                    "anyOf": [
+                      {
+                        "required": [
+                          "schema"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "tables"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "topics"
+                        ]
+                      }
+                    ],
+                    "properties": {
+                      "access": {
+                        "enum": [
+                          "read",
+                          "write"
+                        ]
+                      },
+                      "schema": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "tables": {
+                        "items": {
+                          "maxLength": 257,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "topics": {
+                        "items": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "maxItems": 128,
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      }
+                    },
+                    "required": [
+                      "access"
+                    ],
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "connection_id",
+                  "credential_scope"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection_id": {
+                          "type": "string"
+                        },
+                        "credential": {
+                          "description": "plaintext bearer returned once and never stored",
+                          "type": "string"
+                        },
+                        "credential_scope": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "access": {
+                              "enum": [
+                                "read",
+                                "write"
+                              ]
+                            },
+                            "schema": {
+                              "type": "string"
+                            },
+                            "tables": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "topics": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "access",
+                            "schema",
+                            "tables",
+                            "topics"
+                          ],
+                          "type": "object"
+                        },
+                        "role_id": {
+                          "type": "string"
+                        },
+                        "token_id": {
+                          "type": "string"
+                        },
+                        "user_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "connection_id",
+                        "user_id",
+                        "role_id",
+                        "token_id",
+                        "credential",
+                        "credential_scope"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Issue an app connection credential",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/list_agents": {
       "get": {
         "description": "Read every agent on this node (id, name, model, tools). No side effects. Requires api:query.",
@@ -22542,6 +22754,1186 @@
           }
         },
         "summary": "List models",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/list_network_records": {
+      "get": {
+        "description": "Read a newest-first page of decoded connection, grant, tunnel-session, or gateway/mesh records from this workspace's Zetta. No side effects. Requires data:network_records_read.",
+        "operationId": "list_network_records",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          },
+          {
+            "description": "a declared index; defaults to all",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "description": "a declared index; defaults to all",
+              "pattern": "^[a-z][a-z_]{0,63}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "enum": [
+                "connection",
+                "grant",
+                "tunnel_session",
+                "activity"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "value",
+            "required": false,
+            "schema": {
+              "maxLength": 512,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "next_after": {
+                          "type": "string"
+                        },
+                        "records": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "expires_ms": {
+                                "type": "integer"
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "record": {
+                                "$schema": "http://json-schema.org/draft-07/schema#",
+                                "description": "A workspace network record (#1281): Lake connection/grant history or a zetta-tunnel relay session/gateway decision.",
+                                "oneOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "actor_id": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "connection_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "credential_scope": {
+                                        "type": [
+                                          "object",
+                                          "null"
+                                        ]
+                                      },
+                                      "event": {
+                                        "enum": [
+                                          "connection_declared",
+                                          "connection_updated",
+                                          "connection_removed"
+                                        ]
+                                      },
+                                      "ports": {
+                                        "items": {
+                                          "maximum": 65535,
+                                          "minimum": 1,
+                                          "type": "integer"
+                                        },
+                                        "type": "array",
+                                        "uniqueItems": true
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "source_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "source_kind": {
+                                        "enum": [
+                                          "app",
+                                          "service",
+                                          "agent",
+                                          "tunnel"
+                                        ]
+                                      },
+                                      "target_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "target_kind": {
+                                        "enum": [
+                                          "service",
+                                          "app"
+                                        ]
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "timestamp",
+                                      "workspace",
+                                      "connection_id",
+                                      "actor_id",
+                                      "source_kind",
+                                      "source_id",
+                                      "target_kind",
+                                      "target_id",
+                                      "ports"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "actor_id": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "event": {
+                                        "enum": [
+                                          "grant_created",
+                                          "grant_revoked",
+                                          "grant_expired"
+                                        ]
+                                      },
+                                      "expires_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "grant_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "port": {
+                                        "maximum": 65535,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "revoked_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "target_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "target_kind": {
+                                        "enum": [
+                                          "service",
+                                          "app"
+                                        ]
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "user_id": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "timestamp",
+                                      "workspace",
+                                      "grant_id",
+                                      "actor_id",
+                                      "user_id",
+                                      "target_kind",
+                                      "target_id",
+                                      "port",
+                                      "expires_at"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "bytes_down": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "bytes_up": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "endpoint": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "event": {
+                                        "enum": [
+                                          "session_start",
+                                          "session_end",
+                                          "refusal"
+                                        ]
+                                      },
+                                      "grant_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "peer": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "reason": {
+                                        "maxLength": 128,
+                                        "type": "string"
+                                      },
+                                      "role": {
+                                        "const": "relay"
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "session_id": {
+                                        "pattern": "^[0-9a-f]{32}$",
+                                        "type": "string"
+                                      },
+                                      "started_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "role",
+                                      "session_id",
+                                      "timestamp",
+                                      "started_at",
+                                      "grant_id",
+                                      "workspace",
+                                      "peer",
+                                      "endpoint",
+                                      "reason",
+                                      "bytes_up",
+                                      "bytes_down"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "decision": {
+                                        "enum": [
+                                          "allow",
+                                          "deny"
+                                        ]
+                                      },
+                                      "dns_name": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "event": {
+                                        "const": "egress_decision"
+                                      },
+                                      "port": {
+                                        "maximum": 65535,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "protocol": {
+                                        "enum": [
+                                          "https_sni",
+                                          "explicit"
+                                        ]
+                                      },
+                                      "reason": {
+                                        "maxLength": 128,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "resolved_address": {
+                                        "maxLength": 512,
+                                        "type": "string"
+                                      },
+                                      "role": {
+                                        "const": "egress"
+                                      },
+                                      "rule_id": {
+                                        "pattern": "^$|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "source": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "started_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "role",
+                                      "timestamp",
+                                      "started_at",
+                                      "decision",
+                                      "reason",
+                                      "rule_id",
+                                      "workspace",
+                                      "source",
+                                      "dns_name",
+                                      "port",
+                                      "protocol",
+                                      "resolved_address"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "bytes_down": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "bytes_up": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "decision": {
+                                        "enum": [
+                                          "allow",
+                                          "deny"
+                                        ]
+                                      },
+                                      "destination": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "event": {
+                                        "enum": [
+                                          "peer_decision",
+                                          "ingress_decision",
+                                          "mesh_decision"
+                                        ]
+                                      },
+                                      "protocol": {
+                                        "maxLength": 64,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "reason": {
+                                        "maxLength": 128,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "role": {
+                                        "enum": [
+                                          "peer_gateway",
+                                          "ingress_gateway",
+                                          "mesh"
+                                        ]
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "source": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "started_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "role",
+                                      "timestamp",
+                                      "started_at",
+                                      "decision",
+                                      "reason",
+                                      "workspace",
+                                      "source",
+                                      "destination",
+                                      "protocol",
+                                      "bytes_up",
+                                      "bytes_down"
+                                    ],
+                                    "type": "object"
+                                  }
+                                ],
+                                "title": "zetta.NetworkRecord"
+                              },
+                              "revision": {
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "type": {
+                                "enum": [
+                                  "connection",
+                                  "grant",
+                                  "tunnel_session",
+                                  "activity"
+                                ]
+                              },
+                              "updated_ms": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "type",
+                              "record",
+                              "revision",
+                              "updated_ms",
+                              "expires_ms"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "records"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List workspace network records",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "Read a newest-first page of decoded connection, grant, tunnel-session, or gateway/mesh records from this workspace's Zetta. No side effects. Requires data:network_records_read.",
+        "operationId": "list_network_records_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "after": {
+                    "type": "string"
+                  },
+                  "direction": {
+                    "enum": [
+                      "asc",
+                      "desc"
+                    ]
+                  },
+                  "filter": {
+                    "description": "a declared index; defaults to all",
+                    "pattern": "^[a-z][a-z_]{0,63}$",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "enum": [
+                      "connection",
+                      "grant",
+                      "tunnel_session",
+                      "activity"
+                    ]
+                  },
+                  "value": {
+                    "maxLength": 512,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "next_after": {
+                          "type": "string"
+                        },
+                        "records": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "expires_ms": {
+                                "type": "integer"
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "record": {
+                                "$schema": "http://json-schema.org/draft-07/schema#",
+                                "description": "A workspace network record (#1281): Lake connection/grant history or a zetta-tunnel relay session/gateway decision.",
+                                "oneOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "actor_id": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "connection_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "credential_scope": {
+                                        "type": [
+                                          "object",
+                                          "null"
+                                        ]
+                                      },
+                                      "event": {
+                                        "enum": [
+                                          "connection_declared",
+                                          "connection_updated",
+                                          "connection_removed"
+                                        ]
+                                      },
+                                      "ports": {
+                                        "items": {
+                                          "maximum": 65535,
+                                          "minimum": 1,
+                                          "type": "integer"
+                                        },
+                                        "type": "array",
+                                        "uniqueItems": true
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "source_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "source_kind": {
+                                        "enum": [
+                                          "app",
+                                          "service",
+                                          "agent",
+                                          "tunnel"
+                                        ]
+                                      },
+                                      "target_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "target_kind": {
+                                        "enum": [
+                                          "service",
+                                          "app"
+                                        ]
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "timestamp",
+                                      "workspace",
+                                      "connection_id",
+                                      "actor_id",
+                                      "source_kind",
+                                      "source_id",
+                                      "target_kind",
+                                      "target_id",
+                                      "ports"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "actor_id": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "event": {
+                                        "enum": [
+                                          "grant_created",
+                                          "grant_revoked",
+                                          "grant_expired"
+                                        ]
+                                      },
+                                      "expires_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "grant_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "port": {
+                                        "maximum": 65535,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "revoked_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "target_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "target_kind": {
+                                        "enum": [
+                                          "service",
+                                          "app"
+                                        ]
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "user_id": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "timestamp",
+                                      "workspace",
+                                      "grant_id",
+                                      "actor_id",
+                                      "user_id",
+                                      "target_kind",
+                                      "target_id",
+                                      "port",
+                                      "expires_at"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "bytes_down": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "bytes_up": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "endpoint": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "event": {
+                                        "enum": [
+                                          "session_start",
+                                          "session_end",
+                                          "refusal"
+                                        ]
+                                      },
+                                      "grant_id": {
+                                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "peer": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "reason": {
+                                        "maxLength": 128,
+                                        "type": "string"
+                                      },
+                                      "role": {
+                                        "const": "relay"
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "session_id": {
+                                        "pattern": "^[0-9a-f]{32}$",
+                                        "type": "string"
+                                      },
+                                      "started_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "role",
+                                      "session_id",
+                                      "timestamp",
+                                      "started_at",
+                                      "grant_id",
+                                      "workspace",
+                                      "peer",
+                                      "endpoint",
+                                      "reason",
+                                      "bytes_up",
+                                      "bytes_down"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "decision": {
+                                        "enum": [
+                                          "allow",
+                                          "deny"
+                                        ]
+                                      },
+                                      "dns_name": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "event": {
+                                        "const": "egress_decision"
+                                      },
+                                      "port": {
+                                        "maximum": 65535,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "protocol": {
+                                        "enum": [
+                                          "https_sni",
+                                          "explicit"
+                                        ]
+                                      },
+                                      "reason": {
+                                        "maxLength": 128,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "resolved_address": {
+                                        "maxLength": 512,
+                                        "type": "string"
+                                      },
+                                      "role": {
+                                        "const": "egress"
+                                      },
+                                      "rule_id": {
+                                        "pattern": "^$|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "source": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "started_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "role",
+                                      "timestamp",
+                                      "started_at",
+                                      "decision",
+                                      "reason",
+                                      "rule_id",
+                                      "workspace",
+                                      "source",
+                                      "dns_name",
+                                      "port",
+                                      "protocol",
+                                      "resolved_address"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "bytes_down": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "bytes_up": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "decision": {
+                                        "enum": [
+                                          "allow",
+                                          "deny"
+                                        ]
+                                      },
+                                      "destination": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "event": {
+                                        "enum": [
+                                          "peer_decision",
+                                          "ingress_decision",
+                                          "mesh_decision"
+                                        ]
+                                      },
+                                      "protocol": {
+                                        "maxLength": 64,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "reason": {
+                                        "maxLength": 128,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "role": {
+                                        "enum": [
+                                          "peer_gateway",
+                                          "ingress_gateway",
+                                          "mesh"
+                                        ]
+                                      },
+                                      "schema": {
+                                        "const": 1
+                                      },
+                                      "source": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "started_at": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "timestamp": {
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                                        "type": "string"
+                                      },
+                                      "workspace": {
+                                        "maxLength": 253,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "schema",
+                                      "event",
+                                      "role",
+                                      "timestamp",
+                                      "started_at",
+                                      "decision",
+                                      "reason",
+                                      "workspace",
+                                      "source",
+                                      "destination",
+                                      "protocol",
+                                      "bytes_up",
+                                      "bytes_down"
+                                    ],
+                                    "type": "object"
+                                  }
+                                ],
+                                "title": "zetta.NetworkRecord"
+                              },
+                              "revision": {
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "type": {
+                                "enum": [
+                                  "connection",
+                                  "grant",
+                                  "tunnel_session",
+                                  "activity"
+                                ]
+                              },
+                              "updated_ms": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "type",
+                              "record",
+                              "revision",
+                              "updated_ms",
+                              "expires_ms"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "records"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List workspace network records",
         "tags": [
           "read"
         ]
@@ -33592,6 +34984,119 @@
         ]
       }
     },
+    "/v1/revoke_app_credential": {
+      "post": {
+        "description": "Revoke every bearer token for one app Connection and remove its least-privilege role assignment. Idempotent and mutates replicated governance state. Requires api:manage_tokens.",
+        "operationId": "revoke_app_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connection_id": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "connection_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection_id": {
+                          "type": "string"
+                        },
+                        "revoked": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "revoked_token_ids": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "connection_id",
+                        "revoked",
+                        "revoked_token_ids"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Revoke an app connection credential",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/run": {
       "post": {
         "description": "Execute a stored, gate-passing project graph through its registered methodology runner. Unknown and unavailable model kinds are refused; a graph with no model step may run structurally. Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
@@ -41228,6 +42733,546 @@
         "summary": "Show version",
         "tags": [
           "read"
+        ]
+      }
+    },
+    "/v1/write_network_record": {
+      "post": {
+        "description": "Validate and durably store one Lake connection/grant history record or one zetta-tunnel session/gateway decision in this workspace's Zetta. Mutates replicated state. Requires data:network_records_write.",
+        "operationId": "write_network_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "description": "A workspace network record (#1281): Lake connection/grant history or a zetta-tunnel relay session/gateway decision.",
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "actor_id": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "connection_id": {
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "credential_scope": {
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "event": {
+                        "enum": [
+                          "connection_declared",
+                          "connection_updated",
+                          "connection_removed"
+                        ]
+                      },
+                      "ports": {
+                        "items": {
+                          "maximum": 65535,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "schema": {
+                        "const": 1
+                      },
+                      "source_id": {
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "source_kind": {
+                        "enum": [
+                          "app",
+                          "service",
+                          "agent",
+                          "tunnel"
+                        ]
+                      },
+                      "target_id": {
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "target_kind": {
+                        "enum": [
+                          "service",
+                          "app"
+                        ]
+                      },
+                      "timestamp": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "workspace": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "schema",
+                      "event",
+                      "timestamp",
+                      "workspace",
+                      "connection_id",
+                      "actor_id",
+                      "source_kind",
+                      "source_id",
+                      "target_kind",
+                      "target_id",
+                      "ports"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "actor_id": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "event": {
+                        "enum": [
+                          "grant_created",
+                          "grant_revoked",
+                          "grant_expired"
+                        ]
+                      },
+                      "expires_at": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "grant_id": {
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "port": {
+                        "maximum": 65535,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "revoked_at": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "schema": {
+                        "const": 1
+                      },
+                      "target_id": {
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "target_kind": {
+                        "enum": [
+                          "service",
+                          "app"
+                        ]
+                      },
+                      "timestamp": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "user_id": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "workspace": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "schema",
+                      "event",
+                      "timestamp",
+                      "workspace",
+                      "grant_id",
+                      "actor_id",
+                      "user_id",
+                      "target_kind",
+                      "target_id",
+                      "port",
+                      "expires_at"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bytes_down": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "bytes_up": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "endpoint": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "event": {
+                        "enum": [
+                          "session_start",
+                          "session_end",
+                          "refusal"
+                        ]
+                      },
+                      "grant_id": {
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "peer": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "reason": {
+                        "maxLength": 128,
+                        "type": "string"
+                      },
+                      "role": {
+                        "const": "relay"
+                      },
+                      "schema": {
+                        "const": 1
+                      },
+                      "session_id": {
+                        "pattern": "^[0-9a-f]{32}$",
+                        "type": "string"
+                      },
+                      "started_at": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "workspace": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "schema",
+                      "event",
+                      "role",
+                      "session_id",
+                      "timestamp",
+                      "started_at",
+                      "grant_id",
+                      "workspace",
+                      "peer",
+                      "endpoint",
+                      "reason",
+                      "bytes_up",
+                      "bytes_down"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "decision": {
+                        "enum": [
+                          "allow",
+                          "deny"
+                        ]
+                      },
+                      "dns_name": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "event": {
+                        "const": "egress_decision"
+                      },
+                      "port": {
+                        "maximum": 65535,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "protocol": {
+                        "enum": [
+                          "https_sni",
+                          "explicit"
+                        ]
+                      },
+                      "reason": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "resolved_address": {
+                        "maxLength": 512,
+                        "type": "string"
+                      },
+                      "role": {
+                        "const": "egress"
+                      },
+                      "rule_id": {
+                        "pattern": "^$|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "schema": {
+                        "const": 1
+                      },
+                      "source": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "started_at": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "workspace": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "schema",
+                      "event",
+                      "role",
+                      "timestamp",
+                      "started_at",
+                      "decision",
+                      "reason",
+                      "rule_id",
+                      "workspace",
+                      "source",
+                      "dns_name",
+                      "port",
+                      "protocol",
+                      "resolved_address"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bytes_down": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "bytes_up": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "decision": {
+                        "enum": [
+                          "allow",
+                          "deny"
+                        ]
+                      },
+                      "destination": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "event": {
+                        "enum": [
+                          "peer_decision",
+                          "ingress_decision",
+                          "mesh_decision"
+                        ]
+                      },
+                      "protocol": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "reason": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "role": {
+                        "enum": [
+                          "peer_gateway",
+                          "ingress_gateway",
+                          "mesh"
+                        ]
+                      },
+                      "schema": {
+                        "const": 1
+                      },
+                      "source": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "started_at": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+                        "type": "string"
+                      },
+                      "workspace": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "schema",
+                      "event",
+                      "role",
+                      "timestamp",
+                      "started_at",
+                      "decision",
+                      "reason",
+                      "workspace",
+                      "source",
+                      "destination",
+                      "protocol",
+                      "bytes_up",
+                      "bytes_down"
+                    ],
+                    "type": "object"
+                  }
+                ],
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "title": "zetta.NetworkRecord"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "expires_ms": {
+                          "type": "integer"
+                        },
+                        "key": {
+                          "type": "string"
+                        },
+                        "owner": {
+                          "type": "string"
+                        },
+                        "replicas": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "replicas_expected": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "revision": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "type": {
+                          "enum": [
+                            "connection",
+                            "grant",
+                            "tunnel_session",
+                            "activity"
+                          ]
+                        },
+                        "updated_ms": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "key",
+                        "revision",
+                        "updated_ms",
+                        "expires_ms",
+                        "owner",
+                        "replicas",
+                        "replicas_expected"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Write a workspace network record",
+        "tags": [
+          "action"
         ]
       }
     }

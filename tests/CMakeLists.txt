@@ -23,6 +23,7 @@ endif()
 
 add_executable(zetta-tests
   memory/test_accounting.cpp
+  transport/test_security.cpp
   api/test_registry.cpp
   api/test_agent_api.cpp
   api/test_workspace_methodology_api.cpp
@@ -45,6 +46,7 @@ add_executable(zetta-tests
   api/test_serving.cpp
   api/test_scoped_grants_api.cpp
   api/test_record_capabilities.cpp
+  api/test_network_capabilities.cpp
   api/test_storage_capabilities.cpp
   api/test_object_routes.cpp
   api/test_row_security_api.cpp
@@ -70,6 +72,7 @@ add_executable(zetta-tests
   data/test_database.cpp
   data/test_replication_strategy.cpp
   data/test_record_store.cpp
+  network/test_network_records.cpp
   data/test_metric_store.cpp
   data/test_record_soak.cpp
   data/test_object_store.cpp
@@ -269,6 +272,7 @@ add_executable(zetta-tests
   cluster/test_listen_port.cpp
   cluster/test_cluster_routing.cpp
   cluster/test_cluster_security.cpp
+  cluster/test_peer_gateway.cpp
   cluster/test_signal.cpp
   cluster/test_collectives.cpp
   cluster/test_replication.cpp
@@ -328,6 +332,7 @@ add_executable(zetta-tests
   compute/test_mlx_transformer.cpp
   compute/test_safetensors.cpp
   test_integrity.cpp
+  test_release.cpp
   test_schemas.cpp
 )
 
@@ -348,6 +353,7 @@ target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_BINARY="$<TARGET_FILE:zetta>"
   ZETTA_AUDIT_PROOF_BINARY="$<TARGET_FILE:zetta-audit-proof>"
   ZETTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  ZETTA_PROJECT_VERSION="${PROJECT_VERSION}"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
 add_dependencies(zetta-tests zetta)
 add_executable(zetta-audit-proof governance/audit_proof.cpp)
@@ -355,7 +361,7 @@ target_link_libraries(zetta-audit-proof PRIVATE zetta-core)
 target_compile_features(zetta-audit-proof PRIVATE cxx_std_26)
 add_dependencies(zetta-tests zetta-audit-proof)
 target_link_libraries(zetta-tests
-  PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
+  PRIVATE zetta-api PRIVATE zetta-core zetta_transport GTest::gtest_main
   # The boundary validator, so schema-as-code tests can assert every
   # registered input/output schema actually loads (test_openapi.cpp).
   PRIVATE nlohmann_json_schema_validator

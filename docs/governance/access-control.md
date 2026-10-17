@@ -343,6 +343,18 @@ issued programmatically via `Node::create_token`.
 > (`user.json` / `role.json` / `token.json` / `user_role.json`). A token's hash
 > replicates in full; the plaintext never enters the document.
 
+### Connection-owned app credentials (#1280)
+
+[`issue_app_credential`](../network/scoped-app-access.md) composes this store
+with the fine-grained grants below. It creates one implementation-owned user
+and role for a Lake connection and app, grants only the selected tables or
+database and topic prefixes, grants only the tools needed to use those
+resources, and returns one hashed-at-rest API token. `read` grants no mutation;
+`write` includes read and write on the same resources but no DDL or
+administration. `revoke_app_credential` revokes the user's tokens and removes
+the role assignment. Calls made with the token use the ordinary capability,
+per-statement SQL, pub/sub, and audit paths.
+
 > **What's next.** The *store* above is the foundation; the **default-deny gate**
 > below (#745, always on since #799) consumes it, and **RBAC role management** (the
 > permission vocabulary, custom roles, user↔role assignment — #746) is the section
@@ -463,6 +475,7 @@ can never disagree:
 | `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
 | `records:read` / `records:write` / `records:manage` | `data:records_read` / `data:records_write` / `orchestration:create_collection` | read, write and declare keyed record collections; object-scopable by collection name prefix, `ON COLLECTION <prefix>` (#1231, [../data/record-store.md](../data/record-store.md)) |
 | `metrics:read` / `metrics:write` | `data:metrics_read` / `data:metrics_write`, `orchestration:create_metric` | query, record and declare labelled time series (#1231, [../data/time-series.md](../data/time-series.md)) |
+| `network:read` / `network:write` | `data:network_records_read` / `data:network_records_write` | Lake reads and zetta-tunnel writes the typed, retained records in one workspace's Zetta; neither atom grants generic record access (#1281, [../network/network-records.md](../network/network-records.md)) |
 | `objects:read` / `objects:write` / `objects:manage` | `data:objects_read` / `data:objects_write` / `orchestration:objects_manage` | read, write (and hold the owner lease of) and declare object buckets; object-scopable by bucket name prefix, `ON BUCKET <prefix>`; only `admin` holds them by default (#1005, [../data/object-store.md](../data/object-store.md#rights)) |
 | `pipelines:manage` | all pipeline, dataset/connector, snapshot, graph, agent/profile/plan, solution, decision-policy, experiment, and run-metric write operations, and the dataset, model, run and index deletes (lake#645) in `permission.cpp` | drive the authoring → gate → deploy → run → governed-action control surface over MCP/REST, including run parameters, metric series, and typed artifacts (#1102, #1103, #1104, #1105, #1137) |
 | `studies:promote`  | `orchestration:promote_trial` | register a complete trial's Model as the Study's promoted project version (#1138) |

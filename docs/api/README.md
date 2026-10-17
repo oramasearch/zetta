@@ -146,6 +146,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `sql` | read | api:query | one governed SQL statement — every `system.*` view; answers `{messages, columns, rows}` with `columns` always filled, and an error for an unknown column ([query.md](../data/query.md)). Each data-changing statement is authorized on its own (`sql:write` / `sql:ddl` / `users:manage` / `tokens:manage`) and audited as `data_changed` ([per-statement enforcement](../governance/access-control.md#per-statement-enforcement), #1229); also a JSON-body POST, so a statement is not bound by the ~4 KiB request line (#1231) |
 | `get_record` | read | data:records_read (`records:read`, scopable `ON COLLECTION`) | one keyed record by `(collection, key)`; also POST ([record-store.md](../data/record-store.md)) |
 | `list_records` | read | data:records_read | one index value's records ordered by `order` then key, paged by `next_after`; also POST |
+| `list_network_records` | read | data:network_records_read (`network:read`) | decoded, retained connection/grant/session/activity pages from this workspace's Zetta; indexed filters, newest-first by default; also POST ([network records](../network/network-records.md)) |
 | `query_metric` | read | data:metrics_read (`metrics:read`) | sum a counter or aggregate a gauge over a range, filtered, grouped and stepped; also POST ([time-series.md](../data/time-series.md)) |
 | `list_objects` | read | data:objects_read (`objects:read`, scopable `ON BUCKET`) | a bucket's keys and sizes by key, paged; also POST and `GET /v1/objects/<bucket>` ([object-store.md](../data/object-store.md)) |
 | `object_usage` | read | data:objects_read | a bucket's objects, bytes and quota; also `GET /v1/objects/<bucket>:usage` |
@@ -191,8 +192,11 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
+| `issue_app_credential` | action | api:manage_tokens (`tokens:manage`) | create one connection-owned user, least-privilege role, and hashed token; return its plaintext once; refuse a second live token for the same connection ([scoped app access](../network/scoped-app-access.md), #1280) |
+| `revoke_app_credential` | action | api:manage_tokens (`tokens:manage`) | revoke every token for one connection and remove its role assignment; idempotent (#1280) |
 | `create_collection` | action | orchestration:create_collection (`records:manage`) | declare a record collection, its indexes and retention; idempotent for an identical definition |
 | `put_record` | action | data:records_write (`records:write`) | conditional (`if_absent` / `if_revision`, 409 otherwise) keyed write, durable and on every live node before it returns |
+| `write_network_record` | action | data:network_records_write (`network:write`) | validate and durably store a Lake connection/grant history object or zetta-tunnel session/gateway decision in this workspace's Zetta ([network records](../network/network-records.md)) |
 | `delete_record` | action | data:records_write | conditional delete |
 | `create_metric` | action | orchestration:create_metric (`metrics:write`) | declare a labelled counter or gauge |
 | `record_metric` | action | data:metrics_write (`metrics:write`) | append up to 1000 labelled points, all validated first |
