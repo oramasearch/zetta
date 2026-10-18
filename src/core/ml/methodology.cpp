@@ -23,6 +23,19 @@
 namespace zetta::ml {
 namespace {
 
+// The columns an S-1 forward-label source row must carry: the numeric features
+// and the original text column of every categorical feature (#1203).
+std::vector<std::string> forward_label_source_columns(
+    const zetta::data::DatasetContract& contract) {
+    std::vector<std::string> columns = contract.feature_columns;
+    for (const zetta::data::CategoricalEncoding& encoding : contract.categorical_features) {
+        if (std::ranges::find(columns, encoding.column) == columns.end()) {
+            columns.push_back(encoding.column);
+        }
+    }
+    return columns;
+}
+
 std::string lower(std::string_view value) {
     std::string result(value);
     std::transform(result.begin(), result.end(), result.begin(),
@@ -624,7 +637,7 @@ api::ApiResult run_m1(RunRequest& request) {
                         solutions::ForwardLabelSpec{
                             .label_column = resolved.contract.label_column,
                             .feature_columns =
-                                resolved.contract.feature_columns,
+                                forward_label_source_columns(resolved.contract),
                             .blackout_gap_seconds = correctness->value(
                                 "blackout_gap_seconds", 0.0),
                             .window_seconds = labels.value(
@@ -677,6 +690,8 @@ api::ApiResult run_m1(RunRequest& request) {
                 table.forward_label_contract.as_of = prediction->value;
                 table.forward_label_contract.feature_columns =
                     resolved.contract.feature_columns;
+                table.forward_label_contract.categorical_features =
+                    resolved.contract.categorical_features;
                 table.forward_label_source =
                     snapshot->database + "." + snapshot->source_table;
                 table.forward_label_censored = forward.censored;

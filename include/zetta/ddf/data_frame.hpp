@@ -51,6 +51,11 @@ struct ColumnSchema {
     // Runtime-only mapping for a text business-id field projected into Int64.
     // It is deliberately absent from the schema JSON boundary.
     std::shared_ptr<const data::EntityKeyMapping> entity_keys;
+    // Runtime-only one-hot indicator (#1203): when set, the float64 column is 1
+    // where the row's `field` is this text and 0 otherwise — another level, an
+    // unseen level, null, or a row without the field. Like `entity_keys`, it is
+    // absent from the schema JSON boundary.
+    std::optional<std::string> category_level;
 
     // The row field actually read: `field` when set, otherwise `name`.
     const std::string& source_field() const noexcept {

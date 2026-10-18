@@ -230,8 +230,10 @@ https://github.com/oramasearch/lake/issues/253):
   dataset, as before. lake points a project's pipeline at a table this way (a project made from an
   Opportunity, *Build a Pipeline* from a dataset), and such runs used to train on the demo data
   silently. Verify: `Uc1Journey.ARunWithoutADatasetReadsItsPipelinesTable`.
-- **Columns the model cannot use** are said: inference notes `not used: '<column>' (not numeric;
-  categorical columns are not supported yet)` (#957 is categorical support), and
+- **Columns the model cannot use** are said: inference notes `not used: '<column>' (not numeric,
+  and <why it is not a category>)`, and a text category the GBDT one-hot encodes is logged as
+  `categorical feature: '<column>' one-hot encoded into <column>=<level>, …`
+  ([categorical features](../data/categorical-features.md), #1203), and
   `get_run_report`'s `dataset` adds `source` and `not_used` (from the run's lineage and logs; a
   model's metrics hold numbers only). A table-backed report drops `events`, which it has none of.
 - **A structural run** (a graph with no model step) logs a `warn`, `structural: … its steps

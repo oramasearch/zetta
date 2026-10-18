@@ -50,6 +50,7 @@ label_column      the numeric or boolean target (inferred only for {0,1}) — ne
 time_column       optional point-in-time cutoff column (requires as_of)
 as_of             ISO-8601 timestamp or epoch seconds; only earlier rows contribute
 feature_columns   the numeric or boolean columns to train on
+categorical_features  low-cardinality text columns and their fitted levels (resolved, not given)
 ```
 
 When the time role is present, `as_of` and every value in `time_column` may use
@@ -72,8 +73,16 @@ inside a trained model.
   / `id` that is present and integer-valued or text. Most specific first: a table carrying
   both `account_id` and `id` means the account, not the row.
 - **features** — every remaining column whose sampled values are numeric or boolean, in catalog
-  order, excluding the entity, label, and time columns. At least one is required: a
-  label with no features is not a training set.
+  order, excluding the entity, label, and time columns. A remaining **text** column with 2 to
+  32 levels that does not identify rows and is not a date goes to `categorical_features`
+  instead, and `resolve_dataset` refits its levels on every training row (after the cutoff);
+  any other column is left out with a `not used: '<column>' (…)` note saying why. At least one
+  numeric or categorical feature is required: a label with no features is not a training set.
+  A text column named in `feature_columns` stays there (a text methodology reads it) and is
+  also recorded as a category when it is one. Only the M-1 GBDT's table path (runs and Study
+  trials) one-hot encodes categories; every other methodology reads numeric columns and says
+  so. The rules, the stored encoding and predict are in
+  [categorical-features.md](categorical-features.md) (#1203).
 - **time / as_of** — **never inferred.**
 
 Matching is case-insensitive (a warehouse round-trips `CHURNED` and `churned`

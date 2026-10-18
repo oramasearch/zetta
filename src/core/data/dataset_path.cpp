@@ -100,6 +100,40 @@ std::string join(const std::vector<std::string>& items, const char* separator) {
     return out;
 }
 
+std::string categorical_note_prefix(const std::string& column) {
+    return "categorical column: '" + column + "'";
+}
+
+std::string categorical_note(const CategoricalEncoding& encoding, const char* rows) {
+    std::string levels;
+    for (std::size_t index = 0; index < encoding.levels.size(); ++index) {
+        if (index != 0) levels += ", ";
+        levels += encoding.levels[index];
+    }
+    return categorical_note_prefix(encoding.column) + " (text, " +
+           std::to_string(encoding.levels.size()) + " levels in the " + rows + ": " +
+           levels + "; one-hot encoded as " + encoding.column +
+           "=<level> where the trainer reads categorical columns, the GBDT (M-1) "
+           "does; an unseen or missing value encodes as all zeros)";
+}
+
+// Fit `column` as a category, refusing an encoding whose feature names would
+// collide with a real column of the table.
+CategoricalFit fit_category(const std::string& column, const std::vector<std::string>& columns,
+                            const std::vector<nlohmann::json>& rows) {
+    CategoricalFit fit = fit_categorical_encoding(column, rows);
+    if (!fit.ok()) return fit;
+    for (const std::string& feature : fit.encoding->feature_names()) {
+        if (!find_column(columns, feature).empty()) {
+            CategoricalFit refused;
+            refused.reason = "its encoded feature '" + feature +
+                             "' would collide with a column of the same name";
+            return refused;
+        }
+    }
+    return fit;
+}
+
 }  // namespace
 
 std::optional<std::int64_t> EntityKeyMapping::derived(
@@ -285,7 +319,8 @@ bool DatasetContract::operator==(const DatasetContract& other) const {
     return entity_column == other.entity_column &&
            label_column == other.label_column &&
            time_column == other.time_column && as_of == other.as_of &&
-           feature_columns == other.feature_columns && mappings_equal;
+           feature_columns == other.feature_columns &&
+           categorical_features == other.categorical_features && mappings_equal;
 }
 
 std::string_view to_string(DatasetPathKind kind) {
@@ -515,6 +550,9 @@ DatasetContractResult infer_dataset_contract(const std::vector<std::string>& col
     }
 
     // --- the features -------------------------------------------------------
+    // Fitted afresh: a contract carried in from a previous resolution must not
+    // smuggle its levels past the rows this one reads.
+    result.contract.categorical_features.clear();
     if (result.contract.feature_columns.empty()) {
         for (const std::string& column : columns) {
             if (column == result.contract.entity_column) {
@@ -526,26 +564,40 @@ DatasetContractResult infer_dataset_contract(const std::vector<std::string>& col
             if (column == result.contract.time_column) {
                 continue;
             }
-            if (!all_values(sample, column, is_numeric_value)) {
-                // Said out loud: a column left out silently is one the caller assumes
-                // the model used (lake's UX review 2026-09-27; categorical features are
-                // #957).
-                result.notes.push_back("not used: '" + column +
-                                       "' (not numeric; categorical columns are not "
-                                       "supported yet)");
+            if (all_values(sample, column, is_numeric_value)) {
+                result.contract.feature_columns.push_back(column);
                 continue;
             }
-            result.contract.feature_columns.push_back(column);
+            // Said out loud either way: a column left out silently is one the caller
+            // assumes the model used (lake's UX review 2026-09-27).
+            if (values_of(sample, column).empty()) {
+                result.notes.push_back("not used: '" + column +
+                                       "' (no values in the sampled rows)");
+                continue;
+            }
+            CategoricalFit fit = fit_category(column, columns, sample);
+            if (!fit.ok()) {
+                result.notes.push_back("not used: '" + column + "' (not numeric, and " +
+                                       fit.reason + ")");
+                continue;
+            }
+            result.notes.push_back(categorical_note(*fit.encoding, "sampled rows"));
+            result.contract.categorical_features.push_back(std::move(*fit.encoding));
         }
-        if (result.contract.feature_columns.empty()) {
+        if (result.contract.feature_columns.empty() &&
+            result.contract.categorical_features.empty()) {
             return fail(
-                "dataset: no numeric feature columns beside the entity and label — a label "
-                "with no features is not a training set. Add engineered numeric columns to "
-                "the query, or name them with the dataset contract's feature_columns.");
+                "dataset: no numeric or categorical feature columns beside the entity and "
+                "label — a label with no features is not a training set. Add engineered "
+                "numeric columns to the query, or name them with the dataset contract's "
+                "feature_columns.");
         }
-        result.notes.push_back(
-            "feature columns (" + std::to_string(result.contract.feature_columns.size()) +
-            "): " + join(result.contract.feature_columns, ", "));
+        if (!result.contract.feature_columns.empty()) {
+            result.notes.push_back(
+                "feature columns (" +
+                std::to_string(result.contract.feature_columns.size()) +
+                "): " + join(result.contract.feature_columns, ", "));
+        }
     } else {
         // The caller's own spellings, normalized, with the entity/label kept out —
         // carrying the label through as a feature would leak the answer into X.
@@ -560,6 +612,22 @@ DatasetContractResult infer_dataset_contract(const std::vector<std::string>& col
                             " column");
             }
             normalized.push_back(column);
+            // A named text column stays in `feature_columns` (a methodology that
+            // reads text, such as M-10, takes it from there) and is ALSO recorded
+            // as a category when it is one, for a trainer that one-hot encodes it.
+            if (sample.empty() || all_values(sample, column, is_numeric_value) ||
+                values_of(sample, column).empty()) {
+                continue;
+            }
+            CategoricalFit fit = fit_category(column, columns, sample);
+            if (fit.ok()) {
+                result.notes.push_back(categorical_note(*fit.encoding, "sampled rows"));
+                result.contract.categorical_features.push_back(std::move(*fit.encoding));
+            } else {
+                result.notes.push_back("named feature '" + column +
+                                       "' is not numeric, and is not one-hot encoded: " +
+                                       fit.reason);
+            }
         }
         result.contract.feature_columns = std::move(normalized);
     }
@@ -701,18 +769,25 @@ ResolvedDataset resolve_dataset(Node& node, const DatasetPath& path,
         return resolved;
     }
     resolved.contract = std::move(contract.contract);
+    resolved.notes = std::move(contract.notes);
+    if (!resolved.contract.entity_keys && resolved.contract.categorical_features.empty()) {
+        return resolved;
+    }
+
+    // A text entity is keyed, and a category's levels are fitted, over EVERY row
+    // rather than the sample: a key missing from the map, or a level that was
+    // common but unsampled, would otherwise surface only at training time.
+    std::string read_error;
+    const DatasetSampler read = sampler ? sampler : default_dataset_sampler(node, cluster);
+    const std::vector<nlohmann::json> rows =
+        read(sampled.database, sampled.table, 0, read_error);
+    if (!read_error.empty()) {
+        resolved.error = "dataset: could not read '" + sampled.database + "." +
+                         sampled.table + "' to key its entities and fit its categories: " +
+                         read_error;
+        return resolved;
+    }
     if (resolved.contract.entity_keys) {
-        std::string mapping_error;
-        const DatasetSampler read =
-            sampler ? sampler : default_dataset_sampler(node, cluster);
-        const std::vector<nlohmann::json> rows =
-            read(sampled.database, sampled.table, 0, mapping_error);
-        if (!mapping_error.empty()) {
-            resolved.error = "dataset: could not map text entity column '" +
-                             resolved.contract.entity_column + "': " +
-                             mapping_error;
-            return resolved;
-        }
         std::vector<nlohmann::json> values;
         values.reserve(rows.size());
         for (const nlohmann::json& row : rows) {
@@ -732,7 +807,61 @@ ResolvedDataset resolve_dataset(Node& node, const DatasetPath& path,
         }
         resolved.contract.entity_keys = std::move(mapped.mapping);
     }
-    resolved.notes = std::move(contract.notes);
+    if (!resolved.contract.categorical_features.empty()) {
+        // The training rows: with a time cutoff, only the rows the model may see.
+        // A row whose time does not parse is not a training row either.
+        std::vector<nlohmann::json> training;
+        const std::vector<nlohmann::json>* fit_rows = &rows;
+        if (!resolved.contract.time_column.empty()) {
+            for (const nlohmann::json& row : rows) {
+                if (!row.is_object()) continue;
+                const auto time = row.find(resolved.contract.time_column);
+                if (time == row.end()) continue;
+                const std::optional<double> seconds = zetta::util::parse_time_seconds(*time);
+                if (seconds && *seconds <= resolved.contract.as_of) training.push_back(row);
+            }
+            fit_rows = &training;
+        }
+        std::vector<CategoricalEncoding> kept;
+        for (const CategoricalEncoding& sampled_encoding :
+             resolved.contract.categorical_features) {
+            const std::string prefix = categorical_note_prefix(sampled_encoding.column);
+            auto note = std::ranges::find_if(resolved.notes, [&prefix](const std::string& line) {
+                return line.starts_with(prefix);
+            });
+            CategoricalFit fit = fit_category(sampled_encoding.column, sampled.columns, *fit_rows);
+            const std::string rows_counted =
+                "training rows (" + std::to_string(fit_rows->size()) + ")";
+            if (!fit.ok()) {
+                const std::string reason = "not used: '" + sampled_encoding.column +
+                                           "' (not numeric, and across every training "
+                                           "row: " + fit.reason + ")";
+                if (note != resolved.notes.end()) {
+                    *note = reason;
+                } else {
+                    resolved.notes.push_back(reason);
+                }
+                continue;
+            }
+            const std::string fitted = categorical_note(*fit.encoding, rows_counted.c_str());
+            if (note != resolved.notes.end()) {
+                *note = fitted;
+            } else {
+                resolved.notes.push_back(fitted);
+            }
+            kept.push_back(std::move(*fit.encoding));
+        }
+        resolved.contract.categorical_features = std::move(kept);
+        if (resolved.contract.feature_columns.empty() &&
+            resolved.contract.categorical_features.empty()) {
+            resolved.error =
+                "dataset: no numeric or categorical feature columns beside the entity and "
+                "label — a label with no features is not a training set. Add engineered "
+                "numeric columns to the query, or name them with the dataset contract's "
+                "feature_columns.";
+            return resolved;
+        }
+    }
     return resolved;
 }
 
@@ -744,6 +873,9 @@ nlohmann::json to_json(const DatasetContract& contract) {
                          {"feature_columns", contract.feature_columns}};
     if (contract.entity_keys) {
         value["entity_key_mapping"] = contract.entity_keys->to_json();
+    }
+    if (!contract.categorical_features.empty()) {
+        value["categorical_features"] = to_json(contract.categorical_features);
     }
     return value;
 }
@@ -797,6 +929,14 @@ std::optional<DatasetContract> dataset_contract_from_json(const nlohmann::json& 
             return fail("dataset_contract.entity_key_mapping: " + reason);
         }
     }
+    if (const auto categorical = value.find("categorical_features");
+        categorical != value.end()) {
+        std::string reason;
+        contract.categorical_features = categorical_encodings_from_json(*categorical, &reason);
+        if (!reason.empty()) {
+            return fail("dataset_contract.categorical_features: " + reason);
+        }
+    }
     if (!contract.time_column.empty() && value.find("as_of") == value.end()) {
         return fail(
             "dataset_contract.as_of: required with a time_column — a cutoff column with no "
@@ -840,8 +980,11 @@ const nlohmann::json& dataset_contract_schema() {
             {"type", "array"},
             {"items", {{"type", "string"}, {"minLength", 1}}},
             {"description",
-             "the numeric or boolean columns to train on; omit to use every numeric or "
-             "boolean column that is not the entity, label, or time column"}};
+             "the columns to train on; omit to use every numeric or boolean column that "
+             "is not the entity, label, or time column, plus every text column with at "
+             "most " + std::to_string(kCategoricalMaxLevels) +
+                 " levels as a one-hot encoded category. A named text column is "
+                 "one-hot encoded when it is a category"}};
         nlohmann::json mapping;
         mapping["type"] = "object";
         mapping["description"] =
@@ -860,6 +1003,15 @@ const nlohmann::json& dataset_contract_schema() {
               {"original_value",
                {{"type", "string"}, {"minLength", 1}}}}}};
         document["properties"]["entity_key_mapping"] = std::move(mapping);
+        document["properties"]["categorical_features"] = {
+            {"type", "array"},
+            {"items", categorical_encoding_schema()},
+            {"description",
+             "resolved low-cardinality text columns and their fitted levels (at most " +
+                 std::to_string(kCategoricalMaxLevels) +
+                 " each), one-hot encoded by a trainer that reads categorical columns. "
+                 "Reported, and carried for distributed launches; a resolution refits it "
+                 "from the rows rather than trusting a caller's copy"}};
         return document;
     }();
     return schema;

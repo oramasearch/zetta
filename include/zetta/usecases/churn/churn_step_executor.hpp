@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "zetta/data/categorical_encoding.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/featurize.hpp"
 #include "zetta/pipeline/executor.hpp"
@@ -117,6 +118,10 @@ struct ChurnPipelineConfig {
     std::string accounts_dataset;
     std::vector<std::string> dataset_notes;
     std::shared_ptr<const data::EntityKeyMapping> entity_keys;
+    // The fitted one-hot encodings of the table's text categories (#1203). The
+    // registered Model records them in `feature_schema.categorical_encoding`, with
+    // the row contract predict reads in `feature_schema.inputs`.
+    std::vector<data::CategoricalEncoding> categorical_features;
 
     // Optional S-1 rolling examples. Training reads this source while scoring
     // continues to read `accounts_table`, keeping future outcomes out of the

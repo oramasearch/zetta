@@ -113,10 +113,14 @@ Every excluded column has its own reason. The common rules are:
   its own level;
 - **numeric-input trainers** (the M-1, M-5 and M-18 tree rules, and every
   registered table run whose trainer reads the numeric dataset contract) get no
-  one-hot or target-encoded features, because nothing would consume them: an
-  integer-coded categorical (a count such as `support_tickets`) is planned as a
-  numeric column, and a text categorical is excluded with a reason that says how to
-  include it (a clean step that writes one 0/1 column per level);
+  target-encoded features: an integer-coded categorical (a count such as
+  `support_tickets`) is planned as a numeric column. **M-1 one-hot encodes a text
+  category itself** (#1203): one with at most 32 levels is planned as
+  `<column>=<level>` indicators fitted on the training rows and stored with the model,
+  and one above the cap is excluded with a reason
+  ([categorical-features.md](categorical-features.md)). The other numeric-input
+  trainers exclude a text categorical with a reason that says how to include it (a
+  clean step that writes one 0/1 column per level);
 - identifiers are excluded and are never target encoded; the reason says whether
   the name or the values made it a key, and how to use it;
 - datetimes become elapsed age/tenure/recency relative to `as_of`, plus calendar
@@ -185,7 +189,7 @@ The execution contract describes what the trainer can actually consume:
 
 | Family | Planned execution |
 |---|---|
-| M-1, M-5, M-6, M-9 numeric table trainers | The accepted source list replaces the numeric dataset contract before training. Explicit pipeline selections are respected; labels, keys, leakage and unsupported inputs are excluded. Prepared numeric columns are carried through without claiming an unfitted encoder or scaler. |
+| M-1, M-5, M-6, M-9 numeric table trainers | The accepted source list replaces the numeric dataset contract before training. Explicit pipeline selections are respected; labels, keys, leakage and unsupported inputs are excluded. Prepared numeric columns are carried through without claiming an unfitted encoder or scaler. M-1 also accepts the contract's text categories, reported as one-hot `<column>=<level>` features with their fitted levels (#1203). |
 | M-2 identity resolution | Native normalized pair similarities, missing indicators, and verified-identifier constraints. |
 | M-3 segmentation | The existing global fitted numeric scaling/imputation and bounded one-hot encoder; reports use its fitted encoded names and exclusions. |
 | M-4 forecasting | The pipeline's actual lag offsets and prior-only rolling window, evaluated at rolling origins; the raw current target is excluded. |

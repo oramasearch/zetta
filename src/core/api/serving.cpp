@@ -17,6 +17,7 @@
 #include "zetta/index/search.hpp"
 #include "zetta/ml/gbdt_score.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/score_table.hpp"
 #include "zetta/node.hpp"
 
 namespace zetta::api {
@@ -122,12 +123,17 @@ const nlohmann::json& predict_request_schema() {
             {"type", "array"},
             {"minItems", 1},
             {"description",
-             "the batch to score: one object per entity mapping feature name "
-             "to its numeric or boolean value; every feature the model was trained on "
-             "must be present (extra features are ignored)"},
+             "the batch to score: one object per entity mapping each input the "
+             "model's feature_schema.inputs names to its value — a number or "
+             "boolean for a numeric feature, the original text (or null) for a "
+             "categorical one, which is one-hot encoded with the levels fitted at "
+             "training time (an unseen level encodes as all zeros). Every input "
+             "must be present; extra fields are ignored"},
             {"items", {{"type", "object"}}}};
         document["properties"]["rows"]["items"]["additionalProperties"] = {
-            {"oneOf", {{{"type", "number"}}, {{"type", "boolean"}}}}};
+            {"oneOf",
+             {{{"type", "number"}}, {{"type", "boolean"}}, {{"type", "string"}},
+              {{"type", "null"}}}}};
         document["properties"]["entities"] = {
             {"type", "array"},
             {"description",
@@ -377,8 +383,17 @@ ApiResult serve_predict(Node& node, const ServeRequest& request) {
     // Build the design matrix in the model's own feature order. Extra features
     // in a row are ignored; a feature the model needs must be present in every
     // row (the schema already guaranteed rows are objects of numbers).
-    const nlohmann::json& rows = input.at("rows");
+    // Text categories arrive by their original column (#1203) and are encoded
+    // with the levels the model was trained with.
+    nlohmann::json rows = input.at("rows");
     const std::size_t row_count = rows.size();
+    for (std::size_t row = 0; row < row_count; ++row) {
+        if (const std::string reason = zetta::ml::encode_model_row(*model, rows[row]);
+            !reason.empty()) {
+            return serve.finish(ApiResult::failure(
+                "invalid_input", reason, "/rows/" + std::to_string(row)));
+        }
+    }
     std::vector<std::vector<double>> columns(weights->feature_count());
     for (std::size_t feature = 0; feature < weights->feature_count();
          ++feature) {
@@ -391,6 +406,12 @@ ApiResult serve_predict(Node& node, const ServeRequest& request) {
                     "invalid_input",
                     "missing feature '" + feature_name +
                         "' the model requires",
+                    "/rows/" + std::to_string(row)));
+            }
+            if (!value->is_number() && !value->is_boolean()) {
+                return serve.finish(ApiResult::failure(
+                    "invalid_input",
+                    "feature '" + feature_name + "' must be a number or boolean",
                     "/rows/" + std::to_string(row)));
             }
             columns[feature][row] = value->is_boolean()

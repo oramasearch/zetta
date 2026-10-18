@@ -92,15 +92,21 @@ RowExplanation explain_row(const Model& model, const nlohmann::json& row) {
                        "' records no feature columns, so nothing says what to feed it");
     }
 
+    // Text categories by their original column (#1203), encoded with the levels
+    // fitted at training time; an unseen level encodes as all zeros.
+    nlohmann::json encoded = row;
+    if (const std::string reason = encode_model_row(model, encoded); !reason.empty()) {
+        return failure("explain: " + reason);
+    }
     std::vector<double> values(features.size());
     for (std::size_t index = 0; index < features.size(); ++index) {
-        const auto found = row.find(features[index]);
+        const auto found = encoded.find(features[index]);
         // Hard failure, not a zero-fill: zero is a real value to a GBDT, so a missing
         // column would be explained as "this account has none of these" rather than
         // reported as missing.
-        if (found == row.end() || found->is_null()) {
+        if (found == encoded.end() || found->is_null()) {
             return failure("explain: the row has no '" + features[index] +
-                           "'; the model needs " + join(features));
+                           "'; the model needs " + join(model_input_names(model)));
         }
         if (found->is_boolean()) {
             values[index] = found->get<bool>() ? 1.0 : 0.0;
@@ -138,9 +144,15 @@ RowExplanation explain_entity(Node& node, const Model& model, const std::string&
                                           .field = contract.entity_column,
                                           .dtype = DataType::Int64,
                                           .entity_keys = contract.entity_keys});
+    std::string encoding_error;
+    const std::vector<data::CategoricalEncoding> encodings =
+        model_categorical_encodings(model.value().feature_schema, &encoding_error);
+    if (!encoding_error.empty()) {
+        return failure("explain: model '" + model.id() +
+                       "' has an invalid categorical encoding: " + encoding_error);
+    }
     for (const std::string& feature : features) {
-        schema.columns.push_back(
-            ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});
+        schema.columns.push_back(model_feature_column_schema(feature, encodings));
     }
 
     // Gated onto the owner thread (#624, #956). This reads the partition catalog and

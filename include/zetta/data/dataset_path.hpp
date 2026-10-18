@@ -13,6 +13,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/data/categorical_encoding.hpp"
+
 // **The one `dataset_path` grammar** (#947), and what a table's columns MEAN.
 //
 // Two things were both called a dataset and nothing converted one into the other:
@@ -176,6 +178,14 @@ struct DatasetContract {
     // Never contains the entity, label, or time column.
     std::vector<std::string> feature_columns;
 
+    // Low-cardinality text columns, one-hot encoded (#1203). Kept apart from
+    // `feature_columns` because only a trainer that reads them (the M-1 GBDT's
+    // table path) may use them; every other methodology reads numeric columns and
+    // ignores this list. Inference fits the levels on the sampled rows and
+    // `resolve_dataset` refits them on every training row. See
+    // categorical_encoding.hpp for the rules.
+    std::vector<CategoricalEncoding> categorical_features;
+
     // Populated only for a text entity column. Serialized with the contract for
     // distributed launches, and persisted with Runs and Models.
     std::shared_ptr<const EntityKeyMapping> entity_keys;
@@ -216,8 +226,13 @@ const std::vector<std::string>& label_column_candidates();
 //     collision-checked derived int64 keys for compute and are restored in outputs.
 //   * **features** — every remaining column whose sampled values are all numeric
 //     or boolean, in catalog order, excluding the entity, label, and time
-//     columns. At least one is required: a label with no features is not a
-//     training set.
+//     columns. A remaining text column that fits categorical_encoding.hpp's rules
+//     (at most `kCategoricalMaxLevels` levels, not an identifier, not a date) goes
+//     to `categorical_features`; any other column is left out with a note saying
+//     why. At least one numeric or categorical feature is required: a label with
+//     no features is not a training set. A text column the caller names in
+//     `feature_columns` is moved to `categorical_features`, or refused with the
+//     reason it is not a category.
 //   * **time / as_of** — never inferred (see the header note). Passed through from
 //     `overrides` untouched.
 //

@@ -24,6 +24,7 @@
 #include "zetta/ml/gbdt_explain_job.hpp"
 #include "zetta/ml/gbdt_score_job.hpp"
 #include "zetta/ml/gbdt_train_job.hpp"
+#include "zetta/ml/score_table.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/data/table.hpp"
@@ -597,12 +598,16 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
                 metrics["dataset_majority_class_accuracy"] = std::max(rate, 1.0 - rate);
             }
             model->set_metrics(std::move(metrics));
+            nlohmann::json feature_schema = model->feature_schema();
             if (config_.entity_keys) {
-                nlohmann::json feature_schema = model->feature_schema();
                 feature_schema["entity_key_mapping"] =
                     config_.entity_keys->to_json();
-                model->set_feature_schema(std::move(feature_schema));
             }
+            // #1203: the one-hot encodings fitted on the training rows go with
+            // the model, so predict applies the same levels, and `inputs` says
+            // what a row must carry: the original columns, text by name.
+            model->set_feature_schema(ml::with_model_inputs(
+                std::move(feature_schema), config_.categorical_features));
         });
     }
 

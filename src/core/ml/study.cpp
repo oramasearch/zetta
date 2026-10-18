@@ -1,4 +1,5 @@
 #include "zetta/ml/study.hpp"
+#include "zetta/ml/score_table.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1714,13 +1715,30 @@ DatasetTrialResult run_dataset_trial(Node& node, RealTrialPlan& plan,
         return outcome;
     }
 
+    // Numeric features straight through, then one 0/1 indicator per fitted level
+    // of each text category, read from its original column (#1203) — the same
+    // columns the M-1 table run trains on.
     ddf::DataFrameSchema schema;
+    std::vector<std::string> features;
+    const auto& categories = plan.table.contract.categorical_features;
     for (const std::string& feature :
          plan.table.contract.feature_columns) {
+        if (std::ranges::any_of(categories, [&feature](const auto& encoding) {
+                return encoding.column == feature;
+            })) {
+            continue;
+        }
+        features.push_back(feature);
         schema.columns.push_back(
             {.name = feature,
              .field = feature,
              .dtype = compute::DataType::Float64});
+    }
+    for (const data::CategoricalEncoding& encoding : categories) {
+        for (const std::string& level : encoding.levels) {
+            features.push_back(encoding.feature_name(level));
+            schema.columns.push_back(model_feature_column_schema(features.back(), categories));
+        }
     }
     schema.columns.push_back(
         {.name = plan.table.contract.label_column,
@@ -1783,8 +1801,7 @@ DatasetTrialResult run_dataset_trial(Node& node, RealTrialPlan& plan,
         return outcome;
     }
     const DistributedTrainResult trained = run_train_job(
-        *coordinator, *job, frame,
-        plan.table.contract.feature_columns,
+        *coordinator, *job, frame, features,
         plan.table.contract.label_column, plan.options.params, &node,
         plan.options.model_name, "study." + run_id, {},
         kDefaultGbdtTimeout, {}, run_id, plan.options.training_progress,
@@ -1800,6 +1817,8 @@ DatasetTrialResult run_dataset_trial(Node& node, RealTrialPlan& plan,
             nlohmann::json metrics = model->metrics();
             metrics["dataset_rows"] = frame.row_count();
             model->set_metrics(std::move(metrics));
+            model->set_feature_schema(
+                with_model_inputs(model->feature_schema(), categories));
         }
         const std::shared_ptr<pipeline::Run> run = node.find_run(run_id);
         if (run) {
