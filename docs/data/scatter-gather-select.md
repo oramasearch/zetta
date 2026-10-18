@@ -111,10 +111,27 @@ that no owner saw is an error naming it, and `SELECT *` reports the union as its
 `columns`. An answer without `columns_seen` (a responder that predates it)
 switches the check off rather than refusing a real column.
 
+**LIMIT pushdown (#1021).** A non-aggregating SELECT with a `LIMIT` sends `keep`
+(`offset + limit`, at least 1) and, when it has one, its `order_by` keys. Each
+owner keeps at most `keep` rows per partition: its first ones with no `ORDER BY`,
+otherwise its top ones after `sort_rows_for_order`, the same stable comparison
+(`compare_for_order`) the coordinator uses. The coordinator merges in partition
+order and applies `ORDER BY` / `OFFSET` / `LIMIT` as before, so the answer is the
+full scan's. `SelectOutcome::rows_received` counts the rows that came back, which
+is what the tests assert against. The owner still reads every row of its
+partitions, because `columns_seen` must be complete. An aggregate is never capped.
+
+*Rolling upgrades:* a responder older than this refuses `keep` / `order_by` at
+its closed schema, answering `sql.scan: …` (a decode error, where a failed scan
+says `sql.scan local: …`). The coordinator then asks that responder again without
+them; the answer is the same, only more rows cross the wire.
+
 ## Where the work happens
 
 - **WHERE and the projection are pushed to the owner** — the filter runs beside
   the data and only the wanted columns of the surviving rows cross the wire.
+- **LIMIT is pushed to the owner** (above) — at most `offset + limit` rows per
+  partition, ORDER BY or not.
 - **Column-level access masking stays with the coordinator**, which is the node
   that knows the caller.
 - **Row-level security is refused** on a partition-only table (as `GROUP BY`
@@ -150,7 +167,15 @@ elsewhere fails with the same unreachable-owner reason a dead peer would give.
 - the merge rules asserted directly on hand-built partials (the weighted `avg`,
   and count/sum adding while min/max reduce and an empty shard is ignored);
 - the wire round trip plus malformed messages rejected at the schema boundary,
-  including a whole-table aggregate request and `columns_seen`;
+  including a whole-table aggregate request, `columns_seen`, and `keep` /
+  `order_by` (a negative `keep` refused);
+- `LimitIsPushedDownAndAnswersLikeTheFullScan` (#1021): on one node over 8
+  partitions, `LIMIT`, `OFFSET`, `FETCH FIRST`, `ORDER BY` on one and two keys,
+  with a `WHERE` and a projection — each answer equals the full scan cut by hand,
+  and `rows_received` is at most `offset + limit` per partition; an aggregate is
+  not cut; an unknown `ORDER BY` key is still refused under `LIMIT 0`;
+- `APartitionOnlyDatasetKeepsItsSourceColumnOrder` (#1021): `SELECT *` and the
+  dataset summary follow the recorded order, typed from the partitions' stats;
 - a whole-table `count(*)`, a text `GROUP BY` key, an unknown column and
   `SELECT *`'s columns over a partition-only table, on one node and across two;
 - a single node answering a partition-only table from its 8 partitions — grouped

@@ -141,6 +141,12 @@ struct AddDatasetOptions {
     // format for `add_dataset_file` / `add_dataset_content`, `rows` for
     // `add_dataset_rows`. A connector pull sets its connector type.
     std::string source_format;
+    // The source's column order, recorded on the table (#1021; see
+    // Table::column_order). Empty = the path's own: the CSV header, the Parquet
+    // file's schema, the order a JSON or JSON Lines source first writes each
+    // key — and nothing for in-memory rows, whose objects hold no order. A
+    // connector pull sets its query's SELECT list.
+    std::vector<std::string> columns;
 };
 
 // The outcome of adding a dataset. On success `error` is empty, `table` is the

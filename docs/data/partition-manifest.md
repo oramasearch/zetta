@@ -118,6 +118,11 @@ type for a body Parquet could not express). Together with `columns` and
 report `system.datasets` for a partition it does not hold a byte of — **without
 reading a body**.
 
+Since #1021 each entry also records `"column_stats": [{"name", "type", "nulls"}, …]`:
+every column's JSON family over the partition's rows and how many of them hold
+null or omit it. `get_dataset` sums them to type a partition-only dataset's
+columns and give each one's null share ([column-order.md](column-order.md)).
+
 ## Tests
 
 [`tests/data/test_dataset_manifest.cpp`](../../tests/data/test_dataset_manifest.cpp)

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <algorithm>
 #include <optional>
@@ -2072,33 +2073,6 @@ std::vector<nlohmann::json> crash_rows(const Node& node) {
 
 // Apply a SELECT's WHERE + projection to in-memory rows (used by the system
 // table; regular tables stream straight from the storage engine).
-// Postgres' order for one ORDER BY key: numbers numerically, then booleans,
-// then strings; NULL (or a missing field) greatest, so last ascending and first
-// descending. Values of different kinds order by kind.
-int order_rank(const nlohmann::json& value) {
-    if (value.is_null()) return 4;
-    if (value.is_number()) return 0;
-    if (value.is_boolean()) return 1;
-    if (value.is_string()) return 2;
-    return 3;
-}
-
-int compare_for_order(const nlohmann::json& a, const nlohmann::json& b) {
-    const int ra = order_rank(a), rb = order_rank(b);
-    if (ra != rb) return ra < rb ? -1 : 1;
-    if (a.is_number()) {
-        const double x = a.get<double>(), y = b.get<double>();
-        return x < y ? -1 : (x > y ? 1 : 0);
-    }
-    if (a.is_boolean()) return a.get<bool>() == b.get<bool>() ? 0 : (a.get<bool>() ? 1 : -1);
-    if (a.is_string()) {
-        const int c = a.get_ref<const std::string&>().compare(b.get_ref<const std::string&>());
-        return c < 0 ? -1 : (c > 0 ? 1 : 0);
-    }
-    const std::string x = a.dump(), y = b.dump();
-    return x < y ? -1 : (x > y ? 1 : 0);
-}
-
 // ORDER BY, OFFSET and LIMIT over a finished SELECT result. Returns an error
 // when a key names a column the result does not have.
 std::optional<std::string> apply_order_and_limit(const SelectStmt& statement,
@@ -2116,20 +2090,7 @@ std::optional<std::string> apply_order_and_limit(const SelectStmt& statement,
                        "GROUP BY key or an aggregate's alias)";
             }
         }
-        static const nlohmann::json null_value;
-        std::stable_sort(result.rows.begin(), result.rows.end(),
-                         [&](const nlohmann::json& a, const nlohmann::json& b) {
-                             for (const OrderKey& key : statement.order_by) {
-                                 const auto fa = a.find(key.column);
-                                 const auto fb = b.find(key.column);
-                                 int c = compare_for_order(
-                                     fa == a.end() ? null_value : *fa,
-                                     fb == b.end() ? null_value : *fb);
-                                 if (key.descending) c = -c;
-                                 if (c != 0) return c < 0;
-                             }
-                             return false;
-                         });
+        sort_rows_for_order(result.rows, statement.order_by);
     }
     if (statement.offset > 0) {
         const std::size_t drop = std::min(statement.offset, result.rows.size());
@@ -2680,12 +2641,17 @@ QueryResult Executor::execute(const Statement& stmt,
                 }
                 auto db = node_.find_database(name);
                 if (!db) return error("database \"" + name + "\" does not exist");
-                // Column definitions are parsed but not yet stored (the engine
-                // is schemaless); the table is created by name.
-                if (!db->create_table(s.table.table)) {
+                // Column types are parsed but not enforced (the engine is
+                // schemaless); the column list's ORDER is recorded (#1021), so
+                // SELECT * and get_dataset list the columns as declared.
+                auto created = db->create_table(s.table.table);
+                if (!created) {
                     return error("table \"" + s.table.table +
                                  "\" already exists or the name is invalid");
                 }
+                std::vector<std::string> declared;
+                for (const ColumnDef& column : s.columns) declared.push_back(column.name);
+                created->set_column_order(std::move(declared));
                 return {.message = "CREATE TABLE"};
             },
             [&](const CreateVirtualTableStmt& s) -> QueryResult {
@@ -3295,8 +3261,11 @@ QueryResult Executor::execute(const Statement& stmt,
                         }
                     }
                     QueryResult r;
-                    r.columns = s.aggregating() ? scattered.columns
-                                                : (s.all ? known.names() : s.columns);
+                    r.columns = s.aggregating()
+                                    ? scattered.columns
+                                    : (s.all ? zetta::data::order_columns(
+                                                   table->column_order(), known.names())
+                                             : s.columns);
                     r.rows = scattered.rows;
                     // Column-level access stays with the coordinator: the owner
                     // filtered + projected, this node knows the caller.
@@ -3335,6 +3304,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (s.aggregating()) groups.emplace(s);
                 QueryResult r;
                 if (!s.all) r.columns = s.columns;
+                // LIMIT pushdown (#1021): with no ORDER BY, rows past
+                // offset + limit can never be in the answer, so they are not
+                // copied out. The pass still visits them to learn the columns.
+                std::optional<std::size_t> keep;
+                if (!groups && s.order_by.empty() && s.limit &&
+                    *s.limit <= std::numeric_limits<std::size_t>::max() - s.offset) {
+                    keep = s.offset + *s.limit;
+                }
                 const zetta::storage::StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
                     const zetta::storage::ParquetLazyPtr handle = store.at(i);
@@ -3349,6 +3326,7 @@ QueryResult Executor::execute(const Statement& stmt,
                         groups->add(row);
                         continue;
                     }
+                    if (keep && r.rows.size() >= *keep) continue;
                     if (s.all) {
                         if (read_access.all_columns) {
                             r.rows.push_back(row);
@@ -3379,7 +3357,12 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error(*problem);
                 }
                 if (groups) return finish_aggregate(s, *groups);
-                if (s.all) r.columns = known.names();
+                // SELECT * lists the source's column order when the load
+                // recorded one (#1021); the rows' keys read back sorted.
+                if (s.all) {
+                    r.columns = zetta::data::order_columns(table->column_order(),
+                                                           known.names());
+                }
                 r.message = "SELECT " + std::to_string(r.rows.size());
                 return r;
             },

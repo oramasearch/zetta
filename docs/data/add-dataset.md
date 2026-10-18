@@ -101,6 +101,13 @@ from: `csv` / `jsonl` / `json` / `parquet` for a file or an upload, the connecto
 no longer reads as `jsonl`. A table made any other way (SQL `CREATE TABLE`, an engine
 result) has none.
 
+**Column order (#1021).** The load also records the source's column order on the
+table (`Table::column_order()`, `cols:<table-id>`, `table.json`): the CSV header,
+the Parquet schema, the order a JSON or JSON Lines source first writes each key, or
+`AddDatasetOptions::columns` when the caller passes one (a connector passes its
+query's SELECT list). `get_dataset`, `list_datasets`, `system.datasets` and `SELECT *`
+list the columns that way. See [column-order.md](column-order.md).
+
 ### Partitioning (placed across the cluster)
 
 The whole point of "as a partitioned table" is that the dataset's slices land on

@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "zetta/data/dataset_columns.hpp"
+
 namespace zetta::data {
 
 // Where one of a dataset's partitions physically lives, flattened from the
@@ -45,8 +47,15 @@ struct DatasetSummary {
                             //   "partitioned" / "partitioned_with_replicas")
     std::uint64_t rows = 0;       // row count
     std::uint64_t size_bytes = 0;  // on-disk bytes of the row data (the JSONL chunks)
-    std::vector<std::string> columns;  // inferred schema — field names in first-seen
-                                       //   order (the engine is schemaless)
+    std::vector<std::string> columns;  // the column names, in the source's order
+                                       //   when one was recorded (#1021), else in
+                                       //   first-seen order (the engine is schemaless)
+    // Whether `columns` follows a recorded source order (#1021) — the CSV
+    // header, the Parquet schema, a connector query's SELECT list — or, false,
+    // the first-seen order of the stored rows, whose keys read back sorted.
+    bool column_order_recorded = false;
+    // The same columns, typed (#1021): what get_dataset answers as `columns`.
+    std::vector<DatasetColumn> typed_columns;
     std::vector<DatasetPlacement> partitions;  // partition placement across the
                                                //   cluster (empty = not partitioned)
 

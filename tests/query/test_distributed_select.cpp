@@ -10,6 +10,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -19,6 +20,7 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/data/table.hpp"
@@ -153,6 +155,25 @@ void expect_matches_truth(const QueryService::Outcome& outcome,
         EXPECT_DOUBLE_EQ(row.at("max_amount").get<double>(), group.max);
         EXPECT_DOUBLE_EQ(row.at("mean_amount").get<double>(), group.avg());
     }
+}
+
+// Parse one SELECT, for calling the scatter-gather planner directly.
+SelectStmt parse_select(const std::string& sql) {
+    zetta::query::PostgresDialect dialect;
+    auto parsed = dialect.parse(sql);
+    EXPECT_TRUE(parsed.ok()) << parsed.error;
+    return std::get<SelectStmt>(parsed.statements.at(0));
+}
+
+// The full answer cut down by hand: ORDER BY (stable), OFFSET, LIMIT, exactly
+// as the coordinator applies them to the merged rows.
+std::vector<nlohmann::json> cut(std::vector<nlohmann::json> rows,
+                                const SelectStmt& statement) {
+    zetta::query::sort_rows_for_order(rows, statement.order_by);
+    const std::size_t from = std::min(statement.offset, rows.size());
+    rows.erase(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(from));
+    if (statement.limit && rows.size() > *statement.limit) rows.resize(*statement.limit);
+    return rows;
 }
 
 constexpr const char* kGroupedSql =
@@ -295,6 +316,24 @@ TEST(ScatterGatherWire, RequestAndResponseRoundTripThroughTheirSchemas) {
     EXPECT_TRUE(whole_back->group_by.empty());
     ASSERT_EQ(whole_back->aggregates.size(), 1u);
 
+    // LIMIT pushdown (#1021): the per-partition cap and its ORDER BY travel.
+    PartitionScanRequest limited;
+    limited.table = "tbl:x";
+    limited.partitions = {"p"};
+    limited.keep = 7;
+    limited.order_by = {zetta::query::OrderKey{"amount", true},
+                        zetta::query::OrderKey{"label", false}};
+    const std::optional<PartitionScanRequest> limited_back =
+        zetta::query::decode_partition_scan_request(
+            zetta::query::encode_partition_scan_request(limited), &error);
+    ASSERT_TRUE(limited_back) << error;
+    EXPECT_EQ(limited_back->keep, 7u);
+    ASSERT_EQ(limited_back->order_by.size(), 2u);
+    EXPECT_EQ(limited_back->order_by[0].column, "amount");
+    EXPECT_TRUE(limited_back->order_by[0].descending);
+    EXPECT_FALSE(limited_back->order_by[1].descending);
+    EXPECT_FALSE(whole_back->keep) << "no LIMIT, no cap";
+
     // The columns an owner's rows carry travel with its answer.
     response.columns_seen = std::vector<std::string>{"segment", "amount"};
     const std::optional<PartitionScanResponse> with_columns =
@@ -317,6 +356,9 @@ TEST(ScatterGatherWire, MalformedMessagesAreRejectedAtTheBoundary) {
     EXPECT_FALSE(zetta::query::decode_partition_scan_request(
         R"({"table":"t","partitions":[],"where":{"column":"a","op":"like","value":1}})",
         &error));
+    // A negative cap is refused (#1021).
+    EXPECT_FALSE(zetta::query::decode_partition_scan_request(
+        R"({"table":"t","partitions":[],"keep":-1})", &error));
     // A partial with no row count is not a partial.
     EXPECT_FALSE(zetta::query::decode_partition_scan_response(
         R"({"from":"n","groups":[{"key":1,"aggregates":[{"value":2.0}]}]})", &error));
@@ -358,6 +400,116 @@ TEST(ScatterGatherSelect, SingleNodeAnswersAPartitionOnlyTableFromItsPartitions)
     EXPECT_TRUE(filtered.rows[0].contains("label"));
     EXPECT_FALSE(filtered.rows[0].contains("segment"));
 
+    node.stop();
+}
+
+// #1021: LIMIT is pushed to the partitions. No partition sends more than
+// offset + limit rows (with ORDER BY, its own top rows by the same stable sort),
+// and the merged answer equals the full scan cut down by hand.
+TEST(ScatterGatherSelect, LimitIsPushedDownAndAnswersLikeTheFullScan) {
+    TempDir dir;
+    Node node{config_for(dir)};
+    node.start();
+
+    AddDatasetOptions options;
+    options.table_name = "cached";
+    options.partition_count = 8;
+    options.partition_only = true;
+    const AddDatasetResult added = add_dataset_rows(node, sample_rows(), options);
+    ASSERT_TRUE(added.ok()) << added.error;
+    ASSERT_EQ(added.partitions.size(), 8u);
+    const std::string table_id = added.table->id();
+
+    const zetta::query::SelectOutcome full = zetta::query::select_over_partitions(
+        node, nullptr, parse_select("SELECT * FROM datasets.cached;"), table_id);
+    ASSERT_TRUE(full.ok()) << full.error;
+    ASSERT_EQ(full.rows.size(), 60u);
+    EXPECT_EQ(full.rows_received, 60u);
+
+    QueryService service{node};
+    for (const std::string sql :
+         {"SELECT * FROM datasets.cached LIMIT 5;",
+          "SELECT * FROM datasets.cached OFFSET 3 LIMIT 4;",
+          "SELECT label FROM datasets.cached FETCH FIRST 2 ROWS ONLY;",
+          "SELECT * FROM datasets.cached ORDER BY amount DESC LIMIT 4;",
+          "SELECT * FROM datasets.cached ORDER BY segment, amount DESC OFFSET 2 LIMIT 5;",
+          "SELECT label, amount FROM datasets.cached WHERE segment = 2 "
+          "ORDER BY amount LIMIT 3;",
+          "SELECT * FROM datasets.cached ORDER BY segment LIMIT 7;"}) {
+        SCOPED_TRACE(sql);
+        const SelectStmt statement = parse_select(sql);
+        const zetta::query::SelectOutcome scanned =
+            zetta::query::select_over_partitions(node, nullptr, statement, table_id);
+        ASSERT_TRUE(scanned.ok()) << scanned.error;
+        const std::size_t keep = statement.offset + *statement.limit;
+        EXPECT_LE(scanned.rows_received, keep * added.partitions.size())
+            << "a partition sent more than offset + limit rows";
+        EXPECT_LT(scanned.rows_received, 60u) << "the LIMIT did not reach the partitions";
+
+        // The answer through the executor equals the full scan, filtered,
+        // projected and cut by hand.
+        SelectStmt unlimited = statement;
+        unlimited.limit.reset();
+        unlimited.offset = 0;
+        unlimited.order_by.clear();
+        const zetta::query::SelectOutcome everything =
+            zetta::query::select_over_partitions(node, nullptr, unlimited, table_id);
+        ASSERT_TRUE(everything.ok()) << everything.error;
+        const auto answered = service.run(sql, "");
+        ASSERT_TRUE(answered.ok()) << answered.error;
+        EXPECT_EQ(answered.rows, cut(everything.rows, statement));
+    }
+
+    // An aggregate is not cut at the partitions: every row still counts.
+    const auto counted = service.run("SELECT count(*) FROM datasets.cached LIMIT 1;", "");
+    ASSERT_TRUE(counted.ok()) << counted.error;
+    EXPECT_EQ(counted.rows.at(0).at("count"), 60);
+    // An ORDER BY key the result lacks is still refused under LIMIT 0.
+    EXPECT_FALSE(service.run("SELECT label FROM datasets.cached ORDER BY amount LIMIT 0;", "").ok());
+
+    node.stop();
+}
+
+// #1021: a dataset loaded with a column order (a connector query's SELECT list)
+// keeps it — SELECT * over the partitions and the dataset summary list the
+// columns that way — and its columns are typed from the partitions' stats.
+TEST(ScatterGatherSelect, APartitionOnlyDatasetKeepsItsSourceColumnOrder) {
+    TempDir dir;
+    Node node{config_for(dir)};
+    node.start();
+
+    std::vector<nlohmann::json> rows = sample_rows();
+    rows[0]["label"] = nullptr;
+    rows[1].erase("label");
+    AddDatasetOptions options;
+    options.table_name = "cached";
+    options.partition_count = 4;
+    options.partition_only = true;
+    options.columns = {"segment", "label", "amount"};
+    const AddDatasetResult added = add_dataset_rows(node, rows, options);
+    ASSERT_TRUE(added.ok()) << added.error;
+
+    QueryService service{node};
+    const auto star = service.run("SELECT * FROM datasets.cached LIMIT 1;", "");
+    ASSERT_TRUE(star.ok()) << star.error;
+    EXPECT_EQ(star.columns, (std::vector<std::string>{"segment", "label", "amount"}));
+
+    bool found = false;
+    for (const zetta::data::DatasetSummary& dataset : node.datasets()) {
+        if (dataset.table_id != added.table->id()) continue;
+        found = true;
+        EXPECT_TRUE(dataset.column_order_recorded);
+        EXPECT_EQ(dataset.columns, (std::vector<std::string>{"segment", "label", "amount"}));
+        ASSERT_EQ(dataset.typed_columns.size(), 3u);
+        EXPECT_EQ(dataset.typed_columns[0].type, "integer");
+        EXPECT_FALSE(dataset.typed_columns[0].nullable);
+        EXPECT_EQ(dataset.typed_columns[1].type, "string");
+        EXPECT_TRUE(dataset.typed_columns[1].nullable);
+        ASSERT_TRUE(dataset.typed_columns[1].null_fraction);
+        EXPECT_DOUBLE_EQ(*dataset.typed_columns[1].null_fraction, 2.0 / 60.0);
+        EXPECT_EQ(dataset.typed_columns[2].type, "integer");
+    }
+    EXPECT_TRUE(found);
     node.stop();
 }
 
@@ -477,6 +629,7 @@ TEST(ScatterGatherSelect, MultiNodeAggregatesMatchTheSingleNodeAnswer) {
     options.replication_factor = 1;  // one owner each, so the scan must split
     options.partition_only = true;
     options.members = {kNodeA, kNodeB};
+    options.columns = {"label", "segment", "amount"};  // the source's order (#1021)
     const AddDatasetResult added = add_dataset_rows(a, sample_rows(), options);
     ASSERT_TRUE(added.ok()) << added.error;
 
@@ -523,9 +676,52 @@ TEST(ScatterGatherSelect, MultiNodeAggregatesMatchTheSingleNodeAnswer) {
     }
     EXPECT_EQ(all.rows.size(), 60u);
     EXPECT_EQ(labels.size(), 60u);
-    // SELECT * names its columns from what the owners' rows carry (#1218).
-    EXPECT_EQ(std::set<std::string>(all.columns.begin(), all.columns.end()),
-              (std::set<std::string>{"segment", "amount", "label"}));
+    // SELECT * names its columns from what the owners' rows carry (#1218), in
+    // the order the load recorded (#1021).
+    EXPECT_EQ(all.columns, (std::vector<std::string>{"label", "segment", "amount"}));
+
+    // The order replicated (`cols:<table-id>`): B, which did not load the
+    // dataset, lists the same columns in the same order.
+    ASSERT_TRUE(converge(a, b, [&] {
+        for (const zetta::data::DatasetSummary& dataset : b.datasets()) {
+            if (dataset.table_id == added.table->id()) return dataset.column_order_recorded;
+        }
+        return false;
+    }));
+    for (const zetta::data::DatasetSummary& dataset : b.datasets()) {
+        if (dataset.table_id != added.table->id()) continue;
+        EXPECT_EQ(dataset.columns, (std::vector<std::string>{"label", "segment", "amount"}));
+    }
+
+    // LIMIT across the split (#1021): each owner sends at most offset + limit
+    // rows per partition, and either coordinator answers what the full scan
+    // cut by hand would.
+    for (Node* coordinator : {&a, &b}) {
+        for (const std::string sql :
+             {"SELECT * FROM datasets.cached LIMIT 3;",
+              "SELECT label, amount FROM datasets.cached ORDER BY amount DESC OFFSET 1 LIMIT 4;"}) {
+            SCOPED_TRACE(sql);
+            const SelectStmt statement = parse_select(sql);
+            ASSERT_TRUE(coordinator->distributed_select());
+            const zetta::query::SelectOutcome scanned =
+                coordinator->distributed_select()->execute(statement, added.table->id());
+            ASSERT_TRUE(scanned.ok()) << scanned.error;
+            EXPECT_LE(scanned.rows_received,
+                      (statement.offset + *statement.limit) * added.partitions.size());
+            EXPECT_LT(scanned.rows_received, 60u);
+            SelectStmt unlimited = statement;
+            unlimited.limit.reset();
+            unlimited.offset = 0;
+            unlimited.order_by.clear();
+            const zetta::query::SelectOutcome everything =
+                coordinator->distributed_select()->execute(unlimited, added.table->id());
+            ASSERT_TRUE(everything.ok()) << everything.error;
+            QueryService service{*coordinator};
+            const auto answered = service.run(sql, "");
+            ASSERT_TRUE(answered.ok()) << answered.error;
+            EXPECT_EQ(answered.rows, cut(everything.rows, statement));
+        }
+    }
 
     // A whole-table aggregate and a text GROUP BY key merge across the split,
     // and a column no owner saw is an error on either coordinator (#1218).

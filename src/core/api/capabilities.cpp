@@ -2439,9 +2439,25 @@ ApiResult handle_get_index(const nlohmann::json& input, ApiContext& context) {
 
 // --- get_dataset / list_datasets ----------------------------------------------
 
+// A dataset's typed columns as get_dataset answers them (#1021):
+// `[{name, type, nullable, null_fraction}]`, `null_fraction` null when unknown.
+nlohmann::json typed_columns_json(const zetta::data::DatasetSummary& dataset) {
+    nlohmann::json columns = nlohmann::json::array();
+    for (const zetta::data::DatasetColumn& column : dataset.typed_columns) {
+        columns.push_back(
+            {{"name", column.name},
+             {"type", column.type},
+             {"nullable", column.nullable},
+             {"null_fraction", column.null_fraction ? nlohmann::json(*column.null_fraction)
+                                                    : nlohmann::json()}});
+    }
+    return columns;
+}
+
 // A DatasetSummary as JSON — the full computed shape, with the per-partition
 // placement kept structured (the SQL view flattens it to strings for tabular
-// reading; the tool keeps the arrays an agent can walk).
+// reading; the tool keeps the arrays an agent can walk). `columns` is the names
+// in order (list_datasets); get_dataset replaces it with the typed columns.
 nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) {
     nlohmann::json partitions = nlohmann::json::array();
     for (const zetta::data::DatasetPlacement& placement : dataset.partitions) {
@@ -2460,6 +2476,11 @@ nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) 
                           {"rows", dataset.rows},
                           {"size_bytes", dataset.size_bytes},
                           {"columns", dataset.columns},
+                          // #1021: "source" when the columns follow the file's
+                          // or query's own order, "first_seen" when none was
+                          // recorded (a dataset loaded before it was kept).
+                          {"column_order",
+                           dataset.column_order_recorded ? "source" : "first_seen"},
                           {"partitions", std::move(partitions)},
                           // #837: whether this node can see the WHOLE dataset.
                           // An agent that reads `rows` must be able to tell a
@@ -2470,15 +2491,15 @@ nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) 
                           {"expected_rows", dataset.expected_rows}};
 }
 
-// The schema of dataset_summary_json — shared by get_dataset (the value) and
-// list_datasets (the array items).
+// The schema of dataset_summary_json — list_datasets' array items, and with
+// `columns` typed (get_dataset_output_schema below) get_dataset's value.
 const nlohmann::json& dataset_summary_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required",
          {"name", "database", "table_id", "format", "source_format", "replication", "rows",
-          "size_bytes", "columns", "partitions", "degraded", "degraded_reason",
-          "expected_partitions", "expected_rows"}},
+          "size_bytes", "columns", "column_order", "partitions", "degraded",
+          "degraded_reason", "expected_partitions", "expected_rows"}},
         {"additionalProperties", false},
         {"properties",
          {{"name", {{"type", "string"}}},
@@ -2496,7 +2517,21 @@ const nlohmann::json& dataset_summary_schema() {
           {"replication", {{"type", "integer"}}},
           {"rows", {{"type", "integer"}}},
           {"size_bytes", {{"type", "integer"}}},
-          {"columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"columns",
+           {{"type", "array"},
+            {"description",
+             "the column names, in the source's order when column_order is "
+             "\"source\" (#1021)"},
+            {"items", {{"type", "string"}}}}},
+          {"column_order",
+           {{"type", "string"},
+            {"enum", {"source", "first_seen"}},
+            {"description",
+             "source: columns follow the file's or query's own order (the CSV "
+             "header, the Parquet schema, the first JSON row, the SELECT list); "
+             "first_seen: no order was recorded (a dataset loaded before #1021), "
+             "so the columns come in the order the stored rows present them, "
+             "which is alphabetical"}}},
           {"partitions",
            {{"type", "array"},
             {"items",
@@ -2517,6 +2552,46 @@ const nlohmann::json& dataset_summary_schema() {
           {"degraded_reason", {{"type", "string"}}},
           {"expected_partitions", {{"type", "integer"}}},
           {"expected_rows", {{"type", "integer"}}}}}};
+    return schema;
+}
+
+// get_dataset's value: the summary with `columns` typed (#1021).
+const nlohmann::json& get_dataset_output_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json out = dataset_summary_schema();
+        out["properties"]["columns"] = {
+            {"type", "array"},
+            {"description",
+             "the dataset's columns, in the source's order when column_order is "
+             "\"source\" (#1021), each with the JSON type its values share and "
+             "the share of rows that hold null for it or omit it"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"name", "type", "nullable", "null_fraction"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"name", {{"type", "string"}}},
+                {"type",
+                 {{"type", "string"},
+                  {"enum",
+                   {"boolean", "integer", "number", "string", "object", "array", "null",
+                    "mixed", "unknown"}},
+                  {"description",
+                   "the JSON type the column's values share: integer widens to "
+                   "number when both occur, mixed when the values differ otherwise, "
+                   "null when every value is null, unknown for a partition written "
+                   "before types were recorded"}}},
+                {"nullable", {{"type", "boolean"}}},
+                {"null_fraction",
+                 {{"type", {"number", "null"}},
+                  {"minimum", 0},
+                  {"maximum", 1},
+                  {"description",
+                   "nulls (or missing cells) over rows; null when unknown (a "
+                   "partition-only dataset written before null counts were "
+                   "recorded)"}}}}}}}};
+        return out;
+    }();
     return schema;
 }
 
@@ -2585,7 +2660,9 @@ ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
             "engine_error", "dataset '" + name + "' exists in several databases (" +
                                 databases + ") — pass \"database\" to pick one");
     }
-    return ApiResult::success(dataset_summary_json(matches.front()));
+    nlohmann::json value = dataset_summary_json(matches.front());
+    value["columns"] = typed_columns_json(matches.front());
+    return ApiResult::success(std::move(value));
 }
 
 ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
@@ -11496,11 +11573,12 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "get_dataset",
         "Get one dataset",
-        "Read one dataset's computed summary — schema, row count, size, "
+        "Read one dataset's computed summary — its columns in the source "
+        "file's order with each one's type and null share, row count, size, "
         "format, replication, partition placement — by name (plus database "
         "when ambiguous). No side effects.",
         get_dataset_schema(),
-        dataset_summary_schema(),
+        get_dataset_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,

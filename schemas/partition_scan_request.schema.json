@@ -37,6 +37,31 @@
     "group_by": {
       "type": "string"
     },
+    "keep": {
+      "description": "the most rows one partition returns: the SELECT's offset + limit (#1021)",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "order_by": {
+      "description": "sort each partition's rows by these keys before keeping `keep` (#1021)",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "column": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "descending": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "column"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "partitions": {
       "items": {
         "minLength": 1,

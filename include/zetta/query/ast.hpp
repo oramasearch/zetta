@@ -266,7 +266,10 @@ struct SelectStmt {
     // ORDER BY / LIMIT / OFFSET, applied to the finished result of every path
     // (plain, grouped, system table, scattered over partitions). An ORDER BY key
     // names a column of the result: a projected column, a GROUP BY key or an
-    // aggregate's alias; with SELECT *, any column.
+    // aggregate's alias; with SELECT *, any column. `limit` is set by `LIMIT n`
+    // or `FETCH FIRST n ROWS ONLY`. A non-aggregating SELECT also pushes
+    // `offset + limit` down to the scan (#1021): no partition owner sends more
+    // rows than that, ORDER BY or not (each sorts its share and keeps the top).
     std::vector<OrderKey> order_by;
     std::optional<std::size_t> limit;
     std::size_t offset = 0;

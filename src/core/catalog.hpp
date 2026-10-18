@@ -143,6 +143,11 @@
 //                          by the node that completed the write, so the key has
 //                          exactly one writer — see data/dataset_manifest.hpp /
 //                          docs/data/partition-manifest.md)
+//   cols:<table-uuid>  -> { columns: [name, …] }  (a dataset's SOURCE COLUMN
+//                          ORDER — the CSV header, the Parquet schema, a
+//                          connector query's SELECT list, a CREATE TABLE's
+//                          column list — #1021. One writer, the loading node;
+//                          see Table::column_order / docs/data/column-order.md)
 //   record_collection:<name> -> { name, indexes, retention_ms?, created }  (a keyed
 //                          record collection's definition — #1231; the records
 //                          themselves live in each node's record log, never here,
@@ -193,6 +198,7 @@ inline constexpr std::string_view kLedgerPrefix = "ledger:";
 inline constexpr std::string_view kRoiReadoutPrefix = "roi_readout:";
 inline constexpr std::string_view kPartitionPrefix = "part:";
 inline constexpr std::string_view kManifestPrefix = "mfst:";
+inline constexpr std::string_view kColumnOrderPrefix = "cols:";
 inline constexpr std::string_view kUserPrefix = "user:";
 inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
@@ -301,6 +307,14 @@ inline std::string partition_key(const std::string& partition_id) {
 // key has exactly one writer and can never lose a merge.
 inline std::string manifest_key(const std::string& table_id) {
     return std::string(kManifestPrefix) + table_id;
+}
+// A dataset's source column order (#1021) — the CSV header, the Parquet schema,
+// the connector query's SELECT list — keyed by the TABLE, written once by the
+// node that loaded it (one writer, like the manifest). Its own key rather than a
+// field of `tbl:`, because the order is known only after the table exists (a
+// co-launched ingest adopts `tbl:` on every participant).
+inline std::string column_order_key(const std::string& table_id) {
+    return std::string(kColumnOrderPrefix) + table_id;
 }
 inline std::string user_key(const std::string& user_id) {
     return std::string(kUserPrefix) + user_id;

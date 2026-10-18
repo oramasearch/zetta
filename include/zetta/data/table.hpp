@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -111,6 +112,29 @@ public:
     // materialize path. An empty optional clears it.
     void apply_partition_manifest(std::optional<DatasetManifestValue> value);
 
+    // **The source's column order** (#1021): the CSV header, the Parquet file's
+    // schema, the first JSON row's keys, a connector query's SELECT list, or a
+    // CREATE TABLE's column list. Rows are stored as JSON objects, whose keys
+    // read back sorted, so without this a dataset's columns came back
+    // alphabetical. Empty when nothing was recorded — a table loaded before
+    // #1021, or made another way — and then readers keep the first-seen order.
+    // `get_dataset`, `list_datasets`, `system.datasets` and `SELECT *` list the
+    // recorded columns first, then any column a row carries that it does not
+    // name. Captured under `cols:<table-id>` and written to table.json.
+    const std::vector<std::string>& column_order() const { return column_order_; }
+
+    // Record the order: capture it into `cols:<table-id>`, then rewrite
+    // table.json. Called by the node that loaded the rows. Repeated names keep
+    // their first place; an empty list records nothing.
+    void set_column_order(std::vector<std::string> columns);
+
+    // Apply an order that arrived from a peer: projection + table.json only, no
+    // capture. An empty list clears it.
+    void apply_column_order(std::vector<std::string> columns);
+
+    // Restore the order read back from table.json at load: no capture, no write.
+    void restore_column_order(std::vector<std::string> columns);
+
     zetta::storage::StorageEngine& store() { return *store_; }
     const zetta::storage::StorageEngine& store() const { return *store_; }
 
@@ -168,6 +192,13 @@ private:
     bool partition_only_ = false;               // #833; rows never captured
     std::string source_format_;                 // #1221; empty = not recorded
     std::optional<DatasetManifestValue> partition_manifest_;  // #837
+    std::vector<std::string> column_order_;     // #1021; empty = not recorded
 };
+
+// The columns of a table in the order to show them (#1021): `recorded` (a
+// table's `column_order()`) first, then every name in `seen` it does not hold, in
+// `seen`'s order. With nothing recorded, `seen` unchanged.
+std::vector<std::string> order_columns(const std::vector<std::string>& recorded,
+                                       const std::vector<std::string>& seen);
 
 }  // namespace zetta::data

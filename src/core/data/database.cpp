@@ -60,12 +60,23 @@ void Database::load() {
         if (const auto it = meta.find("manifest"); it != meta.end()) {
             manifest = parse_dataset_manifest_value(*it);
         }
-        tables_.push_back(std::make_shared<Table>(
+        auto table = std::make_shared<Table>(
             entry.path().filename().string(),
             meta["name"].get<std::string>(), entry.path(), replication_,
             replication_strategy_from_meta(meta),
             meta.value("partition_only", false), std::move(manifest),
-            meta.value("source_format", std::string())));
+            meta.value("source_format", std::string()));
+        // The source column order (#1021), when one was recorded. Anything but
+        // an array of strings is ignored rather than trusted.
+        if (const auto it = meta.find("column_order");
+            it != meta.end() && it->is_array()) {
+            std::vector<std::string> columns;
+            for (const nlohmann::json& column : *it) {
+                if (column.is_string()) columns.push_back(column.get<std::string>());
+            }
+            table->restore_column_order(std::move(columns));
+        }
+        tables_.push_back(std::move(table));
     }
     // Stable order for the UI (directory iteration order is unspecified).
     std::sort(tables_.begin(), tables_.end(),
@@ -136,6 +147,7 @@ bool Database::drop_table(const std::string& name) {
         // The manifest is keyed by the table, so it goes with it (#837) —
         // otherwise a re-created table id would inherit a stale expected count.
         replication_->remove(catalog::manifest_key((*it)->id()));
+        replication_->remove(catalog::column_order_key((*it)->id()));
     }
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
