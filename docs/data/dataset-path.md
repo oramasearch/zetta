@@ -4,7 +4,7 @@
 **Serves:** [#948](https://github.com/oramasearch/zetta/issues/948) ·
 **Code:** [`include/zetta/data/dataset_path.hpp`](../../include/zetta/data/dataset_path.hpp),
 [`src/core/data/dataset_path.cpp`](../../src/core/data/dataset_path.cpp) ·
-**Tests:** `tests/data/test_dataset_path.cpp`
+**Tests:** `tests/data/test_dataset_path.cpp`, `tests/data/test_dataset_catalog_typing.cpp` (#1203 item 3), and the #956 timing in `tests/usecases/churn/test_motive_demo_dataset.cpp`
 
 ## The break this closes
 
@@ -66,13 +66,14 @@ inside a trained model.
 
 - **label** — the first of `churned` / `churn` / `is_churn` / `is_churned` /
   `did_churn` / `label` / `target` / `outcome` / `converted` / `y` that is present
-  **and binary across the sampled rows**. Binary-ness outranks the name: a column
+  **and binary** (a boolean in the partition catalog, or 0/1 across the sampled rows). Binary-ness outranks the name: a column
   called `label` holding free text is not a training target, and training on it would
   fail deep inside the GBDT rather than here, where the reason is still legible.
 - **entity** — the first of `entity` / `entity_id` / `account_id` / `customer_id` / …
   / `id` that is present and integer-valued or text. Most specific first: a table carrying
   both `account_id` and `id` means the account, not the row.
-- **features** — every remaining column whose sampled values are numeric or boolean, in catalog
+- **features** — every remaining column that is numeric or boolean (by its partition catalog
+  type, or across the sampled rows when the catalog cannot type the table), in catalog
   order, excluding the entity, label, and time columns. A remaining **text** column with 2 to
   32 levels that does not identify rows and is not a date goes to `categorical_features`
   instead, and `resolve_dataset` refits its levels on every training row (after the cutoff);
@@ -139,10 +140,97 @@ when:
   fraction of the rows while looking perfectly healthy;
 - the table has no rows, or the contract cannot be inferred.
 
-Reading rows for typing goes through the injected `DatasetSampler`, so contract and
-semantic inference are unit-testable against rows built in a test. The default reads through
+Reading rows goes through the injected `DatasetSampler`, so contract and semantic
+inference are unit-testable against rows built in a test. The default reads through
 `query::QueryService`, which routes a partition-only table through the
-[scatter-gather select](scatter-gather-select.md).
+[scatter-gather select](scatter-gather-select.md). `sample_dataset` (used by
+`analyze_dataset`) still reads whole rows; `resolve_dataset` types the contract from the
+partition catalog first, below.
+
+## Typing from the partition catalog
+
+[#1203](https://github.com/oramasearch/zetta/issues/1203) item 3. Every partition body
+records its own schema in the catalog
+([#837](https://github.com/oramasearch/zetta/issues/837)): the Parquet physical type of each
+column, or the JSON family for a JSON Lines body. `catalog_column_types` merges those over
+the table's partitions into one `CatalogColumnType` per column:
+
+| Recorded | Type | What it decides without a row |
+|---|---|---|
+| `boolean` | `Boolean` | numeric, binary, integer: a feature, a label, an entity key |
+| `int32`, `int64`, `integer` | `Integer` | numeric and integer: a feature or an entity key. Not whether it is 0/1 |
+| `float`, `double`, `number` | `Number` | numeric: a feature. Not whether it is 0/1, nor whether it is whole |
+| `null` (JSON Lines) | `Null` | no values: `not used` |
+| `byte_array`, `string`, `mixed`, anything else | `Undecided` | nothing. Text, a mixed column, or an all-null Parquet column (written as `byte_array`) |
+
+Partitions merge as you would expect: an integer and a real partition make `Number`, a boolean
+and an integer partition make `Integer`, `Null` gives way to the other side, and `Undecided`
+wins. The catalog types the table only when **every row** is in a partition that recorded its
+schema: a table that was never partitioned, a partition written before #837, or a catalog that
+covers fewer rows than the table holds (rows inserted after the ingest) leaves it unavailable,
+and the table is typed from sampled rows exactly as before.
+
+**What still reads rows, and why.** `columns_needing_values` names the columns whose values
+decide something the catalog does not record; only those are read:
+
+- **Every `Undecided` column, from the first `kDefaultSampleRows` rows.** Text has to be
+  looked at to tell a category (2 to 32 levels, not an identifier, not a date —
+  [categorical-features.md](categorical-features.md)) from an identifier, a date or free text,
+  and a text entity has to be checked for empty values. This is the read that keeps item 2's
+  decisions what they were: the same rows, the same rules.
+- **A label candidate typed `Integer` or `Number`** (when no label is named), from the same
+  rows: inference picks the first candidate whose values are all 0/1, and the catalog does not
+  record that. A boolean candidate needs no read.
+- **An entity candidate, or the named entity, typed `Number`**: a real column is an entity key
+  only when every value is whole.
+- **Fitting, over every row** — only when there is a text entity or a category: the entity
+  column (its derived keys), each category column (its levels, refitted on the training rows),
+  and the time column that picks the training rows. Nothing else.
+
+A table of numbers with a boolean label, or with the entity and label named, is typed with
+**no row read at all**. The first note says which happened:
+
+```
+column types: from the partition catalog (2 partitions); values of churned, finance_segment, finance_sub_segment, sfdc_account_id read from the first 256 rows (text, or a label or entity the catalog cannot type)
+column types: from the partition catalog (4 partitions); no rows read to type them
+column types: from the first 256 rows, every column (the table has no partitions in the catalog)
+```
+
+`ResolvedDataset::reads` carries the same facts as data: whether the catalog typed it (and
+why not), the sampled columns and row count, and the fitted columns and row count.
+
+The reads are projected: `read_dataset_columns` runs `SELECT <columns> FROM <db>.<table>`
+rather than `SELECT *`. A column name the SQL subset cannot write as a bare identifier (it has
+no quoted identifiers: `plan tier`, `limit`) falls back to `SELECT *` and is projected in
+memory, so the answer is the same. With an injected sampler, the sampler's rows are used and
+cut to the same columns.
+
+**One deliberate difference from the sample.** A column the catalog types numeric whose
+first 256 rows happen to be all null is a feature: the catalog has seen its values, where the
+sample alone left it out with `no values in the sampled rows`. Every other decision is the
+sample's, and `CatalogTyping.TypesMatchWhatTheSamplerProduced` holds it to that by resolving
+the same rows landed partitioned, unpartitioned and partition-only.
+
+**Measured** ([#956](https://github.com/oramasearch/zetta/issues/956)'s path:
+`MotiveDemoDataset.TrainsAndExplainsWithTreeShap` over the 15,000-row demo table from
+`scripts/gen_motive_demo_dataset.py --accounts 15000`, median of 5 per run, three runs each,
+macOS arm64 Release, same machine back to back):
+
+| | before | after |
+|---|---|---|
+| `resolve_dataset`, entity and label named | 86–87 ms | 34–36 ms |
+| `resolve_dataset`, label inferred | 86–88 ms | 37–39 ms |
+| `score_table` (15,000 rows, unchanged) | 65–71 ms | 65–70 ms |
+
+Before, a resolve ran `SELECT *` twice (the typing sample and the fit for the two
+categories). After, it reads four of eighteen columns for typing (`churned` when the label is
+inferred, `finance_segment`, `finance_sub_segment`, `sfdc_account_id`) and two for fitting.
+
+**With SQL `LIMIT` pushdown** ([#1021](https://github.com/oramasearch/zetta/issues/1021)): the
+typing read is still a whole-table scan cut to 256 rows, because `LIMIT` cuts the result and
+not the scan today. Once the scan stops at the limit, appending `LIMIT <n>` to the projected
+query in `read_dataset_columns` (when `n` is not zero) makes the typing read cost 256 rows; the
+fitting read reads every row by design.
 
 ## Boundaries
 
@@ -180,8 +268,9 @@ at the boundary). A table run reports back what it **inferred**:
 { "run_id": "...", "engine": "churn", "status": "running",
   "dataset": { "entity_column": "account_id", "label_column": "churned",
                "feature_columns": ["failed_payments", "logins_30d", "nps"] },
-  "dataset_notes": ["label column: 'churned' (binary across the sampled rows)",
-                    "entity column: 'account_id' (integer across the sampled rows)",
+  "dataset_notes": ["column types: from the partition catalog (8 partitions); values of churned read from the first 256 rows (text, or a label or entity the catalog cannot type)",
+                    "label column: 'churned' (binary across the sampled rows)",
+                    "entity column: 'account_id' (integer by its type in the partition catalog, integer)",
                     "feature columns (3): failed_payments, logins_30d, nps",
                     "no time column given — the rows are taken as already point-in-time correct"] }
 ```
@@ -198,8 +287,7 @@ inside a trained model.
   payload is small — a table id and a contract, not the rows — so this is a smaller
   change than the one it replaces.
 
-- **Typing columns from the partition catalog.** The default sampler reads the whole
-  table and keeps the first `kDefaultSampleRows` rows, because the SQL subset has no
-  `LIMIT` yet. The catalog already records each body's column types
-  ([#837](https://github.com/oramasearch/zetta/issues/837)), so typing from it — reading
-  no rows at all — is the follow-up.
+- **A `LIMIT` on the typing read.** Typing reads only the columns the catalog cannot
+  decide (above), but still scans the table to keep the first `kDefaultSampleRows` rows
+  until SQL `LIMIT` reaches the scan
+  ([#1021](https://github.com/oramasearch/zetta/issues/1021)).

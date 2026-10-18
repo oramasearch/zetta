@@ -2,8 +2,10 @@
 
 **Status:** shipped for the M-1 GBDT's table path (runs over a `database.table` and Study
 trials) — [#1203](https://github.com/oramasearch/zetta/issues/1203), item 2 of
-[#957](https://github.com/oramasearch/zetta/issues/957). Typing columns from the partition
-catalog (item 3) is not part of this.
+[#957](https://github.com/oramasearch/zetta/issues/957). Item 3 types the other columns from
+the partition catalog and reads only the text columns' values to decide categories
+([dataset-path.md](dataset-path.md#typing-from-the-partition-catalog)); what is decided here is
+unchanged by it.
 
 A churn table uploaded from a CSV carries `plan` and `region` as text. Those are the first
 features most people expect a churn model to use, and until #1203 they were dropped with
@@ -43,8 +45,10 @@ category.
 
 ## Fitted on the training rows, stored with the model
 
-- **Fitting.** Inference proposes the levels from the sampled rows; `resolve_dataset` then
-  refits them over every training row of the table — after the `as_of` cutoff when a time
+- **Fitting.** Inference proposes the levels from the sampled rows (the first 256 rows of the
+  text columns, which are read even when the partition catalog types every other column);
+  `resolve_dataset` then refits them over every training row of the table, reading only the
+  category columns and the time column — after the `as_of` cutoff when a time
   column is given — so a common level the sample missed is still a feature. A column that fails
   a rule over the full rows is dropped with a note. Levels are sorted; nulls and empty strings
   are not levels.
@@ -109,6 +113,9 @@ the model expects text is refused. A row that already carries the encoded featur
   for a seen and an unseen level, a refused row without the column, and a table score.
 - `GettingStartedChurn.CsvTrainsEndToEndAndStudyTrialUsesTheSameFeatures`: a run and a Study
   trial over the same table use the same encoded features.
+- `CatalogTyping.TypesMatchWhatTheSamplerProduced` (`tests/data/test_dataset_catalog_typing.cpp`):
+  with the contract typed from the partition catalog (item 3), the same rows give the same
+  categories and fitted levels as typing from a sample, with and without a time cutoff.
 - `ServingFixture.ServedPredictEncodesTextCategoriesWithTheStoredLevels`
   (`tests/api/test_serving.cpp`): the served route matches the reference scorer for a seen,
   an unseen and a null level.

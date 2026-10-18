@@ -39,7 +39,8 @@
 // columns the analyst selected; requiring the caller to spell the contract out every
 // time would make the plain-language path ("predict which accounts will churn")
 // useless, because the agent does not know which column holds the label. So the
-// contract is INFERRED from the column names and a sample of the rows, by the ranked
+// contract is INFERRED from the column names, the column types the partition catalog
+// records, and a sample of the rows where the types do not decide (#1203), by the ranked
 // rules below — and every inference is reported back in `notes`, so a caller reads
 // what was assumed rather than discovering it in a model. Anything inferred can be
 // overridden explicitly, and an inference that cannot be made **fails with the list
@@ -212,9 +213,78 @@ struct DatasetContractResult {
 const std::vector<std::string>& entity_column_candidates();
 const std::vector<std::string>& label_column_candidates();
 
+class DatasetPartition;
+
+// What the partition catalog says about one column, across every partition of a
+// table (#1203 item 3). Each partition body records its own schema in the catalog
+// (#837): the Parquet physical type of each column, or the JSON family for a JSON
+// Lines body. Merged over the partitions, that answers most of what inference asks
+// of a column without reading a row:
+//
+//   * `Boolean`   — every value is true/false: numeric, binary and integer.
+//   * `Integer`   — every value is a whole number (a boolean partition widens to
+//                   it): numeric and integer; whether it is 0/1 is not recorded.
+//   * `Number`    — numbers, some real: numeric; integer-ness is not recorded.
+//   * `Null`      — no partition holds a value (a JSON Lines body records `null`).
+//   * `Undecided` — text, a column mixing families, or a Parquet `byte_array`,
+//                   which is also what an all-null Parquet column is written as.
+//                   Only values can decide it.
+//
+// An integer partition and a real-number partition merge to `Number`; anything
+// merged with `Undecided` is `Undecided`; `Null` merges to the other side.
+enum class CatalogColumnType { Boolean, Integer, Number, Null, Undecided };
+
+std::string_view to_string(CatalogColumnType type);
+
+// The catalog's column types for one table, or why the catalog cannot type it.
+// A table can only be typed from the catalog when EVERY row is in a partition
+// that recorded its schema: a table that was never partitioned, a partition
+// written before #837 recorded schemas, or a catalog that covers fewer rows than
+// the table holds (rows inserted after the ingest) all leave `unavailable` set,
+// and the contract is typed from sampled rows as before.
+struct CatalogColumnTypes {
+    std::map<std::string, CatalogColumnType> columns;
+    std::size_t partitions = 0;
+    std::string unavailable;  // empty when the catalog types the table
+
+    bool available() const { return unavailable.empty(); }
+    // The column's type; `Undecided` for a column the catalog does not record.
+    CatalogColumnType type_of(const std::string& column) const;
+};
+
+// Merge the `stats.schema` of `table_id`'s entries in `partitions`. `rows` is the
+// table's row count; the catalog must account for all of them.
+CatalogColumnTypes catalog_column_types(
+    const std::vector<std::shared_ptr<DatasetPartition>>& partitions,
+    const std::string& table_id, std::uint64_t rows);
+
+// The columns whose values inference must still read when the catalog types the
+// rest, given the caller's `overrides`:
+//
+//   * every `Undecided` column — text has to be looked at to tell a category
+//     (2 to 32 levels, not an identifier, not a date) from anything else, and a
+//     text entity has to be checked for empty values;
+//   * a label candidate (by name, when no label is named) typed `Integer` or
+//     `Number` — the catalog does not record whether the values are 0/1;
+//   * an entity candidate, or the named entity, typed `Number` — the catalog does
+//     not record whether the reals are whole.
+//
+// Everything else is decided by its catalog type. In catalog order.
+std::vector<std::string> columns_needing_values(const std::vector<std::string>& columns,
+                                                const CatalogColumnTypes& catalog,
+                                                const DatasetContract& overrides);
+
 // Infer the parts of `overrides` that were left empty, from `columns` (the table's
 // column names, in catalog order) and `sample` (rows read from the table — enough
 // to judge a column's type; an empty sample means only names can be used).
+//
+// With `catalog` (available), a column's type is taken from the partition catalog
+// wherever the catalog decides it, and `sample` is consulted only for the columns
+// columns_needing_values() names — it may carry just those. Every decision is the
+// one the sample would have made, with one deliberate difference: a column the
+// catalog types numeric but whose sampled rows are all null is a feature (the
+// catalog has seen its values; the sample had not), where the sample alone left it
+// out with "no values in the sampled rows".
 //
 // The rules, in order:
 //
@@ -240,7 +310,8 @@ const std::vector<std::string>& label_column_candidates();
 // naming a column that is not there has a typo, not an intent.
 DatasetContractResult infer_dataset_contract(const std::vector<std::string>& columns,
                                              const std::vector<nlohmann::json>& sample,
-                                             const DatasetContract& overrides = {});
+                                             const DatasetContract& overrides = {},
+                                             const CatalogColumnTypes* catalog = nullptr);
 
 // Read up to `limit` rows of `database`.`table`, for typing the columns. A zero
 // limit means all rows; entity mapping uses it to detect collisions dataset-wide.
@@ -261,12 +332,30 @@ using DatasetSampler = std::function<std::vector<nlohmann::json>(
 // here.
 //
 // **It reads the whole table and keeps the first `limit` rows**: the SQL subset's
-// LIMIT cuts the result, not the scan. That is bounded work on a demo-sized table and wasteful
-// on a large one; the partition catalog already records each body's column types
-// (#837), so typing the columns from the catalog instead — reading no rows at all —
-// is the follow-up. Recorded rather than left as a surprise.
+// LIMIT cuts the result, not the scan. resolve_dataset() no longer uses it when no
+// sampler is injected — it types the contract from the partition catalog and reads
+// only the columns that still need values (read_dataset_columns below). The
+// methodologies that read every row for training still call it with a zero limit.
 DatasetSampler default_dataset_sampler(Node& node,
                                        const zetta::cluster::Cluster* cluster = nullptr);
+
+// Read `columns` of up to `limit` rows (zero: every row) of `database`.`table`
+// through the node's query service: `SELECT <columns> FROM <database>.<table>`,
+// truncated to `limit`. Rows carry only the named columns. A column whose name the
+// SQL subset cannot spell as a bare identifier (it has no quoted identifiers), or a
+// projected query the executor refuses, falls back to `SELECT *` and projects the
+// rows here, so the answer is the same either way.
+//
+// Like default_dataset_sampler, the scan is whole-table and `limit` only cuts the
+// result. When the SQL `LIMIT` is pushed into the scan (#1021), appending
+// `LIMIT <limit>` to the projected query here makes the typing read cost
+// `limit` rows instead of a scan; nothing else on this path changes.
+std::vector<nlohmann::json> read_dataset_columns(Node& node,
+                                                 const zetta::cluster::Cluster* cluster,
+                                                 const std::string& database,
+                                                 const std::string& table,
+                                                 const std::vector<std::string>& columns,
+                                                 std::size_t limit, std::string& error);
 
 // How many rows the default resolution samples. Enough to catch a column that is
 // integer in its first rows and fractional later, small enough to be free.
@@ -296,6 +385,29 @@ SampledDataset sample_dataset(Node& node, const DatasetPath& path,
                               std::size_t sample_rows = kDefaultSampleRows,
                               const zetta::cluster::Cluster* cluster = nullptr);
 
+// What resolve_dataset() read to type the contract, so a caller (and a test) can
+// see exactly which rows were touched rather than assume none or all were.
+struct DatasetReads {
+    // The contract was typed from the partition catalog. When false,
+    // `catalog_unavailable` says why and the first `sampled_rows` rows were read
+    // whole (`SELECT *`), as before #1203 item 3.
+    bool typed_from_catalog = false;
+    std::string catalog_unavailable;
+    std::size_t catalog_partitions = 0;
+
+    // The typing read: the columns whose values inference looked at, from the
+    // first `sampled_rows` rows. Empty with typed_from_catalog: no rows were read
+    // to type the contract.
+    std::vector<std::string> sampled_columns;
+    std::size_t sampled_rows = 0;
+
+    // The fitting read, over every row: a text entity's keys, each category's
+    // levels (refitted on the training rows), and the time column that picks the
+    // training rows. Empty when there is no text entity and no category.
+    std::vector<std::string> fitted_columns;
+    std::size_t fitted_rows = 0;
+};
+
 // A `dataset_path` resolved against the live catalog: the table it names, and what
 // its columns mean.
 struct ResolvedDataset {
@@ -307,13 +419,28 @@ struct ResolvedDataset {
 
     DatasetContract contract;
     std::vector<std::string> notes;  // the inferences made, for the caller to show
+    DatasetReads reads;              // what was read to make them
     std::string error;               // empty on success
 
     bool ok() const { return error.empty(); }
 };
 
 // Resolve a Table-form `dataset_path` against `node`: find the dataset in the live
-// catalog (`Node::datasets()`), sample it, and infer/validate the contract.
+// catalog (`Node::datasets()`), type its columns, and infer/validate the contract.
+//
+// **Typing (#1203 item 3).** The column types come from the partition catalog
+// (catalog_column_types) when it covers the table. Rows are then read only for
+// what the catalog cannot decide — columns_needing_values(): text columns (is it a
+// category, an identifier, a date?), and a label or entity candidate whose 0/1-ness
+// or whole-ness the catalog does not record. Those columns alone are read, from the
+// first `sample_rows` rows. A table the catalog cannot type is sampled whole as
+// before, and a note says why. With an injected `sampler` the same columns are
+// needed, and the sampler's rows are used for them.
+//
+// **Fitting.** A text entity's keys and each category's levels are then fitted
+// over every row (the levels over the training rows, after the `as_of` cutoff):
+// that read carries the entity, the categories and the time column only. A table
+// with no text entity and no category reads no row at all past the typing read.
 //
 // Fails, non-throwing and with a path-qualified reason, when: the path is the
 // Directory form (the caller loads those itself — this says so rather than
