@@ -48,8 +48,8 @@ category.
 - **Fitting.** Inference proposes the levels from the sampled rows (the first 256 rows of the
   text columns, which are read even when the partition catalog types every other column);
   `resolve_dataset` then refits them over every training row of the table, reading only the
-  category columns and the time column — after the `as_of` cutoff when a time
-  column is given — so a common level the sample missed is still a feature. A column that fails
+  category columns and the time column — only the rows at or before the `as_of`
+  cutoff when a time column is given — so a common level the sample missed is still a feature. A column that fails
   a rule over the full rows is dropped with a note. Levels are sorted; nulls and empty strings
   are not levels.
 - **No leakage.** One-hot encoding reads no label, so its levels carry no target information

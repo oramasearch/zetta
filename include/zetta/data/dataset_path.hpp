@@ -439,7 +439,7 @@ struct ResolvedDataset {
 // needed, and the sampler's rows are used for them.
 //
 // **Fitting.** A text entity's keys and each category's levels are then fitted
-// over every row (the levels over the training rows, after the `as_of` cutoff):
+// over every row (the levels over the training rows, those at or before `as_of`):
 // that read carries the entity, the categories and the time column only. A table
 // with no text entity and no category reads no row at all past the typing read.
 //

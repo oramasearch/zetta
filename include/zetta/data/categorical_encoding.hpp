@@ -23,7 +23,7 @@
 //     values are distinct (otherwise the column identifies rows), and the values are
 //     not dates or timestamps. Anything else stays excluded, with a reason.
 //   * **Fitted on the training rows only.** The level list is read from the rows the
-//     model trains on (after the `as_of` cutoff when a time column is given), never
+//     model trains on (the rows at or before `as_of` when a time column is given), never
 //     from the rows it is later asked to score. One-hot encoding reads no label, so
 //     the levels carry no target information into a held-out fold; no target
 //     encoding is done.
