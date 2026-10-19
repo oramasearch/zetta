@@ -238,18 +238,34 @@ TableScoreResult score_rows(const Model& model, const std::vector<nlohmann::json
                        "' records no feature columns, so nothing says what to feed it");
     }
 
+    // Text categories by their original column (#1203), encoded with the levels
+    // fitted at training time. The encodings are parsed once for the batch, and a
+    // row is copied only when the model has categories to write into it.
+    std::string encoding_error;
+    const std::vector<data::CategoricalEncoding> encodings =
+        model_categorical_encodings(model.value().feature_schema, &encoding_error);
+    if (!encoding_error.empty()) {
+        return failure("score: model '" + model.id() +
+                       "' has an invalid categorical encoding: " + encoding_error);
+    }
+
     std::vector<std::vector<double>> columns(features.size());
     for (std::vector<double>& column : columns) column.resize(rows.size());
+    nlohmann::json encoded_row;
     for (std::size_t row = 0; row < rows.size(); ++row) {
         if (!rows[row].is_object()) {
             return failure("score: row " + std::to_string(row) + " is not an object");
         }
-        // Text categories by their original column (#1203), encoded with the
-        // levels fitted at training time.
-        nlohmann::json encoded = rows[row];
-        if (const std::string reason = encode_model_row(model, encoded); !reason.empty()) {
-            return failure("score: row " + std::to_string(row) + ": " + reason);
+        const nlohmann::json* source = &rows[row];
+        if (!encodings.empty()) {
+            encoded_row = rows[row];
+            if (const std::string reason = data::encode_categorical_row(encodings, encoded_row);
+                !reason.empty()) {
+                return failure("score: row " + std::to_string(row) + ": " + reason);
+            }
+            source = &encoded_row;
         }
+        const nlohmann::json& encoded = *source;
         for (std::size_t index = 0; index < features.size(); ++index) {
             const auto found = encoded.find(features[index]);
             // A missing feature is a hard failure. Zero-filling it would score the

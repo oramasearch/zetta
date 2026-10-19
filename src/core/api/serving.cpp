@@ -382,18 +382,36 @@ ApiResult serve_predict(Node& node, const ServeRequest& request) {
 
     // Build the design matrix in the model's own feature order. Extra features
     // in a row are ignored; a feature the model needs must be present in every
-    // row (the schema already guaranteed rows are objects of numbers).
+    // row (the schema already guaranteed rows are objects of scalars; a text or
+    // null value left after encoding is refused below).
     // Text categories arrive by their original column (#1203) and are encoded
     // with the levels the model was trained with.
-    nlohmann::json rows = input.at("rows");
-    const std::size_t row_count = rows.size();
-    for (std::size_t row = 0; row < row_count; ++row) {
-        if (const std::string reason = zetta::ml::encode_model_row(*model, rows[row]);
-            !reason.empty()) {
-            return serve.finish(ApiResult::failure(
-                "invalid_input", reason, "/rows/" + std::to_string(row)));
-        }
+    // The encodings are parsed once for the batch, and the batch is copied only
+    // when the model has categories to write into it.
+    std::string encoding_error;
+    const std::vector<zetta::data::CategoricalEncoding> encodings =
+        zetta::ml::model_categorical_encodings(model->feature_schema(), &encoding_error);
+    if (!encoding_error.empty()) {
+        return serve.finish(ApiResult::failure(
+            "engine_error", "model '" + request.target +
+                                "' has an invalid categorical encoding: " + encoding_error));
     }
+    nlohmann::json encoded_rows;
+    const nlohmann::json* batch = &input.at("rows");
+    if (!encodings.empty()) {
+        encoded_rows = *batch;
+        for (std::size_t row = 0; row < encoded_rows.size(); ++row) {
+            if (const std::string reason =
+                    zetta::data::encode_categorical_row(encodings, encoded_rows[row]);
+                !reason.empty()) {
+                return serve.finish(ApiResult::failure(
+                    "invalid_input", reason, "/rows/" + std::to_string(row)));
+            }
+        }
+        batch = &encoded_rows;
+    }
+    const nlohmann::json& rows = *batch;
+    const std::size_t row_count = rows.size();
     std::vector<std::vector<double>> columns(weights->feature_count());
     for (std::size_t feature = 0; feature < weights->feature_count();
          ++feature) {
