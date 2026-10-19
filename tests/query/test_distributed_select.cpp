@@ -472,11 +472,13 @@ TEST(ScatterGatherSelect, LimitIsPushedDownAndAnswersLikeTheFullScan) {
     node.stop();
 }
 
-// #1021: an ORDER BY key the caller may not read is not pushed to the owners.
-// The coordinator masks that column to null before it sorts, so without the
-// pushdown the answer is the rows in stored order; owners sorting by the hidden
-// value would pick the rows by it instead, and reveal its order.
-TEST(ScatterGatherSelect, AnOrderByOnAMaskedColumnPicksNoRowsByItsValue) {
+// #1021: ORDER BY on a column the caller may not read is refused, as WHERE and
+// GROUP BY on one are: with LIMIT pushed to the owners, the sort would choose
+// which rows are kept (and their order) by values the caller cannot see. Over a
+// partition-only table and a replicated one alike; an ORDER BY on a readable
+// column still pushes down and answers like the full scan, the hidden column
+// masked.
+TEST(ScatterGatherSelect, AnOrderByOnAMaskedColumnIsRefused) {
     TempDir dir;
     Node node{config_for(dir)};
     node.start();
@@ -488,11 +490,16 @@ TEST(ScatterGatherSelect, AnOrderByOnAMaskedColumnPicksNoRowsByItsValue) {
     options.partition_only = true;
     const AddDatasetResult added = add_dataset_rows(node, sample_rows(), options);
     ASSERT_TRUE(added.ok()) << added.error;
+    const auto replicated = node.find_database("datasets")->create_table("plain");
+    ASSERT_TRUE(replicated);
+    for (const nlohmann::json& row : sample_rows()) replicated->add_row(row);
 
     ASSERT_TRUE(node.create_role("clerk"));
-    ASSERT_TRUE(node.grant_scoped_permissions(
-        "clerk", {"sql:read"},
-        zetta::governance::Resource::column("datasets", "cached", {"segment", "label"})));
+    for (const char* table : {"cached", "plain"}) {
+        ASSERT_TRUE(node.grant_scoped_permissions(
+            "clerk", {"sql:read"},
+            zetta::governance::Resource::column("datasets", table, {"segment", "label"})));
+    }
     const auto user = node.create_user("cleo");
     ASSERT_TRUE(user);
     ASSERT_TRUE(node.assign_role(user->id(), node.find_role("clerk")->id()));
@@ -506,29 +513,37 @@ TEST(ScatterGatherSelect, AnOrderByOnAMaskedColumnPicksNoRowsByItsValue) {
         return executor.execute(parsed.statements.at(0), "");
     };
 
-    struct Case {
-        std::string limited;    // the statement
-        std::string unlimited;  // the same with no OFFSET / LIMIT
-    };
-    for (const Case& test :
-         {Case{"SELECT * FROM datasets.cached ORDER BY amount DESC LIMIT 5;",
-               "SELECT * FROM datasets.cached ORDER BY amount DESC;"},
-          Case{"SELECT * FROM datasets.cached ORDER BY segment, amount DESC LIMIT 7;",
-               "SELECT * FROM datasets.cached ORDER BY segment, amount DESC;"},
-          Case{"SELECT label, amount FROM datasets.cached ORDER BY amount OFFSET 2 LIMIT 3;",
-               "SELECT label, amount FROM datasets.cached ORDER BY amount;"}}) {
-        SCOPED_TRACE(test.limited);
-        const auto everything = run_as(test.unlimited, user->id(), true);
-        ASSERT_TRUE(everything.ok()) << everything.error;
-        ASSERT_EQ(everything.rows.size(), 60u);
-        for (const nlohmann::json& row : everything.rows) {
-            EXPECT_TRUE(row.at("amount").is_null()) << "amount is masked";
+    for (const std::string table : {"cached", "plain"}) {
+        for (const std::string tail :
+             {" ORDER BY amount DESC LIMIT 5;", " ORDER BY amount DESC;",
+              " ORDER BY segment, amount DESC LIMIT 7;"}) {
+            const std::string sql = "SELECT * FROM datasets." + table + tail;
+            SCOPED_TRACE(sql);
+            const auto refused = run_as(sql, user->id(), true);
+            ASSERT_FALSE(refused.ok());
+            EXPECT_NE(refused.error.find("permission denied: no sql:read grant on column "
+                                         "\"amount\" used in ORDER BY"),
+                      std::string::npos)
+                << refused.error;
         }
-        const auto limited = run_as(test.limited, user->id(), true);
-        ASSERT_TRUE(limited.ok()) << limited.error;
-        SelectStmt statement = parse_select(test.limited);
-        statement.order_by.clear();  // `everything` is already in order
-        EXPECT_EQ(limited.rows, cut(everything.rows, statement));
+    }
+
+    // ORDER BY a readable column: pushed down, the same rows as the unlimited
+    // answer cut by hand, amount masked.
+    const auto everything =
+        run_as("SELECT * FROM datasets.cached ORDER BY segment DESC;", user->id(), true);
+    ASSERT_TRUE(everything.ok()) << everything.error;
+    ASSERT_EQ(everything.rows.size(), 60u);
+    const auto limited = run_as(
+        "SELECT * FROM datasets.cached ORDER BY segment DESC OFFSET 2 LIMIT 5;", user->id(),
+        true);
+    ASSERT_TRUE(limited.ok()) << limited.error;
+    SelectStmt statement =
+        parse_select("SELECT * FROM datasets.cached ORDER BY segment DESC OFFSET 2 LIMIT 5;");
+    statement.order_by.clear();  // `everything` is already in order
+    EXPECT_EQ(limited.rows, cut(everything.rows, statement));
+    for (const nlohmann::json& row : limited.rows) {
+        EXPECT_TRUE(row.at("amount").is_null()) << "amount is masked";
     }
 
     // A caller who may read amount still gets the owners' top rows by it.

@@ -120,10 +120,10 @@ order and applies `ORDER BY` / `OFFSET` / `LIMIT` as before, so the answer is th
 full scan's. `SelectOutcome::rows_received` counts the rows that came back, which
 is what the tests assert against. The owner still reads every row of its
 partitions, because `columns_seen` must be complete. An aggregate is never capped.
-An `ORDER BY` key the caller may not read is not sent: the coordinator masks that
-column to null before it sorts, so the owners are sent only the keys before the
-first such column (none, when it is the first). They then keep the rows the masked
-answer keeps, and never choose rows by a value the caller cannot see.
+An `ORDER BY` on a column the caller may not read never gets here: the executor
+refuses it (`permission denied: no sql:read grant on column "…" used in ORDER BY`),
+as it refuses `WHERE` and `GROUP BY` on one, because the owners would otherwise
+choose which rows to keep by a value the caller cannot see.
 
 *Rolling upgrades:* a responder older than this refuses `keep` / `order_by` at
 its closed schema, answering `sql.scan: …` (a decode error, where a failed scan
@@ -178,10 +178,11 @@ elsewhere fails with the same unreachable-owner reason a dead peer would give.
   with a `WHERE` and a projection — each answer equals the full scan cut by hand,
   and `rows_received` is at most `offset + limit` per partition; an aggregate is
   not cut; an unknown `ORDER BY` key is still refused under `LIMIT 0`;
-- `AnOrderByOnAMaskedColumnPicksNoRowsByItsValue` (#1021): a caller with a
-  column-scoped grant that hides `amount` gets, for `ORDER BY amount … LIMIT`,
-  the same rows as the unlimited answer cut by hand, not the owners' top rows
-  by the hidden value; a caller who may read it still gets the top rows;
+- `AnOrderByOnAMaskedColumnIsRefused` (#1021): a caller with a column-scoped
+  grant that hides `amount` is refused `ORDER BY amount` (alone, as a second key,
+  with and without `LIMIT`) over a partition-only and a replicated table; its
+  `ORDER BY` on a readable column still pushes down and answers like the full
+  scan, `amount` masked; a caller who may read `amount` gets the top rows by it;
 - `APartitionOnlyDatasetKeepsItsSourceColumnOrder` (#1021): `SELECT *` and the
   dataset summary follow the recorded order, typed from the partitions' stats;
 - a whole-table `count(*)`, a text `GROUP BY` key, an unknown column and

@@ -625,8 +625,11 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
   statement flows through): `Node::column_scope(identity, op, db, table)` returns the
   identity's column access for a table. A `SELECT` on a table with **no** covering
   grant is denied; columns the caller lacks `sql:read` on are **masked** to null in
-  the output (both `SELECT *` and a projected list), and a `WHERE`/`GROUP BY` over a
-  masked column is refused (no inference). An `INSERT` to a table or column with no
+  the output (both `SELECT *` and a projected list), and a `WHERE`/`GROUP BY`/`ORDER BY`
+  over a masked column is refused (no inference; an `ORDER BY` would choose which
+  rows a `LIMIT` keeps by the hidden value, #1021). `get_dataset` follows the same
+  rule for its typed columns: a masked column keeps its name and answers `type`,
+  `nullable` and `null_fraction` as null (#1021). An `INSERT` to a table or column with no
   `sql:write` grant is **rejected**, and so is every other data-changing statement
   without its right — see [per-statement enforcement](#per-statement-enforcement).
 - **MCP / REST** (`src/core/api/registry.cpp`): the invoke right for the capability

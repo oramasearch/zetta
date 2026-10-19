@@ -68,7 +68,8 @@ keep `LIMIT`. An `ORDER BY` key names a column of the result — a selected colu
 `GROUP BY` key or an aggregate's alias (any column with `SELECT *`); another name is an
 error that says so. Numbers sort numerically, then booleans, then strings; `NULL` sorts
 last ascending and first descending, as in Postgres; ties keep the next key's order, then
-scan order.
+scan order. An `ORDER BY` on a column the caller may not read (a column-scoped `sql:read`)
+is refused, as `WHERE` and `GROUP BY` on one are (#1021).
 
 **`LIMIT` is pushed down** (#1021) for a non-aggregating SELECT:
 

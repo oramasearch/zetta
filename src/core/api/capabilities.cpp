@@ -2441,9 +2441,21 @@ ApiResult handle_get_index(const nlohmann::json& input, ApiContext& context) {
 
 // A dataset's typed columns as get_dataset answers them (#1021):
 // `[{name, type, nullable, null_fraction}]`, `null_fraction` null when unknown.
-nlohmann::json typed_columns_json(const zetta::data::DatasetSummary& dataset) {
+// A column the caller may not read under `sql:read` keeps its name and answers
+// `type`, `nullable` and `null_fraction` as null — the way SQL masks it (the
+// column stays in `SELECT *`, its values read as null), so nothing about its
+// values reaches a caller who cannot read them.
+nlohmann::json typed_columns_json(const zetta::data::DatasetSummary& dataset,
+                                  const zetta::governance::ColumnAccess& access) {
     nlohmann::json columns = nlohmann::json::array();
     for (const zetta::data::DatasetColumn& column : dataset.typed_columns) {
+        if (!access.allows(column.name)) {
+            columns.push_back({{"name", column.name},
+                               {"type", nullptr},
+                               {"nullable", nullptr},
+                               {"null_fraction", nullptr}});
+            continue;
+        }
         columns.push_back(
             {{"name", column.name},
              {"type", column.type},
@@ -2572,16 +2584,19 @@ const nlohmann::json& get_dataset_output_schema() {
               {"properties",
                {{"name", {{"type", "string"}}},
                 {"type",
-                 {{"type", "string"},
+                 {{"type", {"string", "null"}},
                   {"enum",
                    {"boolean", "integer", "number", "string", "object", "array", "null",
-                    "mixed", "unknown"}},
+                    "mixed", "unknown", nullptr}},
                   {"description",
                    "the JSON type the column's values share: integer widens to "
                    "number when both occur, mixed when the values differ otherwise, "
-                   "null when every value is null, unknown for a partition written "
-                   "before types were recorded"}}},
-                {"nullable", {{"type", "boolean"}}},
+                   "\"null\" when every value is null, unknown for a partition "
+                   "written before types were recorded; JSON null when the caller "
+                   "may not read the column (sql:read)"}}},
+                {"nullable",
+                 {{"type", {"boolean", "null"}},
+                  {"description", "null when the caller may not read the column"}}},
                 {"null_fraction",
                  {{"type", {"number", "null"}},
                   {"minimum", 0},
@@ -2589,7 +2604,7 @@ const nlohmann::json& get_dataset_output_schema() {
                   {"description",
                    "nulls (or missing cells) over rows; null when unknown (a "
                    "partition-only dataset written before null counts were "
-                   "recorded)"}}}}}}}};
+                   "recorded) or when the caller may not read the column"}}}}}}}};
         return out;
     }();
     return schema;
@@ -2661,7 +2676,12 @@ ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
                                 databases + ") — pass \"database\" to pick one");
     }
     nlohmann::json value = dataset_summary_json(matches.front());
-    value["columns"] = typed_columns_json(matches.front());
+    // Column-level read access (#747), decided as the SQL executor decides it.
+    const zetta::governance::ColumnAccess access = context.node.column_scope(
+        context.acting_key, context.acting_is_user,
+        Operation{zetta::governance::CapabilityDomain::Data, "read"},
+        matches.front().database, matches.front().name);
+    value["columns"] = typed_columns_json(matches.front(), access);
     return ApiResult::success(std::move(value));
 }
 

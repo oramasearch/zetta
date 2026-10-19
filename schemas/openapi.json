@@ -12478,7 +12478,7 @@
                                 "type": "string"
                               },
                               "null_fraction": {
-                                "description": "nulls (or missing cells) over rows; null when unknown (a partition-only dataset written before null counts were recorded)",
+                                "description": "nulls (or missing cells) over rows; null when unknown (a partition-only dataset written before null counts were recorded) or when the caller may not read the column",
                                 "maximum": 1,
                                 "minimum": 0,
                                 "type": [
@@ -12487,10 +12487,14 @@
                                 ]
                               },
                               "nullable": {
-                                "type": "boolean"
+                                "description": "null when the caller may not read the column",
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
                               },
                               "type": {
-                                "description": "the JSON type the column's values share: integer widens to number when both occur, mixed when the values differ otherwise, null when every value is null, unknown for a partition written before types were recorded",
+                                "description": "the JSON type the column's values share: integer widens to number when both occur, mixed when the values differ otherwise, \"null\" when every value is null, unknown for a partition written before types were recorded; JSON null when the caller may not read the column (sql:read)",
                                 "enum": [
                                   "boolean",
                                   "integer",
@@ -12500,9 +12504,13 @@
                                   "array",
                                   "null",
                                   "mixed",
-                                  "unknown"
+                                  "unknown",
+                                  null
                                 ],
-                                "type": "string"
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
                               }
                             },
                             "required": [

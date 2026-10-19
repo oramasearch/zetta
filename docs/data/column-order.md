@@ -77,6 +77,12 @@ partition body already records:
 `nullable` is true when some row holds null for the column or omits it.
 `null_fraction` is those rows over all rows.
 
+**A column the caller may not read** (a column-scoped `sql:read`,
+[access control](../governance/access-control.md)) keeps its name and answers
+`type`, `nullable` and `null_fraction` as JSON `null`, the way SQL masks its
+values: nothing about them reaches a caller who cannot read them. `list_datasets`
+and `system.datasets` give names only.
+
 - **A replicated table** is profiled from its rows, in the same pass that learns
   its columns.
 - **A partition-only table** has no local copy of its rows on most nodes, so each
@@ -98,4 +104,5 @@ partition body already records:
   partition stats) and the two-node test (the order replicates to the node that
   did not load the dataset).
 - `tests/api/test_registry.cpp` — `get_dataset`'s typed `columns` and
-  `list_datasets`' names, with and without a recorded order.
+  `list_datasets`' names, with and without a recorded order;
+  `GetDatasetMasksTheTypesOfColumnsTheCallerMayNotRead`.

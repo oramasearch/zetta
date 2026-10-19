@@ -41,7 +41,8 @@ name (`conflict`) unless `if_exists: "rename"`, with lake's rules and wording;
 `get_dataset` accepts `database.table`, and dataset summaries carry
 `source_format` (#1221). See [add dataset](../../../docs/data/add-dataset.md).
 `get_dataset` answers its `columns` typed, `[{name, type, nullable,
-null_fraction}]`, in the source's order, and every summary says whether that order
+null_fraction}]`, in the source's order (the last three null for a column the
+caller may not read), and every summary says whether that order
 was recorded (`column_order`); `list_datasets` keeps the names (#1021, see
 [column order](../../../docs/data/column-order.md)).
 

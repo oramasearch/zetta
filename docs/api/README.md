@@ -269,7 +269,8 @@ schema validated (the CRDT value / on-disk projection) — with the `id` added;
 `get_dataset` / `list_datasets` return the computed `DatasetSummary` with the
 schema and partition placement kept structured (the SQL view flattens them for
 tabular reading). `list_datasets` gives each dataset's `columns` as names;
-`get_dataset` gives them typed, `[{name, type, nullable, null_fraction}]`. Both
+`get_dataset` gives them typed, `[{name, type, nullable, null_fraction}]`, with
+the last three null for a column the caller may not read (`sql:read`). Both
 list them in the source's order and say whether one was recorded
 (`column_order`: `source` / `first_seen`) — [column-order.md](../data/column-order.md), #1021. Every handler is a thin caller of the same live engine
 source its `system.*` view computes from (`Node::…()`), so MCP, SQL, and the

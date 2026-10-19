@@ -1480,6 +1480,52 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
     EXPECT_EQ(exact.value.at("name"), "v1.events");
 }
 
+// #1021: get_dataset's typed columns say nothing about the values of a column
+// the caller may not read (a column-scoped sql:read): the column keeps its name
+// and answers type, nullable and null_fraction as null, as SQL masks it.
+TEST_F(RegistryFixture, GetDatasetMasksTheTypesOfColumnsTheCallerMayNotRead) {
+    node.ensure_builtin_roles();
+    auto database = node.create_database("sales");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("customers");
+    ASSERT_TRUE(table);
+    table->set_column_order({"id", "name", "ssn"});
+    table->add_row({{"id", 1}, {"name", "a"}, {"ssn", "111"}});
+    table->add_row({{"id", 2}, {"name", "b"}, {"ssn", nullptr}});
+
+    ASSERT_TRUE(node.create_role("clerk"));
+    ASSERT_TRUE(node.grant_permissions("clerk", {"api:query", "mcp:call"}));
+    ASSERT_TRUE(node.grant_scoped_permissions(
+        "clerk", {"sql:read"},
+        zetta::governance::Resource::column("sales", "customers", {"id", "name"})));
+    const auto user = node.create_user("cleo");
+    ASSERT_TRUE(user);
+    ASSERT_TRUE(node.assign_role(user->id(), node.find_role("clerk")->id()));
+
+    ApiContext context{node, nullptr, user->id(), trace, &node.span_recorder()};
+    context.acting_is_user = true;
+    const ApiResult masked = registry.call(
+        "get_dataset", nlohmann::json{{"dataset", "customers"}}, context);
+    ASSERT_TRUE(masked.ok) << masked.error.message;
+    const nlohmann::json& columns = masked.value.at("columns");
+    ASSERT_EQ(columns.size(), 3u);
+    EXPECT_EQ(columns[0].at("name"), "id");
+    EXPECT_EQ(columns[0].at("type"), "integer");
+    EXPECT_EQ(columns[1].at("type"), "string");
+    EXPECT_EQ(columns[2],
+              (nlohmann::json{{"name", "ssn"},
+                              {"type", nullptr},
+                              {"nullable", nullptr},
+                              {"null_fraction", nullptr}}))
+        << "the hidden column's name only";
+
+    // The trusted local caller reads every column.
+    const ApiResult whole = call("get_dataset", nlohmann::json{{"dataset", "customers"}});
+    ASSERT_TRUE(whole.ok) << whole.error.message;
+    EXPECT_EQ(whole.value.at("columns")[2].at("type"), "string");
+    EXPECT_DOUBLE_EQ(whole.value.at("columns")[2].at("null_fraction").get<double>(), 0.5);
+}
+
 TEST_F(RegistryFixture, AnalyzeAndPlanFeatureReadsUseLandedDatasetRows) {
     std::vector<nlohmann::json> rows;
     for (int index = 0; index < 80; ++index) {
