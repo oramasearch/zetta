@@ -116,6 +116,8 @@ the model expects text is refused. A row that already carries the encoded featur
 - `CatalogTyping.TypesMatchWhatTheSamplerProduced` (`tests/data/test_dataset_catalog_typing.cpp`):
   with the contract typed from the partition catalog (item 3), the same rows give the same
   categories and fitted levels as typing from a sample, with and without a time cutoff.
+- `CatalogTyping.LevelsAfterTheCutoffAreNotFitted`: a level that first appears after `as_of`
+  is not one of the fitted levels, and is fitted when there is no cutoff.
 - `ServingFixture.ServedPredictEncodesTextCategoriesWithTheStoredLevels`
   (`tests/api/test_serving.cpp`): the served route matches the reference scorer for a seen,
   an unseen and a null level.
