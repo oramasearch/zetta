@@ -3244,8 +3244,24 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "rows are filtered on their owner — query a "
                                      "replicated table instead");
                     }
+                    // The owners sort by the ORDER BY they are sent (LIMIT
+                    // pushdown, #1021), but a column this caller may not read
+                    // is masked to null here, after the owners answered, so the
+                    // final sort sees only nulls in it. Send the owners only the
+                    // keys before the first such column: they then keep the
+                    // rows the masked answer keeps, and choose none by a value
+                    // the caller may not see.
+                    SelectStmt scan = s;
+                    if (!read_access.all_columns) {
+                        const auto hidden = std::find_if(
+                            scan.order_by.begin(), scan.order_by.end(),
+                            [&](const OrderKey& key) {
+                                return !read_access.allows(key.column);
+                            });
+                        scan.order_by.erase(hidden, scan.order_by.end());
+                    }
                     const SelectOutcome scattered = select_over_partitions(
-                        node_, node_.distributed_select(), s, table->id());
+                        node_, node_.distributed_select(), scan, table->id());
                     if (!scattered.ok()) return error(scattered.error);
                     // The owners report the columns their rows carry; with every
                     // owner's list in hand, a column none of them saw does not

@@ -24,8 +24,10 @@
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/governance/scope.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/query/executor.hpp"
 #include "zetta/query/postgres.hpp"
 #include "zetta/query/service.hpp"
 
@@ -466,6 +468,79 @@ TEST(ScatterGatherSelect, LimitIsPushedDownAndAnswersLikeTheFullScan) {
     EXPECT_EQ(counted.rows.at(0).at("count"), 60);
     // An ORDER BY key the result lacks is still refused under LIMIT 0.
     EXPECT_FALSE(service.run("SELECT label FROM datasets.cached ORDER BY amount LIMIT 0;", "").ok());
+
+    node.stop();
+}
+
+// #1021: an ORDER BY key the caller may not read is not pushed to the owners.
+// The coordinator masks that column to null before it sorts, so without the
+// pushdown the answer is the rows in stored order; owners sorting by the hidden
+// value would pick the rows by it instead, and reveal its order.
+TEST(ScatterGatherSelect, AnOrderByOnAMaskedColumnPicksNoRowsByItsValue) {
+    TempDir dir;
+    Node node{config_for(dir)};
+    node.start();
+    node.ensure_builtin_roles();
+
+    AddDatasetOptions options;
+    options.table_name = "cached";
+    options.partition_count = 4;
+    options.partition_only = true;
+    const AddDatasetResult added = add_dataset_rows(node, sample_rows(), options);
+    ASSERT_TRUE(added.ok()) << added.error;
+
+    ASSERT_TRUE(node.create_role("clerk"));
+    ASSERT_TRUE(node.grant_scoped_permissions(
+        "clerk", {"sql:read"},
+        zetta::governance::Resource::column("datasets", "cached", {"segment", "label"})));
+    const auto user = node.create_user("cleo");
+    ASSERT_TRUE(user);
+    ASSERT_TRUE(node.assign_role(user->id(), node.find_role("clerk")->id()));
+
+    const auto run_as = [&](const std::string& sql, const std::string& acting,
+                            bool is_user) {
+        zetta::query::PostgresDialect dialect;
+        auto parsed = dialect.parse(sql);
+        EXPECT_TRUE(parsed.ok()) << parsed.error;
+        zetta::query::Executor executor{node, nullptr, acting, is_user};
+        return executor.execute(parsed.statements.at(0), "");
+    };
+
+    struct Case {
+        std::string limited;    // the statement
+        std::string unlimited;  // the same with no OFFSET / LIMIT
+    };
+    for (const Case& test :
+         {Case{"SELECT * FROM datasets.cached ORDER BY amount DESC LIMIT 5;",
+               "SELECT * FROM datasets.cached ORDER BY amount DESC;"},
+          Case{"SELECT * FROM datasets.cached ORDER BY segment, amount DESC LIMIT 7;",
+               "SELECT * FROM datasets.cached ORDER BY segment, amount DESC;"},
+          Case{"SELECT label, amount FROM datasets.cached ORDER BY amount OFFSET 2 LIMIT 3;",
+               "SELECT label, amount FROM datasets.cached ORDER BY amount;"}}) {
+        SCOPED_TRACE(test.limited);
+        const auto everything = run_as(test.unlimited, user->id(), true);
+        ASSERT_TRUE(everything.ok()) << everything.error;
+        ASSERT_EQ(everything.rows.size(), 60u);
+        for (const nlohmann::json& row : everything.rows) {
+            EXPECT_TRUE(row.at("amount").is_null()) << "amount is masked";
+        }
+        const auto limited = run_as(test.limited, user->id(), true);
+        ASSERT_TRUE(limited.ok()) << limited.error;
+        SelectStmt statement = parse_select(test.limited);
+        statement.order_by.clear();  // `everything` is already in order
+        EXPECT_EQ(limited.rows, cut(everything.rows, statement));
+    }
+
+    // A caller who may read amount still gets the owners' top rows by it.
+    const auto local = run_as("SELECT * FROM datasets.cached ORDER BY amount DESC LIMIT 1;",
+                              "", false);
+    ASSERT_TRUE(local.ok()) << local.error;
+    ASSERT_EQ(local.rows.size(), 1u);
+    int highest = 0;
+    for (const nlohmann::json& row : sample_rows()) {
+        highest = std::max(highest, row.at("amount").get<int>());
+    }
+    EXPECT_EQ(local.rows[0].at("amount"), highest);
 
     node.stop();
 }
