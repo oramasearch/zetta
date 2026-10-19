@@ -301,8 +301,9 @@ std::vector<std::string> columns_needing_values(const std::vector<std::string>& 
 //     to `categorical_features`; any other column is left out with a note saying
 //     why. At least one numeric or categorical feature is required: a label with
 //     no features is not a training set. A text column the caller names in
-//     `feature_columns` is moved to `categorical_features`, or refused with the
-//     reason it is not a category.
+//     `feature_columns` stays there (a text methodology reads it as it is) and is
+//     ALSO recorded in `categorical_features` when it is a category; when it is
+//     not, a note says why it is not one-hot encoded.
 //   * **time / as_of** — never inferred (see the header note). Passed through from
 //     `overrides` untouched.
 //
