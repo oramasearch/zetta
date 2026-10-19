@@ -326,14 +326,16 @@ using DatasetSampler = std::function<std::vector<nlohmann::json>(
     const std::string& database, const std::string& table, std::size_t limit,
     std::string& error)>;
 
-// The default sampler: `SELECT * FROM <database>.<table>` through the node's own
-// query service, truncated to `limit` rows. Pass the node's `Cluster` so a
-// partition-only table is read through the scatter-gather select — without it the
-// read is node-local and would type the columns off whatever slice happens to live
-// here.
+// The default sampler: `SELECT * FROM <database>.<table> LIMIT <limit>` (no LIMIT
+// for a zero limit) through the node's own query service. Pass the node's
+// `Cluster` so a partition-only table is read through the scatter-gather select —
+// without it the read is node-local and would type the columns off whatever slice
+// happens to live here.
 //
-// **It reads the whole table and keeps the first `limit` rows**: the SQL subset's
-// LIMIT cuts the result, not the scan. resolve_dataset() no longer uses it when no
+// **The cost of the LIMIT is the query service's**: until the SQL `LIMIT` is pushed
+// into the scan (#1021) it cuts the result, not the scan, so the whole table is
+// still read; with the pushdown only the first `limit` rows are. The rows kept are
+// the same either way. resolve_dataset() no longer uses it when no
 // sampler is injected — it types the contract from the partition catalog and reads
 // only the columns that still need values (read_dataset_columns below). The
 // methodologies that read every row for training still call it with a zero limit.
@@ -341,16 +343,14 @@ DatasetSampler default_dataset_sampler(Node& node,
                                        const zetta::cluster::Cluster* cluster = nullptr);
 
 // Read `columns` of up to `limit` rows (zero: every row) of `database`.`table`
-// through the node's query service: `SELECT <columns> FROM <database>.<table>`,
-// truncated to `limit`. Rows carry only the named columns. A column whose name the
+// through the node's query service: `SELECT <columns> FROM <database>.<table>
+// LIMIT <limit>`. Rows carry only the named columns. A column whose name the
 // SQL subset cannot spell as a bare identifier (it has no quoted identifiers), or a
 // projected query the executor refuses, falls back to `SELECT *` and projects the
 // rows here, so the answer is the same either way.
 //
-// Like default_dataset_sampler, the scan is whole-table and `limit` only cuts the
-// result. When the SQL `LIMIT` is pushed into the scan (#1021), appending
-// `LIMIT <limit>` to the projected query here makes the typing read cost
-// `limit` rows instead of a scan; nothing else on this path changes.
+// Like default_dataset_sampler, the LIMIT bounds the scan once the query service
+// pushes it down (#1021); before that it cuts the result of a whole-table scan.
 std::vector<nlohmann::json> read_dataset_columns(Node& node,
                                                  const zetta::cluster::Cluster* cluster,
                                                  const std::string& database,

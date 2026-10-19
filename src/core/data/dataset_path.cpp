@@ -230,6 +230,13 @@ bool plain_identifier(const std::string& name) {
     return std::ranges::find(reserved, lowered(name)) == reserved.end();
 }
 
+// ` LIMIT <limit>`, or nothing for a zero limit (every row). Without ORDER BY the
+// rows kept are the first ones in scan order, the same rows truncating a full read
+// keeps; with the LIMIT pushed into the scan (#1021) only those rows are read.
+std::string limit_clause(std::size_t limit) {
+    return limit == 0 ? std::string() : " LIMIT " + std::to_string(limit);
+}
+
 // Keep only `columns` of each row.
 std::vector<nlohmann::json> project_rows(std::vector<nlohmann::json> rows,
                                          const std::vector<std::string>& columns) {
@@ -902,7 +909,8 @@ DatasetSampler default_dataset_sampler(Node& node, const zetta::cluster::Cluster
                             std::size_t limit, std::string& error) {
         zetta::query::QueryService service(node, cluster);
         const zetta::query::QueryService::Outcome outcome =
-            service.run("SELECT * FROM " + database + "." + table, database);
+            service.run("SELECT * FROM " + database + "." + table + limit_clause(limit),
+                        database);
         if (!outcome.ok()) {
             error = outcome.error;
             return std::vector<nlohmann::json>{};
@@ -928,7 +936,9 @@ std::vector<nlohmann::json> read_dataset_columns(Node& node,
     if (std::ranges::all_of(columns, plain_identifier)) {
         zetta::query::QueryService service(node, cluster);
         const zetta::query::QueryService::Outcome outcome = service.run(
-            "SELECT " + join(columns, ", ") + " FROM " + database + "." + table, database);
+            "SELECT " + join(columns, ", ") + " FROM " + database + "." + table +
+                limit_clause(limit),
+            database);
         // The answer must be the named columns and nothing else; anything else (a
         // name the parser read as something other than a column) is not trusted.
         if (outcome.ok() && outcome.columns == columns) {

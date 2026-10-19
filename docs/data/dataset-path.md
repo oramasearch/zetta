@@ -227,9 +227,10 @@ categories). After, it reads four of eighteen columns for typing (`churned` when
 inferred, `finance_segment`, `finance_sub_segment`, `sfdc_account_id`) and two for fitting.
 
 **With SQL `LIMIT` pushdown** ([#1021](https://github.com/oramasearch/zetta/issues/1021)): the
-typing read is still a whole-table scan cut to 256 rows, because `LIMIT` cuts the result and
-not the scan today. Once the scan stops at the limit, appending `LIMIT <n>` to the projected
-query in `read_dataset_columns` (when `n` is not zero) makes the typing read cost 256 rows; the
+typing read already sends `LIMIT <n>` (`SELECT <columns> FROM <db>.<table> LIMIT 256`, and the
+whole-row fallback `SELECT * … LIMIT 256`). Without the pushdown the query service still scans
+the table and cuts the result to the same first 256 rows; with it, the scan stops at the limit
+and the typing read costs 256 rows. Nothing on this path changes when the pushdown lands. The
 fitting read reads every row by design.
 
 ## Boundaries
@@ -287,7 +288,7 @@ inside a trained model.
   payload is small — a table id and a contract, not the rows — so this is a smaller
   change than the one it replaces.
 
-- **A `LIMIT` on the typing read.** Typing reads only the columns the catalog cannot
-  decide (above), but still scans the table to keep the first `kDefaultSampleRows` rows
-  until SQL `LIMIT` reaches the scan
+- **A `LIMIT` that bounds the typing read.** Typing reads only the columns the catalog
+  cannot decide (above) and sends `LIMIT kDefaultSampleRows`, but the scan still visits
+  every row until SQL `LIMIT` reaches the scan
   ([#1021](https://github.com/oramasearch/zetta/issues/1021)).
