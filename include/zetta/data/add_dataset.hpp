@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,12 +16,14 @@
 
 #include "zetta/data/partition_scheduler.hpp"
 #include "zetta/data/replication_strategy.hpp"
+#include "zetta/observability/trace.hpp"
 
 namespace zetta { class Node; }
 
 namespace zetta::data {
 
 class Database;
+class ObjectReader;
 class ObjectStore;
 class Table;
 class DatasetPartition;
@@ -225,9 +228,10 @@ std::string dataset_name_taken(std::string_view table, std::string_view database
 // lands larger data.
 inline constexpr std::size_t kMaxDatasetContentBytes = std::size_t{16} * 1024 * 1024;
 
-// The most bytes `load_dataset_object` loads (#1302). The decoded rows are held
-// in the table in memory until they are partitioned, so this bounds node memory;
-// a partition-at-a-time write would lift it.
+// The most bytes `load_dataset_object` loads (#1302). Every decoded row is held
+// in the loading node's table (in memory and in its JSONL chunk files) until the
+// partitions are written, so this bounds that node's memory and disk during the
+// load; a partition-at-a-time write would lift it.
 inline constexpr std::uint64_t kMaxDatasetObjectBytes = std::uint64_t{1} << 30;  // 1 GiB
 
 // The longest line a streaming load accepts, so a file with no newline cannot
@@ -239,7 +243,9 @@ inline constexpr std::size_t kMaxDatasetLineBytes = kMaxDatasetContentBytes;  //
 // `add_dataset_file` and `load_dataset_object` all decode through it, so all
 // three refuse the same lines in the same words. A CSV row never spans lines
 // (a quoted field left open at the end of its line is refused), so decoding a
-// line at a time is exact. After a refusal the decoder stays refused.
+// line at a time is exact. A line that is not well-formed UTF-8 is refused
+// (`line <n>: not valid UTF-8`) before it is decoded, because a row holding it
+// could not be stored. After a refusal the decoder stays refused.
 class DatasetLineDecoder {
 public:
     explicit DatasetLineDecoder(dataset_file::Format format);  // Csv or Jsonl only
@@ -369,7 +375,14 @@ private:
 };
 
 // --- Load a dataset from a stored object (#1302) ------------------------------
-//
+
+// The graph label of a `load_dataset_object` run (project label `datasets`):
+// what recover_object_dataset_loads looks for.
+inline constexpr std::string_view kObjectDatasetLoadGraph = "load_dataset_object";
+
+// How often a load logs its progress by default: every 64 MiB read.
+inline constexpr std::uint64_t kObjectDatasetProgressBytes = std::uint64_t{64} * 1024 * 1024;
+
 // What `load_dataset_object` loads: a plain (unsealed) CSV or JSONL object
 // already in a bucket of the object capability (docs/data/object-store.md),
 // typically staged there a chunk at a time through `PATCH /v1/objects/...`.
@@ -380,11 +393,28 @@ struct ObjectDatasetSource {
     // When the base name is taken: false refuses with `dataset_name_taken`,
     // true saves under the next free name (`_2`, `_3`, ...).
     bool rename_if_exists = false;
-    // Remove the object once the run reaches a terminal status, either one.
+    // Remove the object once the run reaches a terminal status, either one. The
+    // caller checks objects:write on the bucket first; the removal is recorded
+    // in the audit trail as a `delete_object` call by `acting_key`.
     bool remove_object = false;
+    // Who asked for the load (an access key id; empty = the local operator).
+    std::string acting_key;
+    // The caller's trace. The run and the load's spans join it; when it is not
+    // valid the load starts a trace of its own.
+    zetta::observability::TraceContext trace;
     // The most bytes the load accepts. Tests lower it to exercise the refusal
     // without a 1 GiB fixture.
     std::uint64_t max_bytes = kMaxDatasetObjectBytes;
+    // How many bytes between progress entries in the run's log. Tests lower it
+    // to see the cadence without a 64 MiB fixture.
+    std::uint64_t progress_bytes = kObjectDatasetProgressBytes;
+    // An injection point for tests: wraps the opened reader, so a test can fail
+    // or hold a read. Unset in production.
+    std::function<std::shared_ptr<ObjectReader>(std::shared_ptr<ObjectReader>)> wrap_reader;
+    // An injection point for tests: called on the owner thread once the
+    // partitions are written; a non-empty return fails the load there, as a
+    // partitioned write that failed part-way does. Unset in production.
+    std::function<std::string()> after_partition_write;
 };
 
 // Load a CSV or JSONL object of `bucket` as a new partitioned table, streaming
@@ -397,30 +427,56 @@ struct ObjectDatasetSource {
 //      carry-over) and feed each to a DatasetLineDecoder.
 //   2. **Materialize** on the owner thread: every 10,000 rows (and at the end)
 //      the worker hands the batch over with Node::run_on_owner and waits for
-//      it to land before reading further. The first batch creates the table.
-//   3. **Partition and finish** on the owner thread: partition_target_table,
-//      the `dataset_added` audit event, the run's output and status.
+//      it to land before reading further. The first batch creates the table
+//      and records it in the run's reads (zetta#1258), so delete_dataset
+//      refuses it while the load runs. Every later batch first checks that the
+//      database still maps the name to that table's id, and fails the load
+//      with `the table <database>.<table> was removed while the load ran` when
+//      it does not (a SQL `DROP TABLE`, or the name re-used).
+//   3. **Partition and finish** on the owner thread: the same id check,
+//      partition_target_table, release of the loading node's local rows, the
+//      `dataset_added` audit event, the run's output and status.
 //
 // The table is created partition-only (#833, `Table::partition_only`): its rows
 // are never captured into the replicated document, the partition bodies on
 // their owners are the dataset, and a SELECT over it is scatter-gather. A large
 // file captured row by row costs several times the time and node memory.
 //
-// Memory beyond the table is one slice, one carry-over line and one batch.
-// Every object-store call (open_read, read, remove) runs on the worker, so the
-// owner loop never waits on the store.
+// **Memory.** Until the partitions are written, every decoded row is held on
+// the loading node in the table's local store: in memory, and appended to the
+// table's JSONL chunk files. Once the partitions are written they are
+// released (Table::release_local_rows), memory and files both, so after a
+// successful load the loading node holds what every other node holds: the
+// partition catalog, plus the partition bodies it owns. Beyond the table the
+// worker holds one slice, one carry-over line (at most kMaxDatasetLineBytes)
+// and one batch. Every object-store call (open_read, read, remove) runs on
+// the worker, so the owner loop never waits on the store.
+//
+// **Failure.** Nothing of a failed load survives: its partition catalog
+// entries and their bodies are removed (as delete_dataset does), then its
+// table, by id, so a table someone else created under the same name is never
+// touched. Every piece of owner-thread work catches what it throws and fails
+// the run instead, so no exception unwinds out of the owner loop's tick.
 //
 // The durable handle is a Run created by start() on the owner thread (project
-// label `datasets`, graph label `load_dataset_object`) and set Running before
-// start() returns; get_run polls it. It logs one `info` entry when the read
-// starts and one per further 64 MiB read, and ends Succeeded with one
-// `dataset` output, or Failed with an `error` entry naming the reason and no
-// table left behind. With `remove_object` the object is removed after the
-// terminal status; a failed removal adds a `warn` entry.
+// label `datasets`, graph label kObjectDatasetLoadGraph) and set Running before
+// start() returns; get_run polls it. Its params record the request and the
+// loading node (`node`), which is how recover_object_dataset_loads finds a load
+// its node did not finish. It logs one `info` entry when the read starts and
+// one per further `progress_bytes` read, and ends Succeeded with one `dataset`
+// output, or Failed with an `error` entry naming the reason. With
+// `remove_object` the object is removed after the terminal status; a failed
+// removal adds a `warn` entry.
+//
+// Observability: spans `load_dataset_object` (the whole job), and beneath it
+// `load_dataset_object:read` (reading and decoding, wall clock),
+// `load_dataset_object:materialize` (the owner-thread time spent landing
+// batches, summed) and `load_dataset_object:partition`.
 //
 // Threading: call start() and destroy the handle on the owner thread. The
-// destructor stops an unfinished load and drains the owner queue until the
-// worker has let go of the node (the AsyncCaseRun teardown discipline).
+// destructor stops an unfinished load (it fails with `the load was stopped
+// before it finished`) and drains the owner queue until the worker has let go
+// of the node (the AsyncCaseRun teardown discipline).
 class AsyncObjectDatasetLoad {
 public:
     // Create the run and launch the worker. `options.members` should be the
@@ -450,5 +506,15 @@ private:
     std::shared_ptr<State> state_;
     std::string run_id_;
 };
+
+// Settle the `load_dataset_object` runs this node left Running when it last
+// stopped (killed mid-load): each is set Failed with `the node stopped before
+// the load finished`, and the table it was loading is removed with its
+// partition catalog entries and bodies, as a failed load's is. Runs another
+// node is loading are left alone, and so is the object, even when the load
+// asked for `remove_object`. Node::start calls it once the catalogue is loaded,
+// on the owner thread; it never calls the object store. Returns how many runs
+// it settled.
+std::size_t recover_object_dataset_loads(Node& node);
 
 }  // namespace zetta::data

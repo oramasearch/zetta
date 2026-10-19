@@ -42,7 +42,7 @@ name (`conflict`) unless `if_exists: "rename"`, with lake's rules and wording;
 `source_format` (#1221). `load_dataset_object` is the job for a file past
 `upload_dataset`'s 16 MiB: it loads an object already in a bucket, checks
 `objects:read` on the bucket with `authorize_object_route` (`object_routes.hpp`),
-and adopts an `AsyncObjectDatasetLoad` into `BackgroundActions` (#1302). See
+and `objects:write` too when `remove_object` asks it to delete the object, and adopts an `AsyncObjectDatasetLoad` into `BackgroundActions` (#1302). See
 [add dataset](../../../docs/data/add-dataset.md).
 `get_dataset` answers its `columns` typed, `[{name, type, nullable,
 null_fraction}]`, in the source's order (the last three null for a column the

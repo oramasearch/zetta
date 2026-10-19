@@ -68,7 +68,8 @@ owner loop, run on the blocking pool. The byte routes are REST only; their OpenA
 `object_route_paths()` beside the capabilities.
 
 To turn an object into a dataset, call `load_dataset_object` with its bucket and key: it loads
-a plain csv or jsonl object as a partitioned table in the background (#1302,
+a plain csv or jsonl object as a partitioned table in the background, and needs `objects:read` on
+the bucket (`objects:write` too when `remove_object` asks it to delete the object afterwards) (#1302,
 [add-dataset.md](add-dataset.md#load-from-a-stored-object-1302)).
 
 `acquire_object_lease` with `wait_ms` waits without holding a thread: its registry entry is an

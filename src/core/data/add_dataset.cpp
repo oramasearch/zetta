@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cctype>
 #include <charconv>
+#include <chrono>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -22,6 +24,7 @@
 
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/large_object.hpp"
 #include "zetta/data/object_store.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/node.hpp"
@@ -197,6 +200,55 @@ void note_key_order(const nlohmann::json& row, std::string_view text,
     }
 }
 
+// Whether `text` is well-formed UTF-8 (RFC 3629: no overlong forms, no
+// surrogates, nothing past U+10FFFF). nlohmann's serializer refuses anything
+// else by throwing when a row is written to the table's store, so the decoder
+// refuses such a line first.
+bool valid_utf8(std::string_view text) {
+    std::size_t index = 0;
+    while (index < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[index]);
+        if (lead < 0x80) {
+            ++index;
+            continue;
+        }
+        // The sequence length, and the range its second byte must fall in.
+        std::size_t length = 0;
+        unsigned char second_low = 0x80;
+        unsigned char second_high = 0xBF;
+        if (lead >= 0xC2 && lead <= 0xDF) {
+            length = 2;
+        } else if (lead == 0xE0) {
+            length = 3;
+            second_low = 0xA0;  // no overlong form
+        } else if ((lead >= 0xE1 && lead <= 0xEC) || lead == 0xEE || lead == 0xEF) {
+            length = 3;
+        } else if (lead == 0xED) {
+            length = 3;
+            second_high = 0x9F;  // no surrogate
+        } else if (lead == 0xF0) {
+            length = 4;
+            second_low = 0x90;  // no overlong form
+        } else if (lead >= 0xF1 && lead <= 0xF3) {
+            length = 4;
+        } else if (lead == 0xF4) {
+            length = 4;
+            second_high = 0x8F;  // nothing past U+10FFFF
+        } else {
+            return false;
+        }
+        if (text.size() - index < length) return false;
+        const auto second = static_cast<unsigned char>(text[index + 1]);
+        if (second < second_low || second > second_high) return false;
+        for (std::size_t offset = 2; offset < length; ++offset) {
+            const auto continuation = static_cast<unsigned char>(text[index + offset]);
+            if (continuation < 0x80 || continuation > 0xBF) return false;
+        }
+        index += length;
+    }
+    return true;
+}
+
 }  // namespace
 
 DatasetLineDecoder::DatasetLineDecoder(dataset_file::Format format) : format_(format) {}
@@ -222,10 +274,13 @@ bool DatasetLineDecoder::refuse(std::string reason) {
 //
 // JSONL: one JSON document per line, whitespace-only lines skipped. A line that
 // does not parse fails the whole load (all-or-nothing, like import_records).
+//
+// Either format: a line that is not well-formed UTF-8 is refused first.
 bool DatasetLineDecoder::decode(std::string_view text, std::vector<nlohmann::json>* rows) {
     if (!error_.empty()) return false;
     ++lines_;
     if (!text.empty() && text.back() == '\r') text.remove_suffix(1);  // CRLF
+    if (!valid_utf8(text)) return refuse("line " + std::to_string(lines_) + ": not valid UTF-8");
     if (format_ == dataset_file::Format::Jsonl) {
         if (text.find_first_not_of(" \t") == std::string_view::npos) return true;
         auto value = nlohmann::json::parse(text.begin(), text.end(), nullptr,
@@ -942,6 +997,13 @@ struct AsyncObjectDatasetLoad::State {
     AddDatasetOptions options;
     std::shared_ptr<zetta::pipeline::Run> run;  // touched on the owner thread only
     AddDatasetResult result;                     // written on the owner thread
+    std::string table_id;  // the table the first batch created (owner thread)
+    // The job span, parent of the phase spans (set by the worker first thing).
+    zetta::observability::TraceContext trace;
+    // Owner-thread time spent landing batches, for the materialize span.
+    std::size_t batches = 0;
+    double materialize_ms = 0.0;
+    std::string materialize_started;
     std::atomic<bool> stop{false};      // the handle is going away
     std::atomic<bool> finished{false};  // the worker has let go of everything
 };
@@ -953,12 +1015,10 @@ using LoadState = AsyncObjectDatasetLoad::State;
 // Rows handed to the owner thread at a time: a batch is the only decoded rows
 // held outside the table.
 constexpr std::size_t kRowsPerBatch = 10'000;
-// How often the run logs progress. Runs are replicated, so an entry per slice
-// would put hundreds of entries on the wire.
-constexpr std::uint64_t kProgressBytes = std::uint64_t{64} * 1024 * 1024;
 constexpr std::uint64_t kMebibyte = std::uint64_t{1024} * 1024;
 
 constexpr const char* kStoppedError = "the load was stopped before it finished";
+constexpr const char* kNodeStoppedError = "the node stopped before the load finished";
 
 // `value` with its thousands grouped by commas: 1204331 -> "1,204,331".
 std::string grouped(std::uint64_t value) {
@@ -967,38 +1027,107 @@ std::string grouped(std::uint64_t value) {
     return digits;
 }
 
+// Run `work` (which returns the failure, or empty) on the owner thread. What it
+// throws becomes the failure: run_on_owner work must not throw, and an
+// exception unwinding out of the owner loop's tick would take the node down or
+// leave this worker waiting on a completion that never comes.
+template <class Work>
+std::string on_owner(LoadState& state, Work&& work) {
+    std::string failure;
+    state.node.run_on_owner([&] {
+        try {
+            failure = work();
+        } catch (const std::exception& error) {
+            failure = std::string("the load failed: ") + error.what();
+        } catch (...) {
+            failure = "the load failed on an unknown error";
+        }
+    });
+    return failure;
+}
+
 // Add one entry to the run's log, on the owner thread.
 void log_run(LoadState& state, std::string level, std::string message) {
-    state.node.run_on_owner([&] {
+    on_owner(state, [&] {
         state.run->add_log({zetta::util::now_iso8601(), std::move(level), std::move(message)});
+        return std::string();
     });
 }
 
+// Empty while the database still maps the load's table name to the table the
+// load created; otherwise the failure. Owner thread. Another caller can drop
+// the table (delete_dataset refuses while the run reads it, a SQL DROP TABLE
+// does not) or drop it and create another under the same name.
+std::string table_removed(const LoadState& state) {
+    if (state.table_id.empty()) return {};
+    const AddDatasetResult& result = state.result;
+    const std::shared_ptr<Database> database = state.node.find_database(result.database->name());
+    const std::shared_ptr<Table> table =
+        database ? database->find_table(result.table->name()) : nullptr;
+    if (table && table->id() == state.table_id) return {};
+    return "the table " + result.database->name() + "." + result.table->name() +
+           " was removed while the load ran";
+}
+
+// Remove what a failed load wrote: the table's partition catalog entries and
+// their bodies (as delete_dataset and a discarded ingest do), then the table,
+// found by id, so a table created under the same name meanwhile is never
+// dropped. Owner thread; it never calls the object store.
+void discard_loaded_table(Node& node, const std::string& database_name,
+                          const std::string& table_id) {
+    const std::shared_ptr<Database> database = node.find_database(database_name);
+    for (const std::shared_ptr<DatasetPartition>& partition :
+         node.dataset_partitions()) {  // a copy: the loop drops entries
+        if (!partition || partition->table() != table_id) continue;
+        if (database && !partition->blob_ref().empty()) {
+            database->large_objects().unlink(partition->blob_ref());
+        }
+        node.drop_dataset_partition(partition->id());
+    }
+    if (!database) return;
+    if (const std::shared_ptr<Table> table = database->find_table_by_id(table_id)) {
+        database->drop_table(table->name());
+    }
+}
+
 // Hand `batch` to the owner thread and wait for it to land. The first batch
-// creates the table, honouring `rename_if_exists`. Returns the failure, or
-// empty. `batch` is empty afterwards.
+// creates the table, honouring `rename_if_exists`, and records it in the run's
+// reads; a later one first checks the table is still the load's. Returns the
+// failure, or empty. `batch` is empty afterwards.
 std::string land_batch(LoadState& state, std::vector<nlohmann::json>& batch) {
-    std::string failure;
-    state.node.run_on_owner([&] {
+    std::string failure = on_owner(state, [&]() -> std::string {
+        const auto started = std::chrono::steady_clock::now();
+        if (state.materialize_started.empty()) {
+            state.materialize_started = zetta::util::now_iso8601();
+        }
         AddDatasetResult& result = state.result;
-        if (!result.table) {
+        if (state.table_id.empty()) {
             const AddDatasetOptions& options = state.options;
             if (!state.source.rename_if_exists) {
-                // upload_dataset's handler checked this too, but the name can be
-                // taken while the object is read.
+                // The handler checked this too, but the name can be taken while
+                // the object is read.
                 const std::shared_ptr<Database> database = state.node.find_database(options.database);
                 if (database && database->find_table(options.table_name)) {
-                    failure = dataset_name_taken(options.table_name, options.database);
-                    return;
+                    return dataset_name_taken(options.table_name, options.database);
                 }
             }
             create_named_target_table(state.node, options.table_name, options, result);
-            if (!result.table) {
-                failure = result.error;
-                return;
-            }
+            if (!result.table) return result.error;
+            state.table_id = result.table->id();
+            // delete_dataset refuses a table a running run reads (zetta#1258),
+            // and recovery finds the table to drop here.
+            state.run->add_reads(
+                {zetta::pipeline::TableRead{result.database->name(), result.table->name(),
+                                            state.table_id}});
+        } else if (std::string removed = table_removed(state); !removed.empty()) {
+            return removed;
         }
         for (nlohmann::json& row : batch) result.table->add_row(std::move(row));
+        ++state.batches;
+        state.materialize_ms += std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - started)
+                                    .count();
+        return {};
     });
     batch.clear();
     return failure;
@@ -1006,7 +1135,7 @@ std::string land_batch(LoadState& state, std::vector<nlohmann::json>& batch) {
 
 // Read the object a slice at a time, decode it line by line and land the rows
 // in batches (the worker phase). Returns the failure, or empty.
-std::string read_object_rows(LoadState& state) {
+std::string read_object_rows(LoadState& state, zetta::observability::ScopedSpan& span) {
     const ObjectDatasetSource& source = state.source;
     std::shared_ptr<ObjectReader> reader;
     const ObjectOutcome opened =
@@ -1017,7 +1146,9 @@ std::string read_object_rows(LoadState& state) {
         }
         return "could not open " + source.bucket + "/" + source.key + ": " + opened.message;
     }
+    if (source.wrap_reader) reader = source.wrap_reader(std::move(reader));
     const std::uint64_t size = reader->length();
+    span.set_attribute("bytes", size);
     log_run(state, "info",
             "loading " + source.bucket + "/" + source.key + ": " + std::to_string(size) +
                 " bytes as " + dataset_file::format_name(source.format));
@@ -1032,13 +1163,13 @@ std::string read_object_rows(LoadState& state) {
     DatasetLineDecoder decoder(source.format);
     std::vector<nlohmann::json> batch;
     std::size_t rows = 0;
-    const std::string too_long = " is longer than " +
-                                 std::to_string(kMaxDatasetLineBytes / kMebibyte) + " MiB";
+    const auto too_long = [&] {
+        return "line " + std::to_string(decoder.lines() + 1) + " is longer than " +
+               std::to_string(kMaxDatasetLineBytes / kMebibyte) + " MiB";
+    };
     // Decode one complete line into the batch, landing the batch when full.
     const auto take_line = [&](std::string_view line) -> std::string {
-        if (line.size() > kMaxDatasetLineBytes) {
-            return "line " + std::to_string(decoder.lines() + 1) + too_long;
-        }
+        if (line.size() > kMaxDatasetLineBytes) return too_long();
         const std::size_t before = batch.size();
         if (!decoder.line(line, batch)) return decoder.error();
         rows += batch.size() - before;
@@ -1046,9 +1177,11 @@ std::string read_object_rows(LoadState& state) {
         return {};
     };
 
+    const std::uint64_t progress = std::max<std::uint64_t>(source.progress_bytes, 1);
     std::string slice;
     std::string carry;  // the partial last line of the slices read so far
-    std::uint64_t next_progress = kProgressBytes;
+    std::uint64_t next_progress = progress;
+    std::size_t slices = 0;
     for (std::uint64_t offset = 0; offset < size;) {
         if (state.stop.load(std::memory_order_acquire)) return kStoppedError;
         const std::uint64_t count = std::min<std::uint64_t>(ObjectStore::kSliceBytes, size - offset);
@@ -1057,6 +1190,7 @@ std::string read_object_rows(LoadState& state) {
             return "reading the object failed at byte " + std::to_string(offset);
         }
         offset += count;
+        ++slices;
         const std::string_view view(slice);
         std::size_t start = 0;
         for (std::size_t end = view.find('\n'); end != std::string_view::npos;
@@ -1067,23 +1201,28 @@ std::string read_object_rows(LoadState& state) {
             if (carry.empty()) {
                 failure = take_line(piece);
             } else {
+                // The size is checked before the carry grows, so it never
+                // holds more than one line of at most kMaxDatasetLineBytes.
+                if (carry.size() + piece.size() > kMaxDatasetLineBytes) return too_long();
                 carry.append(piece);
                 failure = take_line(carry);
                 carry.clear();
             }
             if (!failure.empty()) return failure;
         }
-        carry.append(view.substr(start));
-        if (carry.size() > kMaxDatasetLineBytes) {
-            return "line " + std::to_string(decoder.lines() + 1) + too_long;
-        }
+        const std::string_view rest = view.substr(start);
+        if (carry.size() + rest.size() > kMaxDatasetLineBytes) return too_long();
+        carry.append(rest);
         if (offset >= next_progress && offset < size) {
             log_run(state, "info",
                     "read " + std::to_string(offset / kMebibyte) + " MiB of " +
                         std::to_string(size / kMebibyte) + " MiB, " + grouped(rows) + " rows");
-            next_progress += kProgressBytes;
+            next_progress = (offset / progress + 1) * progress;
         }
     }
+    span.set_attribute("slices", slices);
+    span.set_attribute("rows", rows);
+    if (state.stop.load(std::memory_order_acquire)) return kStoppedError;
     if (!carry.empty()) {  // a last line with no newline
         if (std::string failure = take_line(carry); !failure.empty()) return failure;
     }
@@ -1095,41 +1234,98 @@ std::string read_object_rows(LoadState& state) {
     return {};
 }
 
+// Settle a failed load on the owner thread: nothing of it survives, and the run
+// ends Failed with the reason.
+void settle_failed(LoadState& state, const std::string& failure) {
+    AddDatasetResult& result = state.result;
+    if (!state.table_id.empty()) {
+        discard_loaded_table(state.node, result.database->name(), state.table_id);
+    }
+    result.table.reset();
+    result.partitions.clear();
+    result.error = failure;
+    state.run->set_outputs({});
+    state.run->add_log({zetta::util::now_iso8601(), "error", failure});
+    state.run->set_status(zetta::pipeline::RunStatus::Failed);
+}
+
+// Settle a load whose rows all landed: partition the table, release the
+// loading node's copy of the rows, and end the run Succeeded with the dataset
+// as its output. Returns the failure, or empty. Owner thread.
+std::string settle_loaded(LoadState& state) {
+    if (std::string removed = table_removed(state); !removed.empty()) return removed;
+    AddDatasetResult& result = state.result;
+    const AddDatasetOptions& options = state.options;
+    result.rows = result.table->row_count();
+    {
+        zetta::observability::ScopedSpan span(&state.node.span_recorder(), state.trace,
+                                              "load_dataset_object:partition");
+        span.set_attribute("rows", result.rows);
+        partition_target_table(state.node, options, result);
+        span.set_attribute("partitions", result.partitions.size());
+        if (result.error.empty() && state.source.after_partition_write) {
+            result.error = state.source.after_partition_write();
+        }
+        span.finish(result.error.empty(), result.error);
+        // A failure here can follow partitions already written: settle_failed
+        // removes them with the table.
+        if (!result.error.empty()) return result.error;
+    }
+    // The partition bodies hold the rows now; the local copy is read by nothing.
+    result.table->release_local_rows();
+    audit_dataset_added(state.node, result);
+    const std::string& table = result.table->name();
+    const std::string reference = result.database->name() + "." + table;
+    state.run->set_outputs({zetta::pipeline::RunOutput{"dataset", table, reference}});
+    std::string message = "loaded " + std::to_string(result.rows) + " rows into " +
+                          reference + " in " + std::to_string(result.partitions.size()) +
+                          " partitions";
+    if (table != options.table_name) {
+        message += " (asked for " + options.table_name + "; that name was taken)";
+    }
+    state.run->add_log({zetta::util::now_iso8601(), "info", std::move(message)});
+    state.run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    return {};
+}
+
 // Partition the table and settle the run on the owner thread: Succeeded with
 // the dataset as its output, or Failed with the reason and no table left.
 void finish_object_load(LoadState& state, std::string failure) {
-    state.node.run_on_owner([&] {
-        AddDatasetResult& result = state.result;
-        const AddDatasetOptions& options = state.options;
-        if (failure.empty()) {
-            result.rows = result.table->row_count();
-            partition_target_table(state.node, options, result);
-            failure = result.error;
+    if (failure.empty()) failure = on_owner(state, [&] { return settle_loaded(state); });
+    if (failure.empty()) return;
+    const std::string unsettled = on_owner(state, [&] {
+        settle_failed(state, failure);
+        return std::string();
+    });
+    if (!unsettled.empty()) state.result.error = failure + "; " + unsettled;
+}
+
+// Remove the object after the load, as delete_object does (the same store
+// call on a worker), and record it in the audit trail as that capability's
+// call would be. A failure adds a `warn` entry to the run.
+void remove_loaded_object(LoadState& state) {
+    const ObjectDatasetSource& source = state.source;
+    const ObjectOutcome removed = state.objects.remove(source.bucket, source.key, ObjectWrite{});
+    const std::string reason =
+        removed.ok() ? std::string()
+                     : (removed.message.empty() ? std::string(to_string(removed.status))
+                                                : removed.message);
+    on_owner(state, [&] {
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::DataAccess;
+        event.actor = source.acting_key.empty() ? "local" : source.acting_key;
+        event.target = "api:delete_object";
+        event.allowed = true;
+        event.detail = "bucket " + source.bucket + ": " + source.key +
+                       (removed.ok() ? " removed" : " not removed (" + reason + ")") +
+                       " after load_dataset_object run " + state.run->id();
+        state.node.record_audit_event(std::move(event));
+        if (!removed.ok()) {
+            state.run->add_log({zetta::util::now_iso8601(), "warn",
+                                "could not remove " + source.bucket + "/" + source.key + ": " +
+                                    reason});
         }
-        if (!failure.empty()) {
-            // Nothing of a failed load survives: drop the table it created.
-            if (result.database && result.table) {
-                result.database->drop_table(result.table->name());
-            }
-            result.table.reset();
-            result.partitions.clear();
-            result.error = failure;
-            state.run->add_log({zetta::util::now_iso8601(), "error", failure});
-            state.run->set_status(zetta::pipeline::RunStatus::Failed);
-            return;
-        }
-        audit_dataset_added(state.node, result);
-        const std::string& table = result.table->name();
-        const std::string reference = result.database->name() + "." + table;
-        state.run->set_outputs({zetta::pipeline::RunOutput{"dataset", table, reference}});
-        std::string message = "loaded " + std::to_string(result.rows) + " rows into " +
-                              reference + " in " + std::to_string(result.partitions.size()) +
-                              " partitions";
-        if (table != options.table_name) {
-            message += " (asked for " + options.table_name + "; that name was taken)";
-        }
-        state.run->add_log({zetta::util::now_iso8601(), "info", std::move(message)});
-        state.run->set_status(zetta::pipeline::RunStatus::Succeeded);
+        return std::string();
     });
 }
 
@@ -1137,18 +1333,45 @@ void finish_object_load(LoadState& state, std::string failure) {
 // object when asked. Takes its state by value (shared_ptr), the spawn-precedent
 // discipline against dangling captures.
 zetta::runtime::task<> load_object_task(std::shared_ptr<LoadState> state) {
-    finish_object_load(*state, read_object_rows(*state));
-    if (state->source.remove_object) {
-        const ObjectOutcome removed =
-            state->objects.remove(state->source.bucket, state->source.key, ObjectWrite{});
-        if (!removed.ok()) {
-            log_run(*state, "warn",
-                    "could not remove " + state->source.bucket + "/" + state->source.key +
-                        ": " + (removed.message.empty()
-                                    ? std::string(to_string(removed.status))
-                                    : removed.message));
+    zetta::observability::SpanRecorder* recorder = &state->node.span_recorder();
+    zetta::observability::ScopedSpan job(recorder, state->source.trace, "load_dataset_object");
+    job.set_attribute("intent", "load " + state->source.bucket + "/" + state->source.key +
+                                    " into " + state->options.database + "." +
+                                    state->options.table_name);
+    job.set_attribute("run_id", state->run->id());
+    job.set_attribute("format", dataset_file::format_name(state->source.format));
+    state->trace = {state->source.trace.trace_id, job.span_id()};
+
+    std::string failure;
+    {
+        zetta::observability::ScopedSpan read(recorder, state->trace, "load_dataset_object:read");
+        try {
+            failure = read_object_rows(*state, read);
+        } catch (const std::exception& error) {
+            failure = std::string("the load failed: ") + error.what();
+        } catch (...) {
+            failure = "the load failed on an unknown error";
         }
+        read.finish(failure.empty(), failure);
     }
+    if (state->batches > 0) {
+        // Landing is interleaved with reading, so its span is the owner-thread
+        // time summed over the batches rather than a wall-clock interval.
+        zetta::observability::Span materialize;
+        materialize.trace_id = state->trace.trace_id;
+        materialize.span_id = zetta::observability::make_span_id();
+        materialize.parent_span_id = state->trace.span_id;
+        materialize.name = "load_dataset_object:materialize";
+        materialize.started_at = state->materialize_started;
+        materialize.duration_ms = state->materialize_ms;
+        materialize.attributes = {{"batches", state->batches}};
+        recorder->record(std::move(materialize));
+    }
+    finish_object_load(*state, std::move(failure));
+    if (state->source.remove_object) remove_loaded_object(*state);
+    job.set_attribute("result_shape", {{"rows", state->result.rows},
+                                       {"partitions", state->result.partitions.size()}});
+    job.finish(state->result.ok(), state->result.error);
     co_return;
 }
 
@@ -1161,6 +1384,9 @@ std::shared_ptr<AsyncObjectDatasetLoad> AsyncObjectDatasetLoad::start(
     state->source = std::move(source);
     state->options = std::move(options);
     if (state->options.table_name.empty()) state->options.table_name = "dataset";
+    if (!state->source.trace.valid()) {
+        state->source.trace = zetta::observability::make_root_trace();
+    }
     state->options.source_format = dataset_file::format_name(state->source.format);
     // The loaded table is partition-only (#833): its rows live in the partition
     // bodies on their owners (replication_factor copies) and a SELECT is
@@ -1174,8 +1400,23 @@ std::shared_ptr<AsyncObjectDatasetLoad> AsyncObjectDatasetLoad::start(
 
     // On the owner thread by contract, so the durable handle exists and is
     // Running before start() returns.
-    state->run = node.create_run("datasets", "load_dataset_object");
+    state->run = node.create_run("datasets", std::string(kObjectDatasetLoadGraph));
     if (!state->run) return nullptr;
+    state->run->set_trace_id(state->source.trace.trace_id);
+    // The request, and the node running it: recover_object_dataset_loads
+    // settles only the runs its own node left Running.
+    const ObjectDatasetSource& request = state->source;
+    if (!state->run->log_params({{"node", node.node_id()},
+                                 {"bucket", request.bucket},
+                                 {"key", request.key},
+                                 {"format", dataset_file::format_name(request.format)},
+                                 {"database", state->options.database},
+                                 {"table_name", state->options.table_name},
+                                 {"rename_if_exists", request.rename_if_exists},
+                                 {"remove_object", request.remove_object}})) {
+        node.drop_run(state->run->id());
+        return nullptr;
+    }
     state->run->set_status(zetta::pipeline::RunStatus::Running);
     handle->run_id_ = state->run->id();
     handle->state_ = state;
@@ -1202,5 +1443,29 @@ bool AsyncObjectDatasetLoad::done() const {
 }
 
 const AddDatasetResult& AsyncObjectDatasetLoad::result() const { return state_->result; }
+
+std::size_t recover_object_dataset_loads(Node& node) {
+    std::size_t settled = 0;
+    for (const std::shared_ptr<zetta::pipeline::Run>& run : node.runs()) {
+        if (!run || run->graph() != kObjectDatasetLoadGraph ||
+            run->status() != zetta::pipeline::RunStatus::Running) {
+            continue;
+        }
+        // Only this node's own loads: a peer may be loading right now.
+        const nlohmann::json& params = run->value().metrics.at("params");
+        const auto loading_node = params.find("node");
+        if (loading_node == params.end() || !loading_node->is_string() ||
+            loading_node->get<std::string>() != node.node_id()) {
+            continue;
+        }
+        for (const zetta::pipeline::TableRead& read : run->reads()) {
+            discard_loaded_table(node, read.database, read.table_id);
+        }
+        run->add_log({zetta::util::now_iso8601(), "error", kNodeStoppedError});
+        run->set_status(zetta::pipeline::RunStatus::Failed);
+        ++settled;
+    }
+    return settled;
+}
 
 }  // namespace zetta::data

@@ -8374,7 +8374,7 @@ const nlohmann::json& load_dataset_object_schema() {
                 {"pattern", "^[a-z0-9][a-z0-9_.-]{0,95}$"},
                 {"description",
                  "the bucket holding the object (create_bucket); the caller needs "
-                 "objects:read on it"}}},
+                 "objects:read on it, and objects:write with remove_object"}}},
               {"key",
                {{"type", "string"},
                 {"minLength", 1},
@@ -8404,7 +8404,8 @@ const nlohmann::json& load_dataset_object_schema() {
                {{"type", "boolean"},
                 {"description",
                  "remove the object once the load has finished, whether it succeeded or "
-                 "failed (default false)"}}}}}};
+                 "failed (default false). Needs objects:write on the bucket, as "
+                 "delete_object does, and is audited as a delete_object call"}}}}}};
     }();
     return schema;
 }
@@ -8472,6 +8473,15 @@ ApiResult handle_load_dataset_object(const nlohmann::json& input, ApiContext& co
                                              kObjectsRead, source.bucket)) {
         return *denied;
     }
+    // Removing the object afterwards is a delete: it needs the write right
+    // DELETE /v1/objects/<bucket>/<key> asks for.
+    if (source.remove_object) {
+        if (auto denied = authorize_object_route(context.node, context.acting_key,
+                                                 context.acting_is_user, "load_dataset_object",
+                                                 kObjectsWrite, source.bucket)) {
+            return *denied;
+        }
+    }
     if (!objects->find_bucket(source.bucket)) {
         return ApiResult::failure("not_found", "no bucket '" + source.bucket + "'", "/bucket");
     }
@@ -8490,16 +8500,13 @@ ApiResult handle_load_dataset_object(const nlohmann::json& input, ApiContext& co
             "background action owner");
     }
     options.members = context.node.cluster_members();  // live placement roster
+    source.acting_key = context.acting_key;  // the removal's audit row names the caller
+    source.trace = context.trace;
 
     auto handle = zetta::data::AsyncObjectDatasetLoad::start(context.node, *objects,
                                                              std::move(source), std::move(options));
     if (!handle) {
         return ApiResult::failure("engine_error", "the run record could not be created");
-    }
-    if (!context.trace.trace_id.empty()) {
-        if (auto run = context.node.find_run(handle->run_id())) {
-            run->set_trace_id(context.trace.trace_id);
-        }
     }
     context.background->adopt(handle, [worker = handle.get()] { return worker->done(); });
     nlohmann::json output;
@@ -12570,7 +12577,8 @@ void register_core_capabilities(Registry& registry) {
         "up to 1 GiB. Returns a run id at once and loads in the background: poll "
         "get_run until succeeded (the dataset is the run's output) or failed (the log "
         "says why, and no table is left). Needs objects:read on the bucket; "
-        "remove_object removes the object afterwards. Audited as dataset_added. (#1302)",
+        "remove_object removes the object afterwards and also needs objects:write. "
+        "Audited as dataset_added. (#1302)",
         load_dataset_object_schema(),
         load_dataset_object_output_schema(),
         CapabilityKind::Job,

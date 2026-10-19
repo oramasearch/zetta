@@ -27279,7 +27279,7 @@
     },
     "/v1/load_dataset_object": {
       "post": {
-        "description": "Load a csv or jsonl object already in a bucket (uploaded a chunk at a time with PATCH /v1/objects/<bucket>/<key>) into a new partitioned table placed across the cluster - the path for a file larger than upload_dataset's 16 MiB, up to 1 GiB. Returns a run id at once and loads in the background: poll get_run until succeeded (the dataset is the run's output) or failed (the log says why, and no table is left). Needs objects:read on the bucket; remove_object removes the object afterwards. Audited as dataset_added. (#1302) Requires orchestration:add_dataset. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "description": "Load a csv or jsonl object already in a bucket (uploaded a chunk at a time with PATCH /v1/objects/<bucket>/<key>) into a new partitioned table placed across the cluster - the path for a file larger than upload_dataset's 16 MiB, up to 1 GiB. Returns a run id at once and loads in the background: poll get_run until succeeded (the dataset is the run's output) or failed (the log says why, and no table is left). Needs objects:read on the bucket; remove_object removes the object afterwards and also needs objects:write. Audited as dataset_added. (#1302) Requires orchestration:add_dataset. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
         "operationId": "load_dataset_object",
         "requestBody": {
           "content": {
@@ -27288,7 +27288,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "bucket": {
-                    "description": "the bucket holding the object (create_bucket); the caller needs objects:read on it",
+                    "description": "the bucket holding the object (create_bucket); the caller needs objects:read on it, and objects:write with remove_object",
                     "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
                     "type": "string"
                   },
@@ -27324,7 +27324,7 @@
                     "type": "string"
                   },
                   "remove_object": {
-                    "description": "remove the object once the load has finished, whether it succeeded or failed (default false)",
+                    "description": "remove the object once the load has finished, whether it succeeded or failed (default false). Needs objects:write on the bucket, as delete_object does, and is audited as a delete_object call",
                     "type": "boolean"
                   },
                   "replication_factor": {

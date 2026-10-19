@@ -29,6 +29,7 @@
 #endif
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
+#include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/data/partition_rebalance.hpp"
 #include "zetta/data/table.hpp"
@@ -724,6 +725,13 @@ bool Node::start() {
         last_seen_version_ = replication_->version();
     } else {
         backfill_denormalized_names();
+    }
+    // A dataset load this node was running when it last stopped can never
+    // finish: fail its run and drop its partial table (#1302).
+    if (const std::size_t settled = zetta::data::recover_object_dataset_loads(*this);
+        settled > 0) {
+        std::printf("zetta: %zu dataset load(s) left running by the last stop marked failed\n",
+                    settled);
     }
     zetta::governance::AuditTrail::release_unused_memory();
     // Opening the sidecar and bounded recent/tail frames is sufficient. The

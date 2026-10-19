@@ -52,7 +52,8 @@ public:
     // into the replicated document. Its authoritative data is the **partition
     // bodies** the partitioned write path emitted plus the replicate-to-all
     // partition catalog that says who owns them; the local store holds only the
-    // slice this node produced, as the ingest's staging buffer.
+    // slice this node produced, as the ingest's staging buffer (an object load
+    // releases it once the partitions are written: `release_local_rows`).
     //
     // Why it exists: a distributed ingest has each node land the slice it pulled
     // as partitions *it* owns. Capturing those rows would replicate every one of
@@ -165,6 +166,15 @@ public:
     void materialize_row_delete(const std::string& row_id);
 
     std::size_t row_count() const;
+
+    // Drop this node's local copy of a **partition-only** table's rows, from
+    // memory and from the JSONL chunk files, once the partitioned write has put
+    // them in the partition bodies (#1302). Nothing reads that copy: a SELECT
+    // scatters to the partition owners, and system.datasets counts the catalog.
+    // Afterwards the loading node holds what every other node holds. table.json
+    // stays. No-op on a table that is not partition-only, whose local store IS
+    // its rows. Never captures anything: the rows were never in the document.
+    void release_local_rows();
 
     // Configure this table's partitioner — the per-table policy that maps a row
     // to a partition and a partition to its owner node(s) (the Partitioner seam,

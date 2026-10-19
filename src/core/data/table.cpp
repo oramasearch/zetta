@@ -7,9 +7,12 @@
 #include "../catalog.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace zetta::data {
 
@@ -78,6 +81,21 @@ void Table::materialize_row_delete(const std::string& row_id) {
 }
 
 std::size_t Table::row_count() const { return store_->size(); }
+
+void Table::release_local_rows() {
+    if (!partition_only_) return;
+    // Free the rows first, then remove the files they were appended to, then
+    // open an empty store over the directory. A JsonlStore keeps only `*.jsonl`
+    // chunk files there; table.json is the table's own metadata and stays.
+    store_.reset();
+    std::error_code error;
+    std::vector<std::filesystem::path> chunks;
+    for (const auto& entry : std::filesystem::directory_iterator(dir_, error)) {
+        if (entry.path().extension() == ".jsonl") chunks.push_back(entry.path());
+    }
+    for (const std::filesystem::path& chunk : chunks) std::filesystem::remove(chunk, error);
+    store_ = std::make_unique<zetta::storage::JsonlStore>(dir_);
+}
 
 void Table::set_partition_manifest(DatasetManifestValue value) {
     value.table = id_;  // the key names the table; the value cannot disagree

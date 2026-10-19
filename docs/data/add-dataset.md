@@ -305,7 +305,7 @@ the same name): it answers at once with a run, and the load runs in the backgrou
 | `if_exists` | `"fail"` (default) \| `"rename"` | as for `upload_dataset`; with `rename` the run's final log entry names the name asked for |
 | `database` | string | default `datasets`, by the same rule |
 | `replication_factor` | integer ≥ 1 | owners per partition (default 3, clamped to the node count) |
-| `remove_object` | boolean | default false; when true the job removes the object once the run has finished, whether it succeeded or failed |
+| `remove_object` | boolean | default false; when true the job removes the object once the run has finished, whether it succeeded or failed. Needs `objects:write` on the bucket |
 
 ```json
 {"run_id": "9d1c…", "status": "running",
@@ -315,12 +315,16 @@ the same name): it answers at once with a run, and the load runs in the backgrou
 It is authorized like `upload_dataset` (`orchestration:add_dataset`), and the handler
 also asks for **`objects:read` on the bucket** (`authorize_object_route`, the check
 `GET /v1/objects/<bucket>/<key>` makes), so a load cannot read a bucket its caller
-could not read directly. These refusals answer at once and create nothing:
+could not read directly. With `remove_object` it also asks for **`objects:write` on
+the bucket**, the right `delete_object` needs, because the job deletes the object; a
+key that can only read the bucket is refused before anything starts. These refusals
+answer at once and create nothing:
 
 | Case | Code | Path |
 |---|---|---|
 | a field fails its rule | `invalid_input` | `/<field>` |
-| the caller lacks `objects:read` on the bucket | `unauthorized` | — |
+| the caller lacks `objects:read` on the bucket | `unauthorized` (`no objects:read grant for bucket '<bucket>'` for a user) | — |
+| `remove_object` and the caller lacks `objects:write` on the bucket | `unauthorized` (`no objects:write grant for bucket '<bucket>'` for a user) | — |
 | no such bucket | `not_found` | `/bucket` |
 | `table_name` taken and `if_exists` is `fail` | `conflict` (`upload_dataset`'s words) | `/table_name` |
 | no background action owner in this embedding | `engine_error` | — |
@@ -333,7 +337,9 @@ wait on a peer, and the handler runs on the owner loop.
 The engine entry point is `AsyncObjectDatasetLoad` (`add_dataset.hpp`), modelled on
 `AsyncDatasetAdd`'s worker/owner split. `start()` creates the run (project label
 `datasets`, graph label `load_dataset_object`) and sets it `Running`; poll it with
-`get_run {run_id}`.
+`get_run {run_id}`. The run joins the caller's trace, and its `metrics.params` record
+the request and the node running it:
+`{node, bucket, key, format, database, table_name, rename_if_exists, remove_object}`.
 
 1. **Read and decode, on a runtime worker** (`runtime::spawn`, adopted by the API's
    `BackgroundActions`). `ObjectStore::open_read` resolves the whole object, its size
@@ -342,14 +348,35 @@ The engine entry point is `AsyncObjectDatasetLoad` (`add_dataset.hpp`), modelled
    next, and each line goes to a `DatasetLineDecoder`.
 2. **Materialize, on the owner thread.** Every 10,000 rows, and at the end, the worker
    hands the batch over with `Node::run_on_owner` and waits for it to land before it
-   reads further. The first batch creates the table.
-3. **Partition and finish, on the owner thread:** `partition_target_table` (planned by
-   the object's size, `AddDatasetOptions::approx_bytes`), the `dataset_added` audit
-   event, and the run's output and status.
+   reads further. The first batch creates the table and adds it to the run's `reads`
+   (zetta#1258), so `delete_dataset` refuses the table while the load runs. Every later
+   batch first checks that the database still maps the table's name to the id the
+   first batch created; a SQL `DROP TABLE` does not consult `reads`, and a table can be
+   dropped and another created under the same name.
+3. **Partition and finish, on the owner thread:** the same id check,
+   `partition_target_table` (planned by the object's size,
+   `AddDatasetOptions::approx_bytes`), the release of the loading node's copy of the
+   rows, the `dataset_added` audit event, and the run's output and status.
 
-Memory beyond the table is one slice, one carry-over line and one batch. Every
-object-store call (`open_read`, `read`, `remove`) runs on the worker, so the owner
-loop never waits on the store.
+Owner-thread work never lets an exception out: anything a batch or the finish throws
+fails the run (`the load failed: <what>`) instead of unwinding out of the owner loop's
+tick, which would have taken the node down or left the worker waiting forever.
+
+**Memory.** Until the partitions are written, every decoded row is held on the loading
+node in the table's local store: in memory, and appended to the table's JSONL chunk
+files. Once the partitions are written, `Table::release_local_rows` frees both, so a
+finished load leaves the loading node holding what every other node holds: the
+partition catalog, plus the bodies of the partitions it owns. Nothing reads the local
+copy of a partition-only table (a `SELECT`, `system.datasets` and the `dataset_path`
+resolver all go to the partitions). Beyond the table the worker holds one slice, one
+carry-over line (at most 16 MiB, checked before it grows) and one batch. Every
+object-store call (`open_read`, `read`, `remove`) runs on the worker, so the owner loop
+never waits on the store.
+
+Paths that still read a table's local store do the same on the loading node as they
+already did on every other node: `create_index` and the index step see no rows, and a
+search hit carries no row body. SQL `UPDATE`, `DELETE` and `TRUNCATE` act on the local
+store only and never reached the partitions.
 
 **The table is partition-only** (#833, `Table::partition_only`): its rows are never
 captured into the replicated document; they live in the partition bodies on their
@@ -367,8 +394,10 @@ replicated.
   `{kind: "dataset", name: "<table>", ref: "<database>.<table>"}`, and a final entry
   `loaded <rows> rows into <database>.<table> in <n> partitions`, with
   ` (asked for <table_name>; that name was taken)` appended after a rename.
-- **Failure:** status `failed`, an `error` entry with the reason, and no table: one the
-  job created is dropped. The reasons:
+- **Failure:** status `failed`, an `error` entry with the reason, and nothing left
+  behind: the table's partition catalog entries and their bodies are removed (as
+  `delete_dataset` does), then the table itself, found by its id, so a table someone
+  else created under the same name is never dropped. The reasons:
 
 | Reason | Error |
 |---|---|
@@ -376,17 +405,53 @@ replicated.
 | over the size limit | `the object is <n> bytes; a dataset loads from at most 1073741824 bytes` |
 | a zero-byte object | `the object is empty` |
 | a CSV refusal | as the table above, with its line: `line 3: 3 fields, but the header has 2 columns`, … |
+| a line that is not well-formed UTF-8 (either format) | `line <n>: not valid UTF-8` |
 | a JSONL line that does not parse | `invalid JSON on line <n>` |
 | a line over the line limit | `line <n> is longer than 16 MiB` |
 | a csv header and no rows, or a jsonl object of blank lines | `the object decoded to no rows` |
 | a slice read failing (I/O, or a peer that lost the version) | `reading the object failed at byte <offset>` |
 | the partition write | `partition: …`, as `partition_target_table` reports it |
 | the name taken while the object was read (`if_exists: "fail"`) | `upload_dataset`'s conflict message |
+| the table dropped, or replaced under its name, while the load ran | `the table <database>.<table> was removed while the load ran` |
+| something owner-thread work threw | `the load failed: <what>` |
 | the API server stopped before the load finished | `the load was stopped before it finished` |
+| the node was killed mid-load (set at its next start) | `the node stopped before the load finished` |
 
 With `remove_object`, `ObjectStore::remove` runs after the run reaches either terminal
-status; a failed removal (a fenced bucket, say) adds a `warn` entry and leaves the
-status alone.
+status, the call `delete_object` makes. It is recorded in the audit trail as that
+capability's call (`DataAccess`, target `api:delete_object`, the caller as actor,
+detail `bucket <bucket>: <key> removed after load_dataset_object run <run id>`). A
+failed removal (a fenced bucket, say) adds a `warn` entry and leaves the status alone.
+
+**UTF-8.** `DatasetLineDecoder` refuses a line that is not well-formed UTF-8 before it
+decodes it, so `upload_dataset` and `add_dataset_file` refuse it in the same words. A
+row holding such bytes used to throw from the store when it was written, inside the
+owner loop.
+
+### A node killed mid-load
+
+A load runs on the node that accepted it. If that node is killed, the run stays
+`Running` and the table it was loading stays behind, possibly with partitions already
+written. At its next start the node calls `recover_object_dataset_loads`: every
+`load_dataset_object` run still `Running` whose `params.node` is this node's id (read
+from `data_dir/node_id`, so it survives the restart) is set `failed` with `the node
+stopped before the load finished`, and the table in its `reads` is removed with its
+partition catalog entries and bodies, as a failed load's is. Runs another node is
+loading are left alone. The object is left in place, even with `remove_object`: the
+recovery runs on the owner loop and never calls the object store.
+
+A run whose node never comes back stays `Running`, and its table stays; while it does,
+`delete_dataset` refuses the table (the run reads it). `delete_run` it, then delete the
+dataset.
+
+### Observability
+
+The job opens a span `load_dataset_object` in the caller's trace, with three beneath
+it: `load_dataset_object:read` (opening, reading and decoding, wall clock, with the
+bytes, slices and rows), `load_dataset_object:materialize` (the owner-thread time spent
+landing batches, summed, since landing is interleaved with reading) and
+`load_dataset_object:partition` (rows and partitions). They show in `system.spans` and
+`get_trace` under the run's `trace_id`.
 
 ### Limits
 
@@ -395,10 +460,13 @@ inline constexpr std::uint64_t kMaxDatasetObjectBytes = std::uint64_t{1} << 30; 
 inline constexpr std::size_t kMaxDatasetLineBytes = kMaxDatasetContentBytes;     // 16 MiB
 ```
 
-The decoded rows are held in the table in memory until they are partitioned, so the
-object limit bounds node memory; a partition-at-a-time write would lift it. The line
-limit stops a file with no newline from growing the carry-over without bound.
-`ObjectDatasetSource::max_bytes` lowers the object limit for a test.
+Every decoded row is held on the loading node (in memory and in the table's chunk
+files) until the partitions are written, so the object limit bounds that node's memory
+and disk during the load; a partition-at-a-time write would lift it. The line limit
+stops a file with no newline from growing the carry-over without bound. For tests,
+`ObjectDatasetSource` lowers the object limit (`max_bytes`) and the progress cadence
+(`progress_bytes`), and takes two injection points: `wrap_reader` (hold or fail a
+read) and `after_partition_write` (fail once the partitions are written).
 
 ### Example
 
@@ -428,13 +496,20 @@ curl "$ZETTA/v1/get_run?run_id=9d1c…" -H "Authorization: Bearer $TOKEN"
 ```
 
 Tests: `tests/data/test_add_dataset.cpp` (`DatasetLineDecoder.*`: the decoder gives the
-whole-text decoders' rows and refusals; `ObjectLoad.*`: a 9 MiB CSV whose lines
-straddle slice boundaries, CRLF and blank lines and an unterminated last line, the
-line limit, a ragged last row after a landed batch, the object limit, every other
-refusal, the rename) and `tests/api/test_object_routes.cpp` (`LoadDatasetObject*`: a
-20 MiB CSV PATCHed in 8 MiB chunks loads end to end over REST and `list_datasets` and
-`SELECT count(*)` agree, the synchronous refusals, `if_exists: "rename"`,
-`remove_object` after success and failure, and the `objects:read` check).
+whole-text decoders' rows and refusals, and refuses invalid UTF-8 on every path;
+`ObjectLoad.*`: a 9 MiB CSV whose lines straddle slice boundaries, with its progress
+entries, spans and released local copy, CRLF and blank lines and an unterminated last
+line, the line limit after the table exists, a ragged last row after a landed batch,
+invalid UTF-8 after a landed batch, a failure after the partitions were written, the
+table dropped or replaced mid-load, a stop mid-load, a read failing at a byte, the
+object limit, every other refusal, the rename, and a restart after a kill mid-load;
+`ObjectLoadCluster.*`: on three nodes with `replication_factor: 2`, a node that did not
+load the dataset lists, counts and selects it) and `tests/api/test_object_routes.cpp`
+(`LoadDatasetObject*`: a 20 MiB CSV PATCHed in 8 MiB chunks loads end to end over REST
+and `list_datasets` and `SELECT count(*)` agree, the synchronous refusals,
+`if_exists: "rename"`, `remove_object` after success and failure, the `objects:read`
+check, and `remove_object` refused without `objects:write` and audited as
+`delete_object` with it).
 
 ## The headed affordance
 

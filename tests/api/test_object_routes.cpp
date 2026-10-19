@@ -1066,3 +1066,77 @@ TEST_F(ObjectRoutes, LoadDatasetObjectNeedsObjectsReadOnTheBucket) {
     const auto run = await_run(owner, allowed.json()["value"]["run_id"].get<std::string>(), 60);
     EXPECT_EQ(run.value("status", ""), "succeeded") << run.dump();
 }
+
+// remove_object deletes the object, so it needs objects:write on the bucket, as
+// delete_object does: a key with only objects:read is refused before anything
+// starts, and a removal is audited as a delete_object call.
+TEST_F(ObjectRoutes, LoadDatasetObjectRemovesTheObjectOnlyWithObjectsWrite) {
+    zetta::query::QueryService admin(node);
+    for (const char* statement :
+         {"CREATE ROLE lake_reader", "GRANT mcp:call, pipelines:manage TO ROLE lake_reader",
+          "GRANT objects:read ON BUCKET lake_ TO ROLE lake_reader", "CREATE ROLE lake_writer",
+          "GRANT mcp:call, pipelines:manage TO ROLE lake_writer",
+          "GRANT objects:read, objects:write ON BUCKET lake_ TO ROLE lake_writer"}) {
+        const auto outcome = admin.run(statement, "");
+        ASSERT_TRUE(outcome.ok()) << statement << ": " << outcome.error;
+    }
+    const auto token_for = [&](const std::string& name) {
+        auto user = node.create_user(name);
+        EXPECT_TRUE(user);
+        EXPECT_TRUE(node.assign_role(user->id(), node.find_role(name)->id()));
+        return node.create_token(user->id(), zetta::governance::TokenType::Api);
+    };
+    const auto reader_token = token_for("lake_reader");
+    const auto writer_token = token_for("lake_writer");
+    ASSERT_TRUE(reader_token.token && writer_token.token);
+    run_loop();
+
+    HttpClient owner = client();
+    ASSERT_EQ(owner.request("POST", "/v1/create_bucket", R"({"bucket":"lake_ws"})").status, 200);
+    ASSERT_EQ(owner.request("PUT", "/v1/objects/lake_ws/a.csv", "a\n1\n").status, 200);
+
+    HttpClient reader(server->port(), reader_token.secret);
+    auto refused = reader.request(
+        "POST", "/v1/load_dataset_object",
+        R"({"bucket":"lake_ws","key":"a.csv","format":"csv","table_name":"read_only","remove_object":true})");
+    EXPECT_EQ(refused.status, 403) << refused.body;
+    EXPECT_EQ(refused.json()["error"]["code"], "unauthorized");
+    EXPECT_EQ(refused.json()["error"]["message"], "no objects:write grant for bucket 'lake_ws'");
+    // Nothing started, and the object is still there.
+    EXPECT_EQ(owner.request("GET", "/v1/get_dataset?dataset=read_only").status, 404);
+    EXPECT_EQ(owner.request("GET", "/v1/objects/lake_ws/a.csv").status, 200);
+    // Without remove_object the read right is enough.
+    auto read_only = reader.request(
+        "POST", "/v1/load_dataset_object",
+        R"({"bucket":"lake_ws","key":"a.csv","format":"csv","table_name":"read_only"})");
+    ASSERT_EQ(read_only.status, 200) << read_only.body;
+    EXPECT_EQ(await_run(owner, read_only.json()["value"]["run_id"].get<std::string>(), 60)
+                  .value("status", ""),
+              "succeeded");
+
+    HttpClient writer(server->port(), writer_token.secret);
+    auto removing = writer.request(
+        "POST", "/v1/load_dataset_object",
+        R"({"bucket":"lake_ws","key":"a.csv","format":"csv","table_name":"written","remove_object":true})");
+    ASSERT_EQ(removing.status, 200) << removing.body;
+    const std::string run_id = removing.json()["value"]["run_id"].get<std::string>();
+    EXPECT_EQ(await_run(owner, run_id, 60).value("status", ""), "succeeded");
+    EXPECT_TRUE(awaits_removal(owner, "/v1/objects/lake_ws/a.csv", 30));
+
+    // The removal is on the audit trail as delete_object, naming the run.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    nlohmann::json rows;
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto audit = owner.request(
+            "POST", "/v1/sql",
+            R"({"statement":"SELECT * FROM system.audit WHERE target = 'api:delete_object'"})");
+        ASSERT_EQ(audit.status, 200) << audit.body;
+        rows = audit.json()["value"]["rows"];
+        if (!rows.empty()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    ASSERT_EQ(rows.size(), 1u) << rows.dump();
+    EXPECT_NE(rows[0].value("actor", ""), "local") << rows.dump();
+    EXPECT_EQ(rows[0].value("detail", ""),
+              "bucket lake_ws: a.csv removed after load_dataset_object run " + run_id);
+}
