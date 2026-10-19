@@ -424,3 +424,48 @@ TEST(CatalogTyping, AProjectedReadMatchesTheWholeRowRead) {
         }
     }
 }
+
+// The levels are fitted on the training rows only: a level that first appears
+// after the `as_of` cutoff is not one of the model's levels (it encodes as all
+// zeros at predict time), and the note counts the training rows, not the table.
+TEST(CatalogTyping, LevelsAfterTheCutoffAreNotFitted) {
+    AttachedNode host(24766);
+    std::vector<Json> rows;
+    for (std::size_t index = 0; index < 400; ++index) {
+        const bool late = index >= 300;  // signed up after the cutoff
+        rows.push_back(Json{
+            {"account_id", static_cast<std::int64_t>(index + 1)},
+            {"churned", index % 4 == 0 ? 1 : 0},
+            {"seats", static_cast<std::int64_t>(index % 40)},
+            {"plan", late && index % 2 == 0 ? "enterprise" : (index % 3 == 0 ? "pro" : "basic")},
+            {"signed_up", late ? "2026-06-01" : "2026-04-01"}});
+    }
+    ASSERT_TRUE(land(host, std::move(rows), "late_levels", true).ok());
+
+    DatasetContract named;
+    named.entity_column = "account_id";
+    named.label_column = "churned";
+    named.time_column = "signed_up";
+    named.as_of = 1777593600.0;  // 2026-05-01
+    const ResolvedDataset resolved = resolve(host, "late_levels", named);
+    ASSERT_TRUE(resolved.ok()) << resolved.error;
+    EXPECT_EQ(resolved.reads.fitted_rows, 400u);  // read every row, fit on 300
+    ASSERT_EQ(resolved.contract.categorical_features.size(), 1u);
+    EXPECT_EQ(resolved.contract.categorical_features[0].column, "plan");
+    EXPECT_EQ(resolved.contract.categorical_features[0].levels,
+              (std::vector<std::string>{"basic", "pro"}));
+    EXPECT_NE(std::ranges::find_if(resolved.notes,
+                                   [](const std::string& note) {
+                                       return note.starts_with("categorical column: 'plan'") &&
+                                              note.find("training rows (300)") !=
+                                                  std::string::npos;
+                                   }),
+              resolved.notes.end());
+
+    // Without the cutoff every row is a training row, and the late level is fitted.
+    const ResolvedDataset uncut = resolve(host, "late_levels");
+    ASSERT_TRUE(uncut.ok()) << uncut.error;
+    ASSERT_EQ(uncut.contract.categorical_features.size(), 1u);
+    EXPECT_EQ(uncut.contract.categorical_features[0].levels,
+              (std::vector<std::string>{"basic", "enterprise", "pro"}));
+}
