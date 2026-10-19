@@ -896,4 +896,25 @@ TEST(AddDataset, ReplicationFactorDefaultsToThreeClampedToTheNodeCount) {
     node.stop();
 }
 
+// #1021: partition stats arrive through the replicated catalog, so a field of
+// the wrong shape is read as unknown, never thrown on (Node::datasets() would
+// otherwise fail every get_dataset and list_datasets).
+TEST(AddDataset, ColumnProfileReadsMalformedPartitionStatsWithoutThrowing) {
+    zetta::data::ColumnProfile profile;
+    EXPECT_NO_THROW(profile.add_partition_stats(
+        nlohmann::json{{"column_stats",
+                        {{{"name", "a"}, {"type", 7}, {"nulls", "two"}},
+                         {{"name", "b"}, {"type", "integer"}, {"nulls", -1}}}}},
+        4));
+    EXPECT_NO_THROW(profile.add_partition_stats(
+        nlohmann::json{{"schema", {{{"name", "c"}, {"type", nullptr}, {"optional", "yes"}}}}},
+        2));
+    std::vector<zetta::data::DatasetColumn> columns;
+    ASSERT_NO_THROW(columns = profile.columns({"a", "b", "c"}));
+    ASSERT_EQ(columns.size(), 3u);
+    EXPECT_EQ(columns[0].type, "null");
+    EXPECT_EQ(columns[1].type, "integer");
+    EXPECT_TRUE(columns[2].nullable);
+}
+
 }  // namespace

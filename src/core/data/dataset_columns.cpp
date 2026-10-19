@@ -43,6 +43,19 @@ std::string type_family_of_parquet(std::string_view parquet_type) {
     return "mixed";
 }
 
+namespace {
+
+// A string field of a catalog entry, or `fallback` when it is absent or not a
+// string (the entry crossed the replication boundary; never throw on it).
+std::string string_field(const nlohmann::json& entry, const char* key,
+                         const char* fallback) {
+    const auto found = entry.find(key);
+    return found != entry.end() && found->is_string() ? found->get<std::string>()
+                                                      : std::string(fallback);
+}
+
+}  // namespace
+
 void ColumnProfile::add_row(const nlohmann::json& row) {
     ++rows_;
     if (!row.is_object()) return;
@@ -72,8 +85,14 @@ void ColumnProfile::add_partition_stats(const nlohmann::json& stats, std::uint64
             }
             Counts& counts = counts_[entry["name"].get<std::string>()];
             counts.typed = true;
-            counts.type = merge_type_family(counts.type, entry.value("type", "null"));
-            const std::uint64_t nulls = entry.value("nulls", std::uint64_t{0});
+            counts.type = merge_type_family(counts.type, string_field(entry, "type", "null"));
+            // The stats come from the replicated catalog: a value of another
+            // shape is read as no nulls rather than thrown on.
+            const auto found = entry.find("nulls");
+            const std::uint64_t nulls =
+                found != entry.end() && found->is_number_unsigned()
+                    ? found->get<std::uint64_t>()
+                    : 0;
             counts.present += nulls >= rows ? 0 : rows - nulls;
         }
         return;
@@ -98,8 +117,11 @@ void ColumnProfile::add_partition_stats(const nlohmann::json& stats, std::uint64
         Counts& counts = counts_[entry["name"].get<std::string>()];
         counts.typed = true;
         counts.type = merge_type_family(
-            counts.type, type_family_of_parquet(entry.value("type", std::string("null"))));
-        if (entry.value("optional", true)) counts.nullable = true;
+            counts.type, type_family_of_parquet(string_field(entry, "type", "null")));
+        const auto optional = entry.find("optional");
+        if (optional == entry.end() || !optional->is_boolean() || optional->get<bool>()) {
+            counts.nullable = true;
+        }
     }
 }
 
