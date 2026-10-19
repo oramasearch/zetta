@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <filesystem>
@@ -12,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -20,11 +22,14 @@
 
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/object_store.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/node.hpp"
 #include "zetta/parquet/metadata.hpp"
 #include "zetta/parquet/reader.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/runtime.hpp"
+#include "zetta/util/timestamp.hpp"
 #include "zetta/data/partition_writer.hpp"
 #include "zetta/data/fetch_affinity_placement.hpp"
 #include "zetta/data/rendezvous_placement.hpp"
@@ -171,6 +176,117 @@ nlohmann::json csv_cell_to_json(const std::string& cell) {
     return cell;  // plain string
 }
 
+// The order a JSON source writes its keys in (#1021). A parsed object reads its
+// keys back sorted, so when `row` brings a key not yet in `columns`, `text` (the
+// row's own JSON) is read again preserving order and its new keys are appended
+// in the order written. Usually only the first row is read twice.
+void note_key_order(const nlohmann::json& row, std::string_view text,
+                    std::vector<std::string>& columns,
+                    std::unordered_set<std::string>& seen) {
+    if (!row.is_object()) return;
+    bool fresh = false;
+    for (auto field = row.begin(); field != row.end() && !fresh; ++field) {
+        fresh = !seen.contains(field.key());
+    }
+    if (!fresh) return;
+    const nlohmann::ordered_json ordered = nlohmann::ordered_json::parse(
+        text.begin(), text.end(), nullptr, /*allow_exceptions=*/false);
+    if (ordered.is_discarded() || !ordered.is_object()) return;
+    for (auto field = ordered.begin(); field != ordered.end(); ++field) {
+        if (seen.insert(field.key()).second) columns.push_back(field.key());
+    }
+}
+
+}  // namespace
+
+DatasetLineDecoder::DatasetLineDecoder(dataset_file::Format format) : format_(format) {}
+
+bool DatasetLineDecoder::line(std::string_view text, std::vector<nlohmann::json>& rows) {
+    return decode(text, &rows);
+}
+
+bool DatasetLineDecoder::check(std::string_view text) { return decode(text, nullptr); }
+
+bool DatasetLineDecoder::refuse(std::string reason) {
+    error_ = std::move(reason);
+    return false;
+}
+
+// CSV: the first non-empty line is the header (column names), each later
+// non-empty line one row. Refuses (#1221), naming the 1-based line, a header
+// column with no name or named twice, a quoted field left open at the end of
+// its line, and a row whose field count is not the header's — a ragged row used
+// to be padded with nulls or cut short without a word. The wording is lake's
+// (lake PR #459), so a caller reads one answer from either layer. Each row is
+// an object keyed by the header, cells type-inferred.
+//
+// JSONL: one JSON document per line, whitespace-only lines skipped. A line that
+// does not parse fails the whole load (all-or-nothing, like import_records).
+bool DatasetLineDecoder::decode(std::string_view text, std::vector<nlohmann::json>* rows) {
+    if (!error_.empty()) return false;
+    ++lines_;
+    if (!text.empty() && text.back() == '\r') text.remove_suffix(1);  // CRLF
+    if (format_ == dataset_file::Format::Jsonl) {
+        if (text.find_first_not_of(" \t") == std::string_view::npos) return true;
+        auto value = nlohmann::json::parse(text.begin(), text.end(), nullptr,
+                                           /*allow_exceptions=*/false);
+        if (value.is_discarded()) {
+            return refuse("invalid JSON on line " + std::to_string(lines_));
+        }
+        note_key_order(value, text, columns_, seen_);  // the source's order (#1021)
+        if (rows) rows->push_back(std::move(value));
+        return true;
+    }
+    if (format_ != dataset_file::Format::Csv) {
+        return refuse(std::string("format '") + dataset_file::format_name(format_) +
+                      "' is not decoded a line at a time");
+    }
+    if (text.empty()) return true;  // blank lines carry no row
+    bool closed = true;
+    std::vector<std::string> fields = parse_csv_line(text, closed);
+    const std::string at = "line " + std::to_string(lines_) + ": ";
+    if (!closed) {
+        return refuse(at + "a quoted field is not closed (a row must stay on one line)");
+    }
+    if (!header_seen_) {
+        header_seen_ = true;
+        std::set<std::string> names;
+        for (std::size_t index = 0; index < fields.size(); ++index) {
+            if (fields[index].empty()) {
+                return refuse(at + "header column " + std::to_string(index + 1) +
+                              " has no name");
+            }
+            if (!names.insert(fields[index]).second) {
+                return refuse(at + "the header names column '" + fields[index] + "' twice");
+            }
+        }
+        header_ = std::move(fields);
+        columns_ = header_;  // the file's own order (#1021)
+        return true;
+    }
+    if (fields.size() != header_.size()) {
+        return refuse(at + std::to_string(fields.size()) + " fields, but the header has " +
+                      std::to_string(header_.size()) + " columns");
+    }
+    if (!rows) return true;
+    nlohmann::json row = nlohmann::json::object();
+    for (std::size_t column = 0; column < header_.size(); ++column) {
+        row[header_[column]] = csv_cell_to_json(fields[column]);
+    }
+    rows->push_back(std::move(row));
+    return true;
+}
+
+bool DatasetLineDecoder::finish() {
+    if (!error_.empty()) return false;
+    if (format_ == dataset_file::Format::Csv && !header_seen_) {
+        return refuse("the file has no header row");
+    }
+    return true;
+}
+
+namespace {
+
 // The cancelled-load reason, shared by the decode + materialize phases.
 constexpr const char* kCancelledError = "cancelled by user";
 
@@ -190,136 +306,55 @@ struct DecodeProgress {
     }
 };
 
-// Read CSV text line by line: the first non-empty line is the header (column
-// names), each later non-empty line one row. Refuses (#1221), naming the 1-based
-// line, a header column with no name or named twice, a quoted field left open at
-// the end of its line, and a row whose field count is not the header's — a
-// ragged row used to be padded with nulls or cut short without a word. The
-// wording is lake's (lake PR #459), so a caller reads one answer from either
-// layer. With `rows`, each row is decoded into an object keyed by the header,
-// cells type-inferred; without, the text is only checked. On a refusal `error`
-// is set and `rows` is cleared.
-void scan_csv(std::string_view bytes, std::string& error,
-              std::vector<nlohmann::json>* rows,
-              const DecodeProgress& progress = {},
-              std::vector<std::string>* columns = nullptr) {
-    std::vector<std::string> header;
-    bool header_seen = false;
-    std::size_t number = 0;
+// Decode an in-memory CSV or JSONL text through DatasetLineDecoder, a
+// '\n'-separated line at a time (a text ending in '\n' has no empty last
+// line). With `rows`, each row is decoded into it; without, the text is only
+// checked. With `columns`, the source's column order is written to it (#1021).
+// On a refusal `error` is set and `rows` is cleared.
+void decode_lines(std::string_view bytes, dataset_file::Format format, std::string& error,
+                  std::vector<nlohmann::json>* rows, const DecodeProgress& progress = {},
+                  std::vector<std::string>* columns = nullptr) {
+    DatasetLineDecoder decoder(format);
     std::size_t start = 0;
-    const auto refuse = [&](std::string reason) {
-        error = std::move(reason);
-        if (rows) rows->clear();
-    };
-    while (start < bytes.size()) {
-        if (progress.cancelled()) return refuse(kCancelledError);
+    while (start < bytes.size() && error.empty()) {
+        if (progress.cancelled()) {
+            error = kCancelledError;
+            break;
+        }
         std::size_t end = bytes.find('\n', start);
         if (end == std::string_view::npos) end = bytes.size();
-        std::string_view line = bytes.substr(start, end - start);
+        const std::string_view line = bytes.substr(start, end - start);
         start = end + 1;
-        ++number;
-        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);  // CRLF
-        if (line.empty()) continue;  // blank lines carry no row
-        bool closed = true;
-        std::vector<std::string> fields = parse_csv_line(line, closed);
-        const std::string at = "line " + std::to_string(number) + ": ";
-        if (!closed) {
-            return refuse(at + "a quoted field is not closed (a row must stay on one line)");
+        if (!(rows ? decoder.line(line, *rows) : decoder.check(line))) {
+            error = decoder.error();
+            break;
         }
-        if (!header_seen) {
-            header_seen = true;
-            std::set<std::string> names;
-            for (std::size_t index = 0; index < fields.size(); ++index) {
-                if (fields[index].empty()) {
-                    return refuse(at + "header column " + std::to_string(index + 1) +
-                                  " has no name");
-                }
-                if (!names.insert(fields[index]).second) {
-                    return refuse(at + "the header names column '" + fields[index] +
-                                  "' twice");
-                }
-            }
-            header = std::move(fields);
-            if (columns) *columns = header;  // the file's own order (#1021)
-            continue;
-        }
-        if (fields.size() != header.size()) {
-            return refuse(at + std::to_string(fields.size()) +
-                          " fields, but the header has " +
-                          std::to_string(header.size()) + " columns");
-        }
-        if (!rows) continue;
-        nlohmann::json row = nlohmann::json::object();
-        for (std::size_t column = 0; column < header.size(); ++column) {
-            row[header[column]] = csv_cell_to_json(fields[column]);
-        }
-        rows->push_back(std::move(row));
-        progress.count(rows->size());
+        if (rows) progress.count(rows->size());
     }
-    if (!header_seen) refuse("the file has no header row");
+    if (error.empty() && !decoder.finish()) error = decoder.error();
+    if (!error.empty() && rows) rows->clear();
+    if (error.empty() && columns) *columns = decoder.columns();
 }
 
-// Decode a CSV file's bytes into rows (see scan_csv for what is refused).
+// Decode a CSV file's bytes into rows (see DatasetLineDecoder for what is
+// refused).
 std::vector<nlohmann::json> decode_csv(const std::string& bytes,
                                        std::string& error,
                                        const DecodeProgress& progress = {},
                                        std::vector<std::string>* columns = nullptr) {
     std::vector<nlohmann::json> rows;
-    scan_csv(bytes, error, &rows, progress, columns);
+    decode_lines(bytes, dataset_file::Format::Csv, error, &rows, progress, columns);
     return rows;
 }
 
-// The order a JSON source writes its keys in (#1021). A parsed object reads its
-// keys back sorted, so when `row` brings a key not yet in `columns`, `text` (the
-// row's own JSON) is read again preserving order and its new keys are appended
-// in the order written. Usually only the first row is read twice.
-void note_key_order(const nlohmann::json& row, std::string_view text,
-                    std::vector<std::string>& columns,
-                    std::unordered_set<std::string>& seen) {
-    if (!row.is_object()) return;
-    bool fresh = false;
-    for (auto field = row.begin(); field != row.end() && !fresh; ++field) {
-        fresh = !seen.contains(field.key());
-    }
-    if (!fresh) return;
-    const nlohmann::ordered_json ordered =
-        nlohmann::ordered_json::parse(text, nullptr, /*allow_exceptions=*/false);
-    if (ordered.is_discarded() || !ordered.is_object()) return;
-    for (auto field = ordered.begin(); field != ordered.end(); ++field) {
-        if (seen.insert(field.key()).second) columns.push_back(field.key());
-    }
-}
-
-// Decode a JSON Lines file: one JSON document per line, blank lines skipped. A
-// line that does not parse fails the whole load (all-or-nothing, like
-// import_records).
+// Decode a JSON Lines file: one JSON document per line, blank lines skipped
+// (see DatasetLineDecoder).
 std::vector<nlohmann::json> decode_jsonl(const std::string& bytes,
                                          std::string& error,
                                          const DecodeProgress& progress = {},
                                          std::vector<std::string>* columns = nullptr) {
     std::vector<nlohmann::json> rows;
-    std::unordered_set<std::string> seen;
-    std::istringstream stream(bytes);
-    std::string line;
-    std::size_t line_number = 0;
-    while (std::getline(stream, line)) {
-        if (progress.cancelled()) {
-            error = kCancelledError;
-            return {};
-        }
-        ++line_number;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        // A line of only whitespace is skipped.
-        if (line.find_first_not_of(" \t") == std::string::npos) continue;
-        auto value = nlohmann::json::parse(line, nullptr, /*allow_exceptions=*/false);
-        if (value.is_discarded()) {
-            error = "invalid JSON on line " + std::to_string(line_number);
-            return {};
-        }
-        if (columns) note_key_order(value, line, *columns, seen);
-        rows.push_back(std::move(value));
-        progress.count(rows.size());
-    }
+    decode_lines(bytes, dataset_file::Format::Jsonl, error, &rows, progress, columns);
     return rows;
 }
 
@@ -637,8 +672,15 @@ std::string dataset_name_problem(std::string_view name) {
 
 std::string csv_problem(std::string_view content) {
     std::string error;
-    scan_csv(content, error, nullptr);
+    decode_lines(content, dataset_file::Format::Csv, error, nullptr);
     return error;
+}
+
+std::string dataset_name_taken(std::string_view table, std::string_view database) {
+    return "a dataset named '" + std::string(table) + "' already exists in " +
+           std::string(database) +
+           "; choose another name, or pass if_exists: \"rename\" to save it under the "
+           "next free name";
 }
 
 AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
@@ -705,9 +747,8 @@ AddDatasetResult add_dataset_content(Node& node, std::string_view content,
         result.error = "content is " + std::to_string(content.size()) +
                        " bytes; the most a dataset upload accepts is " +
                        std::to_string(kMaxDatasetContentBytes) +
-                       " bytes (16 MiB). Put larger data in a file on the node "
-                       "(add_dataset) or load it from a source connection "
-                       "(create_dataset_from_query)";
+                       " bytes (16 MiB). Upload a larger file to a bucket and load "
+                       "it with load_dataset_object";
         return result;
     }
     if (content.find_first_not_of(" \t\r\n") == std::string_view::npos) {
@@ -889,5 +930,277 @@ void AsyncDatasetAdd::pump() {
         case Phase::Done: return;
     }
 }
+
+// --- AsyncObjectDatasetLoad (#1302) ------------------------------------------
+
+struct AsyncObjectDatasetLoad::State {
+    State(Node& node, ObjectStore& objects) : node(node), objects(objects) {}
+
+    Node& node;
+    ObjectStore& objects;
+    ObjectDatasetSource source;
+    AddDatasetOptions options;
+    std::shared_ptr<zetta::pipeline::Run> run;  // touched on the owner thread only
+    AddDatasetResult result;                     // written on the owner thread
+    std::atomic<bool> stop{false};      // the handle is going away
+    std::atomic<bool> finished{false};  // the worker has let go of everything
+};
+
+namespace {
+
+using LoadState = AsyncObjectDatasetLoad::State;
+
+// Rows handed to the owner thread at a time: a batch is the only decoded rows
+// held outside the table.
+constexpr std::size_t kRowsPerBatch = 10'000;
+// How often the run logs progress. Runs are replicated, so an entry per slice
+// would put hundreds of entries on the wire.
+constexpr std::uint64_t kProgressBytes = std::uint64_t{64} * 1024 * 1024;
+constexpr std::uint64_t kMebibyte = std::uint64_t{1024} * 1024;
+
+constexpr const char* kStoppedError = "the load was stopped before it finished";
+
+// `value` with its thousands grouped by commas: 1204331 -> "1,204,331".
+std::string grouped(std::uint64_t value) {
+    std::string digits = std::to_string(value);
+    for (std::size_t at = digits.size(); at > 3; at -= 3) digits.insert(at - 3, ",");
+    return digits;
+}
+
+// Add one entry to the run's log, on the owner thread.
+void log_run(LoadState& state, std::string level, std::string message) {
+    state.node.run_on_owner([&] {
+        state.run->add_log({zetta::util::now_iso8601(), std::move(level), std::move(message)});
+    });
+}
+
+// Hand `batch` to the owner thread and wait for it to land. The first batch
+// creates the table, honouring `rename_if_exists`. Returns the failure, or
+// empty. `batch` is empty afterwards.
+std::string land_batch(LoadState& state, std::vector<nlohmann::json>& batch) {
+    std::string failure;
+    state.node.run_on_owner([&] {
+        AddDatasetResult& result = state.result;
+        if (!result.table) {
+            const AddDatasetOptions& options = state.options;
+            if (!state.source.rename_if_exists) {
+                // upload_dataset's handler checked this too, but the name can be
+                // taken while the object is read.
+                const std::shared_ptr<Database> database = state.node.find_database(options.database);
+                if (database && database->find_table(options.table_name)) {
+                    failure = dataset_name_taken(options.table_name, options.database);
+                    return;
+                }
+            }
+            create_named_target_table(state.node, options.table_name, options, result);
+            if (!result.table) {
+                failure = result.error;
+                return;
+            }
+        }
+        for (nlohmann::json& row : batch) result.table->add_row(std::move(row));
+    });
+    batch.clear();
+    return failure;
+}
+
+// Read the object a slice at a time, decode it line by line and land the rows
+// in batches (the worker phase). Returns the failure, or empty.
+std::string read_object_rows(LoadState& state) {
+    const ObjectDatasetSource& source = state.source;
+    std::shared_ptr<ObjectReader> reader;
+    const ObjectOutcome opened =
+        state.objects.open_read(source.bucket, source.key, 0, std::nullopt, reader);
+    if (!opened.ok() || !reader) {
+        if (opened.status == ObjectStatus::NotFound) {
+            return "no object " + source.key + " in bucket " + source.bucket;
+        }
+        return "could not open " + source.bucket + "/" + source.key + ": " + opened.message;
+    }
+    const std::uint64_t size = reader->length();
+    log_run(state, "info",
+            "loading " + source.bucket + "/" + source.key + ": " + std::to_string(size) +
+                " bytes as " + dataset_file::format_name(source.format));
+    if (size > source.max_bytes) {
+        return "the object is " + std::to_string(size) +
+               " bytes; a dataset loads from at most " + std::to_string(source.max_bytes) +
+               " bytes";
+    }
+    if (size == 0) return "the object is empty";
+    state.options.approx_bytes = static_cast<std::size_t>(size);
+
+    DatasetLineDecoder decoder(source.format);
+    std::vector<nlohmann::json> batch;
+    std::size_t rows = 0;
+    const std::string too_long = " is longer than " +
+                                 std::to_string(kMaxDatasetLineBytes / kMebibyte) + " MiB";
+    // Decode one complete line into the batch, landing the batch when full.
+    const auto take_line = [&](std::string_view line) -> std::string {
+        if (line.size() > kMaxDatasetLineBytes) {
+            return "line " + std::to_string(decoder.lines() + 1) + too_long;
+        }
+        const std::size_t before = batch.size();
+        if (!decoder.line(line, batch)) return decoder.error();
+        rows += batch.size() - before;
+        if (batch.size() >= kRowsPerBatch) return land_batch(state, batch);
+        return {};
+    };
+
+    std::string slice;
+    std::string carry;  // the partial last line of the slices read so far
+    std::uint64_t next_progress = kProgressBytes;
+    for (std::uint64_t offset = 0; offset < size;) {
+        if (state.stop.load(std::memory_order_acquire)) return kStoppedError;
+        const std::uint64_t count = std::min<std::uint64_t>(ObjectStore::kSliceBytes, size - offset);
+        slice.clear();
+        if (!reader->read(offset, count, slice) || slice.size() != count) {
+            return "reading the object failed at byte " + std::to_string(offset);
+        }
+        offset += count;
+        const std::string_view view(slice);
+        std::size_t start = 0;
+        for (std::size_t end = view.find('\n'); end != std::string_view::npos;
+             end = view.find('\n', start)) {
+            const std::string_view piece = view.substr(start, end - start);
+            start = end + 1;
+            std::string failure;
+            if (carry.empty()) {
+                failure = take_line(piece);
+            } else {
+                carry.append(piece);
+                failure = take_line(carry);
+                carry.clear();
+            }
+            if (!failure.empty()) return failure;
+        }
+        carry.append(view.substr(start));
+        if (carry.size() > kMaxDatasetLineBytes) {
+            return "line " + std::to_string(decoder.lines() + 1) + too_long;
+        }
+        if (offset >= next_progress && offset < size) {
+            log_run(state, "info",
+                    "read " + std::to_string(offset / kMebibyte) + " MiB of " +
+                        std::to_string(size / kMebibyte) + " MiB, " + grouped(rows) + " rows");
+            next_progress += kProgressBytes;
+        }
+    }
+    if (!carry.empty()) {  // a last line with no newline
+        if (std::string failure = take_line(carry); !failure.empty()) return failure;
+    }
+    if (!decoder.finish()) return decoder.error();
+    if (!batch.empty()) {
+        if (std::string failure = land_batch(state, batch); !failure.empty()) return failure;
+    }
+    if (rows == 0) return "the object decoded to no rows";
+    return {};
+}
+
+// Partition the table and settle the run on the owner thread: Succeeded with
+// the dataset as its output, or Failed with the reason and no table left.
+void finish_object_load(LoadState& state, std::string failure) {
+    state.node.run_on_owner([&] {
+        AddDatasetResult& result = state.result;
+        const AddDatasetOptions& options = state.options;
+        if (failure.empty()) {
+            result.rows = result.table->row_count();
+            partition_target_table(state.node, options, result);
+            failure = result.error;
+        }
+        if (!failure.empty()) {
+            // Nothing of a failed load survives: drop the table it created.
+            if (result.database && result.table) {
+                result.database->drop_table(result.table->name());
+            }
+            result.table.reset();
+            result.partitions.clear();
+            result.error = failure;
+            state.run->add_log({zetta::util::now_iso8601(), "error", failure});
+            state.run->set_status(zetta::pipeline::RunStatus::Failed);
+            return;
+        }
+        audit_dataset_added(state.node, result);
+        const std::string& table = result.table->name();
+        const std::string reference = result.database->name() + "." + table;
+        state.run->set_outputs({zetta::pipeline::RunOutput{"dataset", table, reference}});
+        std::string message = "loaded " + std::to_string(result.rows) + " rows into " +
+                              reference + " in " + std::to_string(result.partitions.size()) +
+                              " partitions";
+        if (table != options.table_name) {
+            message += " (asked for " + options.table_name + "; that name was taken)";
+        }
+        state.run->add_log({zetta::util::now_iso8601(), "info", std::move(message)});
+        state.run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    });
+}
+
+// The worker: read, decode and land the rows, settle the run, then remove the
+// object when asked. Takes its state by value (shared_ptr), the spawn-precedent
+// discipline against dangling captures.
+zetta::runtime::task<> load_object_task(std::shared_ptr<LoadState> state) {
+    finish_object_load(*state, read_object_rows(*state));
+    if (state->source.remove_object) {
+        const ObjectOutcome removed =
+            state->objects.remove(state->source.bucket, state->source.key, ObjectWrite{});
+        if (!removed.ok()) {
+            log_run(*state, "warn",
+                    "could not remove " + state->source.bucket + "/" + state->source.key +
+                        ": " + (removed.message.empty()
+                                    ? std::string(to_string(removed.status))
+                                    : removed.message));
+        }
+    }
+    co_return;
+}
+
+}  // namespace
+
+std::shared_ptr<AsyncObjectDatasetLoad> AsyncObjectDatasetLoad::start(
+    Node& node, ObjectStore& objects, ObjectDatasetSource source, AddDatasetOptions options) {
+    std::shared_ptr<AsyncObjectDatasetLoad> handle(new AsyncObjectDatasetLoad());
+    auto state = std::make_shared<State>(node, objects);
+    state->source = std::move(source);
+    state->options = std::move(options);
+    if (state->options.table_name.empty()) state->options.table_name = "dataset";
+    state->options.source_format = dataset_file::format_name(state->source.format);
+    // The loaded table is partition-only (#833): its rows live in the partition
+    // bodies on their owners (replication_factor copies) and a SELECT is
+    // scatter-gather, never captured row by row into the replicated document.
+    // Capturing them made a 67 MiB CSV (1.4M rows) take 126 s, add 5.8 GB of
+    // node memory and stall the owner loop 8.5 s; partition-only took 41 s,
+    // 1.7 GB and 2.7 s.
+    state->options.partition_only = true;
+    state->result.format = state->source.format;
+    state->result.source_format = state->options.source_format;
+
+    // On the owner thread by contract, so the durable handle exists and is
+    // Running before start() returns.
+    state->run = node.create_run("datasets", "load_dataset_object");
+    if (!state->run) return nullptr;
+    state->run->set_status(zetta::pipeline::RunStatus::Running);
+    handle->run_id_ = state->run->id();
+    handle->state_ = state;
+    zetta::runtime::spawn(load_object_task(state), [state] {
+        state->finished.store(true, std::memory_order_release);
+    });
+    return handle;
+}
+
+AsyncObjectDatasetLoad::~AsyncObjectDatasetLoad() {
+    if (!state_) return;
+    // The worker holds the node until it finishes and hands its batches to the
+    // owner queue: ask it to stop, and pump the queue while it winds down, so
+    // dropping an unfinished handle on the owner thread cannot deadlock.
+    state_->stop.store(true, std::memory_order_release);
+    while (!state_->finished.load(std::memory_order_acquire)) {
+        state_->node.drain_owner_work();
+        std::this_thread::yield();
+    }
+}
+
+bool AsyncObjectDatasetLoad::done() const {
+    return state_->finished.load(std::memory_order_acquire);
+}
+
+const AddDatasetResult& AsyncObjectDatasetLoad::result() const { return state_->result; }
 
 }  // namespace zetta::data

@@ -20,9 +20,12 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/object_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/parquet/metadata.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/util/uuid.hpp"
 
 // #587 — the "Add dataset" engine backend behind the headed affordance. Read a
 // local parquet / jsonl / json / csv file and materialize it as a *partitioned*
@@ -915,6 +918,288 @@ TEST(AddDataset, ColumnProfileReadsMalformedPartitionStatsWithoutThrowing) {
     EXPECT_EQ(columns[0].type, "null");
     EXPECT_EQ(columns[1].type, "integer");
     EXPECT_TRUE(columns[2].nullable);
+}
+
+// --- DatasetLineDecoder and the object load (#1302) ---------------------------
+
+// Feed `text` to a decoder a '\n'-separated line at a time, as a streaming load
+// does. The error, or empty, and the rows decoded.
+std::string decode_by_line(Format format, const std::string& text,
+                           std::vector<nlohmann::json>& rows) {
+    zetta::data::DatasetLineDecoder decoder(format);
+    std::size_t start = 0;
+    while (start < text.size()) {
+        std::size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        if (!decoder.line(std::string_view(text).substr(start, end - start), rows)) {
+            return decoder.error();
+        }
+        start = end + 1;
+    }
+    return decoder.finish() ? std::string() : decoder.error();
+}
+
+// The decoder gives the rows and the refusals, word for word, that a whole-file
+// load gives for the same text, because every load path decodes through it.
+TEST(DatasetLineDecoder, MatchesTheWholeTextDecodersRowsAndRefusals) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+    const std::vector<std::pair<std::string, std::string>> refused_csv = {
+        {"a,b\n1,2\n3\n", "line 3: 1 fields, but the header has 2 columns"},
+        {"\na,b\n1,2,3\n", "line 3: 3 fields, but the header has 2 columns"},
+        {"a,,c\n1,2,3\n", "line 1: header column 2 has no name"},
+        {"id,id\n1,2\n", "line 1: the header names column 'id' twice"},
+        {"a,b\n1,2\n\n\n\n\n\n\n\"x,1\n", "line 9: a quoted field is not closed (a row must stay on one line)"},
+        {"\r\n\r\n", "the file has no header row"},
+    };
+    int index = 0;
+    for (const auto& [text, expected] : refused_csv) {
+        std::vector<nlohmann::json> rows;
+        EXPECT_EQ(decode_by_line(Format::Csv, text, rows), expected) << text;
+        const AddDatasetResult whole = add_dataset_file(
+            node, write_file(tmp.path(), "refused" + std::to_string(index++) + ".csv", text));
+        EXPECT_EQ(whole.error, expected) << text;
+        EXPECT_EQ(zetta::data::csv_problem(text), expected) << text;
+    }
+    std::vector<nlohmann::json> jsonl_rows;
+    EXPECT_EQ(decode_by_line(Format::Jsonl, "{\"ok\":1}\n\n{not json}\n", jsonl_rows),
+              "invalid JSON on line 3");
+    EXPECT_EQ(add_dataset_file(node, write_file(tmp.path(), "bad.jsonl",
+                                                "{\"ok\":1}\n\n{not json}\n"))
+                  .error,
+              "invalid JSON on line 3");
+
+    // The same rows, cell for cell, as a whole-file load stores.
+    const std::string csv = "id,zip,score,flag,note\r\n1,01234,2.5,true,\"a, b\"\r\n\r\n2,9,,FALSE,x";
+    std::vector<nlohmann::json> rows;
+    ASSERT_EQ(decode_by_line(Format::Csv, csv, rows), "");
+    const AddDatasetResult whole = add_dataset_file(node, write_file(tmp.path(), "good.csv", csv));
+    ASSERT_TRUE(whole.ok()) << whole.error;
+    EXPECT_EQ(rows, table_rows(*whole.table));
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0]["zip"], "01234");
+    EXPECT_EQ(rows[0]["note"], "a, b");
+    EXPECT_TRUE(rows[1]["score"].is_null());
+    node.stop();
+}
+
+// A standalone node with an in-memory object store (an empty directory) and a
+// bucket, driven from this thread as the owner loop.
+struct ObjectLoad : ::testing::Test {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    zetta::cluster::ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::data::ObjectStore objects{replication, replication.node_id(), {}};
+
+    void SetUp() override {
+        ASSERT_TRUE(node.start());
+        ASSERT_TRUE(objects.open());
+        ASSERT_TRUE(objects.create_bucket(zetta::data::ObjectBucket{"loads"}).ok());
+        node.tick();  // adopt this thread as the owner before any worker runs
+    }
+    void TearDown() override { node.stop(); }
+
+    void put(const std::string& key, std::string_view bytes) {
+        const auto written = objects.put_range("loads", key, 0, bytes, {});
+        ASSERT_TRUE(written.ok()) << written.message;
+    }
+
+    // Load `key` as `table`, ticking until the run settles.
+    std::shared_ptr<zetta::data::AsyncObjectDatasetLoad> load(
+        const std::string& key, const std::string& table, Format format = Format::Csv,
+        std::uint64_t max_bytes = zetta::data::kMaxDatasetObjectBytes) {
+        zetta::data::ObjectDatasetSource source;
+        source.bucket = "loads";
+        source.key = key;
+        source.format = format;
+        source.max_bytes = max_bytes;
+        AddDatasetOptions options;
+        options.table_name = table;
+        auto handle =
+            zetta::data::AsyncObjectDatasetLoad::start(node, objects, source, options);
+        EXPECT_TRUE(handle);
+        if (!handle) return handle;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        while (!handle->done() && std::chrono::steady_clock::now() < deadline) {
+            node.tick();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_TRUE(handle->done());
+        return handle;
+    }
+
+    std::shared_ptr<zetta::pipeline::Run> run_of(const zetta::data::AsyncObjectDatasetLoad& handle) {
+        return node.find_run(handle.run_id());
+    }
+
+    bool table_exists(const std::string& table) {
+        const auto database = node.find_database("datasets");
+        return database && database->find_table(table);
+    }
+};
+
+// A CSV larger than two slices, whose lines straddle every slice boundary,
+// loads every row exactly once, the first and the last intact.
+TEST_F(ObjectLoad, LinesThatStraddleSliceBoundariesLoadOnce) {
+    std::string csv = "id,label,amount\n";
+    std::size_t rows = 0;
+    while (csv.size() < std::size_t{9} * 1024 * 1024) {
+        csv += std::to_string(rows) + ",row-" + std::to_string(rows) + "-padding," +
+               std::to_string(rows * 3) + ".5\n";
+        ++rows;
+    }
+    ASSERT_GT(csv.size(), 2u * zetta::data::ObjectStore::kSliceBytes);
+    put("big.csv", csv);
+
+    const auto handle = load("big.csv", "big");
+    ASSERT_TRUE(handle);
+    ASSERT_TRUE(handle->result().ok()) << handle->result().error;
+    const auto run = run_of(*handle);
+    ASSERT_TRUE(run);
+    EXPECT_EQ(run->status(), zetta::pipeline::RunStatus::Succeeded);
+    ASSERT_EQ(run->outputs().size(), 1u);
+    EXPECT_EQ(run->outputs()[0].kind, "dataset");
+    EXPECT_EQ(run->outputs()[0].name, "big");
+    EXPECT_EQ(run->outputs()[0].ref, "datasets.big");
+    ASSERT_FALSE(run->logs().empty());
+    EXPECT_EQ(run->logs().front().message,
+              "loading loads/big.csv: " + std::to_string(csv.size()) + " bytes as csv");
+    EXPECT_EQ(run->logs().back().message,
+              "loaded " + std::to_string(rows) + " rows into datasets.big in " +
+                  std::to_string(handle->result().partitions.size()) + " partitions");
+
+    const auto stored = table_rows(*handle->result().table);
+    ASSERT_EQ(stored.size(), rows);
+    std::set<long long> ids;
+    for (const auto& row : stored) {
+        const long long id = row.at("id").get<long long>();
+        ids.insert(id);
+        EXPECT_EQ(row.at("label"), "row-" + std::to_string(id) + "-padding");
+    }
+    EXPECT_EQ(ids.size(), rows);
+    EXPECT_EQ(*ids.begin(), 0);
+    EXPECT_EQ(*ids.rbegin(), static_cast<long long>(rows - 1));
+    EXPECT_EQ(handle->result().source_format, "csv");
+    // Partition-only (#833): the rows live in the partition bodies, and the
+    // manifest says how many there are (what segmentation checks for).
+    EXPECT_TRUE(handle->result().table->partition_only());
+    EXPECT_TRUE(handle->result().table->partition_manifest());
+
+    bool audited = false;
+    for (const auto& event : node.audit_events()) {
+        audited = audited || (event && event->action() == zetta::governance::AuditAction::DatasetAdded &&
+                              event->target() == handle->result().table->id());
+    }
+    EXPECT_TRUE(audited);
+}
+
+// CRLF endings, blank lines and a last line with no newline, in both formats.
+TEST_F(ObjectLoad, CrlfBlankLinesAndAnUnterminatedLastLine) {
+    put("crlf.csv", "id,name\r\n\r\n1,one\r\n\r\n2,two\r\n3,three");
+    const auto csv = load("crlf.csv", "crlf");
+    ASSERT_TRUE(csv && csv->result().ok()) << (csv ? csv->result().error : "");
+    const auto csv_rows = table_rows(*csv->result().table);
+    ASSERT_EQ(csv_rows.size(), 3u);
+    EXPECT_EQ(csv_rows[0], (nlohmann::json{{"id", 1}, {"name", "one"}}));
+    EXPECT_EQ(csv_rows[2], (nlohmann::json{{"id", 3}, {"name", "three"}}));
+
+    put("lines.jsonl", "{\"a\":1}\r\n  \r\n\r\n{\"a\":2}\r\n{\"a\":3}");
+    const auto jsonl = load("lines.jsonl", "lines", Format::Jsonl);
+    ASSERT_TRUE(jsonl && jsonl->result().ok()) << (jsonl ? jsonl->result().error : "");
+    const auto jsonl_rows = table_rows(*jsonl->result().table);
+    ASSERT_EQ(jsonl_rows.size(), 3u);
+    EXPECT_EQ(jsonl_rows[2], (nlohmann::json{{"a", 3}}));
+    EXPECT_EQ(jsonl->result().source_format, "jsonl");
+}
+
+// A line past kMaxDatasetLineBytes is refused naming it, and leaves no table.
+TEST_F(ObjectLoad, ALineLongerThanTheLimitFailsAndLeavesNoTable) {
+    std::string csv = "a\n1\n";
+    csv += std::string(zetta::data::kMaxDatasetLineBytes + 1, 'x');
+    csv += "\n2\n";
+    put("long.csv", csv);
+    const auto handle = load("long.csv", "long_line");
+    ASSERT_TRUE(handle);
+    EXPECT_EQ(handle->result().error, "line 3 is longer than 16 MiB");
+    const auto run = run_of(*handle);
+    EXPECT_EQ(run->status(), zetta::pipeline::RunStatus::Failed);
+    EXPECT_EQ(run->logs().back().level, "error");
+    EXPECT_EQ(run->logs().back().message, "line 3 is longer than 16 MiB");
+    EXPECT_FALSE(table_exists("long_line"));
+}
+
+// A ragged row on the last line fails after earlier batches created and filled
+// the table, and that table is dropped.
+TEST_F(ObjectLoad, ARaggedLastRowDropsThePartiallyFilledTable) {
+    std::string csv = "id,value\n";
+    for (int row = 0; row < 25'000; ++row) {
+        csv += std::to_string(row) + "," + std::to_string(row * 2) + "\n";
+    }
+    csv += "25000\n";
+    put("ragged.csv", csv);
+    const auto handle = load("ragged.csv", "ragged");
+    ASSERT_TRUE(handle);
+    EXPECT_EQ(handle->result().error, "line 25002: 1 fields, but the header has 2 columns");
+    EXPECT_EQ(run_of(*handle)->status(), zetta::pipeline::RunStatus::Failed);
+    EXPECT_FALSE(table_exists("ragged"));
+}
+
+// An object over the limit fails before any row is read; the limit comes in
+// through the source (a 1 GiB fixture would be too heavy).
+TEST_F(ObjectLoad, AnObjectOverTheLimitFailsBeforeAnyRowIsRead) {
+    put("over.csv", "a,b\n1,2\n3,4\n");
+    const auto handle = load("over.csv", "over", Format::Csv, /*max_bytes=*/8);
+    ASSERT_TRUE(handle);
+    EXPECT_EQ(handle->result().error,
+              "the object is 12 bytes; a dataset loads from at most 8 bytes");
+    EXPECT_EQ(handle->result().rows, 0u);
+    EXPECT_FALSE(table_exists("over"));
+    EXPECT_FALSE(node.find_database("datasets"));
+}
+
+// The other refusals, each in its words, none leaving a table.
+TEST_F(ObjectLoad, RefusalsNameTheReasonAndLeaveNoTable) {
+    const auto missing = load("absent.csv", "absent");
+    ASSERT_TRUE(missing);
+    EXPECT_EQ(missing->result().error, "no object absent.csv in bucket loads");
+
+    put("header.csv", "a,b\n");
+    EXPECT_EQ(load("header.csv", "header")->result().error, "the object decoded to no rows");
+
+    put("bad.jsonl", "{\"a\":1}\n{nope}\n");
+    EXPECT_EQ(load("bad.jsonl", "bad", Format::Jsonl)->result().error, "invalid JSON on line 2");
+
+    put("unclosed.csv", "a,b\n1,\"2\n");
+    EXPECT_EQ(load("unclosed.csv", "unclosed")->result().error,
+              "line 2: a quoted field is not closed (a row must stay on one line)");
+
+    for (const char* table : {"absent", "header", "bad", "unclosed"}) {
+        EXPECT_FALSE(table_exists(table)) << table;
+    }
+}
+
+// A name taken while the object was read is refused when the first batch would
+// create the table, unless the caller asked for a rename.
+TEST_F(ObjectLoad, ATakenNameFailsUnlessRenameWasAsked) {
+    put("one.csv", "a\n1\n");
+    ASSERT_TRUE(load("one.csv", "taken")->result().ok());
+    const auto refused = load("one.csv", "taken");
+    EXPECT_EQ(refused->result().error, zetta::data::dataset_name_taken("taken", "datasets"));
+
+    zetta::data::ObjectDatasetSource source{"loads", "one.csv", Format::Csv};
+    source.rename_if_exists = true;
+    AddDatasetOptions options;
+    options.table_name = "taken";
+    auto renamed = zetta::data::AsyncObjectDatasetLoad::start(node, objects, source, options);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (!renamed->done() && std::chrono::steady_clock::now() < deadline) node.tick();
+    ASSERT_TRUE(renamed->result().ok()) << renamed->result().error;
+    EXPECT_EQ(renamed->result().table->name(), "taken_2");
+    EXPECT_EQ(run_of(*renamed)->logs().back().message,
+              "loaded 1 rows into datasets.taken_2 in " +
+                  std::to_string(renamed->result().partitions.size()) +
+                  " partitions (asked for taken; that name was taken)");
 }
 
 }  // namespace

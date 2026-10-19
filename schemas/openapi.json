@@ -27277,6 +27277,160 @@
         ]
       }
     },
+    "/v1/load_dataset_object": {
+      "post": {
+        "description": "Load a csv or jsonl object already in a bucket (uploaded a chunk at a time with PATCH /v1/objects/<bucket>/<key>) into a new partitioned table placed across the cluster - the path for a file larger than upload_dataset's 16 MiB, up to 1 GiB. Returns a run id at once and loads in the background: poll get_run until succeeded (the dataset is the run's output) or failed (the log says why, and no table is left). Needs objects:read on the bucket; remove_object removes the object afterwards. Audited as dataset_added. (#1302) Requires orchestration:add_dataset. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "load_dataset_object",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "description": "the bucket holding the object (create_bucket); the caller needs objects:read on it",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "database": {
+                    "description": "target database, created if absent (default datasets); named by the same rule as table_name",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "format": {
+                    "description": "how the object is laid out: csv (a header row, then one row per line with as many fields as the header, cells type-inferred) or jsonl (one JSON object per line)",
+                    "enum": [
+                      "csv",
+                      "jsonl"
+                    ],
+                    "type": "string"
+                  },
+                  "if_exists": {
+                    "description": "what to do when table_name is taken: fail (the default) refuses with conflict; rename saves under the next free name (_2, _3, ...) and the run's final log entry names the one asked for",
+                    "enum": [
+                      "fail",
+                      "rename"
+                    ],
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "the object's key: a plain (unsealed) csv or jsonl file, typically uploaded a chunk at a time with PATCH /v1/objects/<bucket>/<key>?offset=<n>. At most 1 GiB (1073741824 bytes), no line longer than 16 MiB",
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "remove_object": {
+                    "description": "remove the object once the load has finished, whether it succeeded or failed (default false)",
+                    "type": "boolean"
+                  },
+                  "replication_factor": {
+                    "description": "owners per partition (default 3, clamped to the node count)",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "table_name": {
+                    "description": "the new table's name: a letter or underscore, then letters, digits and underscores, at most 63 characters, not a SQL keyword. A name already taken in the database is refused (conflict) unless if_exists is rename",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bucket",
+                  "key",
+                  "format",
+                  "table_name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "poll": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "description": "the load's run: poll get_run / system.runs",
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "run_id",
+                        "status",
+                        "poll"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Load a dataset from a stored object",
+        "tags": [
+          "job"
+        ]
+      }
+    },
     "/v1/log_run_artifact": {
       "post": {
         "description": "Append typed JSON chart data to a Run; this mutates the replicated Run. Requires orchestration:log_run_artifact.",
@@ -42149,7 +42303,7 @@
     },
     "/v1/upload_dataset": {
       "post": {
-        "description": "Load a csv or jsonl file's TEXT, sent in the request, into a new partitioned table placed across the cluster - for a caller that cannot put a file on the node (add_dataset reads the node's filesystem). Same parsing, table creation and placement as add_dataset; at most 16 MiB of content. Audited as dataset_added; the table then appears in list_datasets / system.datasets and can be passed to run as dataset_path <database>.<table>. (#1008) Requires orchestration:add_dataset.",
+        "description": "Load a csv or jsonl file's TEXT, sent in the request, into a new partitioned table placed across the cluster - for a caller that cannot put a file on the node (add_dataset reads the node's filesystem). Same parsing, table creation and placement as add_dataset; at most 16 MiB of content (a larger file goes to a bucket and loads with load_dataset_object). Audited as dataset_added; the table then appears in list_datasets / system.datasets and can be passed to run as dataset_path <database>.<table>. (#1008) Requires orchestration:add_dataset.",
         "operationId": "upload_dataset",
         "requestBody": {
           "content": {
@@ -42158,7 +42312,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "content": {
-                    "description": "the file's text, verbatim. At most 16 MiB (16777216 bytes of UTF-8); larger data belongs in a file on the node (add_dataset) or a source connection (create_dataset_from_query)",
+                    "description": "the file's text, verbatim. At most 16 MiB (16777216 bytes of UTF-8); upload a larger file to a bucket (PATCH /v1/objects/<bucket>/<key>, a chunk at a time) and load it with load_dataset_object",
                     "minLength": 1,
                     "type": "string"
                   },

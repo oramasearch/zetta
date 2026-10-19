@@ -37,7 +37,7 @@ partitioned and non-empty — writes the table through the
 across the cluster. **Non-throwing**: any failure (an unsupported extension, an
 unreadable / empty / malformed file, a partition-write error) returns an
 `AddDatasetResult` whose `error` says why, instead of throwing across the
-zetta-core seam.
+zetta-core boundary.
 
 ### Formats (`dataset_file::Format`)
 
@@ -76,9 +76,9 @@ carry no row.
 
 **A CSV that would not load row for row is refused, naming its 1-based line
 (#1221)** — it used to be padded with nulls or cut short without a word. The
-decoder (`scan_csv`, shared by the file, async and upload paths) and the pure check
-`zetta::data::csv_problem(content)` refuse, in the same words lake uses (lake PR
-#459):
+decoder (`DatasetLineDecoder`, shared by the file, async, upload and object-load
+paths) and the pure check `zetta::data::csv_problem(content)` refuse, in the same
+words lake uses (lake PR #459):
 
 | Problem | Error |
 |---|---|
@@ -237,9 +237,11 @@ a dataset from a file may add the same rows from a request) and audited as
 be given to `run` as `dataset_path: "<database>.<table>"` ([dataset-path.md](dataset-path.md)).
 
 **The cap is 16 MiB of content, and it is a refusal, not a truncation.** Over it the
-call answers `invalid_input` (400) naming the cap and pointing at the paths built for
-bigger data — a file on the node (`add_dataset`) or a source connection
-(`create_dataset_from_query`), both of which land data partition by partition. The
+call answers `invalid_input` (400) naming the cap and pointing at the path built for
+bigger files: upload them to a bucket a chunk at a time and load them with
+[`load_dataset_object`](#load-from-a-stored-object-1302) (below). A file on the node
+(`add_dataset`) or a source connection (`create_dataset_from_query`) also lands larger
+data. The
 whole text is held in memory and decoded on the owner loop, so the cap bounds both the
 request and the stall. To let a capped upload through at all, the HTTP server's
 request-body limit was raised from the parser's 64 KiB default to
@@ -276,6 +278,163 @@ type inference and quoted cells match the file path, the audit, the conflict and
 (`RefusesRaggedCsvNamingTheLine`, `DatasetNameProblemMatchesLake`,
 `RecordsTheSourceFormatOnTheTable`) and `tests/api/test_rest_server.cpp`
 (`UploadDatasetOverRestAcceptsALargeBody`: ~1 MiB over loopback HTTP).
+
+## Load from a stored object (#1302)
+
+`upload_dataset` carries the file in the request, so it stops at 16 MiB. A larger file
+goes in two steps: the caller uploads its bytes to a bucket of the
+[object capability](object-store.md) a chunk at a time, with
+`PATCH /v1/objects/<bucket>/<key>?offset=<n>` (resumable: a resent chunk is accepted
+unchanged), then calls **`load_dataset_object`** with the bucket and key. No other
+append API exists for datasets: the object store already orders appends at exact
+offsets and is replicated, so a chunk may land on any node behind one endpoint.
+
+The object must be a plain csv or jsonl file. Lake seals its drive files with a key
+Zetta never holds, so it copies the plaintext into a staging object first
+([lake#846](https://github.com/oramasearch/lake/issues/846)).
+
+`load_dataset_object` is a **job** (REST `POST /v1/load_dataset_object`, the MCP tool of
+the same name): it answers at once with a run, and the load runs in the background.
+
+| Input | | |
+|---|---|---|
+| `bucket` | string, required | the bucket holding the object (`valid_bucket_name`) |
+| `key` | string, required | the object's key (`valid_object_key`) |
+| `format` | `"csv"` \| `"jsonl"`, required | how the object is laid out, as for `upload_dataset` |
+| `table_name` | string, required | the new table's name, by `upload_dataset`'s rule |
+| `if_exists` | `"fail"` (default) \| `"rename"` | as for `upload_dataset`; with `rename` the run's final log entry names the name asked for |
+| `database` | string | default `datasets`, by the same rule |
+| `replication_factor` | integer ≥ 1 | owners per partition (default 3, clamped to the node count) |
+| `remove_object` | boolean | default false; when true the job removes the object once the run has finished, whether it succeeded or failed |
+
+```json
+{"run_id": "9d1c…", "status": "running",
+ "poll": "get_run until status is succeeded or failed; the dataset is the run's output"}
+```
+
+It is authorized like `upload_dataset` (`orchestration:add_dataset`), and the handler
+also asks for **`objects:read` on the bucket** (`authorize_object_route`, the check
+`GET /v1/objects/<bucket>/<key>` makes), so a load cannot read a bucket its caller
+could not read directly. These refusals answer at once and create nothing:
+
+| Case | Code | Path |
+|---|---|---|
+| a field fails its rule | `invalid_input` | `/<field>` |
+| the caller lacks `objects:read` on the bucket | `unauthorized` | — |
+| no such bucket | `not_found` | `/bucket` |
+| `table_name` taken and `if_exists` is `fail` | `conflict` (`upload_dataset`'s words) | `/table_name` |
+| no background action owner in this embedding | `engine_error` | — |
+
+Whether the object exists, and its size, are checked in the job: opening a read can
+wait on a peer, and the handler runs on the owner loop.
+
+### The run
+
+The engine entry point is `AsyncObjectDatasetLoad` (`add_dataset.hpp`), modelled on
+`AsyncDatasetAdd`'s worker/owner split. `start()` creates the run (project label
+`datasets`, graph label `load_dataset_object`) and sets it `Running`; poll it with
+`get_run {run_id}`.
+
+1. **Read and decode, on a runtime worker** (`runtime::spawn`, adopted by the API's
+   `BackgroundActions`). `ObjectStore::open_read` resolves the whole object, its size
+   is checked, and `ObjectReader::read` reads it `ObjectStore::kSliceBytes` (4 MiB) at
+   a time. Lines are cut on `\n`, the partial last line of each slice carried into the
+   next, and each line goes to a `DatasetLineDecoder`.
+2. **Materialize, on the owner thread.** Every 10,000 rows, and at the end, the worker
+   hands the batch over with `Node::run_on_owner` and waits for it to land before it
+   reads further. The first batch creates the table.
+3. **Partition and finish, on the owner thread:** `partition_target_table` (planned by
+   the object's size, `AddDatasetOptions::approx_bytes`), the `dataset_added` audit
+   event, and the run's output and status.
+
+Memory beyond the table is one slice, one carry-over line and one batch. Every
+object-store call (`open_read`, `read`, `remove`) runs on the worker, so the owner
+loop never waits on the store.
+
+**The table is partition-only** (#833, `Table::partition_only`): its rows are never
+captured into the replicated document; they live in the partition bodies on their
+owners (`replication_factor` copies), and a `SELECT` over the table is scatter-gather.
+Capturing them row by row, as `upload_dataset` does, made a 67 MiB CSV (1.4 million
+rows, one node) take 126 s, add 5.8 GB of node memory and stall the owner loop for
+8.5 s; partition-only took 41 s, 1.7 GB and 2.7 s.
+
+The log gets one `info` entry when the read starts
+(`loading <bucket>/<key>: <size> bytes as <format>`), one for each further 64 MiB read
+(`read 128 MiB of 512 MiB, 1,204,331 rows`) and none more often, because runs are
+replicated.
+
+- **Success:** status `succeeded`, one output
+  `{kind: "dataset", name: "<table>", ref: "<database>.<table>"}`, and a final entry
+  `loaded <rows> rows into <database>.<table> in <n> partitions`, with
+  ` (asked for <table_name>; that name was taken)` appended after a rename.
+- **Failure:** status `failed`, an `error` entry with the reason, and no table: one the
+  job created is dropped. The reasons:
+
+| Reason | Error |
+|---|---|
+| no object at the key | `no object <key> in bucket <bucket>` |
+| over the size limit | `the object is <n> bytes; a dataset loads from at most 1073741824 bytes` |
+| a zero-byte object | `the object is empty` |
+| a CSV refusal | as the table above, with its line: `line 3: 3 fields, but the header has 2 columns`, … |
+| a JSONL line that does not parse | `invalid JSON on line <n>` |
+| a line over the line limit | `line <n> is longer than 16 MiB` |
+| a csv header and no rows, or a jsonl object of blank lines | `the object decoded to no rows` |
+| a slice read failing (I/O, or a peer that lost the version) | `reading the object failed at byte <offset>` |
+| the partition write | `partition: …`, as `partition_target_table` reports it |
+| the name taken while the object was read (`if_exists: "fail"`) | `upload_dataset`'s conflict message |
+| the API server stopped before the load finished | `the load was stopped before it finished` |
+
+With `remove_object`, `ObjectStore::remove` runs after the run reaches either terminal
+status; a failed removal (a fenced bucket, say) adds a `warn` entry and leaves the
+status alone.
+
+### Limits
+
+```cpp
+inline constexpr std::uint64_t kMaxDatasetObjectBytes = std::uint64_t{1} << 30;  // 1 GiB
+inline constexpr std::size_t kMaxDatasetLineBytes = kMaxDatasetContentBytes;     // 16 MiB
+```
+
+The decoded rows are held in the table in memory until they are partitioned, so the
+object limit bounds node memory; a partition-at-a-time write would lift it. The line
+limit stops a file with no newline from growing the carry-over without bound.
+`ObjectDatasetSource::max_bytes` lowers the object limit for a test.
+
+### Example
+
+```sh
+# A bucket for staged loads.
+curl -X POST "$ZETTA/v1/create_bucket" -H "Authorization: Bearer $TOKEN" \
+  -d '{"bucket":"lake_dataset_loads"}'
+
+# The CSV in two chunks, each at the offset where the previous one ended.
+split -b 8m accounts.csv part.
+curl -X PATCH "$ZETTA/v1/objects/lake_dataset_loads/l/accounts?offset=0" \
+  -H "Authorization: Bearer $TOKEN" --data-binary @part.aa
+curl -X PATCH "$ZETTA/v1/objects/lake_dataset_loads/l/accounts?offset=$(wc -c < part.aa | tr -d ' ')" \
+  -H "Authorization: Bearer $TOKEN" --data-binary @part.ab
+
+# Load it, removing the staged object afterwards.
+curl -X POST "$ZETTA/v1/load_dataset_object" -H "Authorization: Bearer $TOKEN" \
+  -d '{"bucket":"lake_dataset_loads","key":"l/accounts","format":"csv",
+       "table_name":"accounts","remove_object":true}'
+# → {"value":{"run_id":"9d1c…","status":"running","poll":"get_run until …"}}
+
+# Poll until status is succeeded (or failed, with the reason in logs).
+curl "$ZETTA/v1/get_run?run_id=9d1c…" -H "Authorization: Bearer $TOKEN"
+# → {"value":{"status":"succeeded",
+#             "outputs":[{"kind":"dataset","name":"accounts","ref":"datasets.accounts"}],
+#             "logs":[…,{"level":"info","message":"loaded 1405770 rows into datasets.accounts in 2 partitions"}]}}
+```
+
+Tests: `tests/data/test_add_dataset.cpp` (`DatasetLineDecoder.*`: the decoder gives the
+whole-text decoders' rows and refusals; `ObjectLoad.*`: a 9 MiB CSV whose lines
+straddle slice boundaries, CRLF and blank lines and an unterminated last line, the
+line limit, a ragged last row after a landed batch, the object limit, every other
+refusal, the rename) and `tests/api/test_object_routes.cpp` (`LoadDatasetObject*`: a
+20 MiB CSV PATCHed in 8 MiB chunks loads end to end over REST and `list_datasets` and
+`SELECT count(*)` agree, the synchronous refusals, `if_exists: "rename"`,
+`remove_object` after success and failure, and the `objects:read` check).
 
 ## The headed affordance
 
@@ -339,6 +498,7 @@ catalog entries.
   (Parquet-only, IR-driven); this is the GUI, file-picker, all-formats counterpart.
 
 Natural next slices: a partition-count / replication-factor control in the UI,
-streaming large files rather than reading them whole, a Hub-name resolver behind the
+streaming a file on the node the way `load_dataset_object` streams an object, a
+partition-at-a-time write that lifts the 1 GiB object limit, a Hub-name resolver behind the
 `datasets`-shim extension point. The original import format is now retained as
 `source_format` (#1221).

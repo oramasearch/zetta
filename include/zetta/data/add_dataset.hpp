@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <string_view>
 #include <vector>
 
@@ -20,6 +21,7 @@ namespace zetta { class Node; }
 namespace zetta::data {
 
 class Database;
+class ObjectStore;
 class Table;
 class DatasetPartition;
 
@@ -209,13 +211,65 @@ std::string dataset_name_problem(std::string_view name);
 // exactly these, so a ragged row is never padded with nulls or cut short.
 std::string csv_problem(std::string_view content);
 
+// The refusal a load gives when `table` is already taken in `database` and the
+// caller did not ask for a rename (`if_exists: "rename"`). `upload_dataset` and
+// `load_dataset_object` give it in the same words.
+std::string dataset_name_taken(std::string_view table, std::string_view database);
+
 // The most file text `add_dataset_content` accepts: 16 MiB. The upload path
 // (`upload_dataset`, #1008) holds the whole text in the request and then in
 // memory while it decodes, on the owner loop, so the cap bounds both the request
-// and the owner-loop stall. Larger data belongs in a file on the node
-// (`add_dataset`) or a source connection (`create_dataset_from_query`), both of
-// which land it partition by partition.
+// and the owner-loop stall. Larger files are uploaded to a bucket and loaded
+// with `load_dataset_object` (#1302), which streams them; a file on the node
+// (`add_dataset`) or a source connection (`create_dataset_from_query`) also
+// lands larger data.
 inline constexpr std::size_t kMaxDatasetContentBytes = std::size_t{16} * 1024 * 1024;
+
+// The most bytes `load_dataset_object` loads (#1302). The decoded rows are held
+// in the table in memory until they are partitioned, so this bounds node memory;
+// a partition-at-a-time write would lift it.
+inline constexpr std::uint64_t kMaxDatasetObjectBytes = std::uint64_t{1} << 30;  // 1 GiB
+
+// The longest line a streaming load accepts, so a file with no newline cannot
+// grow the carry-over without bound.
+inline constexpr std::size_t kMaxDatasetLineBytes = kMaxDatasetContentBytes;  // 16 MiB
+
+// Decodes a CSV or JSONL text one line at a time, keeping the header and the
+// 1-based line number between calls (#1302). `upload_dataset`,
+// `add_dataset_file` and `load_dataset_object` all decode through it, so all
+// three refuse the same lines in the same words. A CSV row never spans lines
+// (a quoted field left open at the end of its line is refused), so decoding a
+// line at a time is exact. After a refusal the decoder stays refused.
+class DatasetLineDecoder {
+public:
+    explicit DatasetLineDecoder(dataset_file::Format format);  // Csv or Jsonl only
+    // Decode one line (without its '\n'; a trailing '\r' is dropped here).
+    // Appends the row it holds, if any, to `rows`. False on a refusal; error()
+    // says why, naming the line.
+    bool line(std::string_view text, std::vector<nlohmann::json>& rows);
+    // `line` without building the row: the same refusals, for a caller that
+    // only checks the text (`csv_problem`).
+    bool check(std::string_view text);
+    // Call after the last line. False when the text had no header (CSV).
+    bool finish();
+    const std::string& error() const { return error_; }
+    std::size_t lines() const { return lines_; }
+    // The source's column order so far (#1021): the CSV header, or the keys of
+    // the JSONL rows in the order each is first written.
+    const std::vector<std::string>& columns() const { return columns_; }
+
+private:
+    bool decode(std::string_view text, std::vector<nlohmann::json>* rows);
+    bool refuse(std::string reason);
+
+    dataset_file::Format format_;
+    std::vector<std::string> header_;
+    bool header_seen_ = false;
+    std::size_t lines_ = 0;
+    std::string error_;
+    std::vector<std::string> columns_;
+    std::unordered_set<std::string> seen_;
+};
 
 // Load a file's TEXT, already in memory, as a new partitioned table on `node` —
 // the path for a caller that cannot put a file on the node's filesystem (a
@@ -312,6 +366,89 @@ private:
     std::size_t rows_total_ = 0;
     std::size_t next_row_ = 0;  // rows materialized so far
     AddDatasetResult result_;
+};
+
+// --- Load a dataset from a stored object (#1302) ------------------------------
+//
+// What `load_dataset_object` loads: a plain (unsealed) CSV or JSONL object
+// already in a bucket of the object capability (docs/data/object-store.md),
+// typically staged there a chunk at a time through `PATCH /v1/objects/...`.
+struct ObjectDatasetSource {
+    std::string bucket;
+    std::string key;
+    dataset_file::Format format = dataset_file::Format::Csv;  // Csv or Jsonl
+    // When the base name is taken: false refuses with `dataset_name_taken`,
+    // true saves under the next free name (`_2`, `_3`, ...).
+    bool rename_if_exists = false;
+    // Remove the object once the run reaches a terminal status, either one.
+    bool remove_object = false;
+    // The most bytes the load accepts. Tests lower it to exercise the refusal
+    // without a 1 GiB fixture.
+    std::uint64_t max_bytes = kMaxDatasetObjectBytes;
+};
+
+// Load a CSV or JSONL object of `bucket` as a new partitioned table, streaming
+// it slice by slice. The job body of `load_dataset_object`, modelled on
+// AsyncDatasetAdd's worker/owner split:
+//
+//   1. **Read and decode** on a runtime worker (runtime::spawn): open the
+//      object, check its size, read it `ObjectStore::kSliceBytes` at a time,
+//      cut lines on '\n' (keeping the partial last line of each slice as a
+//      carry-over) and feed each to a DatasetLineDecoder.
+//   2. **Materialize** on the owner thread: every 10,000 rows (and at the end)
+//      the worker hands the batch over with Node::run_on_owner and waits for
+//      it to land before reading further. The first batch creates the table.
+//   3. **Partition and finish** on the owner thread: partition_target_table,
+//      the `dataset_added` audit event, the run's output and status.
+//
+// The table is created partition-only (#833, `Table::partition_only`): its rows
+// are never captured into the replicated document, the partition bodies on
+// their owners are the dataset, and a SELECT over it is scatter-gather. A large
+// file captured row by row costs several times the time and node memory.
+//
+// Memory beyond the table is one slice, one carry-over line and one batch.
+// Every object-store call (open_read, read, remove) runs on the worker, so the
+// owner loop never waits on the store.
+//
+// The durable handle is a Run created by start() on the owner thread (project
+// label `datasets`, graph label `load_dataset_object`) and set Running before
+// start() returns; get_run polls it. It logs one `info` entry when the read
+// starts and one per further 64 MiB read, and ends Succeeded with one
+// `dataset` output, or Failed with an `error` entry naming the reason and no
+// table left behind. With `remove_object` the object is removed after the
+// terminal status; a failed removal adds a `warn` entry.
+//
+// Threading: call start() and destroy the handle on the owner thread. The
+// destructor stops an unfinished load and drains the owner queue until the
+// worker has let go of the node (the AsyncCaseRun teardown discipline).
+class AsyncObjectDatasetLoad {
+public:
+    // Create the run and launch the worker. `options.members` should be the
+    // live membership (the caller is on the owner thread). Null only when the
+    // run could not be created. `objects` and `node` must outlive the handle.
+    static std::shared_ptr<AsyncObjectDatasetLoad> start(Node& node, ObjectStore& objects,
+                                                         ObjectDatasetSource source,
+                                                         AddDatasetOptions options);
+    ~AsyncObjectDatasetLoad();
+
+    AsyncObjectDatasetLoad(const AsyncObjectDatasetLoad&) = delete;
+    AsyncObjectDatasetLoad& operator=(const AsyncObjectDatasetLoad&) = delete;
+
+    // True once the worker has finished, the object removal included.
+    bool done() const;
+    const std::string& run_id() const { return run_id_; }
+    // The outcome (same shape as the synchronous add). Valid once done().
+    const AddDatasetResult& result() const;
+
+    // The state shared with the spawned worker (public so the worker coroutine,
+    // a free function in the implementation, can take it by value).
+    struct State;
+
+private:
+    AsyncObjectDatasetLoad() = default;
+
+    std::shared_ptr<State> state_;
+    std::string run_id_;
 };
 
 }  // namespace zetta::data
