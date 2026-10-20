@@ -897,15 +897,35 @@ private:
                 stmt.order_by.push_back(std::move(key));
             } while (accept_punct(','));
         }
-        // LIMIT n [OFFSET m] or OFFSET m [LIMIT n], as Postgres takes either order.
+        // LIMIT n [OFFSET m] or OFFSET m [LIMIT n], as Postgres takes either order,
+        // and the SQL-standard spelling `[OFFSET m {ROW|ROWS}] FETCH {FIRST|NEXT}
+        // [n] {ROW|ROWS} ONLY` (n defaults to 1). A statement says how many rows
+        // once: LIMIT and FETCH together are refused, as Postgres refuses them.
+        bool limit_seen = false;
+        bool offset_seen = false;
         for (int clause = 0; clause < 2; ++clause) {
-            if (!stmt.limit && accept_keyword("limit")) {
+            if (!limit_seen && accept_keyword("limit")) {
+                limit_seen = true;
                 if (accept_keyword("all")) continue;
                 stmt.limit = parse_count("LIMIT");
-            } else if (stmt.offset == 0 && accept_keyword("offset")) {
+            } else if (!offset_seen && accept_keyword("offset")) {
+                offset_seen = true;
                 stmt.offset = parse_count("OFFSET");
-                accept_keyword("rows");
+                if (!accept_keyword("rows")) accept_keyword("row");
+            } else if (!limit_seen && accept_keyword("fetch")) {
+                limit_seen = true;
+                if (!accept_keyword("first")) expect_keyword("next");
+                std::size_t count = 1;
+                if (peek().type == Tok::Num) count = parse_count("FETCH FIRST");
+                if (!accept_keyword("rows")) expect_keyword("row");
+                expect_keyword("only");
+                stmt.limit = count;
             }
+        }
+        if (peek().type == Tok::Ident &&
+            (iequals(peek().text, "limit") || iequals(peek().text, "fetch"))) {
+            throw ParseError{"the row count is given twice (use LIMIT or FETCH "
+                             "FIRST, once)"};
         }
 
         // Reconcile the select list with the GROUP BY into either a plain or an

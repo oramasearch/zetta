@@ -127,7 +127,8 @@ ReconcileBatch* batch_for_replication_key(
         key.starts_with(catalog::kTablePrefix) ||
         key.starts_with(catalog::kRowPrefix) ||
         key.starts_with(catalog::kLargeObjectPrefix) ||
-        key.starts_with(catalog::kManifestPrefix)) {
+        key.starts_with(catalog::kManifestPrefix) ||
+        key.starts_with(catalog::kColumnOrderPrefix)) {
         return &batches.data;
     }
     if (key.starts_with(catalog::kProjectPrefix)) {
@@ -246,23 +247,26 @@ ReplicationReconcileBatches make_reconcile_batches(
         }
     }
     include_experiment_assignments(batches.experiments, snapshot);
+    // A table's `tbl:`, `mfst:` and `cols:` keys reconcile together: a changed
+    // one brings the other two, so the table is in the batch and its manifest
+    // and column order are applied (or cleared) from the current document.
     for (const std::string& key : batches.data.keys) {
-        std::string related_key;
-        if (const std::string table_id =
-                catalog::id_after(key, catalog::kTablePrefix);
-            !table_id.empty()) {
-            related_key = catalog::manifest_key(table_id);
-        } else if (const std::string table_id =
-                       catalog::id_after(key, catalog::kManifestPrefix);
-                   !table_id.empty()) {
-            related_key = catalog::table_key(table_id);
+        std::string table_id = catalog::id_after(key, catalog::kTablePrefix);
+        if (table_id.empty()) table_id = catalog::id_after(key, catalog::kManifestPrefix);
+        if (table_id.empty()) {
+            table_id = catalog::id_after(key, catalog::kColumnOrderPrefix);
         }
-        if (related_key.empty() || batches.data.values.contains(related_key)) {
-            continue;
-        }
-        if (const auto value = snapshot.find(related_key);
-            value != snapshot.end()) {
-            batches.data.values[related_key] = *value;
+        if (table_id.empty()) continue;
+        for (const std::string& related_key :
+             {catalog::table_key(table_id), catalog::manifest_key(table_id),
+              catalog::column_order_key(table_id)}) {
+            if (related_key == key || batches.data.values.contains(related_key)) {
+                continue;
+            }
+            if (const auto value = snapshot.find(related_key);
+                value != snapshot.end()) {
+                batches.data.values[related_key] = *value;
+            }
         }
     }
     return batches;
@@ -530,11 +534,13 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
                 std::string(to_string(table->replication_strategy().kind()));
 
             // Schema: the union of each row's object keys in first-seen order — the
-            // engine is schemaless, so a dataset's schema is whatever its rows carry.
+            // engine is schemaless, so a dataset's schema is whatever its rows carry
+            // — typed by the values they hold (#1021).
             std::unordered_set<std::string> seen;
             const auto note_column = [&](const std::string& column) {
                 if (seen.insert(column).second) dataset.columns.push_back(column);
             };
+            zetta::data::ColumnProfile profile;
 
             // Row count + schema.
             //
@@ -548,8 +554,11 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
                     if (partition->table() != table->id()) continue;
                     const zetta::data::PartitionRowRange& range =
                         partition->row_range();
-                    if (range.end > range.start) dataset.rows += range.end - range.start;
+                    const std::uint64_t partition_rows =
+                        range.end > range.start ? range.end - range.start : 0;
+                    dataset.rows += partition_rows;
                     const nlohmann::json& stats = partition->stats();
+                    profile.add_partition_stats(stats, partition_rows);
                     if (!stats.is_object()) continue;
                     const auto columns = stats.find("columns");
                     if (columns == stats.end() || !columns->is_array()) continue;
@@ -561,12 +570,20 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
                 dataset.rows = store.size();
                 for (std::size_t i = 0; i < store.size(); ++i) {
                     const zetta::storage::ParquetLazyPtr row = store.at(i);
-                    if (!row || !row->is_object()) continue;
+                    if (!row) continue;
+                    profile.add_row(*row);
+                    if (!row->is_object()) continue;
                     for (auto field = row->begin(); field != row->end(); ++field) {
                         note_column(field.key());
                     }
                 }
             }
+            // The source's column order first, when the load recorded one
+            // (#1021); the keys the rows carry otherwise read back sorted.
+            dataset.column_order_recorded = !table->column_order().empty();
+            dataset.columns =
+                zetta::data::order_columns(table->column_order(), dataset.columns);
+            dataset.typed_columns = profile.columns(dataset.columns);
 
             // On-disk size: the JSONL row chunks under the table's folder (the row
             // data's storage footprint). A filesystem error leaves it at 0.
@@ -5230,6 +5247,12 @@ void Node::migrate_to_replication() {
                 replication_->set(catalog::manifest_key(table->id()),
                                   to_json(*table->partition_manifest()));
             }
+            // So does the source column order (#1021), for the same reason.
+            if (!table->column_order().empty() &&
+                !already_replicated(catalog::column_order_key(table->id()))) {
+                replication_->set(catalog::column_order_key(table->id()),
+                                  nlohmann::json{{"columns", table->column_order()}});
+            }
             // A partition-only table's rows are deliberately absent from the
             // document (#833) — migrating them in would undo exactly what the
             // marker exists to prevent.
@@ -5528,6 +5551,8 @@ void Node::reconcile_databases(
     std::map<std::string, RowEntry> rows;                     // id -> entry
     // Partition manifests (#837), keyed by the table they describe.
     std::map<std::string, zetta::data::DatasetManifestValue> manifests;
+    // Source column orders (#1021), keyed by the table they describe.
+    std::map<std::string, std::vector<std::string>> column_orders;
     struct LargeObjectEntry {
         std::string database_id;
         std::string name;
@@ -5572,6 +5597,22 @@ void Node::reconcile_databases(
             if (std::optional<zetta::data::DatasetManifestValue> parsed =
                     zetta::data::parse_dataset_manifest_value(value)) {
                 manifests.emplace(std::move(manifest_table), std::move(*parsed));
+            }
+        } else if (std::string order_table =
+                       catalog::id_after(key, catalog::kColumnOrderPrefix);
+                   !order_table.empty()) {
+            // `{columns: [name, …]}`; anything else is ignored at the boundary.
+            if (value.is_object()) {
+                const auto columns = value.find("columns");
+                if (columns != value.end() && columns->is_array()) {
+                    std::vector<std::string> names;
+                    for (const nlohmann::json& column : *columns) {
+                        if (column.is_string()) {
+                            names.push_back(column.get<std::string>());
+                        }
+                    }
+                    column_orders.emplace(std::move(order_table), std::move(names));
+                }
             }
         } else if (std::string lo_id =
                        catalog::id_after(key, catalog::kLargeObjectPrefix);
@@ -5655,6 +5696,11 @@ void Node::reconcile_databases(
             manifest == manifests.end()
                 ? std::nullopt
                 : std::optional<zetta::data::DatasetManifestValue>(manifest->second));
+        // The source column order (#1021), by the same rule.
+        const auto order = column_orders.find(table_id);
+        table->apply_column_order(order == column_orders.end()
+                                      ? std::vector<std::string>{}
+                                      : order->second);
     }
     for (auto& [id, entry] : rows) {
         auto db_table = [&]() -> std::shared_ptr<zetta::data::Table> {

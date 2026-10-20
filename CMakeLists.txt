@@ -668,6 +668,7 @@ add_library(zetta-core STATIC
   src/core/governance/policy.cpp
   src/core/solutions/audit_ledger.cpp
   src/core/data/table.cpp
+  src/core/data/dataset_columns.cpp
   src/core/data/partitioner.cpp
   src/core/data/partition_body.cpp
   src/core/storage/lazy_row.cpp

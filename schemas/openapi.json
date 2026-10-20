@@ -12405,7 +12405,7 @@
     },
     "/v1/get_dataset": {
       "get": {
-        "description": "Read one dataset's computed summary — schema, row count, size, format, replication, partition placement — by name (plus database when ambiguous). No side effects. Requires api:query.",
+        "description": "Read one dataset's computed summary — its columns in the source file's order with each one's type and null share, row count, size, format, replication, partition placement — by name (plus database when ambiguous). No side effects. Requires api:query.",
         "operationId": "get_dataset",
         "parameters": [
           {
@@ -12461,9 +12461,65 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "column_order": {
+                          "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
+                          "enum": [
+                            "source",
+                            "first_seen"
+                          ],
+                          "type": "string"
+                        },
                         "columns": {
+                          "description": "the dataset's columns, in the source's order when column_order is \"source\" (#1021), each with the JSON type its values share and the share of rows that hold null for it or omit it",
                           "items": {
-                            "type": "string"
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "null_fraction": {
+                                "description": "nulls (or missing cells) over rows; null when unknown (a partition-only dataset written before null counts were recorded) or when the caller may not read the column",
+                                "maximum": 1,
+                                "minimum": 0,
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "nullable": {
+                                "description": "null when the caller may not read the column",
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "type": {
+                                "description": "the JSON type the column's values share: integer widens to number when both occur, mixed when the values differ otherwise, \"null\" when every value is null, unknown for a partition written before types were recorded; JSON null when the caller may not read the column (sql:read)",
+                                "enum": [
+                                  "boolean",
+                                  "integer",
+                                  "number",
+                                  "string",
+                                  "object",
+                                  "array",
+                                  "null",
+                                  "mixed",
+                                  "unknown",
+                                  null
+                                ],
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "type",
+                              "nullable",
+                              "null_fraction"
+                            ],
+                            "type": "object"
                           },
                           "type": "array"
                         },
@@ -12550,6 +12606,7 @@
                         "rows",
                         "size_bytes",
                         "columns",
+                        "column_order",
                         "partitions",
                         "degraded",
                         "degraded_reason",
@@ -21361,7 +21418,16 @@
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "column_order": {
+                                "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
+                                "enum": [
+                                  "source",
+                                  "first_seen"
+                                ],
+                                "type": "string"
+                              },
                               "columns": {
+                                "description": "the column names, in the source's order when column_order is \"source\" (#1021)",
                                 "items": {
                                   "type": "string"
                                 },
@@ -21450,6 +21516,7 @@
                               "rows",
                               "size_bytes",
                               "columns",
+                              "column_order",
                               "partitions",
                               "degraded",
                               "degraded_reason",

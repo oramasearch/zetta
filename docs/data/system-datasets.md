@@ -37,7 +37,7 @@ database. The columns:
 | `replication` | the table's [replication strategy](replication-strategy.md) (`replicate_to_all` / `partitioned` / `partitioned_with_replicas`) |
 | `rows` | row count |
 | `size_bytes` | on-disk bytes of the row data (the JSONL chunks under the table folder) |
-| `columns` | the inferred schema — field names (comma-joined, first-seen order) |
+| `columns` | the inferred schema — field names, comma-joined, in the source's order when the load recorded one ([column-order.md](column-order.md), #1021), else first-seen order |
 | `column_count` | number of inferred columns |
 | `partitioned` | whether the dataset has any partition-catalog entries |
 | `partition_count` | how many partitions the catalog records for it |

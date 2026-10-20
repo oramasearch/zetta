@@ -85,6 +85,18 @@ struct PartitionScanRequest {
     std::string group_by;                     // the group key; empty = one group
     std::vector<ScanAggregate> aggregates;    // the aggregates, in select order
 
+    // **LIMIT pushdown** (#1021), non-aggregating scans only. `keep` is the most
+    // rows any one partition may return: the statement's `offset + limit`, since
+    // the global answer can need that many from a single partition and never
+    // more. With `order_by`, a partition sorts its surviving rows by those keys
+    // (the same stable order the coordinator uses) and keeps the first `keep`;
+    // without it, the first `keep` in row order. The coordinator still applies
+    // ORDER BY / OFFSET / LIMIT to the merged rows, which gives exactly the
+    // answer a full scan would: the global top `keep` of a stable sort is, per
+    // partition, a prefix of that partition's own stable sort.
+    std::vector<OrderKey> order_by;
+    std::optional<std::size_t> keep;
+
     // An aggregating scan returns per-group partials instead of rows: it has a
     // group key, an aggregate, or both. With aggregates and no key, the whole
     // scan is one group (`SELECT count(*) FROM t`, #1218).
@@ -167,6 +179,10 @@ struct SelectOutcome {
     bool table_columns_complete = false;
     std::uint64_t partitions_read = 0;
     std::uint64_t rows_scanned = 0;
+    // Rows the partitions sent back (non-aggregating scans): with a pushed-down
+    // LIMIT (#1021) at most `offset + limit` per partition, however many rows
+    // they scanned.
+    std::uint64_t rows_received = 0;
     std::vector<SelectContribution> contributions;
     std::string error;
 
@@ -205,6 +221,16 @@ private:
     std::unordered_map<std::string, std::size_t> index_;
     std::vector<GroupPartial> groups_;
 };
+
+// ORDER BY's comparison of two cells (-1, 0, 1): numbers before booleans before
+// strings before anything else, and NULL (or a missing cell) last, as Postgres
+// sorts ascending. One definition for the coordinator and every partition owner,
+// so a pushed-down top-N keeps exactly the rows the merged sort would.
+int compare_for_order(const nlohmann::json& left, const nlohmann::json& right);
+
+// Stable-sort `rows` by `keys` (each ascending unless `descending`).
+void sort_rows_for_order(std::vector<nlohmann::json>& rows,
+                         const std::vector<OrderKey>& keys);
 
 // The aggregates an aggregating SELECT computes, in select order.
 std::vector<ScanAggregate> scan_aggregates_of(const SelectStmt& statement);

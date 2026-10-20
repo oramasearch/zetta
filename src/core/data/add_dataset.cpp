@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -21,6 +22,7 @@
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/node.hpp"
+#include "zetta/parquet/metadata.hpp"
 #include "zetta/parquet/reader.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/data/partition_writer.hpp"
@@ -199,7 +201,8 @@ struct DecodeProgress {
 // is set and `rows` is cleared.
 void scan_csv(std::string_view bytes, std::string& error,
               std::vector<nlohmann::json>* rows,
-              const DecodeProgress& progress = {}) {
+              const DecodeProgress& progress = {},
+              std::vector<std::string>* columns = nullptr) {
     std::vector<std::string> header;
     bool header_seen = false;
     std::size_t number = 0;
@@ -237,6 +240,7 @@ void scan_csv(std::string_view bytes, std::string& error,
                 }
             }
             header = std::move(fields);
+            if (columns) *columns = header;  // the file's own order (#1021)
             continue;
         }
         if (fields.size() != header.size()) {
@@ -258,10 +262,32 @@ void scan_csv(std::string_view bytes, std::string& error,
 // Decode a CSV file's bytes into rows (see scan_csv for what is refused).
 std::vector<nlohmann::json> decode_csv(const std::string& bytes,
                                        std::string& error,
-                                       const DecodeProgress& progress = {}) {
+                                       const DecodeProgress& progress = {},
+                                       std::vector<std::string>* columns = nullptr) {
     std::vector<nlohmann::json> rows;
-    scan_csv(bytes, error, &rows, progress);
+    scan_csv(bytes, error, &rows, progress, columns);
     return rows;
+}
+
+// The order a JSON source writes its keys in (#1021). A parsed object reads its
+// keys back sorted, so when `row` brings a key not yet in `columns`, `text` (the
+// row's own JSON) is read again preserving order and its new keys are appended
+// in the order written. Usually only the first row is read twice.
+void note_key_order(const nlohmann::json& row, std::string_view text,
+                    std::vector<std::string>& columns,
+                    std::unordered_set<std::string>& seen) {
+    if (!row.is_object()) return;
+    bool fresh = false;
+    for (auto field = row.begin(); field != row.end() && !fresh; ++field) {
+        fresh = !seen.contains(field.key());
+    }
+    if (!fresh) return;
+    const nlohmann::ordered_json ordered =
+        nlohmann::ordered_json::parse(text, nullptr, /*allow_exceptions=*/false);
+    if (ordered.is_discarded() || !ordered.is_object()) return;
+    for (auto field = ordered.begin(); field != ordered.end(); ++field) {
+        if (seen.insert(field.key()).second) columns.push_back(field.key());
+    }
 }
 
 // Decode a JSON Lines file: one JSON document per line, blank lines skipped. A
@@ -269,8 +295,10 @@ std::vector<nlohmann::json> decode_csv(const std::string& bytes,
 // import_records).
 std::vector<nlohmann::json> decode_jsonl(const std::string& bytes,
                                          std::string& error,
-                                         const DecodeProgress& progress = {}) {
+                                         const DecodeProgress& progress = {},
+                                         std::vector<std::string>* columns = nullptr) {
     std::vector<nlohmann::json> rows;
+    std::unordered_set<std::string> seen;
     std::istringstream stream(bytes);
     std::string line;
     std::size_t line_number = 0;
@@ -288,6 +316,7 @@ std::vector<nlohmann::json> decode_jsonl(const std::string& bytes,
             error = "invalid JSON on line " + std::to_string(line_number);
             return {};
         }
+        if (columns) note_key_order(value, line, *columns, seen);
         rows.push_back(std::move(value));
         progress.count(rows.size());
     }
@@ -297,11 +326,29 @@ std::vector<nlohmann::json> decode_jsonl(const std::string& bytes,
 // Decode a JSON file: an array becomes one row per element, any other value a
 // single row. A parse error fails the load.
 std::vector<nlohmann::json> decode_json(const std::string& bytes,
-                                        std::string& error) {
+                                        std::string& error,
+                                        std::vector<std::string>* columns = nullptr) {
     auto value = nlohmann::json::parse(bytes, nullptr, /*allow_exceptions=*/false);
     if (value.is_discarded()) {
         error = "invalid JSON";
         return {};
+    }
+    // The key order the document writes (#1021): read once more, preserving it.
+    if (columns) {
+        const nlohmann::ordered_json ordered =
+            nlohmann::ordered_json::parse(bytes, nullptr, /*allow_exceptions=*/false);
+        std::unordered_set<std::string> seen;
+        const auto note = [&](const nlohmann::ordered_json& element) {
+            if (!element.is_object()) return;
+            for (auto field = element.begin(); field != element.end(); ++field) {
+                if (seen.insert(field.key()).second) columns->push_back(field.key());
+            }
+        };
+        if (ordered.is_array()) {
+            for (const nlohmann::ordered_json& element : ordered) note(element);
+        } else if (!ordered.is_discarded()) {
+            note(ordered);
+        }
     }
     std::vector<nlohmann::json> rows;
     if (value.is_array()) {
@@ -314,11 +361,21 @@ std::vector<nlohmann::json> decode_json(const std::string& bytes,
 
 // Decode a Parquet file with the native reader (no Apache Arrow / parquet-cpp).
 std::vector<nlohmann::json> decode_parquet(const std::string& bytes,
-                                           std::string& error) {
+                                           std::string& error,
+                                           std::vector<std::string>* columns = nullptr) {
     parquet::ParquetRowsResult parsed = parquet::read_parquet_rows(bytes);
     if (!parsed.ok()) {
         error = "parquet: " + parsed.error;
         return {};
+    }
+    // The file's schema order (#1021): its leaf columns, as the footer lists them.
+    if (columns) {
+        const parquet::ParquetMetadataResult metadata = parquet::parse_parquet_metadata(bytes);
+        if (metadata.ok()) {
+            for (const parquet::LeafColumn& leaf : metadata.metadata.leaf_columns()) {
+                columns->push_back(leaf.path);
+            }
+        }
     }
     return std::move(parsed.rows);
 }
@@ -360,15 +417,22 @@ std::string unique_table_name(const Database& database, std::string base) {
 // access). On failure `error` says why and {} is returned.
 std::vector<nlohmann::json> decode_dataset_file(
     const fs::path& path, dataset_file::Format format, std::string& error,
-    const DecodeProgress& progress = {}) {
+    const DecodeProgress& progress = {},
+    std::vector<std::string>* columns = nullptr) {
     const std::string bytes = read_file_bytes(path, error);
     if (!error.empty()) return {};
     std::vector<nlohmann::json> rows;
     switch (format) {
-        case dataset_file::Format::Parquet: rows = decode_parquet(bytes, error); break;
-        case dataset_file::Format::Jsonl:   rows = decode_jsonl(bytes, error, progress); break;
-        case dataset_file::Format::Json:    rows = decode_json(bytes, error); break;
-        case dataset_file::Format::Csv:     rows = decode_csv(bytes, error, progress); break;
+        case dataset_file::Format::Parquet:
+            rows = decode_parquet(bytes, error, columns);
+            break;
+        case dataset_file::Format::Jsonl:
+            rows = decode_jsonl(bytes, error, progress, columns);
+            break;
+        case dataset_file::Format::Json: rows = decode_json(bytes, error, columns); break;
+        case dataset_file::Format::Csv:
+            rows = decode_csv(bytes, error, progress, columns);
+            break;
         case dataset_file::Format::Unknown:
             error = "unsupported file type '" + path.extension().string() +
                     "' (add a parquet, jsonl, json, or csv file)";
@@ -389,7 +453,8 @@ std::vector<nlohmann::json> decode_dataset_file(
 // result.error.
 void create_named_target_table(Node& node, const std::string& base,
                                const AddDatasetOptions& options,
-                               AddDatasetResult& result) {
+                               AddDatasetResult& result,
+                               const std::vector<std::string>& decoded_columns = {}) {
     std::shared_ptr<Database> database = node.find_database(options.database);
     if (!database) database = node.create_database(options.database);
     if (!database) {
@@ -408,6 +473,8 @@ void create_named_target_table(Node& node, const std::string& base,
         result.error = "could not create table '" + table_name + "'";
         return;
     }
+    // The source's column order (#1021): the caller's, else the decoder's.
+    table->set_column_order(options.columns.empty() ? decoded_columns : options.columns);
     result.table = table;
 }
 
@@ -416,10 +483,11 @@ void create_named_target_table(Node& node, const std::string& base,
 // result.table; on failure sets result.error.
 void create_target_table(Node& node, const fs::path& path,
                          const AddDatasetOptions& options,
-                         AddDatasetResult& result) {
+                         AddDatasetResult& result,
+                         const std::vector<std::string>& decoded_columns = {}) {
     const std::string base =
         options.table_name.empty() ? derive_table_name(path) : options.table_name;
-    create_named_target_table(node, base, options, result);
+    create_named_target_table(node, base, options, result, decoded_columns);
 }
 
 // The serialized size of a table's rows, estimated from an evenly-spread sample
@@ -582,15 +650,16 @@ AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
                                : options.source_format;
 
     std::string error;
+    std::vector<std::string> columns;
     std::vector<nlohmann::json> rows =
-        decode_dataset_file(path, result.format, error);
+        decode_dataset_file(path, result.format, error, {}, &columns);
     if (!error.empty()) {
         result.error = error;
         return result;
     }
 
     // Materialize into a table on the node.
-    create_target_table(node, path, options, result);
+    create_target_table(node, path, options, result, columns);
     if (!result.table) return result;
 
     for (nlohmann::json& row : rows) result.table->add_row(std::move(row));
@@ -650,11 +719,12 @@ AddDatasetResult add_dataset_content(Node& node, std::string_view content,
     // bytes came from differs.
     const std::string bytes(content);
     std::string error;
+    std::vector<std::string> columns;
     std::vector<nlohmann::json> rows;
     switch (format) {
-        case dataset_file::Format::Csv:   rows = decode_csv(bytes, error); break;
-        case dataset_file::Format::Jsonl: rows = decode_jsonl(bytes, error); break;
-        case dataset_file::Format::Json:  rows = decode_json(bytes, error); break;
+        case dataset_file::Format::Csv:   rows = decode_csv(bytes, error, {}, &columns); break;
+        case dataset_file::Format::Jsonl: rows = decode_jsonl(bytes, error, {}, &columns); break;
+        case dataset_file::Format::Json:  rows = decode_json(bytes, error, &columns); break;
         case dataset_file::Format::Parquet:
         case dataset_file::Format::Unknown:
             error = std::string("format '") + dataset_file::format_name(format) +
@@ -672,7 +742,7 @@ AddDatasetResult add_dataset_content(Node& node, std::string_view content,
 
     const std::string base =
         options.table_name.empty() ? "dataset" : options.table_name;
-    create_named_target_table(node, base, options, result);
+    create_named_target_table(node, base, options, result, columns);
     if (!result.table) return result;
 
     for (nlohmann::json& row : rows) result.table->add_row(std::move(row));
@@ -695,6 +765,7 @@ struct AsyncDatasetAdd::DecodeState {
     std::atomic<bool> cancel{false};
     std::atomic<bool> finished{false};
     std::vector<nlohmann::json> rows;  // written before `finished` flips
+    std::vector<std::string> columns;  // same: the source's column order (#1021)
     std::string error;                 // same
 };
 
@@ -706,8 +777,8 @@ namespace {
 zetta::runtime::task<> decode_dataset_task(
     std::shared_ptr<AsyncDatasetAdd::DecodeState> state) {
     DecodeProgress progress{&state->rows_decoded, &state->cancel};
-    state->rows =
-        decode_dataset_file(state->path, state->format, state->error, progress);
+    state->rows = decode_dataset_file(state->path, state->format, state->error,
+                                      progress, &state->columns);
     co_return;
 }
 
@@ -775,7 +846,8 @@ void AsyncDatasetAdd::pump() {
                 return;
             }
             rows_total_ = decode_->rows.size();
-            create_target_table(node_, decode_->path, options_, result_);
+            create_target_table(node_, decode_->path, options_, result_,
+                                decode_->columns);
             if (!result_.table) {
                 phase_ = Phase::Done;
                 return;

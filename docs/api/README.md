@@ -161,7 +161,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_roi_readout` | read | api:query | one solution's versioned correctness certificate, aggregate treated-minus-holdout incrementality with confidence intervals, customer-supplied ROI, guardrails, agent operations, and redacted audit extract |
 | `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
 | `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
-| `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / storage + source format / replication / placement) by name or `database.table` (+ database when ambiguous) |
+| `get_dataset` | read | api:query | one dataset's computed summary (typed columns `[{name, type, nullable, null_fraction}]` in source order + `column_order` / rows / size / storage + source format / replication / placement) by name or `database.table` (+ database when ambiguous) |
 | `get_policy` | read | api:query | one decision policy's current config and immutable version history |
 | `analyze_dataset` | read | api:query | sample a landed dataset and report semantic types with evidence, column statistics, grain, candidate keys, join candidates, and leakage candidates |
 | `plan_features` | read | api:query | return a methodology-specific feature/exclusion plan, or a named `transform_required` correction that is never applied automatically |
@@ -268,7 +268,11 @@ stripped before schema validation).
 schema validated (the CRDT value / on-disk projection) — with the `id` added;
 `get_dataset` / `list_datasets` return the computed `DatasetSummary` with the
 schema and partition placement kept structured (the SQL view flattens them for
-tabular reading). Every handler is a thin caller of the same live engine
+tabular reading). `list_datasets` gives each dataset's `columns` as names;
+`get_dataset` gives them typed, `[{name, type, nullable, null_fraction}]`, with
+the last three null for a column the caller may not read (`sql:read`). Both
+list them in the source's order and say whether one was recorded
+(`column_order`: `source` / `first_seen`) — [column-order.md](../data/column-order.md), #1021. Every handler is a thin caller of the same live engine
 source its `system.*` view computes from (`Node::…()`), so MCP, SQL, and the
 GUI cannot drift (RULE-7). Arbitrary reads beyond these go through `sql`.
 

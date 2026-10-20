@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <set>
 #include <string>
@@ -21,6 +22,7 @@
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/node.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/parquet/metadata.hpp"
 
 // #587 — the "Add dataset" engine backend behind the headed affordance. Read a
 // local parquet / jsonl / json / csv file and materialize it as a *partitioned*
@@ -298,6 +300,121 @@ TEST(AddDataset, RecordsTheSourceFormatOnTheTable) {
     ASSERT_NE(summary, nullptr);
     EXPECT_EQ(summary->source_format, "csv");
     restarted.stop();
+}
+
+// #1021: a dataset keeps its source's column order — the CSV header, the order
+// a JSON Lines or JSON source first writes each key — through get_dataset's
+// summary, SELECT *, the replicated document and a restart. Rows are stored as
+// JSON objects whose keys read back sorted, so before this every one of these
+// came back alphabetical.
+TEST(AddDataset, KeepsTheSourceColumnOrder) {
+    TempDir tmp;
+    std::string csv_table;
+    {
+        // Replicated, so the capture into the document is exercised too.
+        zetta::cluster::ReplicationManager replication{"node-a"};
+        Node node(config_for(tmp), &replication);
+        node.start();
+        const AddDatasetResult csv = add_dataset_file(
+            node, write_file(tmp.path(), "accounts.csv",
+                             "zeta,alpha,mid\n1,a,\n2,b,3.5\n3,c,4\n"));
+        ASSERT_TRUE(csv.ok()) << csv.error;
+        csv_table = csv.table->id();
+        EXPECT_EQ(csv.table->column_order(),
+                  (std::vector<std::string>{"zeta", "alpha", "mid"}));
+
+        const AddDatasetResult jsonl = zetta::data::add_dataset_content(
+            node, "{\"b\":1,\"a\":2}\n{\"c\":3,\"b\":4,\"a\":5}\n", Format::Jsonl,
+            {.table_name = "events"});
+        ASSERT_TRUE(jsonl.ok()) << jsonl.error;
+        EXPECT_EQ(jsonl.table->column_order(), (std::vector<std::string>{"b", "a", "c"}))
+            << "a later row's new key follows, in the order that row writes it";
+
+        const AddDatasetResult json = zetta::data::add_dataset_content(
+            node, "[{\"y\":1,\"x\":2},{\"x\":3,\"w\":4}]", Format::Json,
+            {.table_name = "points"});
+        ASSERT_TRUE(json.ok()) << json.error;
+        EXPECT_EQ(json.table->column_order(), (std::vector<std::string>{"y", "x", "w"}));
+
+        // A caller's order (a connector's SELECT list) wins over the decoder's.
+        const AddDatasetResult chosen = zetta::data::add_dataset_content(
+            node, "p,q\n1,2\n", Format::Csv,
+            {.table_name = "chosen", .columns = {"q", "p"}});
+        ASSERT_TRUE(chosen.ok()) << chosen.error;
+        EXPECT_EQ(chosen.table->column_order(), (std::vector<std::string>{"q", "p"}));
+
+        // In-memory rows hold no order of their own: nothing is recorded.
+        const AddDatasetResult rows = add_dataset_rows(
+            node, std::vector<nlohmann::json>{{{"z", 1}, {"a", 2}}}, {});
+        ASSERT_TRUE(rows.ok()) << rows.error;
+        EXPECT_TRUE(rows.table->column_order().empty());
+
+        const std::vector<DatasetSummary> datasets = node.datasets();
+        const DatasetSummary* summary = find_dataset(datasets, csv_table);
+        ASSERT_NE(summary, nullptr);
+        EXPECT_TRUE(summary->column_order_recorded);
+        EXPECT_EQ(summary->columns, (std::vector<std::string>{"zeta", "alpha", "mid"}));
+        ASSERT_EQ(summary->typed_columns.size(), 3u);
+        EXPECT_EQ(summary->typed_columns[0].type, "integer");
+        EXPECT_EQ(summary->typed_columns[1].type, "string");
+        EXPECT_EQ(summary->typed_columns[2].type, "number");
+        EXPECT_TRUE(summary->typed_columns[2].nullable);
+        ASSERT_TRUE(summary->typed_columns[2].null_fraction);
+        EXPECT_NEAR(*summary->typed_columns[2].null_fraction, 1.0 / 3.0, 1e-9);
+        const DatasetSummary* unordered = find_dataset(datasets, rows.table->id());
+        ASSERT_NE(unordered, nullptr);
+        EXPECT_FALSE(unordered->column_order_recorded);
+        EXPECT_EQ(unordered->columns, (std::vector<std::string>{"a", "z"}));
+
+        const nlohmann::json document = replication.snapshot();
+        const auto key = document.find("cols:" + csv_table);
+        ASSERT_NE(key, document.end()) << "the order is captured under cols:<table-id>";
+        EXPECT_EQ(key->at("columns"), nlohmann::json::array({"zeta", "alpha", "mid"}));
+        // A reconcile pass keeps it (the document is the source of truth).
+        node.tick();
+        EXPECT_EQ(csv.table->column_order(),
+                  (std::vector<std::string>{"zeta", "alpha", "mid"}));
+        // Dropping the table drops its order with it.
+        const std::string events_id = jsonl.table->id();
+        ASSERT_TRUE(jsonl.database->drop_table("events"));
+        EXPECT_FALSE(replication.snapshot().contains("cols:" + events_id));
+        node.stop();
+    }
+    // table.json carries it across a restart, into a fresh document.
+    zetta::cluster::ReplicationManager fresh{"node-a"};
+    Node restarted(config_for(tmp), &fresh);
+    restarted.start();
+    const std::vector<DatasetSummary> datasets = restarted.datasets();
+    const DatasetSummary* summary = find_dataset(datasets, csv_table);
+    ASSERT_NE(summary, nullptr);
+    EXPECT_EQ(summary->columns, (std::vector<std::string>{"zeta", "alpha", "mid"}));
+    EXPECT_TRUE(fresh.snapshot().contains("cols:" + csv_table))
+        << "migrated into the document on start";
+    restarted.tick();
+    const std::vector<DatasetSummary> after_tick = restarted.datasets();
+    const DatasetSummary* reconciled = find_dataset(after_tick, csv_table);
+    ASSERT_NE(reconciled, nullptr);
+    EXPECT_EQ(reconciled->columns, (std::vector<std::string>{"zeta", "alpha", "mid"}));
+    restarted.stop();
+}
+
+TEST(AddDataset, AParquetFileKeepsItsSchemaOrder) {
+    if (!fs::exists(saas_fixture_path())) GTEST_SKIP() << "parquet fixture missing";
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+    const AddDatasetResult result = add_dataset_file(node, saas_fixture_path());
+    ASSERT_TRUE(result.ok()) << result.error;
+    std::ifstream in(saas_fixture_path(), std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+    const auto metadata = zetta::parquet::parse_parquet_metadata(bytes);
+    ASSERT_TRUE(metadata.ok()) << metadata.error;
+    std::vector<std::string> schema_order;
+    for (const auto& leaf : metadata.metadata.leaf_columns()) schema_order.push_back(leaf.path);
+    ASSERT_FALSE(schema_order.empty());
+    EXPECT_EQ(result.table->column_order(), schema_order);
+    node.stop();
 }
 
 // =====================================================================
@@ -777,6 +894,27 @@ TEST(AddDataset, ReplicationFactorDefaultsToThreeClampedToTheNodeCount) {
     }
 
     node.stop();
+}
+
+// #1021: partition stats arrive through the replicated catalog, so a field of
+// the wrong shape is read as unknown, never thrown on (Node::datasets() would
+// otherwise fail every get_dataset and list_datasets).
+TEST(AddDataset, ColumnProfileReadsMalformedPartitionStatsWithoutThrowing) {
+    zetta::data::ColumnProfile profile;
+    EXPECT_NO_THROW(profile.add_partition_stats(
+        nlohmann::json{{"column_stats",
+                        {{{"name", "a"}, {"type", 7}, {"nulls", "two"}},
+                         {{"name", "b"}, {"type", "integer"}, {"nulls", -1}}}}},
+        4));
+    EXPECT_NO_THROW(profile.add_partition_stats(
+        nlohmann::json{{"schema", {{{"name", "c"}, {"type", nullptr}, {"optional", "yes"}}}}},
+        2));
+    std::vector<zetta::data::DatasetColumn> columns;
+    ASSERT_NO_THROW(columns = profile.columns({"a", "b", "c"}));
+    ASSERT_EQ(columns.size(), 3u);
+    EXPECT_EQ(columns[0].type, "null");
+    EXPECT_EQ(columns[1].type, "integer");
+    EXPECT_TRUE(columns[2].nullable);
 }
 
 }  // namespace

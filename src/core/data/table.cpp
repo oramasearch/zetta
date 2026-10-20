@@ -6,7 +6,9 @@
 
 #include "../catalog.hpp"
 
+#include <algorithm>
 #include <fstream>
+#include <unordered_set>
 #include <utility>
 
 namespace zetta::data {
@@ -97,6 +99,56 @@ void Table::apply_partition_manifest(std::optional<DatasetManifestValue> value) 
     persist_meta();  // projection only — no capture (no feedback loop)
 }
 
+namespace {
+
+// Drop repeated names (the first place wins) and empty ones.
+std::vector<std::string> distinct_columns(std::vector<std::string> columns) {
+    std::vector<std::string> kept;
+    kept.reserve(columns.size());
+    for (std::string& column : columns) {
+        if (column.empty()) continue;
+        if (std::find(kept.begin(), kept.end(), column) != kept.end()) continue;
+        kept.push_back(std::move(column));
+    }
+    return kept;
+}
+
+}  // namespace
+
+void Table::set_column_order(std::vector<std::string> columns) {
+    columns = distinct_columns(std::move(columns));
+    if (columns.empty()) return;
+    // CRDT first (the source of truth), then the projection, as the manifest.
+    if (replication_) {
+        replication_->set(catalog::column_order_key(id_),
+                          nlohmann::json{{"columns", columns}});
+    }
+    column_order_ = std::move(columns);
+    persist_meta();
+}
+
+void Table::apply_column_order(std::vector<std::string> columns) {
+    columns = distinct_columns(std::move(columns));
+    if (column_order_ == columns) return;
+    column_order_ = std::move(columns);
+    persist_meta();  // projection only — no capture (no feedback loop)
+}
+
+void Table::restore_column_order(std::vector<std::string> columns) {
+    column_order_ = distinct_columns(std::move(columns));
+}
+
+std::vector<std::string> order_columns(const std::vector<std::string>& recorded,
+                                       const std::vector<std::string>& seen) {
+    if (recorded.empty()) return seen;
+    std::vector<std::string> ordered = recorded;
+    std::unordered_set<std::string> named(recorded.begin(), recorded.end());
+    for (const std::string& column : seen) {
+        if (named.insert(column).second) ordered.push_back(column);
+    }
+    return ordered;
+}
+
 void Table::set_partitioner(std::shared_ptr<Partitioner> partitioner) {
     partitioner_ = std::move(partitioner);
 }
@@ -118,6 +170,8 @@ void Table::persist_meta() const {
     if (partition_manifest_) {
         meta["manifest"] = to_json(*partition_manifest_);
     }
+    // The source's column order (#1021); omitted when none was recorded.
+    if (!column_order_.empty()) meta["column_order"] = column_order_;
     std::ofstream out(dir_ / "table.json", std::ios::trunc);
     out << meta.dump(2) << '\n';
 }

@@ -49,13 +49,18 @@ SELECT sku, qty FROM shop.items WHERE qty >= 3;
 Values: single-quoted strings (`''` escapes a quote), integers, decimals,
 optional leading `-`, `true` / `false` / `null`.
 
-### Ordering and paging (ORDER BY, LIMIT, OFFSET)
+### Ordering and paging (ORDER BY, LIMIT, OFFSET, FETCH FIRST)
 
 ```sql
 SELECT account, risk FROM churn.accounts ORDER BY risk DESC, account LIMIT 10;
 SELECT * FROM shop.items ORDER BY sku OFFSET 20 LIMIT 10;   -- either order; LIMIT ALL = none
 SELECT segment, COUNT(*) AS n FROM churn.events GROUP BY segment ORDER BY n DESC LIMIT 1;
+SELECT * FROM shop.items OFFSET 20 ROWS FETCH FIRST 10 ROWS ONLY;  -- the SQL-standard spelling
 ```
+
+`FETCH {FIRST | NEXT} [n] {ROW | ROWS} ONLY` is `LIMIT n` (n defaults to 1), and
+`OFFSET m` takes an optional `ROW` / `ROWS`. A statement gives its row count once:
+`LIMIT` and `FETCH` together are a parse error. `TOP n` is not accepted.
 
 They apply to the finished result of every path (a plain scan, a `GROUP BY`, a `system`
 table, a partition-only table scattered to its owners), in that order: sort, skip `OFFSET`,
@@ -63,8 +68,24 @@ keep `LIMIT`. An `ORDER BY` key names a column of the result — a selected colu
 `GROUP BY` key or an aggregate's alias (any column with `SELECT *`); another name is an
 error that says so. Numbers sort numerically, then booleans, then strings; `NULL` sorts
 last ascending and first descending, as in Postgres; ties keep the next key's order, then
-scan order. The whole result is still read before it is cut: `LIMIT` bounds what is
-returned, not what is scanned.
+scan order. An `ORDER BY` on a column the caller may not read (a column-scoped `sql:read`)
+is refused, as `WHERE` and `GROUP BY` on one are (#1021).
+
+**`LIMIT` is pushed down** (#1021) for a non-aggregating SELECT:
+
+- **Over a partition-only table** the coordinator asks each partition owner for at
+  most `offset + limit` rows per partition. With `ORDER BY`, each owner sorts its
+  surviving rows by the same keys and the same stable comparison, and keeps its
+  top `offset + limit`; without, its first ones in row order. The coordinator then
+  sorts, skips and cuts the merged rows exactly as before, so the answer is the
+  one a full scan would give (the global top N of a stable sort is, per partition,
+  a prefix of that partition's own sort). No more than `offset + limit` rows per
+  partition cross the wire. See [scatter-gather-select.md](scatter-gather-select.md).
+- **Over a replicated table** with no `ORDER BY`, rows past `offset + limit` are
+  not copied into the result. With `ORDER BY` every row is still read and sorted.
+- The scan still visits every row to learn the table's columns, so a misspelt
+  column is refused under any `LIMIT`. An aggregate is never cut at the scan
+  (`SELECT count(*) … LIMIT 1` counts every row).
 
 ### Aggregation (aggregates, GROUP BY)
 
@@ -119,9 +140,14 @@ use, so one query answers the same way on every path.
   is refused on it. Over a partition-only table the owners report the columns
   their rows carry, and the coordinator checks against their union.
 - `SELECT *` returns whole rows, and **`columns` names them**: every column the
-  table's rows carry — a row keeps its keys in name order, and a column first
-  seen in a later row comes after — filled even when `LIMIT` or the
-  `WHERE` leaves fewer rows (or none). `SELECT a, b` projects to those keys;
+  table's rows carry, **in the source's order** when the load recorded one (the
+  CSV header, the Parquet schema, a connector query's SELECT list, a `CREATE
+  TABLE` column list — [column-order.md](column-order.md), #1021), then any other
+  column. A table with no recorded order (loaded before #1021) keeps first-seen
+  order: a row keeps its keys in name order, and a column first seen in a later
+  row comes after. `columns` is filled even when `LIMIT` or the `WHERE` leaves
+  fewer rows (or none). The row objects themselves are JSON, whose keys read back
+  sorted; `columns` is the order to show them in. `SELECT a, b` projects to those keys;
   `columns` is always the result's column list, on every path.
 - `WHERE` supports a single `column <op> value` predicate, where `<op>` is one of
   `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`. Equality/inequality work over any value;
@@ -496,8 +522,8 @@ magnitude — ns, µs, ms, s, min, h, d, wk — e.g. `(523 ns)`, `(1.500 ms)`,
 `WHERE` is a single-column predicate (no `AND`/`OR`); `GROUP BY` takes exactly
 one key (no multi-key grouping or `HAVING`); `ORDER BY` takes result columns
 only (no expressions); no joins, `DISTINCT`, multi-table queries, or
-`CREATE TABLE AS`; column types are parsed but not stored or enforced, so an
-empty table has no known columns (`SELECT *` over it reports `columns: []`, and
+`CREATE TABLE AS`; `TOP n`; column types are parsed but not stored or enforced
+(the column list's order is kept), so an empty table has no known columns (`SELECT *` over it reports `columns: []`, and
 no column name is refused). `GROUP BY` or an aggregate over a table with a
 row-security policy is refused for a non-bypass caller. These land in the same
 AST and executor.
