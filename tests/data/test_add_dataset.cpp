@@ -1245,6 +1245,27 @@ TEST_F(ObjectLoad, CrlfBlankLinesAndAnUnterminatedLastLine) {
     EXPECT_EQ(jsonl->result().source_format, "jsonl");
 }
 
+// An object load keeps the source's column order like a file load (#1021): the
+// CSV header, and the JSONL keys in the order each is first written, a key that
+// first appears after the first batch included.
+TEST_F(ObjectLoad, KeepsTheSourceColumnOrder) {
+    put("order.csv", "zeta,alpha,mid\n1,a,\n2,b,3.5\n");
+    const auto csv = load("order.csv", "order_csv");
+    ASSERT_TRUE(csv && csv->result().ok()) << (csv ? csv->result().error : "");
+    EXPECT_EQ(csv->result().table->column_order(),
+              (std::vector<std::string>{"zeta", "alpha", "mid"}));
+
+    std::string jsonl;
+    for (int row = 0; row < 10'001; ++row) jsonl += "{\"b\":1,\"a\":2}\n";
+    jsonl += "{\"c\":3,\"b\":4,\"a\":5}\n";
+    put("order.jsonl", jsonl);
+    const auto events = load("order.jsonl", "order_jsonl", Format::Jsonl);
+    ASSERT_TRUE(events && events->result().ok()) << (events ? events->result().error : "");
+    EXPECT_EQ(events->result().table->column_order(),
+              (std::vector<std::string>{"b", "a", "c"}))
+        << "the key the last row brings, after the first batch landed, follows";
+}
+
 // A line past kMaxDatasetLineBytes is refused naming it. It comes after the
 // first batch, so the table exists by then, and it is dropped.
 TEST_F(ObjectLoad, ALineLongerThanTheLimitFailsAndDropsTheTable) {

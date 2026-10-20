@@ -998,6 +998,9 @@ struct AsyncObjectDatasetLoad::State {
     std::shared_ptr<zetta::pipeline::Run> run;  // touched on the owner thread only
     AddDatasetResult result;                     // written on the owner thread
     std::string table_id;  // the table the first batch created (owner thread)
+    // The source's column order the decoder has seen (#1021). Written by the
+    // worker before it hands a batch over, read on the owner thread meanwhile.
+    std::vector<std::string> columns;
     // The job span, parent of the phase spans (set by the worker first thing).
     zetta::observability::TraceContext trace;
     // Owner-thread time spent landing batches, for the materialize span.
@@ -1111,7 +1114,8 @@ std::string land_batch(LoadState& state, std::vector<nlohmann::json>& batch) {
                     return dataset_name_taken(options.table_name, options.database);
                 }
             }
-            create_named_target_table(state.node, options.table_name, options, result);
+            create_named_target_table(state.node, options.table_name, options, result,
+                                      state.columns);
             if (!result.table) return result.error;
             state.table_id = result.table->id();
             // delete_dataset refuses a table a running run reads (zetta#1258),
@@ -1173,7 +1177,10 @@ std::string read_object_rows(LoadState& state, zetta::observability::ScopedSpan&
         const std::size_t before = batch.size();
         if (!decoder.line(line, batch)) return decoder.error();
         rows += batch.size() - before;
-        if (batch.size() >= kRowsPerBatch) return land_batch(state, batch);
+        if (batch.size() >= kRowsPerBatch) {
+            state.columns = decoder.columns();
+            return land_batch(state, batch);
+        }
         return {};
     };
 
@@ -1227,6 +1234,7 @@ std::string read_object_rows(LoadState& state, zetta::observability::ScopedSpan&
         if (std::string failure = take_line(carry); !failure.empty()) return failure;
     }
     if (!decoder.finish()) return decoder.error();
+    state.columns = decoder.columns();
     if (!batch.empty()) {
         if (std::string failure = land_batch(state, batch); !failure.empty()) return failure;
     }
@@ -1257,6 +1265,9 @@ std::string settle_loaded(LoadState& state) {
     AddDatasetResult& result = state.result;
     const AddDatasetOptions& options = state.options;
     result.rows = result.table->row_count();
+    // A JSONL key first written after the first batch joins the order here
+    // (#1021); the caller's own order, when given, was set at create time.
+    if (options.columns.empty()) result.table->set_column_order(state.columns);
     {
         zetta::observability::ScopedSpan span(&state.node.span_recorder(), state.trace,
                                               "load_dataset_object:partition");
