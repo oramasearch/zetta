@@ -58,7 +58,8 @@ tag all exist and the cluster runs that image.
 7. **Move the pins**: zetta-bridge's pin of `modules/zetta` to the tag, then the umbrella's
    pointer, and refresh the `zetta-pin` build context lake builds against.
 
-`v0.4.0` is recorded on its page once the image is built.
+`v0.4.0` is `oramasearch/zetta:main-104e8a98`, also tagged `v0.4.0`
+(`sha256:73e613748c1d6114a31fd8c462b55a09109de1b7c73323042429cb8a8509e1a9`); it is not rolled yet.
 `v0.3.0` is `oramasearch/zetta:main-d7551c75`, also tagged `v0.3.0`
 (`sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a`); it is not rolled yet.
 `v0.2.0` is `oramasearch/zetta:main-4015ef76`, also tagged `v0.2.0`.
