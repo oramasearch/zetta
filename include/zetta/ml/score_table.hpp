@@ -7,6 +7,7 @@
 
 #include "zetta/compute/compute_device.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/ddf/data_frame.hpp"
 #include "zetta/ml/gbdt_score.hpp"
 #include "zetta/ml/model.hpp"
 
@@ -101,5 +102,43 @@ TableScoreResult score_rows(const Model& model, const std::vector<nlohmann::json
 // `feature_schema.features`. Empty when the model records none — which makes it
 // unscorable, and is reported as that rather than guessed around.
 std::vector<std::string> model_feature_columns(const Model& model);
+
+// --- categorical inputs (#1203) ------------------------------------------------
+//
+// A model trained on a table with text categories records the fitted one-hot
+// encodings in `feature_schema.categorical_encoding`. Every predict path (score,
+// explain, the served predict endpoint) applies THAT list to the rows it is given:
+// a row carries the original column (`plan: "pro"`), the model's encoded features
+// (`plan=pro`) are derived from it, and an unseen level encodes as all zeros.
+
+// The encodings `feature_schema` records; empty for a model trained on numeric
+// columns only, or when the record is malformed (reported by `error`).
+std::vector<data::CategoricalEncoding> model_categorical_encodings(
+    const nlohmann::json& feature_schema, std::string* error = nullptr);
+
+// The row contract predict reads, in the model's feature order: one entry per
+// input column, `{name, type: "number"}` for a numeric feature and
+// `{name, type: "string", encoding: "one_hot", levels, features, unseen}` for a
+// text category, named by its original column. Written to `feature_schema.inputs`.
+nlohmann::json model_input_contract(const nlohmann::json& feature_schema);
+
+// Write `encodings` (when any) to `feature_schema.categorical_encoding` and the row
+// contract to `feature_schema.inputs`. Every trainer that one-hot encodes text
+// categories calls it on the model it registers.
+nlohmann::json with_model_inputs(nlohmann::json feature_schema,
+                                 const std::vector<data::CategoricalEncoding>& encodings);
+
+// The names in model_input_contract(), in order: what an error says a row needs.
+std::vector<std::string> model_input_names(const Model& model);
+
+// Encode `row`'s categorical columns in place with the model's encodings. Returns
+// an empty string, or why the row cannot be encoded.
+std::string encode_model_row(const Model& model, nlohmann::json& row);
+
+// The frame column a table read projects for one of the model's features: a
+// Float64 read straight through, or a 0/1 indicator read from the original text
+// column when the feature is a categorical level.
+ddf::ColumnSchema model_feature_column_schema(
+    const std::string& feature, const std::vector<data::CategoricalEncoding>& encodings);
 
 }  // namespace zetta::ml

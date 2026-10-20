@@ -17,7 +17,7 @@
       "type": "array"
     },
     "rows": {
-      "description": "the batch to score: one object per entity mapping feature name to its numeric or boolean value; every feature the model was trained on must be present (extra features are ignored)",
+      "description": "the batch to score: one object per entity mapping each input the model's feature_schema.inputs names to its value — a number or boolean for a numeric feature, the original text (or null) for a categorical one, which is one-hot encoded with the levels fitted at training time (an unseen level encodes as all zeros). Every input must be present; extra fields are ignored",
       "items": {
         "additionalProperties": {
           "oneOf": [
@@ -26,6 +26,12 @@
             },
             {
               "type": "boolean"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
             }
           ]
         },

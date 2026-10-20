@@ -427,6 +427,23 @@ ChurnNumericShards encode_churn_dataset(const ChurnDataset& dataset) {
     return shards;
 }
 
+namespace {
+
+// The contract's numeric features: `feature_columns` less any column that is also
+// a categorical feature (a caller-named text column is recorded in both lists).
+std::vector<std::string> numeric_table_features(const zetta::data::DatasetContract& contract) {
+    std::vector<std::string> features;
+    for (const std::string& feature : contract.feature_columns) {
+        const bool categorical = std::ranges::any_of(
+            contract.categorical_features,
+            [&feature](const auto& encoding) { return encoding.column == feature; });
+        if (!categorical) features.push_back(feature);
+    }
+    return features;
+}
+
+}  // namespace
+
 DataFrameSchema table_accounts_schema(
     const zetta::data::DatasetContract& contract,
     bool continuous_label) {
@@ -440,9 +457,18 @@ DataFrameSchema table_accounts_schema(
                                           .field = contract.entity_column,
                                           .dtype = DataType::Int64,
                                           .entity_keys = contract.entity_keys});
-    for (const std::string& feature : contract.feature_columns) {
+    for (const std::string& feature : numeric_table_features(contract)) {
         schema.columns.push_back(
             ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});
+    }
+    // One 0/1 column per fitted level, read from the original text column (#1203).
+    for (const zetta::data::CategoricalEncoding& encoding : contract.categorical_features) {
+        for (const std::string& level : encoding.levels) {
+            schema.columns.push_back(ColumnSchema{.name = encoding.feature_name(level),
+                                                  .field = encoding.column,
+                                                  .dtype = DataType::Float64,
+                                                  .category_level = level});
+        }
     }
     if (!contract.label_column.empty()) {
         schema.columns.push_back(ColumnSchema{.name = contract.label_column,
@@ -469,7 +495,12 @@ ddf::FeaturizeSpec table_featurize_spec(const zetta::data::DatasetContract& cont
     // one already-featurized row per entity — the windowing happened in the
     // warehouse SQL, and inventing event aggregates over rows that are not events
     // would be arithmetic on a shape that does not exist.
-    spec.account_features = contract.feature_columns;
+    spec.account_features = numeric_table_features(contract);
+    for (const zetta::data::CategoricalEncoding& encoding : contract.categorical_features) {
+        for (const std::string& feature : encoding.feature_names()) {
+            spec.account_features.push_back(feature);
+        }
+    }
     spec.label_column = contract.label_column;
     return spec;
 }
@@ -489,7 +520,8 @@ ChurnSolutionResult run_churn_solution_on_table(
             "the dataset contract needs an entity column and a label column — resolve "
             "it with zetta::data::resolve_dataset");
     }
-    if (input.contract.feature_columns.empty()) {
+    if (input.contract.feature_columns.empty() &&
+        input.contract.categorical_features.empty()) {
         return fail("the dataset contract names no feature columns");
     }
 
@@ -519,6 +551,7 @@ ChurnSolutionResult run_churn_solution_on_table(
     pipeline.accounts_dataset = input.dataset_name;
     pipeline.dataset_notes = input.notes;
     pipeline.entity_keys = input.contract.entity_keys;
+    pipeline.categorical_features = input.contract.categorical_features;
     pipeline.accounts_schema = table_accounts_schema(
         input.contract, options.params.objective == "squared_error");
     pipeline.events_schema = churn_events_schema();  // empty frame; static mode

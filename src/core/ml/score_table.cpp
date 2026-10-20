@@ -1,5 +1,6 @@
 #include "zetta/ml/score_table.hpp"
 
+#include <algorithm>
 #include <utility>
 
 #include "zetta/ddf/data_frame.hpp"
@@ -48,6 +49,82 @@ std::vector<std::string> model_feature_columns(const Model& model) {
     return columns;
 }
 
+std::vector<data::CategoricalEncoding> model_categorical_encodings(
+    const nlohmann::json& feature_schema, std::string* error) {
+    if (!feature_schema.is_object()) return {};
+    const auto found = feature_schema.find("categorical_encoding");
+    if (found == feature_schema.end()) return {};
+    return data::categorical_encodings_from_json(*found, error);
+}
+
+nlohmann::json model_input_contract(const nlohmann::json& feature_schema) {
+    nlohmann::json inputs = nlohmann::json::array();
+    const std::vector<data::CategoricalEncoding> encodings =
+        model_categorical_encodings(feature_schema);
+    const auto features = feature_schema.is_object() ? feature_schema.find("features")
+                                                     : feature_schema.end();
+    if (!feature_schema.is_object() || features == feature_schema.end() ||
+        !features->is_array()) {
+        return inputs;
+    }
+    std::vector<std::string> listed;
+    for (const nlohmann::json& feature : *features) {
+        if (!feature.is_string()) continue;
+        const std::string name = feature.get<std::string>();
+        if (const auto categorical = data::find_categorical_feature(encodings, name)) {
+            const data::CategoricalEncoding& encoding = *categorical->encoding;
+            if (std::ranges::contains(listed, encoding.column)) continue;
+            listed.push_back(encoding.column);
+            nlohmann::json entry = encoding.to_json();
+            entry.erase("column");
+            entry["name"] = encoding.column;
+            entry["type"] = "string";
+            inputs.push_back(std::move(entry));
+            continue;
+        }
+        inputs.push_back({{"name", name}, {"type", "number"}});
+    }
+    return inputs;
+}
+
+nlohmann::json with_model_inputs(nlohmann::json feature_schema,
+                                 const std::vector<data::CategoricalEncoding>& encodings) {
+    if (!feature_schema.is_object()) feature_schema = nlohmann::json::object();
+    if (!encodings.empty()) {
+        feature_schema["categorical_encoding"] = data::to_json(encodings);
+    }
+    feature_schema["inputs"] = model_input_contract(feature_schema);
+    return feature_schema;
+}
+
+std::vector<std::string> model_input_names(const Model& model) {
+    std::vector<std::string> names;
+    for (const nlohmann::json& input : model_input_contract(model.value().feature_schema)) {
+        names.push_back(input.at("name").get<std::string>());
+    }
+    return names;
+}
+
+std::string encode_model_row(const Model& model, nlohmann::json& row) {
+    std::string error;
+    const std::vector<data::CategoricalEncoding> encodings =
+        model_categorical_encodings(model.value().feature_schema, &error);
+    if (!error.empty()) return "the model's categorical encoding is invalid: " + error;
+    if (encodings.empty()) return {};
+    return data::encode_categorical_row(encodings, row);
+}
+
+ddf::ColumnSchema model_feature_column_schema(
+    const std::string& feature, const std::vector<data::CategoricalEncoding>& encodings) {
+    if (const auto categorical = data::find_categorical_feature(encodings, feature)) {
+        return ColumnSchema{.name = feature,
+                            .field = categorical->encoding->column,
+                            .dtype = DataType::Float64,
+                            .category_level = categorical->level};
+    }
+    return ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64};
+}
+
 TableScoreResult score_table(Node& node, const Model& model, const std::string& table_id,
                              const zetta::data::DatasetContract& contract,
                              compute::ComputeDevice& device, std::size_t top_k) {
@@ -75,9 +152,15 @@ TableScoreResult score_table(Node& node, const Model& model, const std::string& 
                                           .field = contract.entity_column,
                                           .dtype = DataType::Int64,
                                           .entity_keys = contract.entity_keys});
+    std::string encoding_error;
+    const std::vector<data::CategoricalEncoding> encodings =
+        model_categorical_encodings(model.value().feature_schema, &encoding_error);
+    if (!encoding_error.empty()) {
+        return failure("score: model '" + model.id() +
+                       "' has an invalid categorical encoding: " + encoding_error);
+    }
     for (const std::string& feature : features) {
-        schema.columns.push_back(
-            ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});
+        schema.columns.push_back(model_feature_column_schema(feature, encodings));
     }
 
     // Gated onto the owner thread (#624, #956). This reads the partition catalog
@@ -155,21 +238,44 @@ TableScoreResult score_rows(const Model& model, const std::vector<nlohmann::json
                        "' records no feature columns, so nothing says what to feed it");
     }
 
+    // Text categories by their original column (#1203), encoded with the levels
+    // fitted at training time. The encodings are parsed once for the batch, and a
+    // row is copied only when the model has categories to write into it.
+    std::string encoding_error;
+    const std::vector<data::CategoricalEncoding> encodings =
+        model_categorical_encodings(model.value().feature_schema, &encoding_error);
+    if (!encoding_error.empty()) {
+        return failure("score: model '" + model.id() +
+                       "' has an invalid categorical encoding: " + encoding_error);
+    }
+
     std::vector<std::vector<double>> columns(features.size());
     for (std::vector<double>& column : columns) column.resize(rows.size());
+    nlohmann::json encoded_row;
     for (std::size_t row = 0; row < rows.size(); ++row) {
         if (!rows[row].is_object()) {
             return failure("score: row " + std::to_string(row) + " is not an object");
         }
+        const nlohmann::json* source = &rows[row];
+        if (!encodings.empty()) {
+            encoded_row = rows[row];
+            if (const std::string reason = data::encode_categorical_row(encodings, encoded_row);
+                !reason.empty()) {
+                return failure("score: row " + std::to_string(row) + ": " + reason);
+            }
+            source = &encoded_row;
+        }
+        const nlohmann::json& encoded = *source;
         for (std::size_t index = 0; index < features.size(); ++index) {
-            const auto found = rows[row].find(features[index]);
+            const auto found = encoded.find(features[index]);
             // A missing feature is a hard failure. Zero-filling it would score the
             // row as if the value were measured and happened to be zero — a real
             // value to a GBDT, and a confidently wrong answer rather than a visible
             // one.
-            if (found == rows[row].end() || found->is_null()) {
+            if (found == encoded.end() || found->is_null()) {
                 return failure("score: row " + std::to_string(row) + " has no '" +
-                               features[index] + "'; the model needs " + join(features));
+                               features[index] + "'; the model needs " +
+                               join(model_input_names(model)));
             }
             if (found->is_boolean()) {
                 columns[index][row] = found->get<bool>() ? 1.0 : 0.0;

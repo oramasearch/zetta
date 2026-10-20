@@ -23,6 +23,7 @@
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -196,12 +197,16 @@ TEST_F(GettingStartedChurn, CsvTrainsEndToEndAndStudyTrialUsesTheSameFeatures) {
         << report.value.dump();
     const Json& features = report.value.at("features");
     const std::set<std::string> run_used = used_features(features);
-    EXPECT_EQ(run_used, std::set<std::string>(std::begin(kMeasures), std::end(kMeasures)))
-        << features.dump();
-    const Json* plan = excluded(features, "plan");
-    ASSERT_NE(plan, nullptr) << features.dump();
-    EXPECT_NE(plan->at("why").get<std::string>().find("0/1 column per level"), std::string::npos)
-        << plan->dump();
+    // #1203: the text column `plan` is one-hot encoded, one feature per level.
+    std::set<std::string> expected_used(std::begin(kMeasures), std::end(kMeasures));
+    expected_used.insert({"plan=basic", "plan=enterprise", "plan=pro"});
+    EXPECT_EQ(run_used, expected_used) << features.dump();
+    EXPECT_EQ(excluded(features, "plan"), nullptr) << features.dump();
+    for (const Json& used : features.at("used")) {
+        if (used.at("source") != Json::array({"plan"})) continue;
+        EXPECT_NE(used.at("transform").get<std::string>().find("one-hot"), std::string::npos)
+            << used.dump();
+    }
     EXPECT_NE(excluded(features, "account_id"), nullptr);
     EXPECT_NE(excluded(features, "churned"), nullptr);
 
@@ -236,7 +241,7 @@ TEST_F(GettingStartedChurn, CsvTrainsEndToEndAndStudyTrialUsesTheSameFeatures) {
     ASSERT_TRUE(trial_run);
     EXPECT_EQ(used_features(trial_run->value().features), run_used)
         << trial_run->value().features.dump();
-    EXPECT_NE(excluded(trial_run->value().features, "plan"), nullptr);
+    EXPECT_EQ(excluded(trial_run->value().features, "plan"), nullptr);
     const auto model = node.find_model(trial.model);
     ASSERT_TRUE(model);
     EXPECT_EQ(model->feature_schema().value("features", Json::array()).size(), run_used.size())
@@ -244,10 +249,12 @@ TEST_F(GettingStartedChurn, CsvTrainsEndToEndAndStudyTrialUsesTheSameFeatures) {
 }
 
 TEST_F(GettingStartedChurn, NoInputsFailureNamesExcludedColumnsAndHowToIncludeThem) {
-    std::string csv = "account_id,plan,region,churned\n";
+    // Text columns that are not categories: a unique email per row (an
+    // identifier) and a city with 40 levels (above the 32-level one-hot cap).
+    std::string csv = "account_id,email,city,churned\n";
     for (int index = 0; index < 120; ++index) {
-        csv += std::format("{},{},{},{}\n", 100 + index, index % 3 == 0 ? "basic" : "pro",
-                           index % 2 == 0 ? "north" : "south", index % 4 == 0 ? 1 : 0);
+        csv += std::format("{},user{}@example.com,city_{},{}\n", 100 + index, index,
+                           index % 40, index % 4 == 0 ? 1 : 0);
     }
     upload("text_only", csv);
     build_pipeline("text only");
@@ -258,12 +265,160 @@ TEST_F(GettingStartedChurn, NoInputsFailureNamesExcludedColumnsAndHowToIncludeTh
     const std::string& message = refused.error.message;
     EXPECT_NE(message.find("create_eligible_features"), std::string::npos) << message;
     EXPECT_NE(message.find("Excluded columns: "), std::string::npos) << message;
-    for (const auto* column : {"plan", "region"}) {
-        EXPECT_NE(message.find(std::string(column) + " — text categories"), std::string::npos)
-            << message;
-    }
-    EXPECT_NE(message.find("0/1 column per level"), std::string::npos) << message;
+    EXPECT_NE(message.find("email — identifiers are excluded"), std::string::npos) << message;
+    EXPECT_NE(message.find("city — text with 40 distinct values is above the 32-level cap"),
+              std::string::npos)
+        << message;
     EXPECT_TRUE(node.runs().empty());
+}
+
+// #1203: a churn table whose signal is mostly in text columns. `region` decides most
+// of the label and `plan` some of it; `usage` is the only number and carries little.
+std::string categorical_signal_csv() {
+    constexpr std::array<std::string_view, 4> regions = {"north", "south", "east", "west"};
+    std::string csv = "account_id,usage,region,plan,contact_email,churned\n";
+    for (int index = 0; index < 600; ++index) {
+        const int usage = (index * 37) % 100;
+        const std::string_view region = regions[(index * 7 / 3) % 4];
+        const std::string_view plan = (index / 5) % 2 == 0 ? "basic" : "pro";
+        int churned = (region == "south" || (plan == "basic" && region == "east")) ? 1 : 0;
+        if (index % 13 == 0) churned = 1 - churned;
+        csv += std::format("{},{},{},{},owner{}@example.com,{}\n", 9000 + index, usage, region,
+                           plan, index, churned);
+    }
+    return csv;
+}
+
+TEST_F(GettingStartedChurn, TextCategoriesAreEncodedAndImproveTheHeldOutScore) {
+    upload("regional", categorical_signal_csv());
+
+    const auto train = [&](const std::string& project, const Json& extra) -> std::string {
+        build_pipeline(project);
+        Json input = {{"project", project},
+                      {"graph", "churn"},
+                      {"dataset_path", "getting_started.regional"},
+                      {"holdout_fraction", 0.25}};
+        input.update(extra);
+        const ApiResult started = call("run", input);
+        EXPECT_TRUE(started.ok) << started.error.message;
+        if (!started.ok) return {};
+        const std::string run_id = started.value.at("run_id");
+        EXPECT_TRUE(pump_until([&] {
+            const auto run = node.find_run(run_id);
+            return run && (run->status() == zetta::pipeline::RunStatus::Succeeded ||
+                           run->status() == zetta::pipeline::RunStatus::Failed);
+        }));
+        const auto run = node.find_run(run_id);
+        EXPECT_EQ(run->status(), zetta::pipeline::RunStatus::Succeeded);
+        return run_id;
+    };
+    const auto model_of = [&](const std::string& run_id) {
+        std::shared_ptr<zetta::ml::Model> found;
+        for (const auto& model : node.models()) {
+            if (model && model->value().run == run_id) found = model;
+        }
+        return found;
+    };
+
+    // With the categories (inferred) and without them (only `usage` named).
+    const std::string with_run = train("with categories", Json::object());
+    const std::string without_run =
+        train("numbers only", {{"dataset", {{"feature_columns", {"usage"}}}}});
+    ASSERT_FALSE(with_run.empty());
+    ASSERT_FALSE(without_run.empty());
+    const auto with_model = model_of(with_run);
+    const auto without_model = model_of(without_run);
+    ASSERT_TRUE(with_model);
+    ASSERT_TRUE(without_model);
+
+    // The run's report names the categorical columns and how they were encoded;
+    // the identifier-like email is still excluded, saying why.
+    const auto run = node.find_run(with_run);
+    const Json& features = run->value().features;
+    const std::set<std::string> used = used_features(features);
+    for (const auto* feature : {"usage", "region=east", "region=north", "region=south",
+                                "region=west", "plan=basic", "plan=pro"}) {
+        EXPECT_TRUE(used.contains(feature)) << feature << " " << features.dump();
+    }
+    EXPECT_FALSE(used.contains("contact_email")) << features.dump();
+    bool logged_region = false;
+    bool logged_email = false;
+    for (const auto& log : run->logs()) {
+        if (log.message.find("categorical feature: 'region' one-hot encoded into region=east, "
+                             "region=north, region=south, region=west") != std::string::npos) {
+            logged_region = true;
+        }
+        if (log.message.find("not used: 'contact_email'") != std::string::npos) {
+            logged_email = true;
+        }
+    }
+    EXPECT_TRUE(logged_region) << "the run log names the encoded category";
+    EXPECT_TRUE(logged_email) << "the run log says why the email column is not used";
+
+    // The encoding is stored with the model, and the input contract names the
+    // original columns: numbers for numeric features, text with levels for categories.
+    const Json& schema = with_model->feature_schema();
+    ASSERT_TRUE(schema.contains("categorical_encoding")) << schema.dump();
+    Json region_input;
+    for (const Json& input : schema.at("inputs")) {
+        if (input.at("name") == "region") region_input = input;
+        EXPECT_NE(input.at("name"), "contact_email");
+    }
+    ASSERT_FALSE(region_input.is_null()) << schema.dump();
+    EXPECT_EQ(region_input.at("type"), "string");
+    EXPECT_EQ(region_input.at("levels"), Json::array({"east", "north", "south", "west"}));
+
+    // The categories carry the signal: the held-out AUC is clearly higher with them.
+    ASSERT_TRUE(with_model->metrics().contains("held_out_auc")) << with_model->metrics().dump();
+    ASSERT_TRUE(without_model->metrics().contains("held_out_auc"))
+        << without_model->metrics().dump();
+    const double with_auc = with_model->metrics().at("held_out_auc").get<double>();
+    const double without_auc = without_model->metrics().at("held_out_auc").get<double>();
+    RecordProperty("held_out_auc_with_categories", std::to_string(with_auc));
+    RecordProperty("held_out_auc_numbers_only", std::to_string(without_auc));
+    EXPECT_GT(with_auc, without_auc + 0.15)
+        << "with categories " << with_auc << ", numbers only " << without_auc;
+
+    // Predict by original names and text values: a seen category, an unseen one
+    // (all zeros, not an error), and a row without the column (an error).
+    const ApiResult scored = call(
+        "score", {{"model", with_model->id()},
+                  {"rows", Json::array({{{"usage", 50}, {"region", "south"}, {"plan", "pro"}},
+                                        {{"usage", 50}, {"region", "north"}, {"plan", "pro"}},
+                                        {{"usage", 50}, {"region", "antarctica"},
+                                         {"plan", "enterprise"}}})},
+                  {"entities", Json::array({1, 2, 3})}});
+    ASSERT_TRUE(scored.ok) << scored.error.message;
+    ASSERT_EQ(scored.value.at("ranked").size(), 3u);
+    double south = -1.0;
+    double north = -1.0;
+    for (const Json& item : scored.value.at("ranked")) {
+        const double risk = item.at("risk").get<double>();
+        EXPECT_GE(risk, 0.0);
+        EXPECT_LE(risk, 1.0);
+        if (item.at("entity") == 1) south = risk;
+        if (item.at("entity") == 2) north = risk;
+    }
+    EXPECT_GT(south, north) << scored.value.dump();
+
+    const ApiResult explained =
+        call("explain", {{"model", with_model->id()},
+                         {"row", {{"usage", 50}, {"region", "south"}, {"plan", "basic"}}}});
+    ASSERT_TRUE(explained.ok) << explained.error.message;
+
+    const ApiResult missing = call(
+        "score", {{"model", with_model->id()},
+                  {"rows", Json::array({{{"usage", 50}, {"plan", "pro"}}})}});
+    ASSERT_FALSE(missing.ok);
+    EXPECT_NE(missing.error.message.find("'region'"), std::string::npos)
+        << missing.error.message;
+
+    // Scoring the table itself reads the original text columns with the stored levels.
+    const ApiResult table_scored =
+        call("score", {{"model", with_model->id()},
+                       {"dataset_path", "getting_started.regional"}});
+    ASSERT_TRUE(table_scored.ok) << table_scored.error.message;
+    EXPECT_EQ(table_scored.value.at("rows_scored"), 600);
 }
 
 } // namespace

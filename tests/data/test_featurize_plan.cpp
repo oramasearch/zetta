@@ -256,11 +256,27 @@ TEST_F(FeaturizationFixture, FeaturePlansDifferForTreesSegmentationAndForecasts)
     const auto tree = plan("accounts", tree_options);
     ASSERT_TRUE(tree.ok()) << tree.error;
     ASSERT_EQ(tree.status, "ready");
-    // M-1's trainer reads numeric columns only (#1216): text categories are
-    // excluded with how to include them, never planned as unconsumable
-    // one-hot or target-encoded features.
+    // M-1's trainer reads numeric columns (#1216) and one-hot encodes a text
+    // category itself (#1203): plan (4 levels) and campaign (30 levels) are within
+    // the 32-level cap, so they are planned as <column>=<level> indicators fitted on
+    // the training rows, never as target-encoded features.
     for (const auto* text : {"plan", "campaign"}) {
-        EXPECT_TRUE(std::ranges::any_of(tree.excluded, [text](const auto& exclusion) {
+        EXPECT_TRUE(std::ranges::any_of(tree.entries, [text](const auto& entry) {
+            return entry.source_columns == std::vector<std::string>{text} &&
+                   entry.features == std::vector<std::string>{std::string(text) + "=<level>"} &&
+                   entry.transform.find("fitted on the training rows only") !=
+                       std::string::npos &&
+                   entry.transform.find("all zeros") != std::string::npos;
+        })) << text;
+    }
+    // A numeric-only trainer that does not encode categories (M-5 survival) still
+    // excludes them, saying how to include them.
+    FeaturePlanOptions survival_options = tree_options;
+    survival_options.methodology = "M-5";
+    const auto survival = plan("accounts", survival_options);
+    ASSERT_TRUE(survival.ok()) << survival.error;
+    for (const auto* text : {"plan", "campaign"}) {
+        EXPECT_TRUE(std::ranges::any_of(survival.excluded, [text](const auto& exclusion) {
             return exclusion.source_column == text &&
                    exclusion.reason.find("reads numeric columns only") != std::string::npos &&
                    exclusion.reason.find("0/1 column per level") != std::string::npos;

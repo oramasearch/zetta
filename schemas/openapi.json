@@ -549,6 +549,52 @@
                           }
                         ]
                       },
+                      "categorical_features": {
+                        "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                        "items": {
+                          "additionalProperties": false,
+                          "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "encoding": {
+                              "enum": [
+                                "one_hot"
+                              ],
+                              "type": "string"
+                            },
+                            "features": {
+                              "description": "the encoded feature names, one per level",
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "levels": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "maxItems": 32,
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "unseen": {
+                              "description": "how a value outside the fitted levels is encoded",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "column",
+                            "levels"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
                       "entity_column": {
                         "description": "the integer or text business key of the thing being scored, one row per entity",
                         "type": "string"
@@ -589,7 +635,7 @@
                         "type": "object"
                       },
                       "feature_columns": {
-                        "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                        "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                         "items": {
                           "minLength": 1,
                           "type": "string"
@@ -6038,6 +6084,52 @@
                               }
                             ]
                           },
+                          "categorical_features": {
+                            "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                            "items": {
+                              "additionalProperties": false,
+                              "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                              "properties": {
+                                "column": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "encoding": {
+                                  "enum": [
+                                    "one_hot"
+                                  ],
+                                  "type": "string"
+                                },
+                                "features": {
+                                  "description": "the encoded feature names, one per level",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                "levels": {
+                                  "items": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "maxItems": 32,
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "unseen": {
+                                  "description": "how a value outside the fitted levels is encoded",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "column",
+                                "levels"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
                           "entity_column": {
                             "description": "the integer or text business key of the thing being scored, one row per entity",
                             "type": "string"
@@ -6078,7 +6170,7 @@
                             "type": "object"
                           },
                           "feature_columns": {
-                            "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                            "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                             "items": {
                               "minLength": 1,
                               "type": "string"
@@ -11246,6 +11338,52 @@
                         }
                       ]
                     },
+                    "categorical_features": {
+                      "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                      "items": {
+                        "additionalProperties": false,
+                        "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "encoding": {
+                            "enum": [
+                              "one_hot"
+                            ],
+                            "type": "string"
+                          },
+                          "features": {
+                            "description": "the encoded feature names, one per level",
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "levels": {
+                            "items": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "maxItems": 32,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "unseen": {
+                            "description": "how a value outside the fitted levels is encoded",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "levels"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "entity_column": {
                       "description": "the integer or text business key of the thing being scored, one row per entity",
                       "type": "string"
@@ -11286,7 +11424,7 @@
                       "type": "object"
                     },
                     "feature_columns": {
-                      "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                      "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                       "items": {
                         "minLength": 1,
                         "type": "string"
@@ -11353,12 +11491,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's own feature columns",
+                  "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's inputs (feature_schema.inputs): numeric features by name, a text category by its original column and text value",
                   "type": "object"
                 }
               }
             },
-            "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's own feature columns",
+            "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's inputs (feature_schema.inputs): numeric features by name, a text category by its original column and text value",
             "in": "query",
             "name": "row",
             "required": false
@@ -28128,7 +28266,7 @@
                     "type": "string"
                   },
                   "rows": {
-                    "description": "the batch to score: one object per entity mapping feature name to its numeric or boolean value; every feature the model was trained on must be present (extra features are ignored)",
+                    "description": "the batch to score: one object per entity mapping each input the model's feature_schema.inputs names to its value — a number or boolean for a numeric feature, the original text (or null) for a categorical one, which is one-hot encoded with the levels fitted at training time (an unseen level encodes as all zeros). Every input must be present; extra fields are ignored",
                     "items": {
                       "additionalProperties": {
                         "oneOf": [
@@ -28137,6 +28275,12 @@
                           },
                           {
                             "type": "boolean"
+                          },
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
                           }
                         ]
                       },
@@ -35265,6 +35409,52 @@
                           }
                         ]
                       },
+                      "categorical_features": {
+                        "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                        "items": {
+                          "additionalProperties": false,
+                          "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "encoding": {
+                              "enum": [
+                                "one_hot"
+                              ],
+                              "type": "string"
+                            },
+                            "features": {
+                              "description": "the encoded feature names, one per level",
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "levels": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "maxItems": 32,
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "unseen": {
+                              "description": "how a value outside the fitted levels is encoded",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "column",
+                            "levels"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
                       "entity_column": {
                         "description": "the integer or text business key of the thing being scored, one row per entity",
                         "type": "string"
@@ -35305,7 +35495,7 @@
                         "type": "object"
                       },
                       "feature_columns": {
-                        "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                        "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                         "items": {
                           "minLength": 1,
                           "type": "string"
@@ -36177,6 +36367,52 @@
                         }
                       ]
                     },
+                    "categorical_features": {
+                      "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                      "items": {
+                        "additionalProperties": false,
+                        "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "encoding": {
+                            "enum": [
+                              "one_hot"
+                            ],
+                            "type": "string"
+                          },
+                          "features": {
+                            "description": "the encoded feature names, one per level",
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "levels": {
+                            "items": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "maxItems": 32,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "unseen": {
+                            "description": "how a value outside the fitted levels is encoded",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "levels"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "entity_column": {
                       "description": "the integer or text business key of the thing being scored, one row per entity",
                       "type": "string"
@@ -36217,7 +36453,7 @@
                       "type": "object"
                     },
                     "feature_columns": {
-                      "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                      "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                       "items": {
                         "minLength": 1,
                         "type": "string"
@@ -36291,7 +36527,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's own feature columns",
+                  "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's inputs (feature_schema.inputs): numeric features by name, and a text category by its original column and text value, one-hot encoded with the levels fitted at training time (an unseen level encodes as all zeros)",
                   "items": {
                     "type": "object"
                   },
@@ -36299,7 +36535,7 @@
                 }
               }
             },
-            "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's own feature columns",
+            "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's inputs (feature_schema.inputs): numeric features by name, and a text category by its original column and text value, one-hot encoded with the levels fitted at training time (an unseen level encodes as all zeros)",
             "in": "query",
             "name": "rows",
             "required": false

@@ -136,6 +136,11 @@ struct MethodologyRule {
     // with a reason that says how to include them, instead of being planned
     // as one-hot or target-encoded features nothing consumes (#1216).
     bool numeric_inputs_only = false;
+    // The trainer one-hot encodes text categories itself (#1203): a text column
+    // with at most `kCategoricalMaxLevels` levels is planned as `<column>=<level>`
+    // indicators fitted on the training rows rather than excluded. The M-1 GBDT's
+    // table path does; the other numeric-only trainers do not yet.
+    bool one_hot_text_categories = false;
 };
 
 // One rule table keyed by the methodology registry's stable IDs and aliases.

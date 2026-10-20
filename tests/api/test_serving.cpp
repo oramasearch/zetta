@@ -30,6 +30,7 @@
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/gbdt_score.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/score_table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 
@@ -273,6 +274,83 @@ TEST_F(ServingFixture, ModelExposeServePredictDenyAndUnexpose) {
 // the route — the served route is the SAME Node::search path as the `search`
 // capability (identical hits), with the deny half and system.indexes
 // read-back.
+// #1203: a model trained with a one-hot encoded text column is served by the
+// column's ORIGINAL name and text value. The stored levels encode the row; an
+// unseen level encodes as all zeros rather than failing; a number where the
+// model expects text, or a row without the column, is refused.
+TEST_F(ServingFixture, ServedPredictEncodesTextCategoriesWithTheStoredLevels) {
+    std::vector<std::vector<double>> columns(3);
+    std::vector<double> labels;
+    for (std::size_t i = 0; i < 60; ++i) {
+        const std::size_t tier = i % 3;  // 0 gold, 1 silver, 2 neither
+        columns[0].push_back(static_cast<double>(i % 7) / 7.0);
+        columns[1].push_back(tier == 0 ? 1.0 : 0.0);
+        columns[2].push_back(tier == 1 ? 1.0 : 0.0);
+        labels.push_back(tier == 0 ? 1.0 : 0.0);
+    }
+    zetta::ml::GbdtParams params;
+    params.num_trees = 10;
+    params.max_depth = 3;
+    const auto trained = zetta::ml::train_gbdt(
+        columns, {"usage", "tier=gold", "tier=silver"}, labels, params);
+    ASSERT_TRUE(trained.ok()) << trained.status.message;
+
+    zetta::ml::ModelValue value;
+    value.kind = "classifier";
+    value.name = "tiered";
+    auto model = node.create_model(std::move(value));
+    ASSERT_TRUE(model);
+    ASSERT_TRUE(model->set_weights(trained.model.to_json().dump()));
+    zetta::data::CategoricalEncoding tier;
+    tier.column = "tier";
+    tier.levels = {"gold", "silver"};
+    nlohmann::json schema{{"features", {"usage", "tier=gold", "tier=silver"}},
+                          {"categorical_encoding", zetta::data::to_json(
+                                                       std::vector{tier})}};
+    schema["inputs"] = zetta::ml::model_input_contract(schema);
+    model->set_feature_schema(schema);
+    ASSERT_TRUE(call("expose_model", {{"model", "tiered"}}).ok);
+    const std::string key =
+        make_key("scorer", {{CapabilityDomain::Data, "predict"}});
+
+    // The input contract names the original column, typed as text.
+    ASSERT_EQ(schema.at("inputs").size(), 2u);
+    EXPECT_EQ(schema.at("inputs")[0], (nlohmann::json{{"name", "usage"}, {"type", "number"}}));
+    EXPECT_EQ(schema.at("inputs")[1].at("name"), "tier");
+    EXPECT_EQ(schema.at("inputs")[1].at("type"), "string");
+    EXPECT_EQ(schema.at("inputs")[1].at("levels"), (nlohmann::json{"gold", "silver"}));
+
+    const auto served = serve_predict(
+        "tiered",
+        {{"rows",
+          {{{"usage", 0.3}, {"tier", "gold"}},
+           {{"usage", 0.3}, {"tier", "bronze"}},  // never seen in training
+           {{"usage", 0.3}, {"tier", nullptr}}}}},
+        key);
+    ASSERT_TRUE(served.ok) << served.error.message;
+    const auto oracle = zetta::ml::score_gbdt(
+        trained.model, {{0.3, 0.3, 0.3}, {1.0, 0.0, 0.0}, {0.0, 0.0, 0.0}},
+        {"usage", "tier=gold", "tier=silver"}, {0, 1, 2});
+    ASSERT_TRUE(oracle.ok());
+    ASSERT_EQ(served.value.at("ranked").size(), 3u);
+    for (std::size_t index = 0; index < 3; ++index) {
+        EXPECT_EQ(served.value.at("ranked")[index].at("entity"), oracle.ranked[index].entity);
+        EXPECT_DOUBLE_EQ(served.value.at("ranked")[index].at("risk").get<double>(),
+                         oracle.ranked[index].risk);
+    }
+    EXPECT_EQ(served.value.at("ranked")[0].at("entity"), 0);  // gold is the risky tier
+
+    const auto numeric_tier =
+        serve_predict("tiered", {{"rows", {{{"usage", 0.3}, {"tier", 2}}}}}, key);
+    EXPECT_FALSE(numeric_tier.ok);
+    EXPECT_EQ(numeric_tier.error.code, "invalid_input");
+    EXPECT_EQ(numeric_tier.error.path, "/rows/0");
+    const auto no_tier = serve_predict("tiered", {{"rows", {{{"usage", 0.3}}}}}, key);
+    EXPECT_FALSE(no_tier.ok);
+    EXPECT_NE(no_tier.error.message.find("'tier'"), std::string::npos)
+        << no_tier.error.message;
+}
+
 TEST_F(ServingFixture, IndexExposeServeSearchDenyAndUnexpose) {
     node.index_registry().add(
         std::make_shared<zetta::test::TermFrequencyBackend>());

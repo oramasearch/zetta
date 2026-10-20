@@ -7582,7 +7582,10 @@ const nlohmann::json& score_schema() {
             {"items", {{"type", "object"}}},
             {"description",
              "score these rows instead of a dataset - an account that is not in the "
-             "data at all. Each row is keyed by the model's own feature columns"}}},
+             "data at all. Each row is keyed by the model's inputs "
+             "(feature_schema.inputs): numeric features by name, and a text category "
+             "by its original column and text value, one-hot encoded with the levels "
+             "fitted at training time (an unseen level encodes as all zeros)"}}},
           {"entities",
            {{"type", "array"},
             {"items",
@@ -7771,7 +7774,9 @@ const nlohmann::json& explain_schema() {
            {{"type", "object"},
             {"description",
              "explain this row instead of a dataset entity — an account that is not "
-             "in the data at all. Keyed by the model's own feature columns"}}}}}};
+             "in the data at all. Keyed by the model's inputs (feature_schema.inputs): "
+             "numeric features by name, a text category by its original column and "
+             "text value"}}}}}};
     return schema;
 }
 

@@ -21,7 +21,7 @@ struct MethodologyRuleEntry {
 
 const std::vector<MethodologyRuleEntry>& methodology_rules() {
     static const std::vector<MethodologyRuleEntry> rules = {
-        {MethodologyRule{"M-1", MethodologyFamily::Tree, true, true, false, false, true},
+        {MethodologyRule{"M-1", MethodologyFamily::Tree, true, true, false, false, true, true},
          {"m-1", "classification", "classifier", "churn", "tree", "gbdt"}},
         {MethodologyRule{"M-2", MethodologyFamily::Native, false, true, false, false},
          {"entity_resolution", "entity-resolution", "m-2"}},
@@ -279,6 +279,13 @@ void append_boolean_plan(FeaturePlan& plan, const ColumnAnalysis& column) {
                             "two-valued data has a direct binary representation"});
 }
 
+std::string one_hot_transform() {
+    return "one-hot encode: one 0/1 column per level (<column>=<level>), levels fitted on "
+           "the training rows only and stored with the model, at most " +
+           std::to_string(kCategoricalMaxLevels) +
+           " levels; an unseen or missing value at predict time encodes as all zeros";
+}
+
 bool numeric_coded(const ColumnAnalysis& column) {
     return !column.quantiles.empty() && column.string_lengths.empty();
 }
@@ -292,6 +299,27 @@ void append_categorical_plan(FeaturePlan& plan, const ColumnAnalysis& column,
         // feature it cannot read (#1216).
         if (numeric_coded(column)) {
             append_numeric_plan(plan, column, rule);
+            return;
+        }
+        // #1203: the M-1 table path one-hot encodes a text category itself, with
+        // the levels fitted on the training rows and stored with the model.
+        if (rule.one_hot_text_categories) {
+            if (column.distinct_count <= kCategoricalMaxLevels) {
+                plan.entries.push_back(
+                    {{column.name},
+                     {column.name + "=<level>"},
+                     one_hot_transform(),
+                     "a text category with at most " +
+                         std::to_string(kCategoricalMaxLevels) +
+                         " levels; the trainer reads one 0/1 column per level"});
+                return;
+            }
+            exclude_once(plan, column.name,
+                         "text with " + std::to_string(column.distinct_count) +
+                             " distinct values is above the " +
+                             std::to_string(kCategoricalMaxLevels) +
+                             "-level cap for one-hot encoding; to include it, group it "
+                             "into fewer levels in a clean step");
             return;
         }
         exclude_once(plan, column.name,
