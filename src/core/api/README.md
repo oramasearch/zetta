@@ -39,7 +39,11 @@ refused at `/definition/files/0/content` in lake's words (#1220).
 `upload_dataset` refuses unsafe table and database names, ragged CSV, and a taken
 name (`conflict`) unless `if_exists: "rename"`, with lake's rules and wording;
 `get_dataset` accepts `database.table`, and dataset summaries carry
-`source_format` (#1221). See [add dataset](../../../docs/data/add-dataset.md).
+`source_format` (#1221). `load_dataset_object` is the job for a file past
+`upload_dataset`'s 16 MiB: it loads an object already in a bucket, checks
+`objects:read` on the bucket with `authorize_object_route` (`object_routes.hpp`),
+and `objects:write` too when `remove_object` asks it to delete the object, and adopts an `AsyncObjectDatasetLoad` into `BackgroundActions` (#1302). See
+[add dataset](../../../docs/data/add-dataset.md).
 `get_dataset` answers its `columns` typed, `[{name, type, nullable,
 null_fraction}]`, in the source's order (the last three null for a column the
 caller may not read), and every summary says whether that order

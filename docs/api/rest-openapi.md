@@ -66,6 +66,14 @@ Domain failures keep the engine's reason verbatim and map onto HTTP statuses
 name, e.g. `upload_dataset` without `if_exists: "rename"`, #1221) · `engine_error`
 → 422 · `busy` → 503.
 
+`upload_dataset` takes a file's text in the JSON body, at most 16 MiB of it. A larger
+file is uploaded to a bucket with the raw `PATCH /v1/objects/<bucket>/<key>?offset=<n>`
+route a chunk at a time, then loaded with the `load_dataset_object` job
+(`POST /v1/load_dataset_object`): it answers 200 with a `run_id` at once, refuses a
+taken name with the same 409 and words as `upload_dataset`, and reports a failed load
+on the run (`get_run`), not in the response (#1302,
+[add-dataset.md](../data/add-dataset.md#load-from-a-stored-object-1302)).
+
 **Every request gets an answer — never silence (#1007).** Three ways a request
 used to get *no* response, each of which reads exactly like a hung node (curl: 0
 bytes until its own timeout; through a proxy, "Empty reply from server"):

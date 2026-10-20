@@ -1,4 +1,5 @@
 #include "zetta/api/capabilities.hpp"
+#include "object_routes.hpp"
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -8255,8 +8256,8 @@ const nlohmann::json& upload_dataset_schema() {
             {"minLength", 1},
             {"description",
              "the file's text, verbatim. At most 16 MiB (16777216 bytes of UTF-8); "
-             "larger data belongs in a file on the node (add_dataset) or a source "
-             "connection (create_dataset_from_query)"}}},
+             "upload a larger file to a bucket (PATCH /v1/objects/<bucket>/<key>, a "
+             "chunk at a time) and load it with load_dataset_object"}}},
           {"database",
            {{"type", "string"},
             {"minLength", 1},
@@ -8281,8 +8282,9 @@ ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context
             "content is " + std::to_string(content.size()) +
                 " bytes; upload_dataset accepts at most " +
                 std::to_string(zetta::data::kMaxDatasetContentBytes) +
-                " bytes (16 MiB). Put larger data in a file on the node and use "
-                "add_dataset, or load it with create_dataset_from_query",
+                " bytes (16 MiB). Upload a larger file to a bucket (PATCH "
+                "/v1/objects/<bucket>/<key>, a chunk at a time) and load it with "
+                "load_dataset_object",
             "/content");
     }
     const std::string format_name = input.at("format").get<std::string>();
@@ -8317,10 +8319,7 @@ ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context
         if (database && database->find_table(options.table_name)) {
             return ApiResult::failure(
                 "conflict",
-                "a dataset named '" + options.table_name + "' already exists in " +
-                    options.database +
-                    "; choose another name, or pass if_exists: \"rename\" to save it "
-                    "under the next free name",
+                zetta::data::dataset_name_taken(options.table_name, options.database),
                 "/table_name");
         }
     }
@@ -8351,6 +8350,169 @@ ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context
     if (added.table && added.table->name() != options.table_name) {
         output["renamed_from"] = options.table_name;
     }
+    return ApiResult::success(std::move(output));
+}
+
+// --- load_dataset_object (#1302) ----------------------------------------------------
+//
+// upload_dataset carries the file in the request, capped at 16 MiB. A larger file
+// is first uploaded to a bucket a chunk at a time (PATCH /v1/objects/<bucket>/<key>,
+// the object capability's resumable append, #1005); this loads that object in the
+// background (AsyncObjectDatasetLoad) and answers with the run to poll.
+
+const nlohmann::json& load_dataset_object_schema() {
+    static const nlohmann::json schema = [] {
+        // The fields it shares with upload_dataset, described the same way.
+        const nlohmann::json& upload = upload_dataset_schema().at("properties");
+        return nlohmann::json{
+            {"type", "object"},
+            {"required", {"bucket", "key", "format", "table_name"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"bucket",
+               {{"type", "string"},
+                {"pattern", "^[a-z0-9][a-z0-9_.-]{0,95}$"},
+                {"description",
+                 "the bucket holding the object (create_bucket); the caller needs "
+                 "objects:read on it, and objects:write with remove_object"}}},
+              {"key",
+               {{"type", "string"},
+                {"minLength", 1},
+                {"maxLength", 1024},
+                {"description",
+                 "the object's key: a plain (unsealed) csv or jsonl file, typically "
+                 "uploaded a chunk at a time with PATCH /v1/objects/<bucket>/<key>?offset=<n>. "
+                 "At most 1 GiB (1073741824 bytes), no line longer than 16 MiB"}}},
+              {"format",
+               {{"type", "string"},
+                {"enum", {"csv", "jsonl"}},
+                {"description",
+                 "how the object is laid out: csv (a header row, then one row per line with "
+                 "as many fields as the header, cells type-inferred) or jsonl (one JSON "
+                 "object per line)"}}},
+              {"table_name", upload.at("table_name")},
+              {"if_exists",
+               {{"type", "string"},
+                {"enum", {"fail", "rename"}},
+                {"description",
+                 "what to do when table_name is taken: fail (the default) refuses with "
+                 "conflict; rename saves under the next free name (_2, _3, ...) and the "
+                 "run's final log entry names the one asked for"}}},
+              {"database", upload.at("database")},
+              {"replication_factor", upload.at("replication_factor")},
+              {"remove_object",
+               {{"type", "boolean"},
+                {"description",
+                 "remove the object once the load has finished, whether it succeeded or "
+                 "failed (default false). Needs objects:write on the bucket, as "
+                 "delete_object does, and is audited as a delete_object call"}}}}}};
+    }();
+    return schema;
+}
+
+const nlohmann::json& load_dataset_object_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run_id", "status", "poll"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"run_id",
+           {{"type", "string"},
+            {"description", "the load's run: poll get_run / system.runs"}}},
+          {"status", {{"type", "string"}}},
+          {"poll", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_load_dataset_object(const nlohmann::json& input, ApiContext& context) {
+    zetta::data::ObjectDatasetSource source;
+    source.bucket = input.at("bucket").get<std::string>();
+    source.key = input.at("key").get<std::string>();
+    if (!zetta::data::valid_bucket_name(source.bucket)) {
+        return ApiResult::failure(
+            "invalid_input",
+            "bucket: '" + source.bucket +
+                "' is not a bucket name (a lowercase letter or digit, then up to 95 of "
+                "a-z, 0-9, _, . and -)",
+            "/bucket");
+    }
+    if (!zetta::data::valid_object_key(source.key)) {
+        return ApiResult::failure(
+            "invalid_input", "key: an object key is 1 to 1024 bytes with no control characters",
+            "/key");
+    }
+    source.format = input.at("format").get<std::string>() == "csv"
+                        ? zetta::data::dataset_file::Format::Csv
+                        : zetta::data::dataset_file::Format::Jsonl;
+    source.rename_if_exists = input.value("if_exists", std::string("fail")) == "rename";
+    source.remove_object = input.value("remove_object", false);
+
+    zetta::data::AddDatasetOptions options;
+    options.database = input.value("database", options.database);
+    options.table_name = input.at("table_name").get<std::string>();
+    for (const auto& [field, value] :
+         {std::pair<std::string, const std::string*>{"table_name", &options.table_name},
+          std::pair<std::string, const std::string*>{"database", &options.database}}) {
+        if (const std::string problem = zetta::data::dataset_name_problem(*value);
+            !problem.empty()) {
+            return ApiResult::failure("invalid_input", field + ": " + problem, "/" + field);
+        }
+    }
+    options.replication_factor =
+        input.value("replication_factor", options.replication_factor);
+
+    zetta::data::ObjectStore* objects = context.node.object_store();
+    if (!objects) {
+        return ApiResult::failure("engine_error",
+                                  "this node has no replicated catalogue to keep buckets in");
+    }
+    // The read right GET /v1/objects/<bucket>/<key> asks for, so a caller cannot
+    // read a bucket through a load that it could not read directly.
+    if (auto denied = authorize_object_route(context.node, context.acting_key,
+                                             context.acting_is_user, "load_dataset_object",
+                                             kObjectsRead, source.bucket)) {
+        return *denied;
+    }
+    // Removing the object afterwards is a delete: it needs the write right
+    // DELETE /v1/objects/<bucket>/<key> asks for.
+    if (source.remove_object) {
+        if (auto denied = authorize_object_route(context.node, context.acting_key,
+                                                 context.acting_is_user, "load_dataset_object",
+                                                 kObjectsWrite, source.bucket)) {
+            return *denied;
+        }
+    }
+    if (!objects->find_bucket(source.bucket)) {
+        return ApiResult::failure("not_found", "no bucket '" + source.bucket + "'", "/bucket");
+    }
+    if (!source.rename_if_exists) {
+        const auto database = context.node.find_database(options.database);
+        if (database && database->find_table(options.table_name)) {
+            return ApiResult::failure(
+                "conflict", zetta::data::dataset_name_taken(options.table_name, options.database),
+                "/table_name");
+        }
+    }
+    if (!context.background) {
+        return ApiResult::failure(
+            "engine_error",
+            "load_dataset_object is a job capability and this embedding wired no "
+            "background action owner");
+    }
+    options.members = context.node.cluster_members();  // live placement roster
+    source.acting_key = context.acting_key;  // the removal's audit row names the caller
+    source.trace = context.trace;
+
+    auto handle = zetta::data::AsyncObjectDatasetLoad::start(context.node, *objects,
+                                                             std::move(source), std::move(options));
+    if (!handle) {
+        return ApiResult::failure("engine_error", "the run record could not be created");
+    }
+    context.background->adopt(handle, [worker = handle.get()] { return worker->done(); });
+    nlohmann::json output;
+    output["run_id"] = handle->run_id();
+    output["status"] = "running";
+    output["poll"] = "get_run until status is succeeded or failed; the dataset is the run's output";
     return ApiResult::success(std::move(output));
 }
 
@@ -12392,7 +12554,8 @@ void register_core_capabilities(Registry& registry) {
         "partitioned table placed across the cluster - for a caller that cannot "
         "put a file on the node (add_dataset reads the node's filesystem). Same "
         "parsing, table creation and placement as add_dataset; at most 16 MiB of "
-        "content. Audited as dataset_added; the table then appears in "
+        "content (a larger file goes to a bucket and loads with load_dataset_object). "
+        "Audited as dataset_added; the table then appears in "
         "list_datasets / system.datasets and can be passed to run as "
         "dataset_path <database>.<table>. (#1008)",
         upload_dataset_schema(),
@@ -12404,6 +12567,27 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_upload_dataset});
+
+    registry.add(Capability{
+        "load_dataset_object",
+        "Load a dataset from a stored object",
+        "Load a csv or jsonl object already in a bucket (uploaded a chunk at a time "
+        "with PATCH /v1/objects/<bucket>/<key>) into a new partitioned table placed "
+        "across the cluster - the path for a file larger than upload_dataset's 16 MiB, "
+        "up to 1 GiB. Returns a run id at once and loads in the background: poll "
+        "get_run until succeeded (the dataset is the run's output) or failed (the log "
+        "says why, and no table is left). Needs objects:read on the bucket; "
+        "remove_object removes the object afterwards and also needs objects:write. "
+        "Audited as dataset_added. (#1302)",
+        load_dataset_object_schema(),
+        load_dataset_object_output_schema(),
+        CapabilityKind::Job,
+        // Authorized like upload_dataset: whoever may add a dataset may load one
+        // from an object (the handler also checks objects:read on the bucket).
+        Operation{CapabilityDomain::Orchestration, "add_dataset"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_load_dataset_object});
 
     registry.add(Capability{
         "create_connection",

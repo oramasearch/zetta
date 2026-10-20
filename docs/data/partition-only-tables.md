@@ -63,14 +63,18 @@ sourced from the catalog.
 - **No update path for the marker.** Flipping it on a populated table would
   strand rows on one side or the other (captured rows with no bodies, or bodies
   with rows the document also holds). A dataset is created partition-only or not.
-- **No pruning of the ingesting node's staging rows.** Dropping them would make
-  `write_partitioned` unable to re-run and would not save the write; it is bytes
-  on one node's disk, not on the wire, and the read paths ignore them.
+- **No pruning of the ingesting node's staging rows, except after an object
+  load.** Dropping them would make `write_partitioned` unable to re-run and would
+  not save the write; it is bytes on one node's disk, not on the wire, and the read
+  paths ignore them. `load_dataset_object` is the exception (#1302): its loads run
+  to 1 GiB, so once its partitions are written it frees the loading node's copy,
+  memory and chunk files both, with `Table::release_local_rows`
+  ([add-dataset.md](add-dataset.md#load-from-a-stored-object-1302)).
 
 ## Where it is used
 
 `add_dataset_rows` / `add_dataset_file` take it through
-`AddDatasetOptions::partition_only`. The connector path (a result set that is a
+`AddDatasetOptions::partition_only`, and `load_dataset_object` always sets it. The connector path (a result set that is a
 *cache*, [connector-query.md](connector-query.md)) is its intended user: RF=1
 bodies placed by fetch affinity, nothing captured.
 

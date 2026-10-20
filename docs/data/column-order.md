@@ -18,16 +18,20 @@ next to the table rather than in the rows.
 
 | Source | Order recorded |
 | --- | --- |
-| CSV (`add_dataset`, `upload_dataset`) | the header |
+| CSV (`add_dataset`, `upload_dataset`, `load_dataset_object`) | the header |
 | Parquet (`add_dataset`) | the file's schema: its leaf columns, as the footer lists them |
-| JSON Lines | the keys of the first row, in the order the line writes them; a key first seen in a later row follows, in that row's order |
+| JSON Lines (the same three paths) | the keys of the first row, in the order the line writes them; a key first seen in a later row follows, in that row's order |
 | JSON (an array of objects, or one object) | the same rule over the elements |
 | A connector query (`create_dataset_from_query`, Postgres or Snowflake) | the query's SELECT list, as the source returned it |
 | `CREATE TABLE t (a …, b …)` | the column list |
 | `add_dataset_rows` (in-memory rows) | `AddDatasetOptions::columns` when the caller passes one; otherwise nothing (an in-memory object holds no order) |
 
 A caller can override the decoder's order with `AddDatasetOptions::columns`; the
-connector paths do, with the query's columns.
+connector paths do, with the query's columns. CSV and JSON Lines are decoded a line
+at a time by `DatasetLineDecoder`, which records the order as it goes; an object
+load (`load_dataset_object`, #1302) creates its table with the order seen by the
+first batch and sets it again from the whole object before partitioning, so a
+JSON Lines key first written after the first batch is not lost.
 
 ## Where it is kept
 
@@ -97,7 +101,9 @@ and `system.datasets` give names only.
 - `tests/data/test_add_dataset.cpp` — `KeepsTheSourceColumnOrder` (CSV header,
   JSON Lines and JSON key order, a caller's order, no order for in-memory rows,
   the `cols:` key, a reconcile, drop, and a restart into a fresh document) and
-  `AParquetFileKeepsItsSchemaOrder`.
+  `AParquetFileKeepsItsSchemaOrder`; `ObjectLoad.KeepsTheSourceColumnOrder` (an
+  object's CSV header, and a JSON Lines key that first appears after the first
+  10,000-row batch).
 - `tests/data/test_query.cpp` — `CreateTableColumnListIsTheSelectStarOrder`.
 - `tests/query/test_distributed_select.cpp` —
   `APartitionOnlyDatasetKeepsItsSourceColumnOrder` (types and null share from the
