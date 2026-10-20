@@ -37,7 +37,7 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT ZETTA_USE_SYSTEM_COMPILER)
 endif()
 
 project(zetta
-  VERSION 0.3.0
+  VERSION 0.4.0
   DESCRIPTION "A database; runs headless or with an SDL3 + Dear ImGui UI"
   LANGUAGES C CXX
 )
@@ -668,6 +668,7 @@ add_library(zetta-core STATIC
   src/core/governance/policy.cpp
   src/core/solutions/audit_ledger.cpp
   src/core/data/table.cpp
+  src/core/data/dataset_columns.cpp
   src/core/data/partitioner.cpp
   src/core/data/partition_body.cpp
   src/core/storage/lazy_row.cpp
@@ -705,6 +706,7 @@ add_library(zetta-core STATIC
   src/core/data/object_log.cpp
   src/core/data/add_dataset.cpp
   src/core/data/dataset_path.cpp
+  src/core/data/categorical_encoding.cpp
   src/core/data/analyze_dataset.cpp
   src/core/data/featurize_plan.cpp
   src/core/ml/run_features.cpp

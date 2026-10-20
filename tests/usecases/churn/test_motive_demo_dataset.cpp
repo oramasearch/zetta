@@ -225,12 +225,21 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     // ---- the holdout figure -------------------------------------------------
     // Score the 30% the model never saw, and compute AUC over it here. This is the
     // number that says how the model behaves on an account it has not met.
+    // The model's inputs by original column name: the numeric features, and each
+    // text category as its text value (the model one-hot encodes it, #1203).
+    std::vector<std::string> model_inputs = resolved.contract.feature_columns;
+    std::size_t encoded_features = resolved.contract.feature_columns.size();
+    for (const zetta::data::CategoricalEncoding& category :
+         resolved.contract.categorical_features) {
+        model_inputs.push_back(category.column);
+        encoded_features += category.feature_names().size();
+    }
     std::vector<std::int64_t> holdout_entities;
     std::vector<double> holdout_labels;
     std::vector<Json> holdout_features;
     for (const Json& row : holdout_rows) {
         Json features = Json::object();
-        for (const std::string& column : resolved.contract.feature_columns) {
+        for (const std::string& column : model_inputs) {
             features[column] = row.at(column);
         }
         holdout_features.push_back(std::move(features));
@@ -273,7 +282,7 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     std::vector<double> train_labels;
     for (const Json& row : train_rows) {
         Json features = Json::object();
-        for (const std::string& column : resolved.contract.feature_columns) {
+        for (const std::string& column : model_inputs) {
             features[column] = row.at(column);
         }
         train_features.push_back(std::move(features));
@@ -315,7 +324,9 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
               << "%)\n";
     std::cout << "HOLDOUT AUC     " << holdout_auc
               << "   <-- the number to publish (rows the model never saw)\n";
-    std::cout << "features        " << resolved.contract.feature_columns.size() << "\n";
+    std::cout << "features        " << resolved.contract.feature_columns.size()
+              << " numeric, " << resolved.contract.categorical_features.size()
+              << " categorical (" << encoded_features << " encoded)\n";
     std::cout << "in-sample       " << metrics.dump()
               << "   <-- computed over the TRAINING rows, not a holdout\n";
     std::cout << "top driver      " << result.top_driver << "\n";
@@ -345,7 +356,7 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
                            {"events", 3870209},
                            {"churn_rate", static_cast<double>(churned) /
                                               static_cast<double>(accounts_total)},
-                           {"features", resolved.contract.feature_columns}};
+                           {"features", model_inputs}};
     artifact["model"] = {{"id", result.model_id},
                          {"held_out_auc", holdout_auc},
                          {"in_sample_auc", metrics.at("auc").get<double>()},
@@ -387,32 +398,78 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     // in ten minutes through the API. Two candidates: resolving the dataset,
     // which samples via SELECT * because the SQL subset has no LIMIT, or the
     // scoring itself. Timing them apart is the whole diagnosis.
+    //
+    // Measured over the WHOLE generated table (every account, not the 70% the
+    // model trained on), landed beside the training table, so the figure is the
+    // one a `score` over the demo table pays. Each half runs five times and the
+    // median is printed: one cold run says more about the allocator than the code.
     {
-        const auto clock_now = [] { return std::chrono::steady_clock::now(); };
-        const auto ms = [](auto from, auto to) {
-            return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+        std::vector<Json> all_rows = read_csv(dir / "account_features.csv");
+        zetta::data::AddDatasetOptions all_options;
+        all_options.database = "motive_demo";
+        all_options.table_name = "account_features_all";
+        all_options.partitioned = true;
+        all_options.members = {host.node.node_id()};
+        const zetta::data::AddDatasetResult all_added =
+            zetta::data::add_dataset_rows(host.node, std::move(all_rows), all_options);
+        ASSERT_TRUE(all_added.ok()) << all_added.error;
+
+        using Clock = std::chrono::steady_clock;
+        const auto micros = [](Clock::time_point from, Clock::time_point to) {
+            return std::chrono::duration_cast<std::chrono::microseconds>(to - from).count();
+        };
+        const auto median = [](std::vector<long long> samples) {
+            std::sort(samples.begin(), samples.end());
+            return samples[samples.size() / 2];
         };
 
-        const auto resolve_start = clock_now();
-        const zetta::data::ResolvedDataset again = zetta::data::resolve_dataset(
-            host.node, zetta::data::parse_dataset_path("motive_demo.account_features"),
-            overrides, zetta::data::default_dataset_sampler(host.node, &host.cluster));
-        const auto resolve_end = clock_now();
-        ASSERT_TRUE(again.ok()) << again.error;
+        // Resolved twice over: with the entity and label named (what #956's
+        // `score` sent) and with only the entity named (the label inferred, which
+        // must check that `churned` is binary). The entity is named in both: the
+        // table's key, `account_index`, is not a name inference recognizes.
+        constexpr int kRepeats = 5;
+        std::vector<long long> resolve_named;
+        std::vector<long long> resolve_inferred;
+        zetta::data::DatasetContract entity_only;
+        entity_only.entity_column = "account_index";
+        std::vector<long long> score_times;
+        zetta::data::ResolvedDataset again;
+        zetta::data::ResolvedDataset inferred;
+        std::uint64_t rows_scored = 0;
+        for (int repeat = 0; repeat < kRepeats; ++repeat) {
+            const auto named_start = Clock::now();
+            again = zetta::data::resolve_dataset(
+                host.node, zetta::data::parse_dataset_path("motive_demo.account_features_all"),
+                overrides, {}, zetta::data::kDefaultSampleRows, &host.cluster);
+            resolve_named.push_back(micros(named_start, Clock::now()));
+            ASSERT_TRUE(again.ok()) << again.error;
 
-        CpuDevice score_device;
-        const auto score_start = clock_now();
-        const zetta::ml::TableScoreResult scored = zetta::ml::score_table(
-            host.node, *model, again.table_id, again.contract, score_device);
-        const auto score_end = clock_now();
-        ASSERT_TRUE(scored.ok()) << scored.error;
+            const auto inferred_start = Clock::now();
+            inferred = zetta::data::resolve_dataset(
+                host.node, zetta::data::parse_dataset_path("motive_demo.account_features_all"),
+                entity_only, {}, zetta::data::kDefaultSampleRows, &host.cluster);
+            resolve_inferred.push_back(micros(inferred_start, Clock::now()));
+            ASSERT_TRUE(inferred.ok()) << inferred.error;
 
-        std::cout << "\n=== #956 · where scoring spends its time ===\n"
-                  << "resolve_dataset  " << ms(resolve_start, resolve_end) << " ms"
-                  << "   (samples via SELECT *)\n"
-                  << "score_table      " << ms(score_start, score_end) << " ms"
-                  << "   (" << scored.rows_scored << " rows scored)\n"
-                  << std::endl;
+            CpuDevice score_device;
+            const auto score_start = Clock::now();
+            const zetta::ml::TableScoreResult scored = zetta::ml::score_table(
+                host.node, *model, again.table_id, again.contract, score_device);
+            score_times.push_back(micros(score_start, Clock::now()));
+            ASSERT_TRUE(scored.ok()) << scored.error;
+            rows_scored = scored.rows_scored;
+        }
+
+        std::cout << "\n=== #956 · where scoring spends its time (median of " << kRepeats
+                  << ", " << again.rows << " rows) ===\n"
+                  << "resolve_dataset, entity + label named  "
+                  << median(resolve_named) / 1000.0 << " ms\n"
+                  << "resolve_dataset, label inferred        "
+                  << median(resolve_inferred) / 1000.0 << " ms\n"
+                  << "score_table                            " << median(score_times) / 1000.0
+                  << " ms   (" << rows_scored << " rows scored)\n";
+        for (const std::string& note : inferred.notes) std::cout << "  note: " << note << "\n";
+        std::cout << std::endl;
     }
 
     const fs::path out = dir / "run-report.json";
@@ -438,7 +495,7 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     // comparable to anything.
     EXPECT_NEAR(recomputed_in_sample, metrics.at("auc").get<double>(), 0.01);
     ASSERT_FALSE(result.drivers.empty()) << "TreeSHAP produced no drivers";
-    EXPECT_EQ(result.drivers.size(), resolved.contract.feature_columns.size());
+    EXPECT_EQ(result.drivers.size(), encoded_features);
     EXPECT_FALSE(result.top_driver.empty());
 
     // The model must learn a real signal — and NOT a perfect one. The label is drawn from

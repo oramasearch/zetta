@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/data/categorical_encoding.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/util/timestamp.hpp"
 
@@ -172,10 +173,66 @@ ComputeStatus fill_chunks(const zetta::storage::StorageEngine& store, const std:
     return ComputeStatus::success();
 }
 
+// One-hot indicator column (#1203): 1 where the row's field is `level`, else 0.
+// A missing field or null is a 0 — a connector table is schemaless at the row
+// level, and "not this level" is exactly what an absent value means here.
+ComputeStatus fill_indicator_chunks(const zetta::storage::StorageEngine& store,
+                                    const std::string& field, const std::string& level,
+                                    ComputeDevice& device, std::size_t chunk_rows,
+                                    std::vector<DeviceBuffer>& out) {
+    const std::size_t row_count = store.size();
+    std::vector<double> host;
+    for (std::size_t start = 0; start < row_count; start += chunk_rows) {
+        const std::size_t length = std::min(chunk_rows, row_count - start);
+        host.clear();
+        host.reserve(length);
+        for (std::size_t row = start; row < start + length; ++row) {
+            const zetta::storage::ParquetLazyPtr handle = store.at(row);
+            if (!handle) {
+                return ComputeStatus::backend_error(
+                    "load_data_frame: row " + std::to_string(row) +
+                    " could not be read: " + handle.error());
+            }
+            const nlohmann::json& doc = *handle;
+            double value = 0.0;
+            if (doc.is_object()) {
+                if (const auto found = doc.find(field); found != doc.end()) {
+                    value = data::categorical_indicator(*found, level);
+                }
+            }
+            host.push_back(value);
+        }
+        DeviceBuffer buffer = device.allocate(DataType::Float64, length);
+        if (buffer.empty()) {
+            return ComputeStatus::out_of_memory(
+                "load_data_frame: failed to allocate a device buffer for column '" +
+                field + "=" + level + "'");
+        }
+        const ComputeStatus status =
+            device.copy_from_host(host.data(), buffer, length * sizeof(double));
+        if (!status.ok()) return status;
+        out.push_back(std::move(buffer));
+    }
+    return ComputeStatus::success();
+}
+
 // Build one column by dispatching the chunk fill on the column's runtime dtype.
 ComputeStatus build_column(const zetta::storage::StorageEngine& store, const ColumnSchema& spec,
                            ComputeDevice& device, std::size_t chunk_rows,
                            Column& out) {
+    if (spec.category_level) {
+        if (spec.dtype != DataType::Float64 || spec.timestamp) {
+            return ComputeStatus::invalid_argument(
+                "load_data_frame: categorical indicator column '" + spec.name +
+                "' must be a non-timestamp float64");
+        }
+        std::vector<DeviceBuffer> chunks;
+        const ComputeStatus status = fill_indicator_chunks(
+            store, spec.source_field(), *spec.category_level, device, chunk_rows, chunks);
+        if (!status.ok()) return status;
+        out = Column{spec.name, spec.dtype, std::move(chunks), store.size()};
+        return ComputeStatus::success();
+    }
     if (spec.timestamp && spec.dtype != DataType::Float64) {
         return ComputeStatus::invalid_argument(
             "load_data_frame: timestamp column '" + spec.name +

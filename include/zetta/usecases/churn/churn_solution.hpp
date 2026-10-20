@@ -223,14 +223,18 @@ struct ChurnTableInput {
 };
 
 // The DDF schema of the accounts shard for `contract`: the entity key as Int64,
-// each feature column as Float64, the label as Int64, and the time column (when
-// set) as Float64. Pure — the encoder's output contract in table form.
+// each feature column as Float64, one Float64 0/1 indicator per level of each
+// categorical feature (named `<column>=<level>`, read from the original column),
+// the label as Int64, and the time column (when set) as Float64. A column in both
+// `feature_columns` and `categorical_features` is read as the category. Pure — the
+// encoder's output contract in table form.
 ddf::DataFrameSchema table_accounts_schema(
     const zetta::data::DatasetContract& contract,
     bool continuous_label = false);
 
 // The featurization for `contract`: **static carry-through mode** — no windowed
-// event features, the contract's feature columns carried through, the label as the
+// event features, the contract's feature columns and categorical indicator
+// columns carried through, the label as the
 // target. A connector query returns one already-featurized row per entity (the
 // windowing happened in the warehouse SQL), so there are no events to aggregate.
 // When the contract names a time column the row universe is still cut at `as_of`,

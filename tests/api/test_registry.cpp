@@ -106,7 +106,7 @@ TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        167u); // +2 app-credential capabilities (#1280), +2 network-record capabilities (#1281), +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        168u); // +load_dataset_object (#1302), +2 app-credential capabilities (#1280), +2 network-record capabilities (#1281), +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -133,6 +133,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     // A remote caller can put data on the node without a file on its disk
     // (#1008).
     EXPECT_TRUE(registry.find("upload_dataset"));
+    // ...and a file past its 16 MiB cap, staged in a bucket first (#1302).
+    EXPECT_TRUE(registry.find("load_dataset_object"));
     // A mistaken project can be removed, not only created (#1009).
     EXPECT_TRUE(registry.find("delete_project"));
     // Finding a table must not require ingesting one: browsing a source's
@@ -1384,14 +1386,60 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
     EXPECT_EQ(fetched.value.at("name"), "events");
     EXPECT_EQ(fetched.value.at("database"), "data");
     EXPECT_EQ(fetched.value.at("rows"), 2u);
+    // #1021: get_dataset's columns are typed objects. No order was recorded
+    // for this table, so they come first-seen (the stored keys, sorted) and the
+    // answer says so.
+    EXPECT_EQ(fetched.value.at("column_order"), "first_seen");
     EXPECT_EQ(fetched.value.at("columns"),
-              nlohmann::json::array({"action", "user"}));
+              (nlohmann::json::array(
+                  {{{"name", "action"}, {"type", "string"}, {"nullable", false},
+                    {"null_fraction", 0.0}},
+                   {{"name", "user"}, {"type", "string"}, {"nullable", false},
+                    {"null_fraction", 0.0}}})));
     EXPECT_TRUE(fetched.value.at("partitions").empty());
 
     auto listed = call("list_datasets", nlohmann::json::object());
     ASSERT_TRUE(listed.ok) << listed.error.message;
     ASSERT_EQ(listed.value.at("datasets").size(), 1u);
     EXPECT_EQ(listed.value.at("datasets")[0].at("name"), "events");
+    // list_datasets keeps the names (one string per column), in the same order.
+    EXPECT_EQ(listed.value.at("datasets")[0].at("columns"),
+              nlohmann::json::array({"action", "user"}));
+
+    // A recorded source order (a CSV header, a SELECT list) leads; a typed
+    // column reports the share of rows that hold null for it or omit it.
+    auto ordered = database->create_table("signups");
+    ASSERT_TRUE(ordered);
+    ordered->set_column_order({"user", "plan", "seats"});
+    ordered->add_row({{"user", "u1"}, {"plan", "pro"}, {"seats", 3}});
+    ordered->add_row({{"user", "u2"}, {"plan", nullptr}, {"seats", 2.5}});
+    ordered->add_row({{"user", "u3"}, {"seats", 1}});
+    ordered->add_row({{"user", "u4"}, {"plan", "free"}, {"seats", 1}, {"note", "x"}});
+    auto signups = call("get_dataset", nlohmann::json{{"dataset", "data.signups"}});
+    ASSERT_TRUE(signups.ok) << signups.error.message;
+    EXPECT_EQ(signups.value.at("column_order"), "source");
+    const nlohmann::json& columns = signups.value.at("columns");
+    ASSERT_EQ(columns.size(), 4u);
+    EXPECT_EQ(columns[0].at("name"), "user");
+    EXPECT_EQ(columns[1].at("name"), "plan");
+    EXPECT_EQ(columns[2].at("name"), "seats");
+    EXPECT_EQ(columns[3].at("name"), "note") << "a column the order does not name follows";
+    EXPECT_EQ(columns[0].at("type"), "string");
+    EXPECT_FALSE(columns[0].at("nullable").get<bool>());
+    EXPECT_EQ(columns[1].at("type"), "string");
+    EXPECT_TRUE(columns[1].at("nullable").get<bool>());
+    EXPECT_DOUBLE_EQ(columns[1].at("null_fraction").get<double>(), 0.5);
+    EXPECT_EQ(columns[2].at("type"), "number") << "integers widen to number beside a real";
+    EXPECT_DOUBLE_EQ(columns[3].at("null_fraction").get<double>(), 0.75);
+    auto signups_listed = call("list_datasets", nlohmann::json::object());
+    ASSERT_TRUE(signups_listed.ok) << signups_listed.error.message;
+    for (const nlohmann::json& dataset : signups_listed.value.at("datasets")) {
+        if (dataset.at("name") != "signups") continue;
+        EXPECT_EQ(dataset.at("columns"),
+                  nlohmann::json::array({"user", "plan", "seats", "note"}));
+        EXPECT_EQ(dataset.at("column_order"), "source");
+    }
+    ASSERT_TRUE(database->drop_table("signups"));
 
     auto missing = call("get_dataset", nlohmann::json{{"dataset", "nonexistent"}});
     EXPECT_FALSE(missing.ok);
@@ -1432,6 +1480,52 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
     auto exact = call("get_dataset", nlohmann::json{{"dataset", "v1.events"}});
     ASSERT_TRUE(exact.ok) << exact.error.message;
     EXPECT_EQ(exact.value.at("name"), "v1.events");
+}
+
+// #1021: get_dataset's typed columns say nothing about the values of a column
+// the caller may not read (a column-scoped sql:read): the column keeps its name
+// and answers type, nullable and null_fraction as null, as SQL masks it.
+TEST_F(RegistryFixture, GetDatasetMasksTheTypesOfColumnsTheCallerMayNotRead) {
+    node.ensure_builtin_roles();
+    auto database = node.create_database("sales");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("customers");
+    ASSERT_TRUE(table);
+    table->set_column_order({"id", "name", "ssn"});
+    table->add_row({{"id", 1}, {"name", "a"}, {"ssn", "111"}});
+    table->add_row({{"id", 2}, {"name", "b"}, {"ssn", nullptr}});
+
+    ASSERT_TRUE(node.create_role("clerk"));
+    ASSERT_TRUE(node.grant_permissions("clerk", {"api:query", "mcp:call"}));
+    ASSERT_TRUE(node.grant_scoped_permissions(
+        "clerk", {"sql:read"},
+        zetta::governance::Resource::column("sales", "customers", {"id", "name"})));
+    const auto user = node.create_user("cleo");
+    ASSERT_TRUE(user);
+    ASSERT_TRUE(node.assign_role(user->id(), node.find_role("clerk")->id()));
+
+    ApiContext context{node, nullptr, user->id(), trace, &node.span_recorder()};
+    context.acting_is_user = true;
+    const ApiResult masked = registry.call(
+        "get_dataset", nlohmann::json{{"dataset", "customers"}}, context);
+    ASSERT_TRUE(masked.ok) << masked.error.message;
+    const nlohmann::json& columns = masked.value.at("columns");
+    ASSERT_EQ(columns.size(), 3u);
+    EXPECT_EQ(columns[0].at("name"), "id");
+    EXPECT_EQ(columns[0].at("type"), "integer");
+    EXPECT_EQ(columns[1].at("type"), "string");
+    EXPECT_EQ(columns[2],
+              (nlohmann::json{{"name", "ssn"},
+                              {"type", nullptr},
+                              {"nullable", nullptr},
+                              {"null_fraction", nullptr}}))
+        << "the hidden column's name only";
+
+    // The trusted local caller reads every column.
+    const ApiResult whole = call("get_dataset", nlohmann::json{{"dataset", "customers"}});
+    ASSERT_TRUE(whole.ok) << whole.error.message;
+    EXPECT_EQ(whole.value.at("columns")[2].at("type"), "string");
+    EXPECT_DOUBLE_EQ(whole.value.at("columns")[2].at("null_fraction").get<double>(), 0.5);
 }
 
 TEST_F(RegistryFixture, AnalyzeAndPlanFeatureReadsUseLandedDatasetRows) {

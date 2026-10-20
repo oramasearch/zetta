@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -90,7 +92,8 @@ TEST(DatasetContract, InfersEntityLabelAndFeaturesFromAFlatTable) {
 
 TEST(DatasetContract, AColumnItCannotUseIsSaidOutLoud) {
     // lake's UX review 2026-09-27: a categorical `plan` column vanished from the features
-    // with nothing saying so (#957 is categorical support itself).
+    // with nothing saying so. With two rows holding two values, `plan` identifies rows
+    // rather than grouping them (#1203), so it is still left out — and said.
     const std::vector<std::string> columns{"account_id", "plan", "spend", "churned"};
     const std::vector<Json> sample{
         {{"account_id", 1}, {"plan", "pro"}, {"spend", 80.0}, {"churned", 0}},
@@ -348,6 +351,156 @@ TEST(DatasetContract, MalformedFieldsAreRejectedAtTheBoundary) {
         nlohmann::json{{"feature_columns", "mrr"}}, &error));
     EXPECT_FALSE(zetta::data::dataset_contract_from_json(
         nlohmann::json{{"feature_columns", nlohmann::json::array({""})}}, &error));
+}
+
+// --- categorical features (#1203) -------------------------------------------
+
+// A churn table as a CSV upload lands it: numbers, two low-cardinality text columns,
+// a unique text column, and text dates.
+std::vector<Json> categorical_sample(std::size_t rows = 40) {
+    const std::vector<std::string> plans{"basic", "pro", "enterprise"};
+    const std::vector<std::string> regions{"north", "south"};
+    std::vector<Json> sample;
+    for (std::size_t index = 0; index < rows; ++index) {
+        sample.push_back(Json{{"account_id", static_cast<std::int64_t>(index + 1)},
+                              {"spend", static_cast<double>(index * 3 % 17)},
+                              {"plan", plans[index % 3]},
+                              {"region", index % 5 == 0 ? Json(nullptr)
+                                                        : Json(regions[index % 2])},
+                              {"email", "user" + std::to_string(index) + "@example.com"},
+                              {"signed_up", "2026-0" + std::to_string(1 + index % 9) + "-01"},
+                              {"churned", index % 4 == 0 ? 1 : 0}});
+    }
+    return sample;
+}
+
+const std::vector<std::string> kCategoricalColumns = {
+    "account_id", "spend", "plan", "region", "email", "signed_up", "churned"};
+
+TEST(CategoricalFeatures, LowCardinalityTextBecomesAOneHotFeature) {
+    const auto inferred =
+        infer_dataset_contract(kCategoricalColumns, categorical_sample(), {});
+    ASSERT_TRUE(inferred.ok()) << inferred.error;
+    EXPECT_EQ(inferred.contract.feature_columns, (std::vector<std::string>{"spend"}));
+    ASSERT_EQ(inferred.contract.categorical_features.size(), 2u);
+    const auto& plan = inferred.contract.categorical_features[0];
+    EXPECT_EQ(plan.column, "plan");
+    EXPECT_EQ(plan.levels, (std::vector<std::string>{"basic", "enterprise", "pro"}));
+    EXPECT_EQ(plan.feature_names(),
+              (std::vector<std::string>{"plan=basic", "plan=enterprise", "plan=pro"}));
+    // Nulls are skipped when fitting, not a level of their own.
+    EXPECT_EQ(inferred.contract.categorical_features[1].levels,
+              (std::vector<std::string>{"north", "south"}));
+
+    // Every decision is in the notes: what was encoded, and why the rest was not.
+    const auto note = [&inferred](std::string_view prefix) {
+        const auto found = std::ranges::find_if(inferred.notes, [prefix](const auto& line) {
+            return line.starts_with(prefix);
+        });
+        return found == inferred.notes.end() ? std::string{} : *found;
+    };
+    EXPECT_NE(note("categorical column: 'plan'").find("3 levels"), std::string::npos);
+    EXPECT_NE(note("not used: 'email'").find("an identifier or free text"), std::string::npos)
+        << note("not used: 'email'");
+    EXPECT_NE(note("not used: 'signed_up'").find("dates or timestamps"), std::string::npos)
+        << note("not used: 'signed_up'");
+}
+
+TEST(CategoricalFeatures, TextAboveTheLevelCapStaysExcluded) {
+    std::vector<Json> sample;
+    for (std::size_t index = 0; index < 200; ++index) {
+        sample.push_back(Json{{"account_id", static_cast<std::int64_t>(index)},
+                              {"spend", static_cast<double>(index % 9)},
+                              {"city", "city_" + std::to_string(index % 40)},
+                              {"churned", index % 2}});
+    }
+    const auto inferred =
+        infer_dataset_contract({"account_id", "spend", "city", "churned"}, sample, {});
+    ASSERT_TRUE(inferred.ok()) << inferred.error;
+    EXPECT_TRUE(inferred.contract.categorical_features.empty());
+    EXPECT_TRUE(std::ranges::any_of(inferred.notes, [](const std::string& line) {
+        return line.starts_with("not used: 'city'") &&
+               line.find("40 distinct values") != std::string::npos &&
+               line.find("32-level cap") != std::string::npos;
+    })) << inferred.notes.back();
+}
+
+TEST(CategoricalFeatures, CategoriesAloneAreATrainingSet) {
+    std::vector<Json> sample;
+    for (std::size_t index = 0; index < 12; ++index) {
+        sample.push_back(Json{{"account_id", static_cast<std::int64_t>(index)},
+                              {"plan", index % 2 == 0 ? "basic" : "pro"},
+                              {"churned", index % 2}});
+    }
+    const auto inferred = infer_dataset_contract({"account_id", "plan", "churned"}, sample);
+    ASSERT_TRUE(inferred.ok()) << inferred.error;
+    EXPECT_TRUE(inferred.contract.feature_columns.empty());
+    ASSERT_EQ(inferred.contract.categorical_features.size(), 1u);
+}
+
+TEST(CategoricalFeatures, ANamedTextFeatureIsAlsoRecordedAsACategory) {
+    // A named text column stays in feature_columns (a text methodology reads it from
+    // there) and is recorded as a category for a trainer that one-hot encodes it.
+    DatasetContract overrides;
+    overrides.feature_columns = {"spend", "plan"};
+    const auto inferred =
+        infer_dataset_contract(kCategoricalColumns, categorical_sample(), overrides);
+    ASSERT_TRUE(inferred.ok()) << inferred.error;
+    EXPECT_EQ(inferred.contract.feature_columns, (std::vector<std::string>{"spend", "plan"}));
+    ASSERT_EQ(inferred.contract.categorical_features.size(), 1u);
+    EXPECT_EQ(inferred.contract.categorical_features[0].column, "plan");
+}
+
+TEST(CategoricalFeatures, EncodingARowHandlesSeenUnseenMissingAndWrongTypes) {
+    zetta::data::CategoricalEncoding plan;
+    plan.column = "plan";
+    plan.levels = {"basic", "pro"};
+    const std::vector encodings{plan};
+
+    Json seen{{"plan", "pro"}};
+    EXPECT_EQ(zetta::data::encode_categorical_row(encodings, seen), "");
+    EXPECT_EQ(seen.at("plan=basic"), 0.0);
+    EXPECT_EQ(seen.at("plan=pro"), 1.0);
+
+    Json unseen{{"plan", "platinum"}};
+    EXPECT_EQ(zetta::data::encode_categorical_row(encodings, unseen), "");
+    EXPECT_EQ(unseen.at("plan=basic"), 0.0);
+    EXPECT_EQ(unseen.at("plan=pro"), 0.0);
+
+    Json null_value{{"plan", nullptr}};
+    EXPECT_EQ(zetta::data::encode_categorical_row(encodings, null_value), "");
+    EXPECT_EQ(null_value.at("plan=pro"), 0.0);
+
+    // Already encoded by the caller: left as it is.
+    Json pre_encoded{{"plan=basic", 1}, {"plan=pro", 0}};
+    EXPECT_EQ(zetta::data::encode_categorical_row(encodings, pre_encoded), "");
+    EXPECT_EQ(pre_encoded.at("plan=basic"), 1);
+
+    Json absent{{"spend", 3}};
+    EXPECT_NE(zetta::data::encode_categorical_row(encodings, absent).find("no 'plan'"),
+              std::string::npos);
+    Json number{{"plan", 2}};
+    EXPECT_NE(zetta::data::encode_categorical_row(encodings, number).find("must be text"),
+              std::string::npos);
+}
+
+TEST(CategoricalFeatures, TheContractCarriesItsCategoriesThroughJson) {
+    const auto inferred =
+        infer_dataset_contract(kCategoricalColumns, categorical_sample(), {});
+    ASSERT_TRUE(inferred.ok()) << inferred.error;
+    const Json encoded = zetta::data::to_json(inferred.contract);
+    ASSERT_TRUE(encoded.contains("categorical_features"));
+    EXPECT_EQ(encoded.at("categorical_features")[0].at("features"),
+              Json::array({"plan=basic", "plan=enterprise", "plan=pro"}));
+    std::string error;
+    const auto decoded = zetta::data::dataset_contract_from_json(encoded, &error);
+    ASSERT_TRUE(decoded) << error;
+    EXPECT_EQ(*decoded, inferred.contract);
+
+    Json duplicate = encoded;
+    duplicate["categorical_features"][0]["levels"] = Json::array({"pro", "pro"});
+    EXPECT_FALSE(zetta::data::dataset_contract_from_json(duplicate, &error));
+    EXPECT_NE(error.find("duplicate level"), std::string::npos) << error;
 }
 
 }  // namespace

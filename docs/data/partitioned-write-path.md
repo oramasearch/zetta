@@ -98,7 +98,7 @@ with an `error`):
    | `blob_ref` | the large object's id (the body holding this partition's rows) |
    | `row_range` | the partition's `[start, end)` slice (see below) |
    | `owner_nodes` | `partitioner->place_partition(partition, members)` — primary first, then replicas |
-   | `stats` | `{ "partition": <id>, "rows": <count>, "format": "parquet"\|"jsonl", "placement": <partitioner name>, "columns": [...] }` (provenance; richer per-column pruning stats are a later slice) |
+   | `stats` | `{ "partition": <id>, "rows": <count>, "format": "parquet"\|"jsonl", "placement": <partitioner name>, "columns": [...], "schema": [...], "column_stats": [{name, type, nulls}], "bytes": <n> }` (provenance, the body's schema, and each column's JSON type and null count — #837, #1021; per-column pruning stats are a later slice) |
 
 ## Row ranges — the cumulative slice
 

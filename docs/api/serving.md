@@ -21,7 +21,11 @@ cluster. Realizes [../product/experience/serving.md](../product/experience/servi
     (`load_gbdt_model` + `score_gbdt`, the GBDT schema boundary re-validating
     the weights body), returning the ranked at-risk list. Boolean features load
     as 0/1, and a model trained with text entity ids accepts and returns those
-    original values. The weights
+    original values. A model trained with text categories takes each one by its
+    original column and text value (`{"region": "south"}`), encoded with the
+    levels stored in `feature_schema.categorical_encoding`; an unseen level or a
+    null encodes as all zeros, a missing column or a number is `invalid_input`
+    ([categorical features](../data/categorical-features.md), #1203). The weights
     replicate, so **any node answers**.
   - `GET /v1/indexes/{name}/search?query=…` — [THE search entry point](../indexing/node-search.md)
     (`Node::search`, #641) underneath: the distributed per-partition

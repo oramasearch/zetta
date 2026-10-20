@@ -310,6 +310,21 @@ const nlohmann::json& partition_scan_request_schema() {
               {"op", {{"enum", {"eq", "ne", "lt", "le", "gt", "ge"}}}},
               {"value", nlohmann::json::object()}}}}},
           {"columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"order_by",
+           {{"type", "array"},
+            {"description", "sort each partition's rows by these keys before keeping `keep` (#1021)"},
+            {"items",
+             {{"type", "object"},
+              {"additionalProperties", false},
+              {"required", {"column"}},
+              {"properties",
+               {{"column", {{"type", "string"}, {"minLength", 1}}},
+                {"descending", {{"type", "boolean"}}}}}}}}},
+          {"keep",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description",
+             "the most rows one partition returns: the SELECT's offset + limit (#1021)"}}},
           {"group_by", {{"type", "string"}}},
           {"aggregates",
            {{"type", "array"},
@@ -387,6 +402,14 @@ std::string encode_partition_scan_request(const PartitionScanRequest& request) {
                              {"value", request.where->value}};
     }
     if (!request.columns.empty()) document["columns"] = request.columns;
+    if (!request.order_by.empty()) {
+        nlohmann::json keys = nlohmann::json::array();
+        for (const OrderKey& key : request.order_by) {
+            keys.push_back({{"column", key.column}, {"descending", key.descending}});
+        }
+        document["order_by"] = std::move(keys);
+    }
+    if (request.keep) document["keep"] = *request.keep;
     if (request.aggregating()) {
         if (!request.group_by.empty()) document["group_by"] = request.group_by;
         nlohmann::json aggregates = nlohmann::json::array();
@@ -434,6 +457,15 @@ std::optional<PartitionScanRequest> decode_partition_scan_request(
     }
     if (document.contains("columns")) {
         request.columns = document.at("columns").get<std::vector<std::string>>();
+    }
+    if (document.contains("order_by")) {
+        for (const nlohmann::json& key : document.at("order_by")) {
+            request.order_by.push_back(OrderKey{key.at("column").get<std::string>(),
+                                                key.value("descending", false)});
+        }
+    }
+    if (document.contains("keep")) {
+        request.keep = document.at("keep").get<std::size_t>();
     }
     request.group_by = document.value("group_by", std::string{});
     if (document.contains("aggregates")) {
@@ -577,6 +609,58 @@ std::vector<GroupPartial> GroupAccumulator::take() {
     return std::exchange(groups_, {});
 }
 
+int compare_for_order(const nlohmann::json& left, const nlohmann::json& right) {
+    // Postgres' order for one ORDER BY key: numbers numerically, then booleans,
+    // then strings; NULL (or a missing field) greatest, so last ascending and
+    // first descending. Values of different kinds order by kind.
+    const auto rank = [](const nlohmann::json& value) {
+        if (value.is_null()) return 4;
+        if (value.is_number()) return 0;
+        if (value.is_boolean()) return 1;
+        if (value.is_string()) return 2;
+        return 3;
+    };
+    const int left_rank = rank(left);
+    const int right_rank = rank(right);
+    if (left_rank != right_rank) return left_rank < right_rank ? -1 : 1;
+    if (left.is_number()) {
+        const double x = left.get<double>();
+        const double y = right.get<double>();
+        return x < y ? -1 : (x > y ? 1 : 0);
+    }
+    if (left.is_boolean()) {
+        return left.get<bool>() == right.get<bool>() ? 0 : (left.get<bool>() ? 1 : -1);
+    }
+    if (left.is_string()) {
+        const int compared = left.get_ref<const std::string&>().compare(
+            right.get_ref<const std::string&>());
+        return compared < 0 ? -1 : (compared > 0 ? 1 : 0);
+    }
+    if (left.is_null()) return 0;
+    const std::string x = left.dump();
+    const std::string y = right.dump();
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+void sort_rows_for_order(std::vector<nlohmann::json>& rows,
+                         const std::vector<OrderKey>& keys) {
+    if (keys.empty()) return;
+    static const nlohmann::json null_value;
+    std::stable_sort(rows.begin(), rows.end(),
+                     [&](const nlohmann::json& left, const nlohmann::json& right) {
+                         for (const OrderKey& key : keys) {
+                             const auto left_cell = left.find(key.column);
+                             const auto right_cell = right.find(key.column);
+                             int compared = compare_for_order(
+                                 left_cell == left.end() ? null_value : *left_cell,
+                                 right_cell == right.end() ? null_value : *right_cell);
+                             if (key.descending) compared = -compared;
+                             if (compared != 0) return compared < 0;
+                         }
+                         return false;
+                     });
+}
+
 std::vector<ScanAggregate> scan_aggregates_of(const SelectStmt& statement) {
     std::vector<ScanAggregate> aggregates;
     for (const GroupedItem& item : statement.items) {
@@ -642,6 +726,13 @@ PartitionScanResponse scan_owned_partitions(const std::vector<OwnedPartition>& o
                 groups.add(row);
                 continue;
             }
+            // LIMIT pushdown (#1021): with no ORDER BY the first `keep` rows
+            // of the partition are all it can contribute. The scan goes on
+            // only to learn the columns the rows carry (columns_seen).
+            if (request.keep && request.order_by.empty() &&
+                block.rows.size() >= *request.keep) {
+                continue;
+            }
             if (request.columns.empty()) {
                 block.rows.push_back(row);
             } else {
@@ -653,7 +744,15 @@ PartitionScanResponse scan_owned_partitions(const std::vector<OwnedPartition>& o
                 block.rows.push_back(std::move(projected));
             }
         }
-        if (!aggregating) response.blocks.push_back(std::move(block));
+        if (!aggregating) {
+            // With ORDER BY, the partition's top `keep` by the same stable sort
+            // the coordinator applies to the merged rows.
+            if (request.keep && !request.order_by.empty()) {
+                sort_rows_for_order(block.rows, request.order_by);
+                if (block.rows.size() > *request.keep) block.rows.resize(*request.keep);
+            }
+            response.blocks.push_back(std::move(block));
+        }
     }
     if (aggregating) response.groups = groups.take();
     response.columns_seen = std::move(columns_seen);
@@ -734,8 +833,19 @@ PartitionScanRequest scan_request_for(const SelectStmt& statement,
     if (statement.aggregating()) {
         if (!statement.group_by.empty()) request.group_by = statement.group_by.front();
         request.aggregates = scan_aggregates_of(statement);
-    } else if (!statement.all) {
-        request.columns = statement.columns;
+    } else {
+        if (!statement.all) request.columns = statement.columns;
+        // LIMIT pushdown (#1021): no partition need send more than the rows the
+        // answer can hold, offset included. ORDER BY travels with it so each
+        // owner keeps its own top rows rather than its first ones.
+        // At least one row is kept, so `LIMIT 0` still lets the coordinator
+        // check an ORDER BY key against a real row, as a full scan would; an
+        // offset + limit past the size range is no limit at all.
+        if (statement.limit &&
+            *statement.limit <= std::numeric_limits<std::size_t>::max() - statement.offset) {
+            request.keep = std::max<std::size_t>(1, statement.offset + *statement.limit);
+            request.order_by = statement.order_by;
+        }
     }
     return request;
 }
@@ -900,6 +1010,7 @@ SelectOutcome merge_scan_responses(const SelectStmt& statement,
         for (const PartitionScanResponse& answer : answers) {
             for (const ScanBlock& block : answer.blocks) {
                 blocks.emplace(block.partition, &block.rows);
+                outcome.rows_received += block.rows.size();
             }
         }
         for (const std::string& partition : partition_order) {
@@ -986,6 +1097,7 @@ void merge_into(SelectOutcome& outcome, const SelectStmt& statement,
     outcome.rows = std::move(merged.rows);
     outcome.table_columns = std::move(merged.table_columns);
     outcome.table_columns_complete = merged.table_columns_complete;
+    outcome.rows_received = merged.rows_received;
 }
 
 }  // namespace
@@ -1064,10 +1176,25 @@ SelectOutcome DistributedSelect::execute(const SelectStmt& statement,
             continue;
         }
 
-        const std::string encoded = encode_partition_scan_request(request);
+        std::string encoded = encode_partition_scan_request(request);
         const auto started = std::chrono::steady_clock::now();
-        const zetta::cluster::SignalResponse reply =
+        zetta::cluster::SignalResponse reply =
             cluster_.request(node_id, std::string(kScanMethod), encoded, timeout);
+        // A responder older than LIMIT pushdown (#1021) refuses `keep` and
+        // `order_by` at its schema (a closed object) and answers a decode error,
+        // "sql.scan: …", where a failed scan says "sql.scan local: …". During a
+        // rolling upgrade, ask it again without them: the coordinator applies
+        // ORDER BY / OFFSET / LIMIT to the merged rows either way, so the answer
+        // is the same and only the rows on the wire differ.
+        if (!reply.ok && request.keep && reply.error.starts_with("sql.scan: ") &&
+            (reply.error.find("keep") != std::string::npos ||
+             reply.error.find("order_by") != std::string::npos)) {
+            PartitionScanRequest unlimited = request;
+            unlimited.keep.reset();
+            unlimited.order_by.clear();
+            encoded = encode_partition_scan_request(unlimited);
+            reply = cluster_.request(node_id, std::string(kScanMethod), encoded, timeout);
+        }
         const double elapsed_ms =
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - started)

@@ -60,7 +60,7 @@
   "info": {
     "description": "The capability registry rendered as plain HTTP routes: reads are GET /v1/<name> (input in the query string), actions and jobs are POST /v1/<name> (input as the JSON body). The same registry is served as MCP tools on POST /mcp — one registry, two renderings, zero drift. Every response carries a trace_id; read the full trace back with get_trace.",
     "title": "Orama Zetta control surface",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -549,6 +549,52 @@
                           }
                         ]
                       },
+                      "categorical_features": {
+                        "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                        "items": {
+                          "additionalProperties": false,
+                          "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "encoding": {
+                              "enum": [
+                                "one_hot"
+                              ],
+                              "type": "string"
+                            },
+                            "features": {
+                              "description": "the encoded feature names, one per level",
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "levels": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "maxItems": 32,
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "unseen": {
+                              "description": "how a value outside the fitted levels is encoded",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "column",
+                            "levels"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
                       "entity_column": {
                         "description": "the integer or text business key of the thing being scored, one row per entity",
                         "type": "string"
@@ -589,7 +635,7 @@
                         "type": "object"
                       },
                       "feature_columns": {
-                        "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                        "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                         "items": {
                           "minLength": 1,
                           "type": "string"
@@ -6038,6 +6084,52 @@
                               }
                             ]
                           },
+                          "categorical_features": {
+                            "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                            "items": {
+                              "additionalProperties": false,
+                              "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                              "properties": {
+                                "column": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "encoding": {
+                                  "enum": [
+                                    "one_hot"
+                                  ],
+                                  "type": "string"
+                                },
+                                "features": {
+                                  "description": "the encoded feature names, one per level",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                "levels": {
+                                  "items": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "maxItems": 32,
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "unseen": {
+                                  "description": "how a value outside the fitted levels is encoded",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "column",
+                                "levels"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
                           "entity_column": {
                             "description": "the integer or text business key of the thing being scored, one row per entity",
                             "type": "string"
@@ -6078,7 +6170,7 @@
                             "type": "object"
                           },
                           "feature_columns": {
-                            "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                            "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                             "items": {
                               "minLength": 1,
                               "type": "string"
@@ -11246,6 +11338,52 @@
                         }
                       ]
                     },
+                    "categorical_features": {
+                      "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                      "items": {
+                        "additionalProperties": false,
+                        "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "encoding": {
+                            "enum": [
+                              "one_hot"
+                            ],
+                            "type": "string"
+                          },
+                          "features": {
+                            "description": "the encoded feature names, one per level",
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "levels": {
+                            "items": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "maxItems": 32,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "unseen": {
+                            "description": "how a value outside the fitted levels is encoded",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "levels"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "entity_column": {
                       "description": "the integer or text business key of the thing being scored, one row per entity",
                       "type": "string"
@@ -11286,7 +11424,7 @@
                       "type": "object"
                     },
                     "feature_columns": {
-                      "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                      "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                       "items": {
                         "minLength": 1,
                         "type": "string"
@@ -11353,12 +11491,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's own feature columns",
+                  "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's inputs (feature_schema.inputs): numeric features by name, a text category by its original column and text value",
                   "type": "object"
                 }
               }
             },
-            "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's own feature columns",
+            "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's inputs (feature_schema.inputs): numeric features by name, a text category by its original column and text value",
             "in": "query",
             "name": "row",
             "required": false
@@ -12405,7 +12543,7 @@
     },
     "/v1/get_dataset": {
       "get": {
-        "description": "Read one dataset's computed summary — schema, row count, size, format, replication, partition placement — by name (plus database when ambiguous). No side effects. Requires api:query.",
+        "description": "Read one dataset's computed summary — its columns in the source file's order with each one's type and null share, row count, size, format, replication, partition placement — by name (plus database when ambiguous). No side effects. Requires api:query.",
         "operationId": "get_dataset",
         "parameters": [
           {
@@ -12461,9 +12599,65 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "column_order": {
+                          "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
+                          "enum": [
+                            "source",
+                            "first_seen"
+                          ],
+                          "type": "string"
+                        },
                         "columns": {
+                          "description": "the dataset's columns, in the source's order when column_order is \"source\" (#1021), each with the JSON type its values share and the share of rows that hold null for it or omit it",
                           "items": {
-                            "type": "string"
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "null_fraction": {
+                                "description": "nulls (or missing cells) over rows; null when unknown (a partition-only dataset written before null counts were recorded) or when the caller may not read the column",
+                                "maximum": 1,
+                                "minimum": 0,
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "nullable": {
+                                "description": "null when the caller may not read the column",
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "type": {
+                                "description": "the JSON type the column's values share: integer widens to number when both occur, mixed when the values differ otherwise, \"null\" when every value is null, unknown for a partition written before types were recorded; JSON null when the caller may not read the column (sql:read)",
+                                "enum": [
+                                  "boolean",
+                                  "integer",
+                                  "number",
+                                  "string",
+                                  "object",
+                                  "array",
+                                  "null",
+                                  "mixed",
+                                  "unknown",
+                                  null
+                                ],
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "type",
+                              "nullable",
+                              "null_fraction"
+                            ],
+                            "type": "object"
                           },
                           "type": "array"
                         },
@@ -12550,6 +12744,7 @@
                         "rows",
                         "size_bytes",
                         "columns",
+                        "column_order",
                         "partitions",
                         "degraded",
                         "degraded_reason",
@@ -21361,7 +21556,16 @@
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "column_order": {
+                                "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
+                                "enum": [
+                                  "source",
+                                  "first_seen"
+                                ],
+                                "type": "string"
+                              },
                               "columns": {
+                                "description": "the column names, in the source's order when column_order is \"source\" (#1021)",
                                 "items": {
                                   "type": "string"
                                 },
@@ -21450,6 +21654,7 @@
                               "rows",
                               "size_bytes",
                               "columns",
+                              "column_order",
                               "partitions",
                               "degraded",
                               "degraded_reason",
@@ -27072,6 +27277,160 @@
         ]
       }
     },
+    "/v1/load_dataset_object": {
+      "post": {
+        "description": "Load a csv or jsonl object already in a bucket (uploaded a chunk at a time with PATCH /v1/objects/<bucket>/<key>) into a new partitioned table placed across the cluster - the path for a file larger than upload_dataset's 16 MiB, up to 1 GiB. Returns a run id at once and loads in the background: poll get_run until succeeded (the dataset is the run's output) or failed (the log says why, and no table is left). Needs objects:read on the bucket; remove_object removes the object afterwards and also needs objects:write. Audited as dataset_added. (#1302) Requires orchestration:add_dataset. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "load_dataset_object",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bucket": {
+                    "description": "the bucket holding the object (create_bucket); the caller needs objects:read on it, and objects:write with remove_object",
+                    "pattern": "^[a-z0-9][a-z0-9_.-]{0,95}$",
+                    "type": "string"
+                  },
+                  "database": {
+                    "description": "target database, created if absent (default datasets); named by the same rule as table_name",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "format": {
+                    "description": "how the object is laid out: csv (a header row, then one row per line with as many fields as the header, cells type-inferred) or jsonl (one JSON object per line)",
+                    "enum": [
+                      "csv",
+                      "jsonl"
+                    ],
+                    "type": "string"
+                  },
+                  "if_exists": {
+                    "description": "what to do when table_name is taken: fail (the default) refuses with conflict; rename saves under the next free name (_2, _3, ...) and the run's final log entry names the one asked for",
+                    "enum": [
+                      "fail",
+                      "rename"
+                    ],
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "the object's key: a plain (unsealed) csv or jsonl file, typically uploaded a chunk at a time with PATCH /v1/objects/<bucket>/<key>?offset=<n>. At most 1 GiB (1073741824 bytes), no line longer than 16 MiB",
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "remove_object": {
+                    "description": "remove the object once the load has finished, whether it succeeded or failed (default false). Needs objects:write on the bucket, as delete_object does, and is audited as a delete_object call",
+                    "type": "boolean"
+                  },
+                  "replication_factor": {
+                    "description": "owners per partition (default 3, clamped to the node count)",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "table_name": {
+                    "description": "the new table's name: a letter or underscore, then letters, digits and underscores, at most 63 characters, not a SQL keyword. A name already taken in the database is refused (conflict) unless if_exists is rename",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bucket",
+                  "key",
+                  "format",
+                  "table_name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "poll": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "description": "the load's run: poll get_run / system.runs",
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "run_id",
+                        "status",
+                        "poll"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Load a dataset from a stored object",
+        "tags": [
+          "job"
+        ]
+      }
+    },
     "/v1/log_run_artifact": {
       "post": {
         "description": "Append typed JSON chart data to a Run; this mutates the replicated Run. Requires orchestration:log_run_artifact.",
@@ -28061,7 +28420,7 @@
                     "type": "string"
                   },
                   "rows": {
-                    "description": "the batch to score: one object per entity mapping feature name to its numeric or boolean value; every feature the model was trained on must be present (extra features are ignored)",
+                    "description": "the batch to score: one object per entity mapping each input the model's feature_schema.inputs names to its value — a number or boolean for a numeric feature, the original text (or null) for a categorical one, which is one-hot encoded with the levels fitted at training time (an unseen level encodes as all zeros). Every input must be present; extra fields are ignored",
                     "items": {
                       "additionalProperties": {
                         "oneOf": [
@@ -28070,6 +28429,12 @@
                           },
                           {
                             "type": "boolean"
+                          },
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
                           }
                         ]
                       },
@@ -35198,6 +35563,52 @@
                           }
                         ]
                       },
+                      "categorical_features": {
+                        "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                        "items": {
+                          "additionalProperties": false,
+                          "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "encoding": {
+                              "enum": [
+                                "one_hot"
+                              ],
+                              "type": "string"
+                            },
+                            "features": {
+                              "description": "the encoded feature names, one per level",
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "levels": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "maxItems": 32,
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "unseen": {
+                              "description": "how a value outside the fitted levels is encoded",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "column",
+                            "levels"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
                       "entity_column": {
                         "description": "the integer or text business key of the thing being scored, one row per entity",
                         "type": "string"
@@ -35238,7 +35649,7 @@
                         "type": "object"
                       },
                       "feature_columns": {
-                        "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                        "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                         "items": {
                           "minLength": 1,
                           "type": "string"
@@ -36110,6 +36521,52 @@
                         }
                       ]
                     },
+                    "categorical_features": {
+                      "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                      "items": {
+                        "additionalProperties": false,
+                        "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "encoding": {
+                            "enum": [
+                              "one_hot"
+                            ],
+                            "type": "string"
+                          },
+                          "features": {
+                            "description": "the encoded feature names, one per level",
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "levels": {
+                            "items": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "maxItems": 32,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "unseen": {
+                            "description": "how a value outside the fitted levels is encoded",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "levels"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "entity_column": {
                       "description": "the integer or text business key of the thing being scored, one row per entity",
                       "type": "string"
@@ -36150,7 +36607,7 @@
                       "type": "object"
                     },
                     "feature_columns": {
-                      "description": "the numeric or boolean columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column",
+                      "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
                       "items": {
                         "minLength": 1,
                         "type": "string"
@@ -36224,7 +36681,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's own feature columns",
+                  "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's inputs (feature_schema.inputs): numeric features by name, and a text category by its original column and text value, one-hot encoded with the levels fitted at training time (an unseen level encodes as all zeros)",
                   "items": {
                     "type": "object"
                   },
@@ -36232,7 +36689,7 @@
                 }
               }
             },
-            "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's own feature columns",
+            "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's inputs (feature_schema.inputs): numeric features by name, and a text category by its original column and text value, one-hot encoded with the levels fitted at training time (an unseen level encodes as all zeros)",
             "in": "query",
             "name": "rows",
             "required": false
@@ -41846,7 +42303,7 @@
     },
     "/v1/upload_dataset": {
       "post": {
-        "description": "Load a csv or jsonl file's TEXT, sent in the request, into a new partitioned table placed across the cluster - for a caller that cannot put a file on the node (add_dataset reads the node's filesystem). Same parsing, table creation and placement as add_dataset; at most 16 MiB of content. Audited as dataset_added; the table then appears in list_datasets / system.datasets and can be passed to run as dataset_path <database>.<table>. (#1008) Requires orchestration:add_dataset.",
+        "description": "Load a csv or jsonl file's TEXT, sent in the request, into a new partitioned table placed across the cluster - for a caller that cannot put a file on the node (add_dataset reads the node's filesystem). Same parsing, table creation and placement as add_dataset; at most 16 MiB of content (a larger file goes to a bucket and loads with load_dataset_object). Audited as dataset_added; the table then appears in list_datasets / system.datasets and can be passed to run as dataset_path <database>.<table>. (#1008) Requires orchestration:add_dataset.",
         "operationId": "upload_dataset",
         "requestBody": {
           "content": {
@@ -41855,7 +42312,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "content": {
-                    "description": "the file's text, verbatim. At most 16 MiB (16777216 bytes of UTF-8); larger data belongs in a file on the node (add_dataset) or a source connection (create_dataset_from_query)",
+                    "description": "the file's text, verbatim. At most 16 MiB (16777216 bytes of UTF-8); upload a larger file to a bucket (PATCH /v1/objects/<bucket>/<key>, a chunk at a time) and load it with load_dataset_object",
                     "minLength": 1,
                     "type": "string"
                   },

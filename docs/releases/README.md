@@ -4,11 +4,17 @@ One page per tagged release, newest first. A page states what changed, **what it
 someone upgrading**, and what is knowingly still broken — a release note that lists only
 wins is marketing, and the next reader rediscovers the gap expensively.
 
+- [v0.4.0](v0.4.0.md) — 2026-10-19. Datasets: the source's column order and typed columns,
+  `LIMIT` pushed to the partitions, text columns as categorical features, the contract typed
+  from the partition catalog, and `load_dataset_object` past the 16 MiB inline cap. **Behaviour
+  changes:** `get_dataset`'s `columns` are typed objects, and predict takes categorical columns by
+  their original name. Image: `oramasearch/zetta:v0.4.0`.
 - [v0.3.0](v0.3.0.md) — 2026-10-17. Zetta's part of secure networking: a workspace's
   network records (connections, grants, tunnel sessions, activity), one scoped and
   revocable credential per app connection, Zetta peer links through zetta-tunnel peer
   gateways, and the cluster's mutual-TLS transport as a library zetta-tunnel links. No
-  behaviour change for a `v0.2.0` caller. Image: `oramasearch/zetta:v0.3.0`.
+  behaviour change for a `v0.2.0` caller. Image: `oramasearch/zetta:v0.3.0` (the same digest
+  as `main-d7551c75`).
 - [v0.2.0](v0.2.0.md) — 2026-10-12. The engine a hosted workspace runs on: 21 methodologies
   behind one registry, composed solutions, AutoML studies, pub/sub inside the node, a keyed
   record store and an object store, and an audit trail outside the replicated catalogue.
@@ -52,6 +58,9 @@ tag all exist and the cluster runs that image.
 7. **Move the pins**: zetta-bridge's pin of `modules/zetta` to the tag, then the umbrella's
    pointer, and refresh the `zetta-pin` build context lake builds against.
 
+`v0.4.0` is recorded on its page once the image is built.
+`v0.3.0` is `oramasearch/zetta:main-d7551c75`, also tagged `v0.3.0`
+(`sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a`); it is not rolled yet.
 `v0.2.0` is `oramasearch/zetta:main-4015ef76`, also tagged `v0.2.0`.
 
 ### Writing a release page

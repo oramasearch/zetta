@@ -12,6 +12,7 @@
 #include "temp_dir.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/executor.hpp"
@@ -1025,8 +1026,9 @@ TEST(QueryService, SelectStarFillsColumns) {
     svc.run("INSERT INTO d.t (plan, amount) VALUES ('pro', 5), ('free', 1);", "");
     svc.run("INSERT INTO d.t (plan, amount, region) VALUES ('team', 2, 'EU');", "");
 
-    // A stored row keeps its keys in name order; across rows, first seen first.
-    const std::vector<std::string> expected{"amount", "plan", "region"};
+    // The CREATE TABLE column list leads (#1021); a column it does not name
+    // follows, first seen first.
+    const std::vector<std::string> expected{"plan", "amount", "region"};
     auto limited = svc.run("SELECT * FROM d.t LIMIT 1;", "");
     ASSERT_TRUE(limited.ok()) << limited.error;
     EXPECT_EQ(limited.rows.size(), 1u);
@@ -1499,6 +1501,128 @@ TEST(PostgresParser, ParsesOrderByLimitOffset) {
     EXPECT_FALSE(pg.parse("SELECT * FROM t LIMIT -1;").ok());
     EXPECT_FALSE(pg.parse("SELECT * FROM t LIMIT 1.5;").ok());
     EXPECT_FALSE(pg.parse("SELECT * FROM t ORDER a;").ok());
+}
+
+// #1021: the SQL-standard spelling of LIMIT, and a row count given once.
+TEST(PostgresParser, ParsesFetchFirstRowsOnly) {
+    PostgresDialect pg;
+    const auto first = pg.parse("SELECT * FROM t FETCH FIRST 3 ROWS ONLY;");
+    ASSERT_TRUE(first.ok()) << first.error;
+    EXPECT_EQ(std::get<SelectStmt>(first.statements.at(0)).limit, 3u);
+
+    const auto next = pg.parse("SELECT * FROM t FETCH NEXT ROW ONLY");
+    ASSERT_TRUE(next.ok()) << next.error;
+    EXPECT_EQ(std::get<SelectStmt>(next.statements.at(0)).limit, 1u) << "n defaults to 1";
+
+    const auto paged =
+        pg.parse("SELECT a FROM t ORDER BY a OFFSET 2 ROWS FETCH FIRST 5 ROWS ONLY;");
+    ASSERT_TRUE(paged.ok()) << paged.error;
+    const auto& select = std::get<SelectStmt>(paged.statements.at(0));
+    EXPECT_EQ(select.offset, 2u);
+    EXPECT_EQ(select.limit, 5u);
+    EXPECT_TRUE(pg.parse("SELECT * FROM t OFFSET 1 ROW LIMIT 2;").ok());
+
+    EXPECT_FALSE(pg.parse("SELECT * FROM t FETCH FIRST 3 ROWS;").ok()) << "ONLY is required";
+    EXPECT_FALSE(pg.parse("SELECT * FROM t FETCH 3 ROWS ONLY;").ok());
+    const auto twice = pg.parse("SELECT * FROM t LIMIT 1 FETCH FIRST 2 ROWS ONLY;");
+    EXPECT_FALSE(twice.ok());
+    EXPECT_NE(twice.error.find("given twice"), std::string::npos) << twice.error;
+    EXPECT_FALSE(pg.parse("SELECT * FROM t LIMIT 1 LIMIT 2;").ok());
+}
+
+// #1021: LIMIT pushed into a replicated table's scan answers exactly what the
+// full scan cut down would, with and without ORDER BY, OFFSET or FETCH.
+TEST(QueryService, LimitOverAReplicatedTableMatchesTheFullScan) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    ASSERT_TRUE(svc.run("CREATE DATABASE d; CREATE TABLE d.events (n int, bucket int);", "").ok());
+    std::string insert = "INSERT INTO d.events (n, bucket) VALUES ";
+    for (int i = 0; i < 40; ++i) {
+        if (i > 0) insert += ", ";
+        insert += "(" + std::to_string(i) + ", " + std::to_string((i * 7) % 5) + ")";
+    }
+    ASSERT_TRUE(svc.run(insert + ";", "").ok());
+
+    const auto full = svc.run("SELECT * FROM d.events;", "");
+    ASSERT_TRUE(full.ok()) << full.error;
+    ASSERT_EQ(full.rows.size(), 40u);
+    const auto slice = [&](std::size_t from, std::size_t count) {
+        return std::vector<nlohmann::json>(
+            full.rows.begin() + static_cast<std::ptrdiff_t>(from),
+            full.rows.begin() + static_cast<std::ptrdiff_t>(std::min(from + count, full.rows.size())));
+    };
+    const auto limited = svc.run("SELECT * FROM d.events LIMIT 5;", "");
+    ASSERT_TRUE(limited.ok()) << limited.error;
+    EXPECT_EQ(limited.rows, slice(0, 5));
+    const auto paged = svc.run("SELECT * FROM d.events OFFSET 37 LIMIT 5;", "");
+    ASSERT_TRUE(paged.ok()) << paged.error;
+    EXPECT_EQ(paged.rows, slice(37, 5));
+    const auto fetched = svc.run("SELECT n FROM d.events FETCH FIRST 2 ROWS ONLY;", "");
+    ASSERT_TRUE(fetched.ok()) << fetched.error;
+    ASSERT_EQ(fetched.rows.size(), 2u);
+    EXPECT_EQ(fetched.rows[0]["n"], full.rows[0]["n"]);
+    const auto none = svc.run("SELECT * FROM d.events LIMIT 0;", "");
+    ASSERT_TRUE(none.ok()) << none.error;
+    EXPECT_TRUE(none.rows.empty());
+    EXPECT_EQ(none.columns, (std::vector<std::string>{"n", "bucket"}));
+
+    // ORDER BY is not pushed into this scan: the order needs every row.
+    const auto ordered = svc.run("SELECT n, bucket FROM d.events ORDER BY bucket DESC, n LIMIT 4;", "");
+    ASSERT_TRUE(ordered.ok()) << ordered.error;
+    ASSERT_EQ(ordered.rows.size(), 4u);
+    std::vector<nlohmann::json> expected = full.rows;
+    std::stable_sort(expected.begin(), expected.end(), [](const auto& a, const auto& b) {
+        if (a["bucket"] != b["bucket"]) return a["bucket"] > b["bucket"];
+        return a["n"] < b["n"];
+    });
+    for (std::size_t i = 0; i < 4; ++i) EXPECT_EQ(ordered.rows[i], expected[i]) << i;
+
+    // A column the table lacks is still refused under a LIMIT the first rows
+    // already filled: the scan keeps visiting rows to learn the columns.
+    const auto unknown = svc.run("SELECT nope FROM d.events LIMIT 1;", "");
+    EXPECT_FALSE(unknown.ok());
+    node.stop();
+}
+
+// #1021: CREATE TABLE's column list is the table's column order, so SELECT *
+// and the dataset summary list the columns as declared, not sorted.
+TEST(QueryService, CreateTableColumnListIsTheSelectStarOrder) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    ASSERT_TRUE(svc.run("CREATE DATABASE d; CREATE TABLE d.accounts (zeta int, alpha text, mid int);", "").ok());
+    ASSERT_TRUE(svc.run("INSERT INTO d.accounts (zeta, alpha, mid) VALUES (1, 'a', 2), (3, 'b', NULL);", "").ok());
+
+    const auto star = svc.run("SELECT * FROM d.accounts;", "");
+    ASSERT_TRUE(star.ok()) << star.error;
+    EXPECT_EQ(star.columns, (std::vector<std::string>{"zeta", "alpha", "mid"}));
+
+    bool found = false;
+    for (const zetta::data::DatasetSummary& dataset : node.datasets()) {
+        if (dataset.name != "accounts") continue;
+        found = true;
+        EXPECT_TRUE(dataset.column_order_recorded);
+        EXPECT_EQ(dataset.columns, (std::vector<std::string>{"zeta", "alpha", "mid"}));
+        ASSERT_EQ(dataset.typed_columns.size(), 3u);
+        EXPECT_EQ(dataset.typed_columns[0].type, "integer");
+        EXPECT_EQ(dataset.typed_columns[1].type, "string");
+        EXPECT_TRUE(dataset.typed_columns[2].nullable);
+        ASSERT_TRUE(dataset.typed_columns[2].null_fraction);
+        EXPECT_DOUBLE_EQ(*dataset.typed_columns[2].null_fraction, 0.5);
+    }
+    EXPECT_TRUE(found);
+
+    // A table with no recorded order keeps today's first-seen (sorted) order.
+    auto plain = node.find_database("d")->create_table("plain");
+    ASSERT_TRUE(plain);
+    plain->add_row({{"zeta", 1}, {"alpha", 2}});
+    const auto plain_star = svc.run("SELECT * FROM d.plain;", "");
+    ASSERT_TRUE(plain_star.ok()) << plain_star.error;
+    EXPECT_EQ(plain_star.columns, (std::vector<std::string>{"alpha", "zeta"}));
+    node.stop();
 }
 
 TEST(QueryService, OrderByLimitAndOffsetShapeTheResult) {

@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset_columns.hpp"
 #include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/large_object.hpp"
@@ -128,17 +129,26 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
         // reads the schema off the replicate-to-all catalog rather than off a
         // store that is empty there.
         nlohmann::json columns = nlohmann::json::array();
+        // Each column's JSON type and null count over this partition's rows
+        // (#1021), so get_dataset can type a partition-only dataset's columns
+        // and say how many values are null without reading a body.
+        nlohmann::json column_stats;
         {
             std::unordered_set<std::string> seen;
+            std::vector<std::string> names;
+            ColumnProfile profile;
             for (const PartitionRow& row : rows) {
+                profile.add_row(row.doc);
                 if (!row.doc.is_object()) continue;
                 for (auto field = row.doc.begin(); field != row.doc.end();
                      ++field) {
                     if (seen.insert(field.key()).second) {
                         columns.push_back(field.key());
+                        names.push_back(field.key());
                     }
                 }
             }
+            column_stats = profile.stats(names);
         }
         // The blob's OWN schema — column names with the physical type each was
         // written as — and its byte size, recorded beside the row count (#837).
@@ -162,6 +172,7 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
                                      {"placement", partitioner->name()},
                                      {"columns", std::move(columns)},
                                      {"schema", std::move(schema)},
+                                     {"column_stats", std::move(column_stats)},
                                      {"bytes", serialized.bytes.size()}};
 
         std::shared_ptr<DatasetPartition> recorded =

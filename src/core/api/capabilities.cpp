@@ -1,4 +1,5 @@
 #include "zetta/api/capabilities.hpp"
+#include "object_routes.hpp"
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -2439,9 +2440,37 @@ ApiResult handle_get_index(const nlohmann::json& input, ApiContext& context) {
 
 // --- get_dataset / list_datasets ----------------------------------------------
 
+// A dataset's typed columns as get_dataset answers them (#1021):
+// `[{name, type, nullable, null_fraction}]`, `null_fraction` null when unknown.
+// A column the caller may not read under `sql:read` keeps its name and answers
+// `type`, `nullable` and `null_fraction` as null — the way SQL masks it (the
+// column stays in `SELECT *`, its values read as null), so nothing about its
+// values reaches a caller who cannot read them.
+nlohmann::json typed_columns_json(const zetta::data::DatasetSummary& dataset,
+                                  const zetta::governance::ColumnAccess& access) {
+    nlohmann::json columns = nlohmann::json::array();
+    for (const zetta::data::DatasetColumn& column : dataset.typed_columns) {
+        if (!access.allows(column.name)) {
+            columns.push_back({{"name", column.name},
+                               {"type", nullptr},
+                               {"nullable", nullptr},
+                               {"null_fraction", nullptr}});
+            continue;
+        }
+        columns.push_back(
+            {{"name", column.name},
+             {"type", column.type},
+             {"nullable", column.nullable},
+             {"null_fraction", column.null_fraction ? nlohmann::json(*column.null_fraction)
+                                                    : nlohmann::json()}});
+    }
+    return columns;
+}
+
 // A DatasetSummary as JSON — the full computed shape, with the per-partition
 // placement kept structured (the SQL view flattens it to strings for tabular
-// reading; the tool keeps the arrays an agent can walk).
+// reading; the tool keeps the arrays an agent can walk). `columns` is the names
+// in order (list_datasets); get_dataset replaces it with the typed columns.
 nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) {
     nlohmann::json partitions = nlohmann::json::array();
     for (const zetta::data::DatasetPlacement& placement : dataset.partitions) {
@@ -2460,6 +2489,11 @@ nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) 
                           {"rows", dataset.rows},
                           {"size_bytes", dataset.size_bytes},
                           {"columns", dataset.columns},
+                          // #1021: "source" when the columns follow the file's
+                          // or query's own order, "first_seen" when none was
+                          // recorded (a dataset loaded before it was kept).
+                          {"column_order",
+                           dataset.column_order_recorded ? "source" : "first_seen"},
                           {"partitions", std::move(partitions)},
                           // #837: whether this node can see the WHOLE dataset.
                           // An agent that reads `rows` must be able to tell a
@@ -2470,15 +2504,15 @@ nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) 
                           {"expected_rows", dataset.expected_rows}};
 }
 
-// The schema of dataset_summary_json — shared by get_dataset (the value) and
-// list_datasets (the array items).
+// The schema of dataset_summary_json — list_datasets' array items, and with
+// `columns` typed (get_dataset_output_schema below) get_dataset's value.
 const nlohmann::json& dataset_summary_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required",
          {"name", "database", "table_id", "format", "source_format", "replication", "rows",
-          "size_bytes", "columns", "partitions", "degraded", "degraded_reason",
-          "expected_partitions", "expected_rows"}},
+          "size_bytes", "columns", "column_order", "partitions", "degraded",
+          "degraded_reason", "expected_partitions", "expected_rows"}},
         {"additionalProperties", false},
         {"properties",
          {{"name", {{"type", "string"}}},
@@ -2496,7 +2530,21 @@ const nlohmann::json& dataset_summary_schema() {
           {"replication", {{"type", "integer"}}},
           {"rows", {{"type", "integer"}}},
           {"size_bytes", {{"type", "integer"}}},
-          {"columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"columns",
+           {{"type", "array"},
+            {"description",
+             "the column names, in the source's order when column_order is "
+             "\"source\" (#1021)"},
+            {"items", {{"type", "string"}}}}},
+          {"column_order",
+           {{"type", "string"},
+            {"enum", {"source", "first_seen"}},
+            {"description",
+             "source: columns follow the file's or query's own order (the CSV "
+             "header, the Parquet schema, the first JSON row, the SELECT list); "
+             "first_seen: no order was recorded (a dataset loaded before #1021), "
+             "so the columns come in the order the stored rows present them, "
+             "which is alphabetical"}}},
           {"partitions",
            {{"type", "array"},
             {"items",
@@ -2517,6 +2565,49 @@ const nlohmann::json& dataset_summary_schema() {
           {"degraded_reason", {{"type", "string"}}},
           {"expected_partitions", {{"type", "integer"}}},
           {"expected_rows", {{"type", "integer"}}}}}};
+    return schema;
+}
+
+// get_dataset's value: the summary with `columns` typed (#1021).
+const nlohmann::json& get_dataset_output_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json out = dataset_summary_schema();
+        out["properties"]["columns"] = {
+            {"type", "array"},
+            {"description",
+             "the dataset's columns, in the source's order when column_order is "
+             "\"source\" (#1021), each with the JSON type its values share and "
+             "the share of rows that hold null for it or omit it"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"name", "type", "nullable", "null_fraction"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"name", {{"type", "string"}}},
+                {"type",
+                 {{"type", {"string", "null"}},
+                  {"enum",
+                   {"boolean", "integer", "number", "string", "object", "array", "null",
+                    "mixed", "unknown", nullptr}},
+                  {"description",
+                   "the JSON type the column's values share: integer widens to "
+                   "number when both occur, mixed when the values differ otherwise, "
+                   "\"null\" when every value is null, unknown for a partition "
+                   "written before types were recorded; JSON null when the caller "
+                   "may not read the column (sql:read)"}}},
+                {"nullable",
+                 {{"type", {"boolean", "null"}},
+                  {"description", "null when the caller may not read the column"}}},
+                {"null_fraction",
+                 {{"type", {"number", "null"}},
+                  {"minimum", 0},
+                  {"maximum", 1},
+                  {"description",
+                   "nulls (or missing cells) over rows; null when unknown (a "
+                   "partition-only dataset written before null counts were "
+                   "recorded) or when the caller may not read the column"}}}}}}}};
+        return out;
+    }();
     return schema;
 }
 
@@ -2585,7 +2676,14 @@ ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
             "engine_error", "dataset '" + name + "' exists in several databases (" +
                                 databases + ") — pass \"database\" to pick one");
     }
-    return ApiResult::success(dataset_summary_json(matches.front()));
+    nlohmann::json value = dataset_summary_json(matches.front());
+    // Column-level read access (#747), decided as the SQL executor decides it.
+    const zetta::governance::ColumnAccess access = context.node.column_scope(
+        context.acting_key, context.acting_is_user,
+        Operation{zetta::governance::CapabilityDomain::Data, "read"},
+        matches.front().database, matches.front().name);
+    value["columns"] = typed_columns_json(matches.front(), access);
+    return ApiResult::success(std::move(value));
 }
 
 ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
@@ -7485,7 +7583,10 @@ const nlohmann::json& score_schema() {
             {"items", {{"type", "object"}}},
             {"description",
              "score these rows instead of a dataset - an account that is not in the "
-             "data at all. Each row is keyed by the model's own feature columns"}}},
+             "data at all. Each row is keyed by the model's inputs "
+             "(feature_schema.inputs): numeric features by name, and a text category "
+             "by its original column and text value, one-hot encoded with the levels "
+             "fitted at training time (an unseen level encodes as all zeros)"}}},
           {"entities",
            {{"type", "array"},
             {"items",
@@ -7674,7 +7775,9 @@ const nlohmann::json& explain_schema() {
            {{"type", "object"},
             {"description",
              "explain this row instead of a dataset entity — an account that is not "
-             "in the data at all. Keyed by the model's own feature columns"}}}}}};
+             "in the data at all. Keyed by the model's inputs (feature_schema.inputs): "
+             "numeric features by name, a text category by its original column and "
+             "text value"}}}}}};
     return schema;
 }
 
@@ -8153,8 +8256,8 @@ const nlohmann::json& upload_dataset_schema() {
             {"minLength", 1},
             {"description",
              "the file's text, verbatim. At most 16 MiB (16777216 bytes of UTF-8); "
-             "larger data belongs in a file on the node (add_dataset) or a source "
-             "connection (create_dataset_from_query)"}}},
+             "upload a larger file to a bucket (PATCH /v1/objects/<bucket>/<key>, a "
+             "chunk at a time) and load it with load_dataset_object"}}},
           {"database",
            {{"type", "string"},
             {"minLength", 1},
@@ -8179,8 +8282,9 @@ ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context
             "content is " + std::to_string(content.size()) +
                 " bytes; upload_dataset accepts at most " +
                 std::to_string(zetta::data::kMaxDatasetContentBytes) +
-                " bytes (16 MiB). Put larger data in a file on the node and use "
-                "add_dataset, or load it with create_dataset_from_query",
+                " bytes (16 MiB). Upload a larger file to a bucket (PATCH "
+                "/v1/objects/<bucket>/<key>, a chunk at a time) and load it with "
+                "load_dataset_object",
             "/content");
     }
     const std::string format_name = input.at("format").get<std::string>();
@@ -8215,10 +8319,7 @@ ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context
         if (database && database->find_table(options.table_name)) {
             return ApiResult::failure(
                 "conflict",
-                "a dataset named '" + options.table_name + "' already exists in " +
-                    options.database +
-                    "; choose another name, or pass if_exists: \"rename\" to save it "
-                    "under the next free name",
+                zetta::data::dataset_name_taken(options.table_name, options.database),
                 "/table_name");
         }
     }
@@ -8249,6 +8350,169 @@ ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context
     if (added.table && added.table->name() != options.table_name) {
         output["renamed_from"] = options.table_name;
     }
+    return ApiResult::success(std::move(output));
+}
+
+// --- load_dataset_object (#1302) ----------------------------------------------------
+//
+// upload_dataset carries the file in the request, capped at 16 MiB. A larger file
+// is first uploaded to a bucket a chunk at a time (PATCH /v1/objects/<bucket>/<key>,
+// the object capability's resumable append, #1005); this loads that object in the
+// background (AsyncObjectDatasetLoad) and answers with the run to poll.
+
+const nlohmann::json& load_dataset_object_schema() {
+    static const nlohmann::json schema = [] {
+        // The fields it shares with upload_dataset, described the same way.
+        const nlohmann::json& upload = upload_dataset_schema().at("properties");
+        return nlohmann::json{
+            {"type", "object"},
+            {"required", {"bucket", "key", "format", "table_name"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"bucket",
+               {{"type", "string"},
+                {"pattern", "^[a-z0-9][a-z0-9_.-]{0,95}$"},
+                {"description",
+                 "the bucket holding the object (create_bucket); the caller needs "
+                 "objects:read on it, and objects:write with remove_object"}}},
+              {"key",
+               {{"type", "string"},
+                {"minLength", 1},
+                {"maxLength", 1024},
+                {"description",
+                 "the object's key: a plain (unsealed) csv or jsonl file, typically "
+                 "uploaded a chunk at a time with PATCH /v1/objects/<bucket>/<key>?offset=<n>. "
+                 "At most 1 GiB (1073741824 bytes), no line longer than 16 MiB"}}},
+              {"format",
+               {{"type", "string"},
+                {"enum", {"csv", "jsonl"}},
+                {"description",
+                 "how the object is laid out: csv (a header row, then one row per line with "
+                 "as many fields as the header, cells type-inferred) or jsonl (one JSON "
+                 "object per line)"}}},
+              {"table_name", upload.at("table_name")},
+              {"if_exists",
+               {{"type", "string"},
+                {"enum", {"fail", "rename"}},
+                {"description",
+                 "what to do when table_name is taken: fail (the default) refuses with "
+                 "conflict; rename saves under the next free name (_2, _3, ...) and the "
+                 "run's final log entry names the one asked for"}}},
+              {"database", upload.at("database")},
+              {"replication_factor", upload.at("replication_factor")},
+              {"remove_object",
+               {{"type", "boolean"},
+                {"description",
+                 "remove the object once the load has finished, whether it succeeded or "
+                 "failed (default false). Needs objects:write on the bucket, as "
+                 "delete_object does, and is audited as a delete_object call"}}}}}};
+    }();
+    return schema;
+}
+
+const nlohmann::json& load_dataset_object_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run_id", "status", "poll"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"run_id",
+           {{"type", "string"},
+            {"description", "the load's run: poll get_run / system.runs"}}},
+          {"status", {{"type", "string"}}},
+          {"poll", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_load_dataset_object(const nlohmann::json& input, ApiContext& context) {
+    zetta::data::ObjectDatasetSource source;
+    source.bucket = input.at("bucket").get<std::string>();
+    source.key = input.at("key").get<std::string>();
+    if (!zetta::data::valid_bucket_name(source.bucket)) {
+        return ApiResult::failure(
+            "invalid_input",
+            "bucket: '" + source.bucket +
+                "' is not a bucket name (a lowercase letter or digit, then up to 95 of "
+                "a-z, 0-9, _, . and -)",
+            "/bucket");
+    }
+    if (!zetta::data::valid_object_key(source.key)) {
+        return ApiResult::failure(
+            "invalid_input", "key: an object key is 1 to 1024 bytes with no control characters",
+            "/key");
+    }
+    source.format = input.at("format").get<std::string>() == "csv"
+                        ? zetta::data::dataset_file::Format::Csv
+                        : zetta::data::dataset_file::Format::Jsonl;
+    source.rename_if_exists = input.value("if_exists", std::string("fail")) == "rename";
+    source.remove_object = input.value("remove_object", false);
+
+    zetta::data::AddDatasetOptions options;
+    options.database = input.value("database", options.database);
+    options.table_name = input.at("table_name").get<std::string>();
+    for (const auto& [field, value] :
+         {std::pair<std::string, const std::string*>{"table_name", &options.table_name},
+          std::pair<std::string, const std::string*>{"database", &options.database}}) {
+        if (const std::string problem = zetta::data::dataset_name_problem(*value);
+            !problem.empty()) {
+            return ApiResult::failure("invalid_input", field + ": " + problem, "/" + field);
+        }
+    }
+    options.replication_factor =
+        input.value("replication_factor", options.replication_factor);
+
+    zetta::data::ObjectStore* objects = context.node.object_store();
+    if (!objects) {
+        return ApiResult::failure("engine_error",
+                                  "this node has no replicated catalogue to keep buckets in");
+    }
+    // The read right GET /v1/objects/<bucket>/<key> asks for, so a caller cannot
+    // read a bucket through a load that it could not read directly.
+    if (auto denied = authorize_object_route(context.node, context.acting_key,
+                                             context.acting_is_user, "load_dataset_object",
+                                             kObjectsRead, source.bucket)) {
+        return *denied;
+    }
+    // Removing the object afterwards is a delete: it needs the write right
+    // DELETE /v1/objects/<bucket>/<key> asks for.
+    if (source.remove_object) {
+        if (auto denied = authorize_object_route(context.node, context.acting_key,
+                                                 context.acting_is_user, "load_dataset_object",
+                                                 kObjectsWrite, source.bucket)) {
+            return *denied;
+        }
+    }
+    if (!objects->find_bucket(source.bucket)) {
+        return ApiResult::failure("not_found", "no bucket '" + source.bucket + "'", "/bucket");
+    }
+    if (!source.rename_if_exists) {
+        const auto database = context.node.find_database(options.database);
+        if (database && database->find_table(options.table_name)) {
+            return ApiResult::failure(
+                "conflict", zetta::data::dataset_name_taken(options.table_name, options.database),
+                "/table_name");
+        }
+    }
+    if (!context.background) {
+        return ApiResult::failure(
+            "engine_error",
+            "load_dataset_object is a job capability and this embedding wired no "
+            "background action owner");
+    }
+    options.members = context.node.cluster_members();  // live placement roster
+    source.acting_key = context.acting_key;  // the removal's audit row names the caller
+    source.trace = context.trace;
+
+    auto handle = zetta::data::AsyncObjectDatasetLoad::start(context.node, *objects,
+                                                             std::move(source), std::move(options));
+    if (!handle) {
+        return ApiResult::failure("engine_error", "the run record could not be created");
+    }
+    context.background->adopt(handle, [worker = handle.get()] { return worker->done(); });
+    nlohmann::json output;
+    output["run_id"] = handle->run_id();
+    output["status"] = "running";
+    output["poll"] = "get_run until status is succeeded or failed; the dataset is the run's output";
     return ApiResult::success(std::move(output));
 }
 
@@ -11496,11 +11760,12 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "get_dataset",
         "Get one dataset",
-        "Read one dataset's computed summary — schema, row count, size, "
+        "Read one dataset's computed summary — its columns in the source "
+        "file's order with each one's type and null share, row count, size, "
         "format, replication, partition placement — by name (plus database "
         "when ambiguous). No side effects.",
         get_dataset_schema(),
-        dataset_summary_schema(),
+        get_dataset_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -12289,7 +12554,8 @@ void register_core_capabilities(Registry& registry) {
         "partitioned table placed across the cluster - for a caller that cannot "
         "put a file on the node (add_dataset reads the node's filesystem). Same "
         "parsing, table creation and placement as add_dataset; at most 16 MiB of "
-        "content. Audited as dataset_added; the table then appears in "
+        "content (a larger file goes to a bucket and loads with load_dataset_object). "
+        "Audited as dataset_added; the table then appears in "
         "list_datasets / system.datasets and can be passed to run as "
         "dataset_path <database>.<table>. (#1008)",
         upload_dataset_schema(),
@@ -12301,6 +12567,27 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_upload_dataset});
+
+    registry.add(Capability{
+        "load_dataset_object",
+        "Load a dataset from a stored object",
+        "Load a csv or jsonl object already in a bucket (uploaded a chunk at a time "
+        "with PATCH /v1/objects/<bucket>/<key>) into a new partitioned table placed "
+        "across the cluster - the path for a file larger than upload_dataset's 16 MiB, "
+        "up to 1 GiB. Returns a run id at once and loads in the background: poll "
+        "get_run until succeeded (the dataset is the run's output) or failed (the log "
+        "says why, and no table is left). Needs objects:read on the bucket; "
+        "remove_object removes the object afterwards and also needs objects:write. "
+        "Audited as dataset_added. (#1302)",
+        load_dataset_object_schema(),
+        load_dataset_object_output_schema(),
+        CapabilityKind::Job,
+        // Authorized like upload_dataset: whoever may add a dataset may load one
+        // from an object (the handler also checks objects:read on the bucket).
+        Operation{CapabilityDomain::Orchestration, "add_dataset"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_load_dataset_object});
 
     registry.add(Capability{
         "create_connection",

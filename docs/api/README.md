@@ -161,7 +161,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_roi_readout` | read | api:query | one solution's versioned correctness certificate, aggregate treated-minus-holdout incrementality with confidence intervals, customer-supplied ROI, guardrails, agent operations, and redacted audit extract |
 | `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
 | `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
-| `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / storage + source format / replication / placement) by name or `database.table` (+ database when ambiguous) |
+| `get_dataset` | read | api:query | one dataset's computed summary (typed columns `[{name, type, nullable, null_fraction}]` in source order + `column_order` / rows / size / storage + source format / replication / placement) by name or `database.table` (+ database when ambiguous) |
 | `get_policy` | read | api:query | one decision policy's current config and immutable version history |
 | `analyze_dataset` | read | api:query | sample a landed dataset and report semantic types with evidence, column statistics, grain, candidate keys, join candidates, and leakage candidates |
 | `plan_features` | read | api:query | return a methodology-specific feature/exclusion plan, or a named `transform_required` correction that is never applied automatically |
@@ -251,6 +251,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
 | `snapshot` | action | orchestration:snapshot | materialize the latest row per entity at or before an inclusive cutoff into a replicated table keyed by `(entity_id, as_of)` (#1103) |
 | `upload_dataset` | action | orchestration:add_dataset | load a csv/jsonl file's TEXT sent in the request (≤ 16 MiB) through add_dataset's parsing + placement — for callers that cannot write the node's filesystem (#1008); refuses a taken name (`conflict`) unless `if_exists: "rename"`, unsafe names and ragged CSV, in lake's words (#1221, [add-dataset.md](../data/add-dataset.md)) |
+| `load_dataset_object` | job | orchestration:add_dataset | load a csv/jsonl object already in a bucket (staged a chunk at a time with `PATCH /v1/objects/<bucket>/<key>`, up to 1 GiB) into a partition-only table in the background; returns a run id to poll with `get_run`; also needs `objects:read` on the bucket; `remove_object` removes the object afterwards and also needs `objects:write` (#1302, [add-dataset.md](../data/add-dataset.md#load-from-a-stored-object-1302)) |
 | `create_index` | action | orchestration:create_index | build a Search index over a loaded table (records the entity + builds the per-partition BM25F sub-indexes) so `search` returns ranked hits — the public create path [`Node::create_index`](../indexing/node-search.md) names |
 | `testsuite_run` | job | orchestration:testsuite_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
 | `cloud_inspect` | action | orchestration:cloud_inspect | **consent-gated with `--governance`** read-only provider inspect (identity/regions via the provider CLI); result cached as `system.cloud_status` |
@@ -268,7 +269,11 @@ stripped before schema validation).
 schema validated (the CRDT value / on-disk projection) — with the `id` added;
 `get_dataset` / `list_datasets` return the computed `DatasetSummary` with the
 schema and partition placement kept structured (the SQL view flattens them for
-tabular reading). Every handler is a thin caller of the same live engine
+tabular reading). `list_datasets` gives each dataset's `columns` as names;
+`get_dataset` gives them typed, `[{name, type, nullable, null_fraction}]`, with
+the last three null for a column the caller may not read (`sql:read`). Both
+list them in the source's order and say whether one was recorded
+(`column_order`: `source` / `first_seen`) — [column-order.md](../data/column-order.md), #1021. Every handler is a thin caller of the same live engine
 source its `system.*` view computes from (`Node::…()`), so MCP, SQL, and the
 GUI cannot drift (RULE-7). Arbitrary reads beyond these go through `sql`.
 

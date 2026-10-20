@@ -494,6 +494,9 @@ DistributedIngestResult run_single_shot_connector_ingest(
     // What the rows were loaded from (#1221): the connector, not the `jsonl`
     // shape its in-memory rows take.
     add.source_format = config.type;
+    // The query's SELECT order (#1021), so the dataset lists its columns as the
+    // query named them rather than sorted.
+    add.columns = pulled.data.columns;
 
     data::AddDatasetResult added =
         data::add_dataset_rows(node, pulled.data.rows, add);
@@ -598,6 +601,9 @@ DistributedIngestResult run_distributed_connector_ingest(
         result.error = "could not create the target table";
         return result;
     }
+    // The query's SELECT order (#1021), recorded once, here, on the initiator:
+    // its own `cols:` key, so the participants that adopt `tbl:` never write it.
+    table->set_column_order(submitted.plan.columns);
     result.table = table;
 
     std::shared_ptr<compute::ComputeJob> job =

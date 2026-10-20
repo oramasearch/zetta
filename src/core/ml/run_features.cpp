@@ -120,6 +120,23 @@ std::string unsafe_feature(const ir::ExecutionGraph& pipeline, const data::Datas
     return {};
 }
 
+std::string join_names(const std::vector<std::string>& names) {
+    std::string out;
+    for (const std::string& name : names) {
+        out += (out.empty() ? "" : ", ") + name;
+    }
+    return out;
+}
+
+// How a fitted category is encoded, for the run's feature report (#1203).
+std::string categorical_transform(const data::CategoricalEncoding& encoding) {
+    return "one-hot encoding of " + std::to_string(encoding.levels.size()) + " levels (" +
+           join_names(encoding.levels) +
+           ") fitted on the training rows only and stored with the model; predict "
+           "reads the original text column, and an unseen or missing value encodes as "
+           "all zeros";
+}
+
 void add_exclusion(data::FeaturePlan& plan, const std::string& column, std::string reason) {
     if (!column.empty() && !std::ranges::any_of(plan.excluded, [&](const auto& excluded) {
             return excluded.source_column == column;
@@ -237,8 +254,12 @@ data::FeaturePlan plan_table_features(Node& node, const zetta::cluster::Cluster*
         return plan;
     }
     const bool native = !options.native_entries.empty();
+    // #1203: whether this trainer one-hot encodes the contract's text categories.
+    const std::optional<data::MethodologyRule> rule = data::methodology_rule(methodology);
+    const bool one_hot = !native && rule && rule->one_hot_text_categories;
     std::vector<data::FeaturePlanEntry> accepted;
     std::vector<std::string> sources;
+    std::vector<std::string> categorical_sources;
     for (const auto& entry : plan.entries) {
         bool allowed = true;
         for (const auto& source : entry.source_columns) {
@@ -303,6 +324,22 @@ data::FeaturePlan plan_table_features(Node& node, const zetta::cluster::Cluster*
                           "Model step's features to include it");
             continue;
         }
+        if (one_hot) {
+            const auto category = std::ranges::find_if(
+                dataset.contract.categorical_features,
+                [&source](const data::CategoricalEncoding& encoding) {
+                    return encoding.column == source;
+                });
+            if (category != dataset.contract.categorical_features.end()) {
+                categorical_sources.push_back(source);
+                accepted.push_back({{source}, category->feature_names(),
+                                    categorical_transform(*category),
+                                    "a text category with at most " +
+                                        std::to_string(data::kCategoricalMaxLevels) +
+                                        " levels; the GBDT reads one 0/1 column per level"});
+                continue;
+            }
+        }
         if (!std::ranges::contains(dataset.contract.feature_columns, source)) {
             add_exclusion(plan, source,
                           "not supported by the trainer's numeric input contract; to include it, "
@@ -325,12 +362,55 @@ data::FeaturePlan plan_table_features(Node& node, const zetta::cluster::Cluster*
     }
     if (!native) {
         for (const auto& source : dataset.contract.feature_columns) {
-            if (!std::ranges::contains(sources, source)) {
+            if (!std::ranges::contains(sources, source) &&
+                !std::ranges::contains(categorical_sources, source)) {
                 add_exclusion(plan, source, "excluded by the feature plan");
             }
         }
         dataset.contract.feature_columns = std::move(sources);
     }
+    // Keep only the categories this trainer encodes, and make the run log say what
+    // happened to each one the contract found (#1203).
+    std::vector<data::CategoricalEncoding> kept;
+    for (data::CategoricalEncoding& encoding : dataset.contract.categorical_features) {
+        const std::string prefix = "categorical column: '" + encoding.column + "'";
+        const auto note = std::ranges::find_if(
+            dataset.notes, [&prefix](const std::string& line) { return line.starts_with(prefix); });
+        std::string line;
+        if (std::ranges::contains(categorical_sources, encoding.column)) {
+            line = "categorical feature: '" + encoding.column + "' one-hot encoded into " +
+                   join_names(encoding.feature_names()) + " (" +
+                   std::to_string(encoding.levels.size()) +
+                   " levels fitted on the training rows and stored with the model; an "
+                   "unseen or missing value encodes as all zeros)";
+            kept.push_back(std::move(encoding));
+        } else if (std::ranges::contains(dataset.contract.feature_columns, encoding.column)) {
+            // A caller-named column this trainer reads as it is (a text methodology):
+            // the category note no longer applies, and nothing was left out.
+            if (note != dataset.notes.end()) dataset.notes.erase(note);
+            continue;
+        } else {
+            const auto excluded = std::ranges::find_if(plan.excluded, [&](const auto& item) {
+                return item.source_column == encoding.column;
+            });
+            if (excluded == plan.excluded.end()) {
+                add_exclusion(plan, encoding.column,
+                              one_hot ? "excluded by the feature plan"
+                                      : "text categories are not encoded for this "
+                                        "methodology, which reads numeric columns only");
+            }
+            const auto reason = std::ranges::find_if(plan.excluded, [&](const auto& item) {
+                return item.source_column == encoding.column;
+            });
+            line = "not used: '" + encoding.column + "' (" + reason->reason + ")";
+        }
+        if (note != dataset.notes.end()) {
+            *note = std::move(line);
+        } else {
+            dataset.notes.push_back(std::move(line));
+        }
+    }
+    dataset.contract.categorical_features = std::move(kept);
     plan.entries = std::move(accepted);
     add_exclusion(plan, options.label_column, "the label is the target, never an input feature");
     add_exclusion(plan, options.entity_column, "the entity key identifies rows, not a model feature");
