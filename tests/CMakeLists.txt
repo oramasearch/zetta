@@ -162,6 +162,7 @@ add_executable(zetta-tests
   pubsub/test_pubsub_capabilities.cpp
   governance/test_users_roles_tokens.cpp
   governance/test_roles.cpp
+  governance/test_authz_regressions.cpp
   governance/test_scoped_grants.cpp
   governance/test_row_security.cpp
   governance/test_consent.cpp

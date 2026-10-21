@@ -68,8 +68,8 @@ node), captured rather than assumed:
 | `ZETTA_E2E_BASE_URL` | *(required)* | the node's HTTP API, e.g. `http://<name>-zetta.<ns>.svc.cluster.local:4800` |
 | `ZETTA_E2E_PEER_URLS` | — | space/comma list of the **other** nodes' base URLs (per-pod DNS); enables the replication canary when ≥2 nodes |
 | `ZETTA_E2E_LEVELS` | `2,3` | which levels to run (`2`, `3`, or `2,3`) |
-| `ZETTA_E2E_TOKEN` | — | bearer token for the target node — with auth always on (#799) every node requires one (the seeded/auto-generated admin token). **Required** for the §3.13 authz-enforcement assertions (`ZETTA_E2E_REQUIRE_AUTH=1`) |
-| `ZETTA_E2E_REQUIRE_AUTH` | `0` | `1` enables the §3.13 authz-enforcement assertions; the target enforces auth **unconditionally** now (#799), so this only turns the extra assertions on |
+| `ZETTA_E2E_TOKEN` | — | **required**: the target's seeded admin (owner) token. Auth is always on (#799), so every request needs a bearer; §3.13 mints its own per-run users and tokens from this one |
+| `ZETTA_E2E_REQUIRE_AUTH` | — | ignored (auth is always on, #799); kept so an older runner that still sets it keeps working |
 | `ZETTA_E2E_DB` | `e2e` | scratch SQL database |
 | `ZETTA_E2E_TIMEOUT` / `ZETTA_E2E_RETRIES` / `ZETTA_E2E_POLL` | `45` / `10` / `240` | per-request timeout, per-request retries, async-run poll budget (seconds) |
 
@@ -87,7 +87,7 @@ ZETTA_E2E_BASE_URL=http://127.0.0.1:4800 ZETTA_E2E_LEVELS=3 sh tests/e2e/zetta-e
 # auth is always on (#799); --admin-token seeds the owner so the harness has a bearer
 zetta --headless --mcp-listen 127.0.0.1:4801 --data-dir /tmp/z-auth \
       --admin-token "$TOK" &
-ZETTA_E2E_BASE_URL=http://127.0.0.1:4801 ZETTA_E2E_REQUIRE_AUTH=1 ZETTA_E2E_TOKEN="$TOK" \
+ZETTA_E2E_BASE_URL=http://127.0.0.1:4801 ZETTA_E2E_TOKEN="$TOK" \
   sh tests/e2e/zetta-e2e.sh
 
 # multi-node — §3.10 CRDT + convergence (lights up once #786 lands)
@@ -122,12 +122,12 @@ tracks growing it). The six epic children (#777–#782) are the sections marked 
 | 3.10 | cluster + CRDT (**#781**) | membership on every node; **bidirectional** A→B and B→A convergence (latency-bounded); rebalance + blob transfer. **Gated on ≥2 reachable nodes** (mTLS-sync #786): SKIPs cleanly on a single-node target, lights up on a real cluster — never a FAIL |
 | 3.11 | observability (**#782**) | `system.activity`/`spans`/`traces` carry the e2e's ops; `get_trace` round-trip; `system.crashes` empty |
 | 3.12 | blobs / consent / audit (**#782**) | missing-object → clean 4xx; consent-gated capability → `403 consent_required` (no side effect), listable + audited, local session cannot self-decide, bogus id → clean error; audit monotonic growth across the e2e's writes. Blob put/get + approve→execute are tracked SKIPs (no black-box surface / need an approver key) |
-| 3.13 | authz enforcement (**#780**) | under the always-on auth gate (#799; regression harness for **#759–#769**): deny-by-default on REST + `/mcp`, bogus bearer denied, admin authenticates; reader denied write (#759) + role escalation (#761); RLS `USING (current_user())` + admin bypass (#748/#762); no-condition policy rejected (#765); `system.tokens` no secrets (#744). Privileged-DDL gap (#759), masking/scoped-grants (#747/#760/#767), token revoke, catalog exposure (#766) are tracked SKIPs that light up as each finding's enforcement lands |
+| 3.13 | authz enforcement (**#780**) | the regression harness for **#759–#769**, with its in-process half and the per-finding map in [authz-regressions.md](authz-regressions.md). Fixed findings are hard assertions: deny-by-default on REST + `/mcp` and a bogus bearer refused (#762/#769); a reader refused every privileged and data-changing statement (#759/#1229) and audited as refused (#769); RLS + admin bypass (#748/#762); the grammar refuses a condition-less policy (#765); column masking, and no aggregate over a masked column (#747/#760); a tool-scoped user calls only its tool (#747); orchestration grantable (#768). Open findings are SKIPs naming them that turn into PASSes when the fix is deployed: a `roles:manage`-only delegate granting itself admin (#761), the governance catalog and `/v1/specs` readable by anyone (#766). Findings with no black-box surface (#763, #764, #767, the #765 replicated path, the #769 KDF/seed, built-in role tamper) are SKIPs that point at the in-process test |
 
 Every SKIP names its reason and the issue it awaits, so a green run is a precise statement of what the
-target can and cannot yet enforce. The **#780** privileged-statement checks are gated on the build's
-base write-enforcement (a build where `sql:write` is unenforced can't give a trustworthy RLS/masking
-verdict) — they assert strictly once enforcement is intact.
+target can and cannot yet enforce. Every §3.13 check made "as" a user sends that user's bearer alone
+(`sql_as`, `http_as`); before #780 the run's admin bearer went along with it, so the "reader" checks
+ran as the admin (see [authz-regressions.md](authz-regressions.md#the-e2e-bug-this-found)).
 
 ## How it is operated in production
 

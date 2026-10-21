@@ -31,11 +31,11 @@
 #   ZETTA_E2E_TESTKIT_CASES  Optional space list of testkit case ids to run
 #                        (default: discover from system.test_cases, else a
 #                        built-in canonical list).
-#   ZETTA_E2E_TOKEN      Optional bearer token (default: none — the deployed
-#                        node runs unauthenticated-local). REQUIRED with
-#                        ZETTA_E2E_REQUIRE_AUTH=1 (the seeded admin token).
-#   ZETTA_E2E_REQUIRE_AUTH  "1" when the target enforces --require-auth (enables
-#                        the §3.13 authz-enforcement assertions; needs a token).
+#   ZETTA_E2E_TOKEN      REQUIRED. The seeded admin (owner) token — the node
+#                        enforces auth on every request (zetta#799). §3.13 mints
+#                        its own per-run users and tokens from it.
+#   ZETTA_E2E_REQUIRE_AUTH  Ignored (auth is always on); kept so an older runner
+#                        that still sets it keeps working.
 #   ZETTA_E2E_DB         Scratch SQL database (default "e2e").
 #   ZETTA_E2E_TIMEOUT / _RETRIES / _POLL   45 / 10 / 240 (seconds).
 #
@@ -165,7 +165,10 @@ http_code() {
 sql() { sql_as "" "$1" "${2-$DB}"; }
 
 # sql_as BEARER STATEMENT [DATABASE] -> $BODY ; 0 iff ok:true. An empty BEARER
-# uses whatever the curlrc carries (the run's default token, if any).
+# uses whatever the curlrc carries (the run's default token). An explicit BEARER
+# is sent ALONE: the curlrc is not read, because it carries the run's admin
+# token and a second Authorization header let the node authenticate the request
+# as the admin (#780 — before this, every "as the reader" check ran as the admin).
 sql_as() {
     _b="$1"; _stmt="$2"; _db="${3-$DB}"; _i=0
     _q="statement=$(printf '%s' "$_stmt" | jq -sRr @uri)"
@@ -173,7 +176,7 @@ sql_as() {
     while [ "$_i" -lt "$RETRIES" ]; do
         _i=$((_i+1))
         if [ -n "$_b" ]; then
-            BODY="$(curl -K "$CURLRC" -H "Authorization: Bearer $_b" "$BASE/v1/sql?$_q" 2>/dev/null)"
+            BODY="$(curl -sS --max-time "$TIMEOUT" -H "Authorization: Bearer $_b" "$BASE/v1/sql?$_q" 2>/dev/null)"
         else
             BODY="$(curl -K "$CURLRC" "$BASE/v1/sql?$_q" 2>/dev/null)"
         fi
@@ -183,6 +186,16 @@ sql_as() {
         sleep 1
     done
     return 1
+}
+
+# http_as BEARER METHOD PATH [JSON] -> $BODY, $CODE (single shot, exactly this
+# bearer and no other — never the curlrc's).
+http_as() {
+    _b="$1"; _m="$2"; _p="$3"; _d="${4:-}"
+    set -- -sS --max-time "$TIMEOUT" -X "$_m" -o "$BODYF" -w '%{http_code}' -H "Authorization: Bearer $_b"
+    if [ -n "$_d" ]; then set -- "$@" -H 'Content-Type: application/json' -d "$_d"; fi
+    CODE="$(curl "$@" "$BASE$_p" 2>/dev/null)"
+    BODY="$(cat "$BODYF" 2>/dev/null)"
 }
 
 # Envelope readers — SQL results live at `.value.rows` ([{col: val}]); tolerate
@@ -642,121 +655,174 @@ if want_level 3; then
     else skip "system.audit unavailable"; fi
 
     # --- 3.13 authz enforcement (auth is ALWAYS on, #799) [#780] -----------
-    # The regression harness for the auth review findings #759–#769. Auth is now
-    # mandatory on every target (zetta#799) and a token is required at startup, so
-    # this ALWAYS runs — the REQUIRE_AUTH / empty-token skips below are vestigial
-    # (they can never fire) and kept only for back-compat with an older runner.
+    # The black-box regression harness for the auth review findings #759–#769.
+    # The in-process half is tests/governance/test_authz_regressions.cpp and the
+    # coverage map is docs/testing/authz-regressions.md. A FIXED finding is a hard
+    # assertion (a regression FAILs). A finding still OPEN is a SKIP that names it
+    # while it reproduces and turns into a PASS once its fix is deployed. Every
+    # "as <user>" call sends that user's bearer alone (sql_as / http_as).
     sec "LEVEL 3.13 — authz enforcement (always on, #799) [#759-#769]"
-    if [ "$REQUIRE_AUTH" != "1" ]; then
-        skip "target is unauthenticated-local — authz enforcement inert (needs --require-auth target profile #88)"
-    elif [ -z "$TOKEN" ]; then
-        skip "ZETTA_E2E_REQUIRE_AUTH=1 but no ZETTA_E2E_TOKEN (the seeded admin token) provided"
+    ADMIN="$TOKEN"
+    # deny-by-default: no / empty / bogus credential is refused on every surface [#762].
+    _all=1
+    for _p in "/v1/server_info" "/v1/list_projects"; do
+        _c="$(http_code GET "$_p" "" "-")"; case "$_c" in 401|403) : ;; *) _all=0 ;; esac
+    done
+    _c="$(http_code POST "/mcp" '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' "-")"; case "$_c" in 401|403) : ;; *) _all=0 ;; esac
+    [ "$_all" -eq 1 ] && pass "deny-by-default: unauthenticated request denied on REST + /mcp [#762]" || fail "an unauthenticated request was NOT denied [#762]"
+    # A bearer that is not a token is refused: there is no shared secret left to
+    # compare, constant-time or not [#769 item 2, #762].
+    _c="$(http_code GET '/v1/server_info' '' 'e2e-not-a-real-token')"; case "$_c" in 401|403) pass "a bogus bearer is denied ($_c) [#762/#769]" ;; *) fail "a bogus bearer was accepted ($_c) [#762/#769]" ;; esac
+    # the admin (owner) token opens the gate.
+    _c="$(http_code GET '/v1/server_info' '' "$ADMIN")"; case "$_c" in 200) pass "the admin token authenticates (200)" ;; *) fail "the admin token did not authenticate ($_c)" ;; esac
+
+    # Seed a governed workload. Every object and user is per-run: the store is
+    # append-only and a target keeps them across runs.
+    sql_as "$ADMIN" "CREATE DATABASE $DB" >/dev/null 2>&1
+    RUSER="e2e_reader_${RUN}"
+    RTBL="authz_${RUN}"        # the reader's write attempts target this one (#759, #1229)
+    RLSTBL="authz_rls_${RUN}"  # row security (#748): admin-only rows, the reader only reads
+    MTBL="authz_mask_${RUN}"   # column masking (#760): no row policy on it
+    for _t in "$RTBL" "$RLSTBL" "$MTBL"; do
+        sql_as "$ADMIN" "CREATE TABLE $_t (id, owner, amount)" >/dev/null 2>&1
+        for _r in "1,'$RUSER','100'" "2,'someone_else','200'" "3,'$RUSER','300'"; do
+            sql_as "$ADMIN" "INSERT INTO $_t (id, owner, amount) VALUES ($_r)" >/dev/null 2>&1
+        done
+    done
+    # mint_user NAME ROLE -> $MINTED (the user's token, or empty)
+    mint_user() {
+        MINTED=""
+        sql_as "$ADMIN" "CREATE USER $1" >/dev/null 2>&1
+        sql_as "$ADMIN" "GRANT ROLE $2 TO $1" >/dev/null 2>&1
+        if sql_as "$ADMIN" "CREATE TOKEN FOR $1 TYPE access"; then MINTED="$(rfield secret)"; fi
+    }
+    # The built-in reader role: sql:read, serving:read, mcp:call — no write, DDL or manage.
+    mint_user "$RUSER" reader; RTOK="$MINTED"
+    if [ -z "$RTOK" ]; then
+        skip "could not mint a reader token (CREATE USER / GRANT ROLE / CREATE TOKEN refused: $(err_msg)) — the authz matrix needs the credential store (#744)"
     else
-        ADMIN="$TOKEN"
-        # deny-by-default: no / empty / bogus credential is refused on every surface [#762].
-        _all=1
-        for _p in "/v1/server_info" "/v1/list_projects"; do
-            _c="$(http_code GET "$_p" "" "-")"; case "$_c" in 401|403) : ;; *) _all=0 ;; esac
-        done
-        _c="$(http_code POST "/mcp" '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' "-")"; case "$_c" in 401|403) : ;; *) _all=0 ;; esac
-        [ "$_all" -eq 1 ] && pass "deny-by-default: unauthenticated request denied on REST + /mcp [#762]" || fail "an unauthenticated request was NOT denied under --require-auth [#762]"
-        _c="$(http_code GET '/v1/server_info' '' 'e2e-not-a-real-token')"; case "$_c" in 401|403) pass "a bogus bearer is denied ($_c)" ;; *) fail "a bogus bearer was accepted ($_c)" ;; esac
-        # the admin (owner) token opens the gate.
-        _c="$(http_code GET '/v1/server_info' '' "$ADMIN")"; case "$_c" in 200) pass "the admin token authenticates (200)" ;; *) fail "the admin token did not authenticate ($_c)" ;; esac
+        pass "minted a reader token (CREATE USER + GRANT ROLE reader + CREATE TOKEN)"
+        if sql_as "$RTOK" "SELECT id FROM $RTBL"; then pass "reader holds sql:read (SELECT allowed)"; else fail "reader denied its own sql:read: $(err_msg)"; fi
 
-        # Seed a governed workload + a reader user (built-in reader role: sql:read,
-        # serving:read, mcp:call — no write/ddl/manage). Grammar kept to what the
-        # deployed engine parses cleanly (scoped GRANT ... ON <object> is omitted:
-        # it faults the current build via an escaping ParseError — see notes).
-        sql_as "$ADMIN" "CREATE DATABASE $DB" >/dev/null 2>&1
-        RTBL="authz_${RUN}"       # the reader's write attempts target this one (#759, #1229)
-        RLSTBL="authz_rls_${RUN}" # PRISTINE: admin-only rows, the reader only reads it
-        sql_as "$ADMIN" "CREATE TABLE $RTBL (id, owner, amount)" >/dev/null 2>&1
-        sql_as "$ADMIN" "CREATE TABLE $RLSTBL (id, owner, amount)" >/dev/null 2>&1
-        for _r in "1,'e2e_reader','100'" "2,'someone_else','200'" "3,'e2e_reader','300'"; do
-            sql_as "$ADMIN" "INSERT INTO $RTBL (id, owner, amount) VALUES ($_r)" >/dev/null 2>&1
-            sql_as "$ADMIN" "INSERT INTO $RLSTBL (id, owner, amount) VALUES ($_r)" >/dev/null 2>&1
+        # #759 (fixed, #1229): every privileged or data-changing statement checks
+        # its right; a reader is refused each one. An allowed one FAILS.
+        authz_denied() { # DESC STMT FINDING
+            if sql_as "$RTOK" "$2"; then fail "$1 was ALLOWED for a reader [$3]"
+            else pass "$1 denied for a reader [$3]"; fi
+        }
+        authz_denied "INSERT" "INSERT INTO $RTBL (id, owner, amount) VALUES (9,'x','9')" "#759"
+        authz_denied "CREATE USER" "CREATE USER e2e_escalate_${RUN}" "#759"
+        authz_denied "CREATE TOKEN FOR owner" "CREATE TOKEN FOR owner TYPE access" "#759"
+        authz_denied "CREATE TABLE (DDL)" "CREATE TABLE e2e_reader_ddl_${RUN} (x)" "#759"
+        authz_denied "CREATE DATABASE (DDL)" "CREATE DATABASE e2e_reader_db_${RUN}" "#759"
+        authz_denied "UPDATE" "UPDATE $RTBL SET amount = '0'" "#759/#1229"
+        authz_denied "DELETE" "DELETE FROM $RTBL WHERE id = 1" "#759/#1229"
+        authz_denied "TRUNCATE" "TRUNCATE $RTBL" "#759/#1229"
+        authz_denied "DROP TABLE" "DROP TABLE $RTBL" "#759/#1229"
+        authz_denied "DROP DATABASE" "DROP DATABASE $DB" "#759/#1229"
+        # A reader holds no roles:manage, so it cannot grant itself admin.
+        authz_denied "GRANT ROLE admin to itself" "GRANT ROLE admin TO $RUSER" "#761"
+        # The connection store is not reachable through SQL at all (#1230).
+        if sql_as "$ADMIN" "SELECT * FROM zetta_connect.connections"; then
+            fail "the connection store answered a SELECT [#1230]"
+        else pass "the connection store refuses SQL, even for the admin [#1230]"; fi
+
+        # #769 (fixed, #1229): the refused statements are on the audit trail.
+        if sql_as "$ADMIN" "SELECT * FROM system.audit WHERE action = 'data_changed'" ""; then
+            # The reader's refused writes all target $RTBL (and nothing else
+            # writes to it after the seed), so count the refused rows on it.
+            _refused="$(printf '%s' "$BODY" | jq -r --arg t "sql:table:$DB.$RTBL" '[(.value.rows // .rows)[] | select((.allowed == false or .allowed == "false") and .target == $t)] | length' 2>/dev/null)"
+            if [ "${_refused:-0}" -ge 5 ]; then pass "the reader's refused writes are audited as refused data_changed ($_refused) [#769]"
+            else fail "expected >=5 refused data_changed audit rows on $RTBL, got ${_refused:-0} [#769]"; fi
+        else skip "system.audit unreadable: $(err_msg)"; fi
+
+        # #748 row security: a SELECT policy limits a non-admin to the rows
+        # current_user() owns; admin bypasses [#762].
+        if sql_as "$ADMIN" "CREATE POLICY authz_own_${RUN} ON $RLSTBL FOR SELECT USING (owner = current_user())"; then
+            if sql_as "$RTOK" "SELECT id, owner FROM $RLSTBL"; then
+                _rn="$(rows_len)"; _mine="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[].owner] | unique | join(",")')"
+                if [ "$_mine" = "$RUSER" ] && [ "$_rn" -eq 2 ]; then pass "RLS: reader sees only its own rows ($_rn) [#748]"; else fail "RLS: reader saw rows=$_rn owners=$_mine [#748]"; fi
+            else fail "RLS: the reader could not read the table: $(err_msg) [#748]"; fi
+            if sql_as "$ADMIN" "SELECT id FROM $RLSTBL" && [ "$(rows_len)" -eq 3 ]; then pass "RLS: admin bypasses the policy (sees all rows) [#762]"; else fail "RLS: admin did not see all rows [#762]"; fi
+        else fail "CREATE POLICY refused: $(err_msg) [#748]"; fi
+        # #765: the grammar refuses a policy with no condition. (The open half —
+        # such a record arriving by replication or an edited policy.json — has
+        # no black-box surface; it is asserted in-process.)
+        if sql_as "$ADMIN" "CREATE POLICY authz_nocond_${RUN} ON $RLSTBL FOR SELECT"; then
+            fail "a no-condition SELECT policy was accepted — fail-open risk [#765]"
+        else pass "the grammar refuses a SELECT policy with no condition [#765]"; fi
+        skip "a condition-less policy that arrives replicated or restored is asserted in-process only (open: admits every row) [#765]"
+
+        # #760 column masking (fixed): a user granted (id, owner) sees amount
+        # masked, and no aggregate recovers it.
+        MUSER="e2e_masked_${RUN}"
+        sql_as "$ADMIN" "CREATE ROLE e2e_idonly_${RUN}" >/dev/null 2>&1
+        sql_as "$ADMIN" "GRANT mcp:call TO ROLE e2e_idonly_${RUN}" >/dev/null 2>&1  # reach the sql tool
+        if sql_as "$ADMIN" "GRANT sql:read ON $DB.$MTBL(id, owner) TO ROLE e2e_idonly_${RUN}"; then
+            mint_user "$MUSER" "e2e_idonly_${RUN}"; MTOK="$MINTED"
+            if [ -n "$MTOK" ] && sql_as "$MTOK" "SELECT * FROM $MTBL"; then
+                _leak="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[] | select(.amount != null)] | length')"
+                [ "$_leak" = "0" ] && pass "column masking: an ungranted column comes back null [#747]" || fail "column masking leaked amount in $_leak rows [#747]"
+                for _agg in "SELECT id, MAX(amount) FROM $MTBL GROUP BY id" "SELECT owner, MIN(amount) FROM $MTBL GROUP BY owner"; do
+                    if sql_as "$MTOK" "$_agg"; then
+                        _vals="$(printf '%s' "$BODY" | jq -c '[(.value.rows // .rows)[] | to_entries[] | select(.key != "id" and .key != "owner") | .value | select(. != null)]')"
+                        [ "$_vals" = "[]" ] && pass "an aggregate over a masked column returns no value ($_agg) [#760]" || fail "an aggregate recovered masked values $_vals ($_agg) [#760]"
+                    else pass "an aggregate over a masked column is refused [#760]"; fi
+                done
+            else fail "the column-scoped user could not read $MTBL: $(err_msg) [#747]"; fi
+        else fail "GRANT sql:read ON <table>(<columns>) refused: $(err_msg) [#747]"; fi
+
+        # Scoped tool grant (#747) and the spec index it should narrow (#766).
+        TUSER="e2e_onetool_${RUN}"
+        sql_as "$ADMIN" "CREATE ROLE e2e_onetool_${RUN}" >/dev/null 2>&1
+        if sql_as "$ADMIN" "GRANT mcp:call ON TOOL server_info TO ROLE e2e_onetool_${RUN}"; then
+            mint_user "$TUSER" "e2e_onetool_${RUN}"; TTOK="$MINTED"
+            http_as "$TTOK" GET "/v1/server_info"; _c1="$CODE"
+            http_as "$TTOK" GET "/v1/list_projects"; _c2="$CODE"
+            if [ "$_c1" = "200" ] && [ "$_c2" = "403" ]; then pass "a tool-scoped user calls server_info (200) and is refused list_projects (403) [#747]"
+            else fail "tool scope: server_info=$_c1 list_projects=$_c2 (want 200/403) [#747]"; fi
+            http_as "$TTOK" GET "/v1/specs"
+            _lists=0; case "$BODY" in *'"list_projects"'*) _lists=1 ;; esac
+            if [ "$CODE" = "200" ] && [ "$_lists" -eq 1 ]; then
+                skip "a user granted only server_info reads every tool's spec at /v1/specs [#766 open]"
+            else pass "/v1/specs lists only the caller's tools ($CODE) [#766]"; fi
+        else fail "GRANT mcp:call ON TOOL refused: $(err_msg) [#747]"; fi
+
+        # #761 (open): a holder of ONLY roles:manage must not grant itself admin.
+        DUSER="e2e_delegate_${RUN}"
+        sql_as "$ADMIN" "CREATE ROLE e2e_delegates_${RUN}" >/dev/null 2>&1
+        sql_as "$ADMIN" "GRANT roles:manage, sql:read, mcp:call TO ROLE e2e_delegates_${RUN}" >/dev/null 2>&1
+        mint_user "$DUSER" "e2e_delegates_${RUN}"; DTOK="$MINTED"
+        if [ -z "$DTOK" ]; then skip "could not mint the roles:manage delegate: $(err_msg) [#761]"
+        elif ! sql_as "$DTOK" "SELECT id FROM $RTBL"; then fail "the roles:manage delegate cannot run SQL at all: $(err_msg) [#761]"
+        elif sql_as "$DTOK" "GRANT ROLE admin TO $DUSER"; then
+            skip "a holder of only roles:manage granted itself admin [#761 open]"
+        else pass "a holder of only roles:manage cannot grant itself admin [#761]"; fi
+        # Editing or dropping a built-in role is asserted in-process only: on a
+        # target it would change that role for every user of the node.
+        skip "built-in roles can be edited or dropped — asserted in-process only (it would change the target's roles) [#761 open]"
+
+        # #766 (open): the governance catalog is readable by any authenticated user.
+        _seen=""
+        for _v in policies users roles user_roles tokens; do
+            if sql_as "$RTOK" "SELECT * FROM system.$_v" "" && [ "$(rows_len)" -gt 0 ]; then _seen="$_seen system.$_v"; fi
         done
-        sql_as "$ADMIN" "CREATE USER e2e_reader" >/dev/null 2>&1
-        sql_as "$ADMIN" "GRANT ROLE reader TO e2e_reader" >/dev/null 2>&1
-        RTOK=""
-        if sql_as "$ADMIN" "CREATE TOKEN FOR e2e_reader TYPE access"; then RTOK="$(rfield secret)"; fi
-        if [ -z "$RTOK" ]; then
-            skip "could not mint a reader token (CREATE USER/TOKEN DDL absent) — authz matrix needs the credential store (#744)"
-        else
-            pass "minted a scoped reader token (CREATE USER + GRANT ROLE + CREATE TOKEN)"
-            # A reader CAN read (sql:read) ...
-            if sql_as "$RTOK" "SELECT id FROM $RTBL"; then pass "reader holds sql:read (SELECT allowed)"; else fail "reader denied its own sql:read"; fi
-            # ... and is DENIED write (sql:write) — a real, enforced deny [#759 write path].
-            # This is also the bellwether for the per-statement executor gate:
-            # if it is off, RLS/masking (the same choke point) cannot be trusted.
-            _wenf=0
-            if sql_as "$RTOK" "INSERT INTO $RTBL (id, owner, amount) VALUES (9,'x','9')"; then
-                skip "reader INSERT was ALLOWED — sql:write not enforced in this build [#759]"
-            else _wenf=1; pass "reader is denied INSERT (no sql:write) [#759]"; fi
-            # ... and cannot escalate roles (roles:manage) [#761].
-            if sql_as "$RTOK" "GRANT ROLE admin TO e2e_reader"; then
-                skip "reader could GRANT ROLE admin — roles:manage unbounded [#761]"
-            else pass "reader cannot grant itself admin (roles:manage enforced) [#761]"; fi
-            # Privileged statements that must require a manage permission. These
-            # are the #759 core: track a SKIP (loudly) when the check is still
-            # skipped in this build; flips to PASS the moment enforcement lands.
-            authz_privileged() { # DESC STMT FINDING
-                if sql_as "$RTOK" "$2"; then skip "$1 was ALLOWED for a reader — permission check skipped in this build [$3]"
-                else pass "$1 denied for a reader [$3]"; fi
-            }
-            authz_privileged "CREATE USER"  "CREATE USER e2e_escalate_${RUN}"        "#759"
-            authz_privileged "CREATE TOKEN FOR owner" "CREATE TOKEN FOR owner TYPE access" "#759"
-            authz_privileged "CREATE TABLE (DDL)" "CREATE TABLE e2e_reader_ddl_${RUN} (x)" "#759"
-            # Every other data-changing statement checks sql:write / sql:ddl the
-            # way INSERT does (#1229) — enforced, so an allowed one FAILS.
-            authz_denied() { # DESC STMT FINDING
-                if sql_as "$RTOK" "$2"; then fail "$1 was ALLOWED for a reader [$3]"
-                else pass "$1 denied for a reader [$3]"; fi
-            }
-            authz_denied "UPDATE" "UPDATE $RTBL SET amount = '0'" "#1229"
-            authz_denied "DELETE" "DELETE FROM $RTBL WHERE id = 1" "#1229"
-            authz_denied "TRUNCATE" "TRUNCATE $RTBL" "#1229"
-            authz_denied "DROP TABLE" "DROP TABLE $RTBL" "#1229"
-            authz_denied "DROP DATABASE" "DROP DATABASE $DB" "#1229"
-            # The connection store is not reachable through SQL at all (#1230).
-            if sql_as "$ADMIN" "SELECT * FROM zetta_connect.connections"; then
-                fail "the connection store answered a SELECT [#1230]"
-            else pass "the connection store refuses SQL, even for the admin [#1230]"; fi
-            # RLS: a SELECT policy limits a non-admin to rows current_user() owns;
-            # admin bypasses [#748/#762]. RLS and column masking ride the SAME
-            # per-statement executor gate as sql:write, so a build where writes are
-            # unenforced (#759, above) cannot give a trustworthy RLS verdict — gate
-            # the assertion on that bellwether rather than emit a false FAIL. Run on
-            # the PRISTINE admin-only table. A no-condition policy must be rejected [#765].
-            if [ "$_wenf" -ne 1 ]; then
-                skip "RLS enforcement not asserted — the per-statement gate is off in this build (sql:write unenforced, #759); RLS shares that choke point [#748]"
-            elif sql_as "$ADMIN" "CREATE POLICY authz_own_${RUN} ON $RLSTBL FOR SELECT USING (owner = current_user())"; then
-                if sql_as "$RTOK" "SELECT id, owner FROM $RLSTBL"; then
-                    _rn="$(rows_len)"; _mine="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[].owner] | unique | join(",")')"
-                    if [ "$_mine" = "e2e_reader" ]; then pass "RLS: reader sees only its own rows ($_rn, owner=$_mine) [#748]"; else fail "RLS leaked rows to a non-owner (owners=$_mine) [#748]"; fi
-                else skip "RLS: could not read back as the policy user"; fi
-                if sql_as "$ADMIN" "SELECT id FROM $RLSTBL" && [ "$(rows_len)" -eq 3 ]; then pass "RLS: admin bypasses the policy (sees all rows) [#762]"; else skip "RLS admin-bypass read inconclusive"; fi
-            else skip "RLS: CREATE POLICY unsupported in this build [#748]"; fi
-            if sql_as "$ADMIN" "CREATE POLICY authz_nocond_${RUN} ON $RLSTBL FOR SELECT"; then
-                fail "a no-condition SELECT policy was accepted — fail-open risk [#765]"
-            else pass "a no-condition SELECT policy is rejected (no fail-open) [#765]"; fi
-            # Column masking + fine-grained scoped grants need GRANT ... ON <object>,
-            # which faults the current build (an escaping ParseError from the
-            # statement builder — the same class the CREATE TOKEN/ROLE workaround
-            # covers). Tracked, NOT executed (it would crash the node); lights up
-            # when the builder gets the out-of-line workaround.
-            skip "column masking (+ the aggregate path) needs GRANT ... ON table(cols), which faults this build's parser [#760/#747]"
-            skip "scoped grants (table/column/tool/blob) need GRANT ... ON <object>, which faults this build's parser [#747/#767]"
-            # Token revoke: no SQL revoke grammar (programmatic Node::revoke_token
-            # only; REVOKE TOKEN faults the parser). Issue + auth are covered above.
-            skip "token expiry/revoke has no black-box SQL surface in this build (programmatic only) [#780]"
-            # Catalog exposure to any authenticated user [#766] — a real deny would
-            # narrow this; today a reader can read the full policy/user/role catalog.
-            if sql_as "$RTOK" "SELECT id FROM system.policies"; then skip "a reader can read system.policies (full catalog visible to any user) [#766]"; else pass "reader is denied the policy catalog [#766]"; fi
-        fi
+        if [ -n "$_seen" ]; then skip "a reader can read$_seen [#766 open]"; else pass "a reader is refused the governance catalog [#766]"; fi
+
+        # Findings with no black-box surface — each is asserted in-process.
+        skip "blob grants and the path boundary: no HTTP route serves a blob body yet [#767]"
+        skip "a joining node minting a second owner needs a node started against the cluster with its own --admin-token [#763 open]"
+        skip "an unsigned replicated credential needs a raw write into the replicated catalog [#764 open]"
+        skip "the owner token's at-rest hash and an interrupted owner seed are not visible over the API [#769 open]"
+        skip "token expiry/revoke has no black-box SQL surface (programmatic only) [#780]"
+
+        # #768 (fixed, 7b1ac08): orchestration is grantable — the admin runs an
+        # orchestration tool, and the reader (no pipelines:manage) is refused it.
+        http_as "$ADMIN" POST "/v1/create_project" "$(jq -rn --arg n "e2e-authz-${RUN}" '{name:$n}')"; _c1="$CODE"
+        http_as "$RTOK" POST "/v1/create_project" "$(jq -rn --arg n "e2e-authz-r-${RUN}" '{name:$n}')"; _c2="$CODE"
+        if [ "$_c1" = "200" ] && [ "$_c2" = "403" ]; then pass "admin runs create_project (200), the reader is refused it (403) [#768]"
+        else fail "create_project: admin=$_c1 reader=$_c2 (want 200/403) [#768]"; fi
     fi
-
 fi
 
 # ============================================================================
