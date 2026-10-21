@@ -18,6 +18,10 @@
       "description": "The image OCID burst nodes boot from. Empty lets the control plane / instance configuration default apply (a production deployment supplies a current platform/custom image OCID).",
       "type": "string"
     },
+    "key_id": {
+      "description": "The OCID of the vault's master encryption key that encrypts the join-token secret. Required on a secure cluster (#1316).",
+      "type": "string"
+    },
     "memory_in_gbs": {
       "description": "Memory in GB per node for a flexible shape (the shapeConfig). 0 omits it. Default 16.",
       "minimum": 0,
@@ -51,6 +55,10 @@
     "subnet_id": {
       "description": "The subnet OCID burst nodes attach their primary VNIC to.",
       "minLength": 1,
+      "type": "string"
+    },
+    "vault_id": {
+      "description": "The OCI Vault OCID the cluster join token is stored in, as the secret '<pool_name>-cluster-token'. Each node's boot script reads it with the instance principal, so the token never rides user_data. Required on a secure cluster (#1316).",
       "type": "string"
     }
   },

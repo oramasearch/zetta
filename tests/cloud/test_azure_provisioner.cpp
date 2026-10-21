@@ -103,8 +103,7 @@ bool has_token(const std::vector<std::string>& argv, const std::string& token) {
     return std::find(argv.begin(), argv.end(), token) != argv.end();
 }
 
-// Find an argv whose value at `name` contains `needle` (custom-data now carries
-// the seed peer AND the join token as KEY=VALUE lines in one blob — #670).
+// Find an argv whose value at `name` contains `needle`.
 bool flag_value_contains(const std::vector<std::string>& argv,
                          const std::string& name, const std::string& needle) {
     for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
@@ -148,6 +147,7 @@ TEST(AzureConfig, RoundTripsFullConfig) {
     config.seed_peer = "10.0.0.1:7777";
     config.managed_identity = "/subscriptions/sub-123/.../burst-mi";
     config.tenant_id = "tenant-abc";
+    config.key_vault = "zetta-kv";
 
     const auto parsed = AzureConfig::from_json(config.to_json());
     ASSERT_TRUE(parsed.has_value());
@@ -433,35 +433,47 @@ TEST(AzCliControlPlane, DefaultsImageAndSkuForFlexibleCreate) {
     EXPECT_TRUE(has_flag(create, "--platform-fault-domain-count", "1"));
 }
 
+namespace {
+
+// The custom-data argument of the `az vmss create` call, or empty.
+std::string custom_data_of(const std::vector<std::vector<std::string>>& calls) {
+    const std::vector<std::string>& create = vmss_create_call(calls);
+    for (std::size_t index = 0; index + 1 < create.size(); ++index) {
+        if (create[index] == "--custom-data") return create[index + 1];
+    }
+    return "";
+}
+
+constexpr const char* kJoinToken =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+constexpr const char* kIdentity =
+    "/subscriptions/sub-123/resourceGroups/ops/providers/"
+    "Microsoft.ManagedIdentity/userAssignedIdentities/zetta-burst";
+
+AzureConfig secure_config() {
+    AzureConfig config = sample_config();
+    config.seed_peer = "10.0.0.1:7777";
+    config.join_token = kJoinToken;
+    config.key_vault = "zetta-kv";
+    config.managed_identity = kIdentity;
+    return config;
+}
+
+}  // namespace
+
 TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
     std::vector<std::vector<std::string>> calls;
-    std::string custom_data_seen;
-    bool custom_data_private = false;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
-        // The custom-data carries the token, so it arrives as `@<file>`; read the
-        // file while the command runs (it is removed afterwards).
-        for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
-            if (argv[index] == "--custom-data" && argv[index + 1].starts_with("@")) {
-                const std::string path = argv[index + 1].substr(1);
-                custom_data_seen = zetta::test::read_whole_file(path);
-                custom_data_private = zetta::test::owner_only(path);
-            }
-        }
         CommandResult result;
         if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
         return result;
     };
 
     AzCliControlPlane control_plane{runner};
-    AzureConfig config = sample_config();
+    AzureConfig config = secure_config();
     config.spot = true;
     config.max_price = 1.25;
-    config.seed_peer = "10.0.0.1:7777";
-    // On a secure cluster the join token rides alongside the seed peer (#670),
-    // both in the one cloud-init custom-data blob.
-    config.join_token =
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
@@ -469,13 +481,94 @@ TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
     EXPECT_TRUE(has_flag(create, "--priority", "Spot"));
     EXPECT_TRUE(has_token(create, "--eviction-policy"));
     EXPECT_TRUE(has_token(create, "--max-price"));
-    // #770: the token is never an argv value; the custom-data file holds the seed
-    // and the token, readable by its owner only.
-    EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
-    EXPECT_NE(custom_data_seen.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
-    EXPECT_NE(custom_data_seen.find("ZETTA_CLUSTER_TOKEN=" + config.join_token),
-              std::string::npos);
-    EXPECT_TRUE(custom_data_private);
+}
+
+// #1316: on a secure cluster the token is stored in Key Vault before anything is
+// created, through a private file, and the custom-data is the node bootstrap
+// script naming the secret, the vault and the identity: never the token.
+TEST(AzCliControlPlane, StoresTheJoinTokenInKeyVaultAndHandsOnlyItsName) {
+    std::vector<std::vector<std::string>> calls;
+    std::string file_seen;
+    bool file_private = false;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        if (has_token(argv, "keyvault")) {
+            for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+                if (argv[index] == "--file") {
+                    file_seen = zetta::test::read_whole_file(argv[index + 1]);
+                    file_private = zetta::test::owner_only(argv[index + 1]);
+                }
+            }
+        }
+        return CommandResult{};
+    };
+
+    AzCliControlPlane control_plane{runner};
+    const AzureConfig config = secure_config();
+    EXPECT_TRUE(control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()}).satisfied);
+
+    ASSERT_FALSE(calls.empty());
+    const std::vector<std::string>& store = calls.front();
+    EXPECT_TRUE(has_token(store, "keyvault"));
+    EXPECT_TRUE(has_token(store, "set"));
+    EXPECT_TRUE(has_flag(store, "--vault-name", "zetta-kv"));
+    EXPECT_TRUE(has_flag(store, "--name", "zetta-burst-cluster-token"));
+    EXPECT_TRUE(has_flag(store, "--output", "none"));
+    EXPECT_EQ(file_seen, kJoinToken);
+    EXPECT_TRUE(file_private);
+
+    EXPECT_FALSE(zetta::test::any_argv_contains(calls, kJoinToken));
+    const std::string custom_data = custom_data_of(calls);
+    EXPECT_TRUE(custom_data.starts_with("#!/bin/sh\n"));
+    EXPECT_NE(custom_data.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
+    EXPECT_NE(custom_data.find("TOKEN_STORE=azure-key-vault"), std::string::npos);
+    EXPECT_NE(custom_data.find("TOKEN_SECRET=zetta-burst-cluster-token"), std::string::npos);
+    EXPECT_NE(custom_data.find("TOKEN_CONTAINER=zetta-kv"), std::string::npos);
+    EXPECT_NE(custom_data.find(std::string{"TOKEN_IDENTITY="} + kIdentity), std::string::npos);
+    EXPECT_TRUE(has_flag(vmss_create_call(calls), "--assign-identity", kIdentity));
+}
+
+// Fail closed: without a vault and an identity the VMs could not fetch the
+// token, and it never falls back to custom-data, so nothing is created.
+TEST(AzCliControlPlane, ASecureClusterNeedsAKeyVaultAndAnIdentity) {
+    for (const bool drop_vault : {true, false}) {
+        std::vector<std::vector<std::string>> calls;
+        CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+            calls.push_back(argv);
+            return CommandResult{};
+        };
+        AzCliControlPlane control_plane{runner};
+        AzureConfig config = secure_config();
+        if (drop_vault) {
+            config.key_vault.clear();
+        } else {
+            config.managed_identity.clear();
+        }
+        const ProvisionResult result =
+            control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
+        EXPECT_FALSE(result.satisfied);
+        EXPECT_NE(result.detail.find("key_vault and managed_identity"), std::string::npos);
+        EXPECT_TRUE(calls.empty());
+    }
+}
+
+TEST(AzCliControlPlane, FailsClosedWhenKeyVaultRefusesTheToken) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "keyvault")) {
+            result.exit_code = 1;
+            result.stderr_text = "Forbidden: does not have secrets set permission";
+        }
+        return result;
+    };
+    AzCliControlPlane control_plane{runner};
+    const ProvisionResult result =
+        control_plane.bring_up(secure_config(), ProvisionRequest{2, gpu_spec()});
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_NE(result.detail.find("secrets set permission"), std::string::npos);
+    ASSERT_EQ(calls.size(), 1u);  // no group, no scale set
 }
 
 // A successful create is satisfied: the scale set placed the requested VMs, which

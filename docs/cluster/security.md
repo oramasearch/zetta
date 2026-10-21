@@ -120,15 +120,19 @@ returns (`zetta::cloud::SecretFile`, `include/zetta/cloud/secret_file.hpp`).
 | **Kubernetes** (`k8s_cli_control_plane.cpp`) | Secret `<deployment>-cluster-token` (key `ZETTA_CLUSTER_TOKEN`), applied with `kubectl apply --server-side` from the private file; the Deployment references it with `kubectl set env --from=secret/…` (a `secretKeyRef`). Server-side apply keeps the value out of the `last-applied-configuration` annotation that `kubectl describe` prints. | Principals that can read Secrets in the namespace; the pod's processes through their environment. No longer anyone who can read the Deployment. |
 | **AWS** (`aws_cli_control_plane.cpp`) | SSM Parameter Store SecureString `/zetta/<pool>/cluster-token` (`aws ssm put-parameter --value file://…`, fail-closed); the instance carries only the **name**, in the propagating tag `ZETTA_CLUSTER_TOKEN_SSM_PARAMETER`. The node's instance profile needs `ssm:GetParameter` on it and `kms:Decrypt` on its key. | Principals granted `ssm:GetParameter` (+ decrypt). Before #770 the token was itself a tag, readable by anyone with `ec2:DescribeTags` and recorded in CloudTrail. |
 | **Bare metal / containers** (`bare_metal_cli_control_plane.cpp`) | `<runtime> run --env-file <private file>`. | Anyone who can `docker inspect` the container (the runtime stores container env), and the container's processes. |
-| **Azure** (`azure_cli_control_plane.cpp`) | cloud-init custom-data, passed as `--custom-data @<private file>`. | Every process on the VM (the metadata endpoint `169.254.169.254`), the VM's disk (`/var/lib/waagent/CustomData`). |
-| **GCP** (`gcp_cli_control_plane.cpp`) | instance-template `startup-script` metadata, passed with `--metadata-from-file`. | Principals that can describe the template or instance; every process on the VM (the metadata server). |
-| **OCI** (`oci_cli_control_plane.cpp`) | instance-configuration `user_data`, passed as `--instance-details file://<private file>`. | Principals that can read the instance configuration; every process on the VM (IMDS). |
+| **Azure** (`azure_cli_control_plane.cpp`) | Key Vault secret `<pool>-cluster-token` in `key_vault` (`az keyvault secret set --file …`, fail-closed; no `key_vault` / `managed_identity` → nothing is created). The custom-data is the [node bootstrap script](../cloud/node-bootstrap-script.md), carrying only the secret's name; at boot it reads the secret with the user-assigned managed identity and writes a 0400 file (#1316). | Principals with Key Vault Secrets User (or `get`) on the secret, the burst nodes' identity among them; the node's processes that can read the 0400 file. No longer every process on the VM, nor its disk. |
+| **GCP** (`gcp_cli_control_plane.cpp`) | Secret Manager secret `<pool>-cluster-token` (`gcloud secrets create` / `versions add --data-file …`, fail-closed). The `startup-script` is the node bootstrap script, carrying only the secret's name; the template gets `--scopes cloud-platform`, and at boot the script reads the secret with the instance's service account (#1316). | Principals with `secretmanager.secretAccessor` on the secret, the node service account among them. No longer anyone who can describe the template or instance, nor every process on the VM. |
+| **OCI** (`oci_cli_control_plane.cpp`) | OCI Vault secret `<pool>-cluster-token` in `vault_id`, encrypted with `key_id` (`oci vault secret create-base64` / `update-base64 --from-json file://…`, fail-closed; no `vault_id` / `key_id` → nothing is created). The instance configuration's `user_data` is the base64 node bootstrap script, carrying only the secret's name; at boot it reads the secret with the instance principal (#1316). | Principals allowed `read secret-bundles` on it, the burst nodes' dynamic group among them. No longer anyone who can read the instance configuration, nor every process on the instance. |
 
-Azure, GCP and OCI still carry the token in instance user-data / metadata. Moving
-them to Key Vault / Secret Manager / OCI Vault needs the VM bootstrap that fetches
-it (Gap A in [cloud provisioning](../plans/cloud-provisioning.md)), which does not
-exist yet: #1316. #669 (CSR enrollment) would replace the long-lived token on new
-nodes with a one-time enrollment credential.
+No provider puts the token in instance user-data or metadata any more (#1316). The
+VM's user-data is the [node bootstrap script](../cloud/node-bootstrap-script.md),
+which names the secret; the VM reads it with its own identity and writes
+`/etc/zetta/cluster-token` (0400, owned by `zetta`). On AWS the operator's launch
+template runs the same script (#1338 generates that from the binding). Templates and
+instance configurations created before #1316 still hold the token: the GCP and OCI
+provider pages say how to remove them, and the token should be rotated. #669 (CSR
+enrollment) would replace the long-lived token on new nodes with a one-time
+enrollment credential.
 
 **On the node**, the token arrives as `ZETTA_CLUSTER_TOKEN_FILE` (preferred — a
 Kubernetes Secret volume, a 0400 file the bootstrap writes) or

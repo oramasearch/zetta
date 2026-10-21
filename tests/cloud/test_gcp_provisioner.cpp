@@ -116,8 +116,7 @@ bool has_token(const std::vector<std::string>& argv, const std::string& token) {
     return std::find(argv.begin(), argv.end(), token) != argv.end();
 }
 
-// Find an argv whose value at `name` contains `needle` (the startup-script
-// metadata now carries the seed peer AND the join token as KEY=VALUE lines — #670).
+// Find an argv whose value at `name` contains `needle`.
 bool flag_value_contains(const std::vector<std::string>& argv,
                          const std::string& name, const std::string& needle) {
     for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
@@ -469,8 +468,8 @@ TEST(GcpCliControlPlane, SpotConfigAddsSpotAndSeedFlagsToTheTemplate) {
     bool startup_private = false;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
-        // The startup-script carries the token, so it arrives through
-        // --metadata-from-file; read it while the command runs.
+        // The startup-script arrives through --metadata-from-file; read it while
+        // the command runs (the file is removed afterwards).
         for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
             const std::string prefix = "startup-script=";
             if (argv[index] == "--metadata-from-file" &&
@@ -489,8 +488,6 @@ TEST(GcpCliControlPlane, SpotConfigAddsSpotAndSeedFlagsToTheTemplate) {
     GcpConfig config = sample_config();
     config.spot = true;
     config.seed_peer = "10.0.0.1:7777";
-    // On a secure cluster the join token rides alongside the seed peer (#670),
-    // both in the one startup-script metadata value.
     config.join_token =
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -500,14 +497,110 @@ TEST(GcpCliControlPlane, SpotConfigAddsSpotAndSeedFlagsToTheTemplate) {
     ASSERT_NE(tmpl, nullptr);
     EXPECT_TRUE(has_flag(*tmpl, "--provisioning-model", "SPOT"));
     EXPECT_TRUE(has_token(*tmpl, "--instance-termination-action"));
-    // #770: the token is never an argv value; the startup-script file holds the
-    // seed and the token, readable by its owner only.
+    // #1316: the startup-script is the node bootstrap script. It names the seed
+    // and the Secret Manager secret, never the token; the node's access token
+    // needs the cloud-platform scope to read it.
     EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
     EXPECT_FALSE(has_token(*tmpl, "--metadata"));
+    EXPECT_TRUE(has_flag(*tmpl, "--scopes", "cloud-platform"));
+    EXPECT_TRUE(startup_seen.starts_with("#!/bin/sh\n"));
     EXPECT_NE(startup_seen.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
-    EXPECT_NE(startup_seen.find("ZETTA_CLUSTER_TOKEN=" + config.join_token),
-              std::string::npos);
+    EXPECT_NE(startup_seen.find("TOKEN_STORE=gcp-secret-manager"), std::string::npos);
+    EXPECT_NE(startup_seen.find("TOKEN_SECRET=zetta-burst-cluster-token"), std::string::npos);
+    EXPECT_NE(startup_seen.find("TOKEN_CONTAINER=orama-churn"), std::string::npos);
+    EXPECT_EQ(startup_seen.find(config.join_token), std::string::npos);
     EXPECT_TRUE(startup_private);
+}
+
+// #1316: on a secure cluster the token goes to Secret Manager before the
+// template, through a private --data-file, never argv.
+TEST(GcpCliControlPlane, StoresTheJoinTokenInSecretManagerFirst) {
+    std::vector<std::vector<std::string>> calls;
+    std::string data_seen;
+    bool data_private = false;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+            if (argv[index] == "--data-file") {
+                data_seen = zetta::test::read_whole_file(argv[index + 1]);
+                data_private = zetta::test::owner_only(argv[index + 1]);
+            }
+        }
+        CommandResult result;
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;
+    };
+
+    GcpCliControlPlane control_plane{runner};
+    GcpConfig config = sample_config();
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    EXPECT_TRUE(control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()}).satisfied);
+
+    ASSERT_FALSE(calls.empty());
+    const std::vector<std::string>& create = calls.front();
+    EXPECT_TRUE(has_token(create, "secrets"));
+    EXPECT_TRUE(has_token(create, "create"));
+    EXPECT_TRUE(has_token(create, "zetta-burst-cluster-token"));
+    EXPECT_TRUE(has_flag(create, "--project", "orama-churn"));
+    EXPECT_TRUE(has_flag(create, "--replication-policy", "automatic"));
+    EXPECT_EQ(data_seen, config.join_token);
+    EXPECT_TRUE(data_private);
+    EXPECT_EQ(call_with(calls, {"versions", "add"}), nullptr);  // created, not re-added
+    EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
+}
+
+// A re-burst: the secret exists, so the token is added as its latest version.
+TEST(GcpCliControlPlane, AReBurstAddsASecretVersion) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "secrets") && has_token(argv, "create")) {
+            result.exit_code = 1;
+            result.stderr_text = "ALREADY_EXISTS";
+        }
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;
+    };
+
+    GcpCliControlPlane control_plane{runner};
+    GcpConfig config = sample_config();
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    EXPECT_TRUE(control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()}).satisfied);
+
+    const std::vector<std::string>* add = call_with(calls, {"versions", "add"});
+    ASSERT_NE(add, nullptr);
+    EXPECT_TRUE(has_token(*add, "zetta-burst-cluster-token"));
+    EXPECT_TRUE(has_flag(*add, "--project", "orama-churn"));
+    EXPECT_TRUE(has_token(*add, "--data-file"));
+}
+
+// Fail closed: when Secret Manager refuses the token, no template or MIG is
+// touched and the token never falls back to metadata.
+TEST(GcpCliControlPlane, FailsClosedWhenSecretManagerRefusesTheToken) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "secrets")) {
+            result.exit_code = 1;
+            result.stderr_text = "PERMISSION_DENIED: secretmanager.versions.add";
+        }
+        return result;
+    };
+
+    GcpCliControlPlane control_plane{runner};
+    GcpConfig config = sample_config();
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const ProvisionResult result = control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
+
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_NE(result.detail.find("PERMISSION_DENIED"), std::string::npos);
+    EXPECT_EQ(call_with(calls, {"instance-templates", "create"}), nullptr);
+    EXPECT_EQ(call_with(calls, {"managed", "create"}), nullptr);
 }
 
 TEST(GcpCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {

@@ -132,9 +132,10 @@ and so never lands in the detected provisioner config or `system.provisioners`. 
 no token. The token is never a CLI argument: each binding hands it to its CLI
 through a private file (`SecretFile`), and Kubernetes and AWS keep it in their
 secret stores (a Secret + `secretKeyRef`; an SSM SecureString whose *name* rides
-the tag). Azure, GCP and OCI still carry it in instance user-data / metadata until
-the VM bootstrap can fetch from Key Vault / Secret Manager / OCI Vault (#1316). The
-per-provider delivery and who can read it:
+the tag). Azure, GCP and OCI store it in Key Vault / Secret Manager / OCI Vault and
+hand each VM the [node bootstrap script](node-bootstrap-script.md), which names the
+secret and fetches it at boot with the VM's identity (#1316); user-data never
+carries the token. The per-provider delivery and who can read it:
 [cluster security](../cluster/security.md#how-the-token-is-delivered-per-provider-770) (#770).
 
 ### Concrete binding shapes
@@ -146,13 +147,18 @@ Sketches (illustrative — real bindings add a launch template / instance templa
 networking, and tags):
 
 ```text
-# GCP bring_up: ensure the MIG exists at N, then list its instances.
+# GCP bring_up: on a secure cluster store the join token first (#1316), then ensure
+# the MIG exists at N, then list its instances.
+gcloud secrets create <pool>-cluster-token --project <p> --replication-policy automatic \
+    --data-file <private file>          # or, when it exists: gcloud secrets versions add …
 gcloud compute instance-groups managed create <pool> --size <N> \
     --template <instance-template> --zone <zone>
 gcloud compute instance-groups managed resize <pool> --size <N> --zone <zone>
 gcloud compute instance-groups managed list-instances <pool> --zone <zone> --format json
 
-# OCI bring_up: resolve the pool OCID by name, create-or-resize it, then list.
+# OCI bring_up: on a secure cluster store the join token first (#1316), then resolve
+# the pool OCID by name, create-or-resize it, then list.
+oci vault secret create-base64 --from-json file://<private file>   # or update-base64
 # (OCI is OCID-addressed, so the binding resolves name -> OCID first.)
 POOL=$(oci compute-management instance-pool list --compartment-id <c> \
     --display-name <pool> --query 'data[0].id' --raw-output)

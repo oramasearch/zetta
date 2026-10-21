@@ -92,6 +92,7 @@ add_executable(zetta-tests
   cloud/test_provisioner.cpp
   cloud/test_provisioner_detect.cpp
   cloud/test_node_bootstrap_env.cpp
+  cloud/test_node_bootstrap_script.cpp
   cloud/test_secret_file.cpp
   cloud/test_add_nodes.cpp
   cloud/test_local_provisioner.cpp

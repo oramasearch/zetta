@@ -107,8 +107,14 @@ required; everything else has a sensible default.
 | `spot` | `bool` | | burst Spot / low-priority (cheaper, evictable) capacity (default `false`) |
 | `max_price` | `number` | | Spot max $/node-hour; **-1 = up to on-demand** (never price-evicted), Azure's convention (default `-1`) |
 | `seed_peer` | `string` | | cluster seed `host:port` injected into node bootstrap so each node auto-joins |
-| `managed_identity` | `string` | | optional user-assigned managed identity granted to burst nodes |
+| `managed_identity` | `string` | on a secure cluster | user-assigned managed identity (resource id) granted to burst nodes; each node reads the join token from `key_vault` with it (#1316) |
+| `key_vault` | `string` | on a secure cluster | the Key Vault the join token is stored in, as the secret `<pool_name>-cluster-token` (#1316) |
 | `tenant_id` | `string` | | optional Azure AD tenant id |
+
+Inter-node mTLS is always on (#799), so every burst from a running node is a
+secure-cluster burst: without `key_vault` and `managed_identity`, `bring_up`
+refuses with a detail naming both and creates nothing. See
+[the join token](#the-join-token--key-vault-and-a-managed-identity-1316).
 
 ### JSON boundary + schema
 
@@ -133,7 +139,7 @@ instances is teardown. It builds `az vmss` argv, runs them through an injected
 
 | `AzureControlPlane` call | `az` command (shape) |
 |---|---|
-| `bring_up` | `az vmss create … --orchestration-mode Flexible --instance-count N [--vm-sku … --image … --priority Spot --eviction-policy Delete --max-price … --assign-identity … --custom-data "ZETTA_SEED_PEER=…" or --custom-data @<private file>]`, then `list` (on a secure cluster the custom-data also carries `ZETTA_CLUSTER_TOKEN=…` and goes to `az` as `@<file>`, never as an argv value — #670, #770) |
+| `bring_up` | on a secure cluster first `az keyvault secret set --vault-name <key_vault> --name <pool>-cluster-token --file <private file> --encoding utf-8 --output none` (fail-closed — #1316); then `az group create`, then `az vmss create … --orchestration-mode Flexible --instance-count N [--vm-sku … --image … --priority Spot --eviction-policy Delete --max-price … --assign-identity <managed_identity> --custom-data <node bootstrap script>]`, falling back across SKUs on a capacity shortage. The custom-data is the [node bootstrap script](node-bootstrap-script.md): the seed and the secret's name, never the token |
 | `destroy` | `az vmss delete-instances … --instance-ids <node_id>` |
 | `list` | `az vmss list-instances … --output json` |
 
@@ -146,9 +152,58 @@ guide); a true autoscaler resize on an existing pool would use
 
 `bring_up` scales the pool then **lists** what is up and reports best-effort
 against the requested count; the stable `pool_name` makes a re-burst scale the
-existing scale set rather than spawn a duplicate. The seed peer is handed to each
-node via `--custom-data` so it auto-joins at boot (a production deployment
-supplies a full cloud-init; the reference carries the seed address illustratively).
+existing scale set rather than spawn a duplicate. Each node gets the
+[node bootstrap script](node-bootstrap-script.md) as `--custom-data`: cloud-init
+runs it at first boot, it fetches the join token from Key Vault, and starts the
+engine with the seed peer and `ZETTA_CLUSTER_TOKEN_FILE`.
+
+### The join token — Key Vault and a managed identity (#1316)
+
+Custom-data is not a secret store: every process on the VM can read it from the
+metadata endpoint `169.254.169.254`, and it persists on the VM's disk
+(`/var/lib/waagent/CustomData`). So the token never rides it. On a secure cluster
+`bring_up`:
+
+1. stores the token as the Key Vault secret `<pool_name>-cluster-token` in
+   `key_vault` (`az keyvault secret set --file <private file>`; the value is never
+   an argument, and `--output none` keeps `az` from printing it back). If that
+   fails, the burst stops before any resource group or VM is created;
+2. creates the scale set with `--assign-identity <managed_identity>` and the boot
+   script as custom-data. The script names the vault, the secret and the identity;
+3. at boot, the script asks the metadata endpoint for a Key Vault access token for
+   that identity (`resource=https://vault.azure.net`, `msi_res_id=<identity>`),
+   GETs `https://<key_vault>.vault.azure.net/secrets/<pool>-cluster-token`, and
+   writes the value to `/etc/zetta/cluster-token` (0400).
+
+Every burst writes the secret again (a new version), so a rotated cluster token
+reaches the nodes that come up after it.
+
+**What the operator grants.** Create the vault and the user-assigned identity
+once; neither is created by the burst.
+
+| Principal | Needs | RBAC-mode vault (recommended) | Access-policy vault |
+|---|---|---|---|
+| The control plane (the identity `az` runs as on the zetta node) | write the secret | **Key Vault Secrets Officer** on the vault, or on the secret once it exists | secret permission `set` |
+| The control plane | attach the identity to the scale set | **Managed Identity Operator** on the user-assigned identity | (same) |
+| The burst nodes' user-assigned identity (`managed_identity`) | read the secret | **Key Vault Secrets User** on the secret `<pool>-cluster-token` (or the vault) | secret permission `get` |
+
+```sh
+az identity create -g ops -n zetta-burst
+az keyvault create -g ops -n zetta-kv --enable-rbac-authorization true
+# the burst nodes read the token
+az role assignment create --role "Key Vault Secrets User" \
+  --assignee-object-id "$(az identity show -g ops -n zetta-burst --query principalId -o tsv)" \
+  --assignee-principal-type ServicePrincipal \
+  --scope "$(az keyvault show -n zetta-kv --query id -o tsv)"
+# the control plane writes it
+az role assignment create --role "Key Vault Secrets Officer" --assignee <control-plane principal> \
+  --scope "$(az keyvault show -n zetta-kv --query id -o tsv)"
+```
+
+Then set `key_vault: "zetta-kv"` and `managed_identity: "<the identity's resource
+id>"` in the provisioner config. The identity is user-assigned so the grant exists
+before the VM boots; the script still retries for ten minutes while a fresh role
+assignment propagates. The VM image needs `curl` and a POSIX `sh` (Ubuntu has both).
 
 ### The command runner — testable without `az`
 
@@ -211,8 +266,12 @@ the reference binding:
   a Spot eviction; and it works with no identity hooks wired.
 - **`AzCliControlPlane` (fake command runner)** — `bring_up` builds the
   `az vmss create` argv (subscription / resource group / name / location / count /
-  SKU) then lists; a Spot config adds the `--priority Spot` / `--max-price` /
-  `--custom-data` seed flags; best-effort when fewer instances come up; a create
+  SKU) then lists; a Spot config adds the `--priority Spot` / `--max-price`
+  flags; on a secure cluster the token goes to Key Vault first through a private
+  `--file`, the custom-data is a boot script naming the vault, the secret and the
+  identity and never the token, a missing `key_vault` / `managed_identity` creates
+  nothing, and a Key Vault refusal stops the burst before the resource group
+  (#1316); best-effort when fewer instances come up; a create
   failure surfaces in the `detail`; `destroy` builds `delete-instances` and maps a
   non-zero exit to `false`; `list` parses the instances and skips malformed
   entries, and returns empty on a command failure.
