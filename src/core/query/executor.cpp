@@ -2152,7 +2152,11 @@ std::vector<std::string> source_columns_of(const SelectStmt& statement) {
         }
         for (const std::string& key : statement.group_by) named.push_back(key);
     }
-    if (statement.where) named.push_back(statement.where->column);
+    if (statement.where) {
+        for (std::string& column : where_columns(*statement.where)) {
+            named.push_back(std::move(column));
+        }
+    }
     return named;
 }
 
@@ -2339,8 +2343,25 @@ std::optional<QueryResult> execute_grouped_ddf(const SelectStmt& s,
     if (s.group_by.size() != 1) return std::nullopt;
     const std::string& key = s.group_by.front();
 
-    // The DDF filter is numeric, so the predicate value must be a number.
-    if (s.where && !s.where->value.is_number()) return std::nullopt;
+    // The DDF filter is a chain of numeric comparisons, so the WHERE must be one
+    // comparison or an AND of them, each against a number; OR / NOT and string
+    // values fold through the rows instead (#912).
+    std::vector<const WhereClause*> filters;
+    if (s.where) {
+        if (s.where->kind == WhereClause::Kind::Compare) {
+            filters.push_back(&*s.where);
+        } else if (s.where->kind == WhereClause::Kind::And) {
+            for (const WhereClause& operand : s.where->operands) {
+                if (operand.kind != WhereClause::Kind::Compare) return std::nullopt;
+                filters.push_back(&operand);
+            }
+        } else {
+            return std::nullopt;
+        }
+        for (const WhereClause* filter : filters) {
+            if (!filter->value.is_number()) return std::nullopt;
+        }
+    }
 
     // Build the DDF group-by spec and the ordered output plan from the select list.
     // A non-aggregated select column must be the grouping key (standard SQL); a
@@ -2377,7 +2398,7 @@ std::optional<QueryResult> execute_grouped_ddf(const SelectStmt& s,
             plan.push_back({name, std::nullopt, AggregateFunc::Count, item.column});
         }
     }
-    if (s.where) referenced.insert(s.where->column);
+    for (const WhereClause* filter : filters) referenced.insert(filter->column);
 
     QueryResult result;
     for (const OutputColumn& column : plan) result.columns.push_back(column.name);
@@ -2416,11 +2437,11 @@ std::optional<QueryResult> execute_grouped_ddf(const SelectStmt& s,
     }
     ddf::DataFrame frame = std::move(loaded.frame);
 
-    if (s.where) {
+    for (const WhereClause* filter : filters) {
         ddf::FilterPredicate predicate;
-        predicate.column = s.where->column;
-        predicate.comparison = ddf_comparison_of(s.where->op);
-        predicate.value = s.where->value.get<double>();
+        predicate.column = filter->column;
+        predicate.comparison = ddf_comparison_of(filter->op);
+        predicate.value = filter->value.get<double>();
         ddf::DataFrameResult filtered = ddf::filter(frame, predicate);
         if (!filtered.ok()) {
             return error("GROUP BY filter failed: " + filtered.status.message);
@@ -2865,10 +2886,11 @@ QueryResult Executor::execute(const Statement& stmt,
                     const zetta::governance::ColumnAccess read_access =
                         node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
                                            db_name(s.table), s.table.table);
-                    if (!read_access.allows(s.where->column)) {
-                        return deny("permission denied: no sql:read grant on "
-                                    "column \"" + s.where->column +
-                                    "\" used in WHERE");
+                    for (const std::string& column : where_columns(*s.where)) {
+                        if (!read_access.allows(column)) {
+                            return deny("permission denied: no sql:read grant on "
+                                        "column \"" + column + "\" used in WHERE");
+                        }
                     }
                 }
                 // Row-level security (#748, #1229): UPDATE changes only rows the
@@ -2942,10 +2964,11 @@ QueryResult Executor::execute(const Statement& stmt,
                     const zetta::governance::ColumnAccess read_access =
                         node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
                                            db_name(s.table), s.table.table);
-                    if (!read_access.allows(s.where->column)) {
-                        return deny("permission denied: no sql:read grant on "
-                                    "column \"" + s.where->column +
-                                    "\" used in WHERE");
+                    for (const std::string& column : where_columns(*s.where)) {
+                        if (!read_access.allows(column)) {
+                            return deny("permission denied: no sql:read grant on "
+                                        "column \"" + column + "\" used in WHERE");
+                        }
                     }
                 }
                 // Row-level security (#748, #1229): DELETE removes only rows the
@@ -3198,10 +3221,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 // Block filtering/grouping on a column the caller can't read — a
                 // WHERE/GROUP BY over a masked column would otherwise leak it.
                 if (!read_access.all_columns) {
-                    if (s.where && !read_access.allows(s.where->column)) {
-                        return error("permission denied: no sql:read grant on "
-                                     "column \"" + s.where->column +
-                                     "\" used in WHERE");
+                    if (s.where) {
+                        for (const std::string& column : where_columns(*s.where)) {
+                            if (!read_access.allows(column)) {
+                                return error("permission denied: no sql:read grant "
+                                             "on column \"" + column +
+                                             "\" used in WHERE");
+                            }
+                        }
                     }
                     for (const std::string& key : s.group_by) {
                         if (!read_access.allows(key)) {

@@ -530,6 +530,45 @@ TEST_F(RestServerFixture, ReadJourneyOverPlainGets) {
     EXPECT_TRUE(json_of(traces).at("ok").get<bool>()) << traces.body;
 }
 
+// #912's acceptance over /v1/sql: the demo path's ORDER BY, LIMIT, bare
+// COUNT(*) and multi-predicate WHERE all answer over the wire.
+TEST_F(RestServerFixture, DemoPathSqlAnswersOverRest) {
+    auto database = node.create_database("demo");
+    ASSERT_TRUE(database);
+    auto accounts = database->create_table("accounts");
+    ASSERT_TRUE(accounts);
+    accounts->add_row({{"name", "a"}, {"churned", true}, {"segment", "MCS"}, {"risk", 30}});
+    accounts->add_row({{"name", "b"}, {"churned", true}, {"segment", "ENT"}, {"risk", 90}});
+    accounts->add_row({{"name", "c"}, {"churned", false}, {"segment", "MCS"}, {"risk", 60}});
+    accounts->add_row({{"name", "d"}, {"churned", true}, {"segment", "MCS"}, {"risk", 75}});
+
+    const auto rows_of = [&](const std::string& sql) {
+        auto response = request("POST", "/v1/sql", nlohmann::json{{"statement", sql}}.dump());
+        EXPECT_EQ(response.status, 200) << sql << ": " << response.body;
+        auto body = json_of(response);
+        EXPECT_TRUE(body.is_object() && body.value("ok", false)) << sql << ": " << response.body;
+        return body.is_object() && body.contains("value") ? body["value"]["rows"]
+                                                          : nlohmann::json::array();
+    };
+
+    const auto ranked =
+        rows_of("SELECT name, risk FROM demo.accounts ORDER BY risk DESC LIMIT 2");
+    ASSERT_EQ(ranked.size(), 2u);
+    EXPECT_EQ(ranked[0]["name"], "b");
+    EXPECT_EQ(ranked[1]["name"], "d");
+
+    const auto counted = rows_of("SELECT COUNT(*) FROM demo.accounts");
+    ASSERT_EQ(counted.size(), 1u);
+    EXPECT_EQ(counted[0]["count"], 4);
+
+    const auto at_risk = rows_of(
+        "SELECT name, risk FROM demo.accounts WHERE churned = true AND segment = 'MCS' "
+        "ORDER BY risk DESC");
+    ASSERT_EQ(at_risk.size(), 2u);
+    EXPECT_EQ(at_risk[0]["name"], "d");
+    EXPECT_EQ(at_risk[1]["name"], "a");
+}
+
 // The action rendering: POST a JSON body, read the mutation back over GET —
 // the journey discipline over the wire.
 TEST_F(RestServerFixture, PostActionThenReadBack) {

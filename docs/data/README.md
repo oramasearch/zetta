@@ -13,7 +13,7 @@ views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) 
 - [large-objects.md](large-objects.md) — storing files as large objects (metadata in the CRDT, bodies peer-to-peer) and importing JSON/JSONL records.
 - [query.md](query.md) — the dialect-agnostic query layer: the Postgres subset
   (`LIMIT` / `OFFSET` / `FETCH FIRST`, pushed down to the partitions, #1021),
-  aggregates with or without `GROUP BY` on any key type (dense numeric through the
+  `WHERE` with `AND` / `OR` / `NOT` and three-valued logic (#912), aggregates with or without `GROUP BY` on any key type (dense numeric through the
   [DDF engine](../ddf/ddf.md), the rest over rows), unknown columns as errors,
   `columns` always filled, parse errors located by position (#1218), and the
   virtual `system` tables, including live pub/sub dispatch sizing in
@@ -32,7 +32,7 @@ views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) 
 - [partition-body.md](partition-body.md) — the body format of a partition: Parquet for every dataset (`_zid` as a column), format sniffed from the bytes so legacy `.jsonl` bodies still read, JSON Lines fallback for rows Parquet cannot express (`zetta::data::serialize_partition_body`/`read_partition_body`, #833).
 - [partition-only-tables.md](partition-only-tables.md) — tables whose rows are never captured into the CRDT: the data is the partition bodies + the catalog, `system.datasets` counts from the catalog's row ranges, and a `SELECT` fans out to the owners (`zetta::data::Table::partition_only`, #833).
 - [partition-manifest.md](partition-manifest.md) — the table-level record of how many partitions a dataset HAS (`mfst:<table-id>`), so a reader can tell an incomplete view of the partition catalog from a complete one and FAIL the query instead of answering short; enriched per-partition stats (the body's own schema + byte size) let a node plan without reading a body (`zetta::data::DatasetManifestValue`, #837).
-- [scatter-gather-select.md](scatter-gather-select.md) — a `SELECT` over a partition-only table fans out to the partition owners and merges: one owner per partition (exactly-once at RF>1), WHERE + projection pushed near the data, aggregates merged (`avg` weighted by row count), an unreachable owner FAILS the query (`zetta::query::DistributedSelect`, #833).
+- [scatter-gather-select.md](scatter-gather-select.md) — a `SELECT` over a partition-only table fans out to the partition owners and merges: one owner per partition (exactly-once at RF>1), WHERE (compound ones included, #912) + projection pushed near the data, aggregates merged (`avg` weighted by row count), an unreachable owner FAILS the query (`zetta::query::DistributedSelect`, #833).
 - [sharded-blob-placement.md](sharded-blob-placement.md) — a partition body is held only by its owner node(s), not replicate-to-all (`zetta::data::ReplicatedBlobStore`, #515).
 - [partition-rebalance.md](partition-rebalance.md) — between-jobs rebalance on a membership change: ≈rf/N partitions move onto a new node, bodies follow (`zetta::data::rebalance_partitions`, #517).
 - [promote-dataset.md](promote-dataset.md) — raise a cached result set from RF=1 to the durable factor: add owners to each partition in the catalog and the bodies follow over the large-object transport; never removes an owner, clamped to the live roster (`zetta::data::promote_dataset`, #833).
