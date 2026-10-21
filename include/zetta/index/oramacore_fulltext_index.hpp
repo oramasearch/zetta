@@ -73,13 +73,28 @@ public:
     // Run a full-text query: `query.term` (a text/scalar JSON value) is the
     // free-text query, scored by BM25F across all of the index's fields; the row
     // ids are returned **ranked by relevance** (score desc, then row id asc for a
-    // stable, reproducible order), capped to `query.top_k` (0 = no cap). When set,
-    // `query.field` must be one of the index's fields (else InvalidArgument), and
-    // only that field is searched and scored (lake#782): a build over several
-    // fields keeps one single-field index per field beside the combined one.
-    // NotFound when no index was built under spec.key().
+    // stable, reproducible order), capped to `query.top_k` (0 = no cap). The cap
+    // is taken in that order, so a row tied with the last one kept is cut by row
+    // id, never by insertion order — the same order the distributed merge uses.
+    // When set, `query.field` must be one of the index's fields (else
+    // InvalidArgument), and only that field is searched and scored (lake#782): a
+    // build over several fields keeps one single-field index per field beside the
+    // combined one. When `query.statistics` is set, BM25F scores with those corpus
+    // statistics instead of this index's own (#851). NotFound when no index was
+    // built under spec.key().
     IndexQueryResult query(const IndexSpec& spec,
                            const IndexQuery& query) const override;
+
+    // BM25F's IDF and length normalization read corpus statistics, so a sharded
+    // query needs the global-statistics pass. True when the engine is compiled in.
+    bool uses_corpus_statistics() const override;
+
+    // Add this index's corpus statistics for `query.term` (document count, each
+    // analyzed query term's document frequency, every field's length totals) into
+    // `out`. A query naming a field reads that field's own index, the one query()
+    // searches (lake#782). Same validation and statuses as query().
+    IndexStatus collect_statistics(const IndexSpec& spec, const IndexQuery& query,
+                                   CorpusStatistics& out) const override;
 
     // Drop the index built under spec.key(). Idempotent (Ok even if none exists).
     IndexStatus drop(const IndexSpec& spec) override;

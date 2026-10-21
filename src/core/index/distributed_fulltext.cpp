@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <istream>
 #include <sstream>
 #include <utility>
@@ -64,6 +65,76 @@ nlohmann::json_schema::json_validator& hits_validator() {
     return validator;
 }
 
+nlohmann::json_schema::json_validator& stats_validator() {
+    static nlohmann::json_schema::json_validator validator(
+        fulltext_stats_schema());
+    return validator;
+}
+
+// The corpus-statistics object both the fulltext.query request (the merged view
+// every shard scores with) and the fulltext.stats response (one node's part)
+// carry (#851): the document count, each analyzed query term's document
+// frequency, and each field's length totals. Every count is a non-negative
+// integer; a closed object at every level.
+nlohmann::json statistics_schema() {
+    return nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "type": "object",
+  "properties": {
+    "doc_count": { "type": "integer", "minimum": 0 },
+    "term_doc_freq": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "fields": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "total_len": { "type": "integer", "minimum": 0 },
+          "doc_count": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["total_len", "doc_count"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["doc_count", "term_doc_freq", "fields"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
+}
+
+nlohmann::json encode_statistics(const CorpusStatistics& statistics) {
+    nlohmann::json terms = nlohmann::json::object();
+    for (const auto& [term, frequency] : statistics.term_doc_freq) {
+        terms[term] = frequency;
+    }
+    nlohmann::json fields = nlohmann::json::object();
+    for (const auto& [field, lengths] : statistics.fields) {
+        fields[field] = nlohmann::json{{"total_len", lengths.total_len},
+                                       {"doc_count", lengths.doc_count}};
+    }
+    return nlohmann::json{{"doc_count", statistics.doc_count},
+                          {"term_doc_freq", std::move(terms)},
+                          {"fields", std::move(fields)}};
+}
+
+// Decode an already schema-validated statistics object.
+CorpusStatistics decode_statistics(const nlohmann::json& document) {
+    CorpusStatistics statistics;
+    statistics.doc_count = document.at("doc_count").get<std::uint64_t>();
+    for (const auto& [term, frequency] : document.at("term_doc_freq").items()) {
+        statistics.term_doc_freq.emplace(term, frequency.get<std::uint64_t>());
+    }
+    for (const auto& [field, lengths] : document.at("fields").items()) {
+        statistics.fields.emplace(
+            field, FieldLengthStatistics{lengths.at("total_len").get<std::uint64_t>(),
+                                         lengths.at("doc_count").get<std::uint64_t>()});
+    }
+    return statistics;
+}
+
 // --- partition-body reading (compute-near-data) ------------------------------
 
 // Read the body of a large object by id from whichever of the node's databases
@@ -124,9 +195,11 @@ bool parse_body_documents(const std::string& body, const std::string& partition_
 // collective-message pattern); schemas/fulltext_query.schema.json is generated
 // from it and drift-checked by tests/test_schemas.cpp. A closed object: the
 // index it names (table/kind/fields) + the query (term) are required; backend /
-// field / tag / top_k are optional.
+// field / tag / top_k / return_fields / statistics are optional. The same
+// request asks a peer for its corpus statistics over fulltext.stats.
 const nlohmann::json& fulltext_query_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+    static const nlohmann::json schema = [] {
+        nlohmann::json document = nlohmann::json::parse(R"JSONSCHEMA(
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "zetta.FulltextQueryRequest",
@@ -146,6 +219,9 @@ const nlohmann::json& fulltext_query_schema() {
   "additionalProperties": false
 }
 )JSONSCHEMA");
+        document["properties"]["statistics"] = statistics_schema();
+        return document;
+    }();
     return schema;
 }
 
@@ -181,6 +257,31 @@ const nlohmann::json& fulltext_hits_schema() {
   "additionalProperties": false
 }
 )JSONSCHEMA");
+    return schema;
+}
+
+// The fulltext.stats RESPONSE schema (draft-07) — the code-owned source of
+// truth enforced at the decode_fulltext_stats boundary;
+// schemas/fulltext_stats.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp. One node's corpus statistics for a query (#851).
+const nlohmann::json& fulltext_stats_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json document = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.FulltextStatsResponse",
+  "type": "object",
+  "properties": {
+    "from": { "type": "string" },
+    "sub_indexes": { "type": "integer", "minimum": 0 }
+  },
+  "required": ["statistics"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
+        document["properties"]["statistics"] = statistics_schema();
+        return document;
+    }();
     return schema;
 }
 
@@ -226,6 +327,7 @@ IndexQuery FulltextQueryRequest::query() const {
     q.field = field;
     q.term = term;
     q.top_k = top_k;
+    q.statistics = statistics;
     return q;
 }
 
@@ -240,6 +342,7 @@ std::string encode_fulltext_query(const FulltextQueryRequest& request) {
     document["term"] = request.term;
     document["top_k"] = request.top_k;
     if (request.return_fields) document["return_fields"] = *request.return_fields;
+    if (request.statistics) document["statistics"] = encode_statistics(*request.statistics);
     return document.dump();
 }
 
@@ -276,6 +379,10 @@ std::optional<FulltextQueryRequest> decode_fulltext_query(std::string_view paylo
     request.top_k = document.value("top_k", static_cast<std::size_t>(0));
     if (const auto fields = document.find("return_fields"); fields != document.end()) {
         request.return_fields = fields->get<std::vector<std::string>>();
+    }
+    if (const auto statistics = document.find("statistics");
+        statistics != document.end()) {
+        request.statistics = decode_statistics(*statistics);
     }
     return request;
 }
@@ -319,6 +426,38 @@ std::optional<FulltextQueryResponse> decode_fulltext_hits(std::string_view paylo
             hit.at("id").get<std::string>(), hit.at("score").get<double>(),
             hit.value("fields", nlohmann::json{})});
     }
+    return response;
+}
+
+std::string encode_fulltext_stats(const FulltextStatsResponse& response) {
+    nlohmann::json document;
+    if (!response.from.empty()) document["from"] = response.from;
+    document["statistics"] = encode_statistics(response.statistics);
+    document["sub_indexes"] = response.sub_indexes;
+    return document.dump();
+}
+
+std::optional<FulltextStatsResponse> decode_fulltext_stats(std::string_view payload,
+                                                           std::string* error) {
+    nlohmann::json document =
+        nlohmann::json::parse(payload, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    if (document.is_discarded()) {
+        set_error(error, "fulltext stats is not valid JSON");
+        return std::nullopt;
+    }
+
+    collecting_error_handler handler;
+    stats_validator().validate(document, handler);
+    if (handler.failed) {
+        set_error(error, handler.reason);
+        return std::nullopt;
+    }
+
+    FulltextStatsResponse response;
+    response.from = document.value("from", std::string{});
+    response.sub_indexes =
+        static_cast<std::size_t>(document.value("sub_indexes", std::uint64_t{0}));
+    response.statistics = decode_statistics(document.at("statistics"));
     return response;
 }
 
@@ -491,6 +630,27 @@ std::vector<FulltextHit> DistributedFulltextIndex::query_local(
     return merged;
 }
 
+CorpusStatistics DistributedFulltextIndex::collect_local_statistics(
+    const IndexSpec& spec, const IndexQuery& query, IndexStatus* status,
+    std::size_t* sub_indexes) const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+
+    CorpusStatistics statistics;
+    if (sub_indexes) *sub_indexes = 0;
+    if (status) *status = IndexStatus::success();
+    const auto found = sub_specs_.find(spec.key());
+    if (found == sub_specs_.end()) return statistics;  // holds none: adds nothing
+    if (sub_indexes) *sub_indexes = found->second.size();
+    for (const IndexSpec& sub : found->second) {
+        const IndexStatus collected = backend_->collect_statistics(sub, query, statistics);
+        if (!collected.ok()) {
+            if (status) *status = collected;
+            return {};
+        }
+    }
+    return statistics;
+}
+
 DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     const IndexSpec& spec, const IndexQuery& query,
     std::chrono::milliseconds timeout,
@@ -504,13 +664,83 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     const zetta::observability::TraceContext trace =
         parent ? *parent : zetta::observability::TraceContext{};
 
+    // Both rounds go to the same peers: a peer that joined between them would be
+    // asked for hits scored with statistics that never counted its rows.
+    const std::vector<zetta::cluster::ClusterPeer> peers = cluster_.peers();
+
+    FulltextQueryRequest request;
+    request.table = spec.table;
+    request.kind = spec.kind;
+    request.backend = spec.backend;
+    request.fields = spec.fields;
+    request.field = query.field;
+    request.term = query.term;
+    request.top_k = query.top_k;
+    if (return_fields != nullptr) request.return_fields = *return_fields;
+
+    std::uint64_t wire = 0;
+    // Per-peer bytes and time of the statistics round, folded into each peer's
+    // contribution below.
+    std::map<std::string, std::uint64_t> stats_bytes;
+    std::map<std::string, double> stats_latency_ms;
+
+    // (0) The global-statistics round (#851): every sub-index on every node must
+    // score with the same corpus statistics, or a per-shard top_k cutoff can drop
+    // a row that belongs in the global top k. Sum this node's, gather every
+    // peer's, and score everything below with the merge.
+    IndexQuery scored = query;
+    if (backend_->uses_corpus_statistics() && !scored.statistics) {
+        zetta::observability::ScopedSpan stats_span(recorder, trace, "search:statistics");
+        IndexStatus stats_status;
+        CorpusStatistics merged = collect_local_statistics(spec, query, &stats_status);
+        if (!stats_status.ok()) {
+            stats_span.finish(/*ok=*/false, stats_status.message);
+            out.status = stats_status;
+            return out;
+        }
+        const std::string stats_payload = encode_fulltext_query(request);
+        for (const zetta::cluster::ClusterPeer& peer : peers) {
+            const auto started = std::chrono::steady_clock::now();
+            const zetta::cluster::SignalResponse response = cluster_.request(
+                peer.node_id, std::string(kStatsMethod), stats_payload, timeout);
+            stats_latency_ms[peer.node_id] =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started)
+                    .count();
+            if (!response.ok) {
+                out.status = IndexStatus::backend_error(
+                    "fulltext.stats to peer '" + peer.node_id + "' failed: " +
+                    response.error);
+                stats_span.finish(/*ok=*/false, out.status.message);
+                return out;
+            }
+            std::string decode_error;
+            const std::optional<FulltextStatsResponse> peer_stats =
+                decode_fulltext_stats(response.payload, &decode_error);
+            if (!peer_stats) {
+                out.status = IndexStatus::backend_error(
+                    "fulltext stats from peer '" + peer.node_id +
+                    "' are malformed: " + decode_error);
+                stats_span.finish(/*ok=*/false, out.status.message);
+                return out;
+            }
+            stats_bytes[peer.node_id] = stats_payload.size() + response.payload.size();
+            wire += stats_bytes[peer.node_id];
+            merged.merge(peer_stats->statistics);
+        }
+        stats_span.set_attribute("doc_count", merged.doc_count);
+        stats_span.finish(/*ok=*/true);
+        scored.statistics = std::move(merged);
+    }
+    request.statistics = scored.statistics;
+
     // (1) This node's local contribution (across its own partitions).
     zetta::observability::ScopedSpan local_span(recorder, trace, "search:local");
     local_span.set_attribute("node_id", cluster_.node_id());
     IndexStatus local_status;
     std::size_t local_sub_indexes = 0;
     std::vector<FulltextHit> local = query_local(
-        spec, query, &local_status, &local_sub_indexes, return_fields);
+        spec, scored, &local_status, &local_sub_indexes, return_fields);
     if (!local_status.ok()) {
         local_span.finish(/*ok=*/false, local_status.message);
         out.status = local_status;
@@ -530,21 +760,12 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     std::vector<std::vector<FulltextHit>> sources;
     sources.push_back(std::move(local));
     std::size_t answered = 1;
-    std::uint64_t wire = 0;
 
-    // (2) Scatter the query to every connected peer and gather their ranked hits.
-    FulltextQueryRequest request;
-    request.table = spec.table;
-    request.kind = spec.kind;
-    request.backend = spec.backend;
-    request.fields = spec.fields;
-    request.field = query.field;
-    request.term = query.term;
-    request.top_k = query.top_k;
-    if (return_fields != nullptr) request.return_fields = *return_fields;
+    // (2) Scatter the query (with the merged statistics) to every peer and gather
+    // their ranked hits.
     const std::string payload = encode_fulltext_query(request);
 
-    for (const zetta::cluster::ClusterPeer& peer : cluster_.peers()) {
+    for (const zetta::cluster::ClusterPeer& peer : peers) {
         zetta::observability::ScopedSpan peer_span(recorder, trace, "search:peer");
         peer_span.set_attribute("node_id", peer.node_id);
         const zetta::cluster::SignalResponse response = cluster_.request(
@@ -574,8 +795,10 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
         peer_contribution.node_id = peer.node_id;
         peer_contribution.hits = hits->hits.size();
         peer_contribution.sub_indexes = hits->sub_indexes;
-        peer_contribution.latency_ms = peer_span.elapsed_ms();
-        peer_contribution.wire_bytes = payload.size() + response.payload.size();
+        peer_contribution.latency_ms =
+            peer_span.elapsed_ms() + stats_latency_ms[peer.node_id];
+        peer_contribution.wire_bytes =
+            payload.size() + response.payload.size() + stats_bytes[peer.node_id];
         peer_span.set_attribute("hits", hits->hits.size());
         peer_span.set_attribute("sub_indexes", hits->sub_indexes);
         peer_span.set_attribute("wire_bytes", peer_contribution.wire_bytes);
@@ -587,7 +810,7 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
 
     // (3) Merge every contribution into the global ranking.
     const std::vector<FulltextHit> merged =
-        merge_fulltext_hits(sources, query.top_k);
+        merge_fulltext_hits(sources, scored.top_k);
     out.row_ids.reserve(merged.size());
     out.scores.reserve(merged.size());
     out.fields.reserve(merged.size());
@@ -625,6 +848,28 @@ zetta::cluster::SignalResponse DistributedFulltextIndex::on_request(const zetta:
         response.hits = std::move(hits);
         response.sub_indexes = sub_indexes;
         return zetta::cluster::SignalResponse{.ok = true, .payload = encode_fulltext_hits(response)};
+    }
+    if (request.method == kStatsMethod) {
+        std::string decode_error;
+        const std::optional<FulltextQueryRequest> message =
+            decode_fulltext_query(request.payload, &decode_error);
+        if (!message) {
+            return zetta::cluster::SignalResponse{.ok = false,
+                                  .error = "fulltext.stats: " + decode_error};
+        }
+        IndexStatus status;
+        std::size_t sub_indexes = 0;
+        FulltextStatsResponse response;
+        response.statistics = collect_local_statistics(
+            message->spec(), message->query(), &status, &sub_indexes);
+        if (!status.ok()) {
+            return zetta::cluster::SignalResponse{.ok = false,
+                                  .error = "fulltext.stats local: " + status.message};
+        }
+        response.from = cluster_.node_id();
+        response.sub_indexes = sub_indexes;
+        return zetta::cluster::SignalResponse{.ok = true,
+                                              .payload = encode_fulltext_stats(response)};
     }
     if (delegate_) return delegate_->on_request(request);
     return SignalHandler::on_request(request);  // safe default

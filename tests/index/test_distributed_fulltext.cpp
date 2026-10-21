@@ -340,10 +340,13 @@ namespace {
 struct FulltextNode {
     FulltextNode(std::string cluster_id, std::uint16_t port,
                  const std::vector<std::string>& seeds,
-                 const std::vector<nlohmann::json>& shard_rows)
+                 const std::vector<nlohmann::json>& shard_rows,
+                 std::shared_ptr<IndexBackend> backend =
+                     std::make_shared<TermFrequencyBackend>(),
+                 const IndexSpec& spec = articles_spec("tf_reference"))
         : node(node_config(temp_dir)),
           cluster(std::move(cluster_id), cluster_config(port, seeds)),
-          distributed(cluster, std::make_shared<TermFrequencyBackend>()) {
+          distributed(cluster, std::move(backend)) {
         node.start();
         auto database = node.create_database("data");
         EXPECT_TRUE(database);
@@ -355,8 +358,7 @@ struct FulltextNode {
             zetta::data::write_partitioned(node, *database, *created);
         EXPECT_TRUE(written.ok()) << written.error;
         table = created;
-        const auto build =
-            distributed.build_local(node, articles_spec("tf_reference"));
+        const auto build = distributed.build_local(node, spec);
         EXPECT_TRUE(build.ok()) << build.status.message;
     }
 
@@ -547,4 +549,371 @@ TEST(DistributedFulltextMerge, KeepsTheFieldsOfTheHitItKeeps) {
     EXPECT_EQ(merged[0].row_id, "r1");
     EXPECT_EQ(merged[0].fields, (nlohmann::json{{"title", "high"}}));
     EXPECT_EQ(merged[1].fields, (nlohmann::json{{"title", "other"}}));
+}
+
+// ----- a limited search over a skewed corpus equals one index (#851) ----------
+//
+// The corpus the issue describes: the search term is concentrated in some rows
+// and rare in others, so wherever the rows land, the shards' corpus statistics
+// for it differ from the whole table's. Scored with each shard's own IDF, a lone
+// weak match on a shard full of misses outscores a strong match on a shard full
+// of matches, and a per-shard top_k cutoff silently drops a row that belongs in
+// the global top k. With the global-statistics pass, a limited search over the
+// sharded table equals the same search over one unsharded index — membership,
+// order and scores — at every depth and under every distribution.
+
+namespace {
+
+// A 5-token body mentioning "postgres" `tf` times (fillers are not stop words and
+// stem to themselves), so every body has the same length and only the corpus
+// statistics differ between shards.
+std::string postgres_body(int tf) {
+    static const char* const kFillers[] = {"vacuum", "replica", "shard", "backup", "index"};
+    std::string body;
+    for (int i = 0; i < 5; ++i) {
+        if (!body.empty()) body += ' ';
+        body += i < tf ? "postgres" : kFillers[i];
+    }
+    return body;
+}
+
+// 20 rows. Under RoundRobinPartitioner(2) the even ordinals land together: one
+// weak match (tf 1) among nine misses. The odd ordinals: four strong matches
+// (tf 5/4/3/2) among six misses. Other partition counts and node splits skew it
+// differently; the expectation never changes.
+std::vector<nlohmann::json> skewed_corpus() {
+    std::vector<nlohmann::json> even;
+    std::vector<nlohmann::json> odd;
+    even.push_back(article("notes", postgres_body(1)));
+    for (int i = 0; i < 9; ++i) even.push_back(article("notes", "boil water pasta salt basil"));
+    for (int tf = 5; tf >= 2; --tf) odd.push_back(article("notes", postgres_body(tf)));
+    for (int i = 0; i < 6; ++i) odd.push_back(article("notes", "prune roses mulch beds weekly"));
+    std::vector<nlohmann::json> rows;
+    for (std::size_t i = 0; i < even.size(); ++i) {
+        rows.push_back(even[i]);
+        rows.push_back(odd[i]);
+    }
+    return rows;
+}
+
+// The consolidated BM25F oracle over `rows`, uncapped: (row ids, scores).
+IndexQueryResult bm25_oracle(const std::vector<Table*>& tables, const IndexSpec& spec) {
+    OramaCoreFulltextIndex oracle;
+    std::vector<IndexPartition> all;
+    for (Table* table : tables) {
+        for (IndexPartition& partition : zetta::index::read_index_partitions(table->store())) {
+            all.push_back(std::move(partition));
+        }
+    }
+    EXPECT_TRUE(oracle.build(spec, all).ok());
+    return oracle.query(spec, text_query("postgres"));
+}
+
+// `result` must be exactly the first `depth` rows of `oracle` (0 = all of them),
+// with identical scores.
+void expect_oracle_prefix(const DistributedFulltextIndex::QueryResult& result,
+                          const IndexQueryResult& oracle, std::size_t depth,
+                          const std::string& label) {
+    ASSERT_TRUE(result.ok()) << label << ": " << result.status.message;
+    const std::size_t expected =
+        depth == 0 ? oracle.row_ids.size() : std::min(depth, oracle.row_ids.size());
+    const std::vector<std::string> ids(oracle.row_ids.begin(),
+                                       oracle.row_ids.begin() + expected);
+    EXPECT_EQ(result.row_ids, ids) << label << " top " << depth;
+    ASSERT_EQ(result.scores.size(), result.row_ids.size()) << label;
+    for (std::size_t i = 0; i < result.scores.size() && i < expected; ++i) {
+        EXPECT_EQ(result.scores[i], oracle.scores[i])
+            << label << " top " << depth << ": score diverged at rank " << i;
+    }
+}
+
+constexpr std::size_t kDepths[] = {1, 2, 3, 4, 5, 10, 50, 0};
+
+}  // namespace
+
+TEST(DistributedFulltext, LimitedSearchOverSkewedPartitionsEqualsOneIndex) {
+    if (!OramaCoreFulltextIndex::engine_available()) {
+        GTEST_SKIP() << "oramacore-cpp engine not compiled in (submodule absent)";
+    }
+    const IndexSpec spec = articles_spec(std::string(OramaCoreFulltextIndex::kName));
+    std::uint16_t port = 48400;
+    for (const std::size_t partitions : {2u, 3u, 4u, 7u}) {
+        const std::string label = std::to_string(partitions) + " partitions";
+        TempDir dir;
+        Node node(node_config(dir));
+        node.start();
+        auto database = node.create_database("data");
+        ASSERT_TRUE(database);
+        auto table = database->create_table("articles");
+        ASSERT_TRUE(table);
+        table->set_partitioner(std::make_shared<RoundRobinPartitioner>(partitions));
+        for (const nlohmann::json& row : skewed_corpus()) table->add_row(row);
+        const zetta::data::PartitionWriteResult written =
+            zetta::data::write_partitioned(node, *database, *table);
+        ASSERT_TRUE(written.ok()) << written.error;
+
+        Cluster cluster(node.node_id(), cluster_config(port++, {}));
+        DistributedFulltextIndex distributed(cluster);  // the real BM25F backend
+        ASSERT_TRUE(distributed.build_local(node, spec).ok()) << label;
+
+        const IndexQueryResult oracle = bm25_oracle({table.get()}, spec);
+        ASSERT_TRUE(oracle.status.ok());
+        ASSERT_EQ(oracle.row_ids.size(), 5u);  // the five matching rows
+
+        std::vector<std::string> deepest;
+        for (const std::size_t depth : kDepths) {
+            const auto result = distributed.query(spec, text_query("postgres", depth));
+            expect_oracle_prefix(result, oracle, depth, label);
+            // Consistent at every depth: a shallower answer is a prefix of a deeper.
+            if (depth == 50) deepest = result.row_ids;
+        }
+        const auto top3 = distributed.query(spec, text_query("postgres", 3));
+        ASSERT_GE(deepest.size(), 3u);
+        EXPECT_EQ(top3.row_ids, std::vector<std::string>(deepest.begin(), deepest.begin() + 3))
+            << label;
+    }
+}
+
+TEST(DistributedFulltext, LimitedSearchOverSkewedNodesEqualsOneIndex) {
+    if (!OramaCoreFulltextIndex::engine_available()) {
+        GTEST_SKIP() << "oramacore-cpp engine not compiled in (submodule absent)";
+    }
+    // Node A holds the weak match among misses, node B the strong matches: the
+    // shape where one node holds most of the documents mentioning the term.
+    const std::vector<nlohmann::json> corpus = skewed_corpus();
+    std::vector<std::vector<nlohmann::json>> shards(2);
+    for (std::size_t i = 0; i < corpus.size(); ++i) shards[i % 2].push_back(corpus[i]);
+
+    constexpr std::uint16_t kBasePort = 48420;
+    const IndexSpec spec = articles_spec(std::string(OramaCoreFulltextIndex::kName));
+    const std::vector<std::string> ids = {"skew-node-a", "skew-node-b"};
+    std::vector<std::unique_ptr<FulltextNode>> nodes;
+    for (std::size_t index = 0; index < shards.size(); ++index) {
+        std::vector<std::string> seeds;
+        if (index > 0) seeds.push_back("127.0.0.1:" + std::to_string(kBasePort));
+        nodes.push_back(std::make_unique<FulltextNode>(
+            ids[index], static_cast<std::uint16_t>(kBasePort + index), seeds,
+            shards[index], std::make_shared<OramaCoreFulltextIndex>(), spec));
+    }
+    for (auto& node : nodes) node->cluster.start();
+    ASSERT_TRUE(wait_for([&] {
+        for (const auto& node : nodes) {
+            if (node->cluster.peer_count() != nodes.size() - 1) return false;
+        }
+        return true;
+    })) << "cluster did not converge";
+
+    std::vector<Table*> tables;
+    for (auto& node : nodes) tables.push_back(node->table.get());
+    const IndexQueryResult oracle = bm25_oracle(tables, spec);
+    ASSERT_TRUE(oracle.status.ok());
+    ASSERT_EQ(oracle.row_ids.size(), 5u);
+
+    // Every node, as coordinator, returns the oracle's top k at every depth.
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        for (const std::size_t depth : kDepths) {
+            const auto result =
+                nodes[index]->distributed.query(spec, text_query("postgres", depth), 5s);
+            expect_oracle_prefix(result, oracle, depth, "coordinator " + ids[index]);
+            EXPECT_EQ(result.nodes_answered, nodes.size());
+        }
+    }
+}
+
+// ----- the statistics round's pieces (#851) -----------------------------------
+
+TEST(DistributedFulltextStatistics, MergeSumsEveryCount) {
+    zetta::index::CorpusStatistics a;
+    a.doc_count = 10;
+    a.term_doc_freq = {{"postgr", 1}, {"vacuum", 0}};
+    a.fields = {{"body", {50, 10}}, {"title", {10, 10}}};
+    zetta::index::CorpusStatistics b;
+    b.doc_count = 4;
+    b.term_doc_freq = {{"postgr", 4}};
+    b.fields = {{"body", {20, 3}}};
+    a.merge(b);
+    EXPECT_EQ(a.doc_count, 14u);
+    EXPECT_EQ(a.term_doc_freq.at("postgr"), 5u);
+    EXPECT_EQ(a.term_doc_freq.at("vacuum"), 0u);
+    EXPECT_EQ(a.fields.at("body"), (zetta::index::FieldLengthStatistics{70, 13}));
+    EXPECT_EQ(a.fields.at("title"), (zetta::index::FieldLengthStatistics{10, 10}));
+}
+
+TEST(DistributedFulltextWire, StatisticsTravelOnTheQueryAndTheStatsResponse) {
+    zetta::index::CorpusStatistics statistics;
+    statistics.doc_count = 20;
+    statistics.term_doc_freq = {{"postgr", 5}};
+    statistics.fields = {{"body", {100, 20}}, {"title", {20, 20}}};
+
+    FulltextQueryRequest request;
+    request.table = "articles";
+    request.kind = IndexKind::Search;
+    request.fields = {"title", "body"};
+    request.term = "postgres";
+    request.top_k = 2;
+    request.statistics = statistics;
+    std::string error;
+    const auto decoded = zetta::index::decode_fulltext_query(
+        zetta::index::encode_fulltext_query(request), &error);
+    ASSERT_TRUE(decoded) << error;
+    ASSERT_TRUE(decoded->statistics);
+    EXPECT_EQ(*decoded->statistics, statistics);
+    EXPECT_EQ(decoded->query().statistics, statistics);  // what the peer scores with
+
+    // The stats request is the same message without statistics.
+    request.statistics.reset();
+    const auto plain = zetta::index::decode_fulltext_query(
+        zetta::index::encode_fulltext_query(request), &error);
+    ASSERT_TRUE(plain) << error;
+    EXPECT_FALSE(plain->statistics);
+    EXPECT_FALSE(plain->query().statistics);
+
+    zetta::index::FulltextStatsResponse response;
+    response.from = "node-b";
+    response.statistics = statistics;
+    response.sub_indexes = 2;
+    const auto stats = zetta::index::decode_fulltext_stats(
+        zetta::index::encode_fulltext_stats(response), &error);
+    ASSERT_TRUE(stats) << error;
+    EXPECT_EQ(stats->from, "node-b");
+    EXPECT_EQ(stats->statistics, statistics);
+    EXPECT_EQ(stats->sub_indexes, 2u);
+}
+
+TEST(DistributedFulltextWire, MalformedStatisticsAreRejectedAtTheBoundary) {
+    std::string error;
+    // A stats response must carry statistics.
+    EXPECT_FALSE(zetta::index::decode_fulltext_stats(R"({"from":"n"})", &error));
+    EXPECT_FALSE(zetta::index::decode_fulltext_stats("{not json", &error));
+    // A negative count, a missing doc_count, a field missing doc_count.
+    EXPECT_FALSE(zetta::index::decode_fulltext_stats(
+        R"({"statistics":{"doc_count":-1,"term_doc_freq":{},"fields":{}}})", &error));
+    EXPECT_FALSE(zetta::index::decode_fulltext_stats(
+        R"({"statistics":{"term_doc_freq":{},"fields":{}}})", &error));
+    EXPECT_FALSE(zetta::index::decode_fulltext_stats(
+        R"({"statistics":{"doc_count":1,"term_doc_freq":{},"fields":{"body":{"total_len":5}}}})",
+        &error));
+    // A query request whose statistics carry a non-integer frequency.
+    EXPECT_FALSE(zetta::index::decode_fulltext_query(
+        R"({"table":"a","kind":"search","fields":["t"],"term":"q",)"
+        R"("statistics":{"doc_count":1,"term_doc_freq":{"q":"many"},"fields":{}}})",
+        &error));
+    EXPECT_TRUE(zetta::index::decode_fulltext_stats(
+        R"({"statistics":{"doc_count":0,"term_doc_freq":{},"fields":{}}})", &error))
+        << error;
+}
+
+TEST(DistributedFulltextStatistics, ReferenceScorerSkipsTheStatisticsRound) {
+    // A partition-independent scorer needs no statistics: no fulltext.stats round.
+    TermFrequencyBackend reference;
+    EXPECT_FALSE(reference.uses_corpus_statistics());
+    if (OramaCoreFulltextIndex::engine_available()) {
+        EXPECT_TRUE(OramaCoreFulltextIndex().uses_corpus_statistics());
+    }
+}
+
+TEST(OramaCoreFulltextIndexOrder, CapCutsATieByRowIdNotInsertionOrder) {
+    if (!OramaCoreFulltextIndex::engine_available()) {
+        GTEST_SKIP() << "oramacore-cpp engine not compiled in (submodule absent)";
+    }
+    // Three identical rows tie on score; they are inserted in descending row-id
+    // order, so the engine's own (insertion-order) tie-break would keep "row-c".
+    OramaCoreFulltextIndex backend;
+    const IndexSpec spec = articles_spec(std::string(OramaCoreFulltextIndex::kName));
+    IndexPartition partition;
+    partition.id = "p0";
+    for (const char* id : {"row-c", "row-b", "row-a"}) {
+        partition.documents.push_back(
+            IndexDocument{id, article("Postgres", postgres_body(2))});
+    }
+    partition.documents.push_back(IndexDocument{"row-z", article("notes", "boil water pasta salt basil")});
+    ASSERT_TRUE(backend.build(spec, std::span<const IndexPartition>(&partition, 1)).ok());
+
+    const auto top1 = backend.query(spec, text_query("postgres", 1));
+    ASSERT_TRUE(top1.status.ok());
+    EXPECT_EQ(top1.row_ids, (std::vector<std::string>{"row-a"}));
+    const auto top2 = backend.query(spec, text_query("postgres", 2));
+    EXPECT_EQ(top2.row_ids, (std::vector<std::string>{"row-a", "row-b"}));
+    const auto all = backend.query(spec, text_query("postgres", 0));
+    EXPECT_EQ(all.row_ids, (std::vector<std::string>{"row-a", "row-b", "row-c"}));
+}
+
+TEST(OramaCoreFulltextIndexOrder, CollectsStatisticsAndScoresWithThem) {
+    if (!OramaCoreFulltextIndex::engine_available()) {
+        GTEST_SKIP() << "oramacore-cpp engine not compiled in (submodule absent)";
+    }
+    // Two shards of the skewed corpus, built as separate indexes, plus the whole.
+    const std::vector<nlohmann::json> corpus = skewed_corpus();
+    const IndexSpec spec = articles_spec(std::string(OramaCoreFulltextIndex::kName));
+    IndexSpec spec_a = spec;
+    spec_a.table = "articles-a";
+    IndexSpec spec_b = spec;
+    spec_b.table = "articles-b";
+    IndexPartition a{"a", {}};
+    IndexPartition b{"b", {}};
+    IndexPartition whole{"all", {}};
+    for (std::size_t i = 0; i < corpus.size(); ++i) {
+        IndexDocument document{"row-" + std::to_string(100 + i), corpus[i]};
+        (i % 2 == 0 ? a : b).documents.push_back(document);
+        whole.documents.push_back(document);
+    }
+    OramaCoreFulltextIndex backend;
+    ASSERT_TRUE(backend.build(spec_a, std::span<const IndexPartition>(&a, 1)).ok());
+    ASSERT_TRUE(backend.build(spec_b, std::span<const IndexPartition>(&b, 1)).ok());
+    ASSERT_TRUE(backend.build(spec, std::span<const IndexPartition>(&whole, 1)).ok());
+
+    IndexQuery query = text_query("postgres", 2);
+    zetta::index::CorpusStatistics merged;
+    ASSERT_TRUE(backend.collect_statistics(spec_a, query, merged).ok());
+    ASSERT_TRUE(backend.collect_statistics(spec_b, query, merged).ok());
+    zetta::index::CorpusStatistics consolidated;
+    ASSERT_TRUE(backend.collect_statistics(spec, query, consolidated).ok());
+    EXPECT_EQ(merged, consolidated);
+    EXPECT_EQ(merged.doc_count, 20u);
+
+    // Scored with the merged statistics, shard B's top 2 are the whole table's top 2.
+    query.statistics = merged;
+    const auto shard_b = backend.query(spec_b, query);
+    const auto oracle = backend.query(spec, text_query("postgres", 2));
+    ASSERT_TRUE(shard_b.status.ok());
+    EXPECT_EQ(shard_b.row_ids, oracle.row_ids);
+    EXPECT_EQ(shard_b.scores, oracle.scores);
+
+    // Unknown index / bad field: the same statuses as query().
+    zetta::index::CorpusStatistics unused;
+    IndexSpec missing = spec;
+    missing.table = "nope";
+    EXPECT_EQ(backend.collect_statistics(missing, query, unused).code,
+              zetta::index::IndexStatusCode::NotFound);
+    IndexQuery bad_field = text_query("postgres");
+    bad_field.field = "author";
+    EXPECT_EQ(backend.collect_statistics(spec, bad_field, unused).code,
+              zetta::index::IndexStatusCode::InvalidArgument);
+}
+
+TEST(OramaCoreFulltextIndexOrder, CapKeepsTheBestHitsInAnyInsertionOrder) {
+    if (!OramaCoreFulltextIndex::engine_available()) {
+        GTEST_SKIP() << "oramacore-cpp engine not compiled in (submodule absent)";
+    }
+    // Weakest-first insertion makes the engine meet the hits in ascending score
+    // order; a capped query must still return the best ones (the engine's bounded
+    // heap used to evict the best kept hit, dropping a top-k row silently).
+    OramaCoreFulltextIndex backend;
+    const IndexSpec spec = articles_spec(std::string(OramaCoreFulltextIndex::kName));
+    IndexPartition partition;
+    partition.id = "p0";
+    for (int tf = 1; tf <= 5; ++tf) {
+        partition.documents.push_back(
+            IndexDocument{"row-" + std::to_string(tf), article("notes", postgres_body(tf))});
+    }
+    ASSERT_TRUE(backend.build(spec, std::span<const IndexPartition>(&partition, 1)).ok());
+    const auto all = backend.query(spec, text_query("postgres", 0));
+    ASSERT_EQ(all.row_ids,
+              (std::vector<std::string>{"row-5", "row-4", "row-3", "row-2", "row-1"}));
+    for (std::size_t k = 1; k <= 5; ++k) {
+        const auto top = backend.query(spec, text_query("postgres", k));
+        EXPECT_EQ(top.row_ids, std::vector<std::string>(all.row_ids.begin(),
+                                                         all.row_ids.begin() + k))
+            << "top " << k;
+    }
 }

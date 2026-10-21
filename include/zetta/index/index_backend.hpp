@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -116,6 +119,46 @@ struct IndexPartition {
     std::vector<IndexDocument> documents;  // the rows in this partition
 };
 
+// One field's length totals across a corpus: the sum of the field's token counts
+// over the documents that carry it, and how many documents carry it (the average
+// field length BM25F normalizes by is total_len / doc_count).
+struct FieldLengthStatistics {
+    std::uint64_t total_len = 0;
+    std::uint64_t doc_count = 0;
+
+    bool operator==(const FieldLengthStatistics&) const = default;
+};
+
+// The corpus statistics a ranked backend scores with (#851): the document count,
+// the document frequency of each query term (keyed by the ANALYZED term the
+// backend matches on, so a backend's own tokenizer decides the keys), and each
+// field's length totals (keyed by field name). A sharded query collects one per
+// shard (IndexBackend::collect_statistics), merges them, and queries every shard
+// with the merge (IndexQuery::statistics), so each shard ranks exactly as one
+// index over the whole corpus would and a per-shard top_k cutoff drops nothing
+// that belongs in the global top k.
+struct CorpusStatistics {
+    std::uint64_t doc_count = 0;
+    std::map<std::string, std::uint64_t> term_doc_freq;
+    std::map<std::string, FieldLengthStatistics> fields;
+
+    // Add another shard's statistics into this one. Every count sums: shards hold
+    // disjoint rows.
+    void merge(const CorpusStatistics& other) {
+        doc_count += other.doc_count;
+        for (const auto& [term, frequency] : other.term_doc_freq) {
+            term_doc_freq[term] += frequency;
+        }
+        for (const auto& [field, lengths] : other.fields) {
+            FieldLengthStatistics& mine = fields[field];
+            mine.total_len += lengths.total_len;
+            mine.doc_count += lengths.doc_count;
+        }
+    }
+
+    bool operator==(const CorpusStatistics&) const = default;
+};
+
 // A query against a built index. A Search backend reads `field` + `term` (exact
 // value match over an indexed field). A Vector / semantic backend reads `vector` +
 // `top_k` behind the *same* seam (additive — a field a backend doesn't use is
@@ -126,6 +169,10 @@ struct IndexQuery {
     nlohmann::json term;           // the value to match (Search)
     std::vector<float> vector;     // the query embedding (Vector / semantic)
     std::size_t top_k = 0;         // cap on results (0 = no cap)
+    // The corpus statistics to score with instead of the index's own (#851): a
+    // sharded query's merged view of every shard. nullopt = the index's own
+    // statistics. A backend that does not use corpus statistics ignores it.
+    std::optional<CorpusStatistics> statistics;
 };
 
 // What a query returned: a status plus the matching row ids in a deterministic
@@ -176,6 +223,26 @@ public:
     // Drop a built index. Idempotent: dropping an index that was never built (or
     // was already dropped) succeeds (Ok) — the post-condition is "not built here".
     virtual IndexStatus drop(const IndexSpec& spec) = 0;
+
+    // Does this backend score with corpus statistics (document frequencies,
+    // average field lengths)? If so, a sharded query must gather every shard's
+    // statistics first and score each shard with the merge (#851), or a per-shard
+    // top_k cutoff can drop a row that belongs in the global top k. False by
+    // default: an exact-match or partition-independent scorer needs no such pass.
+    virtual bool uses_corpus_statistics() const { return false; }
+
+    // Add the index built under spec.key()'s corpus statistics for `query` into
+    // `out` (so a caller can accumulate several sub-indexes). Only meaningful when
+    // uses_corpus_statistics(); the default adds nothing and succeeds. Same
+    // statuses as query() (NotFound, InvalidArgument).
+    virtual IndexStatus collect_statistics(const IndexSpec& spec,
+                                           const IndexQuery& query,
+                                           CorpusStatistics& out) const {
+        (void)spec;
+        (void)query;
+        (void)out;
+        return IndexStatus::success();
+    }
 };
 
 }  // namespace zetta::index

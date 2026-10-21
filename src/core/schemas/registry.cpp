@@ -175,6 +175,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::index::fulltext_query_schema},
         {"fulltext_hits", "fulltext_hits.schema.json",
          &zetta::index::fulltext_hits_schema},
+        {"fulltext_stats", "fulltext_stats.schema.json",
+         &zetta::index::fulltext_stats_schema},
         {"partition_scan_request", "partition_scan_request.schema.json",
          &zetta::query::partition_scan_request_schema},
         {"partition_scan_response", "partition_scan_response.schema.json",

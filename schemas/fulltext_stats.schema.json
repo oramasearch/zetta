@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "from": {
+      "type": "string"
+    },
+    "statistics": {
+      "additionalProperties": false,
+      "properties": {
+        "doc_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fields": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "doc_count": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total_len": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total_len",
+              "doc_count"
+            ],
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "term_doc_freq": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "doc_count",
+        "term_doc_freq",
+        "fields"
+      ],
+      "type": "object"
+    },
+    "sub_indexes": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "statistics"
+  ],
+  "title": "zetta.FulltextStatsResponse",
+  "type": "object"
+}

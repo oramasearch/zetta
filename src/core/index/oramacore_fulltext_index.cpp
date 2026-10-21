@@ -27,6 +27,70 @@ std::optional<std::string> scalar_text(const nlohmann::json& value) {
     return std::nullopt;
 }
 
+// zetta's corpus statistics <-> the engine's (the same counts, keyed the same way).
+oramacore::index::CorpusStats to_engine(const CorpusStatistics& statistics) {
+    oramacore::index::CorpusStats out;
+    out.doc_count = statistics.doc_count;
+    for (const auto& [term, frequency] : statistics.term_doc_freq) {
+        out.term_doc_freq.emplace(term, frequency);
+    }
+    for (const auto& [field, lengths] : statistics.fields) {
+        out.fields.emplace(field, oramacore::index::FieldLengthStats{
+                                      lengths.total_len, lengths.doc_count});
+    }
+    return out;
+}
+
+void add_from_engine(const oramacore::index::CorpusStats& statistics,
+                     CorpusStatistics& out) {
+    CorpusStatistics converted;
+    converted.doc_count = statistics.doc_count;
+    for (const auto& [term, frequency] : statistics.term_doc_freq) {
+        converted.term_doc_freq.emplace(term, frequency);
+    }
+    for (const auto& [field, lengths] : statistics.fields) {
+        converted.fields.emplace(
+            field, FieldLengthStatistics{lengths.total_len, lengths.doc_count});
+    }
+    out.merge(converted);
+}
+
+// The checks query() and collect_statistics() share: a named field must be one
+// the index covers, and the term must be text. Ok + the text on success.
+IndexStatus validate_query(const IndexSpec& spec, const IndexQuery& query,
+                           std::string& text) {
+    if (!query.field.empty() &&
+        std::find(spec.fields.begin(), spec.fields.end(), query.field) ==
+            spec.fields.end()) {
+        return IndexStatus::invalid_argument(
+            "field '" + query.field + "' is not indexed by this index");
+    }
+    std::optional<std::string> scalar = scalar_text(query.term);
+    if (!scalar) {
+        return IndexStatus::invalid_argument(
+            "full-text query term must be a text/scalar value");
+    }
+    text = std::move(*scalar);
+    return IndexStatus::success();
+}
+
+// The engine index a query searches: the named field's own index when the query
+// names one and the build kept one (lake#782), else the combined index. query()
+// and collect_statistics() both use it, so a sharded field query merges and
+// scores with that field's statistics alone. A template so it can take the
+// private Impl::Built without naming it.
+template <typename Built>
+const oramacore::index::MemoryIndex& searched_index(const Built& built,
+                                                    const IndexQuery& query) {
+    if (!query.field.empty()) {
+        if (const auto one = built.by_field.find(query.field);
+            one != built.by_field.end()) {
+            return one->second;
+        }
+    }
+    return built.index;
+}
+
 }  // namespace
 
 // One built BM25F index: the engine's in-memory index plus the mapping from its
@@ -130,20 +194,9 @@ IndexQueryResult OramaCoreFulltextIndex::query(const IndexSpec& spec,
 
     // A named field must be one this index covers, and then only that field is
     // searched (lake#782): a row matching in another field is not a hit.
-    if (!query.field.empty() &&
-        std::find(spec.fields.begin(), spec.fields.end(), query.field) ==
-            spec.fields.end()) {
-        result.status = IndexStatus::invalid_argument(
-            "field '" + query.field + "' is not indexed by this index");
-        return result;
-    }
-
-    const auto text = scalar_text(query.term);
-    if (!text) {
-        result.status = IndexStatus::invalid_argument(
-            "full-text query term must be a text/scalar value");
-        return result;
-    }
+    std::string text;
+    result.status = validate_query(spec, query, text);
+    if (!result.status.ok()) return result;
 
     const auto built = impl_->built.find(spec.key());
     if (built == impl_->built.end()) {
@@ -152,30 +205,72 @@ IndexQueryResult OramaCoreFulltextIndex::query(const IndexSpec& spec,
         return result;
     }
 
-    // Rank by BM25F relevance. The engine already orders hits score-desc with a
-    // stable DocId tiebreak; mapping each hit's DocId back to its row id preserves
-    // that deterministic, reproducible order.
-    const oramacore::index::MemoryIndex* searched = &built->second.index;
-    if (!query.field.empty()) {
-        if (const auto one = built->second.by_field.find(query.field);
-            one != built->second.by_field.end()) {
-            searched = &one->second;
-        }
+    // Score with the supplied corpus statistics when a sharded query passed them
+    // (#851), else with this index's own.
+    std::optional<oramacore::index::CorpusStats> global;
+    if (query.statistics) global = to_engine(*query.statistics);
+    // A query naming a field searches that field's own index (lake#782).
+    const oramacore::index::MemoryIndex& searched = searched_index(built->second, query);
+    const auto search = [&](std::size_t limit) {
+        return global ? searched.search(text, limit, *global)
+                      : searched.search(text, limit);
+    };
+
+    // The engine breaks a score tie by DocId (insertion order); this backend's
+    // order, and the distributed merge's, breaks it by row id. So a cap must not
+    // cut inside a tie the engine ordered: while the page is full and its last
+    // hit still ties with the top_k-th, fetch a larger page, until the tie is
+    // wholly inside it. Then sort by (score desc, row id asc) and cap.
+    std::size_t limit = query.top_k;
+    oramacore::index::SearchResult hits = search(limit);
+    while (limit > 0 && hits.hits.size() == limit &&
+           hits.hits.back().score == hits.hits[query.top_k - 1].score &&
+           limit < built->second.rowid_by_docid.size()) {
+        limit *= 2;
+        hits = search(limit);
     }
-    const oramacore::index::SearchResult hits = searched->search(*text, query.top_k);
-    result.row_ids.reserve(hits.hits.size());
-    result.scores.reserve(hits.hits.size());
+
+    std::vector<std::pair<double, const std::string*>> ranked;
+    ranked.reserve(hits.hits.size());
     for (const oramacore::index::Hit& hit : hits.hits) {
         if (hit.doc_id < built->second.rowid_by_docid.size()) {
-            result.row_ids.push_back(built->second.rowid_by_docid[hit.doc_id]);
-            // Carry the BM25F relevance score (higher = better) aligned to
-            // row_ids, so a distributed scatter-gather can merge per-partition
-            // hits into one global ranking by score.
-            result.scores.push_back(hit.score);
+            ranked.emplace_back(hit.score, &built->second.rowid_by_docid[hit.doc_id]);
         }
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+        if (a.first != b.first) return a.first > b.first;
+        return *a.second < *b.second;
+    });
+    if (query.top_k > 0 && ranked.size() > query.top_k) ranked.resize(query.top_k);
+
+    result.row_ids.reserve(ranked.size());
+    result.scores.reserve(ranked.size());
+    for (const auto& [score, row_id] : ranked) {
+        result.row_ids.push_back(*row_id);
+        // Carry the BM25F relevance score (higher = better) aligned to
+        // row_ids, so a distributed scatter-gather can merge per-partition
+        // hits into one global ranking by score.
+        result.scores.push_back(score);
     }
     result.status = IndexStatus::success();
     return result;
+}
+
+bool OramaCoreFulltextIndex::uses_corpus_statistics() const { return true; }
+
+IndexStatus OramaCoreFulltextIndex::collect_statistics(
+    const IndexSpec& spec, const IndexQuery& query, CorpusStatistics& out) const {
+    std::string text;
+    const IndexStatus valid = validate_query(spec, query, text);
+    if (!valid.ok()) return valid;
+    const auto built = impl_->built.find(spec.key());
+    if (built == impl_->built.end()) {
+        return IndexStatus::not_found("no index built for " + spec.key());
+    }
+    // The statistics of the index query() will search: a field's own index when
+    // the query names one, so every shard merges and scores the same field.
+    add_from_engine(searched_index(built->second, query).stats(text), out);
+    return IndexStatus::success();
 }
 
 IndexStatus OramaCoreFulltextIndex::drop(const IndexSpec& spec) {
@@ -225,6 +320,14 @@ IndexQueryResult OramaCoreFulltextIndex::query(const IndexSpec&,
 
 IndexStatus OramaCoreFulltextIndex::drop(const IndexSpec&) {
     return IndexStatus::success();  // nothing built — the post-condition holds
+}
+
+bool OramaCoreFulltextIndex::uses_corpus_statistics() const { return false; }
+
+IndexStatus OramaCoreFulltextIndex::collect_statistics(const IndexSpec&,
+                                                       const IndexQuery&,
+                                                       CorpusStatistics&) const {
+    return IndexStatus::unsupported(kEngineMissing);
 }
 
 std::size_t OramaCoreFulltextIndex::built_count() const { return 0; }
