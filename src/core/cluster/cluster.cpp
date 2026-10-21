@@ -138,6 +138,12 @@ struct Cluster::State {
     // peer_count() in steady state; a higher value would mean links are leaking. An
     // atomic so connection_count() can read it without the peer mutex.
     std::atomic<int> live_connections{0};
+    // Replication gossip sent (#794), summed over links; read by gossip_stats().
+    std::atomic<std::uint64_t> gossip_rounds{0};
+    std::atomic<std::uint64_t> gossip_sync_frames{0};
+    std::atomic<std::uint64_t> gossip_full_syncs{0};
+    std::atomic<std::uint64_t> gossip_incremental_syncs{0};
+    std::atomic<std::uint64_t> gossip_sync_bytes{0};
 
     // --- Reconnect routing (dedup redials by node id, #739) -----------------
     //
@@ -880,9 +886,13 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
         // Periodic gossip + keepalive, every ~0.5s (not every poll tick).
         if (Clock::now() - last_gossip >= kGossipInterval) {
             last_gossip = Clock::now();
+            self->gossip_rounds.fetch_add(1, std::memory_order_relaxed);
             if (self->replication) {
-                if (!co_await link->stream->write_frame(
-                        sync_line(*self->replication)) ||
+                std::string sync = sync_line(*self->replication);
+                self->gossip_sync_frames.fetch_add(1, std::memory_order_relaxed);
+                self->gossip_full_syncs.fetch_add(1, std::memory_order_relaxed);
+                self->gossip_sync_bytes.fetch_add(sync.size(), std::memory_order_relaxed);
+                if (!co_await link->stream->write_frame(std::move(sync)) ||
                     !co_await link->stream->write_frame(
                         status_line(*self->replication))) {
                     break;
@@ -1606,6 +1616,17 @@ std::size_t Cluster::peer_count() const {
 std::size_t Cluster::connection_count() const {
     const int count = state_->live_connections.load(std::memory_order_relaxed);
     return count > 0 ? static_cast<std::size_t>(count) : 0;
+}
+
+GossipStats Cluster::gossip_stats() const {
+    constexpr auto order = std::memory_order_relaxed;
+    return GossipStats{
+        .rounds = state_->gossip_rounds.load(order),
+        .sync_frames = state_->gossip_sync_frames.load(order),
+        .full_syncs = state_->gossip_full_syncs.load(order),
+        .incremental_syncs = state_->gossip_incremental_syncs.load(order),
+        .sync_bytes = state_->gossip_sync_bytes.load(order),
+    };
 }
 
 std::vector<NodeStatus> Cluster::nodes() const {
