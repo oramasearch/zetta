@@ -24446,7 +24446,7 @@
     },
     "/v1/list_projects": {
       "get": {
-        "description": "Read the names of every AI project on this node. No side effects. Requires api:query.",
+        "description": "Read the names of every AI project on this node, with a summary of each (id, name, and each graph's id, name and approval) for a caller who may also call get_project. No side effects. Requires api:query.",
         "operationId": "list_projects",
         "parameters": [
           {
@@ -24482,8 +24482,58 @@
                       "additionalProperties": false,
                       "properties": {
                         "projects": {
+                          "description": "the project names",
                           "items": {
                             "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summaries": {
+                          "description": "one entry per name in `projects`, in the same order (#1185): the project's id and name and each graph's id, name and approval, so a list page needs no get_project per project. Present only when the caller may also call get_project",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "graphs": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "approval": {
+                                      "description": "plan-approval state (#885), as get_project",
+                                      "enum": [
+                                        "proposed",
+                                        "approved"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "name",
+                                    "approval"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "graphs"
+                            ],
+                            "type": "object"
                           },
                           "type": "array"
                         }

@@ -818,6 +818,74 @@ TEST_F(RegistryFixture, JourneyCreateProjectThenReadBack) {
     EXPECT_EQ(activity_count.load(), 1);  // no hook on failure
 }
 
+// #1185: list_projects answers a list page in one call. `projects` stays the
+// names (existing callers), and `summaries` carries, in the same order, each
+// project's id and name and each graph's id, name and approval, matching
+// get_project's answer exactly. An internal project (lake#654) is in neither.
+TEST_F(RegistryFixture, ListProjectsReturnsGraphSummariesMatchingGetProject) {
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "churn"}}).ok);
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "empty"}}).ok);
+    ASSERT_TRUE(node.create_project("m (standalone model)", "", "", /*internal=*/true));
+    for (const char* text : {"predict which accounts churn",
+                             "predict which accounts renew"}) {
+        auto captured = call("capture_intent",
+                             nlohmann::json{{"project", "churn"}, {"text", text}});
+        ASSERT_TRUE(captured.ok) << captured.error.message;
+        auto compiled = call("compile_intent",
+                             nlohmann::json{{"project", "churn"},
+                                            {"input_id", captured.value.at("input_id")}});
+        ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    }
+    const auto churn = node.find_project("churn");
+    ASSERT_TRUE(churn);
+    ASSERT_GE(churn->graphs().size(), 2u);
+    const std::string approved_graph = churn->graphs().front()->id();
+    auto approved = call("approve_plan", nlohmann::json{{"project", "churn"},
+                                                        {"graph", approved_graph}});
+    ASSERT_TRUE(approved.ok) << approved.error.message;
+
+    auto listed = call("list_projects", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    const auto& projects = listed.value.at("projects");
+    const auto& summaries = listed.value.at("summaries");
+    EXPECT_EQ(projects, nlohmann::json(node.project_names()));  // unchanged shape
+    ASSERT_EQ(projects.size(), 2u);  // the internal project is left out
+    ASSERT_EQ(summaries.size(), projects.size());
+
+    // Each summary is exactly get_project's id, name and graphs' id/name/approval.
+    for (std::size_t i = 0; i < summaries.size(); ++i) {
+        const auto& summary = summaries[i];
+        EXPECT_EQ(summary.at("name"), projects[i]);
+        auto detail = call("get_project", nlohmann::json{{"name", projects[i]}});
+        ASSERT_TRUE(detail.ok) << detail.error.message;
+        EXPECT_EQ(summary.at("id"), detail.value.at("id"));
+        const auto& graphs = summary.at("graphs");
+        const auto& full = detail.value.at("graphs");
+        ASSERT_EQ(graphs.size(), full.size());
+        for (std::size_t g = 0; g < graphs.size(); ++g) {
+            EXPECT_EQ(graphs[g],
+                      (nlohmann::json{{"id", full[g].at("id")},
+                                      {"name", full[g].at("name")},
+                                      {"approval", full[g].at("approval")}}));
+        }
+    }
+
+    const std::size_t at_churn = projects[0] == "churn" ? 0 : 1;
+    const auto& churn_summary = summaries[at_churn];
+    EXPECT_EQ(churn_summary.at("id"), churn->id());
+    std::size_t approved_count = 0;
+    for (const auto& graph : churn_summary.at("graphs")) {
+        if (graph.at("approval") == "approved") {
+            ++approved_count;
+            EXPECT_EQ(graph.at("id"), approved_graph);
+        } else {
+            EXPECT_EQ(graph.at("approval"), "proposed");
+        }
+    }
+    EXPECT_EQ(approved_count, 1u);
+    EXPECT_TRUE(summaries[1 - at_churn].at("graphs").empty());
+}
+
 // #1009 journey: delete a project and read the deletion back. Its inputs and
 // graphs go with it; its runs and models are kept, stay listed, and the answer
 // says how many were left behind.
