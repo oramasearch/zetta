@@ -467,7 +467,7 @@ void install_connector_fetch_launch_runner(
 }
 
 // The ingest path for a connector with no result-partition protocol (today:
-// Postgres). One query, one result set, landed through `add_dataset_rows` —
+// Postgres and MySQL). One query, one result set, landed through `add_dataset_rows` —
 // which runs the same PartitionScheduler, honours the same partition_count and
 // replication_factor, and marks the table partition_only, so the dataset it
 // produces is shaped exactly like the tiled path's. It fans out over cores and
@@ -491,7 +491,7 @@ DistributedIngestResult run_single_shot_connector_ingest(
         return result;
     };
 
-    // read_only_query_rejection already ran in the caller; run_connector_query
+    // connector_query_rejection already ran in the caller; run_connector_query
     // re-checks it, which is correct — it is also a public entry point.
     const ConnectorResult pulled =
         run_connector_query(config, options.query, options.max_rows);
@@ -539,7 +539,7 @@ DistributedIngestResult run_distributed_connector_ingest(
     const DistributedIngestOptions& options) {
     DistributedIngestResult result;
 
-    if (const std::string rejection = read_only_query_rejection(options.query);
+    if (const std::string rejection = connector_query_rejection(config, options.query);
         !rejection.empty()) {
         result.error = rejection;
         return result;

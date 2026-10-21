@@ -25,15 +25,17 @@
 #include <boost/http/serializer.hpp>
 #include <boost/http/static_response.hpp>
 
+#include "system_trust_store.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/runtime/net.hpp"
 
 // The native coroutine HTTPS client behind the connector transport interface (#827).
 //
-// This is the **second** translation unit allowed to name Corosio (through
-// `zetta::runtime::net`), alongside `src/core/cluster/cluster.cpp`: the cluster
-// adapter owns inbound/peer traffic, this one owns outbound client traffic. It
+// One of the three translation units allowed to name Corosio (through
+// `zetta::runtime::net`), alongside `src/core/cluster/cluster.cpp` and
+// `src/core/api/mysql_protocol.cpp`: the cluster adapter owns inbound/peer
+// traffic, this one owns outbound HTTP(S), the MySQL driver outbound MySQL. It
 // is compiled into `zetta-api`, not `zetta-core`, so Boost.HTTP never reaches
 // the core's link surface — see include/zetta/api/native_http_transport.hpp.
 namespace zetta::api {
@@ -165,58 +167,15 @@ void drop_secret_headers(connect::HttpRequest& request) {
     request.secret_headers.clear();
 }
 
-// Read a system CA bundle (PEM) for verifying public HTTPS peers. The OpenSSL
-// backend in corosio does NOT wire `SSL_CTX_set_default_verify_paths`, so a client
-// context starts with an EMPTY trust store and every public-CA handshake fails
-// "certificate verify failed". We therefore load the roots explicitly (the same
-// `add_certificate_authority` path the cluster's mTLS uses) — honoring
-// `SSL_CERT_FILE` first, then the common platform locations. Empty (+ a reason)
-// when none is found.
-std::string load_system_ca_bundle(std::string& reason) {
-    std::vector<std::string> candidates;
-    if (const char* env = std::getenv("SSL_CERT_FILE");
-        env != nullptr && env[0] != '\0') {
-        candidates.emplace_back(env);
-    }
-    candidates.insert(candidates.end(), {
-                                            "/etc/ssl/cert.pem",  // macOS / some BSD/Linux
-                                            "/opt/homebrew/etc/openssl@3/cert.pem",  // brew arm64
-                                            "/usr/local/etc/openssl@3/cert.pem",  // brew x86_64
-                                            "/etc/ssl/certs/ca-certificates.crt",  // Debian/Ubuntu
-                                            "/etc/pki/tls/certs/ca-bundle.crt",  // RHEL/Fedora
-                                        });
-    for (const std::string& path : candidates) {
-        std::ifstream file(path, std::ios::binary);
-        if (!file) continue;
-        std::string contents((std::istreambuf_iterator<char>(file)),
-                             std::istreambuf_iterator<char>());
-        if (!contents.empty()) return contents;
-    }
-    reason = "no CA bundle at SSL_CERT_FILE or the common system paths";
-    return std::string();
-}
-
-// Add every root in a PEM `bundle` to `context`, ONE cert per call. corosio's
-// `add_certificate_authority` reads only the FIRST certificate out of whatever PEM
-// it is handed (`init_ssl` does a single `PEM_read_bio_X509`), so a whole ~150-root
-// system bundle passed as one blob would load only the first root and drop the
-// rest — the chain then never builds. Split on the PEM markers and add each. Non-
-// throwing; returns false (+ reason) only if not one certificate parsed.
-bool add_ca_bundle(net::tls_context& context, const std::string& bundle,
-                   std::string& reason) {
-    constexpr std::string_view kBegin = "-----BEGIN CERTIFICATE-----";
-    constexpr std::string_view kEnd = "-----END CERTIFICATE-----";
-    std::size_t position = 0;
+// Add every system root to `context`, one certificate per call (see
+// system_trust_store.hpp for why). Non-throwing; returns false (+ reason) only
+// if not one certificate was accepted.
+bool add_system_roots(net::tls_context& context, std::string& reason) {
+    const std::vector<std::string> certificates = system_ca_certificates(reason);
+    if (certificates.empty()) return false;
     int added = 0;
-    for (;;) {
-        const std::size_t begin = bundle.find(kBegin, position);
-        if (begin == std::string::npos) break;
-        const std::size_t end = bundle.find(kEnd, begin);
-        if (end == std::string::npos) break;
-        const std::size_t block_end = end + kEnd.size();
-        const std::string one = bundle.substr(begin, block_end - begin) + "\n";
-        if (!context.add_certificate_authority(one)) ++added;  // skip a bad cert
-        position = block_end;
+    for (const std::string& certificate : certificates) {
+        if (!context.add_certificate_authority(certificate)) ++added;  // skip a bad cert
     }
     if (added == 0) {
         reason = "no certificates parsed from the CA bundle";
@@ -246,14 +205,9 @@ public:
         context->set_hostname(host);  // SNI + hostname verification (returns void)
         // Load the system roots explicitly — set_default_verify_paths is a no-op in
         // this backend, so without this the store is empty and verification fails.
-        std::string bundle_reason;
-        const std::string ca_bundle = load_system_ca_bundle(bundle_reason);
-        if (ca_bundle.empty()) {
-            reason = "could not find a system CA trust store (" + bundle_reason + ")";
-            return nullptr;
-        }
-        if (!add_ca_bundle(*context, ca_bundle, reason)) {
-            reason = "could not load the system CA trust store: " + reason;
+        std::string roots_reason;
+        if (!add_system_roots(*context, roots_reason)) {
+            reason = "could not load the system CA trust store: " + roots_reason;
             return nullptr;
         }
         if (const std::error_code error =

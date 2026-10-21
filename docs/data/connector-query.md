@@ -22,6 +22,11 @@ src/core/connect/connection_store.cpp        save/find/list/remove over the rese
 include/zetta/connect/http_transport.hpp     HttpRequest / HttpResponse / HttpTransport + AsyncHttpTransport (the injected transport)
 src/core/connect/connector.cpp               the config boundary, the read-only guard, the Snowflake connector
 src/core/connect/http_transport.cpp          the installed-default transport registry (no HTTP library in zetta-core)
+include/zetta/connect/mysql_client.hpp       MySQL: the native protocol as a sans-I/O session + the runner injection point (#895)
+src/core/connect/mysql_client.cpp            handshake, TLS negotiation, auth plugins, read-only fencing, typed text result set
+include/zetta/api/mysql_protocol.hpp         install_mysql_protocol — installs the MySQL TCP/TLS driver
+src/core/api/mysql_protocol.cpp              the coroutine TCP + TLS-upgrade driver (zetta-api target)
+src/core/api/system_trust_store.hpp/.cpp     the system CA roots, shared by the HTTPS client and the MySQL driver
 include/zetta/api/native_http_transport.hpp  install/shutdown the native client
 src/core/api/native_http_transport.cpp       the native coroutine HTTPS client (zetta-api target)
 tests/connect/test_connector.cpp             the boundary, the guard, and Snowflake against a fake transport
@@ -29,6 +34,7 @@ tests/connect/test_connection_store.cpp      the store, its boundary, and the no
 tests/connect/test_distributed_fetch.cpp     the tiling's exactly-once property + the bounded concurrent read
 tests/connect/test_distributed_ingest.cpp    the cross-node ingest over a real loopback cluster
 tests/connect/test_native_http_transport.cpp the native client against a real loopback server
+tests/connect/test_mysql_connector.cpp       MySQL: boundary + guard, packet-level protocol, the driver vs a fake server (plaintext + real TLS), a guarded live run
 src/core/testkit/cases_connect.cpp           cluster.connections + cluster.distributed_import — the in-app, GUI-runnable cases
 ```
 
@@ -103,7 +109,7 @@ Two qualifications on that, both per-call rather than per-tool
 
 - **Consent enforcement is off unless the node was started with `--governance`**
   (#995). Off, the call executes and audits as `consent_bypassed`.
-- **A loopback Postgres is not an external system.** The capability's
+- **A loopback Postgres or MySQL is not an external system.** The capability's
   `ConsentDescriber` reads the resolved connector: a host of `127.0.0.1` /
   `localhost` / `::1` or a unix socket never leaves the machine, so it is not
   gated even with `--governance` on (#994). A remote source's challenge names
@@ -354,6 +360,33 @@ runnable from Operations → Test suite and over the `testsuite_run` capability.
 asserts the refusal by *counting transport calls*: a rejected write leaves the
 counter at zero, which is what "before a request is built" means in practice.
 
+The guard a call actually gets is `connector_query_rejection(config, sql)`: the
+rule above, plus the source's own dialect. **MySQL** also admits `SHOW`, treats
+`#` as a comment, and refuses `/*! … */` (an *executable* comment — the server
+runs its contents) and `INTO OUTFILE` / `INTO DUMPFILE` (server-side file
+writes). The wire-protocol connectors then enforce read-only again at the
+driver — a read-only transaction that is never committed.
+
+## MySQL (native protocol)
+
+MySQL has no HTTP API, so the connector speaks the **MySQL client/server
+protocol** itself — natively, with no client library (#895). The protocol is a
+sans-I/O `MysqlClientSession` in zetta-core; `src/core/api/mysql_protocol.cpp`
+(zetta-api) drives it over a coroutine TCP socket, upgrading to TLS when the
+session asks, on its own `io_context` inside `runtime::offload`.
+
+| Concern | How |
+| --- | --- |
+| Config | `type: "mysql"`, `host`, `user` (required), `port` (default 3306), `database` (optional default schema), the password in `token` |
+| TLS | `sslmode` — empty means `verify-full` (TLS before any credential, chain + host verified against the system trust store); `verify-ca`, `require` (encrypt only), `disable` (plaintext, by name). A server without TLS is refused unless `disable` |
+| Auth | `caching_sha2_password` (fast auth; full auth over TLS only), `mysql_native_password`, `sha256_password` / `mysql_clear_password` over TLS only; AuthSwitch followed |
+| Read-only | no multi-statements, no LOCAL INFILE; `SET SESSION TRANSACTION READ ONLY`, `START TRANSACTION READ ONLY`, the statement, `ROLLBACK` |
+| Rows | `sql_select_limit` server-side + a client cap that stops reading and closes |
+| Typing | the text protocol's column types: integers → integers, `DECIMAL`/`FLOAT`/`DOUBLE` → numbers, `BIT` → integer, binary → `0x…` hex, the rest as the server's text |
+
+The full connector skill — least-privilege grants, catalog quirks, gotchas — is
+[connectors/mysql.md](connectors/mysql.md).
+
 ## Snowflake (the first connector)
 
 Snowflake is reached over its **SQL API v2**: `POST /api/v2/statements` with a
@@ -381,16 +414,18 @@ from the source, and a malformed response all come back as a
 
 ## Scope notes / later slices
 
-- **Snowflake is the only connector** in this slice; a second one is a new branch
-  in `run_connector_query` plus an entry in `connector_types()`.
+- Three connectors ship: Snowflake (HTTP), Postgres (libpqxx) and MySQL (native
+  protocol). Another is a new branch in `run_connector_query` plus an entry in
+  `connector_types()`.
 - The **cross-node co-launch** of the fetch is a later slice — see *What is not
   wired yet* above for the landing-path decision it waits on.
 - The native client does **no connection pooling**: one connection per exchange
   with `Connection: close`, so a fan-out pays one TLS handshake per request. A
   pooled variant is a change behind the same injection point.
-- **TLS is not covered by a test** — verifying it needs a certificate authority
-  and a real peer; the loopback suite exercises the same coroutine over a plain
-  socket, and the mTLS peer transport covers the Corosio TLS surface separately.
+- **The HTTPS client's TLS is not covered by a test** — the loopback suite
+  exercises the same coroutine over a plain socket, and the mTLS peer transport
+  covers the Corosio TLS surface separately. (The MySQL driver's TLS upgrade *is*
+  tested over real TLS against a loopback server, `test_mysql_connector.cpp`.)
 - A statement the source is still executing (a `202`) is polled on a
   **`runtime::delay` timer**, not a `sleep_for` ([#832](https://github.com/oramasearch/zetta/issues/832)):
   `submit_connector_statement_async` is a coroutine that suspends between reads,

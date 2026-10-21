@@ -60,6 +60,7 @@ add_executable(zetta-tests
   util/test_uuid.cpp
   util/test_private_directory.cpp
   util/test_sha256.cpp
+  util/test_sha1.cpp
   util/test_fuzzy.cpp
   pipeline/test_validation.cpp
   pipeline/test_gate.cpp
@@ -256,6 +257,7 @@ add_executable(zetta-tests
   data/test_featurize_plan.cpp
   connect/test_connector.cpp
   connect/test_postgres_connector.cpp
+  connect/test_mysql_connector.cpp
   connect/test_connection_store.cpp
   connect/test_credential_seal.cpp
   connect/test_distributed_fetch.cpp
@@ -382,7 +384,10 @@ target_link_libraries(zetta-tests
   # test_clerk_auth.cpp signs a JWT against libcrypto directly. zetta-core
   # links OpenSSL::Crypto PRIVATE, so its include dirs never reach here and
   # <openssl/bn.h> is not found — link it on this target too (#992).
-  PRIVATE OpenSSL::Crypto)
+  PRIVATE OpenSSL::Crypto
+  # test_mysql_connector.cpp runs a fake MySQL server that accepts real TLS
+  # (SSL_accept), to exercise the connector's TLS upgrade end to end (#895).
+  PRIVATE OpenSSL::SSL)
 
 # gtest v1.15.2's gtest-printers.h converts char8_t -> char32_t in PrintTo,
 # which newer Clang flags under -Wcharacter-conversion. It is a header, so the

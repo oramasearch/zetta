@@ -17,6 +17,8 @@
 #include "zetta/api/registry.hpp"
 #include "zetta/cloud/cloud_provider.hpp"
 #include "zetta/cloud/provisioner.hpp"
+#include "zetta/api/mysql_protocol.hpp"
+#include "zetta/connect/mysql_client.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/consent.hpp"
@@ -486,6 +488,94 @@ TEST_F(ConsentFixture, AnInlineConnectorTokenNeverAppearsInTheChallenge) {
     const auto pending = node.consent_ledger().pending();
     ASSERT_EQ(pending.size(), 1u);
     EXPECT_EQ(pending[0]->input.at("connector").at("token"), token);
+}
+
+// --- MySQL (#895): the same per-call judgement, and a MySQL-shaped catalog ------
+
+TEST_F(ConsentFixture, ALoopbackMysqlSourceRunsUngatedAndARemoteOneIsNamed) {
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "local-mysql"},
+                      {"connector",
+                       {{"type", "mysql"},
+                        {"host", "127.0.0.1"},
+                        {"user", "reader"},
+                        {"token", "pw"},
+                        {"sslmode", "disable"}}}})
+                    .ok);
+    auto local = call("create_dataset_from_query",
+                      {{"connection", "local-mysql"}, {"query", "SELECT 1"}});
+    EXPECT_NE(local.error.code, "consent_required") << local.error.message;
+
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "shop"},
+                      {"connector",
+                       {{"type", "mysql"},
+                        {"host", "db.example.com"},
+                        {"port", "3306"},
+                        {"user", "reader"},
+                        {"token", "pw"},
+                        {"database", "shop"}}}})
+                    .ok);
+    auto remote = call("create_dataset_from_query",
+                       {{"connection", "shop"}, {"query", "SELECT 1"}});
+    ASSERT_EQ(remote.error.code, "consent_required");
+    const std::string summary = remote.error.details.at("action").value("summary", "");
+    EXPECT_NE(summary.find("mysql db.example.com:3306/shop"), std::string::npos) << summary;
+}
+
+// list_source_tables builds one information_schema query for every connector;
+// MySQL 8 answers it with UPPER-CASE column names unless aliased, keeps its own
+// catalog in mysql / performance_schema / sys, and treats a backslash in a
+// literal as an escape. A recording runner stands in for the server.
+TEST_F(ConsentFixture, ListSourceTablesSpeaksMysqlsCatalog) {
+    std::vector<std::string> statements;
+    zetta::connect::install_mysql_query_runner(
+        [&statements](const zetta::connect::ConnectorConfig&, const std::string& sql,
+                      std::size_t) {
+            statements.push_back(sql);
+            zetta::connect::ConnectorResult result;
+            if (sql.find("information_schema.columns") != std::string::npos) {
+                result.data.columns = {"table_schema", "table_name", "column_name",
+                                       "data_type", "is_nullable", "ordinal_position"};
+                result.data.rows.push_back({{"table_schema", "shop"},
+                                            {"table_name", "orders"},
+                                            {"column_name", "id"},
+                                            {"data_type", "int"},
+                                            {"is_nullable", "NO"},
+                                            {"ordinal_position", 1}});
+            } else {
+                result.data.columns = {"table_schema", "table_name", "table_type"};
+                result.data.rows.push_back({{"table_schema", "shop"},
+                                            {"table_name", "orders"},
+                                            {"table_type", "BASE TABLE"}});
+            }
+            return result;
+        });
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "local-shop"},
+                      {"connector",
+                       {{"type", "mysql"},
+                        {"host", "127.0.0.1"},
+                        {"user", "reader"},
+                        {"token", "pw"},
+                        {"sslmode", "disable"}}}})
+                    .ok);
+    auto listed = call("list_source_tables",
+                       {{"connection", "local-shop"}, {"schema", "sh\\op"}});
+    zetta::connect::install_mysql_protocol();  // restore the real driver
+
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(statements.size(), 2u);
+    EXPECT_NE(statements[0].find("t.table_schema AS table_schema"), std::string::npos)
+        << statements[0];
+    EXPECT_NE(statements[0].find("'performance_schema'"), std::string::npos);
+    EXPECT_NE(statements[0].find("'sh\\\\op'"), std::string::npos)
+        << "a backslash must be doubled for MySQL: " << statements[0];
+    EXPECT_NE(statements[1].find("c.data_type AS data_type"), std::string::npos)
+        << statements[1];
+    ASSERT_EQ(listed.value.at("tables").size(), 1u);
+    EXPECT_EQ(listed.value.at("tables")[0].at("table"), "orders");
+    EXPECT_EQ(listed.value.at("tables")[0].at("columns")[0].at("column"), "id");
 }
 
 // --- Consent enforcement is OFF by default (#995) -----------------------------

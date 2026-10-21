@@ -4654,7 +4654,7 @@
                 "properties": {
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres or MySQL password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL: host+user).",
                     "properties": {
                       "account": {
                         "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
@@ -4670,15 +4670,15 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database (both connectors).",
+                        "description": "Session database (Snowflake, Postgres; MySQL's optional default schema).",
                         "type": "string"
                       },
                       "host": {
-                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "description": "Postgres or MySQL host, e.g. 127.0.0.1.",
                         "type": "string"
                       },
                       "port": {
-                        "description": "Postgres port (default 5432).",
+                        "description": "Postgres or MySQL port (default 5432 / 3306).",
                         "type": "string"
                       },
                       "role": {
@@ -4686,27 +4686,28 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema (both connectors).",
+                        "description": "Session schema (Snowflake, Postgres).",
                         "type": "string"
                       },
                       "sslmode": {
-                        "description": "Postgres sslmode (disable / require / verify-full / …).",
+                        "description": "Postgres sslmode (disable / require / verify-full / …). MySQL: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres or MySQL password. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
                         "description": "Which connector implementation to use.",
                         "enum": [
                           "snowflake",
-                          "postgres"
+                          "postgres",
+                          "mysql"
                         ],
                         "type": "string"
                       },
                       "user": {
-                        "description": "Postgres role/user.",
+                        "description": "Postgres role / MySQL user.",
                         "type": "string"
                       },
                       "warehouse": {
@@ -4834,7 +4835,7 @@
     },
     "/v1/create_dataset_from_query": {
       "post": {
-        "description": "Run a read-only query against an external source (Snowflake or Postgres) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run. A remote source is reached over the network with your credentials, so it is consent-gated when the node enforces governance; a loopback Postgres touches no cloud and runs directly (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
+        "description": "Run a read-only query against an external source (Snowflake, Postgres or MySQL) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run (MySQL also admits SHOW). A remote source is reached over the network with your credentials, so it is consent-gated when the node enforces governance; a loopback Postgres or MySQL touches no cloud and runs directly (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "create_dataset_from_query",
         "requestBody": {
           "content": {
@@ -4849,7 +4850,7 @@
                   },
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres or MySQL password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL: host+user).",
                     "properties": {
                       "account": {
                         "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
@@ -4865,15 +4866,15 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database (both connectors).",
+                        "description": "Session database (Snowflake, Postgres; MySQL's optional default schema).",
                         "type": "string"
                       },
                       "host": {
-                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "description": "Postgres or MySQL host, e.g. 127.0.0.1.",
                         "type": "string"
                       },
                       "port": {
-                        "description": "Postgres port (default 5432).",
+                        "description": "Postgres or MySQL port (default 5432 / 3306).",
                         "type": "string"
                       },
                       "role": {
@@ -4881,27 +4882,28 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema (both connectors).",
+                        "description": "Session schema (Snowflake, Postgres).",
                         "type": "string"
                       },
                       "sslmode": {
-                        "description": "Postgres sslmode (disable / require / verify-full / …).",
+                        "description": "Postgres sslmode (disable / require / verify-full / …). MySQL: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres or MySQL password. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
                         "description": "Which connector implementation to use.",
                         "enum": [
                           "snowflake",
-                          "postgres"
+                          "postgres",
+                          "mysql"
                         ],
                         "type": "string"
                       },
                       "user": {
-                        "description": "Postgres role/user.",
+                        "description": "Postgres role / MySQL user.",
                         "type": "string"
                       },
                       "warehouse": {
@@ -13156,7 +13158,7 @@
                           "type": "integer"
                         },
                         "source_format": {
-                          "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                          "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake, mysql) or rows; empty for a table not loaded from a source (SQL, engine results)",
                           "type": "string"
                         },
                         "table_id": {
@@ -22268,7 +22270,7 @@
                                     "type": "integer"
                                   },
                                   "source_format": {
-                                    "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                                    "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake, mysql) or rows; empty for a table not loaded from a source (SQL, engine results)",
                                     "type": "string"
                                   },
                                   "table_id": {
@@ -22346,7 +22348,7 @@
                                     "type": "integer"
                                   },
                                   "source_format": {
-                                    "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                                    "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake, mysql) or rows; empty for a table not loaded from a source (SQL, engine results)",
                                     "type": "string"
                                   },
                                   "table_id": {
@@ -26748,7 +26750,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": false,
-                  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+                  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres or MySQL password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL: host+user).",
                   "properties": {
                     "account": {
                       "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
@@ -26764,15 +26766,15 @@
                       "type": "string"
                     },
                     "database": {
-                      "description": "Session database (both connectors).",
+                      "description": "Session database (Snowflake, Postgres; MySQL's optional default schema).",
                       "type": "string"
                     },
                     "host": {
-                      "description": "Postgres host, e.g. 127.0.0.1.",
+                      "description": "Postgres or MySQL host, e.g. 127.0.0.1.",
                       "type": "string"
                     },
                     "port": {
-                      "description": "Postgres port (default 5432).",
+                      "description": "Postgres or MySQL port (default 5432 / 3306).",
                       "type": "string"
                     },
                     "role": {
@@ -26780,27 +26782,28 @@
                       "type": "string"
                     },
                     "schema": {
-                      "description": "Session schema (both connectors).",
+                      "description": "Session schema (Snowflake, Postgres).",
                       "type": "string"
                     },
                     "sslmode": {
-                      "description": "Postgres sslmode (disable / require / verify-full / …).",
+                      "description": "Postgres sslmode (disable / require / verify-full / …). MySQL: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named).",
                       "type": "string"
                     },
                     "token": {
-                      "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
+                      "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres or MySQL password. Never serialized back out.",
                       "type": "string"
                     },
                     "type": {
                       "description": "Which connector implementation to use.",
                       "enum": [
                         "snowflake",
-                        "postgres"
+                        "postgres",
+                        "mysql"
                       ],
                       "type": "string"
                     },
                     "user": {
-                      "description": "Postgres role/user.",
+                      "description": "Postgres role / MySQL user.",
                       "type": "string"
                     },
                     "warehouse": {
@@ -26816,7 +26819,7 @@
                 }
               }
             },
-            "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+            "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres or MySQL password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL: host+user).",
             "in": "query",
             "name": "connector",
             "required": false
