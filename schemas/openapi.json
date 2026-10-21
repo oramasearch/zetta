@@ -907,7 +907,7 @@
     },
     "/v1/analyze_dataset": {
       "get": {
-        "description": "Read a landed dataset's semantic types, evidence, distributions, grain, candidate keys, same-database joins, and leakage candidates. No side effects. Requires api:query.",
+        "description": "Read a landed dataset's semantic types, evidence, distributions, grain, candidate keys, same-database joins, and leakage candidates. Reads as the caller: only tables, columns and rows its own SQL could read; a column it may not read is omitted (#1396). No side effects. Requires api:query.",
         "operationId": "analyze_dataset",
         "parameters": [
           {
@@ -31520,7 +31520,7 @@
     },
     "/v1/plan_features": {
       "get": {
-        "description": "Read a methodology-specific feature and exclusion plan from dataset analysis, or an explicit transform_required proposal. No side effects and no transform is applied. Requires api:query.",
+        "description": "Read a methodology-specific feature and exclusion plan from dataset analysis, or an explicit transform_required proposal, built only from what the caller may read (#1396). No side effects and no transform is applied. Requires api:query.",
         "operationId": "plan_features",
         "parameters": [
           {

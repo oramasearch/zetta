@@ -163,6 +163,30 @@ lookup, degraded-table refusal, empty-table refusal, and sampling behavior. The
 default sampler reads through `query::QueryService`; partition-only tables therefore
 use distributed scatter/gather rather than a local partial read.
 
+### Read as the caller (#1300, #1396)
+
+`analyze_dataset` and `plan_features` call `analyze_dataset_as` / `plan_features_as`
+with the caller's identity (`AnalysisReader`), never the trusted local session:
+
+- **Tables.** The table named, and every same-database table sampled for
+  `joinable_tables`, must be one the caller holds `sql:read` on (`Node::column_scope`
+  with `{data, read}`, the check the SQL executor makes). A table it may not read answers
+  `dataset: no table 'db.table'`, the answer for a table that does not exist, and the
+  near misses offered are only tables it may read. A bare `dataset` name resolves only
+  among readable tables, so a hidden table neither matches nor makes the name ambiguous.
+- **Rows.** The sample is read by `caller_dataset_sampler`: a `SELECT` through the query
+  service as the caller, so row security admits only the caller's rows, and
+  `sampled_rows` counts those. `rows` is the table's total from the catalog, as
+  `get_dataset` reports it.
+- **Columns.** A column the caller may not read is **omitted** from `columns` and stripped
+  from every sampled row before any rule runs, so it is not named, counted, used for the
+  grain, keys, joins or leakage, or planned as a feature. A `label` or `time_column`
+  naming one is treated as a name that matches no column. The readable columns are
+  sampled exactly as for a full-access caller, so their statistics do not move.
+
+Runs still resolve their dataset with the trusted sampler: what a run's steps may read is
+the run principal's authority (#843), not this capability's.
+
 Sampling currently reads through the query layer and keeps the first requested rows
 because the SQL subset has no `LIMIT`. Inference is evidence from that sample, not a
 claim about unobserved rows. Analysis is a value result only: it creates no durable

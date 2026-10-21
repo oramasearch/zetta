@@ -52,6 +52,7 @@ add_executable(zetta-tests
   api/test_storage_capabilities.cpp
   api/test_object_routes.cpp
   api/test_row_security_api.cpp
+  api/test_analysis_access.cpp
   api/test_web_ui_forms.cpp
   api/test_web_blob_authz.cpp
   api/test_web_ui_studio.cpp

@@ -905,9 +905,15 @@ DatasetContractResult infer_dataset_contract(const std::vector<std::string>& col
 }
 
 DatasetSampler default_dataset_sampler(Node& node, const zetta::cluster::Cluster* cluster) {
-    return [&node, cluster](const std::string& database, const std::string& table,
-                            std::size_t limit, std::string& error) {
-        zetta::query::QueryService service(node, cluster);
+    return caller_dataset_sampler(node, cluster, {}, false);
+}
+
+DatasetSampler caller_dataset_sampler(Node& node, const zetta::cluster::Cluster* cluster,
+                                      std::string acting_key, bool acting_is_user) {
+    return [&node, cluster, acting_key = std::move(acting_key), acting_is_user](
+               const std::string& database, const std::string& table, std::size_t limit,
+               std::string& error) {
+        zetta::query::QueryService service(node, cluster, acting_key, acting_is_user);
         const zetta::query::QueryService::Outcome outcome =
             service.run("SELECT * FROM " + database + "." + table + limit_clause(limit),
                         database);
