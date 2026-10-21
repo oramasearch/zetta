@@ -56,8 +56,11 @@ Project needs it as a dataset: `create_connection`, `list_source_tables`, then
   guard also refuses any word that starts a write or changes the session
   (`INSERT`, `UPDATE`, `DELETE`, `REPLACE INTO`, `CREATE`, `DROP`, `ALTER`,
   `ATTACH`, `PRAGMA`, `COPY`, `INSTALL`, `LOAD`, `SET`, `BEGIN`, `COMMIT`, …)
-  wherever it appears outside a `'…'` string, a `"…"` identifier or a comment.
-  Only those two quote forms are skipped (all three engines share them); a column
+  wherever it appears outside a `'…'` string, a `"…"` identifier or a comment
+  (`src/core/connect/write_words.hpp`). Only those two quote forms are skipped
+  (all three engines share them), and the statement is scanned both with and
+  without backslash escapes (DuckDB's `E'…'` strings take them), so a quote the
+  scan reads differently from the engine can only refuse more; a column
   that happens to be named `load` or `set` must be quoted (`"load"`). The service
   is not asked to enforce anything further: none of the three has a read-only
   request mode. lake-duckdb's own lockdown also refuses file, network and
@@ -70,7 +73,7 @@ Project needs it as a dataset: `create_connection`, `list_source_tables`, then
   `max_rows` to 10,000 or fewer to take the first rows. Paging by
   `LIMIT`/`OFFSET` is deliberately not done: without a total order it skips and
   repeats rows. Pulling more than 10,000 rows needs a paged or streamed answer
-  from the services (filed; see *Status*).
+  from the services: [#1382](https://github.com/oramasearch/zetta/issues/1382).
 - **Partitioning:** none. One answer per query, so ingest takes the single-shot
   path (`run_single_shot_connector_ingest`), landing the same dataset shape as
   every other connector.
@@ -121,7 +124,7 @@ ids in a warehouse, CRM or billing system; email addresses to CRM contacts.
 - **A 401 can surface as a reset.** The services answer a wrong token with `401`
   and close the connection without reading the body; on some runs the client sees
   the reset before the answer and reports *could not reach* instead of *refused
-  the token*.
+  the token* ([#1383](https://github.com/oramasearch/zetta/issues/1383)).
 - **Polars datasets are per worker** in lake v1: with several workers each holds
   its own datasets, and the service lists and queries whichever worker answered.
 
@@ -130,7 +133,7 @@ ids in a warehouse, CRM or billing system; email addresses to CRM contacts.
 **shipped** — the connector, its read-only guard, the catalog for all three, and
 consent, unit-tested against a fake transport
 (`tests/connect/test_lake_sql_connector.cpp`) and run live against a local
-`lake-sqlite` and `lake-duckdb` built from their repositories (the guarded
+`lake-sqlite`, `lake-duckdb` and `lake-polars` built from their repositories (the guarded
 `LakeSqlLive` test: `ZETTA_LAKE_SQL_TEST_ENDPOINT`, `_TOKEN`, `_TYPE`, `_TABLE`),
 plus an end-to-end pull through a running node's REST API. lake's side — mapping a
 service's credential into `create_connection` and lifting the kinds on the Data

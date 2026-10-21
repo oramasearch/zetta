@@ -1,11 +1,11 @@
 #include "lake_sql_protocol.hpp"
 
+#include "write_words.hpp"
+
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <charconv>
 #include <utility>
-#include <vector>
 
 namespace zetta::connect::lake_sql {
 namespace {
@@ -17,73 +17,6 @@ std::string lowered(std::string_view text) {
     });
     return out;
 }
-
-bool is_word_start(char character) {
-    return std::isalpha(static_cast<unsigned char>(character)) || character == '_';
-}
-
-bool is_word_char(char character) {
-    return std::isalnum(static_cast<unsigned char>(character)) || character == '_' ||
-           character == '$';
-}
-
-// The bare words of `sql`, lower-cased, in order — everything outside a
-// '…' string, a "…" identifier, a `--` comment and a `/* … */` comment.
-// Only the two quote forms all three engines share are skipped: a form one
-// engine does not treat as a quote (backticks, brackets, $$) is scanned as
-// code, so a disagreement can only refuse more, never admit more.
-std::vector<std::string> bare_words(std::string_view sql) {
-    std::vector<std::string> words;
-    std::size_t index = 0;
-    while (index < sql.size()) {
-        const char character = sql[index];
-        if (character == '\'' || character == '"') {
-            // A doubled quote inside is an escaped quote, not the end.
-            ++index;
-            while (index < sql.size()) {
-                if (sql[index] == character) {
-                    if (index + 1 < sql.size() && sql[index + 1] == character) {
-                        index += 2;
-                        continue;
-                    }
-                    break;
-                }
-                ++index;
-            }
-            ++index;
-            continue;
-        }
-        if (sql.substr(index).starts_with("--")) {
-            const std::size_t line_end = sql.find('\n', index);
-            index = line_end == std::string_view::npos ? sql.size() : line_end + 1;
-            continue;
-        }
-        if (sql.substr(index).starts_with("/*")) {
-            const std::size_t close = sql.find("*/", index + 2);
-            index = close == std::string_view::npos ? sql.size() : close + 2;
-            continue;
-        }
-        if (is_word_start(character) &&
-            (index == 0 || !is_word_char(sql[index - 1]))) {
-            std::size_t end = index;
-            while (end < sql.size() && is_word_char(sql[end])) ++end;
-            words.push_back(lowered(sql.substr(index, end - index)));
-            index = end;
-            continue;
-        }
-        ++index;
-    }
-    return words;
-}
-
-// Words that start a write, change the schema, touch files or extensions, or
-// change the session or transaction, in SQLite, DuckDB or Polars SQL.
-constexpr std::array<std::string_view, 30> kRefusedWords = {
-    "insert",  "update",   "delete",     "merge",    "upsert",  "create",
-    "drop",    "alter",    "truncate",   "attach",   "detach",  "pragma",
-    "vacuum",  "reindex",  "analyze",    "copy",     "install", "load",
-    "export",  "import",   "call",       "checkpoint", "set",   "reset",
-    "begin",   "commit",   "rollback",   "savepoint", "grant",  "revoke"};
 
 bool parse_port(std::string_view text) {
     unsigned port = 0;
@@ -185,22 +118,7 @@ std::optional<Endpoint> parse_endpoint(std::string_view endpoint, std::string* w
 }
 
 std::string query_rejection(const std::string& sql) {
-    const std::vector<std::string> words = bare_words(sql);
-    for (std::size_t index = 0; index < words.size(); ++index) {
-        const std::string& word = words[index];
-        const bool refused =
-            std::ranges::find(kRefusedWords, word) != kRefusedWords.end() ||
-            // `replace(…)` is a string function; `REPLACE INTO` is a write.
-            (word == "replace" && index + 1 < words.size() &&
-             words[index + 1] == "into");
-        if (refused) {
-            return "'" + word +
-                   "' may not appear in a query through a lake service connector "
-                   "(it writes or changes the session); only a read-only SELECT "
-                   "may run — quote an identifier that has this name";
-        }
-    }
-    return {};
+    return write_word_rejection(sql, WriteWordDialect::Sql, "a lake service connector");
 }
 
 nlohmann::json cell(const nlohmann::json& raw) {

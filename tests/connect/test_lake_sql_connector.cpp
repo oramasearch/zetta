@@ -139,7 +139,12 @@ TEST(LakeSqlGuard, RefusesWritesAndSessionChangesWhereverTheyHide) {
           "SELECT 1 FROM t WHERE 'a' = 'a' AND (SELECT 1) = 1 UNION SELECT 1 FROM "
           "(SELECT 1) x; COPY t TO 'f'",
           "WITH x AS (SELECT 1) INSTALL httpfs", "with \"q\" as (select 1) Delete from t",
-          "SET memory_limit = '1TB'", ""}) {
+          "SET memory_limit = '1TB'", "",
+          // DuckDB's E'…' strings take backslash escapes: E'a\'' is one string,
+          // so the DELETE after it is code, whichever way the quote is read.
+          "WITH x AS (SELECT E'a\\'') DELETE FROM t WHERE 'b' = 'b'",
+          // `--1` is not a comment to every engine; what follows is scanned.
+          "WITH x AS (SELECT 1 --1 ) DELETE FROM t\n"}) {
         EXPECT_NE(zetta::connect::connector_query_rejection(config, sql), "") << sql;
     }
 }

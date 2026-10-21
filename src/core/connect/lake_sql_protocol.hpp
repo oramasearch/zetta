@@ -55,7 +55,7 @@ std::optional<Endpoint> parse_endpoint(std::string_view endpoint, std::string* w
 // every `;`-separated statement, and SQLite and DuckDB accept a WITH that feeds
 // an INSERT, UPDATE or DELETE), so any word that starts a write or changes the
 // session is refused wherever it appears outside a string literal, a quoted
-// identifier or a comment. Returns a reason, or empty when accepted.
+// identifier or a comment (write_words.hpp). Returns a reason, or empty.
 std::string query_rejection(const std::string& sql);
 
 // Coerce one answered cell to what a dataset stores: a scalar passes through,
