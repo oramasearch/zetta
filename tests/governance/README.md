@@ -3,6 +3,9 @@
 Role tests keep the permission vocabulary and built-in mappings synchronized.
 They also keep `studies:delete` distinct from Pipeline management and study
 promotion (#1158).
+`BoundedRoles` in `test_roles.cpp` covers bounded role management (#761): a
+`roles:manage` holder grants only what it holds (on the whole object, for a
+scoped grant), touches no role above it, and nobody changes or drops a built-in.
 Pub/sub capability tests additionally exercise the topic/event/subscription scope
 matrix. See [governance](../../docs/governance/README.md) and
 [CRUD](../../docs/pubsub/crud.md).
