@@ -147,7 +147,7 @@ TEST_F(SystemCatalogAccess, TheNodesInternalsAreAdminOnly) {
     for (const char* sql :
          {"SELECT * FROM system.usage;", "SELECT * FROM system.spans;",
           "SELECT * FROM system.memory;", "SELECT * FROM system.large_objects;",
-          "SELECT * FROM system.deployments;", "SELECT count(*) FROM system.users;",
+          "SELECT count(*) FROM system.users;",
           "SELECT * FROM system.users WHERE name = 'rita';",
           "SELECT * FROM system.zetta_principals;"}) {
         EXPECT_TRUE(refused(as(reader).run(sql, ""))) << sql;
@@ -245,10 +245,11 @@ TEST_F(SystemCatalogAccess, EachPersonReadsOnlyTheirOwnAuditRows) {
     }
 }
 
-// A table that mirrors a read capability follows that capability's scope: a user
+// A table that mirrors a capability follows that capability's scope: a user
 // granted only the sql tool cannot read system.models, one also granted
-// list_models can, and system.connections also needs list_connections' own
-// orchestration right, which the built-in reader does not hold.
+// list_models can, and system.connections and system.deployments also need
+// list_connections' and deploy's own orchestration rights, which the built-in
+// reader does not hold.
 TEST_F(SystemCatalogAccess, AToolTableFollowsTheToolsOwnScope) {
     const std::string ana = analyst({"sql"});
     const auto models = as(ana).run("SELECT * FROM system.models;", "");
@@ -271,6 +272,9 @@ TEST_F(SystemCatalogAccess, AToolTableFollowsTheToolsOwnScope) {
     }
     EXPECT_TRUE(refused(as(reader).run("SELECT * FROM system.connections;", "")));
     EXPECT_TRUE(refused(as(reader).run("SELECT * FROM system.pubsub_topics;", "")));
+    // system.deployments follows deploy, which writes it: orchestration:deploy.
+    EXPECT_TRUE(refused(as(reader).run("SELECT * FROM system.deployments;", "")));
+    EXPECT_TRUE(as(owner).run("SELECT * FROM system.deployments;", "").ok());
     EXPECT_TRUE(as(owner).run("SELECT * FROM system.connections;", "").ok());
 }
 

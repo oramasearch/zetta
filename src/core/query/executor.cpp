@@ -199,9 +199,10 @@ constexpr std::string_view kTestCasesTable = "test_cases";
 // admin (cluster:admin). For everyone else:
 //  - Public: static product metadata with no workspace data in it (this
 //    catalog, the test-suite catalog, the provider catalog).
-//  - Tool: the same rows a read capability serves, so SQL is not a way around
-//    the tool's own scope. Readable by whoever may call `tool` (mcp:call on it,
-//    plus the capability's own right when that is more than mcp:call).
+//  - Tool: the rows a capability serves (a list_* read) or writes (deploy's
+//    placements), so SQL is not a way around the tool's own scope. Readable by
+//    whoever may call `tool` (mcp:call on it, plus the capability's own right
+//    when that is more than mcp:call).
 //  - Datasets: rows narrowed to the tables the caller holds sql:read on
 //    (system.datasets, and the partitions of those tables).
 //  - OwnRows: rows narrowed to the caller's own actions (system.audit,
@@ -274,7 +275,8 @@ constexpr std::array kSystemTableCatalog = {
                     SystemTableAccess::Admin},
     SystemTableInfo{kDeploymentsTable,
                     "recorded graph-to-target placements",
-                    SystemTableAccess::Admin},
+                    SystemTableAccess::Tool, "deploy",
+                    zetta::governance::CapabilityDomain::Orchestration, "deploy"},
     SystemTableInfo{kIndexesTable,
                     "the index registry: one row per registered index over a "
                     "table",
