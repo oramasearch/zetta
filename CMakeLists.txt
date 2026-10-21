@@ -707,6 +707,7 @@ add_library(zetta-core STATIC
   src/core/data/import.cpp
   src/core/data/virtual_table.cpp
   src/core/data/record_store.cpp
+  src/core/data/entity_key_table.cpp
   src/core/network/app_credential.cpp
   src/core/network/records.cpp
   src/core/data/record_log.cpp

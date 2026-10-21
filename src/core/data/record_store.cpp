@@ -897,6 +897,53 @@ void RecordStore::scan(const std::string& collection, const std::string& from_ke
                     });
 }
 
+bool RecordStore::put_internal(const std::string& collection, const std::string& key,
+                               std::string value) {
+    if (!valid_stored_collection(collection) || valid_collection_name(collection) ||
+        !valid_key(key)) {
+        return false;
+    }
+    const std::int64_t now = now_ms();
+    const RecordLog::Written written = log_->update(
+        collection, key,
+        [&](const StoredRecord* existing) -> std::optional<StoredRecord> {
+            StoredRecord next;
+            next.revision = std::max(existing ? existing->revision + 1 : 1, now_micros());
+            next.updated_ms = now;
+            next.value = std::move(value);
+            return next;
+        },
+        /*with_value=*/true, /*sync=*/true);
+    if (!written.record || !written.durable) return false;
+    RecordOutcome outcome;
+    replicate(apply_payload(*written.record), {}, outcome);
+    return true;
+}
+
+bool RecordStore::remove_internal(const std::string& collection, const std::string& key) {
+    if (!valid_stored_collection(collection) || valid_collection_name(collection) ||
+        !valid_key(key)) {
+        return false;
+    }
+    const std::int64_t now = now_ms();
+    const RecordLog::Written written = log_->update(
+        collection, key,
+        [&](const StoredRecord* existing) -> std::optional<StoredRecord> {
+            if (!existing || existing->deleted) return std::nullopt;
+            StoredRecord next;
+            next.revision = std::max(existing->revision + 1, now_micros());
+            next.updated_ms = now;
+            next.deleted = true;
+            return next;
+        },
+        /*with_value=*/false, /*sync=*/true);
+    if (!written.record) return true;  // nothing to remove
+    if (!written.durable) return false;
+    RecordOutcome outcome;
+    replicate(apply_payload(*written.record), {}, outcome);
+    return true;
+}
+
 std::size_t RecordStore::pull_from(const std::string& peer) {
     zetta::cluster::Cluster* cluster = cluster_.load();
     if (!cluster) return 0;

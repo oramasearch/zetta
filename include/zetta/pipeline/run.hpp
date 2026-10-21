@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -104,8 +105,10 @@ struct RunValue {
     // says where finished results came from; this says what an unfinished run
     // is reading, which delete_dataset checks.
     std::vector<TableRead> reads;
-    // Empty for integer entities. Text-backed runs persist the deterministic
-    // derived-id map so their intermediate numeric keys remain auditable.
+    // Empty for integer entities. Text-backed runs keep the deterministic
+    // derived-id map so their intermediate numeric keys remain auditable: a
+    // reference to its rows in the `_entity_keys` table (#1255), or inline
+    // `{column, entries}` in records written before it (and on a standalone node).
     nlohmann::json entity_key_mapping = nlohmann::json::object();
     // Frozen input choices, not a fresh analysis at report time (#1062).
     nlohmann::json features = {{"used", nlohmann::json::array()},
@@ -190,8 +193,16 @@ public:
     // Record more tables the run reads (zetta#1258); captures only on change.
     void add_reads(const std::vector<TableRead>& reads);
     void set_trace_id(std::string trace_id);  // the run's trace (#640)
+    // A text entity-key mapping, inline `{column, entries}` or a reference to
+    // its table (#1255). With an entity-key store (Node sets one), the inline
+    // form is written to the table first and the run keeps the reference.
     bool set_entity_key_mapping(nlohmann::json mapping,
                                 std::string* error = nullptr);
+    // Turns a mapping into what the run stores: given the owner ("run:<id>")
+    // and the mapping, it returns the reference (or the mapping unchanged).
+    using EntityKeyStore =
+        std::function<nlohmann::json(std::string_view owner, nlohmann::json mapping)>;
+    void set_entity_key_store(EntityKeyStore store) { entity_key_store_ = std::move(store); }
     bool set_features(nlohmann::json features, std::string* error = nullptr);
     void suppress_metrics_for_privacy();
 
@@ -263,6 +274,7 @@ private:
     std::chrono::steady_clock::time_point last_capture_{};
     std::filesystem::path dir_;
     zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
+    EntityKeyStore entity_key_store_;                    // empty: mappings stay inline
 };
 
 }  // namespace zetta::pipeline

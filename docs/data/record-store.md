@@ -103,6 +103,13 @@ gossip of record bodies.
 every node, so each node removes its own copies from an expiry queue every second; a revision
 check makes a removal lose to a write that landed since the key was queued.
 
+**Engine-internal collections.** A collection whose name starts with `_` belongs to the engine;
+the API refuses such names, so no caller can read or write one. The time series folds its buckets
+into `_metric.<name>` with `fold` (this node only, replicated by anti-entropy). The text entity-key
+table writes `_entity_keys` rows with `put_internal` and `remove_internal`: fsynced on the writing
+node and sent to every live peer at once, with anti-entropy for a peer that missed them. Each row
+has one writer, so no owner orders them ([entity-key-table.md](entity-key-table.md), #1255).
+
 ## API
 
 Every operation is one registry capability: REST route, MCP tool and OpenAPI operation. Writes

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -181,8 +182,16 @@ public:
     // + persist. The weights body is untouched.
     void set_metrics(nlohmann::json metrics);
     // Update the free-form input contract metadata. Used after training when a
-    // table-backed run must attach its text entity-key map to the Model.
+    // table-backed run must attach its text entity-key map to the Model. With an
+    // entity-key store (Node sets one), an inline `entity_key_mapping` is written
+    // to the entity-key table and the model keeps the reference (#1255).
     void set_feature_schema(nlohmann::json feature_schema);
+    // Turns a mapping into what the model stores: given the owner
+    // ("model:<id>") and the mapping, it returns the reference (or the mapping
+    // unchanged).
+    using EntityKeyStore =
+        std::function<nlohmann::json(std::string_view owner, nlohmann::json mapping)>;
+    void set_entity_key_store(EntityKeyStore store) { entity_key_store_ = std::move(store); }
 
     // Refresh denormalized lineage after creation, startup backfill, or a
     // rename. `run` remains populated for wire compatibility.
@@ -209,6 +218,7 @@ private:
     ModelValue value_;
     std::filesystem::path dir_;
     zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
+    EntityKeyStore entity_key_store_;                    // empty: mappings stay inline
 };
 
 }  // namespace zetta::ml

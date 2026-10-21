@@ -78,6 +78,7 @@ add_executable(zetta-tests
   data/test_database.cpp
   data/test_replication_strategy.cpp
   data/test_record_store.cpp
+  data/test_entity_key_table.cpp
   network/test_network_records.cpp
   data/test_metric_store.cpp
   data/test_record_soak.cpp

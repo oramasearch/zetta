@@ -12,6 +12,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -69,6 +70,7 @@ namespace zetta::compute { class CoordinatedLaunchListener; }
 
 namespace zetta::cluster { class ReplicationManager; }
 namespace zetta::pubsub { class PubSub; }
+namespace zetta::data { struct EntityKeyMapping; }
 
 
 
@@ -534,6 +536,18 @@ public:
     // replicated catalogue, so both are null on a standalone node. Thread-safe:
     // the registry calls them from its blocking pool.
     zetta::data::RecordStore* record_store() { return record_store_.get(); }
+
+    // Text entity-key mappings (#1255, docs/data/entity-key-table.md). A Run or
+    // Model record references its derived-id map instead of carrying it:
+    // `entity_key_reference` writes the entries as `owner`'s rows of the
+    // `_entity_keys` table (owner "run:<id>" or "model:<id>") and returns the
+    // reference to store. A reference to another owner's rows is copied, so each
+    // run or model owns what it references. Without a record store (a standalone
+    // node), or if a row cannot be written, the mapping is returned as it was.
+    // `resolve_entity_key_mapping` reads either form back. Thread-safe.
+    nlohmann::json entity_key_reference(std::string_view owner, nlohmann::json mapping);
+    std::shared_ptr<const zetta::data::EntityKeyMapping> resolve_entity_key_mapping(
+        const nlohmann::json& mapping, std::string* error = nullptr) const;
 
     // How the replicated catalogue's once-a-second save is behaving: how many
     // saves ran, the last one's duration and size, and whether one is running

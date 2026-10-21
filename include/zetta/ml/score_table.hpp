@@ -94,9 +94,13 @@ TableScoreResult score_table(Node& node, const Model& model, const std::string& 
 // (#948 step 7). The rows are JSON objects keyed by the model's feature column names;
 // a row missing one of them fails rather than scoring against a zero-filled matrix.
 // `entities[i]` labels `rows[i]`; when empty the rows are labelled by their index.
+// `entity_keys` restores text ids in the answer: the caller resolves the model's
+// mapping (Node::resolve_entity_key_mapping, which reads the entity-key table,
+// #1255); when it is null only an inline mapping on the model is read.
 TableScoreResult score_rows(const Model& model, const std::vector<nlohmann::json>& rows,
                             const std::vector<std::int64_t>& entities = {},
-                            std::size_t top_k = 0);
+                            std::size_t top_k = 0,
+                            std::shared_ptr<const data::EntityKeyMapping> entity_keys = {});
 
 // The ordered feature columns `model` was trained on, read from its
 // `feature_schema.features`. Empty when the model records none — which makes it

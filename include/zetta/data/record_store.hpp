@@ -199,6 +199,13 @@ public:
               std::optional<std::int64_t> expires_ms);
     void scan(const std::string& collection, const std::string& from_key,
               const std::function<bool(const std::string& key, const std::string& value)>& visit) const;
+    // Engine-internal rows written once by their one writer, such as a text
+    // entity-key table (#1255): `put_internal` stores the value durably on this
+    // node and sends it to every live peer, `remove_internal` does the same with
+    // a deletion. A peer that misses either catches up by anti-entropy. False
+    // when this node's log could not be written or synced.
+    bool put_internal(const std::string& collection, const std::string& key, std::string value);
+    bool remove_internal(const std::string& collection, const std::string& key);
 
     // The node that orders writes of (collection, key) in this node's view.
     std::string owner_of(const std::string& collection, const std::string& key) const;
