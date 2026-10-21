@@ -2607,6 +2607,24 @@ QueryResult Executor::execute(const Statement& stmt,
         }
         return std::nullopt;
     };
+    // A data-changing statement on a table the caller holds no right on at all
+    // is refused BEFORE the table is looked up (#252), so "permission denied"
+    // answers the same whether db.table exists or not: the error text is never
+    // an oracle for the names of tables a caller cannot see. A caller with some
+    // right on it still learns that it does not exist. An unqualified name with
+    // no default database falls through to the lookup's own explanation.
+    const auto refuse_unseen_table =
+        [&](const zetta::governance::Operation& operation,
+            std::string_view permission,
+            const TableRef& ref) -> std::optional<QueryResult> {
+        const std::string database = db_name(ref);
+        if (database.empty()) return std::nullopt;
+        if (!change_scope(operation, database, ref.table).table_allowed) {
+            return deny("permission denied: no " + std::string(permission) +
+                        " grant on \"" + database + "." + ref.table + "\"");
+        }
+        return std::nullopt;
+    };
 
     QueryResult result = std::visit(
         overloaded{
@@ -2788,6 +2806,10 @@ QueryResult Executor::execute(const Statement& stmt,
                                  "\" is read-only — durable writes go to the base "
                                  "entity's own path");
                 }
+                if (auto refused = refuse_unseen_table(kSqlWrite, "sql:write",
+                                                       s.table)) {
+                    return std::move(*refused);
+                }
                 auto db = resolve_db(s.table);
                 if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
@@ -2857,6 +2879,10 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("virtual table \"" + s.table.table +
                                  "\" is read-only — durable writes go to the base "
                                  "entity's own path");
+                }
+                if (auto refused = refuse_unseen_table(kSqlWrite, "sql:write",
+                                                       s.table)) {
+                    return std::move(*refused);
                 }
                 auto db = resolve_db(s.table);
                 if (!db) return missing_database(s.table);
@@ -2947,6 +2973,10 @@ QueryResult Executor::execute(const Statement& stmt,
                                  "\" is read-only — durable writes go to the base "
                                  "entity's own path");
                 }
+                if (auto refused = refuse_unseen_table(kSqlWrite, "sql:write",
+                                                       s.table)) {
+                    return std::move(*refused);
+                }
                 auto db = resolve_db(s.table);
                 if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
@@ -3007,6 +3037,10 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("virtual table \"" + s.table.table +
                                  "\" is read-only — durable writes go to the base "
                                  "entity's own path");
+                }
+                if (auto refused = refuse_unseen_table(kSqlWrite, "sql:write",
+                                                       s.table)) {
+                    return std::move(*refused);
                 }
                 auto db = resolve_db(s.table);
                 if (!db) return missing_database(s.table);
@@ -3202,21 +3236,24 @@ QueryResult Executor::execute(const Statement& stmt,
                     return deny(connection_store_refusal());
                 }
                 if (auto problem = aggregate_shape_error(s)) return error(*problem);
+                // Object-scoped read enforcement (#747): the acting identity must
+                // be able to read this table; columns it lacks sql:read on are
+                // masked (nulled) in the output. Decided BEFORE the table is
+                // looked up (#252): a caller with no read right on db.table gets
+                // the same refusal whether or not it exists, so the error text
+                // is not an oracle for the names of tables it cannot see.
+                const zetta::governance::ColumnAccess read_access =
+                    node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
+                                       db_name(s.table), s.table.table);
+                if (!db_name(s.table).empty() && !read_access.table_allowed) {
+                    return deny("permission denied: no sql:read grant on \"" +
+                                db_name(s.table) + "." + s.table.table + "\"");
+                }
                 auto db = resolve_db(s.table);
                 if (!db) return missing_database(s.table);
                 auto table = db->find_table(s.table.table);
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
-                }
-                // Object-scoped read enforcement (#747): the acting identity must
-                // be able to read this table; columns it lacks sql:read on are
-                // masked (nulled) in the output.
-                const zetta::governance::ColumnAccess read_access =
-                    node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
-                                       db_name(s.table), s.table.table);
-                if (!read_access.table_allowed) {
-                    return error("permission denied: no sql:read grant on \"" +
-                                 db_name(s.table) + "." + s.table.table + "\"");
                 }
                 // Block filtering/grouping on a column the caller can't read — a
                 // WHERE/GROUP BY over a masked column would otherwise leak it.
@@ -3224,24 +3261,24 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (s.where) {
                         for (const std::string& column : where_columns(*s.where)) {
                             if (!read_access.allows(column)) {
-                                return error("permission denied: no sql:read grant "
-                                             "on column \"" + column +
-                                             "\" used in WHERE");
+                                return deny("permission denied: no sql:read grant "
+                                            "on column \"" + column +
+                                            "\" used in WHERE");
                             }
                         }
                     }
                     for (const std::string& key : s.group_by) {
                         if (!read_access.allows(key)) {
-                            return error("permission denied: no sql:read grant on "
-                                         "column \"" + key + "\" used in GROUP BY");
+                            return deny("permission denied: no sql:read grant on "
+                                        "column \"" + key + "\" used in GROUP BY");
                         }
                     }
                     for (const GroupedItem& item : s.items) {
                         const std::string& column =
                             item.aggregate ? item.aggregate->column : item.column;
                         if (!column.empty() && !read_access.allows(column)) {
-                            return error("permission denied: no sql:read grant on "
-                                         "column \"" + column + "\"");
+                            return deny("permission denied: no sql:read grant on "
+                                        "column \"" + column + "\"");
                         }
                     }
                     // ORDER BY over a masked column would choose which rows a
@@ -3251,9 +3288,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (!s.aggregating()) {
                         for (const OrderKey& key : s.order_by) {
                             if (!read_access.allows(key.column)) {
-                                return error("permission denied: no sql:read grant on "
-                                             "column \"" + key.column +
-                                             "\" used in ORDER BY");
+                                return deny("permission denied: no sql:read grant on "
+                                            "column \"" + key.column +
+                                            "\" used in ORDER BY");
                             }
                         }
                     }
@@ -3651,12 +3688,19 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const RevokeRoleStmt& s) { return "user:" + s.user; },
             [&](const CreatePolicyStmt& s) { return "policy:" + s.name; },
             [&](const DropPolicyStmt& s) { return "policy:" + s.name; },
-            [&](const SelectStmt&) { return std::string{}; },
+            // A read is audited by the surface that served it, except a
+            // refused one (#252): the attempt to read past a grant is
+            // recorded here, as whom and on what, whatever surface ran it.
+            [&](const SelectStmt& s) {
+                return denied ? "table:" + table_label(s.table) : std::string{};
+            },
         },
         stmt);
     if (!target.empty()) {
         zetta::governance::AuditEventValue event;
-        event.action = zetta::governance::AuditAction::DataChanged;
+        event.action = std::holds_alternative<SelectStmt>(stmt)
+                           ? zetta::governance::AuditAction::DataAccess
+                           : zetta::governance::AuditAction::DataChanged;
         event.actor = acting_key_.empty() ? "local" : acting_key_;
         event.target = "sql:" + target;
         event.allowed = !denied;

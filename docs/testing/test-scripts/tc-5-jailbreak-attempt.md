@@ -13,6 +13,10 @@ This is the **adversarial pass**. #780 is the automated regression harness for e
 already know about; this script is for finding the ones nobody has written a test for. A
 tester who only runs the listed attempts has under-delivered — the listed ones are a warm-up.
 
+The automated half of this script, step by step, is
+[TC-5 coverage](../tc-5-coverage.md): what refuses each attempt today and the test that
+proves it. Start the off-script hour from its list of open gaps.
+
 ## Before starting
 
 - A working cluster with authentication enforced.

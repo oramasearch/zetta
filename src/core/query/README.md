@@ -39,7 +39,9 @@ TOKEN need `users:manage` / `tokens:manage`. A legacy AccessKey needs the flat
 right. Column grants and row-level security apply to UPDATE and DELETE; TRUNCATE
 of a policy-protected table is refused for a non-bypass caller. Each such
 statement records a `data_changed` audit row. SQL never reaches the reserved
-`zetta_connect` database (#1230). See
+`zetta_connect` database (#1230). A caller with no right on a table is refused before the
+table is looked up, so the error never says whether it exists; a refused SELECT
+records a `data_access` row with `allowed: false` (#252). See
 [access control](../../../docs/governance/access-control.md#per-statement-enforcement).
 `GRANT … ON COLLECTION <prefix>` scopes record-store rights to a collection name
 prefix (#1231).

@@ -849,6 +849,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   solutions/test_audit_ledger.cpp  action/outcome chain reconstruction, append-only behavior, persistence, CRDT replication, SQL queryability, and schema rejection (#1107)
   governance/audit_proof.cpp native process-isolated million-event replication and restart RSS worker, with opt-in allocation-profile pause (#1164)
   governance/test_audit.cpp  segment reads/retention, malformed ranges, legacy catalog compaction, incompatible-peer refusal and two-process convergence/RSS assertions (#1164)
+  governance/test_sandbox_escape.cpp  TC-5 jailbreak attempts by a low-privilege analyst over Registry::call: each refused and audited, no existence oracle, open gaps as KNOWN_DEFECT probes (#252)
   ml/test_forecast.cpp / ml/test_forecast_runner.cpp
                             temporal correctness, FVA, intervals, multiple series, horizon bounds, output lineage, and single-member == multi-member forecasting (#1043)
   ml/test_forecast_methodology.cpp
