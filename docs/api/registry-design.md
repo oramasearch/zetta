@@ -78,11 +78,13 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   because the activity hook and the consent ledger run after the gate.
 - **Awaitable reads do not offload.** `receive_events` and `browse_topic` register a topic event
   inside their first owner-loop call, return an immediate read, and let the REST
-  or MCP coroutine suspend on that event under `runtime::timeout`. Publish, edit or close
-  wakes it; the route makes one final owner-loop call. A long poll therefore
-  holds no thread and makes at most two authorized registry calls. Those reads
-  share an audit session and contribute to its five-minute totals (#1076,
-  #1136, #1154).
+  or MCP coroutine suspend on that event, bounded by the request's own `wait_ms`
+  (at most 60 s, #1174). Publish, edit or close wakes it; the route makes one
+  final owner-loop call. A long poll therefore holds no thread and makes at most
+  two authorized registry calls. Those reads share an audit session and
+  contribute to its five-minute totals (#1076, #1136, #1154). The wait also
+  races the client closing its socket (`Impl::await_poll`); a client that left
+  gets no final call and no answer, and its session is freed (#1174).
 - **A retrying await** (#1005): an `AwaitableRead` with `retry_within` keeps
   waiting until `wait_for` passes — each wake, the event or `retry_within(result)`
   elapsing, makes one more whole governed call with a fresh event. Such an entry

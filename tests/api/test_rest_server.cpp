@@ -2119,4 +2119,192 @@ TEST_F(ReplicatedRestServerFixture, RecordCapabilitiesWorkOverRestAndMcp) {
     EXPECT_GT(envelope.at("value").at("revision").get<std::uint64_t>(), revision);
 }
 
+// #1174: an idle client polls at most once a minute, so receive_events and
+// browse_topic take wait_ms up to 60,000 on REST and MCP, and refuse more.
+TEST_F(RestServerFixture, ReceiveAndBrowseTakeSixtySecondPollsAndRefuseLonger) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:minute","exposed":true})").status,
+              200);
+    for (const char* name : {"receive_events", "browse_topic"}) {
+        const auto capability = server->registry().find(name);
+        ASSERT_TRUE(capability) << name;
+        const auto& wait = capability->input_schema.at("properties").at("wait_ms");
+        EXPECT_EQ(wait.at("minimum"), 0) << name;
+        EXPECT_EQ(wait.at("maximum"), 60000) << name;
+        ASSERT_TRUE(capability->awaitable_read) << name;
+        EXPECT_EQ(capability->awaitable_read->wait_for({{"wait_ms", 60000}}),
+                  std::chrono::milliseconds(60000)) << name;
+        // A direct registry caller that skips validation is still bounded.
+        EXPECT_EQ(capability->awaitable_read->wait_for({{"wait_ms", 600000}}),
+                  std::chrono::milliseconds(60000)) << name;
+    }
+    const auto receive = request(
+        "GET", "/v1/receive_events?topic=minute&wait_ms=60001");
+    EXPECT_EQ(receive.status, 400) << receive.body;
+    EXPECT_EQ(json_of(receive).at("error").at("code"), "invalid_input");
+    const auto browse = request(
+        "POST", "/v1/browse_topic", R"({"topic":"minute","wait_ms":60001})");
+    EXPECT_EQ(browse.status, 400) << browse.body;
+    EXPECT_EQ(json_of(browse).at("error").at("code"), "invalid_input");
+    const nlohmann::json mcp_call = {
+        {"jsonrpc", "2.0"}, {"id", 1174}, {"method", "tools/call"},
+        {"params", {{"name", "receive_events"},
+                    {"arguments", {{"topic", "minute"}, {"wait_ms", 60001}}}}}};
+    const auto mcp = request("POST", "/mcp", mcp_call.dump());
+    ASSERT_EQ(mcp.status, 200) << mcp.body;
+    EXPECT_FALSE(json_of(mcp).at("result").at("structuredContent").at("ok").get<bool>())
+        << mcp.body;
+}
+
+// #1174: a 60-second poll answers as soon as an event arrives, and each
+// request keeps its own deadline: a short poll beside it times out on time.
+TEST_F(RestServerFixture, SixtySecondPollAnswersOnArrivalAndShortPollsKeepTheirDeadline) {
+    for (const bool mcp : {false, true}) {
+        const std::string topic = mcp ? "minute-mcp" : "minute-rest";
+        ASSERT_EQ(request("POST", "/v1/create_topic",
+                          nlohmann::json{{"topic", topic}, {"exposed", true}}.dump())
+                      .status,
+                  200);
+        const auto open_poll = [&](int wait_ms) {
+            const nlohmann::json input = {{"topic", topic}, {"wait_ms", wait_ms}};
+            if (!mcp) {
+                return open_http_request(
+                    server->port(), "GET",
+                    "/v1/receive_events?topic=" + topic + "&wait_ms=" + std::to_string(wait_ms),
+                    "", owner_secret);
+            }
+            const nlohmann::json call = {
+                {"jsonrpc", "2.0"}, {"id", wait_ms}, {"method", "tools/call"},
+                {"params", {{"name", "receive_events"}, {"arguments", input}}}};
+            return open_http_request(server->port(), "POST", "/mcp", call.dump(), owner_secret);
+        };
+        const auto envelope_of = [&](const HttpResponse& response) {
+            const auto body = json_of(response);
+            return mcp ? body.at("result").at("structuredContent") : body;
+        };
+
+        const auto started = std::chrono::steady_clock::now();
+        const int long_poll = open_poll(60000);
+        const int short_poll = open_poll(50);
+        ASSERT_GE(long_poll, 0);
+        ASSERT_GE(short_poll, 0);
+        HttpResponse long_response;
+        HttpResponse short_response;
+        std::atomic<bool> long_done{false};
+        std::atomic<bool> short_done{false};
+        std::chrono::steady_clock::duration short_elapsed{};
+        std::thread short_reader([&] {
+            short_response = read_http_response(short_poll);
+            short_elapsed = std::chrono::steady_clock::now() - started;
+            short_done = true;
+        });
+        std::thread long_reader([&] {
+            long_response = read_http_response(long_poll);
+            long_done = true;
+        });
+        const auto short_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!short_done && std::chrono::steady_clock::now() < short_deadline) {
+            server->drain();
+            std::this_thread::yield();
+        }
+        short_reader.join();
+        ASSERT_EQ(short_response.status, 200) << short_response.body;
+        ASSERT_TRUE(envelope_of(short_response).at("ok").get<bool>()) << short_response.body;
+        EXPECT_TRUE(envelope_of(short_response).at("value").at("events").empty());
+        EXPECT_GE(short_elapsed, std::chrono::milliseconds(50));
+        EXPECT_LT(short_elapsed, std::chrono::seconds(5));
+        EXPECT_FALSE(long_done.load()) << "the 60-second poll must still be waiting";
+
+        const auto published = request(
+            "POST", "/v1/publish_event",
+            nlohmann::json{{"topic", topic}, {"payload", "arrived"}}.dump());
+        ASSERT_EQ(published.status, 200) << published.body;
+        const auto published_at = std::chrono::steady_clock::now();
+        const auto long_deadline = published_at + std::chrono::seconds(5);
+        while (!long_done && std::chrono::steady_clock::now() < long_deadline) {
+            server->drain();
+            std::this_thread::yield();
+        }
+        long_reader.join();
+        EXPECT_LT(std::chrono::steady_clock::now() - published_at, std::chrono::seconds(5));
+        ASSERT_EQ(long_response.status, 200) << long_response.body;
+        const auto envelope = envelope_of(long_response);
+        ASSERT_TRUE(envelope.at("ok").get<bool>()) << long_response.body;
+        ASSERT_EQ(envelope.at("value").at("events").size(), 1u) << long_response.body;
+        EXPECT_EQ(envelope.at("value").at("events")[0].at("payload"), "arrived");
+    }
+}
+
+// #1174: a client that leaves a 60-second poll frees its session at once,
+// on REST and on MCP; it does not hold a connection slot for the minute.
+TEST_F(ConnectionLimitFixture, ClientsLeavingSixtySecondPollsFreeTheirSessions) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:leaving","exposed":true})").status,
+              200);
+    const std::size_t audit_before = node.audit_event_count();
+    const nlohmann::json mcp_call = {
+        {"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+        {"params", {{"name", "receive_events"},
+                    {"arguments", {{"topic", "leaving"}, {"wait_ms", 60000}}}}}};
+    OpenSockets long_polls;
+    long_polls.descriptors.push_back(open_http_request(
+        server->port(), "GET", "/v1/receive_events?topic=leaving&wait_ms=60000", "",
+        owner_secret));
+    long_polls.descriptors.push_back(
+        open_http_request(server->port(), "POST", "/mcp", mcp_call.dump(), owner_secret));
+    ASSERT_GE(long_polls.descriptors[0], 0);
+    ASSERT_GE(long_polls.descriptors[1], 0);
+    const auto registered_by = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (node.audit_event_count() < audit_before + 1 &&
+           std::chrono::steady_clock::now() < registered_by) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    ASSERT_GE(node.audit_event_count(), audit_before + 1);
+    // Both admitted sessions are held by the polls.
+    const auto full = request("GET", "/v1/receive_events?topic=leaving&wait_ms=0");
+    EXPECT_EQ(full.status, 503) << full.body;
+
+    for (int& descriptor : long_polls.descriptors) {
+        ::close(descriptor);
+        descriptor = -1;
+    }
+    const auto left_at = std::chrono::steady_clock::now();
+    HttpResponse fresh;
+    while (std::chrono::steady_clock::now() - left_at < std::chrono::seconds(5)) {
+        fresh = request("GET", "/v1/receive_events?topic=leaving&wait_ms=0");
+        if (fresh.status == 200) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_EQ(fresh.status, 200) << fresh.body;
+    EXPECT_LT(std::chrono::steady_clock::now() - left_at, std::chrono::seconds(5));
+}
+
+// #1174: stop() wakes a held MCP long poll as it does a REST one.
+TEST_F(RestServerFixture, StopWakesHeldMcpLongPolls) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:mcp-shutdown","exposed":true})").status,
+              200);
+    const auto audit_before = node.audit_event_count();
+    const nlohmann::json mcp_call = {
+        {"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/call"},
+        {"params", {{"name", "receive_events"},
+                    {"arguments", {{"topic", "mcp-shutdown"}, {"wait_ms", 60000}}}}}};
+    OpenSockets long_polls;
+    long_polls.descriptors.push_back(
+        open_http_request(server->port(), "POST", "/mcp", mcp_call.dump(), owner_secret));
+    ASSERT_GE(long_polls.descriptors[0], 0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (node.audit_event_count() == audit_before &&
+           std::chrono::steady_clock::now() < deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(node.audit_event_count(), audit_before + 1);
+    const auto started = std::chrono::steady_clock::now();
+    server->stop();
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
+    EXPECT_FALSE(server->running());
+}
+
 }  // namespace
