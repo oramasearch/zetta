@@ -9,6 +9,7 @@
 #include <vector>
 #include <map>
 
+#include "zetta/cluster/frame_faults.hpp"
 #include "zetta/cluster/security.hpp"
 #include "zetta/cluster/signal.hpp"
 #include "zetta/governance/audit_event.hpp"
@@ -206,6 +207,11 @@ struct ClusterConfig {
     // Concurrent TLS/HELLO setups on accepted connections. Excess accepts are
     // closed before TLS allocation; dials are not counted; zero clamps to one.
     std::size_t maximum_pending_setups = 64;
+    // Chaos experiments only (#842): when set, every inbound frame after the
+    // handshake passes through this injector, which may drop, delay, duplicate or
+    // reorder it (see frame_faults.hpp). Never set by the zetta binary. Must
+    // outlive the Cluster's network thread — the shared_ptr keeps it alive.
+    std::shared_ptr<FrameFaultInjector> frame_faults;
 };
 
 // Replication gossip this node has sent since start() (#794), summed over every

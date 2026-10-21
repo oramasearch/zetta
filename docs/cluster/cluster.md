@@ -169,6 +169,15 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   an embedded bare `Cluster` with empty `ClusterSecurity` (tests/hosts). See
   [security.md](security.md). The shared `FramedStream` preserves the existing
   newline wire bytes and 64 MiB frame bound (#1283).
+- **Chaos fault injection (#842).** `ClusterConfig::frame_faults` takes a
+  `zetta::cluster::FrameFaultInjector` (`include/zetta/cluster/frame_faults.hpp`).
+  When set, every inbound frame after the `HELLO` passes through it on the read
+  pump, and the link writer asks it every tick for held frames now due, so a test
+  can drop, delay, duplicate and reorder the protocol on a real mTLS link. A
+  peer's activity clock moves only for frames actually applied, so discarding a
+  peer's frames idles the link out exactly like a partition. The zetta binary
+  never sets it; unset costs one null check per frame. The chaos harness that
+  drives it is [../testing/chaos-experiments.md](../testing/chaos-experiments.md).
 - `Cluster` binds the first free port in `[listen_port, listen_port + port_range)`
   synchronously at `start()`, then runs an `io_context` on a background thread:
   an accept loop plus one dial coroutine per `--peer`. `port_range` defaults to

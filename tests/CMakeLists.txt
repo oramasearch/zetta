@@ -439,3 +439,22 @@ add_test(NAME zetta-startup-log-redaction COMMAND zetta-startup-log-redaction-te
 set_tests_properties(zetta-startup-log-redaction PROPERTIES
   TIMEOUT 400
   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+# Chaos experiments (#842): an in-process mutual-TLS cluster tormented on a seeded
+# schedule, asserted to heal (cluster/chaos_harness.hpp). Its own executable so
+# every case carries the `chaos` label (`ctest -L chaos`). The default suite runs
+# the fast cases and one short smoke; the long runs skip unless
+# ZETTA_CHAOS_SCHEDULES / ZETTA_CHAOS_PROBE_ROUNDS is set. See
+# docs/testing/chaos-experiments.md.
+add_executable(zetta-chaos-tests
+  cluster/test_chaos.cpp
+)
+target_compile_features(zetta-chaos-tests PRIVATE cxx_std_26)
+target_include_directories(zetta-chaos-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(zetta-chaos-tests PRIVATE zetta-core GTest::gtest_main)
+if(ZETTA_HAS_WNO_CHARACTER_CONVERSION)
+  target_compile_options(zetta-chaos-tests PRIVATE -Wno-character-conversion)
+endif()
+gtest_discover_tests(zetta-chaos-tests PROPERTIES LABELS chaos)
+# Built with zetta-tests, so the documented `--target zetta-tests && ctest` never
+# meets an unbuilt chaos executable.
+add_dependencies(zetta-tests zetta-chaos-tests)
