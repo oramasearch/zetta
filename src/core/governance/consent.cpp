@@ -5,6 +5,7 @@
 
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/governance/credential_redaction.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
 
@@ -36,7 +37,11 @@ nlohmann::json to_json(const ConsentChallenge& challenge) {
     nlohmann::json value;
     value["id"] = challenge.id;
     value["capability"] = challenge.capability;
-    value["input"] = challenge.input;
+    // The approver sees the exact payload — except a credential given inline
+    // (a connector's `token`), which the challenge holds in memory to execute
+    // but never renders: the listing reaches a different principal, and the
+    // refusal is returned and logged like any error (#74).
+    value["input"] = redact_credentials(challenge.input);
     value["action"] = {{"summary", challenge.action.summary},
                        {"reads", challenge.action.reads},
                        {"runs", challenge.action.runs}};
@@ -51,7 +56,9 @@ nlohmann::json to_json(const ConsentChallenge& challenge) {
         std::string(to_string(challenge.status_at(zetta::util::now_iso8601())));
     if (!challenge.decided_by.empty()) value["decided_by"] = challenge.decided_by;
     if (!challenge.decided_at.empty()) value["decided_at"] = challenge.decided_at;
-    if (!challenge.result.is_null()) value["result"] = challenge.result;
+    if (!challenge.result.is_null()) {
+        value["result"] = redact_credentials(challenge.result);
+    }
     if (!challenge.detail.empty()) value["detail"] = challenge.detail;
     return value;
 }

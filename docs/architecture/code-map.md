@@ -723,6 +723,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     policy.cpp              zetta::governance::Policy — persist policy.json + PolicyValue JSON boundary validation + policy schema (RLS, #748)
     token_secret.cpp        the token crypto (the 2nd OpenSSL-libcrypto user): RAND_bytes secret/salt + SHA-256(salt||secret) + CRYPTO_memcmp constant-time compare (#744)
     audit_event.cpp         zetta::governance::AuditEvent/AuditTrail — value/schema boundary, compressed segment frames, durable seek index/watermarks, legacy migration, range validation and retention
+    credential_redaction.cpp the one rule for which input fields are credentials (`is_credential_field`) + `redact_credentials`, used by the consent challenge JSON and the web form's masked inputs (#74)
     consent.cpp             zetta::governance::ConsentLedger — challenge lifecycle (pending → denied/approved → executed/failed, lazy TTL expiry, capacity that drops decided entries first), challenge JSON + embedded schema (#621)
   solutions/
     audit_ledger.cpp        zetta::solutions ledger JSON codecs/schema validation plus immutable `<data_dir>/ledger/<uuid>.json` persistence (#1107)

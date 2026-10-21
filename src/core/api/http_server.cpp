@@ -47,6 +47,7 @@
 #include "zetta/dataset/dataset_generator_factory.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/connect/connection_store.hpp"
+#include "zetta/governance/credential_redaction.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
@@ -1977,11 +1978,10 @@ struct ApiServer::Impl {
 
     // Whether a schema property holds a credential — rendered as a masked input
     // and never echoed back into the form. Matched on the property name because
-    // that is what the schema gives us; the connector's `token` is the case
-    // that matters today.
+    // that is what the schema gives us — by the one rule every surface shares
+    // (governance/credential_redaction.hpp, #74).
     static bool is_secret_property(const std::string& key) {
-        return key == "token" || key == "secret" || key == "password" ||
-               key == "api_key";
+        return zetta::governance::is_credential_field(key);
     }
 
     // One scalar control. `name` is the form field name (which for a nested

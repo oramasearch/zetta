@@ -660,6 +660,7 @@ add_library(zetta-core STATIC
   src/core/governance/permission.cpp
   src/core/governance/audit_event.cpp
   src/core/governance/consent.cpp
+  src/core/governance/credential_redaction.cpp
   src/core/governance/token_secret.cpp
   src/core/governance/user.cpp
   src/core/governance/role.cpp
