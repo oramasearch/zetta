@@ -162,6 +162,42 @@ them, and is a later optimization.
 Each node clears what *it* can see rather than only what it wrote, because a
 removal converges most reliably when the node holding a key removes it itself.
 
+### A participant that comes back late
+
+"Died" and "came back" are different faults. A node that is **paused** rather
+than gone (a stopped process, a long GC or swap stall, a suspended VM) still
+receives the `run.launch` on its network thread and queues it, and its
+replication still merges gossip; it just executes nothing. When it resumes, its
+first tick drains that launch, possibly long after the agreement failed and
+every other node cleaned up.
+
+Before [#844](https://github.com/oramasearch/zetta/issues/844) that late drain
+re-adopted the table: the cleanup had removed `tbl:<id>`, the resumed node's
+document held the tombstone, and adopting wrote `tbl:<id>` again *causally after*
+it, which re-creates a removed key (a tombstone wins only over a *concurrent*
+write). The node then fetched its tile from the customer's warehouse, held its
+owner thread for the whole coordination timeout on an agreement nobody else
+would join, and only then dropped the table again. For that window the dataset
+existed on one node that every other node had forgotten.
+
+The terminal marker is the table's own tombstone. A dropped table id is never
+reused (ids are fresh UUIDs), so a launch whose target `tbl:<id>` (or `db:<id>`)
+this node's document **knows as removed** (`ReplicationManager::knows_key` true,
+absent from `snapshot()`) belongs to a run that has ended. The runner declines it
+before anything else: no adopt, no fetch, no ingest job, and **no agreement
+round**. The round it would join is already over, so joining would only block
+the node for the timeout. The decline is recorded on the
+`run.launch:connector_fetch` span. `Node::adopt_replicated_table` refuses the
+same case on its own, so no other caller can resurrect a dropped table by
+adopting it.
+
+What this does not cover: a node that resumes *before* the cleanup's tombstone
+reaches it has no way to know the run ended. It adopts, fetches, reaches the
+agreement, times out, and discards: the pre-existing all-or-nothing path, which
+converges on "gone" because its own drop is causally after its own adopt and a
+concurrent removal wins. The cost there is one wasted tile fetch and one timeout
+on that node, never a surviving table.
+
 ### Residue
 
 Cleanup is asserted on every surface a caller reads: after a failed ingest the
@@ -270,6 +306,12 @@ injected argument), and asserts:
    "re-run the ingest" reason, no dataset reported, and no table or
    `system.datasets` entry left on any node, and the `part:` / `lo:` keys it had
    already published are gone from the document too (see *Residue* above).
+6. **A paused participant that resumes declines the ended launch**
+   ([#844](https://github.com/oramasearch/zetta/issues/844)): after the ingest
+   failed and the paused node's document merged the cleanup, its first tick
+   drains the queued launch with no source read, no ingest job, well inside the
+   coordination timeout, and the table stays gone on every node (see *A
+   participant that comes back late* above).
 
 The first four of those are also an **in-app test-suite case** —
 [`cluster.distributed_import`](../testing/runbooks/test-cases/cluster.distributed_import.md),

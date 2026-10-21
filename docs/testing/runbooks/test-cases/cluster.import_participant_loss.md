@@ -58,10 +58,14 @@ So the case is **safe, scoped and self-healing** by construction, not by cleanup
 
 - **A node that was merely paused, then came back.** Only the running nodes are
   ticked while waiting for the cleanup to converge. Ticking the idle one models
-  something different: a node that wakes, drains the launch it had queued, and
-  **re-adopts the table after the cleanup already ran** — a late launch beating a
-  completed cleanup. That is a real behaviour and worth its own case; it is not the
-  behaviour of a node that died, which is what this one is about.
+  something different: a node that wakes and drains the launch it had queued after
+  the cleanup already ran. That is not the behaviour of a node that died, which is
+  what this one is about. It used to re-adopt the table; since
+  [#844](https://github.com/oramasearch/zetta/issues/844) a resumed node that has
+  merged the cleanup declines the ended launch (no adopt, no fetch, no agreement
+  round), pinned at L1 by
+  `DistributedIngest.APausedParticipantThatResumesDeclinesTheEndedLaunch`. See
+  *A participant that comes back late* in the engine doc.
 - **Several fetch requests in flight within one node.** The in-app fake transport
   is installed with no async half, so every node takes the documented serial
   degrade. `tests/connect/test_distributed_fetch.cpp` covers the in-flight fan-out

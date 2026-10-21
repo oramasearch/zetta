@@ -266,10 +266,25 @@ public:
     // logical dataset. Idempotent; safe to call after the key has arrived.
     // `source_format` is what the rows are loaded from (#1221) — the participant
     // writes the same value the initiator did, so the two copies agree.
+    //
+    // **Never resurrects a dropped table** (#844): when this node's document
+    // knows the `tbl:` or `db:` key only as a tombstone, the table was created
+    // and then dropped, and capturing the key again would re-create it causally
+    // after the removal. Ids are fresh UUIDs and never reused, so that case is
+    // always a late caller acting on an entity that is gone; it returns an empty
+    // handle and writes nothing.
     std::shared_ptr<zetta::data::Table> adopt_replicated_table(
         const std::string& database_id, const std::string& database_name,
         const std::string& table_id, const std::string& table_name,
         bool partition_only, const std::string& source_format = {});
+
+    // Whether this node's replicated document records the table (or its
+    // database) as **dropped**: the key is known, but only as a tombstone. False
+    // when the key was never seen (it may simply not have arrived yet) and on a
+    // standalone node. The terminal marker a late `run.launch` participant reads
+    // before adopting a table (#844).
+    bool replicated_table_dropped(const std::string& database_id,
+                                  const std::string& table_id) const;
 
     bool rename_database(const std::string& from, const std::string& to);
     std::vector<std::string> database_names() const;

@@ -1686,6 +1686,10 @@ std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
     // already carry the key, so an existing entry (with, say, a non-default
     // replication strategy) is never overwritten with a narrower one.
     if (replication_) {
+        // A tombstoned key means the table (or its database) was dropped. A
+        // causally-later `set` re-creates a removed key, so adopting it here
+        // would bring a dropped table back on this node alone (#844).
+        if (replicated_table_dropped(database_id, table_id)) return nullptr;
         const nlohmann::json snapshot = replication_->snapshot();
         const std::string database_key = catalog::database_key(database_id);
         if (!snapshot.contains(database_key)) {
@@ -1707,6 +1711,22 @@ std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
     return database->materialize_table(table_id, table_name,
                                        database->replication_strategy(),
                                        partition_only, source_format);
+}
+
+bool Node::replicated_table_dropped(const std::string& database_id,
+                                    const std::string& table_id) const {
+    if (!replication_) return false;
+    // `knows_key` FIRST, then a fresh snapshot: a key that merges in between
+    // then reads as live rather than as dropped. The other order would mistake
+    // a table whose `tbl:` key is just arriving for one that was removed.
+    const auto removed = [&](const std::string& key) {
+        if (!replication_->knows_key(key)) return false;
+        const std::shared_ptr<const nlohmann::json> snapshot =
+            replication_->shared_snapshot();
+        return !(snapshot && snapshot->contains(key));
+    };
+    return removed(catalog::table_key(table_id)) ||
+           removed(catalog::database_key(database_id));
 }
 
 std::shared_ptr<zetta::data::Database> Node::find_database(const std::string& name) const {
