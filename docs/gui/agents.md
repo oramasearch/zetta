@@ -44,7 +44,10 @@ tool-calling fine-tune needed. The same off-thread `ChatOp` runs `respond` **and
 steps into the transcript and **runs it** — a churn graph launches `AsyncChurnRun` on the live
 engine (its trained-model + ranked-list outcome posts back into the transcript via the
 `churn_run_from_chat_` branch of `poll_background_ops()`), anything else runs structurally.
-It is the GUI face of the `agent_run` capability (`docs/agent/inference-runbook.md`).
+It is the GUI counterpart of the `agent_run` capability (`docs/agent/inference-runbook.md`), but it
+does not call it: it runs the compiled graph directly in the trusted local session, without the
+approval `agent_run` requires since #913. That difference is tracked in
+[#1334](https://github.com/oramasearch/zetta/issues/1334).
 
 ## Web app
 
@@ -57,9 +60,11 @@ a partial edit changes only what you touch. The generic create/update/delete_age
 forms sit below. The **Chat** page is a form with an **agent `<select>`**
 (the `agent`-field picker → `agent_options`, from the live agent list) + a message box that
 POSTs to `/run` and renders the result inline. The Chat page carries **two** submit buttons —
-**Send** (`cap=chat`, reply only) and **Build & run** (`cap=agent_run`, #872) — the clicked
-button's `name=cap` picks the capability; `serve_web_run` already wires the background action
-owner, so the churn run works with no extra plumbing. The turn blocks the request for seconds
-(model load + generation, then the run) — fine for a request/response page (the GUI's
-off-thread `ChatOp` is what a live-repainting client needs). Same `agent::respond` +
-`agent_run` paths as the GUI + MCP/REST, so all surfaces behave identically.
+**Send** (`cap=chat`, reply only) and **Build plan** (`cap=agent_run`, #872) — the clicked
+button's `name=cap` picks the capability. **Build plan** stores the compiled plan proposed and
+renders the `not_approved` answer that names it; nothing runs until it is approved
+(`approve_plan`) and run (`agent_run` with project + graph_name, both from the generic action
+forms; #913). `serve_web_run` already wires the background action owner, so the approved churn
+run works with no extra plumbing. The turn blocks the request for seconds (model load +
+generation) — fine for a request/response page (the GUI's off-thread `ChatOp` is what a
+live-repainting client needs). Same `agent::respond` + `agent_run` paths as MCP/REST.

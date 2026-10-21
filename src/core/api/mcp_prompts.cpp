@@ -22,7 +22,9 @@ std::string argument_or(const nlohmann::json& arguments, const std::string& key,
     return value.empty() ? fallback : value;
 }
 
-// The build_and_run prompt body: a workflow over agent_run + get_run. Kept as one
+// The build_and_run prompt body: a workflow over agent_run + approve_plan + get_run.
+// agent_run stores the plan proposed and never runs or approves it (#913), so the
+// prompt shows the plan and approves only on the person's yes. Kept as one
 // instruction message so a host expands it into a single, self-contained turn.
 nlohmann::json build_and_run_messages(const nlohmann::json& arguments) {
     const std::string ask = argument_or(
@@ -45,18 +47,23 @@ nlohmann::json build_and_run_messages(const nlohmann::json& arguments) {
         text += "1. Use the agent \"" + agent + "\" (its id or name).\n";
     }
     text += "2. Call `agent_run` with { agent: <the agent id>, message: the ask above, "
-            "top_k: 10 }. This makes the agent recognize the use case, the engine compile a "
-            "real execution graph from the ask, and the graph run through the gate + the "
-            "engine — all in one call. Do NOT build the graph by hand; agent_run does it.\n";
-    text += "3. From the result, note the agent's `reply` (its recognition of the ask), the "
-            "`shape` (e.g. churn), the `steps` (the connect -> clean -> model -> index -> serve "
-            "-> act graph), and `run.run_id`.\n";
-    text += "4. Poll `get_run` with that run_id until `status` is \"succeeded\" or \"failed\" "
+            "top_k: 10 }. The agent recognizes the use case and the engine compiles a real "
+            "execution graph from the ask, stored as a PROPOSED plan. Nothing runs yet: the "
+            "call answers `not_approved` and names the project and the plan. Do NOT build "
+            "the graph by hand; agent_run does it.\n";
+    text += "3. Read the plan with `get_graph` { project, graph } and show the user its steps "
+            "(the connect -> clean -> model -> index -> serve -> act graph). Ask whether to "
+            "approve it. Only if the user says yes, call `approve_plan` { project, graph }; "
+            "never approve on your own. If they say no, stop and report the proposed plan.\n";
+    text += "4. Call `agent_run` again with { agent, message, project, graph_name: the plan, "
+            "top_k: 10 }. It runs the approved plan through the correctness gate + the engine "
+            "and returns `run.run_id`.\n";
+    text += "5. Poll `get_run` with that run_id until `status` is \"succeeded\" or \"failed\" "
             "(a churn run finishes in a few seconds; re-read every second or two).\n";
-    text += "5. Report back: what the agent recognized, the graph it built (list the steps), "
-            "and the run outcome — on success, the trained model and the served outputs "
-            "(the ranked at-risk list + retention playbook from the run's `outputs`); on "
-            "failure, the failing step and reason from the run's logs.\n\n";
+    text += "6. Report back: what the agent recognized, the graph it built (list the steps), "
+            "who approved it, and the run outcome — on success, the trained model and the "
+            "served outputs (the ranked at-risk list + retention playbook from the run's "
+            "`outputs`); on failure, the failing step and reason from the run's logs.\n\n";
     text += "Keep it concrete and grounded in the actual tool results — this is a real run on "
             "the node, not a plan.";
 
@@ -157,9 +164,10 @@ nlohmann::json mcp_prompt_definitions() {
         {{"name", "build_and_run"},
          {"title", "Build & run a use case"},
          {"description",
-          "Have an agent build AND run a real execution graph from a plain-language ask "
-          "(e.g. churn), then report the built graph + the run outcome. Drives the "
-          "agent_run + get_run tools; the base agent needs no fine-tune for this."},
+          "Have an agent build a real execution graph from a plain-language ask (e.g. "
+          "churn), approve it on your yes, run it, then report the built graph + the run "
+          "outcome. Drives the agent_run + approve_plan + get_run tools; the base agent "
+          "needs no fine-tune for this."},
          {"arguments",
           nlohmann::json::array(
               {{{"name", "ask"},
@@ -207,7 +215,8 @@ std::optional<nlohmann::json> render_mcp_prompt(const std::string& name,
     if (name == "build_and_run") {
         return nlohmann::json{
             {"description",
-             "Build + run an execution graph from a plain-language ask via agent_run."},
+             "Build an execution graph from a plain-language ask via agent_run, approve it "
+             "on the user's yes, and run it."},
             {"messages", build_and_run_messages(arguments)}};
     }
     if (name == "model_from_source") {

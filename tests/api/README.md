@@ -91,3 +91,8 @@ statuses, the bucket aliases, the fence and the waiting acquire over REST and MC
 `ON BUCKET` grants and their audit rows, `507`, OpenAPI, and the latency budgets
 (#1005). Registry coverage accepts a retrying awaitable action and the OpenAPI
 check counts the object paths.
+
+`test_agent_api.cpp` proves `agent_run` refuses a stored plan nobody approved
+(`not_approved`, no Run started, the plan still proposed) and runs one after
+`approve_plan`, without a model checkpoint; the checkpoint-guarded test proves the
+plan it builds is stored proposed, refused, and runs once approved (#913).

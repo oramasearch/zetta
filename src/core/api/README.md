@@ -36,6 +36,9 @@ way past it. See
 `create_agent` and `update_agent` take a closed `definition` schema, and an
 unknown property is reported at the property itself, so `{path, content}` is
 refused at `/definition/files/0/content` in lake's words (#1220).
+`agent_run` stores the plan it compiles proposed and answers `not_approved` without
+running it; it never approves. Given `project` + `graph_name` naming a stored plan, it
+runs it only if approved, checked before the agent's model loads (#913).
 `upload_dataset` refuses unsafe table and database names, ragged CSV, and a taken
 name (`conflict`) unless `if_exists: "rename"`, with lake's rules and wording;
 `get_dataset` accepts `database.table`, and dataset summaries carry

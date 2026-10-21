@@ -520,7 +520,7 @@
     },
     "/v1/agent_run": {
       "post": {
-        "description": "Give an agent a plain-language ask; it recognizes the use case, compiles a real execution graph from it, and runs that graph through the gate + the real engine (churn today) — end to end in one call. The base agent needs no tool-calling fine-tune for this. Returns the agent's reply, the built graph's steps, and the run id (poll get_run / system.runs). Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "description": "Give an agent a plain-language ask; it recognizes the use case and compiles a real execution graph from it, stored on the project as a proposed plan. Nothing runs: the call is refused (not_approved) and names the plan to approve. Once it is approved (approve_plan), agent_run with that project + graph_name runs it through the correctness gate + the real engine (churn today) and returns the reply, the graph's steps, and the run id (poll get_run / system.runs). agent_run never approves a plan itself (#913). Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
         "operationId": "agent_run",
         "requestBody": {
           "content": {
@@ -658,7 +658,7 @@
                     "type": "string"
                   },
                   "graph_name": {
-                    "description": "name for the stored graph (default derived)",
+                    "description": "name for the stored graph (default derived). With `project`, naming a graph already stored there runs that plan if it is approved, and is refused if it is only proposed",
                     "type": "string"
                   },
                   "intent": {
@@ -743,7 +743,7 @@
                           "type": "object"
                         },
                         "shape": {
-                          "description": "the compiled template: 'churn' | 'generic'",
+                          "description": "the compiled template: 'churn' | 'generic', or 'approved' when an approved plan already stored on the project ran",
                           "type": "string"
                         },
                         "steps": {
@@ -798,7 +798,7 @@
             "description": "the engine refused or the owning loop is saturated (busy)"
           }
         },
-        "summary": "Agent builds + runs a graph",
+        "summary": "Agent builds a plan; runs it once approved",
         "tags": [
           "job"
         ]

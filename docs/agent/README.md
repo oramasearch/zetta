@@ -43,7 +43,8 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   (below). Runbooks: generate the data → [`training-data-runbook.md`](training-data-runbook.md);
   run the fine-tune → [`training-runbook.md`](training-runbook.md); run the trained agent →
   [`inference-runbook.md`](inference-runbook.md); **build + run a real graph from a plain-language
-  ask** (`agent_run`, the base agent working end to end — no #859 needed) →
+  ask** (`agent_run`, the base agent working end to end — no #859 needed; it stores the plan
+  proposed and runs it only once approved, #913) →
   [`build-and-run-runbook.md`](build-and-run-runbook.md).
 - **GPU boxes** (#920) — [`gpu-box-runbook.md`](gpu-box-runbook.md): which box for which job,
   the Lambda instance choice (Ampere + native BF16; **not** Volta), provisioning + the CUDA

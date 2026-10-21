@@ -116,7 +116,8 @@ TEST_F(AgentApiFixture, ChatWithARealModel) {
     EXPECT_GE(chat.value.at("rounds").get<int>(), 1);
 }
 
-// agent_run (#872): the base agent builds AND runs an execution graph from plain language,
+// agent_run (#872): the base agent builds an execution graph from plain language, and runs it
+// once a person approves it (#913),
 // with no tool-calling fine-tune (#859). This asserts the capability is wired as a mutating
 // Job — the run path it delegates to is gated + observable like every other run.
 TEST_F(AgentApiFixture, AgentRunIsRegisteredAsAJob) {
@@ -127,10 +128,11 @@ TEST_F(AgentApiFixture, AgentRunIsRegisteredAsAJob) {
 }
 
 // The full agent_run composition with a REAL model: the agent reads the ask, the engine
-// compiles a graph from it, and the graph runs. Guarded on ZETTA_QWEN_DIR; a non-churn ask so
-// the run takes the structural path (no background owner needed in this fixture — the churn
-// engine is exercised live in the inference runbook). Proves agent -> compile -> save -> run.
-TEST_F(AgentApiFixture, AgentRunBuildsAndRunsFromRealModel) {
+// compiles a graph from it and stores it proposed, and nothing runs until the plan is approved
+// (#913). Guarded on ZETTA_QWEN_DIR; a non-churn ask so the approved run takes the structural
+// path (no background owner needed in this fixture — the churn engine is exercised live in the
+// inference runbook). Proves agent -> compile -> save proposed -> refused -> approve -> run.
+TEST_F(AgentApiFixture, AgentRunBuildsAPlanAndRunsItOnlyOnceApproved) {
     const char* dir = std::getenv("ZETTA_QWEN_DIR");
     if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to a checkpoint dir to run";
 
@@ -140,37 +142,101 @@ TEST_F(AgentApiFixture, AgentRunBuildsAndRunsFromRealModel) {
                               {"tools", {"connect", "serve"}}});
     ASSERT_TRUE(created.ok) << created.error.message;
     const std::string id = created.value.at("id").get<std::string>();
+    ASSERT_TRUE(call("create_project", {{"name", "agent built"}}).ok);
 
-    // The graph agent_run stores must come out APPROVED. `run` refuses a proposed
-    // plan (#969), and agent_run creates the graph itself — so without recording
-    // the caller's approval, agent_run refuses its own work. That regression
-    // shipped once and this guarded test was the only thing that could see it.
+    // agent_run builds the plan and stores it proposed. It does not approve it and does not
+    // run it: approval belongs to a principal holding orchestration:approve_plan.
+    ApiResult built = call("agent_run",
+                           {{"agent", id},
+                            {"message", "Summarize the sales table and export a weekly report."},
+                            {"project", "agent built"},
+                            {"graph_name", "weekly report"},
+                            {"max_new_tokens", 32}});
+    ASSERT_FALSE(built.ok) << "agent_run ran a plan nobody approved";
+    EXPECT_EQ(built.error.code, "not_approved");
+    EXPECT_NE(built.error.message.find("weekly report"), std::string::npos) << built.error.message;
+    const auto project = node.find_project("agent built");
+    ASSERT_NE(project, nullptr);
+    const auto stored = project->find_graph("weekly report");
+    ASSERT_NE(stored, nullptr) << "the plan it built must be stored for review";
+    EXPECT_FALSE(stored->approved()) << "agent_run must never approve the plan it built";
+    EXPECT_TRUE(node.runs().empty()) << "nothing may run before the plan is approved";
+
+    // Approved, the same call runs it.
+    ASSERT_TRUE(call("approve_plan", {{"project", "agent built"}, {"graph", "weekly report"}}).ok);
     ApiResult run = call("agent_run",
                          {{"agent", id},
                           {"message", "Summarize the sales table and export a weekly report."},
-                          {"max_new_tokens", 32}});
+                          {"project", "agent built"},
+                          {"graph_name", "weekly report"}});
     ASSERT_TRUE(run.ok) << run.error.message;
-    EXPECT_FALSE(run.value.at("reply").get<std::string>().empty());
-    EXPECT_FALSE(run.value.at("shape").get<std::string>().empty());
-
-    // The graph it built is approved, and the approval names the caller — the
-    // audit trail has to say who said yes, which is why the state exists.
-    bool found_approved = false;
-    for (const std::string& name : node.project_names()) {
-        const auto project = node.find_project(name);
-        if (!project) continue;
-        for (const auto& graph : project->graphs()) {
-            if (graph && graph->approved()) {
-                found_approved = true;
-                EXPECT_FALSE(graph->approved_by().empty())
-                    << "an approved plan must record who approved it";
-            }
-        }
-    }
-    EXPECT_TRUE(found_approved)
-        << "agent_run stored a plan it never approved, so `run` would refuse its own work";
     EXPECT_GE(run.value.at("steps").size(), 1u);
     EXPECT_FALSE(run.value.at("run").at("run_id").get<std::string>().empty());
+}
+
+// #913: agent_run on a stored plan nobody approved is refused, with a reason that names the plan
+// and how to approve it, and nothing runs. The approval check comes before the model loads, so
+// this needs no checkpoint (the agent's model path does not exist here).
+TEST_F(AgentApiFixture, AgentRunRefusesAPlanNobodyApproved) {
+    ASSERT_TRUE(call("create_project", {{"name", "unreviewed"}}).ok);
+    ASSERT_TRUE(call("compile_python",
+                     {{"project", "unreviewed"},
+                      {"source",
+                       "ds = load_dataset(\"accounts.parquet\")\n"
+                       "clean = ds.dropna()\n"},
+                      {"name", "Clean accounts"}})
+                    .ok);
+    ApiResult created =
+        call("create_agent", {{"name", "Runner"}, {"model", "models/does-not-exist"}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string id = created.value.at("id").get<std::string>();
+
+    const ApiResult refused = call("agent_run",
+                                   {{"agent", id},
+                                    {"message", "clean the accounts"},
+                                    {"project", "unreviewed"},
+                                    {"graph_name", "Clean accounts"}});
+    ASSERT_FALSE(refused.ok) << "agent_run ran a plan nobody approved";
+    EXPECT_EQ(refused.error.code, "not_approved");
+    EXPECT_NE(refused.error.message.find("Clean accounts"), std::string::npos)
+        << refused.error.message;
+    EXPECT_NE(refused.error.message.find("approve_plan"), std::string::npos)
+        << refused.error.message;
+    EXPECT_TRUE(node.runs().empty()) << "a refused agent_run must not start a run";
+    const auto graph = node.find_project("unreviewed")->find_graph("Clean accounts");
+    ASSERT_NE(graph, nullptr);
+    EXPECT_FALSE(graph->approved()) << "agent_run must never approve a plan";
+}
+
+// #913: once a principal approves the plan (approve_plan), agent_run runs it, and the reply
+// names who approved it.
+TEST_F(AgentApiFixture, AgentRunRunsAnApprovedPlan) {
+    ASSERT_TRUE(call("create_project", {{"name", "reviewed"}}).ok);
+    ASSERT_TRUE(call("compile_python",
+                     {{"project", "reviewed"},
+                      {"source",
+                       "ds = load_dataset(\"accounts.parquet\")\n"
+                       "clean = ds.dropna()\n"},
+                      {"name", "Clean accounts"}})
+                    .ok);
+    ASSERT_TRUE(call("approve_plan", {{"project", "reviewed"}, {"graph", "Clean accounts"}}).ok);
+    ApiResult created =
+        call("create_agent", {{"name", "Runner"}, {"model", "models/does-not-exist"}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string id = created.value.at("id").get<std::string>();
+
+    const ApiResult ran = call("agent_run",
+                               {{"agent", id},
+                                {"message", "clean the accounts"},
+                                {"project", "reviewed"},
+                                {"graph_name", "Clean accounts"}});
+    ASSERT_TRUE(ran.ok) << ran.error.message;
+    EXPECT_EQ(ran.value.at("shape"), "approved");
+    EXPECT_EQ(ran.value.at("graph"), "Clean accounts");
+    EXPECT_GE(ran.value.at("steps").size(), 2u);
+    EXPECT_FALSE(ran.value.at("run").at("run_id").get<std::string>().empty());
+    EXPECT_NE(ran.value.at("reply").get<std::string>().find("approved by"), std::string::npos);
+    EXPECT_EQ(node.runs().size(), 1u);
 }
 
 }  // namespace

@@ -3312,17 +3312,18 @@ struct ApiServer::Impl {
                 {"create_agent", "update_agent", "delete_agent"}, table);
         } else if (view == "chat") {
             out += web_ui_page_hero("Developer", "Chat",
-                "Talk to a served agent, or have it build and run a real Pipeline from your ask.", "");
-            // Talk to a selected agent (#849), or have it build + run a real graph (#872). One
+                "Talk to a served agent, or have it build a real Pipeline from your ask.", "");
+            // Talk to a selected agent (#849), or have it build a real graph (#872). One
             // form, two submit buttons: the clicked button's name=cap picks the capability —
-            // "Send" -> chat (reply only), "Build & run" -> agent_run (the agent recognizes the
-            // ask, the engine compiles a graph from it, and runs it). POSTed to /run WITHOUT a
-            // _return, so serve_web_run renders the result inline. The turn blocks for seconds
-            // (model load + generation, then the run) — fine for a request/response page.
+            // "Send" -> chat (reply only), "Build plan" -> agent_run (the agent recognizes the
+            // ask, the engine compiles a graph from it and stores it proposed; nothing runs
+            // until it is approved, #913). POSTed to /run WITHOUT a _return, so serve_web_run
+            // renders the result inline. The turn blocks for seconds (model load +
+            // generation) — fine for a request/response page.
             out += "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" +
                    web_ui_icon("models") +
                    "</span><h2>Chat</h2><span class=\"psub\">talk to an agent \xC2\xB7 or have it "
-                   "build + run a real pipeline from your ask</span></div>"
+                   "build a real pipeline from your ask</span></div>"
                    "<form method=\"post\" action=\"/run\">"
                    "<div class=\"fgrid\"><div><label>agent</label><select name=\"agent\">" +
                    agent_options(context) +
@@ -3330,8 +3331,8 @@ struct ApiServer::Impl {
                    "<textarea name=\"message\" rows=\"3\" placeholder=\"e.g. predict which "
                    "customers are about to churn, with calibrated scores + explanations\"></textarea></div></div>"
                    "<div class=\"dlgact\"><button class=\"btn\" name=\"cap\" value=\"chat\">Send</button>"
-                   "<button class=\"btn btn-primary\" name=\"cap\" value=\"agent_run\">Build &amp; "
-                   "run</button></div>"
+                   "<button class=\"btn btn-primary\" name=\"cap\" value=\"agent_run\">Build "
+                   "plan</button></div>"
                    "</form></section>";
         } else if (view == "datagen") {
             out += web_ui_page_hero("Developer", "Data generators",
