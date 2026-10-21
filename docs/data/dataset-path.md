@@ -27,8 +27,7 @@ while the rows sat there, partitioned and healthy.
 
 | Input | Kind | Why |
 |---|---|---|
-| `/var/lib/churn`, `./data/churn.v2`, `data/churn`, `~/fixtures/churn` | **Directory** | contains a separator, or starts with `.` / `~` |
-| an existing filesystem entry | **Directory** | the existence test only ever moves a path *into* Directory, so it can never steal a live table |
+| `./churn`, `./data/churn.v2`, `data/churn`, `/var/lib/churn`, `~/fixtures/churn` | **Directory** | contains a separator, or starts with `.` / `~` |
 | `churn_demo.accounts` | **Table** | `database.table` |
 | `prod.eu.accounts` | **Table** | the **last** dot separates, so a dotted database name still resolves |
 | `accounts` | **Table** | bare name, in the default database |
@@ -37,6 +36,13 @@ The separator test comes **first** because a path is the unambiguous form: a dir
 may legitimately contain a dot, while a table name may not contain a slash. `~` is not
 expanded here — expansion belongs to the caller that owns the filesystem, not to a
 grammar.
+
+The grammar never touches the filesystem: a bare name is always a table (#1433; it used to
+become a directory when an entry of that name existed in the node's working directory).
+A Directory is only a parse. `run` opens it under the node's
+[import root](import-root.md), relative to `<data_dir>/imports`, so of the examples above
+only `./churn`, `./data/churn.v2` and `data/churn` can be loaded; an absolute path, `~`,
+`..` and a symbolic link are refused with `invalid_input` at `/dataset_path`.
 
 ## The contract — what the columns mean
 

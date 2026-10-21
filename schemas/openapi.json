@@ -215,7 +215,7 @@
     },
     "/v1/add_dataset": {
       "post": {
-        "description": "Load a local parquet/jsonl/json/csv file into a new partitioned table placed across the cluster (audited as dataset_added; visible in system.datasets). Requires orchestration:add_dataset.",
+        "description": "Load a parquet/jsonl/json/csv file staged in the node's import directory (imports/ under its data directory) into a new partitioned table placed across the cluster (audited as dataset_added; visible in system.datasets). The path is relative to that directory (#1391). Requires orchestration:add_dataset.",
         "operationId": "add_dataset",
         "requestBody": {
           "content": {
@@ -247,7 +247,7 @@
                     "type": "boolean"
                   },
                   "path": {
-                    "description": "a parquet/jsonl/json/csv file on the node's filesystem",
+                    "description": "a parquet/jsonl/json/csv file staged in the node's import directory (imports/ under its data directory), named relative to it: no absolute path, no '..', no symbolic link (#1391)",
                     "minLength": 1,
                     "type": "string"
                   },
@@ -35668,7 +35668,7 @@
                     "type": "object"
                   },
                   "dataset_path": {
-                    "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the table the pipeline's first connect step names (its `source` + `table` attributes), when this node holds it, with the model step's `target` as the label; otherwise the built-in demo dataset",
+                    "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory staged in the node's import directory (imports/ under its data directory), named relative to it with a separator, e.g. ./churn (#1433). Default: the table the pipeline's first connect step names (its `source` + `table` attributes), when this node holds it, with the model step's `target` as the label; otherwise the built-in demo dataset",
                     "type": "string"
                   },
                   "decision_column": {
@@ -38869,7 +38869,7 @@
                     "type": "string"
                   },
                   "custom_data_path": {
-                    "description": "a churn dataset directory for cases that accept one (default: the built-in synthetic dataset)",
+                    "description": "a churn dataset directory for cases that accept one, relative to the node's import directory (imports/ under its data directory; #1433) (default: the built-in synthetic dataset)",
                     "type": "string"
                   },
                   "intent": {
@@ -42303,7 +42303,7 @@
     },
     "/v1/upload_dataset": {
       "post": {
-        "description": "Load a csv or jsonl file's TEXT, sent in the request, into a new partitioned table placed across the cluster - for a caller that cannot put a file on the node (add_dataset reads the node's filesystem). Same parsing, table creation and placement as add_dataset; at most 16 MiB of content (a larger file goes to a bucket and loads with load_dataset_object). Audited as dataset_added; the table then appears in list_datasets / system.datasets and can be passed to run as dataset_path <database>.<table>. (#1008) Requires orchestration:add_dataset.",
+        "description": "Load a csv or jsonl file's TEXT, sent in the request, into a new partitioned table placed across the cluster - for a caller that cannot put a file on the node (add_dataset reads the node's import directory). Same parsing, table creation and placement as add_dataset; at most 16 MiB of content (a larger file goes to a bucket and loads with load_dataset_object). Audited as dataset_added; the table then appears in list_datasets / system.datasets and can be passed to run as dataset_path <database>.<table>. (#1008) Requires orchestration:add_dataset.",
         "operationId": "upload_dataset",
         "requestBody": {
           "content": {
