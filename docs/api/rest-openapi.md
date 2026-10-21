@@ -12,7 +12,9 @@ Read capabilities may declare `post_alias` to also accept a JSON-body
 `POST /v1/<name>` without changing read classification or removing GET.
 The router and OpenAPI derive both from that registry flag. Pub/sub get/list/browse
 declare it (#1136), and so do `sql`, `get_record`, `list_records` and `query_metric`
-(#1231); aliases use `<name>_post` as their distinct OpenAPI operation id. A `sql`
+(#1231), and so does `chat` (#975: a turn's message and history belong in a body, and
+before #1011 a `POST /v1/chat` matched no route and got no reply at all, which read as a hung
+chat); aliases use `<name>_post` as their distinct OpenAPI operation id. A `sql`
 statement in a body is not bound by the ~4 KiB request line the GET form travels in;
 whichever form it arrives in, the executor authorizes each statement and audits a
 data-changing one as `data_changed` (#1229).

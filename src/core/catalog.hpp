@@ -188,6 +188,7 @@ inline constexpr std::string_view kExperimentPrefix = "experiment:";
 inline constexpr std::string_view kExperimentAssignmentPrefix =
     "experiment_assignment:";
 inline constexpr std::string_view kAgentPrefix = "agent:";
+inline constexpr std::string_view kRunProposalPrefix = "run_proposal:";
 inline constexpr std::string_view kWorkspaceMethodologyPrefix = "methodology:";
 inline constexpr std::string_view kJobPrefix = "job:";
 inline constexpr std::string_view kIndexPrefix = "index:";
@@ -268,6 +269,9 @@ inline std::string experiment_assignment_key(
 }
 inline std::string agent_key(const std::string& agent_id) {
     return std::string(kAgentPrefix) + agent_id;
+}
+inline std::string run_proposal_key(const std::string& proposal_id) {
+    return std::string(kRunProposalPrefix) + proposal_id;
 }
 inline std::string workspace_methodology_key(const std::string& methodology_id) {
     return std::string(kWorkspaceMethodologyPrefix) + methodology_id;

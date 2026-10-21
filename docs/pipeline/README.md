@@ -10,6 +10,7 @@ governance of who may run what is [../governance/](../governance/access-control.
 
 - [run-report.md](run-report.md) — all 21 methodologies' used/excluded features with reasons, alongside Model metrics, lineage and output tables, including streaming prequential metrics and original text business identifiers.
 - [run-report-prompt.md](run-report-prompt.md) — the run report artifact and the prompt that writes it: the engine computes every number, the narrator may only arrange them (#948 step 4).
+- [run-proposals.md](run-proposals.md) — a run the chat agent proposes and a person approves (#969): `propose_run` records an impact preview and creates nothing; `approve_run_proposal` creates exactly the previewed Project and Pipeline and runs it; `reject_run_proposal` is the cancel path.
 - [projects.md](projects.md) — the AI project (`zetta::pipeline::Project`) data model, lifecycle CRUD (incl. `delete_project`: inputs + graphs go, runs + models stay, #1009), and the execution graphs it owns.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::pipeline::ProjectInput`): raw intent/artifact ingestion + provenance, replicated.
 - [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→…→act taxonomy, and its schema-validated JSON form.

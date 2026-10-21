@@ -106,7 +106,7 @@ TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        168u); // +load_dataset_object (#1302), +2 app-credential capabilities (#1280), +2 network-record capabilities (#1281), +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        173u); // +5 run proposals (#969: propose_run, approve_run_proposal, reject_run_proposal, get_run_proposal, list_run_proposals), +load_dataset_object (#1302), +2 app-credential capabilities (#1280), +2 network-record capabilities (#1281), +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -115,6 +115,10 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     for (const char* name :
          {"create_collection", "put_record", "get_record", "delete_record", "list_records",
           "create_metric", "record_metric", "query_metric"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
+    for (const char* name : {"propose_run", "approve_run_proposal", "reject_run_proposal",
+                             "get_run_proposal", "list_run_proposals"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
     EXPECT_TRUE(registry.find("write_network_record"));

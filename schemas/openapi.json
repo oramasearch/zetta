@@ -1755,6 +1755,203 @@
         ]
       }
     },
+    "/v1/approve_run_proposal": {
+      "post": {
+        "description": "Say yes to a proposed run: create exactly the Project and Pipeline its preview named, approve the plan under your name, and run it through the correctness gate and the real engine with your own rights. Returns the run handle (poll get_run). Refuses a proposal that does not exist or was already decided. Requires orchestration:approve_run_proposal. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "approve_run_proposal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "proposal_id": {
+                    "description": "the proposal's id",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "proposal_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved",
+                            "rejected"
+                          ],
+                          "type": "string"
+                        },
+                        "decide": {
+                          "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                          "type": "object"
+                        },
+                        "decided_at": {
+                          "type": "string"
+                        },
+                        "decided_by": {
+                          "type": "string"
+                        },
+                        "graph": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                          "properties": {
+                            "creates_project": {
+                              "type": "boolean"
+                            },
+                            "dataset": {
+                              "properties": {
+                                "description": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "methodology": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "shape": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "template": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "proposal_id": {
+                          "type": "string"
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        },
+                        "rejection_reason": {
+                          "type": "string"
+                        },
+                        "run": {
+                          "description": "the run `run` started (run_id + engine + status) — poll get_run",
+                          "type": "object"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "proposal_id",
+                        "approval",
+                        "message",
+                        "preview",
+                        "run"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Approve a run proposal",
+        "tags": [
+          "job"
+        ]
+      }
+    },
     "/v1/assign": {
       "post": {
         "description": "Assign an entity deterministically before any proposed action, suppress model-driven actions in protected tiers, and durably log explicit exemptions. Mutates assignment state. Requires orchestration:assign.",
@@ -2534,7 +2731,7 @@
     },
     "/v1/chat": {
       "get": {
-        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads the agent's model (a local checkpoint dir). No persistent side effects. Requires api:query.",
+        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads the agent's model (a local checkpoint dir). It changes nothing on the node: a turn that asks to build something returns a run PROPOSAL (propose_run, under the caller's own rights) with an impact preview, and nothing is created until approve_run_proposal. Also accepts a JSON-body POST. Requires api:query.",
         "operationId": "chat",
         "parameters": [
           {
@@ -2544,6 +2741,17 @@
             "required": true,
             "schema": {
               "description": "the agent's id",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "when the turn proposes a run, the dataset it would train on (`database.table` or a dataset directory); the built-in demo dataset when omitted (#969)",
+            "in": "query",
+            "name": "dataset_path",
+            "required": false,
+            "schema": {
+              "description": "when the turn proposes a run, the dataset it would train on (`database.table` or a dataset directory); the built-in demo dataset when omitted (#969)",
               "minLength": 1,
               "type": "string"
             }
@@ -2564,6 +2772,18 @@
             "in": "query",
             "name": "history",
             "required": false
+          },
+          {
+            "description": "when the turn proposes a run, the rows it holds out to measure the model on data it did not train on (#953)",
+            "in": "query",
+            "name": "holdout_fraction",
+            "required": false,
+            "schema": {
+              "description": "when the turn proposes a run, the rows it holds out to measure the model on data it did not train on (#953)",
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            }
           },
           {
             "in": "query",
@@ -2662,6 +2882,213 @@
                         "pipeline": {
                           "description": "the proposed Pipeline, when the turn built one",
                           "type": "object"
+                        },
+                        "proposal": {
+                          "description": "when the turn is an `action`, the run it proposes (propose_run's output): the impact preview and the calls that approve or reject it. Nothing exists until approve_run_proposal — no Project, no Pipeline, no run (#969)",
+                          "type": "object"
+                        },
+                        "proposal_warning": {
+                          "description": "why an `action` turn carries no proposal (the ask did not compile, or the caller may not propose runs)",
+                          "type": "string"
+                        },
+                        "raw": {
+                          "description": "the raw generation, present only when `kind` is `unparsed`. For developers and traces - never render it to a user",
+                          "type": "string"
+                        },
+                        "reply": {
+                          "type": "string"
+                        },
+                        "rounds": {
+                          "type": "integer"
+                        },
+                        "tool_calls": {
+                          "items": {
+                            "properties": {
+                              "detail": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string"
+                              },
+                              "tool": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "reply",
+                        "tool_calls",
+                        "rounds",
+                        "grounded",
+                        "kind"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Chat with an agent",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads the agent's model (a local checkpoint dir). It changes nothing on the node: a turn that asks to build something returns a run PROPOSAL (propose_run, under the caller's own rights) with an impact preview, and nothing is created until approve_run_proposal. Also accepts a JSON-body POST. Requires api:query.",
+        "operationId": "chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "description": "the agent's id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dataset_path": {
+                    "description": "when the turn proposes a run, the dataset it would train on (`database.table` or a dataset directory); the built-in demo dataset when omitted (#969)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "history": {
+                    "description": "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what ran, not to the prose.",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "holdout_fraction": {
+                    "description": "when the turn proposes a run, the rows it holds out to measure the model on data it did not train on (#953)",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_new_tokens": {
+                    "maximum": 2048,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "max_rounds": {
+                    "maximum": 8,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "message": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "scope the answer to this project (name or uuid): its trained model's measure and ranked drivers are given to the agent, so it answers from what the pipeline actually produced instead of from priors (#914)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent",
+                  "message"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "grounded": {
+                          "description": "true only when a project was named AND it has a trained model whose real measure + ranked drivers were given to the agent. False means the reply rests on the model's priors — present it as such, never as a measured result (#914)",
+                          "type": "boolean"
+                        },
+                        "grounded_project": {
+                          "description": "the Project this reply was grounded in. Present whenever grounding happened — including when the engine chose it, because the caller named none and the most recent successful run's Project was used",
+                          "type": "string"
+                        },
+                        "grounding_warning": {
+                          "description": "why the reply is ungrounded, when it is",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "description": "the mode the agent declared for this turn: answer renders as prose, clarify is a question awaiting a reply, abstain is a refusal to present as such, action carries a proposed Pipeline. `unparsed` means the generation was not a valid envelope - `reply` then carries an honest failure sentence and the raw generation moves to `raw`, so it never reaches a chat window (#979)",
+                          "enum": [
+                            "action",
+                            "answer",
+                            "clarify",
+                            "abstain",
+                            "unparsed"
+                          ],
+                          "type": "string"
+                        },
+                        "pipeline": {
+                          "description": "the proposed Pipeline, when the turn built one",
+                          "type": "object"
+                        },
+                        "proposal": {
+                          "description": "when the turn is an `action`, the run it proposes (propose_run's output): the impact preview and the calls that approve or reject it. Nothing exists until approve_run_proposal — no Project, no Pipeline, no run (#969)",
+                          "type": "object"
+                        },
+                        "proposal_warning": {
+                          "description": "why an `action` turn carries no proposal (the ask did not compile, or the caller may not propose runs)",
+                          "type": "string"
                         },
                         "raw": {
                           "description": "the raw generation, present only when `kind` is `unparsed`. For developers and traces - never render it to a user",
@@ -17384,6 +17811,189 @@
         ]
       }
     },
+    "/v1/get_run_proposal": {
+      "get": {
+        "description": "Read one run proposal: its impact preview, whether it is proposed, approved or rejected, and what approving it created. Read-only. Requires api:query.",
+        "operationId": "get_run_proposal",
+        "parameters": [
+          {
+            "description": "the proposal's id",
+            "in": "query",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "description": "the proposal's id",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved",
+                            "rejected"
+                          ],
+                          "type": "string"
+                        },
+                        "decide": {
+                          "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                          "type": "object"
+                        },
+                        "decided_at": {
+                          "type": "string"
+                        },
+                        "decided_by": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                          "properties": {
+                            "creates_project": {
+                              "type": "boolean"
+                            },
+                            "dataset": {
+                              "properties": {
+                                "description": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "methodology": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "shape": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "template": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "proposal_id": {
+                          "type": "string"
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        },
+                        "rejection_reason": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "proposal_id",
+                        "approval",
+                        "message",
+                        "preview"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Read a run proposal",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_run_report": {
       "get": {
         "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. M-4 returns forecast backtests, seasonal-naive comparison, read/excluded data and ordered forecasts. M-7 returns anomaly metrics, ranked anomalies, output tables, and what was read or excluded. Assembled at query time from the run's model and its result tables, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. For M-3 segmentation, returns K selection, separation and stability metrics, input/exclusion facts and assignment/profile tables instead of supervised risk metrics. No side effects. (#958, #1042, #1043, #1046) Requires api:query.",
@@ -24941,6 +25551,202 @@
         ]
       }
     },
+    "/v1/list_run_proposals": {
+      "get": {
+        "description": "List run proposals, newest first, optionally only those still proposed, approved or rejected. Read-only. Requires api:query.",
+        "operationId": "list_run_proposals",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "proposed",
+                "approved",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "proposals": {
+                          "items": {
+                            "properties": {
+                              "agent": {
+                                "type": "string"
+                              },
+                              "approval": {
+                                "enum": [
+                                  "proposed",
+                                  "approved",
+                                  "rejected"
+                                ],
+                                "type": "string"
+                              },
+                              "decide": {
+                                "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                                "type": "object"
+                              },
+                              "decided_at": {
+                                "type": "string"
+                              },
+                              "decided_by": {
+                                "type": "string"
+                              },
+                              "graph_id": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "string"
+                              },
+                              "preview": {
+                                "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                                "properties": {
+                                  "creates_project": {
+                                    "type": "boolean"
+                                  },
+                                  "dataset": {
+                                    "properties": {
+                                      "description": {
+                                        "type": "string"
+                                      },
+                                      "path": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "type": "object"
+                                  },
+                                  "graph": {
+                                    "type": "string"
+                                  },
+                                  "methodology": {
+                                    "type": "string"
+                                  },
+                                  "project": {
+                                    "type": "string"
+                                  },
+                                  "shape": {
+                                    "type": "string"
+                                  },
+                                  "steps": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "template": {
+                                    "type": "string"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "project_id": {
+                                "type": "string"
+                              },
+                              "proposal_id": {
+                                "type": "string"
+                              },
+                              "proposed_at": {
+                                "type": "string"
+                              },
+                              "proposed_by": {
+                                "type": "string"
+                              },
+                              "rejection_reason": {
+                                "type": "string"
+                              },
+                              "run_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "proposal_id",
+                              "approval",
+                              "message",
+                              "preview"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "proposals"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List run proposals",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_runs": {
       "get": {
         "description": "Read every run with Project/Pipeline display names, status, stored metric summary, stamps and log/output counts. No side effects. Requires api:query.",
@@ -31345,6 +32151,347 @@
         ]
       }
     },
+    "/v1/propose_run": {
+      "post": {
+        "description": "Compile a plain-language ask into a Pipeline and record it as a proposal with an impact preview: the Project approving would create, the Pipeline's steps, and the dataset it would train on. Creates nothing else — no Project, no Pipeline, no run — until approve_run_proposal. This is how a chat agent asks to build and run something. Requires orchestration:propose_run.",
+        "operationId": "propose_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "description": "the agent whose chat turn is proposing this, when one is",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dataset": {
+                    "additionalProperties": false,
+                    "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                    "properties": {
+                      "as_of": {
+                        "description": "the cutoff as a finite epoch number or ISO-8601 timestamp; only rows with time_column <= as_of contribute",
+                        "oneOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "categorical_features": {
+                        "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                        "items": {
+                          "additionalProperties": false,
+                          "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "encoding": {
+                              "enum": [
+                                "one_hot"
+                              ],
+                              "type": "string"
+                            },
+                            "features": {
+                              "description": "the encoded feature names, one per level",
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "levels": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "maxItems": 32,
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "unseen": {
+                              "description": "how a value outside the fitted levels is encoded",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "column",
+                            "levels"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "entity_column": {
+                        "description": "the integer or text business key of the thing being scored, one row per entity",
+                        "type": "string"
+                      },
+                      "entity_key_mapping": {
+                        "additionalProperties": false,
+                        "description": "resolved text business ids and their derived int64 keys",
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "entries": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "derived_id": {
+                                  "type": "integer"
+                                },
+                                "original_value": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "derived_id",
+                                "original_value"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "entries"
+                        ],
+                        "type": "object"
+                      },
+                      "feature_columns": {
+                        "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
+                        "items": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "label_column": {
+                        "description": "the {0,1} training target",
+                        "type": "string"
+                      },
+                      "time_column": {
+                        "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "dataset_path": {
+                    "description": "`database.table` or a dataset directory on the node; the built-in demo dataset when omitted",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "graph_name": {
+                    "description": "name for the stored Pipeline (default: from the ask's words)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "holdout_fraction": {
+                    "description": "rows held out to measure the model on data it did not train on",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "the plain-language ask, e.g. 'predict which customers will churn'",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "model_name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "land the Pipeline on this existing project (name or uuid); when omitted, approving creates the new project the preview names",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "top_k": {
+                    "description": "at-risk list cap (0 = all)",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved",
+                            "rejected"
+                          ],
+                          "type": "string"
+                        },
+                        "decide": {
+                          "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                          "type": "object"
+                        },
+                        "decided_at": {
+                          "type": "string"
+                        },
+                        "decided_by": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                          "properties": {
+                            "creates_project": {
+                              "type": "boolean"
+                            },
+                            "dataset": {
+                              "properties": {
+                                "description": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "methodology": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "shape": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "template": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "proposal_id": {
+                          "type": "string"
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        },
+                        "rejection_reason": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "proposal_id",
+                        "approval",
+                        "message",
+                        "preview"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Propose a run",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/publish_event": {
       "post": {
         "description": "Publish one event to an exposed topic. `from` is the caller; delivery options above the caller's governance bounds are clamped and reported. Requires data:pubsub_publish.",
@@ -34912,6 +36059,196 @@
           }
         },
         "summary": "Register a brought model",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/reject_run_proposal": {
+      "post": {
+        "description": "Say no to a proposed run. Nothing is created. Idempotent; refuses a proposal that was already approved. Requires orchestration:reject_run_proposal.",
+        "operationId": "reject_run_proposal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "proposal_id": {
+                    "description": "the proposal's id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "why, in the caller's words",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "proposal_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved",
+                            "rejected"
+                          ],
+                          "type": "string"
+                        },
+                        "decide": {
+                          "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                          "type": "object"
+                        },
+                        "decided_at": {
+                          "type": "string"
+                        },
+                        "decided_by": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                          "properties": {
+                            "creates_project": {
+                              "type": "boolean"
+                            },
+                            "dataset": {
+                              "properties": {
+                                "description": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "methodology": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "shape": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "template": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "proposal_id": {
+                          "type": "string"
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        },
+                        "rejection_reason": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "proposal_id",
+                        "approval",
+                        "message",
+                        "preview"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Reject a run proposal",
         "tags": [
           "action"
         ]

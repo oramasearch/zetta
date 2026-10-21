@@ -130,6 +130,11 @@ void register_solution_capabilities(Registry& registry);
 // docs/solutions/action-integration.md).
 void register_action_capabilities(Registry& registry);
 
+// Propose a run, then approve or reject it (#969; docs/pipeline/run-proposals.md):
+// propose_run, approve_run_proposal, reject_run_proposal, get_run_proposal,
+// list_run_proposals. Called by register_core_capabilities.
+void register_run_proposal_capabilities(Registry& registry);
+
 // A Pipeline granted to an agent, run as that agent's tool (lake#238): the tool is
 // `pipeline_<graph>` (lowercase, non-alphanumerics as `_`). The graph must still be approved at the
 // version the grant pinned; it is gated, then run (`dataset`, `holdout`, `model_name` pass through).

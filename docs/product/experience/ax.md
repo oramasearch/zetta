@@ -98,6 +98,12 @@ relay it to a person.
   and timestamps their pages display. The same values and schemas are available
   over REST and MCP, so agents do not issue per-row Project, Model, or Run reads
   to label a page (#1184).
+- **Propose, then approve** ([run-proposals.md](../../pipeline/run-proposals.md), #969):
+  a chat turn that asks to build something returns a run proposal with an impact preview
+  (the Project it would create, the Pipeline's steps, the dataset) and creates nothing.
+  `approve_run_proposal` creates exactly what the preview named and runs it under the
+  approver's rights; `reject_run_proposal` is the cancel path. Every open proposal names
+  both calls in its `decide` block, so an external MCP client can render the choice.
 - **Data evidence before methodology choice**: `analyze_dataset` reports semantic
   types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
   into explicit features and exclusions. When the prediction unit is wrong or a
