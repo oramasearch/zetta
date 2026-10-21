@@ -112,10 +112,13 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // move_model_to_project, lake#654).
     const std::vector<Operation> pipeline_operations =
         permission_operations("pipelines:manage");
-    EXPECT_EQ(pipeline_operations.size(), 65u);  // +4 workspace methodology actions (zetta#1261), +append_methodology_artifact (lake#690)
+    EXPECT_EQ(pipeline_operations.size(), 68u);  // +propose_run/approve_run_proposal/reject_run_proposal (#969), +4 workspace methodology actions (zetta#1261), +append_methodology_artifact (lake#690)
     EXPECT_TRUE(std::ranges::contains(
         pipeline_operations,
         Operation{CapabilityDomain::Orchestration, "create_solution"}));
+    EXPECT_TRUE(std::ranges::contains(
+        pipeline_operations,
+        Operation{CapabilityDomain::Orchestration, "approve_run_proposal"}));
     EXPECT_TRUE(std::ranges::contains(
         pipeline_operations,
         Operation{CapabilityDomain::Orchestration, "run_solution"}));
