@@ -51,7 +51,15 @@ struct ReplicationManager::State {
     std::vector<am::ChangeHash> clock_heads;
     std::map<am::ActorId, std::uint64_t> clock;
     bool clock_valid = false;
+    // `mutex` guards the document and everything above. `snapshot_mutex` guards
+    // the `snapshot` pointer and the object it points at: a writer holds both
+    // (always `mutex` first) while it changes the snapshot, so either one is
+    // enough to read it. shared_snapshot() takes only `snapshot_mutex`, so a
+    // reader never waits for a long document operation such as save() or the
+    // Automerge half of merge() (#1248). Each writer holds `snapshot_mutex` only
+    // for its parsed-cache update.
     mutable std::mutex mutex;
+    mutable std::mutex snapshot_mutex;
 };
 
 ReplicationManager::ReplicationManager(std::string node_id,
@@ -363,6 +371,7 @@ void ReplicationManager::set(const std::string& key,
     state_->document.transact([&](am::Transaction& transaction) {
         transaction.put(am::root, key, encoded);
     });
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     cache_live_value(*state_, key, encoded);
     record_change(*state_, key);
@@ -400,6 +409,7 @@ void ReplicationManager::remove(const std::string& key) {
     state_->document.transact([&](am::Transaction& transaction) {
         transaction.put(am::root, key, encoded);
     });
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     account_encoded_value(*state_, key, &encoded);
     state_->encoded_values[key] = encoded;
@@ -439,6 +449,7 @@ bool ReplicationManager::update(const std::string& key,
             transaction.put(am::root, write->key, text);
         }
     });
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     for (const auto& [write, text] : encoded) {
         if (write->value) {
@@ -479,7 +490,8 @@ nlohmann::json ReplicationManager::snapshot() const {
 }
 
 std::shared_ptr<const nlohmann::json> ReplicationManager::shared_snapshot() const {
-    const std::lock_guard<std::mutex> lock(state_->mutex);
+    // Not `mutex`: a reader must not wait for save() or merge() (#1248).
+    const std::lock_guard<std::mutex> lock(state_->snapshot_mutex);
     return state_->snapshot;
 }
 
@@ -660,6 +672,7 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
     }
     if (changed_keys.empty()) return;
 
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     for (const std::string& key : changed_keys) {
         const std::optional<std::string> encoded =
@@ -692,6 +705,7 @@ bool ReplicationManager::restore(std::span<const std::byte> blob) {
     state_->document = std::move(*document);
     state_->document.set_actor_id(am::ActorId{zetta::util::uuid_to_bytes(node_id_)});
     state_->clock_valid = false;
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     state_->snapshot = std::make_shared<nlohmann::json>(nlohmann::json::object());
     state_->encoded_values.clear();
     state_->changes.clear();
@@ -734,6 +748,7 @@ bool ReplicationManager::retire_audit(
     }
     state_->document = std::move(*document);
     state_->clock_valid = false;
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     std::erase_if(state_->encoded_values, [](const auto& entry) {
         return entry.first.starts_with("audit:");

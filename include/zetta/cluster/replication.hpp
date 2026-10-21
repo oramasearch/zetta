@@ -131,7 +131,10 @@ public:
     nlohmann::json snapshot() const;
 
     // A shared immutable view of the writer-maintained parsed cache. Writers use
-    // copy-on-write when a reader still holds the current view (#1079).
+    // copy-on-write when a reader still holds the current view (#1079). It never
+    // waits for save() or for the Automerge part of merge(), only for a writer's
+    // brief cache update, so hot read paths (record store lookups, authorization)
+    // stay fast while the catalogue is serialized (#1248).
     std::shared_ptr<const nlohmann::json> shared_snapshot() const;
 
     // Return the keys whose effective values changed after `token`, together
