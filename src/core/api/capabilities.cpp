@@ -2527,7 +2527,10 @@ const nlohmann::json& dataset_summary_schema() {
              "what the rows were loaded from: csv, jsonl, json, parquet, a connector "
              "type (postgres, snowflake) or rows; empty for a table not loaded from a "
              "source (SQL, engine results)"}}},
-          {"replication", {{"type", "integer"}}},
+          {"replication",
+           {{"type", "string"},
+            {"description",
+             "replicate_to_all, partitioned or partitioned_with_replicas"}}},
           {"rows", {{"type", "integer"}}},
           {"size_bytes", {{"type", "integer"}}},
           {"columns",
@@ -3202,7 +3205,76 @@ ApiResult handle_list_indexes(const nlohmann::json&, ApiContext& context) {
 }
 
 const nlohmann::json& list_datasets_schema() {
-    static const nlohmann::json schema = empty_object_schema();
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"properties",
+         {{"detail",
+           {{"type", "string"},
+            {"enum", {"full", "summary"}},
+            {"default", "full"},
+            {"description",
+             "full (the default): every dataset's whole summary, as before — "
+             "columns, partition placement, and size_bytes measured from the "
+             "files. summary (#1195): only what a dataset list shows, from "
+             "counters the engine keeps, reading no row and no file; columns, "
+             "types and placement stay on get_dataset"}}}}}};
+    return schema;
+}
+
+// A dataset as list_datasets' `detail: "summary"` answers it (#1195): the
+// display fields of the full form, unchanged in name and meaning, plus
+// partition_count in place of the placement array.
+nlohmann::json dataset_list_summary_json(const zetta::data::DatasetSummary& dataset) {
+    return nlohmann::json{{"name", dataset.name},
+                          {"database", dataset.database},
+                          {"table_id", dataset.table_id},
+                          {"format", dataset.format},
+                          {"source_format", dataset.source_format},
+                          {"replication", dataset.replication},
+                          {"rows", dataset.rows},
+                          {"size_bytes", dataset.size_bytes},
+                          {"column_order",
+                           dataset.column_order_recorded ? "source" : "first_seen"},
+                          {"partition_count", dataset.partition_count},
+                          {"degraded", dataset.degraded},
+                          {"degraded_reason", dataset.degraded_reason},
+                          {"expected_partitions", dataset.expected_partitions},
+                          {"expected_rows", dataset.expected_rows}};
+}
+
+const nlohmann::json& dataset_list_summary_schema() {
+    static const nlohmann::json schema = [] {
+        const nlohmann::json& full = dataset_summary_schema().at("properties");
+        nlohmann::json properties = nlohmann::json::object();
+        for (const char* name :
+             {"name", "database", "table_id", "format", "source_format", "replication",
+              "rows", "size_bytes", "column_order", "degraded", "degraded_reason",
+              "expected_partitions", "expected_rows"}) {
+            properties[name] = full.at(name);
+        }
+        properties["rows"]["description"] =
+            "the row count: the local store's, or for a partition-only dataset the "
+            "sum of the partition catalog's row ranges (a fraction when degraded)";
+        properties["size_bytes"]["description"] =
+            "bytes of row data in the table's chunk files, from the engine's own "
+            "counter: equal to the full form's measured value once pending writes "
+            "are flushed";
+        properties["partition_count"] = {
+            {"type", "integer"},
+            {"minimum", 0},
+            {"description",
+             "the partition catalog entries this node sees (0 = not partitioned); "
+             "the full form's partitions array has this many entries"}};
+        nlohmann::json required = nlohmann::json::array();
+        for (const auto& [name, _] : properties.items()) required.push_back(name);
+        return nlohmann::json{{"type", "object"},
+                              {"description",
+                               "a dataset in list_datasets' summary form (#1195)"},
+                              {"required", std::move(required)},
+                              {"additionalProperties", false},
+                              {"properties", std::move(properties)}};
+    }();
     return schema;
 }
 
@@ -3212,16 +3284,40 @@ const nlohmann::json& list_datasets_output_schema() {
         {"required", {"datasets"}},
         {"additionalProperties", false},
         {"properties",
-         {{"datasets", {{"type", "array"}, {"items", dataset_summary_schema()}}}}}};
+         {{"detail",
+           {{"type", "string"},
+            {"enum", {"full", "summary"}},
+            {"description", "the form each entry of datasets takes"}}},
+          {"datasets",
+           {{"type", "array"},
+            {"description",
+             "one entry per dataset: the full summary, or with detail \"summary\" "
+             "the summary form"},
+            {"items",
+             {{"anyOf", {dataset_summary_schema(), dataset_list_summary_schema()}}}}}}}}};
     return schema;
 }
 
-ApiResult handle_list_datasets(const nlohmann::json&, ApiContext& context) {
+// The full form computes every dataset from its rows and files (Node::datasets:
+// columns and types from every stored row, size from the chunk files). The
+// summary form reads only counters (Node::dataset_list_summaries), so a page
+// that lists datasets costs per dataset, not per row. Both forms are this one
+// tool, behind its one right, and list the same datasets.
+ApiResult handle_list_datasets(const nlohmann::json& input, ApiContext& context) {
+    const std::string detail = input.value("detail", std::string{"full"});
     nlohmann::json datasets = nlohmann::json::array();
-    for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
-        datasets.push_back(dataset_summary_json(dataset));
+    if (detail == "summary") {
+        for (const zetta::data::DatasetSummary& dataset :
+             context.node.dataset_list_summaries()) {
+            datasets.push_back(dataset_list_summary_json(dataset));
+        }
+    } else {
+        for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
+            datasets.push_back(dataset_summary_json(dataset));
+        }
     }
     nlohmann::json output;
+    output["detail"] = detail;
     output["datasets"] = std::move(datasets);
     return ApiResult::success(std::move(output));
 }
@@ -11829,7 +11925,9 @@ void register_core_capabilities(Registry& registry) {
         "list_datasets",
         "List datasets",
         "Read the computed summary of every dataset — schema, row count, "
-        "size, format, replication, partition placement. No side effects.",
+        "size, format, replication, partition placement. With detail "
+        "\"summary\", only the fields a dataset list shows, from counters, "
+        "reading no row and no file. No side effects.",
         list_datasets_schema(),
         list_datasets_output_schema(),
         CapabilityKind::Read,

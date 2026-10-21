@@ -5,11 +5,26 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
 namespace zetta::storage {
 namespace fs = std::filesystem;
+
+namespace {
+
+// The bytes `{"_zid": id, "doc": doc}` takes as one chunk-file line, newline
+// included, without building that object (which would copy the row): the keys
+// dump in this order, so the line is `{"_zid":` id `,"doc":` doc `}`.
+std::uint64_t line_bytes(const std::string& id, std::size_t doc_bytes) {
+    constexpr std::size_t kFraming = std::string_view{R"({"_zid":)"}.size() +
+                                     std::string_view{R"(,"doc":)"}.size() +
+                                     std::string_view{"}"}.size() + 1;  // + newline
+    return nlohmann::json(id).dump().size() + doc_bytes + kFraming;
+}
+
+}  // namespace
 
 zetta::storage::JsonlStore::JsonlStore(fs::path dir) : dir_(std::move(dir)) {
     std::error_code ec;
@@ -22,6 +37,8 @@ void zetta::storage::JsonlStore::load() {
     ids_.clear();
     resident_sizes_.clear();
     resident_bytes_ = 0;
+    stored_sizes_.clear();
+    stored_bytes_ = 0;
     id_index_.clear();
     // Chunks are contiguous from 0; stop at the first missing file.
     for (std::size_t chunk = 0;; ++chunk) {
@@ -51,6 +68,10 @@ void zetta::storage::JsonlStore::load() {
             const std::size_t resident = line.size() * 2 + id.size() + 96;
             resident_sizes_.push_back(resident);
             resident_bytes_ += resident;
+            // The line as it is on disk (a legacy bare row is shorter than the
+            // current format until its chunk is next rewritten).
+            stored_sizes_.push_back(line.size() + 1);
+            stored_bytes_ += line.size() + 1;
             ids_.push_back(std::move(id));
             records_.push_back(std::move(doc));
         }
@@ -59,11 +80,13 @@ void zetta::storage::JsonlStore::load() {
 
 void zetta::storage::JsonlStore::add(std::string id, nlohmann::json doc) {
     const std::size_t index = records_.size();
-    const nlohmann::json line{{"_zid", id}, {"doc", doc}};
-    const std::size_t resident = line.dump().size() * 2 + id.size() + 96;
+    const std::string line = nlohmann::json{{"_zid", id}, {"doc", doc}}.dump();
+    const std::size_t resident = line.size() * 2 + id.size() + 96;
     records_.push_back(std::move(doc));
     resident_sizes_.push_back(resident);
     resident_bytes_ += resident;
+    stored_sizes_.push_back(line.size() + 1);
+    stored_bytes_ += line.size() + 1;
     ids_.push_back(id);
     id_index_.emplace(std::move(id), index);
     // Append to the row's chunk (derived from its index), rolling to a fresh
@@ -71,17 +94,24 @@ void zetta::storage::JsonlStore::add(std::string id, nlohmann::json doc) {
     // crash-resilient; can be optimized to a held stream later.
     const std::size_t chunk = index / kRecordsPerChunk;
     std::ofstream out(chunk_path(chunk), std::ios::app);
-    out << line.dump() << '\n';
+    out << line << '\n';
 }
 
 void zetta::storage::JsonlStore::update(const std::string& id,
                                         nlohmann::json doc) {
     const std::size_t i = index_of(id);
     if (i == kMissing) return;
-    const std::size_t resident = doc.dump().size() * 2 + id.size() + 96;
+    const std::size_t doc_bytes = doc.dump().size();
+    const std::size_t resident = doc_bytes * 2 + id.size() + 96;
     resident_bytes_ -= resident_sizes_[i];
     resident_bytes_ += resident;
     resident_sizes_[i] = resident;
+    // Counted now, written at the next flush: the counter says what the chunk
+    // file will hold, which is what it holds once the owner loop flushes.
+    const std::uint64_t stored = line_bytes(id, doc_bytes);
+    stored_bytes_ -= stored_sizes_[i];
+    stored_bytes_ += stored;
+    stored_sizes_[i] = stored;
     records_[i] = std::move(doc);
     // Record the chunk; do not rewrite it yet. Reconciling a table issues one
     // update PER ROW, and a chunk holds up to kRecordsPerChunk rows — so
@@ -99,8 +129,10 @@ void zetta::storage::JsonlStore::remove(const std::string& id) {
     const std::size_t i = index_of(id);
     if (i == kMissing) return;
     resident_bytes_ -= resident_sizes_[i];
+    stored_bytes_ -= stored_sizes_[i];
     records_.erase(records_.begin() + static_cast<std::ptrdiff_t>(i));
     resident_sizes_.erase(resident_sizes_.begin() + static_cast<std::ptrdiff_t>(i));
+    stored_sizes_.erase(stored_sizes_.begin() + static_cast<std::ptrdiff_t>(i));
     ids_.erase(ids_.begin() + static_cast<std::ptrdiff_t>(i));
     id_index_.erase(id);
     // Every row after `i` shifted down, so its chunk assignment may have changed
@@ -133,7 +165,14 @@ void zetta::storage::JsonlStore::persist_chunk(std::size_t chunk_index) {
     const std::size_t last = std::min(first + kRecordsPerChunk, records_.size());
     std::ofstream out(chunk_path(chunk_index), std::ios::trunc);
     for (std::size_t i = first; i < last; ++i) {
-        out << nlohmann::json{{"_zid", ids_[i]}, {"doc", records_[i]}}.dump() << '\n';
+        const std::string line =
+            nlohmann::json{{"_zid", ids_[i]}, {"doc", records_[i]}}.dump();
+        out << line << '\n';
+        // A rewrite puts a legacy bare row in the current format: keep the
+        // counter equal to what is now on disk.
+        stored_bytes_ -= stored_sizes_[i];
+        stored_sizes_[i] = line.size() + 1;
+        stored_bytes_ += stored_sizes_[i];
     }
 }
 

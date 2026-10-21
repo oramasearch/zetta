@@ -58,6 +58,10 @@ struct DatasetSummary {
     std::vector<DatasetColumn> typed_columns;
     std::vector<DatasetPlacement> partitions;  // partition placement across the
                                                //   cluster (empty = not partitioned)
+    // How many partition catalog entries this node sees for the dataset: the
+    // size of `partitions`, set on its own by the lean list (#1195), which
+    // leaves `partitions`, `columns` and `typed_columns` empty.
+    std::uint64_t partition_count = 0;
 
     // **Degraded** (#837): this node cannot see the whole dataset. The partition
     // manifest says the dataset has `expected_partitions` catalog entries and

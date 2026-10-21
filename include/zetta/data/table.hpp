@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -139,6 +140,16 @@ public:
     zetta::storage::StorageEngine& store() { return *store_; }
     const zetta::storage::StorageEngine& store() const { return *store_; }
 
+    // Swap the engine that holds this table's local rows, returning the old one.
+    // The new engine must already hold those rows (typically it wraps the old
+    // one): nothing is copied. A test wraps the JsonlStore in an engine that
+    // counts reads, to prove a path reads no row (#1195, the lean dataset list).
+    std::unique_ptr<zetta::storage::StorageEngine> replace_store(
+        std::unique_ptr<zetta::storage::StorageEngine> store) {
+        std::swap(store_, store);
+        return store;
+    }
+
     // Insert a row (persisted immediately + captured into the CRDT); returns the
     // new row count. The row's id is generated here and used as its CRDT key.
     // On a partition_only() table the capture is skipped — the row lands in the
@@ -177,7 +188,7 @@ public:
     void release_local_rows();
 
     // Configure this table's partitioner — the per-table policy that maps a row
-    // to a partition and a partition to its owner node(s) (the Partitioner seam,
+    // to a partition and a partition to its owner node(s) (the Partitioner interface,
     // ADR-31 / ENT-37). null = not partitioned (the default). This is in-memory
     // configuration only in this slice; persisting/replicating the selection and
     // the partition placements is the partition catalog (#510) and the

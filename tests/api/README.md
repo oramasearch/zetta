@@ -16,6 +16,10 @@ compares their subsystem ordering and exact replication byte/item values
 (#1167). Both parity suites remain
 required, alongside the MCP malformed-request and receive/browse long-poll
 regressions.
+`test_dataset_list_summary.cpp` covers `list_datasets`' `detail: "summary"` form
+(#1195): equal to the full form on every shared field, no row read (a counting
+engine wraps every table) and no file read (the chunk files are deleted) at 19 and
+50 datasets, and counters that follow mutations and a degraded dataset.
 Page-list parity creates linked Project, Pipeline, Run, Model, and Study records,
 then compares `list_runs`, `list_models`, and `list_studies` values across REST
 and MCP (#1184).

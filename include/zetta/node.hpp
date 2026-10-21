@@ -685,6 +685,16 @@ public:
     // dataset.hpp / docs/data/system-datasets.md.
     std::vector<zetta::data::DatasetSummary> datasets() const;
 
+    // The same datasets, for a list (#1195): name, database, table id, format,
+    // source format, replication, rows, size_bytes, partition_count and the
+    // degraded fields, each equal to what datasets() reports. `columns`,
+    // `typed_columns` and `partitions` stay empty. It reads no row and no file:
+    // rows come from the store's size (or, for a partition-only table, the
+    // catalog's row ranges), size_bytes from the store's own counter
+    // (StorageEngine::stored_bytes), and the partition counts from one pass over
+    // the catalog, so its cost grows with datasets and partitions, never rows.
+    std::vector<zetta::data::DatasetSummary> dataset_list_summaries() const;
+
     // In-memory cache of consent-gated cloud inspect results (CloudInspector;
     // docs/cloud/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
     // — it is neither replicated nor persisted (a live inspect is session-local;
