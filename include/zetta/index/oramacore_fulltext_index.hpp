@@ -74,8 +74,9 @@ public:
     // free-text query, scored by BM25F across all of the index's fields; the row
     // ids are returned **ranked by relevance** (score desc, then row id asc for a
     // stable, reproducible order), capped to `query.top_k` (0 = no cap). When set,
-    // `query.field` must be one of the index's fields (else InvalidArgument), for
-    // parity with the seam — scoring still spans all fields (BM25F weights them).
+    // `query.field` must be one of the index's fields (else InvalidArgument), and
+    // only that field is searched and scored (lake#782): a build over several
+    // fields keeps one single-field index per field beside the combined one.
     // NotFound when no index was built under spec.key().
     IndexQueryResult query(const IndexSpec& spec,
                            const IndexQuery& query) const override;

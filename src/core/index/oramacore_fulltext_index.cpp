@@ -31,12 +31,19 @@ std::optional<std::string> scalar_text(const nlohmann::json& value) {
 
 // One built BM25F index: the engine's in-memory index plus the mapping from its
 // dense, insertion-ordered DocId back to zetta's stable row id (its `_zid`). The
-// engine speaks DocId (a uint32); the seam speaks row id (a string) — this vector
-// is the bridge (rowid_by_docid[doc_id] == the row's id).
+// engine speaks DocId (a uint32); the IndexBackend interface speaks row id (a
+// string) — this vector maps one to the other (rowid_by_docid[doc_id] == the row's id).
+//
+// The engine's search always scores across every field, so a query naming one
+// field (lake#782) is answered by a second index holding only that field. Each
+// per-field index is fed every row in the same order as the combined one, a row
+// without the field as an empty document, so its DocIds map through the same
+// rowid_by_docid. An index over one field needs none: the combined index is it.
 struct OramaCoreFulltextIndex::Impl {
     struct Built {
         oramacore::index::MemoryIndex index;
         std::vector<std::string> rowid_by_docid;
+        std::map<std::string, oramacore::index::MemoryIndex, std::less<>> by_field;
     };
     std::map<std::string, Built> built;  // spec.key() -> built index
 };
@@ -70,7 +77,13 @@ IndexStatus OramaCoreFulltextIndex::build(
         field_configs.push_back(oramacore::index::FieldConfig{field, {}});
     }
 
-    Impl::Built built{oramacore::index::MemoryIndex(std::move(field_configs)), {}};
+    Impl::Built built{oramacore::index::MemoryIndex(std::move(field_configs)), {}, {}};
+    if (spec.fields.size() > 1) {
+        for (const std::string& field : spec.fields) {
+            built.by_field.try_emplace(field, std::vector<oramacore::index::FieldConfig>{
+                                                  oramacore::index::FieldConfig{field, {}}});
+        }
+    }
     // Index each row id once. Partitions are disjoint chunks of the table, but
     // guard a row appearing in two partitions (the tolerance InMemoryIndexBackend
     // gives) so it can't be double-counted into its BM25F term frequencies or
@@ -90,7 +103,15 @@ IndexStatus OramaCoreFulltextIndex::build(
                 }
             }
             // add() assigns dense ids in call order; keep rowid_by_docid aligned
-            // so a hit's DocId maps straight back to its row id.
+            // so a hit's DocId maps straight back to its row id. Every per-field
+            // index takes every row, so its ids stay aligned too.
+            for (auto& [field, field_index] : built.by_field) {
+                oramacore::index::Document field_doc;
+                if (const auto text = engine_doc.find(field); text != engine_doc.end()) {
+                    field_doc.emplace(field, text->second);
+                }
+                field_index.add(field_doc);
+            }
             const auto doc_id = built.index.add(engine_doc);
             if (doc_id >= built.rowid_by_docid.size()) {
                 built.rowid_by_docid.resize(doc_id + 1);
@@ -107,8 +128,8 @@ IndexQueryResult OramaCoreFulltextIndex::query(const IndexSpec& spec,
                                                const IndexQuery& query) const {
     IndexQueryResult result;
 
-    // A named field must be one this index covers (parity with the seam). BM25F
-    // scores across all fields regardless — the field just validates here.
+    // A named field must be one this index covers, and then only that field is
+    // searched (lake#782): a row matching in another field is not a hit.
     if (!query.field.empty() &&
         std::find(spec.fields.begin(), spec.fields.end(), query.field) ==
             spec.fields.end()) {
@@ -134,8 +155,14 @@ IndexQueryResult OramaCoreFulltextIndex::query(const IndexSpec& spec,
     // Rank by BM25F relevance. The engine already orders hits score-desc with a
     // stable DocId tiebreak; mapping each hit's DocId back to its row id preserves
     // that deterministic, reproducible order.
-    const oramacore::index::SearchResult hits =
-        built->second.index.search(*text, query.top_k);
+    const oramacore::index::MemoryIndex* searched = &built->second.index;
+    if (!query.field.empty()) {
+        if (const auto one = built->second.by_field.find(query.field);
+            one != built->second.by_field.end()) {
+            searched = &one->second;
+        }
+    }
+    const oramacore::index::SearchResult hits = searched->search(*text, query.top_k);
     result.row_ids.reserve(hits.hits.size());
     result.scores.reserve(hits.hits.size());
     for (const oramacore::index::Hit& hit : hits.hits) {
