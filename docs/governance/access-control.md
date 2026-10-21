@@ -702,11 +702,15 @@ a `governance::Resource` in the executor. Programmatically:
 
 ### Enforcement (deny-by-default, admin/unrestricted bypasses)
 
-Every check bypasses object scoping for three identities: the trusted
-in-process local session (empty acting key), a legacy AccessKey (it carries
-only coarse scope/caps), and any user holding the operation as a **flat** right (so
-**admin — flat everything — reaches every object**). Only a user whose right is
-*exclusively* object-scoped is narrowed.
+Every check bypasses object scoping for two identities: the trusted
+in-process local session (empty acting key, which no network surface produces)
+and any user holding the operation as a **flat** right (so
+**admin — flat everything — reaches every object**). A user whose right is
+*exclusively* object-scoped is narrowed. A **legacy AccessKey** (in-process only:
+the headed console's key session, a library caller; over HTTP and `/mcp` an
+AccessKey id is refused at the gate) has no object-scoped grants, so it reaches an
+object exactly when it holds the operation as a flat capability of its own, and is
+refused otherwise. It used to bypass every object control (#762).
 
 - **SQL executor** (`src/core/query/executor.cpp`, the one choke point every
   statement flows through): `Node::column_scope(identity, op, db, table)` returns the
@@ -921,10 +925,13 @@ column grants on:
   (the numeric DDF aggregate path can't apply a row predicate — refuse rather than
   leak an aggregate over hidden rows).
 
-Three identities **bypass** RLS entirely (mirroring the #747 object-scoping bypass):
-the trusted in-process local session (empty acting key), a legacy AccessKey,
-and any **admin** user (one holding `cluster:admin` — the built-in `admin` does).
-So **admin sees every row regardless of policy**. `Node::bypasses_row_security`
+Three identities **bypass** RLS entirely: the trusted in-process local session
+(empty acting key), any **admin** user (one holding `cluster:admin` — the built-in
+`admin` does), and a legacy AccessKey that holds `api:cluster_admin` as a
+capability of its own. So **admin sees every row regardless of policy**. Any
+other legacy AccessKey is bound by row security like a non-admin user (#762); it
+has no user name or roles, so only a policy that names no roles, with a condition
+that does not need `current_user()`, can admit a row. `Node::bypasses_row_security`
 is the decision; `current_user()` / `current_roles()` are resolved from the acting
 user via `find_user_by_id` + `roles_for_user`.
 

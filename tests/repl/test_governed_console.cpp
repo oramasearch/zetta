@@ -364,6 +364,16 @@ TEST(GovernedConsole, QueryOnlyKeyCannotChangeData) {
     ASSERT_TRUE(key);
     console.set_session_key(key->id());
 
+    // A SELECT needs the key's own sql:read too (#762): with only api:query the
+    // engine refuses it, where the key used to read the table whole.
+    const Result unread = console.run(Frontend::Sql, kSqlSelect);
+    EXPECT_FALSE(unread.ok());
+    EXPECT_NE(unread.error.find("permission denied"), std::string::npos) << unread.error;
+    caps.grant(CapabilityDomain::Data, "read");
+    key = principal->create_key(Scope{}, caps);
+    ASSERT_TRUE(key);
+    console.set_session_key(key->id());
+
     for (const char* statement :
          {"INSERT INTO shop.items (sku, qty) VALUES ('C3', 1);",
           "UPDATE shop.items SET qty = 0;", "DELETE FROM shop.items;",

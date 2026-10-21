@@ -86,8 +86,11 @@ node's access keys (read straight off `Node::principals()` → each principal's
 keys, the same source as the Admin panel, re-read each frame). The default is
 **`(unauthenticated local)`** (the empty key id). Selecting a key makes the session
 **capability-scoped** to it: a key that holds the right runs, a key that lacks it
-is blocked — and the block is audited, demonstrating the deny path. A selected key
-that is later dropped falls back to the local session.
+is blocked — and the block is audited, demonstrating the deny path. A key session's
+SQL runs as that key inside the engine too, so a table needs the key's own flat
+`sql:read` and row security binds it unless the key holds `cluster:admin` (#762;
+a key used to skip both). A selected key that is later dropped falls back to the
+local session.
 
 ## No new JSON boundary
 

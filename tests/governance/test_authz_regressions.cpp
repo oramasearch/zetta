@@ -244,9 +244,12 @@ TEST_F(AuthzNode, Finding761_BuiltinRolesCannotBeEditedOrDropped) {
 // ===== non-user identities ===================================================
 // Part 1 is fixed (#799, auth always on): see Finding762 over HTTP below. Part 2:
 // a token always resolves to a USER, so row security and masking bind every
-// remote caller. The in-process local session and a legacy AccessKey still
-// bypass object controls (Node::bypasses_row_security), but neither is reachable
-// over HTTP or /mcp — asserted below by presenting an AccessKey id as a bearer.
+// remote caller, and an AccessKey id presented as a bearer is refused. In
+// process, a legacy AccessKey (the headed console's key session, a library
+// caller) used to bypass row security, masking and object grants; it is now held
+// to them (fixed, #762): a table only with a flat sql:read of its own, row
+// security unless it holds cluster:admin. Only the trusted local session (an
+// empty acting id, which no network surface produces) still reads everything.
 
 TEST_F(AuthzNode, Finding762_RowSecurityBindsATokenResolvedUser) {
     run_local(
@@ -257,6 +260,57 @@ TEST_F(AuthzNode, Finding762_RowSecurityBindsATokenResolvedUser) {
     ASSERT_TRUE(r.ok()) << r.error;
     ASSERT_EQ(r.rows.size(), 2u);
     for (const auto& row : r.rows) EXPECT_EQ(row["owner"], "ada");
+}
+
+TEST_F(AuthzNode, Finding762_ALegacyAccessKeyIsHeldToRowSecurityAndGrants) {
+    run_local(
+        "CREATE POLICY own_people ON app.people FOR SELECT "
+        "USING (owner = current_user());");
+    auto service = node.create_principal("svc");
+    ASSERT_TRUE(service);
+    const auto key_with = [&](std::vector<std::string> actions) {
+        zetta::governance::CapabilitySet capabilities;
+        for (const auto& action : actions) {
+            capabilities.grant(action == "cluster_admin" ? CapabilityDomain::Api
+                                                         : CapabilityDomain::Data,
+                               action);
+        }
+        auto key = service->create_key(zetta::governance::unrestricted_scope(),
+                                       capabilities);
+        EXPECT_TRUE(key);
+        return key ? key->id() : std::string{};
+    };
+    const auto as_key = [&](const std::string& key_id) {
+        return QueryService{node, nullptr, key_id, /*acting_is_user=*/false};
+    };
+
+    // No sql:read of its own: refused, where it used to read every row.
+    const auto bare = as_key(key_with({})).run("SELECT * FROM app.people;", "");
+    EXPECT_TRUE(refused(bare)) << bare.error;
+    EXPECT_TRUE(bare.rows.empty());
+
+    // sql:read: the table, but row security binds it. A key has no user name, so
+    // owner = current_user() admits no row.
+    const auto reader = as_key(key_with({"read"})).run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(reader.ok()) << reader.error;
+    EXPECT_TRUE(reader.rows.empty());
+    EXPECT_FALSE(node.bypasses_row_security(key_with({"read"}), false));
+
+    // cluster:admin on the key itself is the one way past row security.
+    const std::string admin_key = key_with({"read", "cluster_admin"});
+    EXPECT_TRUE(node.bypasses_row_security(admin_key, false));
+    const auto admin = as_key(admin_key).run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(admin.ok()) << admin.error;
+    EXPECT_EQ(admin.rows.size(), 3u);
+
+    // Object grants: a key reaches a tool or a blob only by its own flat right.
+    EXPECT_FALSE(node.may_call_tool(key_with({}), false, "server_info"));
+    EXPECT_FALSE(node.authorize_blob(key_with({}), false, "any-blob"));
+    EXPECT_TRUE(node.authorize_blob(key_with({"blob_read"}), false, "any-blob"));
+    // The trusted local session still reads every row.
+    const auto local_rows = local.run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(local_rows.ok()) << local_rows.error;
+    EXPECT_EQ(local_rows.rows.size(), 3u);
 }
 
 // ===== #765: a row policy with no condition admitted every row ================

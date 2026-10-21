@@ -920,12 +920,14 @@ public:
     // ----- Object-scoped authorization (fine-grained grants, #747) -----------
     // The object tier layered over roles (#746): the acting identity's grants
     // decide access to a SPECIFIC object (table / column / blob / MCP tool), not
-    // just to a resource kind. Deny-by-default. Three identities BYPASS object
-    // scoping: an empty acting id (the trusted unauthenticated-local session), a
-    // legacy AccessKey (`acting_is_user` false, non-empty — it carries only coarse
-    // scope/caps), and any user that holds the operation as a FLAT, unscoped right
-    // (admin holds every one). Only a user whose right is exclusively object-scoped
-    // is narrowed.
+    // just to a resource kind. Deny-by-default. Two identities BYPASS object
+    // scoping: an empty acting id (the trusted unauthenticated-local session, which
+    // no network surface can produce) and any user that holds the operation as a
+    // FLAT, unscoped right (admin holds every one). A user whose right is
+    // exclusively object-scoped is narrowed. A legacy AccessKey (`acting_is_user`
+    // false, non-empty) has no object-scoped grants, so it is allowed exactly when
+    // it holds the operation as a flat capability of its own, and denied otherwise
+    // (#762: it used to bypass every object control).
 
     // Whether the identity may perform `operation` on `object` — the general
     // single-object decision (blob / MCP tool / any Resource).
@@ -1097,11 +1099,11 @@ public:
         const zetta::data::VirtualTable& definition) const;
 
     // Whether the acting identity BYPASSES row-level security (sees/writes every
-    // row regardless of policy). Three identities bypass, mirroring the object-
-    // scoping bypass (#747): an empty acting id (the trusted unauthenticated-local
-    // session), a legacy AccessKey (`acting_is_user` false, non-empty), and any
-    // user that is an admin (holds the cluster:admin permission — the built-in
-    // admin does). Every other user is subject to RLS. Deny-by-default: only these
+    // row regardless of policy). Three identities bypass: an empty acting id (the
+    // trusted unauthenticated-local session), any user that is an admin (holds the
+    // cluster:admin permission — the built-in admin does), and a legacy AccessKey
+    // that holds cluster:admin as a capability of its own (#762: every legacy key
+    // used to bypass). Every other identity is subject to RLS. Deny-by-default: only these
     // widen; a non-bypass user with no applicable policy on a protected table sees
     // no rows.
     bool bypasses_row_security(const std::string& acting_id,
