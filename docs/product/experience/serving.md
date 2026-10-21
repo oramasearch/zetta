@@ -13,6 +13,12 @@ per-entity choice ([#648](https://github.com/oramasearch/zetta/issues/648)):
   state is visible in `system.models` / `system.indexes` and
   audited. Un-exposing is one action.
 
+A **pipeline** is published the same way (zetta#1289): `expose_pipeline`
+pins an approved pipeline behind `POST /v1/pipelines/{name}/run`, which runs
+the pinned version with the caller's input, checked against the schema the
+exposer declared, under the caller's own grants, rate and size limited and
+audited ([../../api/serving.md](../../api/serving.md#published-pipelines-zetta1289)).
+
 This is the `serve` step's full meaning: the pipeline doesn't just produce
 artifacts — it stands them up as endpoints the customer's own systems call,
 with the data and the model never leaving the cluster.

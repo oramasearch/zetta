@@ -39,6 +39,13 @@ class Model;
 namespace zetta::index {
 struct SearchResult;
 }
+namespace zetta::pipeline {
+class Project;
+class ProjectGraph;
+}
+namespace zetta::cluster {
+class Cluster;
+}
 
 namespace zetta::api {
 
@@ -101,7 +108,67 @@ struct ServeRequest {
     // The gate (#745) resolved a token to a user, so `acting_key` is a user id:
     // authorize against the user's effective permissions, not an AccessKey.
     bool acting_is_user = false;
+    // What a published pipeline's run needs (zetta#1289): the registry whose
+    // `run` executes it, the owner of its background work, and the cluster.
+    // Unused by predict / search / blob.
+    const Registry* registry = nullptr;
+    BackgroundActions* background = nullptr;
+    const zetta::cluster::Cluster* cluster = nullptr;
 };
+
+// --- published pipelines (zetta#1289) ---------------------------------------
+//
+// expose_pipeline pins a pipeline and publishes its served route on every node:
+//
+//   POST /v1/pipelines/{name}/run              run it with the caller's input
+//   GET  /v1/pipelines/{name}/runs/{run_id}    a run it served: status, outputs
+//
+// A served run is governed like predict, and more: the caller's own key must
+// hold `data:run_pipeline` (flat, or scoped ON PROJECT to the pipeline's
+// project) AND read access to every table the pinned pipeline reads, so the
+// caller's grants decide, never the exposer's. The body is checked against the
+// size limit and the input schema the exposer declared, the call is admitted by
+// the per-caller rate limit, audited (`serve:run_pipeline:<id>`), and traced.
+
+// A pipeline found by its {name} path segment: the graph id, or the name of an
+// exposed pipeline (unique among exposed pipelines, or `conflict`).
+struct PublishedPipeline {
+    std::shared_ptr<zetta::pipeline::Project> project;
+    std::shared_ptr<zetta::pipeline::ProjectGraph> graph;
+};
+ApiResult resolve_published_pipeline(Node& node, const std::string& target,
+                                     PublishedPipeline& found);
+
+std::string pipeline_endpoint_path(const std::string& graph_id);
+std::string pipeline_run_status_path(const std::string& graph_id, const std::string& run_id);
+
+// A served run's answer, and a status read's: { pipeline_id, project, name,
+// version, run_id, status, outputs, status_endpoint, error? }. The output
+// schema of run_published_pipeline / get_published_pipeline_run and the
+// OpenAPI response of the two served routes.
+const nlohmann::json& pipeline_run_response_schema();
+
+// The default declared input when the exposer declares none: an object that
+// admits no fields, so a caller can pass nothing the exposer did not allow.
+const nlohmann::json& default_pipeline_input_schema();
+
+// Serve one run of a published pipeline: `request.input` is the declared input
+// (passed to `run` with the pipeline's pinned version). Order: resolve ->
+// authorize `data:run_pipeline` (audited either way) -> exposure check -> size
+// limit -> the declared input schema -> rate limit -> the caller's read access
+// to every table the run reads -> `run`. Returns { pipeline_id, project, name,
+// version, run_id, status, outputs, status_endpoint }. Main-thread only;
+// non-throwing.
+ApiResult serve_pipeline_run(Node& node, const ServeRequest& request);
+
+// Serve one run's status: `request.input` is { run_id }. The run must have been
+// served by this pipeline to this same caller, or it is `not_found`. Returns {
+// pipeline_id, version, run_id, status, outputs, error? }. Main-thread only.
+ApiResult serve_pipeline_run_status(Node& node, const ServeRequest& request);
+
+// True once a run's status is terminal (succeeded or failed): the served
+// synchronous mode stops waiting then.
+bool pipeline_run_finished(const ApiResult& status);
 
 // Serve one batch-predict request over an exposed model. Main-thread only
 // (reads the Node tree — the adapter marshals via MainThreadBridge). Order:

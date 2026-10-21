@@ -111,6 +111,8 @@ int rest_status(const ApiResult& result) {
     if (code == "unknown_capability") return 404;
     if (code == "engine_error") return 422;
     if (code == "busy") return 503;
+    if (code == "rate_limited") return 429;       // a published pipeline (zetta#1289)
+    if (code == "payload_too_large") return 413;  // a published pipeline (zetta#1289)
     return 500;
 }
 
@@ -237,8 +239,9 @@ nlohmann::json error_envelope_schema() {
                 {"description",
                  "invalid_input (400) · unauthorized / consent_required "
                  "(403) · not_found / unknown_capability (404) · "
-                 "conflict / fenced / held (409) · range_not_satisfiable (416) · "
-                 "engine_error (422) · busy (503) · quota_exceeded (507)"}}},
+                 "conflict / fenced / held (409) · payload_too_large (413) · "
+                 "range_not_satisfiable (416) · engine_error (422) · rate_limited (429) · "
+                 "busy (503) · quota_exceeded (507)"}}},
               {"message",
                {{"type", "string"},
                 {"description", "the engine's reason, verbatim"}}},
@@ -438,6 +441,55 @@ nlohmann::json openapi_document(const Registry& registry,
     serve_search_operation["responses"] =
         serving_responses(search_response_schema());
     paths["/v1/indexes/{name}/search"]["get"] = std::move(serve_search_operation);
+
+    // Published pipelines (zetta#1289): the served run and its status read.
+    nlohmann::json run_pipeline_operation;
+    run_pipeline_operation["operationId"] = "serve_run_pipeline";
+    run_pipeline_operation["summary"] = "Run a published pipeline (served pipeline endpoint)";
+    run_pipeline_operation["description"] =
+        "Run a PUBLISHED pipeline's pinned version with the body as its declared input "
+        "(expose_pipeline input_schema). The route exists only while the pipeline is exposed; "
+        "access requires data:run_pipeline and read access to the tables it reads. Rate and "
+        "size limited per caller (429, 413). Waits up to the pipeline's sync_timeout_ms for "
+        "the run to finish (200 with its outputs) unless ?wait=false, else answers 202 with "
+        "the run id and status_endpoint. Every request is a serve:run_pipeline trace span "
+        "and is audited.";
+    run_pipeline_operation["tags"] = nlohmann::json::array({"serving"});
+    run_pipeline_operation["parameters"] = nlohmann::json::array(
+        {name_parameter("the pipeline's uuid, or its name when one exposed pipeline has it"),
+         {{"name", "wait"},
+          {"in", "query"},
+          {"required", false},
+          {"description", "false: answer at once with the run id (202)"},
+          {"schema", {{"type", "boolean"}}}}});
+    run_pipeline_operation["requestBody"] = {
+        {"required", false},
+        {"content",
+         {{"application/json", {{"schema", {{"type", "object"}}}}}}}};
+    run_pipeline_operation["responses"] = serving_responses(pipeline_run_response_schema());
+    run_pipeline_operation["responses"]["202"] = {
+        {"description", "the run started and is still running"},
+        {"content",
+         {{"application/json",
+           {{"schema", success_envelope_schema(pipeline_run_response_schema())}}}}}};
+    paths["/v1/pipelines/{name}/run"]["post"] = std::move(run_pipeline_operation);
+
+    nlohmann::json pipeline_run_operation;
+    pipeline_run_operation["operationId"] = "serve_pipeline_run";
+    pipeline_run_operation["summary"] = "A published pipeline's run (served pipeline endpoint)";
+    pipeline_run_operation["description"] =
+        "The status and outputs of a run a published pipeline served to the same caller; "
+        "another caller's run is not found. Access requires data:run_pipeline.";
+    pipeline_run_operation["tags"] = nlohmann::json::array({"serving"});
+    pipeline_run_operation["parameters"] = nlohmann::json::array(
+        {name_parameter("the pipeline's uuid, or its name"),
+         {{"name", "run_id"},
+          {"in", "path"},
+          {"required", true},
+          {"description", "the run id the served run answered"},
+          {"schema", {{"type", "string"}}}}});
+    pipeline_run_operation["responses"] = serving_responses(pipeline_run_response_schema());
+    paths["/v1/pipelines/{name}/runs/{run_id}"]["get"] = std::move(pipeline_run_operation);
 
     // The object capability's byte routes and bucket-route aliases (#1005):
     // path-templated with raw bodies, declared beside the capabilities they

@@ -322,7 +322,7 @@ terms of the **permission vocabulary** (below), not raw capabilities:
 
 | role   | permissions |
 |--------|-------------|
-| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `studies:promote`, `studies:delete`, `serving:manage`, `cloud:manage` (#799, #1138, #1158), **and the pub/sub atoms** `pubsub:*` (#1029) |
+| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `studies:promote`, `studies:delete`, `serving:manage` (which includes `expose_pipeline` / `unexpose_pipeline`, zetta#1289), `serving:run`, `cloud:manage` (#799, #1138, #1158), **and the pub/sub atoms** `pubsub:*` (#1029) |
 | writer | `sql:read`, `sql:write`, `sql:ddl`, `mcp:call`, `serving:read` |
 | reader | `sql:read`, `serving:read`, `mcp:call` |
 
@@ -547,6 +547,7 @@ can never disagree:
 | `sql:ddl`       | `data:ddl`                     | create/drop databases + tables |
 | `mcp:call`      | `api:query`                    | invoke the MCP/REST capability surface (the API-call right) |
 | `serving:read`  | `data:predict`, `data:search`  | call the governed serving routes (predict + search) |
+| `serving:run`   | `data:run_pipeline`            | run a published pipeline (its served route, `run_published_pipeline`); object-scopable `ON PROJECT <name>`; the caller also needs `sql:read` on the tables it reads (zetta#1289) |
 | `users:manage`  | `api:manage_users`             | create/disable/drop users |
 | `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
 | `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |

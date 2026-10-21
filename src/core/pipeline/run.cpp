@@ -402,6 +402,15 @@ const nlohmann::json& schema_document() {
             "additionalProperties": false
           }
         },
+        "published": {
+          "type": "object",
+          "properties": {
+            "version": { "type": "integer", "minimum": 1 },
+            "caller":  { "type": "string" }
+          },
+          "required": ["version", "caller"],
+          "additionalProperties": false
+        },
         "reads": {
           "type": "array",
           "items": {
@@ -518,6 +527,10 @@ nlohmann::json to_json(const RunValue& value) {
     // Only when there is one, so a run that reads nothing keeps the shape an
     // older peer accepts.
     if (!value.reads.empty()) output["reads"] = to_json(value.reads);
+    if (value.published) {
+        output["published"] = {{"version", value.published->version},
+                               {"caller", value.published->caller}};
+    }
     return output;
 }
 
@@ -624,6 +637,11 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
     if (const auto reads = value.find("reads"); reads != value.end()) {
         parsed.reads = table_reads_from_json(*reads);
     }
+    if (const auto published = value.find("published");
+        published != value.end() && published->is_object()) {
+        parsed.published = RunPublication{published->value("version", std::uint64_t{0}),
+                                          published->value("caller", std::string{})};
+    }
     if (const auto lineage = value.find("lineage"); lineage != value.end()) {
         parsed.lineage.sources =
             lineage->value("sources", std::vector<std::string>{});
@@ -670,6 +688,11 @@ void Run::set_lineage(RunLineage lineage) {
 
 void Run::add_reads(const std::vector<TableRead>& reads) {
     if (merge_table_reads(value_.reads, reads)) capture_and_persist();
+}
+
+void Run::set_published(RunPublication published) {
+    value_.published = std::move(published);
+    capture_and_persist();
 }
 
 void Run::set_trace_id(std::string trace_id) {

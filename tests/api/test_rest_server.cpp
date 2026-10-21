@@ -2132,6 +2132,81 @@ TEST_F(RestServerFixture, ServedModelAndIndexEndpointsOverHttp) {
     EXPECT_EQ(search_after.status, 404) << search_after.body;
 }
 
+// Published pipelines over the wire (zetta#1289, docs/api/serving.md): expose
+// over POST /v1/expose_pipeline, run it at POST /v1/pipelines/{id}/run with a
+// bearer (200 + outputs once the run finished inside sync_timeout_ms), read the
+// run back at GET /v1/pipelines/{id}/runs/{run_id}, a user without
+// data:run_pipeline is 403, the size and rate limits are 413 and 429, and
+// unexposing makes the route 404.
+TEST_F(RestServerFixture, PublishedPipelineEndpointsOverHttp) {
+    auto database = node.create_database("data");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    table->add_row({{"id", 1}, {"amount", 10.0}});
+    auto project = node.create_project("shop");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    auto connect = graph.add_node(zetta::ir::StepKind::Connect, "load");
+    auto clean = graph.add_node(zetta::ir::StepKind::Clean, "tidy");
+    connect->attributes = {{"source", "data"}, {"table", "orders"}};
+    graph.add_edge(connect->id, clean->id);
+    auto pipeline = project->create_graph("orders pipeline", std::move(graph));
+    ASSERT_TRUE(pipeline);
+    ASSERT_TRUE(project->approve_graph("orders pipeline", "owner", "2026-10-21T00:00:00Z"));
+    const std::string run_target = "/v1/pipelines/" + pipeline->id() + "/run";
+
+    // Not exposed yet: 404 for the owner, who may run pipelines.
+    EXPECT_EQ(request("POST", run_target, "{}").status, 404);
+
+    auto exposed = request("POST", "/v1/expose_pipeline",
+                           nlohmann::json{{"project", "shop"},
+                                          {"graph", "orders pipeline"},
+                                          {"max_input_bytes", 64},
+                                          {"rate_limit_per_minute", 3}}
+                               .dump());
+    ASSERT_EQ(exposed.status, 200) << exposed.body;
+    EXPECT_EQ(json_of(exposed).at("value").at("endpoint"), run_target);
+
+    auto served = request("POST", run_target, "{}");
+    ASSERT_EQ(served.status, 200) << served.body;
+    const auto served_body = json_of(served);
+    ASSERT_TRUE(served_body.at("ok").get<bool>()) << served.body;
+    EXPECT_EQ(served_body.at("value").at("status"), "succeeded");
+    EXPECT_EQ(served_body.at("value").at("version"), 1);
+    EXPECT_EQ(served_body.at("trace_id").get<std::string>().size(), 32u);
+    const std::string run_id = served_body.at("value").at("run_id");
+
+    auto read = request("GET", "/v1/pipelines/" + pipeline->id() + "/runs/" + run_id, "");
+    ASSERT_EQ(read.status, 200) << read.body;
+    EXPECT_EQ(json_of(read).at("value").at("status"), "succeeded");
+
+    // The declared input admits nothing (400), and the size limit is 413.
+    EXPECT_EQ(request("POST", run_target, nlohmann::json{{"top_k", 1}}.dump()).status, 400);
+    EXPECT_EQ(request("POST", run_target,
+                      nlohmann::json{{"padding", std::string(100, 'x')}}.dump())
+                  .status,
+              413);
+
+    // A user without data:run_pipeline: 403.
+    auto denied_user = node.create_user("no-serving");
+    ASSERT_TRUE(denied_user);
+    const auto denied_token =
+        node.create_token(denied_user->id(), zetta::governance::TokenType::Api);
+    EXPECT_EQ(request("POST", run_target, "{}", denied_token.secret).status, 403);
+
+    // Three calls a minute were allowed (the 400 and 413 were refused first).
+    EXPECT_EQ(request("POST", run_target + "?wait=false", "{}").status, 200);
+    EXPECT_EQ(request("POST", run_target, "{}").status, 200);
+    auto limited = request("POST", run_target, "{}");
+    EXPECT_EQ(limited.status, 429) << limited.body;
+
+    auto unexposed = request("POST", "/v1/unexpose_pipeline",
+                             nlohmann::json{{"project", "shop"}, {"graph", "orders pipeline"}}.dump());
+    ASSERT_EQ(unexposed.status, 200) << unexposed.body;
+    EXPECT_EQ(request("POST", run_target, "{}").status, 404);
+}
+
 // `sql` takes a JSON body (#1231): a statement far beyond the ~4 KiB request
 // line that the GET form is limited to, audited as data_changed like any write
 // (#1229).

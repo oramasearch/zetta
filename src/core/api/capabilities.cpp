@@ -6927,6 +6927,10 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
                                                    "' on project '" +
                                                    project->name() + "'");
     }
+    // A published pipeline runs the version it was exposed at (zetta#1289).
+    if (context.served_graph && context.served_graph->id() == graph->id()) {
+        graph = context.served_graph;
+    }
 
     const zetta::pipeline::ValidationReport report =
         gate_with_workspace_methodologies(context, graph->graph());
@@ -13092,6 +13096,7 @@ void register_core_capabilities(Registry& registry) {
     register_object_capabilities(registry);
     register_storage_capabilities(registry);
     register_study_capabilities(registry);
+    register_pipeline_serving_capabilities(registry);
     register_solution_capabilities(registry);
 
     // Versioned score-to-action policy (#1104).

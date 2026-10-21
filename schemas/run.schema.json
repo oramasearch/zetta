@@ -577,6 +577,23 @@
     "project_name": {
       "type": "string"
     },
+    "published": {
+      "additionalProperties": false,
+      "properties": {
+        "caller": {
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "caller"
+      ],
+      "type": "object"
+    },
     "reads": {
       "items": {
         "additionalProperties": false,

@@ -20,6 +20,7 @@
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/consent.hpp"
+#include "zetta/governance/rate_limiter.hpp"
 #include "zetta/governance/grant.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/cloud/provisioner_config.hpp"
@@ -748,6 +749,9 @@ public:
     // CRDT backing** — consent is per-action and never remembered (the cloud
     // hard rule), so challenges neither persist nor replicate. Source for the
     // read-only `system.consent_requests` view and the headed approval surface.
+    // The per-caller admission window of published pipelines' served routes
+    // (zetta#1289): node-local and forgotten on restart, like the consent ledger.
+    zetta::governance::RateLimiter& serving_rate_limiter() { return serving_rate_limiter_; }
     zetta::governance::ConsentLedger& consent_ledger() { return consent_ledger_; }
     const zetta::governance::ConsentLedger& consent_ledger() const {
         return consent_ledger_;
@@ -1522,6 +1526,7 @@ private:
     std::vector<zetta::cloud::CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
     zetta::governance::ConsentLedger consent_ledger_;                     // ephemeral; not replicated (#621)
+    zetta::governance::RateLimiter serving_rate_limiter_;                 // ephemeral; node-local (zetta#1289)
     zetta::cluster::NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
     zetta::memory::MemoryAccounting memory_accounting_;
     Clock::time_point last_memory_check_{};

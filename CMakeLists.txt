@@ -541,6 +541,7 @@ add_library(zetta-core STATIC
   src/core/api/registry.cpp
   src/core/api/rest.cpp
   src/core/api/serving.cpp
+  src/core/api/pipeline_serving_capabilities.cpp
   src/core/api/specs.cpp
   src/core/api/web_ui.cpp
   src/core/schemas/registry.cpp
@@ -667,6 +668,7 @@ add_library(zetta-core STATIC
   src/core/governance/audit_event.cpp
   src/core/governance/consent.cpp
   src/core/governance/credential_redaction.cpp
+  src/core/governance/rate_limiter.cpp
   src/core/governance/token_secret.cpp
   src/core/governance/user.cpp
   src/core/governance/role.cpp

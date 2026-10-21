@@ -58,7 +58,9 @@ MCP/HTTP work.
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
   data:predict / data:search key scoping, reversible text entity ids, every
-  request a span + audited; #957).
+  request a span + audited; #957), and published pipelines (zetta#1289):
+  expose_pipeline pins a pipeline behind POST /v1/pipelines/{name}/run, run
+  with the caller's own grants, a declared input schema, size and rate limits.
 
 ## The endpoints (shipped with #615, REST with #618)
 
@@ -104,7 +106,10 @@ The same server serves the **exposed-entity endpoints** ([serving.md](serving.md
 #648): `POST /v1/models/{name}/predict` and `GET /v1/indexes/{name}/search`
 answer only while the entity's replicated `exposed` flag is set
 (expose_model / expose_index below); access requires a key holding
-`data:predict` / `data:search`.
+`data:predict` / `data:search`. A published pipeline answers `POST
+/v1/pipelines/{name}/run` and `GET /v1/pipelines/{name}/runs/{run_id}` while it
+is exposed (expose_pipeline below); access requires `data:run_pipeline` and
+read access to the tables it reads (zetta#1289).
 
 ## Connect a client
 
@@ -249,6 +254,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |
 | `expose_index` | action | orchestration:expose_index | publish an index's /v1/indexes/{name}/search endpoint (distributed scatter-gather underneath); endpoint access needs data:search |
 | `unexpose_index` | action | orchestration:unexpose_index | withdraw the index's search endpoint everywhere in one action |
+| `expose_pipeline` | action | orchestration:expose_pipeline | pin an approved, gate-passing pipeline that reads only landed tables and publish POST /v1/pipelines/{name}/run on every node, with its declared `input_schema`, `rate_limit_per_minute`, `max_input_bytes`, `sync_timeout_ms`; exposing again pins the next version (zetta#1289, [serving.md](serving.md#published-pipelines-zetta1289)) |
+| `unexpose_pipeline` | action | orchestration:unexpose_pipeline | withdraw the pipeline's route everywhere in one action; runs it served keep going |
+| `run_published_pipeline` | job | data:run_pipeline (or scoped ON PROJECT) | the served run without HTTP: the pinned version with your input, your grants, the declared schema and limits; answers the run id and status |
+| `get_published_pipeline_run` | read | data:run_pipeline (or scoped ON PROJECT) | the status and outputs of a run a published pipeline served to you |
 | `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
 | `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
 | `compile_intent` | action | orchestration:compile_intent | resolve an optional methodology or solution (otherwise registered keywords), refuse unavailable work with its issue, and store the runnable methodology's editable graph |

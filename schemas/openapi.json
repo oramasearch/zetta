@@ -9,7 +9,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "invalid_input (400) · unauthorized / consent_required (403) · not_found / unknown_capability (404) · conflict / fenced / held (409) · range_not_satisfiable (416) · engine_error (422) · busy (503) · quota_exceeded (507)",
+                "description": "invalid_input (400) · unauthorized / consent_required (403) · not_found / unknown_capability (404) · conflict / fenced / held (409) · payload_too_large (413) · range_not_satisfiable (416) · engine_error (422) · rate_limited (429) · busy (503) · quota_exceeded (507)",
                 "type": "string"
               },
               "details": {
@@ -12475,6 +12475,179 @@
         ]
       }
     },
+    "/v1/expose_pipeline": {
+      "post": {
+        "description": "Publish an approved, gate-passing pipeline as a governed HTTP route (POST /v1/pipelines/{name}/run) on every node, pinned to the version it is now: later edits change nothing callers get until it is exposed again. Callers need data:run_pipeline and read access to the tables it reads; their input must match input_schema. Idempotent; undo with unexpose_pipeline. Requires orchestration:expose_pipeline.",
+        "operationId": "expose_pipeline",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "graph": {
+                    "description": "the pipeline's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "input_schema": {
+                    "description": "the draft-07 JSON Schema callers' input must match: an object schema over `run`'s inputs (dataset_path, top_k, model_name, ...). Default: an object with no properties, so callers can pass nothing",
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_input_bytes": {
+                    "description": "the largest input a call may send, in bytes (default 65536)",
+                    "maximum": 1048576,
+                    "minimum": 2,
+                    "type": "integer"
+                  },
+                  "project": {
+                    "description": "the owning project's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "rate_limit_per_minute": {
+                    "description": "calls one caller may make a minute, per node (default 60)",
+                    "maximum": 100000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "sync_timeout_ms": {
+                    "description": "how long the served route waits for a run to finish before it answers with the run id instead (default 30000; 0 = never wait)",
+                    "maximum": 600000,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "endpoint": {
+                          "description": "the served run route, by id",
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "exposed_at": {
+                          "type": "string"
+                        },
+                        "exposed_by": {
+                          "type": "string"
+                        },
+                        "input_schema": {
+                          "type": "object"
+                        },
+                        "max_input_bytes": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "rate_limit_per_minute": {
+                          "type": "integer"
+                        },
+                        "status_endpoint": {
+                          "description": "the served status route, with {run_id} to fill in",
+                          "type": "string"
+                        },
+                        "sync_timeout_ms": {
+                          "type": "integer"
+                        },
+                        "version": {
+                          "description": "the pinned version callers get (counts the exposures)",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "project",
+                        "name",
+                        "exposed",
+                        "version",
+                        "endpoint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Expose pipeline",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/gate": {
       "post": {
         "description": "Run the correctness gate over a stored project graph and return the validation report: the checks that applied (status + reason), the verdict, block_deploy, and the counts applied / not_applicable. Checks with nothing to check on this graph are counted, never reported as pass; include_not_applicable lists them too. Evaluates only — no state change. Requires orchestration:gate.",
@@ -15901,6 +16074,164 @@
         ]
       }
     },
+    "/v1/get_published_pipeline_run": {
+      "get": {
+        "description": "Read the status and outputs of a run a published pipeline served to you, as GET /v1/pipelines/{name}/runs/{run_id} does. Another caller's run is not found. No side effects. Requires data:run_pipeline.",
+        "operationId": "get_published_pipeline_run",
+        "parameters": [
+          {
+            "description": "the published pipeline's id, or its name",
+            "in": "query",
+            "name": "pipeline",
+            "required": true,
+            "schema": {
+              "description": "the published pipeline's id, or its name",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run id run_published_pipeline answered",
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "description": "the run id run_published_pipeline answered",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a published pipeline's run",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_record": {
       "get": {
         "description": "Read one record's value and revision by (collection, key) from this node. No side effects. Requires data:records_read.",
@@ -17331,6 +17662,23 @@
                         },
                         "project_name": {
                           "type": "string"
+                        },
+                        "published": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "caller": {
+                              "type": "string"
+                            },
+                            "version": {
+                              "minimum": 1,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "caller"
+                          ],
+                          "type": "object"
                         },
                         "reads": {
                           "items": {
@@ -31606,6 +31954,399 @@
         ]
       }
     },
+    "/v1/pipelines/{name}/run": {
+      "post": {
+        "description": "Run a PUBLISHED pipeline's pinned version with the body as its declared input (expose_pipeline input_schema). The route exists only while the pipeline is exposed; access requires data:run_pipeline and read access to the tables it reads. Rate and size limited per caller (429, 413). Waits up to the pipeline's sync_timeout_ms for the run to finish (200 with its outputs) unless ?wait=false, else answers 202 with the run id and status_endpoint. Every request is a serve:run_pipeline trace span and is audited.",
+        "operationId": "serve_run_pipeline",
+        "parameters": [
+          {
+            "description": "the pipeline's uuid, or its name when one exposed pipeline has it",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "false: answer at once with the run id (202)",
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the request was served"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the run started and is still running"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the key lacks the serving capability, the entity does not exist or is not exposed, or the input is at fault"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Run a published pipeline (served pipeline endpoint)",
+        "tags": [
+          "serving"
+        ]
+      }
+    },
+    "/v1/pipelines/{name}/runs/{run_id}": {
+      "get": {
+        "description": "The status and outputs of a run a published pipeline served to the same caller; another caller's run is not found. Access requires data:run_pipeline.",
+        "operationId": "serve_pipeline_run",
+        "parameters": [
+          {
+            "description": "the pipeline's uuid, or its name",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run id the served run answered",
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the request was served"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the key lacks the serving capability, the entity does not exist or is not exposed, or the input is at fault"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "A published pipeline's run (served pipeline endpoint)",
+        "tags": [
+          "serving"
+        ]
+      }
+    },
     "/v1/plan_features": {
       "get": {
         "description": "Read a methodology-specific feature and exclusion plan from dataset analysis, or an explicit transform_required proposal, built only from what the caller may read (#1396). No side effects and no transform is applied. Requires api:query.",
@@ -37806,6 +38547,160 @@
         ]
       }
     },
+    "/v1/run_published_pipeline": {
+      "post": {
+        "description": "Run a published pipeline's pinned version with your input, as POST /v1/pipelines/{name}/run does: your own data:run_pipeline grant and read access to the tables it reads decide, the input is checked against the schema it declares, and calls are rate limited per caller. Starts a run and answers its id and status. Requires data:run_pipeline. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "run_published_pipeline",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "input": {
+                    "description": "the input the pipeline declares (expose_pipeline input_schema)",
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "pipeline": {
+                    "description": "the published pipeline's id, or its name when one exposed pipeline has it",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "pipeline"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Run a published pipeline",
+        "tags": [
+          "job"
+        ]
+      }
+    },
     "/v1/run_solution": {
       "post": {
         "description": "Materialize the explicit snapshot, run registered methodologies, apply policy and holdout protection, deliver governed actions and record the ledger in a durable Run. Requires orchestration:run_solution. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
@@ -40946,6 +41841,157 @@
           }
         },
         "summary": "Un-expose model",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/unexpose_pipeline": {
+      "post": {
+        "description": "Withdraw a published pipeline's HTTP route everywhere in one action: the replicated exposure flips and every node refuses the route. Runs it already served keep going. Idempotent. Requires orchestration:unexpose_pipeline.",
+        "operationId": "unexpose_pipeline",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "graph": {
+                    "description": "the pipeline's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "the owning project's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "endpoint": {
+                          "description": "the served run route, by id",
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "exposed_at": {
+                          "type": "string"
+                        },
+                        "exposed_by": {
+                          "type": "string"
+                        },
+                        "input_schema": {
+                          "type": "object"
+                        },
+                        "max_input_bytes": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "rate_limit_per_minute": {
+                          "type": "integer"
+                        },
+                        "status_endpoint": {
+                          "description": "the served status route, with {run_id} to fill in",
+                          "type": "string"
+                        },
+                        "sync_timeout_ms": {
+                          "type": "integer"
+                        },
+                        "version": {
+                          "description": "the pinned version callers get (counts the exposures)",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "project",
+                        "name",
+                        "exposed",
+                        "version",
+                        "endpoint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Un-expose pipeline",
         "tags": [
           "action"
         ]

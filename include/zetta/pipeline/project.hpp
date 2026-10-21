@@ -185,6 +185,13 @@ public:
                                                 std::string approver,
                                                 std::string at);
 
+    // Publish or withdraw a graph as a served route (zetta#1289,
+    // docs/api/serving.md): store `exposure` on the graph with id `id`, rewrite
+    // its file and capture the new value into the CRDT (`graph:<id>`), so every
+    // node serves, or refuses, its route. Empty handle when no graph has that id.
+    std::shared_ptr<ProjectGraph> set_graph_exposure(const std::string& id,
+                                                     PipelineExposure exposure);
+
     // Apply a replicated graph (a peer's, or one rebuilt from the document) with
     // a given id and approval state, without capturing. Returns the existing
     // handle if present.
