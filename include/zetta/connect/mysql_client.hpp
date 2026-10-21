@@ -36,6 +36,13 @@
 // `START TRANSACTION READ ONLY`), it caps the rows server-side
 // (`sql_select_limit`) and client-side, and it never commits — it rolls back.
 //
+// **TiDB** speaks the same protocol (connector type `tidb`, default port 4000;
+// a `mysql` connection that reaches a TiDB is treated the same). TiDB parses
+// `READ ONLY` but does not enforce it, so when the greeting names TiDB the
+// session refuses a statement holding any word that writes (before any
+// credential is sent), skips the READ ONLY statements, and runs the statement
+// in a plain `START TRANSACTION` that is rolled back.
+//
 // **TLS by default.** An empty `sslmode` means `verify-full`: the connection is
 // upgraded to TLS before any credential is sent, the server certificate is
 // verified against the system trust store and must match the host. A server
@@ -125,6 +132,8 @@ public:
     // greeting, and whether the session ran over TLS.
     const std::string& server_version() const { return server_version_; }
     bool tls_active() const { return tls_active_; }
+    // Whether the greeting named TiDB (and the session is fenced TiDB's way).
+    bool tidb() const { return tidb_; }
 
 private:
     enum class Phase { Greeting, Tls, Auth, Command, Columns, Rows, Rollback, Done };
@@ -155,6 +164,7 @@ private:
     std::string auth_plugin_;
     std::string server_version_;
     bool tls_active_ = false;
+    bool tidb_ = false;
 
     std::vector<std::string> commands_;  // the fencing statements, then the query
     std::size_t next_command_ = 0;
@@ -170,6 +180,9 @@ private:
     std::vector<Column> columns_;
     ConnectorResult result_;
 };
+
+// Whether a greeting's server version names TiDB (`8.0.11-TiDB-v7.5.1`).
+bool is_tidb_version(std::string_view server_version);
 
 // --- The injection point ------------------------------------------------------
 //

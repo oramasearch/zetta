@@ -95,9 +95,10 @@ std::string test_nonce() {
 }
 
 std::string greeting(std::uint32_t caps, const std::string& plugin,
-                     const std::string& nonce = test_nonce()) {
+                     const std::string& nonce = test_nonce(),
+                     const std::string& version = "8.0.36-fake") {
     std::string payload(1, '\x0a');
-    payload += "8.0.36-fake";
+    payload += version;
     payload.push_back('\0');
     payload += le32(42);  // connection id
     payload += nonce.substr(0, 8);
@@ -612,6 +613,10 @@ public:
         std::string certificate_pem;
         std::string private_key_pem;
         std::string password = "secret";
+        std::string version = "8.0.36-fake";
+        // Answer READ ONLY statements with TiDB's error, as a TiDB with
+        // tidb_enable_noop_functions OFF (its default) does.
+        bool refuse_read_only = false;
     };
 
     explicit FakeMysqlServer(Options options) : options_(std::move(options)) {
@@ -738,7 +743,10 @@ private:
 
     void converse() {
         const std::uint32_t caps = kServerCaps | (options_.offer_tls ? kSsl : 0);
-        if (!write_all(frame(0, greeting(caps, "mysql_native_password")))) return;
+        if (!write_all(frame(0, greeting(caps, "mysql_native_password", test_nonce(),
+                                         options_.version)))) {
+            return;
+        }
         Packet packet;
         if (!read_packet(packet)) return;
         std::uint8_t sequence = packet.sequence;
@@ -765,6 +773,14 @@ private:
             if (packet.payload[0] == '\x01') return;  // COM_QUIT
             const std::string text = packet.payload.substr(1);
             queries_.push_back(text);
+            if (options_.refuse_read_only && text.find("READ ONLY") != std::string::npos) {
+                if (!write_all(frame(1, err_packet(1105, "HY000",
+                                                   "function READ ONLY has only noop "
+                                                   "implementation in tidb now")))) {
+                    return;
+                }
+                continue;
+            }
             const bool is_query = text.starts_with("SELECT");
             if (!write_all(is_query ? catalogue_result(1, 3) : frame(1, ok_packet()))) return;
         }
@@ -943,6 +959,152 @@ TEST(MysqlDriver, AnUnreachableServerFailsCleanly) {
         loopback_config(port, "disable"), "SELECT 1", 1);
     EXPECT_FALSE(result.ok());
     EXPECT_NE(result.error.find("could not connect"), std::string::npos) << result.error;
+}
+
+// --- TiDB (#1014): the MySQL protocol, fenced the way TiDB allows ----------------------
+//
+// TiDB parses READ ONLY but does not enforce it: with tidb_enable_noop_functions
+// OFF (its default) `SET SESSION TRANSACTION READ ONLY` and `START TRANSACTION
+// READ ONLY` are errors, and ON they are silently ignored. So a greeting that
+// names TiDB switches the session to the write-word refusal plus a plain
+// transaction that is rolled back.
+
+constexpr const char* kTidbVersion = "8.0.11-TiDB-v7.5.1";
+
+TEST(TidbProtocol, RecognisesTidbVersions) {
+    EXPECT_TRUE(zetta::connect::is_tidb_version("8.0.11-TiDB-v7.5.1"));
+    EXPECT_TRUE(zetta::connect::is_tidb_version("5.7.25-TiDB-v6.5.0"));
+    EXPECT_FALSE(zetta::connect::is_tidb_version("8.0.36"));
+    EXPECT_FALSE(zetta::connect::is_tidb_version("10.11.6-MariaDB"));
+}
+
+TEST(TidbProtocol, AGreetingNamingTidbFencesWithAPlainRolledBackTransaction) {
+    MysqlClientSession session(session_options(MysqlTlsMode::Disable));
+    MysqlStep step = session.receive(
+        frame(0, greeting(kServerCaps, "mysql_native_password", test_nonce(), kTidbVersion)));
+    ASSERT_EQ(step.action, MysqlStep::Action::Read);
+    EXPECT_TRUE(session.tidb());
+
+    step = session.receive(frame(2, ok_packet()));
+    for (const std::string& statement :
+         {std::string("SET SESSION sql_select_limit = 100"), std::string("START TRANSACTION")}) {
+        EXPECT_EQ(query_text(only_packet(step.send)), statement);
+        step = session.receive(frame(1, ok_packet()));
+    }
+    EXPECT_EQ(query_text(only_packet(step.send)), "SELECT * FROM t");
+    step = session.receive(catalogue_result(1));
+    EXPECT_EQ(query_text(only_packet(step.send)), "ROLLBACK");
+    step = session.receive(frame(1, ok_packet()));
+    EXPECT_EQ(step.action, MysqlStep::Action::Finished);
+    ASSERT_TRUE(session.result().ok()) << session.result().error;
+    EXPECT_EQ(session.result().data.rows.size(), 2u);
+}
+
+TEST(TidbProtocol, AWriteWordIsRefusedBeforeAnyCredentialIsSent) {
+    // A `mysql` connection admits `WITH … DELETE` at the guard (MySQL's READ
+    // ONLY transaction refuses it); when the server turns out to be TiDB, the
+    // session refuses it itself, before the handshake response.
+    MysqlSessionOptions options = session_options(MysqlTlsMode::Disable);
+    options.sql = "WITH x AS (SELECT 1) DELETE FROM t";
+    MysqlClientSession session(options);
+    const MysqlStep step = session.receive(
+        frame(0, greeting(kServerCaps, "mysql_native_password", test_nonce(), kTidbVersion)));
+    EXPECT_EQ(step.action, MysqlStep::Action::Finished);
+    EXPECT_TRUE(step.send.empty());
+    ASSERT_FALSE(session.result().ok());
+    EXPECT_NE(session.result().error.find("'delete'"), std::string::npos)
+        << session.result().error;
+}
+
+TEST(TidbConnectorConfig, ParsesLikeMysqlAndIsAKnownType) {
+    const auto config = ConnectorConfig::from_json(
+        {{"type", "tidb"}, {"host", "orders-tidb.ns.svc.cluster.local"}, {"port", "4000"},
+         {"user", "root"}, {"token", "pw"}, {"sslmode", "disable"}});
+    ASSERT_TRUE(config.has_value());
+    EXPECT_FALSE(config->to_json().contains("token"));
+    EXPECT_FALSE(ConnectorConfig::from_json({{"type", "tidb"}, {"user", "root"}}));
+    EXPECT_FALSE(ConnectorConfig::from_json(
+        {{"type", "tidb"}, {"host", "h"}, {"user", "u"}, {"sslmode", "prefer"}}));
+    const auto& types = zetta::connect::connector_types();
+    EXPECT_NE(std::find(types.begin(), types.end(), "tidb"), types.end());
+}
+
+TEST(TidbQueryGuard, AdmitsReadsAndRefusesWritesAnywhere) {
+    ConnectorConfig config = mysql_config();
+    config.type = "tidb";
+    for (const char* sql : {"SELECT * FROM orders", "SHOW TABLES",
+                            "WITH r AS (SELECT 1) SELECT * FROM r",
+                            "SELECT note FROM t WHERE note = 'please delete'"}) {
+        EXPECT_EQ(zetta::connect::connector_query_rejection(config, sql), "") << sql;
+    }
+    for (const char* sql :
+         {"WITH x AS (SELECT 1) DELETE FROM t", "WITH x AS (SELECT 1) UPDATE t SET a = 1",
+          "SELECT * FROM t FOR UPDATE", "SELECT 'a\\'' , 1 FROM t WHERE (DELETE)",
+          "WITH x AS (SELECT 1 --1 ) DELETE FROM t", "SELECT /*! 1 */ 2",
+          "SELECT * INTO OUTFILE '/tmp/x' FROM t"}) {
+        EXPECT_NE(zetta::connect::connector_query_rejection(config, sql), "") << sql;
+    }
+}
+
+TEST(TidbDriver, RunsAgainstATidbOverLoopbackWhicheverTypeNamedIt) {
+    zetta::connect::install_mysql_protocol();
+    for (const char* type : {"tidb", "mysql"}) {
+        FakeMysqlServer::Options options;
+        options.version = kTidbVersion;
+        options.refuse_read_only = true;
+        FakeMysqlServer server(options);
+        ConnectorConfig config = loopback_config(server.port(), "disable");
+        config.type = type;
+        const auto result = zetta::connect::run_connector_query(config, "SELECT * FROM t", 10);
+        server.join();
+        ASSERT_TRUE(result.ok()) << type << ": " << result.error
+                                 << " / server: " << server.failure();
+        EXPECT_EQ(result.data.rows.size(), 3u);
+        EXPECT_EQ(server.queries(),
+                  (std::vector<std::string>{"SET SESSION sql_select_limit = 10",
+                                            "START TRANSACTION", "SELECT * FROM t",
+                                            "ROLLBACK"}))
+            << type;
+    }
+}
+
+TEST(TidbLive, RunsAgainstARealTidbWhenConfigured) {
+    const char* host = std::getenv("ZETTA_TIDB_TEST_HOST");
+    if (host == nullptr || host[0] == '\0') {
+        GTEST_SKIP() << "set ZETTA_TIDB_TEST_HOST (and _PORT/_USER/_PASSWORD/_DB/_SSLMODE) "
+                        "to run against a real TiDB";
+    }
+    const auto env_or = [](const char* key, const char* fallback) {
+        const char* value = std::getenv(key);
+        return std::string(value != nullptr ? value : fallback);
+    };
+    zetta::connect::install_mysql_protocol();
+    ConnectorConfig config;
+    config.type = "tidb";
+    config.host = host;
+    config.port = env_or("ZETTA_TIDB_TEST_PORT", "4000");
+    config.user = env_or("ZETTA_TIDB_TEST_USER", "root");
+    config.token = env_or("ZETTA_TIDB_TEST_PASSWORD", "");
+    config.database = env_or("ZETTA_TIDB_TEST_DB", "");
+    config.sslmode = env_or("ZETTA_TIDB_TEST_SSLMODE", "disable");
+
+    const auto typed = zetta::connect::run_connector_query(
+        config, "SELECT 42 AS n, CAST(2.25 AS DOUBLE) AS f, 'hi' AS s, NULL AS absent", 10);
+    ASSERT_TRUE(typed.ok()) << typed.error;
+    ASSERT_EQ(typed.data.rows.size(), 1u);
+    EXPECT_EQ(typed.data.rows[0].at("n").get<long long>(), 42);
+    EXPECT_DOUBLE_EQ(typed.data.rows[0].at("f").get<double>(), 2.25);
+    EXPECT_EQ(typed.data.rows[0].at("s").get<std::string>(), "hi");
+    EXPECT_TRUE(typed.data.rows[0].at("absent").is_null());
+
+    const auto capped = zetta::connect::run_connector_query(
+        config, "SELECT table_name FROM information_schema.columns", 3);
+    ASSERT_TRUE(capped.ok()) << capped.error;
+    EXPECT_LE(capped.data.rows.size(), 3u);
+
+    const auto shown = zetta::connect::run_connector_query(config, "SHOW DATABASES", 100);
+    ASSERT_TRUE(shown.ok()) << shown.error;
+    EXPECT_FALSE(shown.data.rows.empty());
 }
 
 // --- The live server (guarded) ---------------------------------------------------------

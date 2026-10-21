@@ -113,7 +113,7 @@ Two qualifications on that, both per-call rather than per-tool
 
 - **Consent enforcement is off unless the node was started with `--governance`**
   (#995). Off, the call executes and audits as `consent_bypassed`.
-- **A loopback Postgres, MySQL or lake service is not an external system.** The capability's
+- **A loopback Postgres, MySQL, TiDB or lake service is not an external system.** The capability's
   `ConsentDescriber` reads the resolved connector: a host of `127.0.0.1` /
   `localhost` / `::1` or a unix socket never leaves the machine, so it is not
   gated even with `--governance` on (#994). A remote source's challenge names
@@ -412,6 +412,15 @@ session asks, on its own `io_context` inside `runtime::offload`.
 The full connector skill — least-privilege grants, catalog quirks, gotchas — is
 [connectors/mysql.md](connectors/mysql.md).
 
+**TiDB** (`type: "tidb"`, default port 4000) is the same protocol and driver.
+TiDB parses `READ ONLY` but does not enforce it (with its default
+`tidb_enable_noop_functions = OFF` the statements are errors), so when the
+greeting names TiDB — whichever connector type reached it — the session refuses
+a statement holding any write or session word (`write_words.hpp`) before the
+credentials are sent, skips the READ ONLY statements, and runs the statement in a
+plain `START TRANSACTION` that is rolled back. The `tidb` type's guard applies
+the same word refusal before connecting. See [connectors/tidb.md](connectors/tidb.md).
+
 ## Snowflake (the first connector)
 
 Snowflake is reached over its **SQL API v2**: `POST /api/v2/statements` with a
@@ -439,8 +448,8 @@ from the source, and a malformed response all come back as a
 
 ## Scope notes / later slices
 
-- Four connectors ship: Snowflake (HTTP), Postgres (libpqxx), MySQL (native
-  protocol) and lake's SQLite/DuckDB/Polars services (HTTP, three types). Another
+- Four connectors ship: Snowflake (HTTP), Postgres (libpqxx), MySQL and TiDB
+  (native protocol) and lake's SQLite/DuckDB/Polars services (HTTP, three types). Another
   is a new branch in `run_connector_query`, an entry in `connector_types()`, and
   its catalog read in `source_catalog.cpp`.
 - The **cross-node co-launch** of the fetch is a later slice — see *What is not

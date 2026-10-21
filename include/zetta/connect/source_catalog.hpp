@@ -17,9 +17,10 @@
 //
 // - Postgres, Snowflake and lake's DuckDB service read the ISO
 //   `information_schema.tables` / `.columns`;
-// - MySQL reads the same views with every column aliased (MySQL 8 answers them
-//   in upper case), its own system schemas excluded, and backslashes doubled
-//   in literals;
+// - MySQL and TiDB read the same views with every column aliased (MySQL 8
+//   answers them in upper case), their own system schemas excluded (compared
+//   lower-cased: TiDB names them in upper case), and backslashes doubled in
+//   literals;
 // - lake's SQLite service reads `sqlite_master` and `pragma_table_info`;
 // - lake's Polars service has no SQL catalog (its sandbox admits only queries),
 //   so its datasets come from `GET /v1/datasets`.

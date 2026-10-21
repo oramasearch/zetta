@@ -2,6 +2,7 @@
 
 #include "lake_sql_protocol.hpp"
 #include "snowflake_protocol.hpp"
+#include "write_words.hpp"
 #include "zetta/connect/mysql_client.hpp"
 #include "zetta/connect/postgres_runner.hpp"
 #include "zetta/connect/distributed_fetch.hpp"
@@ -274,7 +275,7 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
         // A lake service: its base URL and its bearer token, nothing else.
         if (config.endpoint.empty() || config.token.empty()) return std::nullopt;
         if (!lake_sql::parse_endpoint(config.endpoint, nullptr)) return std::nullopt;
-    } else if (config.type == "mysql") {
+    } else if (config.type == "mysql" || config.type == "tidb") {
         // database is optional: a query may name `schema.table` itself.
         if (config.host.empty() || config.user.empty()) return std::nullopt;
         // An unknown sslmode is refused rather than read as "no TLS" — and
@@ -304,7 +305,7 @@ std::string endpoint_host(const std::string& endpoint) {
 
 const std::vector<std::string>& connector_types() {
     static const std::vector<std::string> types = {
-        "snowflake", "postgres", "mysql", "lake_sqlite", "lake_duckdb", "lake_polars"};
+        "snowflake", "postgres", "mysql", "tidb", "lake_sqlite", "lake_duckdb", "lake_polars"};
     return types;
 }
 
@@ -313,23 +314,23 @@ const nlohmann::json& connector_config_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/connector_config.schema.json",
   "title": "ConnectorConfig",
-  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres or MySQL password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
+  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
   "type": "object",
   "required": ["type"],
   "additionalProperties": false,
   "properties": {
-    "type": {"type": "string", "enum": ["snowflake", "postgres", "mysql", "lake_sqlite", "lake_duckdb", "lake_polars"], "description": "Which connector implementation to use. lake_sqlite, lake_duckdb and lake_polars read lake's SQLite, DuckDB and Polars services over their HTTP API."},
+    "type": {"type": "string", "enum": ["snowflake", "postgres", "mysql", "tidb", "lake_sqlite", "lake_duckdb", "lake_polars"], "description": "Which connector implementation to use. tidb speaks the MySQL protocol (default port 4000). lake_sqlite, lake_duckdb and lake_polars read lake's SQLite, DuckDB and Polars services over their HTTP API."},
     "account": {"type": "string", "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1)."},
-    "token": {"type": "string", "description": "The secret: a Snowflake programmatic access / OAuth token, a Postgres or MySQL password, or a lake service's bearer token. Never serialized back out."},
+    "token": {"type": "string", "description": "The secret: a Snowflake programmatic access / OAuth token, a Postgres, MySQL or TiDB password, or a lake service's bearer token. Never serialized back out."},
     "auth": {"type": "string", "enum": ["pat", "oauth"], "default": "pat", "description": "Snowflake: how to present the bearer token."},
     "database": {"type": "string", "description": "Session database (Snowflake, Postgres; MySQL's optional default schema)."},
     "schema": {"type": "string", "description": "Session schema (Snowflake, Postgres)."},
     "warehouse": {"type": "string", "description": "Snowflake compute warehouse (required for token auth)."},
     "role": {"type": "string", "description": "Optional session role."},
-    "host": {"type": "string", "description": "Postgres or MySQL host, e.g. 127.0.0.1."},
-    "port": {"type": "string", "description": "Postgres or MySQL port (default 5432 / 3306)."},
-    "user": {"type": "string", "description": "Postgres role / MySQL user."},
-    "sslmode": {"type": "string", "description": "Postgres sslmode (disable / require / verify-full / …). MySQL: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named)."},
+    "host": {"type": "string", "description": "Postgres, MySQL or TiDB host, e.g. 127.0.0.1."},
+    "port": {"type": "string", "description": "Postgres, MySQL or TiDB port (default 5432 / 3306 / 4000)."},
+    "user": {"type": "string", "description": "Postgres role / MySQL or TiDB user."},
+    "sslmode": {"type": "string", "description": "Postgres sslmode (disable / require / verify-full / …). MySQL and TiDB: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named)."},
     "endpoint": {"type": "string", "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL, e.g. http://orders.ws-1.svc.cluster.local:8080. Without a scheme it is https://; plaintext http:// must be written out. No credentials, query or fragment in it: the bearer token goes in `token`."}
   }
 })JSON",
@@ -365,6 +366,14 @@ std::string read_only_query_rejection(const std::string& sql) {
 std::string connector_query_rejection(const ConnectorConfig& config,
                                       const std::string& sql) {
     if (config.type == "mysql") return mysql_query_rejection(sql);
+    if (config.type == "tidb") {
+        // TiDB parses READ ONLY but does not enforce it, so the words that
+        // write are refused here as well as by the session (mysql_client.cpp).
+        if (std::string rejection = mysql_query_rejection(sql); !rejection.empty()) {
+            return rejection;
+        }
+        return write_word_rejection(sql, WriteWordDialect::Mysql, "the TiDB connector");
+    }
     if (lake_sql::is_lake_sql_type(config.type)) {
         if (std::string rejection = read_only_query_rejection(sql); !rejection.empty()) {
             return rejection;
@@ -416,7 +425,9 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
     }
     // MySQL speaks its own wire protocol too, implemented natively
     // (mysql_client.hpp); the TCP/TLS driver is installed by zetta-api.
-    if (config.type == "mysql") {
+    // TiDB is the same protocol and the same driver; the session tells TiDB
+    // from MySQL by its greeting and fences it the way TiDB allows.
+    if (config.type == "mysql" || config.type == "tidb") {
         if (!has_mysql_query_runner()) {
             result.error =
                 "the MySQL connector is not installed in this binary (no zetta-api "

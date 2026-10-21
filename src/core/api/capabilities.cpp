@@ -2593,7 +2593,7 @@ const nlohmann::json& dataset_summary_schema() {
            {{"type", "string"},
             {"description",
              "what the rows were loaded from: csv, jsonl, json, parquet, a connector "
-             "type (postgres, snowflake, mysql, lake_sqlite, lake_duckdb, lake_polars) or rows; empty for a table not loaded from a "
+             "type (postgres, snowflake, mysql, tidb, lake_sqlite, lake_duckdb, lake_polars) or rows; empty for a table not loaded from a "
              "source (SQL, engine results)"}}},
           {"replication",
            {{"type", "string"},
@@ -9021,7 +9021,9 @@ bool is_local_source(const zetta::connect::ConnectorConfig& config) {
         return host == "localhost" || host == "127.0.0.1" || host == "::1";
     }
     // warehouses are remote by construction
-    if (config.type != "postgres" && config.type != "mysql") return false;
+    if (config.type != "postgres" && config.type != "mysql" && config.type != "tidb") {
+        return false;
+    }
     const std::string& host = config.host;
     if (host.empty()) return true;          // libpq default: the local socket
     if (host.front() == '/') return true;   // an explicit unix-socket directory
@@ -9267,7 +9269,7 @@ std::optional<zetta::governance::ConsentAction> describe_create_dataset_from_que
     // The source as a human reads it: "postgres 127.0.0.1:5433/motive",
     // "snowflake ab12345.us-east-1".
     std::string target = config->type;
-    if (config->type == "postgres" || config->type == "mysql") {
+    if (config->type == "postgres" || config->type == "mysql" || config->type == "tidb") {
         target += " " + (config->host.empty() ? std::string{"localhost"} : config->host);
         if (!config->port.empty()) target += ":" + config->port;
         if (!config->database.empty()) target += "/" + config->database;
@@ -12943,12 +12945,12 @@ void register_core_capabilities(Registry& registry) {
         "create_dataset_from_query",
         "Create a dataset from a connector query",
         "Run a read-only query against an external source (Snowflake, "
-        "Postgres, MySQL, or lake's SQLite, DuckDB or Polars service) and load its rows into a new partitioned table placed "
+        "Postgres, MySQL, TiDB, or lake's SQLite, DuckDB or Polars service) and load its rows into a new partitioned table placed "
         "across the cluster \u2014 the in-product path from a warehouse to a "
         "featurizable dataset, with no manual export. Only a single "
-        "SELECT/WITH may run (MySQL also admits SHOW). A remote source is reached "
+        "SELECT/WITH may run (MySQL and TiDB also admit SHOW). A remote source is reached "
         "over the network with your credentials, so it is consent-gated when the "
-        "node enforces governance; a loopback Postgres, MySQL or lake service touches no cloud "
+        "node enforces governance; a loopback Postgres, MySQL, TiDB or lake service touches no cloud "
         "and runs directly "
         "(audited as dataset_added; visible in system.datasets).",
         create_dataset_from_query_schema(),

@@ -133,7 +133,10 @@ runtime::task<> run_session(net::io_context& io, ConnectorConfig config, std::st
     options.tls_mode = *mode;
     MysqlClientSession session(std::move(options));
 
-    const std::string port = config.port.empty() ? std::string("3306") : config.port;
+    // TiDB's SQL port is 4000; MySQL's is 3306.
+    const std::string port = !config.port.empty() ? config.port
+                             : config.type == "tidb" ? std::string("4000")
+                                                     : std::string("3306");
     const std::string where = config.host + ":" + port;
 
     net::resolver resolver(io);

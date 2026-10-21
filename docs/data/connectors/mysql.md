@@ -110,6 +110,10 @@ order and subscription ids to billing (Stripe metadata often carries them).
   client.
 - **MariaDB** is spoken through the same protocol; its `ed25519` and GSSAPI
   plugins are not implemented.
+- **TiDB** is spoken through the same protocol (connector type `tidb`), but it
+  does not enforce `READ ONLY`, so the session recognises it from its greeting
+  and fences it differently — even when the connector type is `mysql`. See
+  [tidb.md](tidb.md).
 
 ## Status
 
