@@ -80,6 +80,35 @@ TEST(ScopedGrantCovering, BlobGrantIsAPrefix) {
     EXPECT_FALSE(object_covers(prefix, Resource::blob("img/logo.png")));
 }
 
+// A blob grant matches on a `/` path boundary, never a bare text prefix (#767):
+// `report` must not admit `report-secret-2026`, nor `2026/01` admit
+// `2026/01-executive-comp/...`.
+TEST(ScopedGrantCovering, BlobGrantMatchesOnAPathSegmentBoundary) {
+    const Resource report = Resource::blob("report");
+    EXPECT_TRUE(object_covers(report, Resource::blob("report")));
+    EXPECT_TRUE(object_covers(report, Resource::blob("report/q1.pdf")));
+    EXPECT_FALSE(object_covers(report, Resource::blob("report-secret-2026")));
+    EXPECT_FALSE(object_covers(report, Resource::blob("reports")));
+    EXPECT_FALSE(object_covers(report, Resource::blob("repo")));
+
+    const Resource month = Resource::blob("2026/01");
+    EXPECT_TRUE(object_covers(month, Resource::blob("2026/01")));
+    EXPECT_TRUE(object_covers(month, Resource::blob("2026/01/payroll.csv")));
+    EXPECT_FALSE(object_covers(
+        month, Resource::blob("2026/01-executive-comp/salaries.csv")));
+    EXPECT_FALSE(object_covers(month, Resource::blob("2026/010")));
+
+    // A trailing-slash grant covers everything under it, not its sibling names.
+    const Resource year = Resource::blob("2026/");
+    EXPECT_TRUE(object_covers(year, Resource::blob("2026/01-executive-comp/x")));
+    EXPECT_FALSE(object_covers(year, Resource::blob("2026")));
+    EXPECT_FALSE(object_covers(year, Resource::blob("2026-archive/x")));
+
+    // An empty blob grant covers nothing (a flat blob:read grants every blob).
+    EXPECT_FALSE(object_covers(Resource::blob(""), Resource::blob("anything")));
+    EXPECT_FALSE(object_covers(Resource::blob(""), Resource::blob("")));
+}
+
 TEST(ScopedGrantCovering, ToolGrantIsExact) {
     const Resource tool = Resource::tool("search");
     EXPECT_TRUE(object_covers(tool, Resource::tool("search")));
@@ -220,11 +249,25 @@ TEST_F(ScopedGrantNode, BlobPrefixGrantAdmitsExactlyThosePrefixes) {
 
     EXPECT_TRUE(node.authorize_blob(uid, /*acting_is_user=*/true, "2026/q1.parquet"));
     EXPECT_FALSE(node.authorize_blob(uid, /*acting_is_user=*/true, "2025/q4.parquet"));
+    EXPECT_FALSE(node.authorize_blob(uid, /*acting_is_user=*/true, "2026-secret/q1.parquet"));
 
     // The admin (flat blob:read) reads every blob; the local session bypasses.
     const std::string admin_id = user_with_role("boss", "admin");
     EXPECT_TRUE(node.authorize_blob(admin_id, /*acting_is_user=*/true, "any/id"));
     EXPECT_TRUE(node.authorize_blob("", /*acting_is_user=*/false, "any/id"));
+}
+
+// The node decision inherits the path boundary (#767): a grant on `report`
+// admits `report` and `report/...`, never `report-secret-2026`.
+TEST_F(ScopedGrantNode, BlobGrantWithoutTrailingSlashStopsAtThePathBoundary) {
+    node.create_role("reporter");
+    ASSERT_TRUE(node.grant_scoped_permissions("reporter", {"blob:read"},
+                                              Resource::blob("report")));
+    const std::string uid = user_with_role("rita", "reporter");
+
+    EXPECT_TRUE(node.authorize_blob(uid, /*acting_is_user=*/true, "report"));
+    EXPECT_TRUE(node.authorize_blob(uid, /*acting_is_user=*/true, "report/2026.pdf"));
+    EXPECT_FALSE(node.authorize_blob(uid, /*acting_is_user=*/true, "report-secret-2026"));
 }
 
 TEST_F(ScopedGrantNode, RevokeRemovesTheScopedGrant) {

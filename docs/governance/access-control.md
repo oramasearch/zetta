@@ -233,7 +233,7 @@ thereby audited, not just the boundary itself; **approval gates** for risky acti
 are their own slice, as is **granting a capability** as a first-class
 command/event (ENT-22 → `GrantCapability` / `CapabilityGranted`). The finer
 access **tiers** (team / partner / per-dataset) extend `ResourceKind` (which already
-has `Topic` for pub/sub, a name-prefix grant like `Blob`, #1029, `Collection`
+has `Topic` for pub/sub, a name-prefix grant, #1029 (`Blob` is a `/`-path prefix, #767), `Collection`
 for keyed record collections, also a name prefix, #1231, and `Bucket` for object
 buckets, a name prefix too, #1005) and
 `Scope`, and new rights extend `CapabilityDomain` / the open action taxonomy,
@@ -574,8 +574,12 @@ tool      MCP tool name       —          —
 `object_covers(granted, target)` is the deny-by-default covering decision: a
 **database** grant covers every table/column in it; a **table** grant covers the
 whole table; a **column-set** grant covers the table for reachability and exactly
-its columns; a **blob** grant is a **prefix** (covers every id that starts with it);
-a **tool** grant is exact.
+its columns; a **blob** grant is a **path prefix**: it covers its own id and every id
+below it on a `/` segment boundary, never a bare text prefix (#767). `report` covers
+`report` and `report/q1.pdf` but not `report-secret-2026`; `2026/01` covers
+`2026/01/payroll.csv` but not `2026/01-executive-comp/…`; `2026/` covers everything
+under `2026/`. An empty blob grant covers nothing (grant a flat `blob:read` for every
+blob). A **tool** grant is exact.
 
 ### The grant model
 
@@ -644,8 +648,9 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
   MCP `tools/list` (`src/core/api/http_server.cpp`) is **filtered** to the tools the
   caller may invoke.
 - **Blobs** (`src/core/api/serving.cpp`, `serve_blob`): `Node::authorize_blob` gates
-  a large-object body read on `blob:read` covering the id (a flat right or a prefix
-  grant).
+  a large-object body read on `blob:read` covering the id (a flat right or a path
+  grant on the id or a `/`-segment parent of it, #767). Any route that serves a blob
+  body must call `serve_blob` or `Node::authorize_blob`.
 - **The web UI's cookie blob routes** (`src/core/api/http_server.cpp`, #1389): `POST
   /blob`, `POST /blob/delete` and `GET /blob/download` are registered before the main
   gate, so each checks the session user itself. Upload and delete need `sql:write` on

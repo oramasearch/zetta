@@ -601,8 +601,9 @@ ApiResult serve_blob(Node& node, const ServeRequest& request) {
     ServeSpan serve(request, "serve:blob");
 
     // Object-scoped access (#747). A token-resolved user must hold `blob:read`
-    // covering this blob id — either a flat blob:read (admin/global) or a prefix
-    // grant whose prefix the id starts with (authorize_blob folds both). A legacy
+    // covering this blob id — either a flat blob:read (admin/global) or a path
+    // grant that equals the id or is a `/`-segment parent of it (#767;
+    // authorize_blob folds both). A legacy
     // AccessKey checks the coarse blob:read right; the empty key is the audited
     // "unauthenticated local" session. Deny-by-default.
     bool allowed = true;
