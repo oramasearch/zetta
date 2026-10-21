@@ -146,7 +146,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     n8n_import.hpp          zetta::pipeline::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
     n8n_compile.hpp         zetta::pipeline::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
     graph_plan.hpp          zetta::pipeline::project_cluster_plan/ClusterPlan/StepPlan/StepPlacement — project how an ExecutionGraph would run over the current cluster (near-data / fan-out / all-nodes / coordinator per step, near-data locality propagated forward along DataFlow edges); pure + deterministic, the engine of the Graph Workspace plan view (#591, #575 area 6); no new JSON boundary
-    executor.hpp            zetta::pipeline::GraphExecutor / StepExecutor — orchestrate a graph into a Run
+    executor.hpp            zetta::pipeline::GraphExecutor / StepExecutor — orchestrate a graph into a Run; GraphExecutor::run_as runs each step as a principal (#843)
+    step_authority.hpp      zetta::pipeline::RunPrincipal / step_operation / decide_step / authorize_step / authorize_graph_steps — deny-by-default per-step authority from the run's principal, each decision audited as data_access (#843)
     run_progress.hpp        zetta::pipeline::project_run_progress/RunProgress/StepRunProgress/StepRunStatus — project a Run's logs+outputs onto an ExecutionGraph (per-step pending/running/succeeded/failed + failing reason + attributed outputs); pure + per-frame cheap, the engine of the Graph Workspace live-run overlay (#626); no new JSON boundary
     validation.hpp          zetta::pipeline::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
     gate.hpp                zetta::pipeline::CorrectnessGate — gate runner: checks → report (RULE-1)
@@ -485,7 +486,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     n8n_import.cpp          zetta::pipeline::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
     n8n_compile.cpp         zetta::pipeline::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
     graph_plan.cpp          project_cluster_plan — per-step cluster placement projection (kind → placement; near-data owner propagation along DataFlow edges; drop stale owners) for the Graph Workspace plan view (#591)
-    executor.cpp            GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
+    executor.cpp            GraphExecutor + topological_order + DefaultStepExecutor (graph → Run); the per-step authority check before each step (#843)
+    step_authority.cpp      step kind → right, the user / AccessKey / table-scoped decision, the data_access audit record (#843)
     run_progress.cpp        project_run_progress — derive per-step run status from the GraphExecutor log grammar + attribute outputs to producing steps (#626)
     validation.cpp          ValidationReport verdict + JSON round-trip/validation
     gate.cpp                CorrectnessGate runner + NonEmptyGraphCheck + make_check

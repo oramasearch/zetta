@@ -240,7 +240,25 @@ ExecutionResult GraphExecutor::execute(Node& node,
             &node.span_recorder(), step_parent,
             "step:" + std::string(to_string(step->kind)));
         step_span.set_attribute("label", step_label(*step));
-        StepOutcome outcome = step_executor_->run_step(*step);
+        // Step authority (#843): the run's principal must hold the right this
+        // step exercises before it executes. A denial fails the step like any
+        // other failure (fail-fast), so nothing past it runs.
+        zetta::governance::AccessDecision authority{true, {}};
+        if (!principal_.local()) {
+            node.run_on_owner(
+                [&] { authority = authorize_step(node, principal_, *step, run_id); });
+        }
+        StepOutcome outcome;
+        if (authority) {
+            outcome = step_executor_->run_step(*step);
+        } else {
+            outcome.ok = false;
+            outcome.error = "not authorized: " + principal_.acting_id + " lacks " +
+                            std::string(zetta::governance::to_string(
+                                step_operation(step->kind).domain)) +
+                            ":" + step_operation(step->kind).action + " (" +
+                            authority.reason + ")";
+        }
         step_span.set_attribute(
             "result_shape", nlohmann::json{{"outputs", outcome.outputs.size()}});
         step_span.finish(outcome.ok, outcome.error);

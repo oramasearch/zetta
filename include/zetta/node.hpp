@@ -62,7 +62,7 @@
 #include "zetta/pubsub/dispatcher.hpp"
 
 namespace zetta::cluster { class Cluster; }
-namespace zetta::pipeline { struct ExecutionResult; }
+namespace zetta::pipeline { struct ExecutionResult; struct RunPrincipal; }
 namespace zetta::ir { class ExecutionGraph; }
 namespace zetta::compute { class JobCoordinator; }
 namespace zetta::compute { class CoordinatedLaunchListener; }
@@ -1149,6 +1149,13 @@ public:
     zetta::pipeline::ExecutionResult run_graph(const ir::ExecutionGraph& graph,
                               std::string project = {},
                               std::string graph_id = {});
+    // The same, with every step run as `principal` (#843): each step must be
+    // authorized for the principal before it executes, and each decision is
+    // audited (pipeline/step_authority.hpp). An empty principal is the trusted
+    // local session, identical to the overload above.
+    zetta::pipeline::ExecutionResult run_graph(const ir::ExecutionGraph& graph,
+                              std::string project, std::string graph_id,
+                              const zetta::pipeline::RunPrincipal& principal);
 
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }

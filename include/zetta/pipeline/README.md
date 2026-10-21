@@ -18,3 +18,9 @@ Run metric writes commit caller values and automatic system samples atomically
 on the owner thread. Only automatic samples advance past a conflicting step;
 caller values retain strict validation. See
 [Run metrics](../../../docs/ml/run-metrics.md) (#1205).
+
+`step_authority.hpp` decides, per step and when the step is reached, whether the
+run's principal may run it: deny-by-default, from the principal's roles or
+AccessKey capabilities, each decision a `data_access` audit event.
+`GraphExecutor::run_as` applies it to a walk. See
+[step authority](../../../docs/governance/step-authority.md) (#843).

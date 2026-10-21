@@ -16,6 +16,7 @@
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/gate.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/util/timestamp.hpp"
 
@@ -511,6 +512,18 @@ api::ApiResult run_composed_solution(const nlohmann::json& input, ApiContext& co
                                      std::string("https://github.com/oramasearch/zetta/issues/1102"));
         }
         stages.push_back({methodology, std::move(stage_graph)});
+    }
+    // Step authority (#843): each stage's steps run as the caller, so the caller
+    // must hold every step's right before any stage starts. A denial runs nothing.
+    const zetta::pipeline::RunPrincipal principal{context.acting_key,
+                                                  context.acting_is_user};
+    for (const SolutionStage& stage : stages) {
+        zetta::pipeline::GraphAuthorization authorized;
+        context.node.run_on_owner([&] {
+            authorized = zetta::pipeline::authorize_graph_steps(context.node, principal,
+                                                                stage.graph);
+        });
+        if (!authorized) return ApiResult::failure("unauthorized", authorized.reason);
     }
     for (const auto& existing : context.node.runs()) {
         if (existing->value().graph == graph->id() &&

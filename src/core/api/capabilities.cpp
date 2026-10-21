@@ -72,6 +72,7 @@
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/project_input.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/pipeline/validation.hpp"
@@ -6922,9 +6923,13 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
                 ") is marked runnable but has no run callback");
     }
 
+    // Step authority (#843): every step runs as the caller, not as the node.
+    const zetta::pipeline::RunPrincipal principal{context.acting_key,
+                                                  context.acting_is_user};
     if (methodology == nullptr) {
-        const zetta::pipeline::ExecutionResult executed =
-            context.node.run_graph(graph->graph(), project->id(), graph->id());
+        // The structural walk checks each step as it reaches it (GraphExecutor).
+        const zetta::pipeline::ExecutionResult executed = context.node.run_graph(
+            graph->graph(), project->id(), graph->id(), principal);
         if (!executed.run) {
             return ApiResult::failure("engine_error",
                                       "the run record could not be created");
@@ -6946,6 +6951,18 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
             output["error"] = executed.error;
         }
         return ApiResult::success(std::move(output));
+    }
+
+    // A methodology runs the pipeline through its own callback, not step by
+    // step through GraphExecutor, so every step is authorized for the caller
+    // before it starts. A denial runs nothing.
+    zetta::pipeline::GraphAuthorization authorized;
+    context.node.run_on_owner([&] {
+        authorized =
+            zetta::pipeline::authorize_graph_steps(context.node, principal, graph->graph());
+    });
+    if (!authorized) {
+        return ApiResult::failure("unauthorized", authorized.reason);
     }
 
     // No dataset given (#1040): M-1 trains on the table the pipeline's own

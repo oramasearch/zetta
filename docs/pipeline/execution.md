@@ -88,7 +88,11 @@ then:
    in graph **insertion order**, so the order is deterministic.
 4. **Runs each step** in order through the `StepExecutor`, moving the run to
    `Running` and logging a line per step (`<kind>: <name>`). Outputs and lineage
-   accumulate as it goes.
+   accumulate as it goes. When the executor was given a principal
+   (`GraphExecutor::run_as`, #843), each step is first authorized for that
+   principal, deny-by-default and audited; a refused step does not execute and
+   fails the run like any other failed step. See
+   [step authority](../governance/step-authority.md).
 5. **Fail-fast** — if a step fails, the failing step + reason are logged, later
    steps do **not** run, and the run ends `Failed`. Otherwise it ends `Succeeded`.
 6. **Stamps lineage** — `freshness` (an ISO-8601 stamp) and `confidence`
