@@ -47,6 +47,7 @@
 #include "catalog.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -4224,9 +4225,34 @@ std::shared_ptr<zetta::governance::User> Node::authenticate_token(
     std::string_view secret) const {
     if (secret.empty()) return nullptr;
     const std::string now = zetta::util::now_iso8601();
+    bool unverified_kdf_token = false;
     for (const auto& token : tokens_) {
         // validates() is constant-time on the hash compare and rejects revoked /
-        // expired tokens; then the owning user must exist and be active.
+        // expired tokens; then the owning user must exist and be active. The
+        // first pass never derives: a KDF token not yet verified is left for the
+        // second pass.
+        if (token->uses_kdf() && !token->kdf_verified()) unverified_kdf_token = true;
+        if (!token->validates(secret, now, /*allow_kdf=*/false)) continue;
+        auto user = find_user_by_id(token->user_id());
+        if (user && user->active()) return user;
+    }
+    if (!unverified_kdf_token) return nullptr;
+    // The slow pass (#769), budgeted: refill one check per kColdKdfRefill up to
+    // the burst, and spend one per bearer that reaches here.
+    const auto clock_now = std::chrono::steady_clock::now();
+    if (cold_kdf_refilled_ == std::chrono::steady_clock::time_point{}) {
+        cold_kdf_refilled_ = clock_now;
+    }
+    const auto refills = (clock_now - cold_kdf_refilled_) / kColdKdfRefill;
+    if (refills > 0) {
+        cold_kdf_budget_ = static_cast<int>(std::min<std::int64_t>(
+            kColdKdfBurst, cold_kdf_budget_ + static_cast<std::int64_t>(refills)));
+        cold_kdf_refilled_ += refills * kColdKdfRefill;
+    }
+    if (cold_kdf_budget_ <= 0) return nullptr;
+    --cold_kdf_budget_;
+    for (const auto& token : tokens_) {
+        if (!token->uses_kdf() || token->kdf_verified()) continue;
         if (!token->validates(secret, now)) continue;
         auto user = find_user_by_id(token->user_id());
         if (user && user->active()) return user;
@@ -4626,32 +4652,60 @@ bool Node::bypasses_row_security(const std::string& acting_id,
 Node::BootstrapResult Node::bootstrap_owner(
     const std::string& admin_token_secret) {
     BootstrapResult result;
-    if (!users_.empty()) {
-        result.reason = "user store is not empty";
-        return result;  // already seeded — never re-mint
-    }
     if (admin_token_secret.empty()) {
         result.reason = "no admin token secret supplied";
         return result;  // nothing to seed the owner's credential with
     }
-    // Mint the owner user, ensure the built-in roles exist, grant it admin, and
-    // issue its access token from the operator's secret (never generated here).
-    auto owner = create_user("owner");
+    // A seed cut short (#769): the only user is "owner" and it holds no token.
+    // Resume it instead of skipping, or the node would have no usable owner.
+    std::shared_ptr<governance::User> resumed;
+    if (!users_.empty()) {
+        if (users_.size() == 1 && users_.front()->name() == "owner") {
+            const std::string owner_id = users_.front()->id();
+            const bool has_token = std::any_of(
+                tokens_.begin(), tokens_.end(),
+                [&](const auto& token) { return token->user_id() == owner_id; });
+            if (!has_token) resumed = users_.front();
+        }
+        if (!resumed) {
+            // Already seeded: never re-mint. Check the operator's secret once
+            // so the owner's token is verified and its later checks are cheap.
+            (void)authenticate_token(admin_token_secret);
+            result.reason = "user store is not empty";
+            return result;
+        }
+    }
+    // Derive the token hash first, so nothing is written when it fails. The
+    // PBKDF2 form (#769): the operator chose this secret, so it may not carry
+    // the entropy of a generated one, and a stolen store must not be guessed at
+    // SHA-256 speed. create_token generates its own secret, which we don't want
+    // for the seeded owner credential, so the token is written here.
+    const std::string salt = governance::generate_token_salt();
+    const std::string hash =
+        salt.empty() ? std::string{}
+                     : governance::kdf_hash_token_secret(salt, admin_token_secret);
+    if (hash.empty()) {
+        result.reason = "failed to hash the admin token secret";
+        return result;
+    }
+    // Mint (or reuse) the owner user, ensure the built-in roles exist, grant it
+    // admin, and issue its access token from the operator's secret. Any failure
+    // after a user was created here drops that user again (with whatever it was
+    // given), leaving the store empty so the next start retries the whole seed.
+    auto owner = resumed ? resumed : create_user("owner");
     if (!owner) {
         result.reason = "failed to create owner user";
         return result;
     }
-    ensure_builtin_roles();
-    if (auto admin = find_role("admin")) {
-        assign_role(owner->id(), admin->id());
-    }
-    // Seed the token directly from the supplied secret (create_token generates a
-    // fresh secret, which we don't want for the seeded owner credential).
-    const std::string salt = governance::generate_token_salt();
-    const std::string hash = governance::hash_token_secret(salt, admin_token_secret);
-    if (salt.empty() || hash.empty()) {
-        result.reason = "failed to hash the admin token secret";
+    const auto roll_back = [&](std::string reason) {
+        if (!resumed) drop_user(owner->name());
+        result.reason = std::move(reason);
         return result;
+    };
+    ensure_builtin_roles();
+    auto admin = find_role("admin");
+    if (!admin || !assign_role(owner->id(), admin->id())) {
+        return roll_back("failed to assign the admin role to the owner");
     }
     governance::TokenValue value;
     value.user_id = owner->id();
@@ -4672,9 +4726,12 @@ Node::BootstrapResult Node::bootstrap_owner(
     }
     auto token = materialize_token(token_id, std::move(value));
     if (!token) {
-        result.reason = "failed to persist the owner token";
-        return result;
+        if (replication_) replication_->remove(catalog::token_key(token_id));
+        return roll_back("failed to persist the owner token");
     }
+    // Verify once now, while the secret is in hand, so the owner's requests take
+    // the cheap path from the start.
+    (void)token->validates(admin_token_secret, zetta::util::now_iso8601());
     result.performed = true;
     result.user_id = owner->id();
     result.user_name = owner->name();

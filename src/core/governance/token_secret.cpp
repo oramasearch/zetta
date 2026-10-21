@@ -1,6 +1,7 @@
 #include "zetta/governance/token_secret.hpp"
 
 #include <array>
+#include <charconv>
 #include <cstddef>
 
 #include <openssl/crypto.h>
@@ -58,6 +59,53 @@ std::string hash_token_secret(std::string_view salt, std::string_view secret) {
         return {};
     }
     return to_hex(digest.data(), digest.size());
+}
+
+std::string kdf_hash_token_secret(std::string_view salt, std::string_view secret,
+                                  unsigned iterations) {
+    if (iterations == 0) return {};
+    std::array<unsigned char, 32> derived{};
+    if (PKCS5_PBKDF2_HMAC(secret.data(), static_cast<int>(secret.size()),
+                          reinterpret_cast<const unsigned char*>(salt.data()),
+                          static_cast<int>(salt.size()),
+                          static_cast<int>(iterations), EVP_sha256(),
+                          static_cast<int>(derived.size()), derived.data()) != 1) {
+        return {};
+    }
+    std::string stored(kTokenKdfPrefix);
+    stored += std::to_string(iterations);
+    stored += '$';
+    stored += to_hex(derived.data(), derived.size());
+    return stored;
+}
+
+bool is_kdf_token_hash(std::string_view stored_hash) {
+    return stored_hash.starts_with(kTokenKdfPrefix);
+}
+
+bool verify_token_secret(std::string_view stored_hash, std::string_view salt,
+                         std::string_view secret) {
+    if (!is_kdf_token_hash(stored_hash)) {
+        const std::string candidate = hash_token_secret(salt, secret);
+        if (candidate.empty()) return false;  // hashing failed: deny
+        return constant_time_equal(candidate, stored_hash);
+    }
+    // pbkdf2-sha256$<iterations>$<64 hex>
+    const std::string_view rest = stored_hash.substr(kTokenKdfPrefix.size());
+    const std::size_t separator = rest.find('$');
+    if (separator == std::string_view::npos) return false;
+    const std::string_view count = rest.substr(0, separator);
+    unsigned iterations = 0;
+    const auto parsed =
+        std::from_chars(count.data(), count.data() + count.size(), iterations);
+    if (parsed.ec != std::errc{} || parsed.ptr != count.data() + count.size() ||
+        iterations == 0 || iterations > 10 * kTokenKdfIterations) {
+        return false;  // malformed, or a work factor no honest writer stores
+    }
+    if (rest.size() - separator - 1 != 64) return false;
+    const std::string candidate = kdf_hash_token_secret(salt, secret, iterations);
+    if (candidate.empty()) return false;
+    return constant_time_equal(candidate, stored_hash);
 }
 
 bool constant_time_equal(std::string_view a, std::string_view b) {

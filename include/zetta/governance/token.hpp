@@ -25,7 +25,8 @@ std::optional<TokenType> token_type_from(std::string_view name);
 struct TokenValue {
     std::string user_id;      // the user this token authenticates as
     TokenType type = TokenType::Api;
-    std::string hash;         // hex SHA-256(salt || secret) — the at-rest secret
+    std::string hash;         // hex SHA-256(salt || secret), or the bootstrap
+                              // owner's `pbkdf2-sha256$<iterations>$<hex>` (#769)
     std::string salt;         // hex per-token salt
     std::string created;      // ISO-8601 UTC
     std::string expires_at;   // optional ISO-8601 UTC; empty = never expires
@@ -69,10 +70,25 @@ public:
     bool expired(std::string_view now) const;
 
     // Does `secret` match this token, and is the token live (not revoked, not
-    // expired) as of `now`? Recomputes SHA-256(salt || secret) and compares it
-    // to the stored hash in **constant time**. The whole point of hashing: a
-    // stolen store can't recover the secret, and validation can't be timed.
-    bool validates(std::string_view secret, std::string_view now) const;
+    // expired) as of `now`? Recomputes the stored hash's form (SHA-256(salt ||
+    // secret), or the PBKDF2 form for the bootstrap owner, #769) and compares it
+    // in **constant time**. The whole point of hashing: a stolen store can't
+    // recover the secret, and validation can't be timed.
+    //
+    // A KDF token costs a full PBKDF2 derivation to check, so after the first
+    // successful check it keeps a memory-only SHA-256(salt || secret) verifier
+    // and later checks compare against that. With `allow_kdf` false, a KDF token
+    // that has not been verified yet in this process answers false without
+    // deriving: Node::authenticate_token uses it to try every cheap match first
+    // and to budget the slow derivations.
+    bool validates(std::string_view secret, std::string_view now,
+                   bool allow_kdf = true) const;
+
+    // Is the stored hash in the KDF form (the bootstrap owner's token, #769)?
+    bool uses_kdf() const;
+    // Has this KDF token been verified once in this process (so checking it is
+    // cheap)? Always false for a non-KDF token. Memory-only, never persisted.
+    bool kdf_verified() const { return !kdf_verifier_.empty(); }
 
     // Replace the mutable value to match a (replicated) one, then rewrite
     // token.json (used by reconcile — e.g. a peer revoked it).
@@ -88,6 +104,9 @@ private:
     std::string id_;
     TokenValue value_;
     std::filesystem::path dir_;
+    // Memory-only SHA-256(salt || secret) of a KDF token's secret, set by the
+    // first successful validates(); cleared when set_value changes the hash.
+    mutable std::string kdf_verifier_;
 };
 
 }  // namespace zetta::governance
