@@ -229,3 +229,50 @@ TEST(GossipBandwidth, Measure) {
         EXPECT_GE(converge_ms, 0) << scenario.name << ": did not converge within 60 s";
     }
 }
+
+// The #794 regression gate: once a mesh holds a sizable document, a round ships
+// only the changes a peer lacks, not the document. Before #794 every SYNC was the
+// whole document, so a SYNC averaged the document's size (more, in base64).
+TEST(GossipBandwidth, SteadyStateRoundsShipOnlyTheChangesAPeerLacks) {
+    // Plaintext, so the gate measures what a round ships and nothing else: over
+    // mutual TLS a loopback mesh still intermittently freezes one node's links
+    // (https://github.com/oramasearch/zetta/issues/835), whatever the payload.
+    // GossipBandwidth.Measure covers mutual TLS.
+    Mesh mesh(3, 44730, /*tls=*/false);
+    ASSERT_TRUE(mesh.wait_meshed()) << "mesh did not form";
+    // Distinct values, so the stored document does not compress away.
+    std::uint64_t state = 794;
+    for (int key = 0; key < 1500; ++key) {
+        std::string value(256, ' ');
+        for (char& c : value) {
+            state = state * 6364136223846793005ull + 1442695040888963407ull;
+            c = static_cast<char>('a' + (state >> 60));
+        }
+        mesh.replicas.front()->set("bulk:" + std::to_string(key), {{"blob", value}});
+    }
+    ASSERT_GE(mesh.wait_converged(60000), 0) << "the preloaded document did not converge";
+    const std::size_t document = mesh.replicas.front()->save().size();
+    ASSERT_GT(document, 300000u);
+    // Let the catch-up's last reports land (a peer that ingested the preload
+    // reports its new clock within a few ticks), so the window is steady state.
+    sleep_ms(3000);
+
+    const GossipStats before = mesh.stats();
+    hammer(mesh, 3000, 1, 128, /*fresh_keys=*/true);
+    const long converge_ms = mesh.wait_converged(30000);
+    const GossipStats during = minus(mesh.stats(), before);
+    EXPECT_GE(converge_ms, 0) << "the mesh did not converge after the writes";
+    ASSERT_GT(during.sync_frames, 0u);
+    const auto per_frame = during.sync_bytes / during.sync_frames;
+    std::fprintf(stderr,
+                 "[gossip] document=%zu frames=%llu full=%llu incremental=%llu "
+                 "bytes_per_frame=%llu\n",
+                 document, static_cast<unsigned long long>(during.sync_frames),
+                 static_cast<unsigned long long>(during.full_syncs),
+                 static_cast<unsigned long long>(during.incremental_syncs),
+                 static_cast<unsigned long long>(per_frame));
+    EXPECT_GT(during.incremental_syncs, during.full_syncs * 10)
+        << "steady-state rounds should ship deltas";
+    EXPECT_LT(per_frame * 20, document)
+        << "a SYNC should be a small fraction of the document";
+}

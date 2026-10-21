@@ -137,6 +137,10 @@ of zetta stays decoupled from the backend.
   tombstone. "Was this ever replicated?", as opposed to `snapshot()`'s "is it live
   now?".
 - `save()` → bytes; `merge(bytes)` — exchange + merge with a peer, conflict-free.
+- `clock()` / `save_since(peer_clock)` — the per-actor change sequences a document
+  holds, and a blob of only the changes a peer with that clock lacks (falling back
+  to the whole document); what gossip ships each round (#794, *Incremental gossip*
+  below).
 - `entry_count()` — number of **live** top-level keys (zetta seeds one per node).
 - `version()` — a short fingerprint of the document's Automerge **heads** (the
   change-DAG leaves). Two nodes hold identical state exactly when their versions
@@ -290,12 +294,16 @@ The [cluster](cluster.md) carries replication. When a node is built with a
 `ReplicationManager`, each peer connection runs a gossip exchange on a ~½s timer
 (adapter: `src/core/cluster/cluster.cpp`):
 
-- `ZETTA/1 SYNC <base64 of save()>` — the whole document; the receiver `merge()`s
-  it (conflict-free, so order and duplicates don't matter).
-- `ZETTA/1 STATUS <entries> <version>` — the sender's status, recorded against
-  that peer so `Cluster::nodes()` can report each node's entries, version, and
-  whether it's **in sync** (its version equals ours) and how long ago it last
-  synced.
+- `ZETTA/1 SYNC <base64 document blob>` — only the changes the peer lacks
+  (`save_since(peer clock)`, [#794](https://github.com/oramasearch/zetta/issues/794));
+  the receiver `merge()`s it (conflict-free, so order and duplicates don't
+  matter). Not sent at all when the peer lacks nothing. See *Incremental gossip*
+  below.
+- `ZETTA/1 STATUS <entries> <version> <clock>` — the sender's status, recorded
+  against that peer so `Cluster::nodes()` can report each node's entries, version,
+  and whether it's **in sync** (its version equals ours) and how long ago it last
+  synced. The trailing `<clock>` (base64 of `clock()`) is what sizes the next
+  SYNC to that node.
 - `ZETTA/1 LOREQ <lo-uuid>` / `ZETTA/1 LORES <lo-uuid> <base64-body>` —
   large-object **body** transfer (the metadata rode in via SYNC). A node requests
   the bodies it's missing (`BlobStore::missing_blobs`) and serves the ones it has
@@ -306,6 +314,51 @@ Each node seeds its own membership entry — `node:<node_id> → { address, reac
 its own key, so the merge unions every node's entry conflict-free. The database
 catalog (DDL + rows) lives under separate keys (see *Data replication* below);
 once two nodes have exchanged everything, their documents share a `version()`.
+
+### Incremental gossip (#794)
+
+Until #794 every round re-shipped `save()` — the whole document with all its
+history — to every peer every ½ s, so a round cost O(document) per peer and a
+write-heavy mesh stopped converging. Now a round ships only what the peer lacks:
+
+- **The clock.** `ReplicationManager::clock()` is, per actor (per node), the
+  highest change sequence the document holds — about 20 bytes per node. Every
+  STATUS carries it; the receiver records it on that peer's record.
+- **The delta.** `save_since(peer_clock)` collects the changes whose sequence is
+  above the peer's clock for their actor and writes them as a document chunk in
+  the same layout `save()` writes, so the receiver's `merge()` (and the
+  audit-retired receiver's `strip_audit_history`) take it unchanged. Changes travel
+  as stored, so signed or sealed values arrive exactly as written. The result is
+  empty when the peer lacks nothing, and then no SYNC is sent.
+- **Gap safety.** `merge()` skips a change whose sequence is at or below the
+  receiver's clock for that actor. A delta built from what we *think* we sent
+  could leave a gap that is then skipped forever if one frame failed to apply
+  (the #835 failure mode). Building it from the clock the receiver *itself
+  reported* rules that out: until the peer reports holding a change, every round
+  re-ships it. A stale clock only costs a few re-sent changes.
+- **Waiting for the peer to take it.** After a SYNC, a link sends the next one
+  only once the peer's reported clock covers our clock as of that SYNC. Without
+  this, every round re-ships what is still in flight, and a peer ingesting a large
+  catch-up keeps reporting its old clock for seconds — so the whole document went
+  out again each round. Frames on a link arrive in order or the link drops, so
+  the wait is a backstop only: after 10 s without the peer showing it, we resend
+  from its reported clock. STATUS is written before SYNC each round, so a node's
+  clock report never queues behind its own large SYNC.
+- **Full-state fallback.** The whole document is sent when the link is new (a
+  clock reported on an earlier link is never trusted: the peer may have restarted
+  from an older document), when the peer reports no clock (a node from before
+  #794 — the clock is a trailing STATUS token those nodes ignore, so mixed
+  versions interoperate; such a peer gets the whole document every round, as before), when the clock does not decode, and when the peer lacks
+  at least half of our changes (too far behind for a delta to pay). A peer that
+  stops applying SYNC sees its missing set grow until that last rule sends it the
+  whole document again.
+- **Measuring it.** `Cluster::gossip_stats()` counts rounds, SYNC frames (whole
+  vs. delta) and their bytes; `GossipBandwidth.Measure`
+  (`tests/cluster/test_gossip_bandwidth.cpp`, run with `ZETTA_GOSSIP_BENCH=1`)
+  is the measurement behind the #794 numbers.
+
+Not done here: history **compaction** (persistence still writes the whole
+document, and a new peer still receives the whole history once).
 
 ## Seeing it: all nodes + replication status
 

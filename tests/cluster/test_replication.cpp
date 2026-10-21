@@ -282,3 +282,169 @@ TEST(IncrementalReconcile, OneChangeStaysFastWithOneHundredThousandMigratedAudit
               static_cast<std::size_t>(kExistingEvents + kTicks));
     node.stop();
 }
+
+// --- Gossip deltas (#794) ---------------------------------------------------
+
+TEST(ReplicationDelta, ShipsOnlyTheChangesThePeerLacks) {
+    ReplicationManager a(zetta::util::new_uuid());
+    ReplicationManager b(zetta::util::new_uuid());
+    const std::string blob(256, 'x');
+    for (int key = 0; key < 200; ++key) {
+        a.set("bulk:" + std::to_string(key), {{"blob", blob}});
+    }
+    b.merge(a.save());
+    ASSERT_EQ(b.version(), a.version());
+
+    a.set("fresh:1", {{"n", 1}});
+    a.set("fresh:2", {{"n", 2}});
+    a.remove("bulk:7");
+
+    const auto delta = a.save_since(b.clock());
+    EXPECT_FALSE(delta.full);
+    EXPECT_EQ(delta.changes, 3u);
+    EXPECT_LT(delta.blob.size() * 20, a.save().size())
+        << "a delta of three changes should be a small fraction of the document";
+    b.merge(delta.blob);
+    EXPECT_EQ(b.version(), a.version());
+    EXPECT_EQ(b.snapshot(), a.snapshot());
+    EXPECT_FALSE(b.snapshot().contains("bulk:7"));
+}
+
+TEST(ReplicationDelta, IsEmptyWhenThePeerLacksNothing) {
+    ReplicationManager a(zetta::util::new_uuid());
+    ReplicationManager b(zetta::util::new_uuid());
+    a.set("k", {{"n", 1}});
+    b.set("other", {{"n", 2}});
+    b.merge(a.save());
+    // b holds everything a holds (and more): a has nothing to send it.
+    const auto delta = a.save_since(b.clock());
+    EXPECT_TRUE(delta.blob.empty());
+    EXPECT_FALSE(delta.full);
+    // The reverse direction still owes a b's own change.
+    const auto back = b.save_since(a.clock());
+    EXPECT_FALSE(back.blob.empty());
+    a.merge(back.blob);
+    EXPECT_EQ(a.version(), b.version());
+}
+
+TEST(ReplicationDelta, FallsBackToTheWholeDocument) {
+    ReplicationManager a(zetta::util::new_uuid());
+    for (int key = 0; key < 10; ++key) a.set("k" + std::to_string(key), {{"n", key}});
+
+    // No clock (a peer that advertises none, e.g. an older node): the document.
+    const auto unknown = a.save_since("");
+    EXPECT_TRUE(unknown.full);
+    EXPECT_EQ(unknown.blob, a.save());
+
+    // A clock that does not decode is treated exactly like no clock.
+    for (const std::string garbage : {std::string("\x05", 1), std::string("not a clock"),
+                                      std::string(17, '\xff')}) {
+        const auto delta = a.save_since(garbage);
+        EXPECT_TRUE(delta.full) << "a malformed clock must not produce a delta";
+    }
+
+    // A peer that holds nothing lacks every change: too far behind for a delta.
+    ReplicationManager fresh(zetta::util::new_uuid());
+    const auto behind = a.save_since(fresh.clock());
+    EXPECT_TRUE(behind.full);
+    fresh.merge(behind.blob);
+    EXPECT_EQ(fresh.version(), a.version());
+}
+
+TEST(ReplicationDelta, ClockNamesEveryActorAndAdvancesWithEachChange) {
+    ReplicationManager a(zetta::util::new_uuid());
+    ReplicationManager b(zetta::util::new_uuid());
+    const std::string empty = a.clock();
+    a.set("k", {{"n", 1}});
+    const std::string one = a.clock();
+    EXPECT_NE(one, empty);
+    a.set("k", {{"n", 2}});
+    EXPECT_NE(a.clock(), one);
+    b.set("j", {{"n", 1}});
+    a.merge(b.save());
+    b.merge(a.save());
+    EXPECT_EQ(a.clock(), b.clock()) << "converged documents hold the same clock";
+    // 1 count byte + 2 actors x (16 id bytes + 1 sequence byte).
+    EXPECT_EQ(a.clock().size(), 1u + 2u * 17u);
+}
+
+// The in-process mesh of AMeshOfThreeConvergesAfterConcurrentWrites, gossiping
+// deltas against each receiver's own clock instead of whole documents. Partial
+// views routinely put a third node's changes on a peer before the author's own
+// link delivers them — a delta must never leave a gap merge() would skip.
+TEST(ReplicationDelta, AMeshGossipingDeltasConvergesWithPartialViews) {
+    constexpr int kNodes = 4;
+    std::vector<std::unique_ptr<ReplicationManager>> nodes;
+    for (int n = 0; n < kNodes; ++n) {
+        nodes.push_back(std::make_unique<ReplicationManager>(zetta::util::new_uuid()));
+    }
+    std::mt19937 rng(20261021u);
+    const std::string blob(128, 'x');
+    std::size_t delta_bytes = 0;
+    std::size_t full_bytes = 0;
+    std::vector<std::string> reported(kNodes);  // the last clock each node reported
+    for (int round = 0; round < 300; ++round) {
+        for (int n = 0; n < kNodes; ++n) {
+            const auto key = "k" + std::to_string(rng() % 8) + ":" + std::to_string(n);
+            if (rng() % 10 == 0) {
+                nodes[n]->remove(key);
+            } else {
+                nodes[n]->set(key, nlohmann::json{{"n", round}, {"blob", blob}});
+            }
+        }
+        for (int fired = 0; fired < kNodes; ++fired) {
+            const int to = static_cast<int>(rng() % kNodes);
+            const int from = (to + 1 + static_cast<int>(rng() % (kNodes - 1))) % kNodes;
+            // The receiver's clock as of its last STATUS, which may be rounds
+            // old (or absent, before its first STATUS): a stale clock only
+            // makes the sender re-ship changes the receiver already holds.
+            const auto delta = nodes[from]->save_since(reported[to]);
+            delta_bytes += delta.blob.size();
+            full_bytes += nodes[from]->save().size();
+            if (!delta.blob.empty()) nodes[to]->merge(delta.blob);
+        }
+        for (int n = 0; n < kNodes; ++n) {
+            if (rng() % 2 == 0) reported[n] = nodes[n]->clock();
+        }
+    }
+    for (int round = 0; round < 10; ++round) {
+        for (int to = 0; to < kNodes; ++to) {
+            for (int from = 0; from < kNodes; ++from) {
+                if (from == to) continue;
+                const auto delta = nodes[from]->save_since(nodes[to]->clock());
+                if (!delta.blob.empty()) nodes[to]->merge(delta.blob);
+            }
+        }
+    }
+    for (int n = 1; n < kNodes; ++n) {
+        EXPECT_EQ(nodes[n]->version(), nodes[0]->version()) << "node " << n;
+        EXPECT_EQ(nodes[n]->snapshot(), nodes[0]->snapshot()) << "node " << n;
+        EXPECT_EQ(nodes[n]->clock(), nodes[0]->clock()) << "node " << n;
+    }
+    // A fresh replica built from any node's whole document is the same document:
+    // no change was skipped anywhere along the way.
+    ReplicationManager check(zetta::util::new_uuid());
+    check.merge(nodes[0]->save());
+    for (int n = 1; n < kNodes; ++n) {
+        const auto before = check.version();
+        check.merge(nodes[n]->save());
+        EXPECT_EQ(check.version(), before) << "node " << n << " holds a change node 0 lacks";
+    }
+    EXPECT_LT(delta_bytes * 5, full_bytes)
+        << "deltas should cost a small fraction of shipping whole documents";
+}
+
+TEST(ReplicationDelta, ReachesAPeerThatRetiredAudit) {
+    ReplicationManager a(zetta::util::new_uuid());
+    ReplicationManager b(zetta::util::new_uuid());
+    for (int key = 0; key < 20; ++key) a.set("k" + std::to_string(key), {{"n", key}});
+    b.merge(a.save());
+    ASSERT_TRUE(b.retire_audit([](const std::string&, const nlohmann::json&) { return true; },
+                               [] { return true; }));
+    a.set("after", {{"n", 1}});
+    const auto delta = a.save_since(b.clock());
+    ASSERT_FALSE(delta.full);
+    b.merge(delta.blob);
+    EXPECT_EQ(b.snapshot().at("after").at("n"), 1);
+    EXPECT_EQ(b.version(), a.version());
+}
