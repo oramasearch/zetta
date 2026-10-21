@@ -578,6 +578,49 @@ TEST_F(ConsentFixture, ListSourceTablesSpeaksMysqlsCatalog) {
     EXPECT_EQ(listed.value.at("tables")[0].at("columns")[0].at("column"), "id");
 }
 
+// --- lake's SQL services (#1014): the endpoint decides local or remote ----------
+
+TEST_F(ConsentFixture, ALoopbackLakeServiceRunsUngatedAndARemoteOneIsNamed) {
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "local-sqlite"},
+                      {"connector",
+                       {{"type", "lake_sqlite"},
+                        {"endpoint", "http://127.0.0.1:8080"},
+                        {"token", "bearer"}}}})
+                    .ok);
+    auto local = call("create_dataset_from_query",
+                      {{"connection", "local-sqlite"}, {"query", "SELECT 1"}});
+    EXPECT_NE(local.error.code, "consent_required") << local.error.message;
+
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "orders-duck"},
+                      {"connector",
+                       {{"type", "lake_duckdb"},
+                        {"endpoint", "http://orders.ws-1.svc.cluster.local:8080"},
+                        {"token", "bearer"}}}})
+                    .ok);
+    auto remote = call("create_dataset_from_query",
+                       {{"connection", "orders-duck"}, {"query", "SELECT 1"}});
+    ASSERT_EQ(remote.error.code, "consent_required");
+    const std::string summary = remote.error.details.at("action").value("summary", "");
+    EXPECT_NE(summary.find("lake_duckdb http://orders.ws-1.svc.cluster.local:8080"),
+              std::string::npos)
+        << summary;
+
+    // An `endpoint` on a type that does not read it never makes a source local.
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "warehouse"},
+                      {"connector",
+                       {{"type", "snowflake"},
+                        {"account", "ab12345"},
+                        {"token", "pat"},
+                        {"endpoint", "http://127.0.0.1:1"}}}})
+                    .ok);
+    auto warehouse = call("create_dataset_from_query",
+                          {{"connection", "warehouse"}, {"query", "SELECT 1"}});
+    EXPECT_EQ(warehouse.error.code, "consent_required");
+}
+
 // --- Consent enforcement is OFF by default (#995) -----------------------------
 
 // The gate points a refused caller at approval surfaces that a one-person node

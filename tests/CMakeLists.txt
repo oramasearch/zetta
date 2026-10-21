@@ -264,6 +264,7 @@ add_executable(zetta-tests
   connect/test_connector.cpp
   connect/test_postgres_connector.cpp
   connect/test_mysql_connector.cpp
+  connect/test_lake_sql_connector.cpp
   connect/test_connection_store.cpp
   connect/test_credential_seal.cpp
   connect/test_distributed_fetch.cpp
