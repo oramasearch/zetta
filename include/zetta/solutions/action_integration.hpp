@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/connect/http_transport.hpp"
+#include "zetta/runtime.hpp"
 
 namespace zetta {
 class Node;
@@ -154,6 +155,26 @@ public:
 std::unique_ptr<ActionConnector> make_action_connector(
     ActionConnectorKind kind);
 
+// A report publication made ready on the Node owner thread: persisted, recorded
+// in the action ledger, and with its outbound request built. `request` is empty
+// when the publication is already settled (delivered or dead-lettered by an
+// earlier call with the same idempotency key), so nothing is sent again.
+//
+// The split exists so the network round-trip can run OFF the owner thread
+// (lake#801): `prepare_report` and `record_report_attempt` touch the Node and
+// run on the owner; sending `request` touches nothing and runs anywhere.
+struct PreparedReportPublication {
+    ReportPublication publication;
+    std::optional<zetta::connect::HttpRequest> request;
+};
+
+// Sends one prepared report request: the async default transport when one is
+// installed, else the synchronous default run on a runtime pool worker, else a
+// response whose `error` says no transport is installed. Never touches a Node,
+// so it is safe from any coroutine; never blocks the Node owner.
+zetta::runtime::task<zetta::connect::HttpResponse> send_report_request(
+    zetta::connect::HttpRequest request);
+
 class ActionRuntime {
 public:
     explicit ActionRuntime(
@@ -177,6 +198,26 @@ public:
         std::string actor,
         std::string* error = nullptr);
 
+    // Validate, persist and ledger-record a report publication and build the
+    // request to send, without sending it. Owner thread.
+    std::optional<PreparedReportPublication> prepare_report(
+        ReportPublicationSpec spec,
+        std::string actor,
+        std::string* error = nullptr);
+
+    // Record one delivery attempt's response against `publication` (owner
+    // thread): an acknowledged response settles it as Delivered; a failure is
+    // recorded with its reason and, once `max_attempts` is reached, settles it
+    // as DeadLetter. Returns the updated publication.
+    std::optional<ReportPublication> record_report_attempt(
+        ReportPublication publication,
+        const zetta::connect::HttpResponse& response,
+        std::string* error = nullptr);
+
+    // prepare_report, then every attempt through the runtime's transport, on
+    // the calling thread. Blocks for the whole delivery: never call it inside a
+    // Node owner tick for a delivery a request is waiting on (lake#801) — use
+    // prepare_report + send_report_request + record_report_attempt instead.
     std::optional<ReportPublication> publish_report(
         ReportPublicationSpec spec,
         std::string actor,

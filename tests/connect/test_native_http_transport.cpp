@@ -1,5 +1,5 @@
 // Protocol-layer coverage of the native coroutine HTTP client that fills the
-// connector transport seam (#827, docs/api/native-http-transport.md).
+// connector transport interface (#827, docs/api/native-http-transport.md).
 //
 // The client is exercised against the engine's own REST server on loopback —
 // real sockets, real HTTP/1.1 framing through Boost.HTTP's serializer/parser —
@@ -11,9 +11,15 @@
 // helper thread — the same layer-2 discipline the REST tests use.
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <string>
 #include <thread>
@@ -154,6 +160,97 @@ TEST_F(NativeHttpTransportFixture, RejectsAUrlThatIsNotAbsoluteHttp) {
     EXPECT_EQ(response.status, 0);
 }
 
+// A loopback listener that accepts the TCP connection (the kernel completes the
+// handshake into its backlog) and then never says a word — the shape of a peer
+// that swallows a TLS ClientHello.
+struct SilentListener {
+    int fd = -1;
+    int port = 0;
+
+    SilentListener() {
+        fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        if (fd < 0 ||
+            ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+            ::listen(fd, 4) != 0) {
+            close();
+            return;
+        }
+        socklen_t length = sizeof(address);
+        ::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length);
+        port = ntohs(address.sin_port);
+    }
+    ~SilentListener() { close(); }
+    void close() {
+        if (fd >= 0) ::close(fd);
+        fd = -1;
+    }
+};
+
+// Runs `request` through the async transport under an OUTER deadline of
+// `limit` and reports whether the transport answered first. The outer deadline
+// only keeps a regression from hanging the suite: the request's own
+// timeout_seconds must end it well before `limit`.
+bool finishes_within(const zetta::connect::HttpRequest& request,
+                     std::chrono::seconds limit,
+                     zetta::connect::HttpResponse& response) {
+    auto [outer_timeout, answered] = zetta::runtime::block_on(
+        zetta::runtime::timeout(
+            zetta::connect::default_async_http_transport()(request), limit));
+    response = std::move(answered);
+    return !outer_timeout;
+}
+
+// lake#801: the request's timeout bounds the TLS handshake, not only the
+// exchange after it. A peer that accepts and then stays silent used to hold the
+// caller until the connection died — a run's report delivery held the
+// workspace for minutes.
+TEST_F(NativeHttpTransportFixture, TheTimeoutBoundsASilentTlsHandshake) {
+    SilentListener listener;
+    ASSERT_GT(listener.port, 0);
+    zetta::connect::HttpRequest request;
+    request.url = "https://127.0.0.1:" + std::to_string(listener.port) + "/hooks";
+    request.body = "{}";
+    request.timeout_seconds = 2;
+
+    zetta::connect::HttpResponse response;
+    const auto started = std::chrono::steady_clock::now();
+    const bool in_time =
+        finishes_within(request, std::chrono::seconds(15), response);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_TRUE(in_time) << "the handshake was not bounded by timeout_seconds";
+    EXPECT_LT(elapsed, std::chrono::seconds(10));
+    EXPECT_FALSE(response.error.empty());
+    EXPECT_EQ(response.status, 0);
+    EXPECT_NE(response.error.find("TLS handshake"), std::string::npos)
+        << response.error;
+}
+
+// lake#801: the timeout bounds the TCP connect too. A non-routable address
+// models a default-deny egress policy that drops the SYN: without the bound the
+// connect waits out the kernel's SYN retries (about 130 s on Linux). Where the
+// network refuses it at once instead, the request still ends well inside the
+// limit, so this holds on any host.
+TEST_F(NativeHttpTransportFixture, TheTimeoutBoundsAConnectThatIsNeverAnswered) {
+    zetta::connect::HttpRequest request;
+    request.url = "http://10.255.255.1:81/hooks/actions";
+    request.body = "{}";
+    request.timeout_seconds = 2;
+
+    zetta::connect::HttpResponse response;
+    const auto started = std::chrono::steady_clock::now();
+    const bool in_time =
+        finishes_within(request, std::chrono::seconds(15), response);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_TRUE(in_time) << "the connect was not bounded by timeout_seconds";
+    EXPECT_LT(elapsed, std::chrono::seconds(10));
+    EXPECT_FALSE(response.error.empty());
+    EXPECT_EQ(response.status, 0);
+}
+
 // A large download streams straight to a file instead of buffering the body on
 // the heap (the weights fetch relies on this for multi-GB shards).
 TEST_F(NativeHttpTransportFixture, StreamsTheBodyToAFileWhenAsked) {
@@ -177,7 +274,7 @@ TEST_F(NativeHttpTransportFixture, StreamsTheBodyToAFileWhenAsked) {
 }
 
 // The property Part 3's distributed fetch rests on: N exchanges in flight at
-// once on one node, joined through the runtime seam's when_all.
+// once on one node, joined through the runtime interface's when_all.
 TEST_F(NativeHttpTransportFixture, FansOutConcurrentExchangesThroughWhenAll) {
     constexpr int kRequests = 8;
     std::vector<zetta::connect::HttpResponse> responses;

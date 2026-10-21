@@ -29,7 +29,7 @@
 #include "zetta/runtime.hpp"
 #include "zetta/runtime/net.hpp"
 
-// The native coroutine HTTPS client behind the connector transport seam (#827).
+// The native coroutine HTTPS client behind the connector transport interface (#827).
 //
 // This is the **second** translation unit allowed to name Corosio (through
 // `zetta::runtime::net`), alongside `src/core/cluster/cluster.cpp`: the cluster
@@ -276,7 +276,7 @@ private:
 // Everything one exchange needs, kept alive by a shared_ptr so the coroutine on
 // the io_context thread and the awaiting caller both hold it. `finished` is the
 // cross-thread handoff: the caller suspends on it and the io_context thread sets
-// it, which is the runtime seam's documented completion primitive.
+// it, which is the runtime interface's documented completion primitive.
 struct Exchange {
     connect::HttpRequest request;
     connect::HttpResponse response;
@@ -455,6 +455,12 @@ private:
     // One connection to `url`: resolve, connect, (optionally) handshake, exchange.
     // Returns the failure reason (empty on success). On a followed redirect,
     // `location` is set and the body is not read.
+    //
+    // `deadline` bounds the WHOLE hop — resolving, connecting and the TLS
+    // handshake as well as the exchange. An endpoint whose packets are dropped
+    // (a default-deny egress policy) otherwise holds a connect for the kernel's
+    // SYN retry budget, about 130 s on Linux, whatever timeout the caller asked
+    // for (lake#801).
     runtime::task<std::string> perform_url(const std::string& url,
                                            const connect::HttpRequest& request,
                                            connect::HttpResponse& response,
@@ -466,9 +472,16 @@ private:
             co_return std::string("not an absolute http(s) URL");
         }
 
+        const auto expires = std::chrono::steady_clock::now() + deadline;
+        const auto remaining = [expires] {
+            return std::max(std::chrono::milliseconds(0),
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                expires - std::chrono::steady_clock::now()));
+        };
+
         net::resolver resolver(io_context_);
-        auto [resolve_error, results] =
-            co_await resolver.resolve(parsed.host, parsed.port);
+        auto [resolve_error, results] = co_await runtime::timeout(
+            resolver.resolve(parsed.host, parsed.port), remaining());
         if (resolve_error) {
             co_return "could not resolve " + parsed.host + ": " +
                 resolve_error.message();
@@ -479,13 +492,19 @@ private:
         bool connected = false;
         std::string connect_reason = "no address resolved for " + parsed.host;
         for (const auto& entry : results) {
-            auto [connect_error] = co_await socket.connect(entry.get_endpoint());
+            auto [connect_error] = co_await runtime::timeout(
+                socket.connect(entry.get_endpoint()), remaining());
             if (!connect_error) {
                 connected = true;
                 break;
             }
             connect_reason = "could not connect to " + parsed.host + ":" +
                              parsed.port + ": " + connect_error.message();
+            if (remaining() == std::chrono::milliseconds(0)) {
+                connect_reason += " (no answer within " +
+                                  std::to_string(deadline.count()) + " s)";
+                break;
+            }
         }
         if (!connected) co_return connect_reason;
 
@@ -496,7 +515,7 @@ private:
             auto [error, reason] = co_await runtime::timeout(
                 exchange_over(socket, request, parsed, response,
                               redirects_remaining, location),
-                deadline);
+                remaining());
             co_return error ? timeout_reason(error) : reason;
         }
 
@@ -507,8 +526,8 @@ private:
 
         // Reference mode: `socket` outlives `secure` (both live in this frame).
         net::openssl_stream secure(&socket, *tls_context);
-        if (auto [handshake_error] =
-                co_await secure.handshake(net::tls_stream::client);
+        if (auto [handshake_error] = co_await runtime::timeout(
+                secure.handshake(net::tls_stream::client), remaining());
             handshake_error) {
             co_return "TLS handshake with " + parsed.host +
                 " failed: " + handshake_error.message();
@@ -517,11 +536,13 @@ private:
         auto [error, reason] = co_await runtime::timeout(
             exchange_over(secure, request, parsed, response, redirects_remaining,
                           location),
-            deadline);
+            remaining());
 
         // Best-effort close_notify: the answer is already in hand, so a peer
-        // that hangs up first is not an error worth reporting.
-        [[maybe_unused]] const auto shutdown_result = co_await secure.shutdown();
+        // that hangs up first — or never answers within the deadline — is not
+        // an error worth reporting.
+        [[maybe_unused]] const auto shutdown_result =
+            co_await runtime::timeout(secure.shutdown(), remaining());
         co_return error ? timeout_reason(error) : reason;
     }
 
