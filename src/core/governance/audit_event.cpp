@@ -1568,4 +1568,25 @@ bool AuditTrail::flush() {
     return impl_->sync_writer();
 }
 
+// ---- the acting identity (#847) ---------------------------------------------
+
+namespace {
+thread_local std::optional<std::string> t_audit_actor;
+}  // namespace
+
+AuditActorScope::AuditActorScope(std::string actor)
+    : previous_(std::move(t_audit_actor)) {
+    t_audit_actor = actor.empty() ? std::string("local") : std::move(actor);
+}
+
+AuditActorScope::AuditActorScope(std::optional<std::string> actor)
+    : previous_(std::move(t_audit_actor)) {
+    if (actor && actor->empty()) actor = std::string("local");
+    t_audit_actor = std::move(actor);
+}
+
+AuditActorScope::~AuditActorScope() { t_audit_actor = std::move(previous_); }
+
+std::optional<std::string> current_audit_actor() { return t_audit_actor; }
+
 }  // namespace zetta::governance

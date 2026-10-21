@@ -120,6 +120,38 @@ bool validate_audit_event_value(const nlohmann::json& value,
 std::optional<AuditEventValue> parse_audit_event_value(
     const nlohmann::json& value, std::string* error = nullptr);
 
+// The identity on whose behalf the current thread is acting (#847). An entry
+// point that knows who is calling — a capability call (Registry::call), a SQL
+// statement (query::Executor), the headed app's frame — opens an
+// AuditActorScope for the duration of the work; the audit sink
+// (Node::record_audit_event) stamps that actor on any event recorded without
+// one, and an entity that would otherwise name a stand-in (a Project naming
+// its owner) names the real caller instead. So an event recorded deep inside
+// a handler (a deploy, a queued job, a created project) is attributed to the
+// caller rather than left blank.
+//
+// The actor is thread-local; Node::run_on_owner carries it across to the
+// owner thread with the work it hands over. Scopes nest: an inner scope wins
+// until it closes and then the outer one is back. An empty actor is spelled
+// "local", the convention every audit row already uses for the
+// unauthenticated local session.
+class AuditActorScope {
+public:
+    explicit AuditActorScope(std::string actor);
+    // Reinstates a captured actor exactly, including "no actor" (nullopt).
+    explicit AuditActorScope(std::optional<std::string> actor);
+    ~AuditActorScope();
+    AuditActorScope(const AuditActorScope&) = delete;
+    AuditActorScope& operator=(const AuditActorScope&) = delete;
+
+private:
+    std::optional<std::string> previous_;
+};
+
+// The actor of the innermost open AuditActorScope on this thread, or nullopt
+// when no entry point declared one (a background worker, a peer reconcile).
+std::optional<std::string> current_audit_actor();
+
 // An interface for appending audit events, decoupling the entities that *emit* them
 // (e.g. a Project's graph CRUD) from the Node that owns the retained trail.
 // `Node` is the implementation; a Project holds a non-owning AuditSink* the same

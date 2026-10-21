@@ -824,6 +824,11 @@ void App::render_frame() {
     // rendering (it runs synchronously inside SDL's pump). One frame at a time.
     if (rendering_) return;
     rendering_ = true;
+    // Everything the person at this desktop does in a frame (create, rename or
+    // drop a project or database, run, deploy) calls the Node directly; the
+    // Node's audit rows name them as the local operator, the same "local" every
+    // other surface uses for the unauthenticated local session (#847).
+    const zetta::governance::AuditActorScope audit_actor{std::string("local")};
     g_mono_font = mono_font_;  // ambient fonts for the shared render helpers
     g_heading_font = heading_font_;
 

@@ -247,6 +247,10 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     span.set_attribute("capability", name);
     span.set_attribute("actor",
                        context.acting_key.empty() ? "local" : context.acting_key);
+    // Everything this call records on the audit trail — including events the
+    // Node records deep inside the handler (a deploy, a created project, a
+    // queued job) — is attributed to the caller (#847).
+    const zetta::governance::AuditActorScope audit_actor{context.acting_key};
 
     auto finish = [&](ApiResult result) {
         result.trace_id = context.trace.trace_id;
@@ -456,6 +460,19 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         });
     }
 
+    // A per-call capability is audited at authorization, before it runs, so a
+    // call that then FAILED would read on the trail exactly like one that
+    // succeeded. Record the failure of anything that is not a plain read (#847):
+    // the trail must say an action was attempted and did not happen.
+    if (capability->audit_policy == AuditPolicy::PerCall && !result.ok &&
+        (capability->kind != CapabilityKind::Read || capability->mutates)) {
+        context.node.run_on_owner([&] {
+            audit_call(context.node, *capability, context.acting_key,
+                       result.error.code != "unauthorized",
+                       "failed: " + result.error.code + ": " + result.error.message);
+        });
+    }
+
     if (capability->audit_policy == AuditPolicy::HandlerRecordsSuccess &&
         !result.ok) {
         context.node.run_on_owner([&] {
@@ -620,6 +637,7 @@ ApiResult Registry::decide_consent(const std::string& challenge_id,
     audit_call(context.node, *entry, challenge->requested_by, /*allowed=*/true,
                "consent-approved execution of challenge " + challenge_id);
 
+    const zetta::governance::AuditActorScope audit_actor{challenge->requested_by};
     ApiResult result = entry->handler(challenge->input, execution);
     action_span.finish(result.ok, result.ok ? std::string{}
                                             : result.error.code + ": " +

@@ -1193,10 +1193,18 @@ void Node::run_on_owner(const std::function<void()>& work) {
         return;
     }
     auto completed = std::make_shared<zetta::runtime::async_event>();
+    // The work runs on another thread, so it carries the caller's acting
+    // identity with it (#847): an audit event the work records is attributed
+    // to whoever handed it over, not to whatever the owner thread was doing.
+    std::function<void()> attributed =
+        [work, actor = zetta::governance::current_audit_actor()] {
+            const zetta::governance::AuditActorScope scope{actor};
+            work();
+        };
     {
         std::lock_guard<std::mutex> lock(owner_work_mutex_);
         owner_work_queue_.push_back(
-            OwnerWork{work, [completed] { completed->set(); }});
+            OwnerWork{std::move(attributed), [completed] { completed->set(); }});
         if (owner_wakeup_) owner_wakeup_();
     }
     // Block this worker until the owner loop has executed the work. The wait
@@ -1697,6 +1705,26 @@ std::shared_ptr<zetta::governance::Principal> Node::find_principal_by_id(
     return nullptr;
 }
 
+namespace {
+
+// A change to the catalogue made through the Node's own API (#847): a project,
+// database or model created, dropped or renamed, or a graph run. These are the
+// calls the headed app makes directly (not through a capability), so the Node
+// records them itself; the actor is whoever the entry point declared
+// (AuditActorScope), filled in by record_audit_event. A peer's change arrives
+// through reconcile (materialize_*) and is not re-recorded here.
+void record_catalog_change(Node& node, std::string target, bool ok,
+                           std::string detail) {
+    zetta::governance::AuditEventValue event;
+    event.action = zetta::governance::AuditAction::DataChanged;
+    event.target = std::move(target);
+    event.allowed = ok;
+    event.detail = std::move(detail);
+    node.record_audit_event(std::move(event));
+}
+
+}  // namespace
+
 std::shared_ptr<zetta::data::Database> Node::create_database(
     std::string name, zetta::data::ReplicationStrategy replication_strategy) {
     // "system" is reserved for the virtual system database (computed system
@@ -1712,8 +1740,11 @@ std::shared_ptr<zetta::data::Database> Node::create_database(
         }
         replication_->set(catalog::database_key(id), value);
     }
-    return materialize_database(id, std::move(name),
-                               std::move(replication_strategy));
+    const std::string target = "database:" + name;
+    auto database = materialize_database(id, std::move(name),
+                                         std::move(replication_strategy));
+    if (database) record_catalog_change(*this, target, true, "database created");
+    return database;
 }
 
 std::shared_ptr<zetta::data::Database> Node::materialize_database(
@@ -1809,7 +1840,9 @@ bool Node::drop_database(const std::string& name) {
     auto db = find_database(name);
     if (!db) return false;
     if (replication_) replication_->remove(catalog::database_key(db->id()));
-    return materialize_drop_database(db->id());
+    const bool dropped = materialize_drop_database(db->id());
+    if (dropped) record_catalog_change(*this, "database:" + name, true, "database dropped");
+    return dropped;
 }
 
 bool Node::materialize_drop_database(const std::string& id) {
@@ -1832,6 +1865,8 @@ bool Node::rename_database(const std::string& from, const std::string& to) {
                           nlohmann::json{{"name", to}});
     }
     db->set_name(to);
+    record_catalog_change(*this, "database:" + to, true,
+                          "database renamed from '" + from + "'");
     return true;
 }
 
@@ -1860,8 +1895,14 @@ std::shared_ptr<zetta::pipeline::Project> Node::create_project(std::string name,
         if (internal) value["internal"] = true;
         replication_->set(catalog::project_key(id), std::move(value));
     }
-    return materialize_project(id, std::move(name), now, now, std::move(owner),
-                               std::move(description), internal);
+    const std::string target = "project:" + name;
+    auto project = materialize_project(id, std::move(name), now, now, std::move(owner),
+                                       std::move(description), internal);
+    if (project) {
+        record_catalog_change(*this, target, true,
+                              internal ? "internal project created" : "project created");
+    }
+    return project;
 }
 
 bool Node::reveal_project(const std::string& id, const std::string& name) {
@@ -1876,6 +1917,8 @@ bool Node::reveal_project(const std::string& id, const std::string& name) {
         replication_->set(catalog::project_key(project->id()), project->metadata());
     }
     if (name != from) update_project_display_name(project->id(), from, name);
+    record_catalog_change(*this, "project:" + name, true,
+                          "internal project '" + from + "' revealed");
     return true;
 }
 
@@ -1935,7 +1978,9 @@ bool Node::drop_project(const std::string& name) {
         }
         replication_->remove(catalog::project_key(project->id()));
     }
-    return materialize_drop_project(project->id());
+    const bool dropped = materialize_drop_project(project->id());
+    if (dropped) record_catalog_change(*this, "project:" + name, true, "project dropped");
+    return dropped;
 }
 
 bool Node::materialize_drop_project(const std::string& id) {
@@ -1960,6 +2005,8 @@ bool Node::rename_project(const std::string& from, const std::string& to) {
                           project->metadata());
     }
     update_project_display_name(project->id(), from, to);
+    record_catalog_change(*this, "project:" + to, true,
+                          "project renamed from '" + from + "'");
     return true;
 }
 
@@ -2630,7 +2677,11 @@ std::shared_ptr<zetta::ml::Model> Node::create_model(zetta::ml::ModelValue value
     value.created = zetta::util::now_iso8601();
     value.weights.reset();  // weights are attached separately via set_weights
     if (replication_) replication_->set(catalog::model_key(id), to_json(value));
-    return materialize_model(id, std::move(value));
+    const std::string detail = "model '" + value.kind + "' registered" +
+        (value.project_name.empty() ? std::string{} : " in project '" + value.project_name + "'");
+    auto model = materialize_model(id, std::move(value));
+    if (model) record_catalog_change(*this, "model:" + model->id(), true, detail);
+    return model;
 }
 
 std::shared_ptr<zetta::ml::Model> Node::materialize_model(std::string id, zetta::ml::ModelValue value) {
@@ -2656,7 +2707,9 @@ std::shared_ptr<zetta::ml::Model> Node::find_model(const std::string& id) const 
 bool Node::drop_model(const std::string& id) {
     if (!find_model(id)) return false;
     if (replication_) replication_->remove(catalog::model_key(id));
-    return materialize_drop_model(id);
+    const bool dropped = materialize_drop_model(id);
+    if (dropped) record_catalog_change(*this, "model:" + id, true, "model dropped");
+    return dropped;
 }
 
 bool Node::materialize_drop_model(const std::string& id) {
@@ -4797,6 +4850,14 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     // immutable record contract holds regardless of what the caller passed.
     const std::string id = zetta::util::new_uuid();
     value.time = zetta::util::now_iso8601();
+    // An event recorded without an actor inside a call names the caller (#847):
+    // the entry point declared who is acting (AuditActorScope), so a deploy, a
+    // queued job or a created project is attributed instead of left blank.
+    if (value.actor.empty()) {
+        if (auto actor = zetta::governance::current_audit_actor()) {
+            value.actor = std::move(*actor);
+        }
+    }
     std::string error;
     if (!audit_trail_ || !audit_trail_->append_local(node_id_, id, std::move(value), &error)) {
         std::fprintf(stderr, "zetta: audit append failed (%s)\n", error.c_str());
@@ -5317,8 +5378,21 @@ zetta::pipeline::ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph
                                 std::string project, std::string graph_id) {
     // Delegate to the standalone orchestrator with the default per-step executor.
     // The Run it creates is owned by this node (replicated + persisted as usual).
-    return zetta::pipeline::GraphExecutor{}.execute(*this, graph, std::move(project),
-                                   std::move(graph_id));
+    zetta::pipeline::ExecutionResult result = zetta::pipeline::GraphExecutor{}.execute(
+        *this, graph, std::move(project), std::move(graph_id));
+    // A run is a governed action (#847): record it with its outcome, so a run
+    // started from the headed app is on the trail like one started over the API.
+    std::string target = "run:" + (result.run ? result.run->id() : std::string("(none)"));
+    std::string detail = "graph run ";
+    if (result.ok) {
+        detail += "succeeded";
+    } else {
+        detail += "failed";
+        if (!result.failed_step.empty()) detail += " at step '" + result.failed_step + "'";
+        if (!result.error.empty()) detail += ": " + result.error;
+    }
+    record_catalog_change(*this, std::move(target), true, std::move(detail));
+    return result;
 }
 
 zetta::pipeline::ExecutionResult Node::run_graph(

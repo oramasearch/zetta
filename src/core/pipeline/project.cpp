@@ -21,6 +21,18 @@
 namespace zetta::pipeline {
 namespace fs = std::filesystem;
 
+namespace {
+
+// Who a graph change is attributed to (#847): the caller the entry point
+// declared (AuditActorScope) — a user who may change someone else's project is
+// named, not the project's owner — or the owner when no caller was declared.
+std::string graph_change_actor(const std::string& owner) {
+    if (auto actor = zetta::governance::current_audit_actor()) return std::move(*actor);
+    return owner;
+}
+
+}  // namespace
+
 Project::Project(std::string id, std::string name, std::string created,
                  std::string updated, std::string owner, fs::path dir,
                  zetta::cluster::ReplicationManager* replication, zetta::governance::AuditSink* audit,
@@ -273,7 +285,7 @@ std::shared_ptr<ProjectGraph> Project::create_graph(std::string name,
     // (no sink) already carrying its own replicated audit event.
     if (audit_) {
         audit_->record_audit_event(
-            {zetta::governance::AuditAction::GraphCreated, owner_, stored->name(), true,
+            {zetta::governance::AuditAction::GraphCreated, graph_change_actor(owner_), stored->name(), true,
              "graph '" + stored->name() + "' created in project '" + name_ + "'",
              {}});
     }
@@ -324,7 +336,7 @@ std::shared_ptr<ProjectGraph> Project::approve_graph(const std::string& name,
     // approval arrives via reconcile_graphs already carrying its own audit event.
     if (audit_) {
         audit_->record_audit_event(
-            {zetta::governance::AuditAction::GraphApproved, owner_, stored->name(),
+            {zetta::governance::AuditAction::GraphApproved, graph_change_actor(owner_), stored->name(),
              true,
              "plan '" + stored->name() + "' approved in project '" + name_ + "'",
              {}});
@@ -414,7 +426,7 @@ bool Project::drop_graph(const std::string& name) {
     // Audit the graph change (FEAT-9), once we know one was actually removed.
     if (removed && audit_) {
         audit_->record_audit_event(
-            {zetta::governance::AuditAction::GraphDropped, owner_, name, true,
+            {zetta::governance::AuditAction::GraphDropped, graph_change_actor(owner_), name, true,
              "graph '" + name + "' dropped from project '" + name_ + "'", {}});
     }
     return removed;
