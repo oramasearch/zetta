@@ -175,6 +175,7 @@ add_executable(zetta-tests
   governance/test_scoped_grants.cpp
   governance/test_row_security.cpp
   governance/test_system_catalog_access.cpp
+  governance/test_virtual_table_access.cpp
   governance/test_consent.cpp
   governance/test_sandbox_escape.cpp
   pipeline/test_executor.cpp

@@ -867,6 +867,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   governance/test_audit.cpp  segment reads/retention, malformed ranges, legacy catalog compaction, incompatible-peer refusal and two-process convergence/RSS assertions (#1164)
   governance/test_sandbox_escape.cpp  TC-5 jailbreak attempts by a low-privilege analyst over Registry::call: each refused and audited, no existence oracle, open gaps as KNOWN_DEFECT probes (#252)
   governance/test_audit_completeness.cpp  the Node's own data_changed rows, caller attribution across registry/SQL/console/run_on_owner, failed-call rows (#847)
+  governance/test_virtual_table_access.cpp  virtual tables: admin-only declare and read, reserved key families never projected (#1392)
   ml/test_forecast.cpp / ml/test_forecast_runner.cpp
                             temporal correctness, FVA, intervals, multiple series, horizon bounds, output lineage, and single-member == multi-member forecasting (#1043)
   ml/test_forecast_methodology.cpp
