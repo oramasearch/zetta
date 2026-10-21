@@ -72,10 +72,11 @@ confinement is at the API boundary, where the path comes from a caller.
 
 ## Not covered here
 
-- Paths a caller names for **writing** (`generate_dataset`'s `path`, feedback and corpus
-  exports) are their own findings: LSR-164
-  ([#1397](https://github.com/oramasearch/zetta/issues/1397)) and LSR-166
-  ([#1399](https://github.com/oramasearch/zetta/issues/1399)).
+- Paths a caller names for **writing** (`generate_dataset`'s `path`, `submit_feedback`'s
+  `export_path`) go under the sibling export root, `<data_dir>/exports`, with the same
+  lexical rules: [export-root.md](export-root.md) (LSR-164
+  [#1397](https://github.com/oramasearch/zetta/issues/1397), LSR-166
+  [#1399](https://github.com/oramasearch/zetta/issues/1399)).
 - The resolver checks the path, then the loader opens it again by name. Someone who can
   already write inside the import directory could swap an entry between the two opens;
   the real-path check narrows that, and anyone with that access can stage the file anyway.

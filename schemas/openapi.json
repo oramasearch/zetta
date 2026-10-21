@@ -12200,7 +12200,8 @@
                     "type": "string"
                   },
                   "path": {
-                    "description": "write the gated JSONL corpus to this file on the node (optional)",
+                    "description": "also write the gated JSONL corpus to a new file on the node, named relative to its export directory (exports/ under the data directory); no absolute path, no '..', no symbolic link, and never an existing file (optional)",
+                    "minLength": 1,
                     "type": "string"
                   },
                   "variants_per_subject": {
@@ -12252,6 +12253,7 @@
                           "type": "string"
                         },
                         "path": {
+                          "description": "the written file, relative to the node's export directory",
                           "type": "string"
                         },
                         "subjects": {
@@ -38590,7 +38592,8 @@
                     "type": "string"
                   },
                   "export_path": {
-                    "description": "local file path to ALSO write the bundle to — the explicit user export; nothing leaves the cluster on its own (optional)",
+                    "description": "ALSO write the bundle to a new file on the node, named relative to its export directory (exports/ under the data directory); no absolute path, no '..', no symbolic link, and never an existing file. Nothing leaves the cluster on its own (optional)",
+                    "minLength": 1,
                     "type": "string"
                   },
                   "intent": {
@@ -38646,7 +38649,7 @@
                           "type": "integer"
                         },
                         "exported_to": {
-                          "description": "present only when export_path was given and the export succeeded",
+                          "description": "present only when export_path was given and the export succeeded: the written file, relative to the node's export directory",
                           "type": "string"
                         },
                         "feedback_id": {

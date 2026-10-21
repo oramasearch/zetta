@@ -707,6 +707,7 @@ add_library(zetta-core STATIC
   src/core/data/add_dataset.cpp
   src/core/data/dataset_path.cpp
   src/core/data/import_path.cpp
+  src/core/data/export_path.cpp
   src/core/data/categorical_encoding.cpp
   src/core/data/analyze_dataset.cpp
   src/core/data/featurize_plan.cpp

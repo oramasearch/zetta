@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // **The import root: the one directory a caller may name files under** (#1391, #1433).
 //
@@ -54,6 +55,14 @@ struct ImportPathResult {
 // an entry of kind `expected`. Non-throwing.
 ImportPathResult resolve_import_path(const std::filesystem::path& root, std::string_view requested,
                                      ImportEntry expected);
+
+// The lexical rules every caller-named path passes before the filesystem is touched,
+// shared by the import root and the export root (export_path.hpp): not empty, no NUL,
+// no backslash, no leading `~`, not absolute, no `..` component, and not the root
+// itself. Returns the path's components (empty and `.` components dropped), or an
+// empty vector with `error` naming `where` and the requested path.
+std::vector<std::string> caller_path_components(std::string_view requested,
+                                                std::string_view where, std::string& error);
 
 // The same, under `import_root(node)`.
 ImportPathResult resolve_import_path(const Node& node, std::string_view requested,

@@ -32,6 +32,9 @@ allowed for every data-changing statement, object and column scope, row
 security on UPDATE/DELETE, and the `data_changed` audit (#1229).
 `connect/test_credential_seal.cpp` and `connect/test_connection_store.cpp` cover
 sealed storage, every read surface, legacy re-sealing and key rotation (#1230).
+`data/test_export_path.cpp` proves a caller-named export (`generate_dataset`'s `path`,
+`submit_feedback`'s `export_path`) is created new under `<data_dir>/exports` and never
+truncates a sentinel outside it, through an absolute path, `..`, or a link (#1397, #1399).
 
 `data/test_object_store.cpp` covers the object capability's contracts, a
 conditional-create race, fencing, torn tails after a kill, compaction and restart,

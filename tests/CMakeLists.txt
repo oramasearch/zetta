@@ -242,6 +242,7 @@ add_executable(zetta-tests
   data/test_add_dataset.cpp
   data/test_dataset_path.cpp
   data/test_import_path.cpp
+  data/test_export_path.cpp
   data/test_dataset_catalog_typing.cpp
   data/test_featurize_plan.cpp
   connect/test_connector.cpp
