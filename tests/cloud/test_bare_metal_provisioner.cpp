@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "secret_argv.hpp"
 #include "temp_dir.hpp"
 #include "zetta/cloud/bare_metal_cli_control_plane.hpp"
 #include "zetta/cloud/bare_metal_provisioner.hpp"
@@ -144,9 +145,17 @@ struct FakeRuntime {
     std::vector<std::vector<std::string>> calls;
     std::size_t up = 0;
     int fail_at = -1;  // when >= 0, `run` fails once `up` reaches it
+    std::string env_file_contents;  // the last --env-file, read during the call
+    bool env_file_private = false;
 
     CommandResult operator()(const std::vector<std::string>& argv) {
         calls.push_back(argv);
+        for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+            if (argv[index] == "--env-file") {
+                env_file_contents = zetta::test::read_whole_file(argv[index + 1]);
+                env_file_private = zetta::test::owner_only(argv[index + 1]);
+            }
+        }
         CommandResult result;
         if (has_token(argv, "run")) {
             if (fail_at >= 0 && up >= static_cast<std::size_t>(fail_at)) {
@@ -425,14 +434,16 @@ TEST(BareMetalCliControlPlane, BringUpLaunchesTheShortfallThenLists) {
             EXPECT_TRUE(has_flag(argv, "--label", "zetta-burst"));
             EXPECT_TRUE(has_token(argv, "--name"));
             EXPECT_TRUE(has_flag(argv, "--env", "ZETTA_SEED_PEER=10.0.0.1:7777"));
-            EXPECT_TRUE(has_flag(
-                argv, "--env",
-                "ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef"
-                "0123456789abcdef0123456789abcdef"));
+            EXPECT_TRUE(has_token(argv, "--env-file"));
             EXPECT_TRUE(has_token(argv, "ghcr.io/oramasearch/zetta:latest"));
         }
     }
     EXPECT_EQ(run_calls, 2);
+    // #770: the token is never an argv value; it rides a private --env-file.
+    EXPECT_FALSE(zetta::test::any_argv_contains(fake.calls, config.join_token));
+    EXPECT_NE(fake.env_file_contents.find("ZETTA_CLUSTER_TOKEN=" + config.join_token),
+              std::string::npos);
+    EXPECT_TRUE(fake.env_file_private);
 
     // The list call filters by the pool label as JSON.
     const std::vector<std::string>* ps = call_with(fake.calls, {"ps"});

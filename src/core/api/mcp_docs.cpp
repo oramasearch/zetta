@@ -128,6 +128,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "node auto-joins with no manual flags.\n\n";
     out += "| Variable | Maps to |\n|---|---|\n";
     out += "| `ZETTA_SEED_PEER` | `--peer` (comma or space separated) |\n";
+    out += "| `ZETTA_CLUSTER_TOKEN_FILE` | `--join-token`, read from a file (preferred) |\n";
     out += "| `ZETTA_CLUSTER_TOKEN` | `--join-token` |\n";
     out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n";
     out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n";

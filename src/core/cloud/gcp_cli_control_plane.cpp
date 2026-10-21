@@ -1,5 +1,6 @@
 #include "zetta/cloud/gcp_cli_control_plane.hpp"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -8,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cloud/command_runner.hpp"
+#include "zetta/cloud/secret_file.hpp"
 
 namespace zetta::cloud {
 
@@ -46,12 +48,32 @@ std::vector<ProvisionedNode> parse_nodes(const std::string& json_text) {
     return nodes;
 }
 
+// The startup-script KEY=VALUE lines the bootstrap reads: the seed address and,
+// on a secure cluster, the join token (#670). Empty when there is nothing to hand
+// over.
+std::string startup_script(const GcpConfig& config) {
+    std::string startup;
+    if (!config.seed_peer.empty()) {
+        startup = "ZETTA_SEED_PEER=" + config.seed_peer;
+    }
+    if (!config.join_token.empty()) {
+        if (!startup.empty()) startup += '\n';
+        startup += "ZETTA_CLUSTER_TOKEN=" + config.join_token;
+    }
+    return startup;
+}
+
 // Build the `gcloud compute instance-templates create` argv. The template carries
 // the per-node shape (machine type / image / network / service account / Spot /
 // startup-script seed) — the MIG below just instantiates it. Spot/preemptible is a
 // template property on GCP (unlike Azure VMSS, where it's a create flag), which is
 // why it lands here.
-std::vector<std::string> template_argv(const GcpConfig& config) {
+//
+// `startup_file`, when set, is a private file holding the startup script: it is
+// passed with `--metadata-from-file` so the join token is never an argv value
+// (#770). Without it the (token-free) script rides `--metadata` inline.
+std::vector<std::string> template_argv(const GcpConfig& config,
+                                       const SecretFile* startup_file) {
     std::vector<std::string> create{"gcloud", "compute", "instance-templates",
                                     "create", config.instance_template};
     flag(create, "--project", config.project_id);
@@ -69,18 +91,13 @@ std::vector<std::string> template_argv(const GcpConfig& config) {
     // Hand each node the cluster seed address at boot so it auto-joins — and, on a
     // secure cluster, the join token (#670) — via a startup-script metadata entry,
     // so the node comes up with the equivalent of `zetta --peer <seed>
-    // --join-token <token>`. (A real deployment supplies a full startup script and
-    // sources the secret token from Secret Manager; this illustrative metadata
-    // carries both KEY=VALUE lines the bootstrap reads on the same seam.)
-    std::string startup;
-    if (!config.seed_peer.empty()) {
-        startup = "ZETTA_SEED_PEER=" + config.seed_peer;
-    }
-    if (!config.join_token.empty()) {
-        if (!startup.empty()) startup += '\n';
-        startup += "ZETTA_CLUSTER_TOKEN=" + config.join_token;
-    }
-    if (!startup.empty()) {
+    // --join-token <token>`. Instance metadata is readable by any principal that
+    // can describe the template or instance, and by every process on the VM: see
+    // docs/cluster/security.md for the trade-off and the Secret Manager follow-up.
+    if (startup_file != nullptr) {
+        flag(create, "--metadata-from-file",
+             "startup-script=" + startup_file->path().string());
+    } else if (const std::string startup = startup_script(config); !startup.empty()) {
         flag(create, "--metadata", "startup-script=" + startup);
     }
     return create;
@@ -99,7 +116,17 @@ ProvisionResult GcpCliControlPlane::bring_up(const GcpConfig& config,
     //    across bursts, so an "already exists" failure is the steady state — this
     //    is an idempotent ensure, not a gate (a genuine bad template makes the MIG
     //    create/resize below fail, which IS the gate).
-    runner_(template_argv(config));
+    std::unique_ptr<SecretFile> startup_file;
+    if (!config.join_token.empty()) {
+        std::string reason;
+        startup_file = SecretFile::create(startup_script(config), &reason);
+        if (!startup_file) {
+            result.satisfied = false;
+            result.detail = "cannot stage the startup-script: " + reason;
+            return result;
+        }
+    }
+    runner_(template_argv(config, startup_file.get()));
 
     // 2) Create the MIG from the template, then 3) resize it to the requested
     //    count. Create-or-resize is what makes a re-burst idempotent on the stable

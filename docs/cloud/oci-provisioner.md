@@ -145,7 +145,7 @@ teardown. It builds `oci compute-management` argv, runs them through an injected
 
 | `OciControlPlane` call | `oci` command (shape) |
 |---|---|
-| `bring_up` | resolve pool OCID by name (`oci compute-management instance-pool list … --query 'data[0].id' --raw-output`); **create path** → `instance-configuration create --instance-details <json>` then `instance-pool create --instance-configuration-id … --placement-configurations <json> --size N`; **resize path** → `instance-pool update --instance-pool-id … --size N`; then `instance-pool list-instances` |
+| `bring_up` | resolve pool OCID by name (`oci compute-management instance-pool list … --query 'data[0].id' --raw-output`); **create path** → `instance-configuration create --instance-details <json>` (`file://<private file>` on a secure cluster, whose user_data carries the join token — #770) then `instance-pool create --instance-configuration-id … --placement-configurations <json> --size N`; **resize path** → `instance-pool update --instance-pool-id … --size N`; then `instance-pool list-instances` |
 | `destroy` | `oci compute-management instance-pool-instance detach --instance-pool-id … --instance-id <id> --is-auto-terminate true --is-decrement-size true` |
 | `list` | `oci compute-management instance-pool list-instances --instance-pool-id …` |
 

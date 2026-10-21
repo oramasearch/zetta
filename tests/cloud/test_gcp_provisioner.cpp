@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "secret_argv.hpp"
 #include "temp_dir.hpp"
 #include "zetta/cloud/burst_identity.hpp"
 #include "zetta/governance/capability.hpp"
@@ -464,8 +465,21 @@ TEST(GcpCliControlPlane, BringUpEnsuresTemplateCreatesMigThenLists) {
 
 TEST(GcpCliControlPlane, SpotConfigAddsSpotAndSeedFlagsToTheTemplate) {
     std::vector<std::vector<std::string>> calls;
+    std::string startup_seen;
+    bool startup_private = false;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
+        // The startup-script carries the token, so it arrives through
+        // --metadata-from-file; read it while the command runs.
+        for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+            const std::string prefix = "startup-script=";
+            if (argv[index] == "--metadata-from-file" &&
+                argv[index + 1].starts_with(prefix)) {
+                const std::string path = argv[index + 1].substr(prefix.size());
+                startup_seen = zetta::test::read_whole_file(path);
+                startup_private = zetta::test::owner_only(path);
+            }
+        }
         CommandResult result;
         if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
         return result;
@@ -486,10 +500,14 @@ TEST(GcpCliControlPlane, SpotConfigAddsSpotAndSeedFlagsToTheTemplate) {
     ASSERT_NE(tmpl, nullptr);
     EXPECT_TRUE(has_flag(*tmpl, "--provisioning-model", "SPOT"));
     EXPECT_TRUE(has_token(*tmpl, "--instance-termination-action"));
-    EXPECT_TRUE(flag_value_contains(*tmpl, "--metadata", "ZETTA_SEED_PEER=10.0.0.1:7777"));
-    EXPECT_TRUE(flag_value_contains(
-        *tmpl, "--metadata",
-        "ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+    // #770: the token is never an argv value; the startup-script file holds the
+    // seed and the token, readable by its owner only.
+    EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
+    EXPECT_FALSE(has_token(*tmpl, "--metadata"));
+    EXPECT_NE(startup_seen.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
+    EXPECT_NE(startup_seen.find("ZETTA_CLUSTER_TOKEN=" + config.join_token),
+              std::string::npos);
+    EXPECT_TRUE(startup_private);
 }
 
 TEST(GcpCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {

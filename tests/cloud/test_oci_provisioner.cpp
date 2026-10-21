@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "secret_argv.hpp"
 #include "temp_dir.hpp"
 #include "zetta/cloud/burst_identity.hpp"
 #include "zetta/governance/capability.hpp"
@@ -487,8 +488,20 @@ TEST(OciCliControlPlane, BringUpResizePathUpdatesAnExistingPool) {
 
 TEST(OciCliControlPlane, SpotConfigAddsPreemptibleAndSeedToInstanceDetails) {
     std::vector<std::vector<std::string>> calls;
+    std::string details;
+    bool details_private = false;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
+        // The details carry the token, so they arrive as `file://<path>`; read the
+        // file while the command runs.
+        for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+            const std::string prefix = "file://";
+            if (argv[index] == "--instance-details" && argv[index + 1].starts_with(prefix)) {
+                const std::string path = argv[index + 1].substr(prefix.size());
+                details = zetta::test::read_whole_file(path);
+                details_private = zetta::test::owner_only(path);
+            }
+        }
         CommandResult result;
         if (is_resolve(argv)) {
             result.stdout_text = "";
@@ -513,7 +526,9 @@ TEST(OciCliControlPlane, SpotConfigAddsPreemptibleAndSeedToInstanceDetails) {
 
     const std::vector<std::string>* cfg = call_with(calls, {"instance-configuration", "create"});
     ASSERT_NE(cfg, nullptr);
-    const std::string details = flag_value(*cfg, "--instance-details");
+    // #770: the token is never an argv value.
+    EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
+    EXPECT_TRUE(details_private);
     EXPECT_NE(details.find("preemptibleInstanceConfig"), std::string::npos);
     EXPECT_NE(details.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
     EXPECT_NE(details.find("ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef"

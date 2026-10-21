@@ -10,7 +10,7 @@ namespace zetta::cloud {
 
 // AwsCliControlPlane — the **reference** AwsControlPlane binding (#377): it drives
 // AWS by shelling out to the `aws` CLI (no AWS C++ SDK, honoring the "no cloud SDK
-// behind the seam" rule). It translates the burst lifecycle into EC2 Auto Scaling
+// behind the provisioner interface" rule). It translates the burst lifecycle into EC2 Auto Scaling
 // Group commands — create/scale the burst pool, list its instances, terminate an
 // instance — runs them through an injected CommandRunner, and parses the JSON the
 // CLI returns at the validated ProvisionedNode boundary.
@@ -24,6 +24,13 @@ namespace zetta::cloud {
 // authenticates it (`aws configure` / SSO / an instance role); CI never runs it,
 // so the command construction + JSON parsing are what the unit tests cover via a
 // fake runner. GCP (#378) mirrors this with its own `gcloud` binding.
+// The SSM Parameter Store name the cluster join token is stored under for a
+// burst pool (`/zetta/<pool>/cluster-token`, a SecureString). A node's instance
+// profile needs ssm:GetParameter on it (and kms:Decrypt on its key); the
+// `ZETTA_CLUSTER_TOKEN_SSM_PARAMETER` tag tells the node which name to read
+// (#770). The token itself is never a tag.
+std::string cluster_token_parameter_name(const AwsConfig& config);
+
 class AwsCliControlPlane : public AwsControlPlane {
 public:
     // `runner` defaults to default_command_runner() (a real `aws` exec). A test

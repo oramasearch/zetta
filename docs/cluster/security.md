@@ -93,11 +93,9 @@ flag or env selects it.
 ### Provisioned / burst nodes (#670)
 
 A cloud-burst node can't be handed these flags interactively, so the provisioner
-interface injects them at boot. Each `<Vendor>ControlPlane` puts the cluster's seed
-address in **`ZETTA_SEED_PEER`** and — when the cluster is secure — its join token
-in **`ZETTA_CLUSTER_TOKEN`**, through the same per-cloud delivery path (an AWS instance
-tag / Azure cloud-init custom-data / GCP + OCI metadata / a Kubernetes pod env / a
-container `--env`), so the node's bootstrap comes up with the equivalent of
+interface injects them at boot. Each `<Vendor>ControlPlane` hands the node the
+cluster's seed address in **`ZETTA_SEED_PEER`** and — when the cluster is secure —
+its join token, so the node's bootstrap comes up with the equivalent of
 `zetta --peer <seed> --join-token <token>` and joins the **mTLS** cluster (the
 only kind — inter-node mTLS is always on, #799). Both are injected once, at fleet
 wire time, from this node's own live cluster security — `main.cpp` passes
@@ -107,9 +105,37 @@ unlike the seed peer it is **never** part of the config's JSON boundary: it is n
 serialized into the node's detected provisioner config or the `system.provisioners`
 table, and rides only the bootstrap path. A `Cluster` with empty security (an
 embedded bare `Cluster` in a test/host, the only unsecured path — #799) has an
-empty token, so nothing is injected. (The reference control planes carry the token illustratively
-through the same visible path as the seed; a production control plane sources it from a
-per-cloud secret store rather than a describe-able tag / literal.)
+empty token, so nothing is injected.
+
+#### How the token is delivered, per provider (#770)
+
+**Never on a command line.** The control planes run vendor CLIs as child
+processes, and a child's argv is readable by every user on the host while it
+runs (`ps`, `/proc/<pid>/cmdline`). The token therefore always reaches the CLI
+through a mode-0600 file in a fresh mode-0700 directory, removed when the command
+returns (`zetta::cloud::SecretFile`, `include/zetta/cloud/secret_file.hpp`).
+
+| Provider | How the node gets the token | Who else can read it |
+|---|---|---|
+| **Kubernetes** (`k8s_cli_control_plane.cpp`) | Secret `<deployment>-cluster-token` (key `ZETTA_CLUSTER_TOKEN`), applied with `kubectl apply --server-side` from the private file; the Deployment references it with `kubectl set env --from=secret/…` (a `secretKeyRef`). Server-side apply keeps the value out of the `last-applied-configuration` annotation that `kubectl describe` prints. | Principals that can read Secrets in the namespace; the pod's processes through their environment. No longer anyone who can read the Deployment. |
+| **AWS** (`aws_cli_control_plane.cpp`) | SSM Parameter Store SecureString `/zetta/<pool>/cluster-token` (`aws ssm put-parameter --value file://…`, fail-closed); the instance carries only the **name**, in the propagating tag `ZETTA_CLUSTER_TOKEN_SSM_PARAMETER`. The node's instance profile needs `ssm:GetParameter` on it and `kms:Decrypt` on its key. | Principals granted `ssm:GetParameter` (+ decrypt). Before #770 the token was itself a tag, readable by anyone with `ec2:DescribeTags` and recorded in CloudTrail. |
+| **Bare metal / containers** (`bare_metal_cli_control_plane.cpp`) | `<runtime> run --env-file <private file>`. | Anyone who can `docker inspect` the container (the runtime stores container env), and the container's processes. |
+| **Azure** (`azure_cli_control_plane.cpp`) | cloud-init custom-data, passed as `--custom-data @<private file>`. | Every process on the VM (the metadata endpoint `169.254.169.254`), the VM's disk (`/var/lib/waagent/CustomData`). |
+| **GCP** (`gcp_cli_control_plane.cpp`) | instance-template `startup-script` metadata, passed with `--metadata-from-file`. | Principals that can describe the template or instance; every process on the VM (the metadata server). |
+| **OCI** (`oci_cli_control_plane.cpp`) | instance-configuration `user_data`, passed as `--instance-details file://<private file>`. | Principals that can read the instance configuration; every process on the VM (IMDS). |
+
+Azure, GCP and OCI still carry the token in instance user-data / metadata. Moving
+them to Key Vault / Secret Manager / OCI Vault needs the VM bootstrap that fetches
+it (Gap A in [cloud provisioning](../plans/cloud-provisioning.md)), which does not
+exist yet: #1316. #669 (CSR enrollment) would replace the long-lived token on new
+nodes with a one-time enrollment credential.
+
+**On the node**, the token arrives as `ZETTA_CLUSTER_TOKEN_FILE` (preferred — a
+Kubernetes Secret volume, a 0400 file the bootstrap writes) or
+`ZETTA_CLUSTER_TOKEN`. The engine trims and validates it against its source,
+refuses to start when the two disagree, and removes `ZETTA_CLUSTER_TOKEN` from its
+own environment once read so no child process inherits it; see
+[node bootstrap](../cloud/node-bootstrap-env.md#the-join-token-770).
 
 ## On disk — `<data_dir>/security/`
 

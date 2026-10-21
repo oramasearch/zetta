@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "secret_argv.hpp"
 #include "zetta/cloud/azure_cli_control_plane.hpp"
 #include "zetta/cloud/azure_provisioner.hpp"
 #include "zetta/cloud/node_capability.hpp"
@@ -434,8 +435,19 @@ TEST(AzCliControlPlane, DefaultsImageAndSkuForFlexibleCreate) {
 
 TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
     std::vector<std::vector<std::string>> calls;
+    std::string custom_data_seen;
+    bool custom_data_private = false;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
+        // The custom-data carries the token, so it arrives as `@<file>`; read the
+        // file while the command runs (it is removed afterwards).
+        for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+            if (argv[index] == "--custom-data" && argv[index + 1].starts_with("@")) {
+                const std::string path = argv[index + 1].substr(1);
+                custom_data_seen = zetta::test::read_whole_file(path);
+                custom_data_private = zetta::test::owner_only(path);
+            }
+        }
         CommandResult result;
         if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
         return result;
@@ -457,10 +469,13 @@ TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
     EXPECT_TRUE(has_flag(create, "--priority", "Spot"));
     EXPECT_TRUE(has_token(create, "--eviction-policy"));
     EXPECT_TRUE(has_token(create, "--max-price"));
-    EXPECT_TRUE(flag_value_contains(create, "--custom-data", "ZETTA_SEED_PEER=10.0.0.1:7777"));
-    EXPECT_TRUE(flag_value_contains(
-        create, "--custom-data",
-        "ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+    // #770: the token is never an argv value; the custom-data file holds the seed
+    // and the token, readable by its owner only.
+    EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
+    EXPECT_NE(custom_data_seen.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
+    EXPECT_NE(custom_data_seen.find("ZETTA_CLUSTER_TOKEN=" + config.join_token),
+              std::string::npos);
+    EXPECT_TRUE(custom_data_private);
 }
 
 // A successful create is satisfied: the scale set placed the requested VMs, which

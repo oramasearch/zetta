@@ -151,7 +151,7 @@ deleting a pod is teardown. It builds `kubectl` argv, runs them through an injec
 
 | `K8sControlPlane` call | `kubectl` command (shape) |
 |---|---|
-| `bring_up` | `kubectl create deployment <name> --image <image>` (ensure); then per-pod shape — `kubectl set env deployment/<name> ZETTA_SEED_PEER=… [ZETTA_CLUSTER_TOKEN=…]` (the join token is set only on a secure cluster — #670), `kubectl set serviceaccount deployment/<name> <sa>`, `kubectl patch deployment <name> --patch <nodeSelector>` (spot); then `kubectl scale deployment/<name> --replicas N`; then `kubectl get pods --selector app=<name> --output json` |
+| `bring_up` | `kubectl create deployment <name> --image <image>` (ensure); then per-pod shape — `kubectl set env deployment/<name> ZETTA_SEED_PEER=…`; on a secure cluster `kubectl apply --server-side --field-manager zetta --filename <private file>` (Secret `<name>-cluster-token`, key `ZETTA_CLUSTER_TOKEN`) then `kubectl set env deployment/<name> --from=secret/<name>-cluster-token` (a secretKeyRef — #670, #770), `kubectl set serviceaccount deployment/<name> <sa>`, `kubectl patch deployment <name> --patch <nodeSelector>` (spot); then `kubectl scale deployment/<name> --replicas N`; then `kubectl get pods --selector app=<name> --output json` |
 | `destroy` | `kubectl delete pod <pod-name>` |
 | `list` | `kubectl get pods --selector app=<name> --output json` |
 
@@ -164,8 +164,9 @@ requested count. The pods are labelled `app=<deployment_name>` by `kubectl creat
 deployment`, which is what `list` and the Deployment select on. Spot scheduling is a
 nodeSelector patch (illustrative label `zetta.io/capacity=spot` — production uses the
 cluster's actual spot node-pool label, e.g. `cloud.google.com/gke-spot`); the seed
-peer rides a `ZETTA_SEED_PEER` env var (and the join token a `ZETTA_CLUSTER_TOKEN`
-env var on a secure cluster — #670); the per-pod identity is a `ServiceAccount`.
+peer rides a `ZETTA_SEED_PEER` env var (and, on a secure cluster, the join token a `ZETTA_CLUSTER_TOKEN`
+env var read from the Secret `<deployment>-cluster-token` through a secretKeyRef —
+never a literal in the Deployment spec, never a `kubectl` argument — #670, #770); the per-pod identity is a `ServiceAccount`.
 The command shapes are grounded in
 [research/kubectl-workloads.md](../research/kubectl-workloads.md) (the cited `kubectl`
 guide — §3.2 Deployments, §5.1 scaling, §6.2 nodeSelector targeting).
@@ -232,7 +233,8 @@ lifecycle, and the reference binding:
   Deployment (`--image` / `--namespace`), scales it (`scale deployment/<name>
   --replicas`), then lists (`get pods --selector app=<name> --output json`); a
   seed/service-account/spot config adds `set env ZETTA_SEED_PEER`
-  (+ `ZETTA_CLUSTER_TOKEN` on a secure cluster — #670) / `set
+  (+ the `<name>-cluster-token` Secret applied from a private file and `set env
+  --from=secret/…` on a secure cluster, with the token in no argv — #670, #770) / `set
   serviceaccount` / a `patch` nodeSelector; best-effort when fewer pods come up; a
   scale failure surfaces in the `detail`; `destroy` builds `delete pod <name>` and
   maps a non-zero exit to `false`; `list` unwraps the `items` envelope, parses, and
