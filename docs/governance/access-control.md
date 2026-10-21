@@ -797,6 +797,15 @@ command, the `using` / `check` predicates rendered back to text, roles). The val
 round-trips through `policy_value_from_json` at the trust boundary — a malformed
 policy is **skipped**, never silently enforced as open.
 
+A policy that is well formed but **lacks the predicate its command enforces** (a
+`select` or `all` policy with no `using`, an `insert` or `update` policy with
+neither `check` nor `using`) **denies** (#765). `CREATE POLICY` refuses to store
+one, but it can still arrive replicated from a peer or from an edited
+`policy.json`. It is kept rather than skipped, so it still engages RLS for its
+table, and it admits no row: an absent predicate is treated the same as one that
+does not parse. A policy that admits every row says so explicitly with
+`USING (true)`.
+
 ### The grammar
 
 ```sql

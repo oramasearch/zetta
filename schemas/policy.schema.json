@@ -5,7 +5,7 @@
   "description": "A row-level security policy (FEAT-9 / #748, epic #743 item 5): Postgres-style RLS over one table for one command class, carrying a USING read filter and/or a WITH CHECK write filter that the SQL WHERE engine evaluates against the acting identity (current_user()/current_roles()). The on-disk policy.json projection of the replicated `policy:<uuid>` CRDT value. Mirrored by zetta::governance::Policy in include/zetta/governance/policy.hpp and enforced by policy_value_from_json() + Node::load_policies()/reconcile_policies() — keep them in sync. The predicate expressions are opaque objects here; zetta::query::PolicyPredicate owns their grammar + evaluation.",
   "properties": {
     "check": {
-      "description": "The write filter (WITH CHECK predicate): a written row is admitted iff it satisfies it. Opaque to governance. Absent when the policy has no write filter.",
+      "description": "The write filter (WITH CHECK predicate): a written row is admitted iff it satisfies it. Opaque to governance. Absent when the policy has no write filter; an INSERT/UPDATE policy with neither check nor using admits no written row (#765).",
       "type": "object"
     },
     "command": {
@@ -46,7 +46,7 @@
       "type": "string"
     },
     "using": {
-      "description": "The read filter (USING predicate): a row is visible iff it satisfies it. Opaque to governance — zetta::query::PolicyPredicate owns its grammar + evaluation. Absent when the policy has no read filter.",
+      "description": "The read filter (USING predicate): a row is visible iff it satisfies it. Opaque to governance — zetta::query::PolicyPredicate owns its grammar + evaluation. Absent when the policy has no read filter; a SELECT/ALL policy without one admits no row (#765), never every row.",
       "type": "object"
     }
   },

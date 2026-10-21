@@ -128,11 +128,11 @@ const nlohmann::json& policy_schema() {
       "enum": ["select", "insert", "update", "all"]
     },
     "using": {
-      "description": "The read filter (USING predicate): a row is visible iff it satisfies it. Opaque to governance — zetta::query::PolicyPredicate owns its grammar + evaluation. Absent when the policy has no read filter.",
+      "description": "The read filter (USING predicate): a row is visible iff it satisfies it. Opaque to governance — zetta::query::PolicyPredicate owns its grammar + evaluation. Absent when the policy has no read filter; a SELECT/ALL policy without one admits no row (#765), never every row.",
       "type": "object"
     },
     "check": {
-      "description": "The write filter (WITH CHECK predicate): a written row is admitted iff it satisfies it. Opaque to governance. Absent when the policy has no write filter.",
+      "description": "The write filter (WITH CHECK predicate): a written row is admitted iff it satisfies it. Opaque to governance. Absent when the policy has no write filter; an INSERT/UPDATE policy with neither check nor using admits no written row (#765).",
       "type": "object"
     },
     "roles": {

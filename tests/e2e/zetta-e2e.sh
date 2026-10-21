@@ -745,13 +745,13 @@ if want_level 3; then
             else fail "RLS: the reader could not read the table: $(err_msg) [#748]"; fi
             if sql_as "$ADMIN" "SELECT id FROM $RLSTBL" && [ "$(rows_len)" -eq 3 ]; then pass "RLS: admin bypasses the policy (sees all rows) [#762]"; else fail "RLS: admin did not see all rows [#762]"; fi
         else fail "CREATE POLICY refused: $(err_msg) [#748]"; fi
-        # #765: the grammar refuses a policy with no condition. (The open half —
-        # such a record arriving by replication or an edited policy.json — has
-        # no black-box surface; it is asserted in-process.)
+        # #765: the grammar refuses a policy with no condition. (The other half —
+        # such a record arriving by replication or an edited policy.json, which
+        # now denies — has no black-box surface; it is asserted in-process.)
         if sql_as "$ADMIN" "CREATE POLICY authz_nocond_${RUN} ON $RLSTBL FOR SELECT"; then
             fail "a no-condition SELECT policy was accepted — fail-open risk [#765]"
         else pass "the grammar refuses a SELECT policy with no condition [#765]"; fi
-        skip "a condition-less policy that arrives replicated or restored is asserted in-process only (open: admits every row) [#765]"
+        skip "a condition-less policy that arrives replicated or restored is asserted in-process only (it denies every row) [#765]"
 
         # #760 column masking (fixed): a user granted (id, owner) sees amount
         # masked, and no aggregate recovers it.

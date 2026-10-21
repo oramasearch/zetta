@@ -1474,14 +1474,16 @@ RlsFilter build_rls_filter(const Node& node, const RlsContext& ctx,
             chosen = &v.check_predicate;
         }
         const nlohmann::json& source = *chosen;
-        if (source.is_null()) {
-            PolicyPredicate always;  // an applicable, predicate-less policy admits its rows
-            always.always_true = true;
-            filter.predicates.push_back(always);
-        } else if (auto parsed = policy_predicate_from_json(source)) {
+        // A policy missing the predicate this access needs, or carrying one that
+        // does not parse, contributes nothing: it has already engaged RLS for the
+        // table (above), so it denies instead of admitting every row (#765).
+        // CREATE POLICY never stores such a policy; it can only arrive
+        // replicated or from an edited policy.json. A policy that admits every
+        // row says so explicitly, as USING (true).
+        if (source.is_null()) continue;
+        if (auto parsed = policy_predicate_from_json(source)) {
             filter.predicates.push_back(*parsed);
         }
-        // A malformed predicate contributes nothing (fail-closed).
     }
     return filter;
 }
