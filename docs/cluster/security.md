@@ -45,16 +45,17 @@ characters. Everything else derives from it:
    node's certificate already carries its node id as `CN` (step 2), so this
    needs no wire or on-disk change and nodes from earlier versions connect
    unchanged.
-5. **One shared framed TLS stream, serialized I/O.** A link's read pump and
-   write pump share one `zetta::transport::FramedStream` over an OpenSSL stream,
-   whose `SSL` object + scratch buffers cannot be driven concurrently
-   (interleaved `SSL_read`/`SSL_write` corrupt the record stream). The reusable
-   transport's async mutex serializes them: the read pump waits for socket
-   readability *off* the lock, then drains the decrypted bytes *under* it, so a
-   read and a write never overlap on the one `SSL` object (#786). A plaintext link
-   keeps lock-free full-duplex I/O. Gossip currently re-ships the full document
-   each round (incremental sync is #794), so this serialization is half-duplex per
-   link under heavy write load.
+5. **One shared framed TLS stream, full duplex.** A link's read pump and write
+   pump share one `zetta::transport::FramedStream` over Corosio's
+   `openssl_stream`. Its `SSL` calls never suspend, so a read and a write never
+   drive the one `SSL` object at the same time (#786), and its socket reads and
+   socket writes take separate locks, so a read waiting for the peer never holds
+   back a write and a write waiting for socket space never holds back a read.
+   That second property is what keeps a link alive when both peers send a large
+   frame at once (gossip re-ships the full document each round; incremental sync
+   is #794): with one lock for both directions, two peers could each park their
+   reader under the lock waiting for the other, and the link froze silently
+   (#835). See [transport-library.md](transport-library.md).
 
 Mixed modes fail cleanly in both directions: a TLS node treats a plaintext
 `HELLO` as a failed handshake; a plaintext node treats a TLS `ClientHello` as a

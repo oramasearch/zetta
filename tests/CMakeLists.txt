@@ -24,6 +24,7 @@ endif()
 add_executable(zetta-tests
   memory/test_accounting.cpp
   transport/test_security.cpp
+  transport/test_framed_stream.cpp
   api/test_registry.cpp
   api/test_dataset_list_summary.cpp
   api/test_agent_api.cpp

@@ -70,13 +70,17 @@ delimiter and preserve bytes after it for the next call. Applications encode a
 payload that can contain a newline before passing it to the stream. Zetta's
 wire protocol already base64-encodes binary fields.
 
-Exactly one read coroutine and one write coroutine may be active on a stream.
-Plain TCP remains full duplex. TLS reads and writes are coordinated because one
-OpenSSL `SSL` object cannot be driven concurrently. The first read drains any
-application record already buffered by the handshake; later reads wait for raw
-socket readability before taking the async lock, drain decrypted data, then
-release it so writes continue. The default maximum frame size is 64 MiB, which
-preserves the cluster's existing limit and can be lowered per stream, either at
+Exactly one read coroutine and one write coroutine may be active on a stream,
+on one executor. Both transports are full duplex: a read that is waiting for the
+peer never holds back a write, and a write that is waiting for socket space
+never holds back a read. For TLS this is Corosio's `openssl_stream` (our fork,
+[oramasearch/corosio](https://github.com/oramasearch/corosio)): the `SSL` calls
+never suspend, so a read and a write cannot drive the one `SSL` object at the
+same time, and the socket I/O between them takes a read lock or a write lock,
+never one lock for both. A read returns bytes already buffered in the TLS engine
+before it reads the socket again, so a received frame never waits for later
+traffic. The default maximum frame size is 64 MiB, which preserves the cluster's
+existing limit and can be lowered per stream, either at
 construction (`FramedStreamOptions`) or between reads
 (`FramedStream::set_maximum_frame_bytes`). The bound is checked inside the TLS
 drain loop too, so one read never buffers far past it.
@@ -87,6 +91,18 @@ corosio#14); it is empty on a plaintext stream. `certificate_common_name(der)`
 reads its subject common name, refusing bytes that are not exactly one
 certificate and subjects with no common name or more than one. It does not
 verify the certificate: the handshake already did, against the context's CA.
+
+Full duplex matters because both ends of a cluster link write their whole
+replicated document every gossip round. Until #835 the stream shared one lock
+between its reader and writer, and the reader could hold it while waiting for
+the peer. When both peers did that at once, each reader waited for a frame the
+other side's writer could not send, and the link froze: no error, no dropped
+connection, and no keepalive, because each writer was parked on the lock. The
+nodes kept reporting their peers while one of them stopped applying `SYNC`.
+`tests/transport/test_framed_stream.cpp` reproduces it on one loopback
+connection: both peers write a frame larger than the socket buffers at once,
+which the old stream never delivers in either direction. A second case streams
+gossip-sized frames both ways and checks every one arrives intact and in order.
 
 ## Zetta cluster integration
 
