@@ -45,6 +45,7 @@ zetta-core). The GoogleTest unit tests build behind `ZETTA_BUILD_TESTS`.
 CMakeLists.txt              build graph: zetta_transport (and ZETTA_TRANSPORT_ONLY consumer mode), imgui lib, zetta-compute lib (+ optional CUDA), zetta-core lib, zetta exe
 .dockerignore               build-context filter for the zetta-bridge image Dockerfiles (COPY . /src); keeps a host build/ + its absolute-path CMakeCache.txt out of the image (#839) — see docs/build.md
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
+images/base-agent/          Dockerfile + README: the Orama base model checkpoint as the private model image oramasearch/base-agent-0.6b:<version> (/model + busybox), which every Lake workspace Zetta copies to /data/models/base-agent through the operator's spec.models (lake#246)
 assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + README
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 scripts/gen-parquet-fixture.py  dev-time pyarrow generator for the committed Parquet fixtures (tests/fixtures/parquet/ + the embedded src/core/testkit/parquet_fixture_data.hpp)
