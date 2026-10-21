@@ -1222,8 +1222,11 @@ double float_less_bound(float upper) {
     return below_is_even ? std::nextafter(middle, kInfinity) : middle;
 }
 
-std::optional<ImportedModel> import_model(std::string_view bytes, const ModelImportOptions& options,
-                                          std::string* error) {
+namespace {
+
+// Recognise the format and run its reader. import_model checks what comes back.
+std::optional<ImportedModel> read_model(std::string_view bytes, const ModelImportOptions& options,
+                                        std::string* error) {
     const std::string_view text = trim_start(bytes);
     if (text.empty()) return refuse<ImportedModel>(error, "the file is empty");
     std::optional<ModelFileFormat> format = options.format;
@@ -1282,6 +1285,24 @@ std::optional<ImportedModel> import_model(std::string_view bytes, const ModelImp
         }
     }
     return refuse<ImportedModel>(error, supported_model_formats());
+}
+
+}  // namespace
+
+std::optional<ImportedModel> import_model(std::string_view bytes, const ModelImportOptions& options,
+                                          std::string* error) {
+    std::optional<ImportedModel> imported = read_model(bytes, options, error);
+    if (!imported) return std::nullopt;
+    // Every reader checks splits as it goes, but against the counts it saw at the
+    // time; the feature names can still change after that (the caller's list
+    // replaces the file's). Check the finished model once more against its own,
+    // final feature list (#1390): a split past the end of it would read past the
+    // row at scoring and write past the explanation in TreeSHAP.
+    std::string reason;
+    if (!imported->model.validate_structure(&reason)) {
+        return refuse<ImportedModel>(error, "the model does not hold together: " + reason);
+    }
+    return imported;
 }
 
 std::optional<std::string> export_onnx(const GbdtModel& model, std::string* error) {
