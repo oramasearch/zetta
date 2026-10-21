@@ -91,7 +91,8 @@ recently succeeded and reports it as `grounded_project`
 
 ## Not built here
 
-- A `system.run_proposals` read view (RULE-7). The capabilities are the read surface for now.
+- A `system.run_proposals` read view (RULE-7, [#1378](https://github.com/oramasearch/zetta/issues/1378)). The capabilities are the read surface for now.
+- Rendering a proposal in Studio ([#1377](https://github.com/oramasearch/zetta/issues/1377)).
 - Teaching the model to propose with a preview and to call the introspection tools itself: the
   corpus families and the retrain in [#969](https://github.com/oramasearch/zetta/issues/969)
   steps 5 and 6.

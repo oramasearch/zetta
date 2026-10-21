@@ -110,7 +110,7 @@ failure this whole path exists to prevent.
 - **Whether the model calls these tools by itself is a training question.** The engine wires
   them; the current checkpoint was not trained on `get_run_report` or `explain`, or on
   proposing a run and waiting. What it drives today is measured in
-  [the #969 walk](../reports/results/chat-loop-walk-2026-10-21.md).
+  [the #969 walk](../reports/chat-loop-walk-validation-2026-10-21.md).
 - **The entity key is an integer.** A ranked list comes back keyed by the integer entity
   column, so joining it to business account ids is the caller's step today.
 - **One open defect** ([#952](https://github.com/oramasearch/zetta/issues/952)): after a run
