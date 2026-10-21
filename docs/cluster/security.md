@@ -52,18 +52,33 @@ malformed line. Either way the connection drops and nothing joins.
 
 ## Joining a cluster
 
-The first node generates the token on first start; `peer_command()` (the
-Cluster panel's copy line, and the headless printout) carries it:
+The first node generates the token on first start and prints where it is and
+the command to join, with the token masked:
 
 ```bash
 # First node — generates data_dir/security/, prints:
 #   zetta: inter-node mTLS on (join token in .../security/cluster-secret.json)
-#   zetta: add another node with: zetta --peer 192.168.1.10:7777 --join-token <64-hex>
+#   zetta: add another node with: zetta --peer 192.168.1.10:7777 --join-token <join-token>
 zetta
 
-# Another machine joins with that exact command:
+# Another machine joins with that command, the token read from the file above
+# (or passed as ZETTA_CLUSTER_TOKEN):
 zetta --peer 192.168.1.10:7777 --join-token <64-hex>
 ```
+
+**The token is never printed or logged (#1393).** It derives the cluster CA key
+and is the connector-credential sealing root (#1230), so anyone holding it can
+mint a trusted peer identity. `Cluster::peer_command()` (the headless banner and
+the Cluster panel's text) puts `kJoinTokenPlaceholder` (`<join-token>`) where the
+token goes. Only `Cluster::peer_command_with_join_token()` returns the clear
+token, and its one caller is the headed Cluster panel's **Copy command** button,
+an explicit operator action. A refused secret file or `--join-token` names the
+file and the field, never the value. The process test
+`tests/cluster/test_startup_log_redaction.cpp` starts the real binary with the
+token from `--join-token`, from `ZETTA_CLUSTER_TOKEN` and generated on first
+start, and fails if any output line contains it. A cluster whose token reached
+logs before this change should be re-keyed (pass a new `--join-token`; the old
+one is kept as a retired token so sealed connector credentials still open).
 
 `--join-token` is persisted in the joiner's own data dir on first use, so it is
 needed only once. Passing a *different* token to a node that already has one

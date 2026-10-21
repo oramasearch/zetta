@@ -49,6 +49,12 @@ struct ClusterSecurity : zetta::transport::TlsCredentials {
 // retired_join_tokens).
 inline constexpr std::size_t kMaxRetiredJoinTokens = 4;
 
+// What printed output shows in place of the join token (#1393). The token is the
+// cluster root secret, so a command or message meant for a log carries this
+// instead; the operator reads the value from <data_dir>/security/cluster-secret.json
+// or passes it as ZETTA_CLUSTER_TOKEN.
+inline constexpr std::string_view kJoinTokenPlaceholder = "<join-token>";
+
 // A fresh join token: 32 bytes from the OS CSPRNG, lowercase hex.
 std::string generate_join_token();
 

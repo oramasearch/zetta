@@ -188,7 +188,11 @@ TEST(ClusterSecurity, SecretFileIsSchemaValidated) {
         dir.path().string(), node_id, {}, &reason));
 }
 
-TEST(ClusterSecurity, PeerCommandCarriesTheJoinToken) {
+// The peer command is printed on every headless start, so it lands in pod logs
+// and log pipelines (#1393): it names where the join token goes and never
+// carries the token itself. Only the explicit accessor, behind the headed app's
+// Copy button, returns the token.
+TEST(ClusterSecurity, PeerCommandNeverCarriesTheJoinToken) {
     const std::string token = zetta::cluster::generate_join_token();
     ClusterConfig config;
     config.listen_host = "127.0.0.1";
@@ -198,8 +202,48 @@ TEST(ClusterSecurity, PeerCommandCarriesTheJoinToken) {
     Cluster node("node-a", config);
     node.start();
     EXPECT_EQ(node.peer_command(),
+              "zetta --peer 127.0.0.1:42400 --join-token " +
+                  std::string(zetta::cluster::kJoinTokenPlaceholder));
+    EXPECT_EQ(node.peer_command().find(token), std::string::npos);
+    EXPECT_EQ(node.peer_command_with_join_token(),
               "zetta --peer 127.0.0.1:42400 --join-token " + token);
     node.stop();
+}
+
+// A secret file that fails validation is reported with a reason that names the
+// file and the field, never the value it holds (#1393): the reason is printed
+// to stderr on a refused start.
+TEST(ClusterSecurity, ASecretFileRefusalNeverEchoesTheToken) {
+    zetta::test::TempDir dir;
+    const std::string node_id = zetta::util::new_uuid();
+    std::filesystem::create_directories(dir.path() / "security");
+
+    // Upper-case hex: the right length, the wrong alphabet.
+    const std::string bad_token(64, 'A');
+    const std::string good_token = zetta::cluster::generate_join_token();
+    std::ofstream(dir.path() / "security" / "cluster-secret.json")
+        << R"({"version": 1, "join_token": ")" + bad_token + R"("})";
+    std::string reason;
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, {}, &reason));
+    EXPECT_FALSE(reason.empty());
+    EXPECT_EQ(reason.find(bad_token), std::string::npos) << reason;
+
+    // A well-formed current token beside a malformed retired one.
+    std::ofstream(dir.path() / "security" / "cluster-secret.json")
+        << R"({"version": 1, "join_token": ")" + good_token +
+               R"(", "retired_join_tokens": [")" + bad_token + R"("]})";
+    reason.clear();
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, {}, &reason));
+    EXPECT_EQ(reason.find(bad_token), std::string::npos) << reason;
+    EXPECT_EQ(reason.find(good_token), std::string::npos) << reason;
+
+    // A malformed --join-token override is refused without repeating it.
+    reason.clear();
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, bad_token, &reason));
+    EXPECT_EQ(reason.find(bad_token), std::string::npos) << reason;
 }
 
 TEST(ClusterSecurity, SameTokenNodesConvergeOverMutualTls) {

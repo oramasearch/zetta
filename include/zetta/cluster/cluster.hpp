@@ -226,8 +226,17 @@ public:
     std::vector<std::string> listen_addresses() const;
 
     // Command to run on another machine to add it to this cluster (uses the
-    // best reachable address — a non-loopback one when available).
+    // best reachable address — a non-loopback one when available). Safe to log:
+    // with security on, the join token is replaced by kJoinTokenPlaceholder, never
+    // printed (#1393). The token is the cluster root secret: it derives the CA key
+    // and seals saved connector credentials, so it must not reach stdout, pod logs
+    // or a log pipeline.
     std::string peer_command() const;
+
+    // The same command with the clear join token, for the one place an operator
+    // explicitly asks for it (the headed app's "Copy command" button). Never log
+    // or print this value.
+    std::string peer_command_with_join_token() const;
 
     // Snapshot of peers with a live link right now (thread-safe). A node kept in
     // the membership view purely by hysteresis (its link has dropped but is within

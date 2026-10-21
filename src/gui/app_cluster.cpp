@@ -590,13 +590,18 @@ void App::draw_cluster() {
         "All nodes are equal; leader election and failover are planned.");
 
     ImGui::TextUnformatted("Add another node with:");
+    // The screen shows the command with the join token masked (#1393): a
+    // screenshot or a shared screen must not carry the cluster root secret. The
+    // Copy button is the operator explicitly asking for it, so it copies the
+    // command with the token.
     std::string command = cluster_.peer_command();
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (mono_font_) ImGui::PushFont(mono_font_);
     ImGui::InputText("##peer_command", &command, ImGuiInputTextFlags_ReadOnly);
     if (mono_font_) ImGui::PopFont();
     if (ImGui::Button("Copy command")) {
-        ImGui::SetClipboardText(command.c_str());
+        const std::string with_token = cluster_.peer_command_with_join_token();
+        ImGui::SetClipboardText(with_token.c_str());
     }
 
     draw_add_nodes_control();
@@ -1191,7 +1196,7 @@ void App::draw_add_nodes_control() {
             if (primary_button(allow.c_str())) run_add_nodes(*target);
             ImGui::EndDisabled();
         } else {
-            // Honest about the seam: the control + consent gate are real, but a
+            // Honest about the missing injected provisioner: the control + consent gate are real, but a
             // configured cloud provisioner for this target hasn't been injected in
             // this build (constructing one needs subscription / region / creds —
             // a separate slice). Injecting it lights this up with no UI change.

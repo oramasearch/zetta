@@ -397,3 +397,17 @@ add_test(NAME zetta-refused-start-exit COMMAND zetta-refused-start-test)
 set_tests_properties(zetta-refused-start-exit PROPERTIES
   TIMEOUT 30
   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+
+# Process-level regression for #1393: no line a headless start writes carries
+# the cluster join token (flag, environment, or generated on first start).
+add_executable(zetta-startup-log-redaction-test
+  cluster/test_startup_log_redaction.cpp
+)
+target_compile_features(zetta-startup-log-redaction-test PRIVATE cxx_std_26)
+target_compile_definitions(zetta-startup-log-redaction-test PRIVATE
+  ZETTA_BINARY_PATH="$<TARGET_FILE:zetta>")
+add_dependencies(zetta-startup-log-redaction-test zetta)
+add_test(NAME zetta-startup-log-redaction COMMAND zetta-startup-log-redaction-test)
+set_tests_properties(zetta-startup-log-redaction PROPERTIES
+  TIMEOUT 400
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
