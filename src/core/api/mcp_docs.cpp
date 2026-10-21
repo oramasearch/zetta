@@ -86,6 +86,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--no-preflight` | skip the startup data integrity check |\n";
     out += "| `--log-cluster` | log cluster gossip to stderr (debugging) |\n";
     out += "| `--governance` | enforce consent gating on cloud-touching calls (off by default) |\n";
+    out += "| `--action-allow-destinations LIST` | address classes an action or report delivery endpoint may reach besides public ones: `loopback`, `private`, `link-local`, `metadata` (default none) |\n";
     out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration |\n";
     out += "| `--audit-summary-retention-days N` | keep audit summaries for N days (default 365); zero disables expiration |\n";
     out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
@@ -95,6 +96,11 @@ std::string render_cli_md(std::string_view origin) {
     out += "is recorded as a `consent_bypassed` audit event naming what ran.\n";
     out += "`--governance` restores the challenge: the first call issues a\n";
     out += "one-time consent request that a **different** principal must approve.\n\n";
+    out += "**Action delivery reaches public addresses only.** An action or report\n";
+    out += "delivery endpoint is chosen by its author, so the node resolves it and\n";
+    out += "refuses loopback, private, link-local and metadata addresses unless\n";
+    out += "`--action-allow-destinations` names the class. See\n";
+    out += "[`docs/governance/destination-policy.md`](docs/governance/destination-policy.md).\n\n";
 
     out += "## Pub/sub dispatch\n\n| Flag | Meaning |\n|---|---|\n";
     out += "| `--pubsub-dispatch-mode MODE` | node-wide mode: `pool` (default), `auto`, `per_key` or `inline` |\n";
@@ -132,6 +138,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `ZETTA_CLUSTER_TOKEN` | `--join-token` |\n";
     out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n";
     out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n";
+    out += "| `ZETTA_ACTION_ALLOW_DESTINATIONS` | `--action-allow-destinations` |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_MODE` | `--pubsub-dispatch-mode` |\n";
     out += "| `ZETTA_PUBSUB_TOPICS_PER_THREAD` | `--pubsub-topics-per-thread` |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_THREADS` | `--pubsub-dispatch-threads` |\n";

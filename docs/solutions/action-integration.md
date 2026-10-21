@@ -65,6 +65,16 @@ to HubSpot task properties. Endpoints are supplied by the caller so deployments
 can select their own SaaS instance or gateway. Tests use loopback HTTP servers;
 the engine never calls a real SaaS service during testing.
 
+Because the endpoint is the author's choice, delivery (tasks and report
+publications alike) may reach only **public addresses** (#1394): the host is
+resolved at delivery, loopback, private, link-local, metadata and reserved
+addresses are refused unless the node allows their class
+(`--action-allow-destinations` / `ZETTA_ACTION_ALLOW_DESTINATIONS`), and the
+connection goes to the address that was checked. A refused attempt records
+`destination refused: <host> resolves to <address>, a <class> address ...` as
+its error and counts toward the attempt bound like any transport failure. See
+[../governance/destination-policy.md](../governance/destination-policy.md).
+
 ## Holdout and kill-switch rules
 
 `DecisionRecord.holdout` is the integration contract for the parallel holdout

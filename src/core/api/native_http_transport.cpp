@@ -487,13 +487,40 @@ private:
                 resolve_error.message();
         }
 
+        // The destination policy (#1394): a URL a caller chose may reach only
+        // public addresses, plus the classes this node allows. Each resolved
+        // address is checked here and only a checked one is dialled, so the
+        // connection goes to the address that passed (no second lookup a DNS
+        // answer could change), and every redirect hop comes back through here.
+        const bool public_only =
+            request.destinations == connect::DestinationPolicy::PublicOnly;
+        const connect::AllowedDestinations allowed =
+            public_only ? connect::allowed_destinations() : connect::AllowedDestinations{};
+        bool any_allowed = !public_only;
+        std::string refused_reason;
+
         net::tcp_socket socket(io_context_);
         socket.open();
         bool connected = false;
         std::string connect_reason = "no address resolved for " + parsed.host;
         for (const auto& entry : results) {
+            const net::endpoint endpoint = entry.get_endpoint();
+            if (public_only) {
+                const std::string address = endpoint.is_v4()
+                                                ? endpoint.v4_address().to_string()
+                                                : endpoint.v6_address().to_string();
+                const connect::AddressClass kind = connect::classify_address(address);
+                if (!connect::destination_allowed(kind, allowed)) {
+                    if (refused_reason.empty()) {
+                        refused_reason =
+                            connect::destination_refused_reason(parsed.host, address, kind);
+                    }
+                    continue;
+                }
+                any_allowed = true;
+            }
             auto [connect_error] = co_await runtime::timeout(
-                socket.connect(entry.get_endpoint()), remaining());
+                socket.connect(endpoint), remaining());
             if (!connect_error) {
                 connected = true;
                 break;
@@ -506,6 +533,7 @@ private:
                 break;
             }
         }
+        if (!any_allowed && !refused_reason.empty()) co_return refused_reason;
         if (!connected) co_return connect_reason;
 
         if (!parsed.secure) {

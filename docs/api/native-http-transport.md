@@ -108,7 +108,14 @@ client sends them and then forgets them:
 - there is no subprocess, so nothing is visible in the process table;
 - a caller-supplied `Host` header is dropped, so it cannot disagree with the
   authority actually dialed;
-- a URL carrying userinfo (`https://user:pass@host/`) is rejected outright.
+- a URL carrying userinfo (`https://user:pass@host/`) is rejected outright;
+- a request marked `destinations = DestinationPolicy::PublicOnly` (an action or
+  report delivery endpoint, which an author chose) dials only resolved addresses
+  that are public or in a class the node allows. Each address is classified after
+  the lookup and only a checked one is connected to, on every redirect hop, so a
+  loopback, private, link-local or metadata target is refused with
+  `destination refused: ...` before any connection
+  ([destination-policy.md](../governance/destination-policy.md), #1394).
 
 `tests/connect/test_native_http_transport.cpp` asserts the no-leak property
 directly: an unreachable host with a bearer set must produce a reason that does

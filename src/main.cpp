@@ -72,6 +72,7 @@ struct Options {
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
     std::string webapp_dir;                     // --webapp-dir PATH (the Studio SPA bundle)
     std::string clerk_issuer;                   // --clerk-issuer URL (Clerk JWT verify; else bearer-only)
+    std::optional<std::string> action_allow_destinations;  // --action-allow-destinations LIST (#1394)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
@@ -172,6 +173,11 @@ void print_usage(const char* argv0) {
         "                      executes on the first call and the bypass is\n"
         "                      audited as consent_bypassed. Turn this on to\n"
         "                      require a distinctly-privileged approval again\n"
+        "  --action-allow-destinations LIST\n"
+        "                      Address classes an action or report delivery\n"
+        "                      endpoint may reach besides public addresses:\n"
+        "                      loopback, private, link-local, metadata\n"
+        "                      (comma separated; default none) (#1394)\n"
         "  -h, --help          Show this help\n"
         "\n"
         "Environment (provisioning; applied as defaults, overridden by the\n"
@@ -186,6 +192,7 @@ void print_usage(const char* argv0) {
         "  ZETTA_PUBSUB_DISPATCH_THREADS -> --pubsub-dispatch-threads\n"
         "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
+        "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
         "                      Ordinary audit retention in days\n"
         "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
@@ -364,6 +371,9 @@ Options parse_args(int argc, char** argv) {
             o.audit_summary_retention_from_cli = true;
         } else if (arg == "--governance") {
             o.node.enforce_consent = true;
+        } else if (arg == "--action-allow-destinations") {
+            const char* v = take_value(argc, argv, i, o, "--action-allow-destinations");
+            if (v) o.action_allow_destinations = v;
         } else if (arg == "-h" || arg == "--help") {
             o.show_help = true;
         } else {
@@ -634,6 +644,23 @@ int main(int argc, char** argv) {
     }
     if (!apply_pubsub_environment(opts)) {
         return 2;
+    }
+    // Where an author-chosen action or report delivery endpoint may reach (#1394):
+    // public addresses only, plus the classes named here. An explicit flag wins
+    // over the environment; an unknown class stops the node.
+    {
+        std::optional<std::string> list = opts.action_allow_destinations;
+        if (!list) {
+            if (const char* env = std::getenv("ZETTA_ACTION_ALLOW_DESTINATIONS")) list = env;
+        }
+        std::string error;
+        const auto allowed = zetta::connect::AllowedDestinations::parse(list.value_or(""), &error);
+        if (!allowed) {
+            std::fprintf(stderr, "zetta: --action-allow-destinations: %s\n", error.c_str());
+            return 2;
+        }
+        zetta::connect::set_allowed_destinations(*allowed);
+        std::printf("zetta: action delivery destinations: %s\n", allowed->describe().c_str());
     }
     if (!opts.audit_retention_from_cli) {
         if (const char* environment =
