@@ -40,3 +40,10 @@ to have landed and then asserted to heal. They build as their own executable,
 peer's `HELLO` node id to the common name of the certificate mutual TLS verified
 (#669): a valid member certificate naming another node is refused, while a
 matching peer joins the same node in the same window.
+`test_cluster_join_authority.cpp` is #848's authority half: two nodes over mutual
+TLS with real `Node`s and identity roots, in `main.cpp`'s order (join, sync,
+then seed). A joiner with its own `--admin-token` mints no owner the cluster
+honors, a joiner with the cluster's token adds no second owner, and a member
+that does not hold the root cannot issue identity, through its node or by
+writing the replicated catalogue (#763, #764,
+[identity-seal.md](../../docs/governance/identity-seal.md)).

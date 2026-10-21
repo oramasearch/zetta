@@ -130,10 +130,15 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--no-mcp` | disable the embedded MCP server |\n";
     out += "| `--webapp-dir PATH` | serve the built Studio web app at `/app` |\n";
     out += "| `--admin-token T` | seed the owner token on first boot |\n";
+    out += "| `--identity-root KEY` | pin the cluster's identity root (printed by the first node) |\n";
     out += "| `--clerk-issuer URL` | verify Clerk JWTs; omit for bearer-only, on-prem |\n\n";
     out += "Without `--admin-token`, a fresh node generates the owner token and\n";
     out += "prints it **once**, so a node is never locked out. It is hashed at rest\n";
     out += "and never logged again.\n\n";
+    out += "Every node of one cluster gets the **same** admin token: it derives the\n";
+    out += "cluster's identity root, which seals every account, role and token.\n";
+    out += "A node started with another token, or a member that writes identity\n";
+    out += "into the replicated catalogue itself, issues nothing any node honors.\n\n";
 
     out += "## Provisioning by environment\n\n";
     out += "Applied as defaults and overridden by the flags above, so a provisioned\n";
@@ -143,6 +148,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `ZETTA_CLUSTER_TOKEN_FILE` | `--join-token`, read from a file (preferred) |\n";
     out += "| `ZETTA_CLUSTER_TOKEN` | `--join-token` |\n";
     out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n";
+    out += "| `ZETTA_IDENTITY_ROOT` | `--identity-root` |\n";
     out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n";
     out += "| `ZETTA_ACTION_ALLOW_DESTINATIONS` | `--action-allow-destinations` |\n";
     out += "| `ZETTA_EGRESS_ALLOW` | `--egress-allow` (used when no flag is given) |\n";

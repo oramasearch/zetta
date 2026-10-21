@@ -25,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -39,6 +40,7 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
+#include "zetta/governance/identity_seal.hpp"
 #include "zetta/governance/permission.hpp"
 #include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
@@ -58,6 +60,7 @@ using zetta::cluster::ClusterConfig;
 using zetta::cluster::ReplicationManager;
 using zetta::governance::AuditAction;
 using zetta::governance::CapabilityDomain;
+using zetta::governance::IdentityAuthority;
 using zetta::governance::Operation;
 using zetta::governance::PolicyValue;
 using zetta::governance::Resource;
@@ -566,8 +569,16 @@ bool converge(Node& a, Node& b, Predicate done) {
     return false;
 }
 
+NodeConfig config_with_root(const TempDir& tmp,
+                            std::optional<IdentityAuthority> root) {
+    NodeConfig cfg = config_for(tmp);
+    cfg.identity_authority = std::move(root);
+    return cfg;
+}
+
 // Node A is the existing cluster with its owner; node B is a fresh node about
 // to join it. The clusters are started by the test, so it can act on B first.
+// Each node has the identity root main.cpp would give it (#763, #764).
 struct TwoNodes {
     TempDir dir_a;
     TempDir dir_b;
@@ -575,15 +586,20 @@ struct TwoNodes {
     std::string id_b = zetta::util::new_uuid();
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
-    Node a{config_for(dir_a), &repl_a};
-    Node b{config_for(dir_b), &repl_b};
+    Node a;
+    Node b;
     std::unique_ptr<Cluster> cluster_a;
     std::unique_ptr<Cluster> cluster_b;
     unsigned short port_a;
     unsigned short port_b;
 
-    TwoNodes(unsigned short first_port, unsigned short second_port)
-        : port_a(first_port), port_b(second_port) {
+    TwoNodes(unsigned short first_port, unsigned short second_port,
+             std::optional<IdentityAuthority> root_a,
+             std::optional<IdentityAuthority> root_b)
+        : a(config_with_root(dir_a, std::move(root_a)), &repl_a),
+          b(config_with_root(dir_b, std::move(root_b)), &repl_b),
+          port_a(first_port),
+          port_b(second_port) {
         a.start();
         b.start();
     }
@@ -627,35 +643,43 @@ std::size_t owners(const Node& node) {
 
 }  // namespace
 
-// #763: a joining node checks its own, still-empty store before it has synced,
-// and seeds a second owner that spreads to the cluster. The order modelled is
-// main.cpp's: bootstrap_owner, then cluster start. A fix that moves seeding after
-// the state exchange changes that order; model the new one here when it lands.
+// #763: a joining node checked its own, still-empty store before it had synced,
+// and seeded a second owner that spread to the cluster. Fixed: main.cpp seeds
+// after the join, and a node seeds only under the root it holds. A joiner given
+// its own --admin-token holds a root of its own, so the owner it seeds is sealed
+// by that root and the existing node never honors it.
 TEST(AuthzCluster, Finding763_AJoiningNodeDoesNotMintASecondOwner) {
-    TwoNodes nodes{43780, 43781};
+    TwoNodes nodes{43780, 43781,
+                   IdentityAuthority::from_owner_secret("cluster-owner-secret"),
+                   IdentityAuthority::from_owner_secret("joiner-secret")};
     ASSERT_TRUE(nodes.a.bootstrap_owner("cluster-owner-secret").performed);
-    const auto joiner = nodes.b.bootstrap_owner("joiner-secret");
     nodes.join();
     ASSERT_TRUE(converge(nodes.a, nodes.b, [&] {
-        return nodes.b.authenticate_token("cluster-owner-secret") != nullptr &&
+        return nodes.cluster_b->peer_count() == 1 &&
                nodes.repl_a.version() == nodes.repl_b.version();
     }));
-    const bool second_owner = owners(nodes.a) > 1 ||
-                              nodes.a.authenticate_token("joiner-secret") != nullptr;
-    // The plain assertion, once fixed:
-    //   EXPECT_EQ(owners(nodes.a), 1u);
-    //   EXPECT_EQ(nodes.a.authenticate_token("joiner-secret"), nullptr);
-    (void)joiner;
-    KNOWN_DEFECT(763, second_owner,
-                 "a joining node's --admin-token became a second owner credential "
-                 "on the existing node");
+    // main.cpp's order: join, sync, reconcile, then seed.
+    nodes.b.ensure_builtin_roles();
+    nodes.b.bootstrap_owner("joiner-secret");
+    ASSERT_TRUE(converge(nodes.a, nodes.b, [&] {
+        return nodes.repl_a.version() == nodes.repl_b.version();
+    }));
+    EXPECT_EQ(owners(nodes.a), 1u);
+    EXPECT_EQ(nodes.a.authenticate_token("joiner-secret"), nullptr);
+    EXPECT_NE(nodes.a.authenticate_token("cluster-owner-secret"), nullptr);
 }
 
-// #764: identity records carry no proof of origin. A peer writes a user, an
+// #764: identity records carried no proof of origin. A peer wrote a user, an
 // admin role, the assignment and a token straight into the replicated catalog
-// (no SQL, no Node call, no issuer) and the existing node honors the token.
+// (no SQL, no Node call, no issuer) and the existing node honored the token.
+// Fixed: every identity record is sealed by the cluster's identity root, and a
+// record without a valid seal is absent. B is a member that pinned the root
+// but does not hold it — membership, not authority.
 TEST(AuthzCluster, Finding764_AnUnsignedReplicatedCredentialIsNotHonored) {
-    TwoNodes nodes{43790, 43791};
+    auto root = IdentityAuthority::from_owner_secret("cluster-owner-secret");
+    ASSERT_TRUE(root);
+    TwoNodes nodes{43790, 43791, root,
+                   IdentityAuthority::verify_only(root->public_key_hex())};
     ASSERT_TRUE(nodes.a.bootstrap_owner("cluster-owner-secret").performed);
 
     // Forge the records on a detached node, then write them raw on B.
@@ -683,16 +707,7 @@ TEST(AuthzCluster, Finding764_AnUnsignedReplicatedCredentialIsNotHonored) {
         return nodes.b.authenticate_token("cluster-owner-secret") != nullptr &&
                nodes.repl_a.version() == nodes.repl_b.version();
     }));
-    auto honored = nodes.a.authenticate_token(issued.secret);
-    const bool admin = honored && nodes.a
-                                      .authorize_user(honored->id(),
-                                                      Operation{CapabilityDomain::Data,
-                                                                "write"})
-                                      .allowed;
-    // The plain assertion, once fixed:
-    //   EXPECT_EQ(nodes.a.authenticate_token(issued.secret), nullptr);
-    KNOWN_DEFECT(764, honored != nullptr,
-                 std::string("a token written raw into the replicated catalog by a "
-                             "peer authenticates on another node") +
-                     (admin ? " as an admin" : ""));
+    EXPECT_EQ(nodes.a.authenticate_token(issued.secret), nullptr);
+    EXPECT_EQ(nodes.b.authenticate_token(issued.secret), nullptr);
+    EXPECT_FALSE(nodes.a.find_user("mallory"));
 }

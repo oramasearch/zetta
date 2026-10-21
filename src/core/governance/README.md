@@ -29,3 +29,8 @@ list the `bucket` kind.
 `redact_credentials`; `consent.cpp` renders a challenge's frozen input and
 result through it, while the ledger keeps the real input to execute (#74). See
 [secret references](../../../docs/governance/secret-references.md).
+`identity_seal.cpp` is the identity root (#763, #764): every replicated identity
+record is sealed with Ed25519 by a root derived from the owner's admin token (or
+generated, or pinned verify-only), and a node honors a record only when its seal
+verifies. `principal.cpp` seals access keys through it. See
+[identity seal](../../../docs/governance/identity-seal.md).

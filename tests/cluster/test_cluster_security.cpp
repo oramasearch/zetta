@@ -353,6 +353,28 @@ TEST(ClusterSecurity, ASecretFileRefusalNeverEchoesTheToken) {
     EXPECT_EQ(reason.find(bad_token), std::string::npos) << reason;
 }
 
+// The identity root's public key rides in the join command, so the next node
+// pins this cluster's root and honors its accounts (#764).
+TEST(ClusterSecurity, PeerCommandCarriesTheIdentityRoot) {
+    const std::string token = zetta::cluster::generate_join_token();
+    const std::string root(64, 'a');
+    ClusterConfig config;
+    config.listen_host = "127.0.0.1";
+    config.listen_port = 42402;
+    config.security = must_derive(token, "node-a");
+    config.identity_root = root;
+
+    Cluster node("node-a", config);
+    node.start();
+    // The printed command names where the join token goes (#1393); the
+    // identity root is public, so it is printed as is.
+    EXPECT_EQ(node.peer_command(),
+              "zetta --peer 127.0.0.1:42402 --join-token <join-token> --identity-root " + root);
+    EXPECT_EQ(node.peer_command_with_join_token(),
+              "zetta --peer 127.0.0.1:42402 --join-token " + token + " --identity-root " + root);
+    node.stop();
+}
+
 TEST(ClusterSecurity, SameTokenNodesConvergeOverMutualTls) {
     const std::string token = zetta::cluster::generate_join_token();
     const std::string id_a = zetta::util::new_uuid();

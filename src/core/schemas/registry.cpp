@@ -51,6 +51,7 @@
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/consent.hpp"
+#include "zetta/governance/identity_seal.hpp"
 #include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/network/records.hpp"
@@ -256,6 +257,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::cluster::node_metrics_wire_schema},
         {"cluster_secret", "cluster_secret.schema.json",
          &zetta::cluster::cluster_secret_schema},
+        {"identity_root", "identity_root.schema.json",
+         &zetta::governance::identity_root_schema},
         {"collective_message", "collective_message.schema.json",
          &zetta::cluster::collective_message_schema},
         {"signal_envelope", "signal_envelope.schema.json",

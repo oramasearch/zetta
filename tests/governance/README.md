@@ -24,6 +24,12 @@ measurement and rejects wrapped byte or item totals (#1167). The worker checks
 the memory registry's audit item count after both phases.
 See [the proof runbook](../../docs/testing/audit-replication.md).
 
+`test_identity_seal.cpp` covers the identity root (#763, #764): seal and open,
+the pin in `<data_dir>/security/identity-root.json`, sealed writes, refused
+writes on a verify-only node, unsealed records not materialized, and the
+one-time sealing on upgrade. See
+[identity-seal.md](../../docs/governance/identity-seal.md).
+
 `test_authz_regressions.cpp` is the authorization regression harness (#780): one
 test per auth review finding, #759 to #769. Fixed findings are plain assertions;
 open ones are `KNOWN_DEFECT` probes that skip with the issue number while the

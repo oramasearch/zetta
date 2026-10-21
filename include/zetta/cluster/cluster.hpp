@@ -221,6 +221,11 @@ struct ClusterConfig {
     // reorder it (see frame_faults.hpp). Never set by the zetta binary. Must
     // outlive the Cluster's network thread — the shared_ptr keeps it alive.
     std::shared_ptr<FrameFaultInjector> frame_faults;
+    // The public key of the cluster's identity root (#764,
+    // docs/governance/identity-seal.md), 64 hex. Not a secret: peer_command()
+    // carries it as --identity-root so the next node pins this cluster's root.
+    // Empty (a test/host Cluster) leaves it out.
+    std::string identity_root;
 };
 
 // Replication gossip this node has sent since start() (#794), summed over every
