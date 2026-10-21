@@ -500,6 +500,8 @@ TEST(AuditTrail, BackgroundActionSpellingsRoundTrip) {
     EXPECT_EQ(audit_action_from("dataset_added"), AuditAction::DatasetAdded);
     EXPECT_EQ(to_string(AuditAction::AuditPurged), "audit_purged");
     EXPECT_EQ(audit_action_from("audit_purged"), AuditAction::AuditPurged);
+    EXPECT_EQ(to_string(AuditAction::EgressDenied), "egress_denied");
+    EXPECT_EQ(audit_action_from("egress_denied"), AuditAction::EgressDenied);
 
     zetta::governance::AuditEventValue value;
     value.action = AuditAction::DatasetAdded;

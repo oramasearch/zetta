@@ -733,6 +733,7 @@ add_library(zetta-core STATIC
   src/core/connect/lake_sql_protocol.cpp
   src/core/connect/write_words.cpp
   src/core/connect/source_catalog.cpp
+  src/core/connect/egress_policy.cpp
   src/core/connect/http_transport.cpp
   src/core/connect/model_fetch.cpp
   src/core/connect/destination_policy.cpp

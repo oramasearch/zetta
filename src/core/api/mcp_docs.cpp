@@ -89,7 +89,13 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--action-allow-destinations LIST` | address classes an action or report delivery endpoint may reach besides public ones: `loopback`, `private`, `link-local`, `metadata` (default none) |\n";
     out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration |\n";
     out += "| `--audit-summary-retention-days N` | keep audit summaries for N days (default 365); zero disables expiration |\n";
+    out += "| `--egress-allow LIST` | outside destinations this node may connect to (repeatable): host, `*.domain`, address or CIDR range, each optionally `:port`; `*` allows everything |\n";
     out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
+    out += "**Outbound network is denied by default.** Without `--egress-allow` the\n";
+    out += "node may connect only to loopback (and its Clerk issuer, when one is set);\n";
+    out += "every other connection is refused before DNS and recorded as an\n";
+    out += "`egress_denied` audit event. See\n";
+    out += "[`docs/governance/egress-policy.md`](docs/governance/egress-policy.md).\n\n";
     out += "**Consent gating is off by default.** A consent-gated capability\n";
     out += "(`create_dataset_from_query`, `cloud_inspect`, `detect_provisioners`,\n";
     out += "a cloud `add_nodes`) executes on the first call, and the ungated call\n";
@@ -139,6 +145,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n";
     out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n";
     out += "| `ZETTA_ACTION_ALLOW_DESTINATIONS` | `--action-allow-destinations` |\n";
+    out += "| `ZETTA_EGRESS_ALLOW` | `--egress-allow` (used when no flag is given) |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_MODE` | `--pubsub-dispatch-mode` |\n";
     out += "| `ZETTA_PUBSUB_TOPICS_PER_THREAD` | `--pubsub-topics-per-thread` |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_THREADS` | `--pubsub-dispatch-threads` |\n";

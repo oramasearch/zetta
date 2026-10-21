@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -26,6 +27,7 @@
 #include <boost/http/static_response.hpp>
 
 #include "system_trust_store.hpp"
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/runtime/net.hpp"
@@ -441,6 +443,33 @@ private:
                             std::chrono::duration_cast<std::chrono::milliseconds>(
                                 expires - std::chrono::steady_clock::now()));
         };
+        // The egress policy (CTL-4, #75): outbound is denied by default. This
+        // is the node's one outbound dialler, so the check here covers every
+        // caller and every redirect hop. A name the allowlist does not admit
+        // is refused before DNS, unless an allowed address range could still
+        // admit what it resolves to.
+        std::uint16_t port_number = 0;
+        {
+            unsigned value = 0;
+            const char* first = parsed.port.data();
+            const char* last = first + parsed.port.size();
+            const auto [end, failure] = std::from_chars(first, last, value);
+            if (failure != std::errc{} || end != last || value == 0 || value > 65535) {
+                co_return "not a valid port: " + parsed.port;
+            }
+            port_number = static_cast<std::uint16_t>(value);
+        }
+        const connect::EgressPolicy policy = connect::egress_policy();
+        const bool name_allowed = policy.allows_name(parsed.host, port_number);
+        const auto refuse = [&]() {
+            std::string reason =
+                connect::egress_denied_reason(parsed.host, port_number);
+            connect::report_egress_denial({parsed.host, port_number, reason});
+            return reason;
+        };
+        if (!name_allowed && !policy.has_network_rule_for(port_number)) {
+            co_return refuse();
+        }
 
         net::resolver resolver(io_context_);
         auto [resolve_error, results] = co_await runtime::timeout(
@@ -465,9 +494,19 @@ private:
         net::tcp_socket socket(io_context_);
         socket.open();
         bool connected = false;
+        bool any_address_allowed = name_allowed;
         std::string connect_reason = "no address resolved for " + parsed.host;
         for (const auto& entry : results) {
             const net::endpoint endpoint = entry.get_endpoint();
+            if (!name_allowed) {
+                // Admitted only by an address range: dial just the resolved
+                // addresses inside it.
+                const std::string address =
+                    endpoint.is_v4() ? endpoint.v4_address().to_string()
+                                     : endpoint.v6_address().to_string();
+                if (!policy.allows_address(address, port_number)) continue;
+                any_address_allowed = true;
+            }
             if (public_only) {
                 const std::string address = endpoint.is_v4()
                                                 ? endpoint.v4_address().to_string()
@@ -496,6 +535,7 @@ private:
                 break;
             }
         }
+        if (!any_address_allowed) co_return refuse();
         if (!any_allowed && !refused_reason.empty()) co_return refused_reason;
         if (!connected) co_return connect_reason;
 

@@ -12,6 +12,7 @@
 #include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/compute/mlx_serving.hpp"
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/connect/model_fetch.hpp"
 #include "zetta/headless.hpp"
@@ -22,6 +23,7 @@
 #include "zetta/cloud/provisioner_detect.hpp"
 #include "zetta/cloud/provisioner_fleet.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/observability/crash.hpp"
@@ -43,6 +45,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -65,6 +68,78 @@ public:
         delete;
 };
 
+// Records every connection the egress policy refuses (CTL-4, #75) on the node's
+// audit trail, and stops before the Node goes away.
+class EgressDenialAudit {
+public:
+    explicit EgressDenialAudit(zetta::Node& node) {
+        zetta::connect::set_egress_denial_observer(
+            [&node](const zetta::connect::EgressDenial& denial) {
+                zetta::governance::AuditEventValue event;
+                event.action = zetta::governance::AuditAction::EgressDenied;
+                event.actor = "node";
+                event.target = "egress:" + denial.host + ":" +
+                               std::to_string(denial.port);
+                event.allowed = false;
+                event.detail = denial.reason;
+                node.record_audit_event(std::move(event));
+            });
+    }
+
+    ~EgressDenialAudit() { zetta::connect::set_egress_denial_observer({}); }
+
+    EgressDenialAudit(const EgressDenialAudit&) = delete;
+    EgressDenialAudit& operator=(const EgressDenialAudit&) = delete;
+};
+
+// The `host[:port]` of an http(s) URL as an egress allowlist entry, or empty.
+std::string url_authority(std::string_view url) {
+    std::string_view rest;
+    std::string_view port;
+    if (url.starts_with("https://")) {
+        rest = url.substr(8);
+        port = "443";
+    } else if (url.starts_with("http://")) {
+        rest = url.substr(7);
+        port = "80";
+    } else {
+        return {};
+    }
+    const auto end = rest.find_first_of("/?#");
+    std::string authority(rest.substr(0, end));
+    if (authority.empty() || authority.find('@') != std::string::npos) return {};
+    const bool has_port = authority.starts_with("[")
+                              ? authority.find("]:") != std::string::npos
+                              : authority.find(':') != std::string::npos;
+    if (!has_port) authority += ":" + std::string(port);
+    return authority;
+}
+
+// The node's egress allowlist: --egress-allow, else ZETTA_EGRESS_ALLOW, plus the
+// Clerk issuer when one is configured (the auth gate fetches its JWKS). Empty
+// means deny: only loopback is reachable. Returns nullopt on a malformed entry.
+std::optional<zetta::connect::EgressPolicy> configured_egress_policy(
+    const std::vector<std::string>& from_cli, const std::string& clerk_issuer) {
+    std::string list;
+    for (const std::string& entry : from_cli) list += entry + ",";
+    if (from_cli.empty()) {
+        if (const char* env = std::getenv("ZETTA_EGRESS_ALLOW")) list = env;
+    }
+    std::string error;
+    auto policy = zetta::connect::EgressPolicy::parse(list, &error);
+    if (!policy) {
+        std::fprintf(stderr, "zetta: %s\n", error.c_str());
+        return std::nullopt;
+    }
+    if (const std::string issuer = url_authority(clerk_issuer); !issuer.empty()) {
+        if (!policy->add(issuer, &error)) {
+            std::fprintf(stderr, "zetta: the Clerk issuer: %s\n", error.c_str());
+            return std::nullopt;
+        }
+    }
+    return policy;
+}
+
 struct Options {
     Mode mode = Mode::Headed;  // headed by default
     zetta::NodeConfig node;
@@ -76,6 +151,7 @@ struct Options {
     std::optional<std::string> action_allow_destinations;  // --action-allow-destinations LIST (#1394)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
+    std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool pubsub_dispatch_mode_from_cli = false;
     bool pubsub_topics_per_thread_from_cli = false;
@@ -179,6 +255,12 @@ void print_usage(const char* argv0) {
         "                      endpoint may reach besides public addresses:\n"
         "                      loopback, private, link-local, metadata\n"
         "                      (comma separated; default none) (#1394)\n"
+        "  --egress-allow LIST Outside destinations this node may connect to\n"
+        "                      (repeatable; comma separated): host, *.domain,\n"
+        "                      address or CIDR range, each optionally :port;\n"
+        "                      * allows everything. Outbound is DENIED by\n"
+        "                      default; loopback is always allowed (CTL-4,\n"
+        "                      docs/governance/egress-policy.md)\n"
         "  -h, --help          Show this help\n"
         "\n"
         "Environment (provisioning; applied as defaults, overridden by the\n"
@@ -194,6 +276,7 @@ void print_usage(const char* argv0) {
         "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
         "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
+        "  ZETTA_EGRESS_ALLOW  Egress allowlist -> --egress-allow\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
         "                      Ordinary audit retention in days\n"
         "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
@@ -375,6 +458,10 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--action-allow-destinations") {
             const char* v = take_value(argc, argv, i, o, "--action-allow-destinations");
             if (v) o.action_allow_destinations = v;
+        } else if (arg == "--egress-allow") {
+            const char* value = take_value(argc, argv, i, o, "--egress-allow");
+            if (!value) break;
+            o.egress_allow.emplace_back(value);
         } else if (arg == "-h" || arg == "--help") {
             o.show_help = true;
         } else {
@@ -516,6 +603,18 @@ int run_pull(int argc, char** argv) {
     const char* token_env = std::getenv("HF_TOKEN");  // never logged; a secret header
     const std::string token = token_env != nullptr ? token_env : "";
 
+    // `zetta pull` is a command a person runs to download named weights, not
+    // graph execution: its process may reach Hugging Face (and its CDN, which
+    // the resolve URL redirects to) on 443, plus whatever ZETTA_EGRESS_ALLOW
+    // adds. Everything else stays denied (CTL-4, #75).
+    {
+        std::optional<zetta::connect::EgressPolicy> policy =
+            configured_egress_policy({}, {});
+        if (!policy) return 2;
+        policy->merge(*zetta::connect::EgressPolicy::parse(
+            "huggingface.co:443,*.huggingface.co:443,*.hf.co:443"));
+        zetta::connect::set_egress_policy(std::move(*policy));
+    }
     zetta::api::install_native_http_transport();
     std::fprintf(stderr, "pulling %s (%s) -> %s\n", repo.c_str(), revision.c_str(),
                  dir.c_str());
@@ -668,6 +767,11 @@ int main(int argc, char** argv) {
         zetta::connect::set_allowed_destinations(*allowed);
         std::printf("zetta: action delivery destinations: %s\n", allowed->describe().c_str());
     }
+    std::optional<zetta::connect::EgressPolicy> egress_policy =
+        configured_egress_policy(opts.egress_allow, opts.clerk_issuer);
+    if (!egress_policy) {
+        return 2;
+    }
     if (!opts.audit_retention_from_cli) {
         if (const char* environment =
                 std::getenv("ZETTA_AUDIT_RETENTION_DAYS")) {
@@ -741,6 +845,14 @@ int main(int argc, char** argv) {
     zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
+
+    // Outbound egress is denied by default (CTL-4, #75): the node may connect
+    // only to loopback and the destinations its operator allowed. Refusals land
+    // on the audit trail as egress_denied.
+    zetta::connect::set_egress_policy(std::move(*egress_policy));
+    std::printf("zetta: egress %s\n",
+                zetta::connect::egress_policy().describe().c_str());
+    EgressDenialAudit egress_denial_audit(node);
 
     // Keep the native coroutine HTTPS client alive only while the Node is
     // alive. This guard joins the worker before Node destruction on every

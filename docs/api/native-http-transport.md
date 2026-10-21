@@ -33,6 +33,15 @@ node stops. A build that never installs one (a unit test, a tool with no egress)
 has **no** default transport, and `run_connector_query` fails with a
 path-qualified reason rather than reaching the network by accident.
 
+**Every connection is checked against the egress policy first** (CTL-4, #75,
+[../governance/egress-policy.md](../governance/egress-policy.md)). `perform_url`
+asks `connect::egress_policy()` before resolving the host and, for a name
+admitted only by an address range, before connecting to each resolved address.
+It runs for every redirect hop, so an allowed host cannot redirect the request
+somewhere else. A refusal is a transport error starting `egress denied:` and is
+reported to the denial observer, which `src/main.cpp` records as an
+`egress_denied` audit event. Loopback is always allowed.
+
 This makes `src/core/api/native_http_transport.cpp` the **second** translation
 unit allowed to name Corosio, alongside `src/core/cluster/cluster.cpp`. The split
 is by direction: the cluster adapter owns inbound/peer traffic, this one owns
