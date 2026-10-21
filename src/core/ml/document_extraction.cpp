@@ -1484,6 +1484,8 @@ AsyncDocumentExtractionRun::AsyncDocumentExtractionRun(
     : node_(node), dataset_(std::move(dataset)), params_(std::move(params)) {
     run_ = node_.create_run(params_.project, params_.graph);
     if (run_) {
+        // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+        run_->add_reads({{dataset_.database, dataset_.table, dataset_.table_id}});
         run_->set_status(zetta::pipeline::RunStatus::Running);
         run_->add_log({zetta::util::now_iso8601(), "info",
                        "document extraction started"});

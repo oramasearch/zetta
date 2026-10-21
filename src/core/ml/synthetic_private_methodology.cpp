@@ -221,6 +221,8 @@ api::ApiResult run_m20(RunRequest& request) {
         return api::ApiResult::failure("engine_error",
                                        "could not create M-20 run record");
     }
+    // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+    run->add_reads({{resolved.database, resolved.table, resolved.table_id}});
     record_run_features(context.node, run->id(), feature_plan);
     run->suppress_metrics_for_privacy();
     nlohmann::json run_params = {

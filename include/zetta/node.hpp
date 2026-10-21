@@ -394,6 +394,11 @@ public:
     std::vector<zetta::pipeline::TableRead> tables_read(
         const std::string& project, const std::string& graph,
         const std::string& dataset_path = {}) const;
+    // The tables `graph`'s connect steps read (zetta#1272): each one naming an
+    // existing `source`.`table`. For a graph that is not stored in a project —
+    // a deployed graph, one handed to GraphExecutor — so its run records them.
+    std::vector<zetta::pipeline::TableRead> tables_read(
+        const ir::ExecutionGraph& graph) const;
     bool drop_run(const std::string& id);
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
@@ -1343,7 +1348,7 @@ private:
     std::shared_ptr<zetta::pipeline::Deployment> materialize_deployment(
         std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,
         std::string node_id, std::size_t node_count, std::size_t edge_count,
-        std::string created);
+        std::string created, std::vector<zetta::pipeline::TableRead> reads = {});
     bool materialize_drop_deployment(const std::string& id);
     std::shared_ptr<zetta::pipeline::Run> materialize_run(std::string id, zetta::pipeline::RunValue value);
     bool materialize_drop_run(const std::string& id);

@@ -349,6 +349,8 @@ bool materialize_outputs(Node &node,
         output.error = "segmentation: could not create the Run record";
         return false;
     }
+    // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+    run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
     output.run_id = run->id();
     if (const auto job = node.find_job(output.job_id))
         run->set_trace_id(job->value().trace_id);

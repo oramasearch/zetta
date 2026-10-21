@@ -5826,6 +5826,8 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
             : context.node.create_run(project ? project->id() : std::string(),
                                       graph ? graph->id() : std::string());
     if (!run) return ApiResult::failure("engine_error", "the run record could not be created");
+    // The dataset Lake's runner read (zetta#1272).
+    if (!dataset_path.empty()) run->add_reads(context.node.tables_read({}, {}, dataset_path));
     run->set_status(zetta::pipeline::RunStatus::Running);
     run->add_log({zetta::util::now_iso8601(), "info",
                   "ran the workspace methodology " + id + " (" + name +

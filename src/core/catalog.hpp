@@ -36,7 +36,7 @@
 //                          — the whole serialized graph as one value; see
 //                          project_graph.hpp / docs/pipeline/execution-graph.md)
 //   deployment:<dep_uuid> -> { graph_name, target: {…}, node, node_count,
-//                          edge_count, created }  (a graph placed onto a target;
+//                          edge_count, created, reads? }  (a graph placed onto a target;
 //                          a top-level entity with no parent — see deployment.hpp)
 //   run:<run_uuid>     -> { project, graph, status, created, updated, logs,
 //                          outputs, lineage }  (one execution of a deployed

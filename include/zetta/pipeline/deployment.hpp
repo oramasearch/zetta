@@ -3,10 +3,12 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "zetta/pipeline/deployment_target.hpp"
+#include "zetta/pipeline/run.hpp"
 
 namespace zetta::pipeline {
 
@@ -32,7 +34,8 @@ public:
     Deployment(std::string id, std::string graph_name, DeploymentTarget target,
                std::string node_id, std::size_t node_count,
                std::size_t edge_count, std::string created,
-               std::filesystem::path dir);
+               std::filesystem::path dir,
+               std::vector<TableRead> reads = {});
 
     const std::string& id() const { return id_; }
     const std::string& graph_name() const { return graph_name_; }
@@ -42,13 +45,18 @@ public:
     std::size_t edge_count() const { return edge_count_; }
     const std::string& created() const { return created_; }
     const std::filesystem::path& dir() const { return dir_; }
+    // The tables the placed graph's connect steps read (zetta#1272), recorded
+    // at deploy time. Each run the deployment controller starts for it records
+    // them, so delete_dataset refuses them while that run is pending or running.
+    const std::vector<TableRead>& reads() const { return reads_; }
 
     // Write this deployment's metadata (id + fields) to dir/deployment.json.
     void persist_meta() const;
 
     // The replicated/on-disk value shape (without the id, which is the CRDT key
     // / folder name):
-    //   { graph_name, target: {…}, node, node_count, edge_count, created }
+    //   { graph_name, target: {…}, node, node_count, edge_count, created,
+    //     reads? }  (`reads` only when the graph reads a table)
     nlohmann::json metadata() const;
 
 private:
@@ -60,6 +68,7 @@ private:
     std::size_t edge_count_;  // graph summary captured at deploy time
     std::string created_;
     std::filesystem::path dir_;
+    std::vector<TableRead> reads_;
 };
 
 }  // namespace zetta::pipeline

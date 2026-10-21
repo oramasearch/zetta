@@ -599,6 +599,8 @@ SurvivalRunResult run_survival_on_dataset(
     node.run_on_owner([&] {
         result.run = node.create_run(params.project, params.graph);
         if (result.run) {
+            // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+            result.run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
             result.run->set_status(pipeline::RunStatus::Running);
             result.run->add_log({util::now_iso8601(), "info",
                                  "survival training started"});

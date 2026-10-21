@@ -18,6 +18,7 @@
 #include "zetta/data/table.hpp"
 #include "zetta/ml/bandit.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/run.hpp"
 
 namespace {
 
@@ -184,6 +185,12 @@ TEST(BanditState, PolicyTableSurvivesNodeRestartAndFeedsTheNextRun) {
         first, resolved, run_params, "project", "graph");
     ASSERT_TRUE(result.ok()) << result.error;
     EXPECT_EQ(result.metrics.decisions, 20u);
+    // The run records the table it read (zetta#1272): the runner was handed
+    // it, not a stored pipeline.
+    const auto run = first.find_run(result.run_id);
+    ASSERT_TRUE(run);
+    ASSERT_EQ(run->reads().size(), 1u);
+    EXPECT_EQ(run->reads().front().table_id, table->id());
     first.stop();
   }
 
