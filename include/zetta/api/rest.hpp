@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,5 +57,15 @@ nlohmann::json rest_envelope(const ApiResult& result);
 // artifact (ZETTA_WRITE_SCHEMAS=1 regenerates — the test_schemas.cpp
 // pattern). Served at GET /v1/openapi.json.
 nlohmann::json openapi_document(const Registry& registry);
+
+// Which capabilities a rendering shows. The served-per-caller documents (the
+// /v1/specs index and its "openapi" entry, list_specs, get_spec) pass the
+// caller's per-tool scope (#766), the same rule tools/list applies, so a user
+// granted one tool discovers that tool only.
+using CapabilityVisible = std::function<bool(const Capability&)>;
+
+// The OpenAPI document with only the capabilities `visible` admits.
+nlohmann::json openapi_document(const Registry& registry,
+                                const CapabilityVisible& visible);
 
 }  // namespace zetta::api

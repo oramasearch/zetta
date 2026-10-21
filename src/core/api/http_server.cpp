@@ -1903,15 +1903,20 @@ struct ApiServer::Impl {
 
         std::string body;
         bool found = true;
+        const RequestIdentity identity = identity_of(route);
         co_await bridge.run_on_owner([&] {
             zetta::observability::ScopedSpan span(
                 &node.span_recorder(), trace,
                 name.empty() ? "specs:index" : "specs:" + name);
             span.set_attribute("spec", name.empty() ? "index" : name);
+            // Only the capabilities the caller may call (#766), the rule
+            // tools/list applies.
+            const CapabilityVisible visible =
+                callable_by(node, identity.acting_key, identity.is_user);
             if (name.empty()) {
-                body = spec_index(capability_registry).dump(2);
+                body = spec_index(capability_registry, visible).dump(2);
             } else {
-                const auto spec = find_spec(capability_registry, name);
+                const auto spec = find_spec(capability_registry, name, visible);
                 found = spec.has_value();
                 // The raw document itself — GET-able by codegen as-is; the
                 // wrapped { name, kind, schema } shape is get_spec's.

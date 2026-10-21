@@ -192,118 +192,194 @@ constexpr std::string_view kTestCasesTable = "test_cases";
 // the headed explorer renders), and the unknown-table error's suggestions all
 // derive from it, so a new system table registered here appears everywhere at
 // once. Adding a table = one entry here + its dispatch branch in execute().
+//
+// Who may read each table (#766). Every entry names its class, so a new table
+// cannot be added without deciding it. The trusted local session (empty acting
+// id: the library, the headed app, tests) reads every table whole, and so does an
+// admin (cluster:admin). For everyone else:
+//  - Public: static product metadata with no workspace data in it (this
+//    catalog, the test-suite catalog, the provider catalog).
+//  - Tool: the same rows a read capability serves, so SQL is not a way around
+//    the tool's own scope. Readable by whoever may call `tool` (mcp:call on it,
+//    plus the capability's own right when that is more than mcp:call).
+//  - Datasets: rows narrowed to the tables the caller holds sql:read on
+//    (system.datasets, and the partitions of those tables).
+//  - OwnRows: rows narrowed to the caller's own actions (system.audit,
+//    system.activity): each person sees what they did, an admin sees everyone.
+//  - Admin: the governance registry (users, roles, grants, policies, tokens,
+//    keys, principals) and the node's internals. Refused to anyone else.
+// Admin is the first enumerator and the default, so an entry that names no class
+// fails closed.
+enum class SystemTableAccess { Admin, Public, Tool, Datasets, OwnRows };
+
 struct SystemTableInfo {
     std::string_view name;
     std::string_view description;
+    SystemTableAccess access = SystemTableAccess::Admin;
+    // For SystemTableAccess::Tool: the capability serving the same rows, and the
+    // operation it requires (domain + action of its required_operation).
+    std::string_view tool = {};
+    zetta::governance::CapabilityDomain tool_domain =
+        zetta::governance::CapabilityDomain::Api;
+    std::string_view tool_action = "query";
 };
 constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kActivityTable,
                     "the merged, newest-first activity feed: audit trail + "
-                    "runs composed chronologically"},
-    SystemTableInfo{kAuditTable, "the immutable, retained audit trail"},
+                    "runs composed chronologically",
+                    SystemTableAccess::OwnRows},
+    SystemTableInfo{kAuditTable, "the immutable, retained audit trail",
+                    SystemTableAccess::OwnRows},
     SystemTableInfo{kCheckpointsTable,
                     "jobs with a durable resume checkpoint in this node's "
-                    "local store (ephemeral, not replicated)"},
+                    "local store (ephemeral, not replicated)",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kCloudProvidersTable,
                     "the deployment-target / provider catalog: pure metadata, "
-                    "reads nothing from any cloud"},
+                    "reads nothing from any cloud",
+                    SystemTableAccess::Public},
     SystemTableInfo{kCloudStatusTable,
                     "cached results of consent-gated cloud inspects; querying "
-                    "never triggers a cloud call"},
+                    "never triggers a cloud call",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kCollectiveRoundsTable,
                     "this node's live collective-plane counters (ephemeral, "
-                    "not replicated)"},
+                    "not replicated)",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kConnectionsTable,
                     "the saved source connections held on every node — "
-                    "settings only, credentials never exposed"},
+                    "settings only, credentials never exposed",
+                    SystemTableAccess::Tool, "list_connections",
+                    zetta::governance::CapabilityDomain::Orchestration, "list_connections"},
+    SystemTableInfo{kConsentRequestsTable,
+                    "the remote-consent challenges for cloud-touching actions: "
+                    "who asked, what for, and how each was decided (#621)",
+                    SystemTableAccess::Tool, "list_consent_requests",
+                    zetta::governance::CapabilityDomain::Api, "query"},
     SystemTableInfo{kCrashesTable,
                     "crash reports found under this node's data_dir "
-                    "(ephemeral, local)"},
+                    "(ephemeral, local)",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kPartitionsTable,
                     "the partition catalog: where each slice of a table's "
-                    "data lives"},
+                    "data lives",
+                    SystemTableAccess::Datasets},
     SystemTableInfo{kDatasetsTable,
                     "datasets as a first-class primitive: schema, rows, size, "
-                    "format, partition placement"},
+                    "format, partition placement",
+                    SystemTableAccess::Datasets},
     SystemTableInfo{kLargeObjectsTable,
                     "large objects (files / blobs) stored per database: name, "
-                    "size, sha256, and whether the body has synced to this node"},
+                    "size, sha256, and whether the body has synced to this node",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kDeploymentsTable,
-                    "recorded graph-to-target placements"},
+                    "recorded graph-to-target placements",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kIndexesTable,
                     "the index registry: one row per registered index over a "
-                    "table"},
+                    "table",
+                    SystemTableAccess::Tool, "list_indexes",
+                    zetta::governance::CapabilityDomain::Api, "query"},
     SystemTableInfo{kJobsTable,
                     "the compute-job registry: one row per unit of native "
-                    "distributed compute + its lifecycle"},
+                    "distributed compute + its lifecycle",
+                    SystemTableAccess::Tool, "list_jobs",
+                    zetta::governance::CapabilityDomain::Api, "query"},
     SystemTableInfo{kKeysTable,
                     "the access keys the principals own: scope + capabilities, "
-                    "no secret material"},
+                    "no secret material",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kLedgerTable,
-                    "the immutable score, decision, action and outcome reward ledger"},
+                    "the immutable score, decision, action and outcome reward ledger",
+                    SystemTableAccess::Tool, "list_ledger",
+                    zetta::governance::CapabilityDomain::Api, "query"},
     SystemTableInfo{kMemoryTable,
-                    "this process memory by owning subsystem plus allocator truth"},
+                    "this process memory by owning subsystem plus allocator truth",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kModelsTable,
                     "the model registry: trained models + their kind, "
-                    "metrics, weights fingerprint"},
+                    "metrics, weights fingerprint",
+                    SystemTableAccess::Tool, "list_models",
+                    zetta::governance::CapabilityDomain::Api, "query"},
     SystemTableInfo{kWorkspaceProfilesTable,
                     "the workspace/environment profile registry: owner, role, "
-                    "daily work, and approved source refs (#886)"},
+                    "daily work, and approved source refs (#886)",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kUsageTable,
                     "metered usage: a single-row snapshot of live consumption "
                     "(projects/runs/jobs/models/datasets+bytes/nodes) for "
-                    "Billing/Usage"},
+                    "Billing/Usage",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kPlansTable,
                     "the plan registry: name, tier, and quota limits the metered "
-                    "usage is measured against (Conflict D)"},
+                    "usage is measured against (Conflict D)",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kNodeMetricsTable,
                     "this node's live host resource utilization, sampled at "
-                    "query time"},
+                    "query time",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kNodesTable,
                     "FULL cluster membership (virtual table over the node-list "
                     "CRDT, #809): every node — incl. those not directly linked — "
                     "with reachability, node_type, liveness + replication status "
-                    "(needs a cluster)"},
+                    "(needs a cluster)",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kPipelineJobsTable,
                     "recorded near-data compute jobs (ephemeral, not "
-                    "replicated)"},
+                    "replicated)",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kPoliciesTable,
                     "the row-level security policy registry: per-table USING "
-                    "read filters + WITH CHECK write filters (RLS)"},
-    SystemTableInfo{kPrincipalsTable, "the authenticated actors"},
+                    "read filters + WITH CHECK write filters (RLS)",
+                    SystemTableAccess::Admin},
+    SystemTableInfo{kPrincipalsTable, "the authenticated actors",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kProvisionersTable,
                     "cloud-burst provisioners detected from this node's local "
-                    "CLIs; carries no credentials"},
+                    "CLIs; carries no credentials",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kPubSubTopicsTable,
                     "pub/sub topics and inboxes on this node: subscribers, held "
                     "events, memory and disk, spilling, the slowest subscriber "
-                    "(#1034; ephemeral, not replicated)"},
+                    "(#1034; ephemeral, not replicated)",
+                    SystemTableAccess::Tool, "list_topics",
+                    zetta::governance::CapabilityDomain::Data, "topics_read"},
     SystemTableInfo{kRolesTable,
                     "the role registry: named permission sets (scope + rights) "
-                    "granted to users"},
+                    "granted to users",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kRunsTable,
                     "the run registry: one row per graph execution + its "
-                    "lifecycle and lineage"},
+                    "lifecycle and lineage",
+                    SystemTableAccess::Tool, "list_runs",
+                    zetta::governance::CapabilityDomain::Api, "query"},
     SystemTableInfo{kSpansTable,
                     "one row per span in this node's span ring: every traced "
-                    "operation's intent, plan, timing"},
+                    "operation's intent, plan, timing",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kTablesTable,
-                    "this catalog: every system table + what it holds"},
+                    "this catalog: every system table + what it holds",
+                    SystemTableAccess::Public},
     SystemTableInfo{kTokensTable,
                     "the token registry: bearer credentials per user — id, "
-                    "type, created, revoked (NO secret material)"},
+                    "type, created, revoked (NO secret material)",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kTestCasesTable,
                     "the in-app test-suite catalog: one row per runnable case "
-                    "(id, category, name, description, option count)"},
+                    "(id, category, name, description, option count)",
+                    SystemTableAccess::Public},
     SystemTableInfo{kTracesTable,
                     "one row per trace aggregated from the span ring: the "
-                    "what-happened summary"},
+                    "what-happened summary",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kUserRolesTable,
                     "the user↔role assignments: one row per (user, role) grant — "
-                    "the many-to-many feeding each user's effective permissions"},
+                    "the many-to-many feeding each user's effective permissions",
+                    SystemTableAccess::Admin},
     SystemTableInfo{kUsersTable,
                     "the user registry: authenticatable identities + status + "
-                    "assigned roles"},
+                    "assigned roles",
+                    SystemTableAccess::Admin},
 };
 
 // One JSON row per system table for the system.tables catalog view (#684).
@@ -318,6 +394,14 @@ std::vector<nlohmann::json> system_table_rows() {
     return rows;
 }
 
+// The catalog entry for a canonical system-table name, or null.
+const SystemTableInfo* find_system_table_info(std::string_view name) {
+    for (const SystemTableInfo& info : kSystemTableCatalog) {
+        if (info.name == name) return &info;
+    }
+    return nullptr;
+}
+
 // The names alone, derived from the catalog for the public accessor.
 constexpr auto kSystemTableNames = [] {
     std::array<std::string_view, kSystemTableCatalog.size()> names{};
@@ -326,6 +410,19 @@ constexpr auto kSystemTableNames = [] {
     }
     return names;
 }();
+
+// The unknown-system-table error. Suggests the catalog itself (never drifts,
+// unlike a hand-kept list — the pre-#684 one already had).
+std::string no_such_system_table(const std::string& name) {
+    std::string available;
+    for (const std::string_view table : kSystemTableNames) {
+        if (!available.empty()) available += ", ";
+        available += "system.";
+        available += table;
+    }
+    return "no such system table \"" + name +
+           "\" (see SELECT * FROM system.tables; available: " + available + ")";
+}
 
 // The pre-#538 table names: `system.zetta_<table>` still resolves to
 // `system.<table>` for the tables that shipped under the legacy prefix.
@@ -2551,6 +2648,100 @@ QueryResult Executor::execute(const Statement& stmt,
         return node_.find_virtual_table(ref.table);
     };
 
+    // ----- who may read a system table (#766) ---------------------------------
+    // The trusted local session and an admin (cluster:admin) read every system
+    // table whole. A token-resolved user is checked against its effective
+    // permissions, a legacy AccessKey against its own (require_permission).
+    const auto reads_whole_system = [&]() -> bool {
+        if (acting_key_.empty()) return true;
+        return !require_permission({zetta::governance::CapabilityDomain::Api,
+                                    "cluster_admin"})
+                    .has_value();
+    };
+    // Whether the caller may call the capability that serves a Tool table's
+    // rows: the per-tool mcp:call scope a user's Registry::call is held to, and
+    // the capability's own right when it needs more than mcp:call.
+    const auto may_use_tool = [&](const SystemTableInfo& info) -> bool {
+        const zetta::governance::Operation invoke{
+            zetta::governance::CapabilityDomain::Api, "query"};
+        const zetta::governance::Operation required{
+            info.tool_domain, std::string(info.tool_action)};
+        if (acting_is_user_) {
+            if (!node_.may_call_tool(acting_key_, /*acting_is_user=*/true,
+                                     std::string(info.tool))) {
+                return false;
+            }
+            if (required == invoke) return true;
+        }
+        return !require_permission(required).has_value();
+    };
+    const auto may_read_system_table = [&](const SystemTableInfo& info) -> bool {
+        if (reads_whole_system()) return true;
+        switch (info.access) {
+            case SystemTableAccess::Public:
+            case SystemTableAccess::Datasets:  // narrowed row by row
+            case SystemTableAccess::OwnRows:   // narrowed row by row
+                return true;
+            case SystemTableAccess::Tool:
+                return may_use_tool(info);
+            case SystemTableAccess::Admin:
+                return false;
+        }
+        return false;
+    };
+    const auto system_table_refusal = [](const SystemTableInfo& info) {
+        const std::string table = "system." + std::string(info.name);
+        if (info.access == SystemTableAccess::Tool) {
+            return "permission denied: " + table + " needs the right to call " +
+                   std::string(info.tool) + " (or cluster:admin)";
+        }
+        return "permission denied: " + table +
+               " is readable by an admin only (cluster:admin)";
+    };
+    // system.audit / system.activity for a non-admin: only the rows it is the
+    // actor of.
+    const auto own_rows = [&](std::vector<nlohmann::json> rows) {
+        if (reads_whole_system()) return rows;
+        std::erase_if(rows, [&](const nlohmann::json& row) {
+            return row.value("actor", std::string()) != acting_key_;
+        });
+        return rows;
+    };
+    // Whether the caller may read some of database.table: sql:read at table
+    // scope or on any of its columns (the rule a SELECT on it uses).
+    const auto may_read_table = [&](const std::string& database,
+                                    const std::string& table) -> bool {
+        if (acting_key_.empty()) return true;
+        if (!acting_is_user_) return !require_permission(kSqlRead).has_value();
+        return node_.column_scope(acting_key_, /*acting_is_user=*/true, kSqlRead,
+                                  database, table)
+            .table_allowed;
+    };
+    // system.datasets for a non-admin: only the datasets it may read.
+    const auto readable_datasets = [&](std::vector<nlohmann::json> rows) {
+        if (reads_whole_system()) return rows;
+        std::erase_if(rows, [&](const nlohmann::json& row) {
+            return !may_read_table(row.value("database", std::string()),
+                                   row.value("dataset", std::string()));
+        });
+        return rows;
+    };
+    // system.dataset_partitions for a non-admin: only the partitions of the
+    // datasets it may read (a partition names its table by id).
+    const auto readable_partitions = [&](std::vector<nlohmann::json> rows) {
+        if (reads_whole_system()) return rows;
+        std::unordered_set<std::string> readable;
+        for (const zetta::data::DatasetSummary& dataset : node_.datasets()) {
+            if (may_read_table(dataset.database, dataset.name)) {
+                readable.insert(dataset.table_id);
+            }
+        }
+        std::erase_if(rows, [&](const nlohmann::json& row) {
+            return !readable.contains(row.value("table", std::string()));
+        });
+        return rows;
+    };
+
     // ----- authorization of data-changing statements (#1229) -----------------
     // Every statement that changes data or schema checks its right here, the
     // way INSERT always has: sql:write for INSERT / UPDATE / DELETE / TRUNCATE,
@@ -3193,6 +3384,17 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (const std::string sys = system_table_of(s.table);
                     !sys.empty()) {
                     const std::string label = "system." + sys;
+                    // Who may read it (#766): see SystemTableAccess. An unknown
+                    // name gets the "no such system table" error; so does, for
+                    // anyone but the local session and an admin, a table served
+                    // below that the catalog does not list (fail closed).
+                    const SystemTableInfo* info = find_system_table_info(sys);
+                    if (info == nullptr && !reads_whole_system()) {
+                        return error(no_such_system_table(sys));
+                    }
+                    if (info != nullptr && !may_read_system_table(*info)) {
+                        return deny(system_table_refusal(*info));
+                    }
                     if (sys == kTablesTable) {
                         return select_over_rows(s, system_table_rows(), label);
                     }
@@ -3267,19 +3469,19 @@ QueryResult Executor::execute(const Statement& stmt,
                         return select_over_rows(s, connection_rows(node_), label);
                     }
                     if (sys == kAuditTable) {
-                        return select_over_rows(s, audit_rows(node_), label);
+                        return select_over_rows(s, own_rows(audit_rows(node_)), label);
                     }
                     if (sys == kLedgerTable) {
                         return select_over_rows(s, ledger_rows(node_), label);
                     }
                     if (sys == kActivityTable) {
-                        return select_over_rows(s, activity_rows(node_), label);
+                        return select_over_rows(s, own_rows(activity_rows(node_)), label);
                     }
                     if (sys == kPartitionsTable) {
-                        return select_over_rows(s, partition_rows(node_), label);
+                        return select_over_rows(s, readable_partitions(partition_rows(node_)), label);
                     }
                     if (sys == kDatasetsTable) {
-                        return select_over_rows(s, dataset_rows(node_), label);
+                        return select_over_rows(s, readable_datasets(dataset_rows(node_)), label);
                     }
                     if (sys == kLargeObjectsTable) {
                         return select_over_rows(s, large_object_rows(node_), label);
@@ -3309,17 +3511,7 @@ QueryResult Executor::execute(const Statement& stmt,
                         return select_over_rows(s, crash_rows(node_), label);
                     }
                     if (sys != kNodesTable) {
-                        // Suggest the catalog itself (never drifts, unlike a
-                        // hand-kept list — the pre-#684 one already had).
-                        std::string available;
-                        for (const std::string_view name : kSystemTableNames) {
-                            if (!available.empty()) available += ", ";
-                            available += "system.";
-                            available += name;
-                        }
-                        return error("no such system table \"" + sys +
-                                     "\" (see SELECT * FROM system.tables; "
-                                     "available: " + available + ")");
+                        return error(no_such_system_table(sys));
                     }
                     if (!cluster_) {
                         return error("system.nodes is unavailable here "

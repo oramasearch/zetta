@@ -43,7 +43,7 @@ State on `dev` at `e9587213` (2026-10-20).
 | [#763](https://github.com/oramasearch/zetta/issues/763) | a joining node mints a second owner | open | `AuthzCluster.AJoiningNodeDoesNotMintASecondOwner` (`KNOWN_DEFECT`, two in-process nodes) | in-process only |
 | [#764](https://github.com/oramasearch/zetta/issues/764) | replicated identity records trusted with no proof of origin | open | `AuthzCluster.AnUnsignedReplicatedCredentialIsNotHonored` (`KNOWN_DEFECT`) | in-process only |
 | [#765](https://github.com/oramasearch/zetta/issues/765) | a row policy with no condition admits every row | **fixed** (a missing predicate denies, `build_rls_filter`) | `APolicyWithNoConditionDeniesInsteadOfAllowingAll`; more in `RowSecuritySql.*` (`tests/governance/test_row_security.cpp`) | the grammar refuses it; the replicated/restored path in-process only |
-| [#766](https://github.com/oramasearch/zetta/issues/766) | the catalog and the spec index are readable by anyone | open | `AReaderCannotReadTheGovernanceCatalog`, `AuthzHttp.SpecsAreFilteredByTheCallersTools` (`KNOWN_DEFECT`) | reader reads `system.policies`/`users`/`roles`/`user_roles`/`tokens`; a one-tool user reads every spec at `/v1/specs` |
+| [#766](https://github.com/oramasearch/zetta/issues/766) | the catalog and the spec index are readable by anyone | **fixed** (each system table has a reader class; `/v1/specs` per caller, [system-catalog-access.md](../governance/system-catalog-access.md)) | `AReaderCannotReadTheGovernanceCatalog`, `AuthzHttp.SpecsAreFilteredByTheCallersTools` | reader reads `system.policies`/`users`/`roles`/`user_roles`/`tokens`; a one-tool user reads every spec at `/v1/specs` |
 | [#767](https://github.com/oramasearch/zetta/issues/767) | blob grants match by text prefix | **fixed** ([#1312](https://github.com/oramasearch/zetta/pull/1312)) | `ABlobGrantStopsAtAPathBoundary` | in-process only (the web UI's cookie blob download, #1389, calls the same `Node::authorize_blob`) |
 | [#768](https://github.com/oramasearch/zetta/issues/768) | orchestration ungrantable under auth | **fixed** (7b1ac08) | `EveryRegisteredOperationIsGrantable` | admin runs `create_project`, the reader is refused it |
 | [#769](https://github.com/oramasearch/zetta/issues/769) | hardening: owner token KDF, atomic seed, shared-secret compare, SQL audit | **fixed**: KDF and seed ([#1311](https://github.com/oramasearch/zetta/pull/1311)), shared secret and audit (#799/#806, #1229) | `TheOwnerTokenIsStoredThroughAKdf`, `AuthzSeed.AnInterruptedOwnerSeedIsResumed`, `RefusedPrivilegedSqlIsAudited`, `AuthzHttp.OnlyATokenThatResolvesToAUserGetsIn` | bogus bearer refused; the reader's refused writes audited as refused `data_changed` |
@@ -59,7 +59,8 @@ everything; no network surface produces it.
 
 **#766 scope.** `/v1/openapi.json`, `/llms.txt`, `/llms-full.txt` and `/llms/:topic` are served
 before the auth gate on purpose (public discovery documents), so they are not probed. `/v1/specs`
-is behind the gate, and is.
+is behind the gate, and is. Whether the public documents should move behind the gate is a
+follow-up decision on #766.
 
 ## The e2e bug this found
 

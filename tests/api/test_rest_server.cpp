@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1915,6 +1916,48 @@ TEST_F(RestServerFixture, SpecIndexIsServed) {
     auto missing = request("GET", "/v1/specs/no-such-spec");
     EXPECT_EQ(missing.status, 404);
     EXPECT_EQ(json_of(missing).at("error").at("code"), "not_found");
+}
+
+// #766: /v1/specs is served per caller, by the rule tools/list applies. A user
+// granted only server_info finds server_info's schemas, and no other tool's: not
+// in the index, not by name (404, like a name that does not exist), not in the
+// "openapi" entry. The owner, above, still gets the whole index.
+TEST_F(RestServerFixture, SpecIndexShowsOnlyTheToolsTheCallerMayCall) {
+    node.ensure_builtin_roles();
+    node.create_role("one_tool");
+    ASSERT_TRUE(node.grant_scoped_permissions(
+        "one_tool", {"mcp:call"}, zetta::governance::Resource::tool("server_info")));
+    auto tina = node.create_user("tina");
+    ASSERT_TRUE(tina);
+    node.assign_role(tina->id(), node.find_role("one_tool")->id());
+    const auto issued =
+        node.create_token(tina->id(), zetta::governance::TokenType::Api);
+    ASSERT_TRUE(issued.token);
+
+    const auto index = request("GET", "/v1/specs", {}, issued.secret);
+    ASSERT_EQ(index.status, 200) << index.body;
+    std::set<std::string> capabilities;
+    for (const auto& entry : json_of(index).at("specs")) {
+        if (entry.contains("capability")) {
+            capabilities.insert(entry.at("capability").get<std::string>());
+        }
+    }
+    EXPECT_EQ(capabilities, std::set<std::string>{"server_info"});
+    EXPECT_EQ(index.body.find("\"list_projects"), std::string::npos);
+
+    EXPECT_EQ(request("GET", "/v1/specs/server_info.input", {}, issued.secret).status,
+              200);
+    const auto hidden = request("GET", "/v1/specs/list_projects.input", {}, issued.secret);
+    EXPECT_EQ(hidden.status, 404);
+    EXPECT_EQ(json_of(hidden).at("error").at("code"), "not_found");
+
+    const auto openapi = request("GET", "/v1/specs/openapi", {}, issued.secret);
+    ASSERT_EQ(openapi.status, 200);
+    const nlohmann::json document = json_of(openapi);
+    const nlohmann::json& paths = document.at("paths");
+    EXPECT_TRUE(paths.contains("/v1/server_info"));
+    EXPECT_FALSE(paths.contains("/v1/list_projects"));
+    EXPECT_FALSE(paths.contains("/v1/sql"));
 }
 
 TEST(RestServerAuth, OpenApiIsAPublicDiscoveryDoc) {

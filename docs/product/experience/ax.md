@@ -33,7 +33,8 @@ relay it to a person.
   JSON Schema in the system (capability schemas + every registered schema-as-code
   boundary schemas, served from their C++ accessors) as one navigable index
   of objects — discovery without reading source, drift-checked through the
-  same table the build enforces.
+  same table the build enforces. Served per caller (#766): an agent discovers
+  the tools it may call, the same set `tools/list` gives it.
 - **Observability threaded back**: every result carries
   trace/span/duration; `get_trace` shows intent · plan · performance · result
   shape including per-node spans of distributed work — an agent can always
