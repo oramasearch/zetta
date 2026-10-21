@@ -2297,8 +2297,7 @@ struct ApiServer::Impl {
     }
 
     // A plain SQL identifier (letters/digits/underscore). Gates db/table names before they
-    // are interpolated into SQL — no injection, and it keeps hostile syntax away from the
-    // crash-prone parser (#819).
+    // are interpolated into SQL — no injection.
     static bool safe_ident(const std::string& s) {
         if (s.empty() || s.size() > 128) return false;
         for (char c : s)

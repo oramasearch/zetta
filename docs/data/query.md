@@ -185,6 +185,13 @@ use, so one query answers the same way on every path.
   character position the parser stopped at and the token there — `expected ';'
   after statement, got 'WEHRE' (at position 17, near 'WEHRE')` — or
   `(at end of input)` when the statement ran out.
+- **No statement can stop the node** (#793, #819): the parser reports every
+  error as a value and never throws, so malformed input (`SELECT * FROM
+  system.*`, `REVOKE TOKEN abc`, a statement cut off anywhere) is answered as an
+  error (`engine_error` from the `sql` capability) and the node keeps serving.
+  `QueryService::run` also catches anything the executor throws.
+  `tests/query/test_parse_errors_never_crash.cpp` feeds over ten thousand
+  malformed statements through the parser and the `sql` capability to hold it.
 - A `SELECT` over a **[partition-only table](partition-only-tables.md)** is not
   answered from the local store at all: it is
   **[scattered to the partition owners and merged](scatter-gather-select.md)**,
