@@ -9,10 +9,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <openssl/bio.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -21,6 +27,7 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/cluster/security.hpp"
+#include "zetta/transport/security.hpp"
 #include "zetta/util/uuid.hpp"
 
 #include "../temp_dir.hpp"
@@ -54,6 +61,22 @@ ClusterSecurity must_derive(const std::string& token,
         zetta::cluster::derive_cluster_security(token, node_id, &reason);
     EXPECT_TRUE(security) << reason;
     return security ? *security : ClusterSecurity{};
+}
+
+// The DER bytes of a PEM certificate: what a TLS stream's
+// peer_certificate_der() hands the cluster after a handshake.
+std::vector<unsigned char> pem_to_der(const std::string& pem) {
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), &BIO_free);
+    std::unique_ptr<X509, decltype(&X509_free)> certificate(
+        PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr), &X509_free);
+    if (!certificate) return {};
+    const int size = i2d_X509(certificate.get(), nullptr);
+    if (size <= 0) return {};
+    std::vector<unsigned char> der(static_cast<std::size_t>(size));
+    unsigned char* cursor = der.data();
+    i2d_X509(certificate.get(), &cursor);
+    return der;
 }
 
 }  // namespace
@@ -553,6 +576,95 @@ TEST(ClusterSecurity, PlaintextNodeCannotJoinTlsCluster) {
     EXPECT_EQ(node_a.peer_count(), 0u);
     EXPECT_EQ(node_b.peer_count(), 0u);
 
+    node_b.stop();
+    node_a.stop();
+}
+
+// #669: a node's certificate names it. The common name read back from the DER
+// a TLS stream reports is the node id, and nothing else matches it.
+TEST(ClusterSecurity, CertificateCommonNameIsTheNodeId) {
+    const std::string token = zetta::cluster::generate_join_token();
+    const std::string node_id = zetta::util::new_uuid();
+    const ClusterSecurity security = must_derive(token, node_id);
+    const std::vector<unsigned char> der = pem_to_der(security.certificate_pem);
+    ASSERT_FALSE(der.empty());
+
+    EXPECT_EQ(zetta::transport::certificate_common_name(der), node_id);
+    EXPECT_TRUE(zetta::cluster::hello_matches_peer_certificate(node_id, der));
+    EXPECT_FALSE(zetta::cluster::hello_matches_peer_certificate(
+        zetta::util::new_uuid(), der));
+    EXPECT_FALSE(zetta::cluster::hello_matches_peer_certificate("", der));
+    // A prefix of the id is not the id.
+    EXPECT_FALSE(zetta::cluster::hello_matches_peer_certificate(
+        node_id.substr(0, 8), der));
+
+    // No certificate (a plaintext link, or a peer that sent none), garbage, and
+    // a certificate with bytes after it are all refused.
+    EXPECT_FALSE(zetta::transport::certificate_common_name({}));
+    EXPECT_FALSE(zetta::cluster::hello_matches_peer_certificate(node_id, {}));
+    const std::vector<unsigned char> garbage = {0x30, 0x03, 0x02, 0x01, 0x01};
+    EXPECT_FALSE(zetta::transport::certificate_common_name(garbage));
+    std::vector<unsigned char> trailing = der;
+    trailing.push_back(0x00);
+    EXPECT_FALSE(zetta::transport::certificate_common_name(trailing));
+
+    // The CA certificate names the CA, never a node.
+    EXPECT_EQ(zetta::transport::certificate_common_name(
+                  pem_to_der(security.ca_certificate_pem)),
+              "zetta-cluster-ca");
+}
+
+// #669: a member whose certificate names one node cannot join under another
+// node's id. Node B holds the token and a valid CA-signed certificate, but the
+// certificate names `victim` while B's HELLO says `id_b`, so A refuses the link
+// before recording anything. Node C, whose HELLO and certificate agree, joins
+// the same node in the same window (the positive control).
+TEST(ClusterSecurity, PeerWhoseHelloIsNotItsCertificateIsRefused) {
+    const std::string token = zetta::cluster::generate_join_token();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
+    const std::string id_c = zetta::util::new_uuid();
+    const std::string victim = zetta::util::new_uuid();
+
+    ClusterConfig config_a;
+    config_a.listen_host = "127.0.0.1";
+    config_a.listen_port = 42450;
+    config_a.security = must_derive(token, id_a);
+    Cluster node_a(id_a, config_a);
+    node_a.start();
+
+    ClusterConfig config_b;
+    config_b.listen_host = "127.0.0.1";
+    config_b.listen_port = 42451;
+    config_b.seeds = {"127.0.0.1:42450"};
+    config_b.security = must_derive(token, victim);  // certificate names `victim`
+    Cluster node_b(id_b, config_b);
+    node_b.start();
+
+    ClusterConfig config_c;
+    config_c.listen_host = "127.0.0.1";
+    config_c.listen_port = 42452;
+    config_c.seeds = {"127.0.0.1:42450"};
+    config_c.security = must_derive(token, id_c);
+    Cluster node_c(id_c, config_c);
+    node_c.start();
+
+    ASSERT_TRUE(wait_for_peers(node_a, 1));
+    ASSERT_TRUE(wait_for_peers(node_c, 1));
+    // Several reconnect cycles for B to keep trying.
+    sleep_ms(4000);
+
+    const auto has_peer = [](const Cluster& cluster, const std::string& id) {
+        const auto peers = cluster.peers();
+        return std::any_of(peers.begin(), peers.end(),
+                           [&](const auto& peer) { return peer.node_id == id; });
+    };
+    EXPECT_EQ(node_a.peer_count(), 1u);
+    EXPECT_TRUE(has_peer(node_a, id_c));
+    EXPECT_FALSE(has_peer(node_a, id_b));
+    EXPECT_FALSE(has_peer(node_a, victim));
+
+    node_c.stop();
     node_b.stop();
     node_a.stop();
 }

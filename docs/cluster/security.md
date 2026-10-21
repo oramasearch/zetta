@@ -35,7 +35,17 @@ characters. Everything else derives from it:
    plaintext dialer is dropped before it even reaches `HELLO`. Credentials that
    fail to load **fail closed** — the node runs no networking rather than
    falling back to plaintext.
-4. **One shared framed TLS stream, serialized I/O.** A link's read pump and
+4. **The `HELLO` node id is pinned to the certificate** (#669). After the
+   handshake, each side reads the certificate its peer presented
+   (`FramedStream::peer_certificate_der()`) and refuses the link unless the node
+   id in the peer's `HELLO` is that certificate's subject common name
+   (`hello_matches_peer_certificate` in `cluster.cpp`). The refusal happens
+   before the peer is registered, recorded or gossiped with, and prints one line
+   to stderr that echoes neither the stated id nor the certificate's name. Every
+   node's certificate already carries its node id as `CN` (step 2), so this
+   needs no wire or on-disk change and nodes from earlier versions connect
+   unchanged.
+5. **One shared framed TLS stream, serialized I/O.** A link's read pump and
    write pump share one `zetta::transport::FramedStream` over an OpenSSL stream,
    whose `SSL` object + scratch buffers cannot be driven concurrently
    (interleaved `SSL_read`/`SSL_write` corrupt the record stream). The reusable
@@ -198,7 +208,9 @@ previous one; its next start re-seals those entries under the current token. See
   connector secret persistence; no JSON or wire-format changes (#1413).
 - `tests/cluster/test_cluster_security.cpp` — token/derivation/persistence
   units + real-TCP mTLS convergence, wrong-token rejection, plaintext
-  rejection.
+  rejection, and the `HELLO`-to-certificate pin
+  (`CertificateCommonNameIsTheNodeId`,
+  `PeerWhoseHelloIsNotItsCertificateIsRefused`).
 
 ## Threat model + known limitations
 
@@ -207,19 +219,26 @@ traffic (TLS 1.3), uninvited joins (no token → no CA-signed cert → handshake
 fails), silent plaintext downgrade (fail-closed credential loading, no
 fallback path).
 
-**Open, by design of this slice** (follow-up: #669 enrollment/pinning/revocation):
+**Closed by #669 (pinning):** a peer's stated node id is bound to its
+certificate. A process holding one node's key and certificate, but not the
+join token, can no longer claim another node's id in its `HELLO`, and a link is
+never recorded under an id its certificate does not name. This is the check the
+two items below depend on.
 
-- **Member-vs-member node-id impersonation.** Corosio exposes no
-  peer-certificate accessor, so the `HELLO` node id cannot be checked against
-  the peer's certificate CN; and with the CA key derivable from the token,
-  any member can mint a certificate for any CN anyway. Fixing both means a
-  CSR-based enrollment (nodes keep private keys the CA never sees; an existing
-  member signs) + certificate pinning — the natural V2 on top of this wire
-  format, requiring an upstream peer-cert accessor (#669).
+**Still open:**
+
+- **Member-vs-member node-id impersonation by a token holder.** The CA key is
+  derivable from the join token, so any member (anyone holding the token) can
+  mint a certificate whose `CN` is another node's id, and pinning accepts it.
+  Closing this means CSR-based enrollment (#1319): a joining node generates its
+  key locally and an existing member signs it, so the CA key lives with members
+  rather than inside the token.
 - **No revocation.** Removing a node's trust today means rotating the token
   (re-key every node). Token rotation is manual (`--join-token` on each node);
   each node re-seals the saved connector credentials on its first start under
-  the new token.
+  the new token. A per-node revocation list checked at every handshake (#1320)
+  is only meaningful once the token no longer mints certificates (the item
+  above).
 **Closed by #670:** burst nodes now receive the join token too — the provisioner
 interface injects `ZETTA_CLUSTER_TOKEN` alongside `ZETTA_SEED_PEER`, so a provisioned
 node maps it with `ZETTA_SEED_PEER` to the CLI defaults, derives the cluster CA

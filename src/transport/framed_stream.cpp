@@ -144,6 +144,13 @@ bool FramedStream::secure() const {
     return impl_->tls != nullptr;
 }
 
+std::vector<unsigned char> FramedStream::peer_certificate_der() const {
+    if (!impl_->tls) {
+        return {};
+    }
+    return impl_->tls->peer_certificate_der();
+}
+
 void FramedStream::close() {
     impl_->socket.close();
 }

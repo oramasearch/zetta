@@ -21,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -474,6 +475,15 @@ struct Cluster::State {
         return members;
     }
 };
+
+// Defined outside the anonymous namespace: declared in cluster.hpp for tests.
+bool hello_matches_peer_certificate(std::string_view stated_node_id,
+                                    std::span<const unsigned char> peer_certificate_der) {
+    if (stated_node_id.empty()) return false;
+    const std::optional<std::string> common_name =
+        zetta::transport::certificate_common_name(peer_certificate_der);
+    return common_name && *common_name == stated_node_id;
+}
 
 namespace {
 
@@ -1122,6 +1132,24 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     }
     if (peer.node_id == my_node_id) {
         link->stream->close();  // we dialed ourselves
+        co_return;
+    }
+    // Pin the stated node id to the certificate mutual TLS just verified (#669):
+    // every node's certificate carries its node id as the common name, so a
+    // HELLO naming any other id is a peer claiming to be someone it is not.
+    // Refused before anything about the peer is recorded.
+    if (link->stream->secure() &&
+        !hello_matches_peer_certificate(peer.node_id,
+                                        link->stream->peer_certificate_der())) {
+        // Neither the stated id nor the certificate's name is echoed: both are
+        // the peer's text.
+        std::fprintf(stderr,
+            "zetta: refused a cluster peer (%s%s): its HELLO node id is not "
+            "the common name of its certificate\n",
+            initiate ? "dialed " : "accepted",
+            initiate ? dialed_endpoint.c_str() : "");
+        std::fflush(stderr);
+        link->stream->close();
         co_return;
     }
     link->stream->set_maximum_frame_bytes(
