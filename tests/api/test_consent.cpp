@@ -644,6 +644,109 @@ TEST_F(ConsentFixture, ALoopbackLakeServiceRunsUngatedAndARemoteOneIsNamed) {
     EXPECT_EQ(warehouse.error.code, "consent_required");
 }
 
+// --- A user's request, approved by a different user (#999) -----------------
+
+// A challenge requested by a token-resolved USER (the MCP / REST / web identity
+// under the default-deny gate) is decided by a different user holding
+// cloud:manage, and executes as the requester. Before #999 approval
+// re-authorized the requester as an access key, so every user's challenge
+// failed on approval with "unknown access key".
+TEST_F(ConsentFixture, AUserRequestIsApprovedByADifferentUserWithTheApproverRight) {
+    node.ensure_builtin_roles();
+    const auto user_with = [&](const std::string& name, const std::string& role) {
+        auto user = node.create_user(name);
+        auto found = node.find_role(role);
+        EXPECT_TRUE(user && found);
+        node.assign_role(user->id(), found->id());
+        return user->id();
+    };
+    const std::string requester = user_with("requester", "admin");
+    const std::string reader = user_with("viewer", "reader");
+    const std::string approver = user_with("approver", "admin");
+    const auto user_call = [&](const std::string& name, nlohmann::json input,
+                               const std::string& user) {
+        ApiContext context = context_for(user);
+        context.acting_is_user = true;
+        return registry.call(name, input, context);
+    };
+
+    auto refusal =
+        user_call("add_nodes", {{"target", "azure"}, {"count", 2}}, requester);
+    ASSERT_FALSE(refusal.ok);
+    ASSERT_EQ(refusal.error.code, "consent_required");
+    const std::string challenge_id = refusal.error.details.value("id", "");
+    // The refusal names a surface that can decide it.
+    EXPECT_NE(refusal.error.message.find("Governance"), std::string::npos)
+        << refusal.error.message;
+
+    // The requester can never approve its own request.
+    auto self = user_call("approve_consent", {{"challenge_id", challenge_id}},
+                          requester);
+    EXPECT_FALSE(self.ok);
+    EXPECT_EQ(self.error.code, "unauthorized");
+    // A user without the approver right (cloud:manage) cannot either.
+    auto unprivileged =
+        user_call("approve_consent", {{"challenge_id", challenge_id}}, reader);
+    EXPECT_FALSE(unprivileged.ok);
+    EXPECT_EQ(unprivileged.error.code, "unauthorized");
+    EXPECT_EQ(node.consent_ledger().find(challenge_id)->status,
+              ConsentStatus::Pending);
+    EXPECT_EQ(fake_azure.provisions, 0);
+
+    auto approval = user_call("approve_consent", {{"challenge_id", challenge_id}},
+                              approver);
+    ASSERT_TRUE(approval.ok) << approval.error.code << ": " << approval.error.message;
+    wait_for_background();
+    EXPECT_EQ(fake_azure.provisions, 1);
+    auto challenge = node.consent_ledger().find(challenge_id);
+    ASSERT_TRUE(challenge);
+    EXPECT_EQ(challenge->status, ConsentStatus::Executed) << challenge->detail;
+    EXPECT_EQ(challenge->decided_by, approver);
+
+    // The decision is audited under the approver.
+    bool decided_by_approver = false;
+    for (const auto& event : node.audit_events()) {
+        if (event->value().action == zetta::governance::AuditAction::ConsentDecided &&
+            event->value().actor == approver && event->value().allowed) {
+            decided_by_approver = true;
+        }
+    }
+    EXPECT_TRUE(decided_by_approver);
+}
+
+// The one-person headless path docs/api/consent.md documents: the SQL that
+// creates a second user holding the approver right, and that user deciding a
+// challenge the owner requested.
+TEST_F(ConsentFixture, TheDocumentedSecondApproverSqlProducesAWorkingApprover) {
+    node.ensure_builtin_roles();
+    auto owner = node.create_user("owner");
+    node.assign_role(owner->id(), node.find_role("admin")->id());
+    for (const char* statement :
+         {"CREATE USER approver", "CREATE ROLE consent_approver",
+          "GRANT mcp:call, cloud:manage TO ROLE consent_approver",
+          "GRANT ROLE consent_approver TO approver", "CREATE TOKEN FOR approver"}) {
+        auto result = call("sql", {{"statement", statement}});
+        ASSERT_TRUE(result.ok) << statement << ": " << result.error.message;
+    }
+    auto approver = node.find_user("approver");
+    ASSERT_TRUE(approver);
+
+    ApiContext requester = context_for(owner->id());
+    requester.acting_is_user = true;
+    auto refusal = registry.call("add_nodes", {{"target", "azure"}, {"count", 1}},
+                                 requester);
+    ASSERT_EQ(refusal.error.code, "consent_required");
+    const std::string challenge_id = refusal.error.details.value("id", "");
+
+    ApiContext deciding = context_for(approver->id());
+    deciding.acting_is_user = true;
+    auto approval = registry.call("approve_consent",
+                                  {{"challenge_id", challenge_id}}, deciding);
+    ASSERT_TRUE(approval.ok) << approval.error.code << ": " << approval.error.message;
+    wait_for_background();
+    EXPECT_EQ(fake_azure.provisions, 1);
+}
+
 // --- Consent enforcement is OFF by default (#995) -----------------------------
 
 // The gate points a refused caller at approval surfaces that a one-person node

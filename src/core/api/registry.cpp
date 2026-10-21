@@ -375,9 +375,9 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
             action = zetta::governance::ConsentAction{capability->description,
                                                       {}, {}};
         }
-        // Consent enforcement is OFF by default (#995, NodeConfig::enforce_consent):
-        // the surfaces the refusal points at cannot decide a challenge on a
-        // one-person node, so the gate blocks the action instead of gating it.
+        // Consent enforcement is OFF by default (#995, NodeConfig::enforce_consent);
+        // `--governance` (or ZETTA_GOVERNANCE=1) turns it on. Remote reads are
+        // guarded per database by safe mode instead (docs/api/safe-mode.md).
         // Ungated is not unrecorded — the bypass is its own audit row
         // (`consent_bypassed`) carrying the action summary the approver would
         // have read, and a span attribute, so a node running without the gate
@@ -394,7 +394,7 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         if (action) {
             auto challenge = context.node.consent_ledger().create(
                 name, effective_input, std::move(*action), context.acting_key,
-                principal_of(context.node, context.acting_key));
+                principal_of(context.node, context.acting_key), context.acting_is_user);
             span.set_attribute("consent_challenge", challenge->id);
             audit_consent(context.node,
                           zetta::governance::AuditAction::ConsentRequested,
@@ -403,22 +403,23 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                               challenge->action.summary);
             // Say where to go, not just what happened. A refusal that names a challenge id and
             // leaves the reader to find the surface that decides it is a dead end — the id is
-            // useless without the page. It named the web console's /governance page, which has
-            // no consent list (#995); the surfaces that can actually decide it are the headed
-            // app's Admin & audit panel and an approver key over the wire. And when there is no
-            // second principal at all, the honest answer is that the gate is optional.
+            // useless without the page. Every surface named here can decide it (#999): the web
+            // console's and the desktop app's Governance page both list pending challenges with
+            // Approve / Deny, and approve_consent decides one over the wire.
             ApiResult refusal = ApiResult::failure(
                 "consent_required",
                 "'" + name + "' touches a cloud provider and did NOT execute; consent challenge " +
                     challenge->id +
-                    " was issued and is waiting for a decision. It must be approved by a "
-                    "DIFFERENT principal than the one that requested it \u2014 an approver key "
-                    "calling approve_consent, or a human in the headed (desktop) app under "
-                    "Admin & audit \u2192 Consent requests, which is exempt from that rule. "
-                    "Approving from the session that made the request is refused by design, and "
-                    "approvals are per-action and never remembered. Read the pending challenges "
-                    "with list_consent_requests. This node was started with --governance; "
-                    "without it consent gating is off and this call would have executed.");
+                    " was issued and is waiting for a decision. Decide it under Governance "
+                    "\u2192 Consent requests: in the web console (/?view=governance&tab=consent) "
+                    "a DIFFERENT user than the requester holding cloud:manage approves or denies "
+                    "it; in the headed (desktop) app the person at the machine can approve it "
+                    "even on a one-person node. Over the wire, approve_consent from a key of a "
+                    "different principal decides it. Approving from the session that made the "
+                    "request is refused by design, and approvals are per-action and never "
+                    "remembered. Read the pending challenges with list_consent_requests. "
+                    "This node was started with --governance; without it consent gating "
+                    "is off and this call would have executed.");
             refusal.error.details = zetta::governance::to_json(*challenge);
             return finish(std::move(refusal));
         }
@@ -603,10 +604,26 @@ ApiResult Registry::decide_consent(const std::string& challenge_id,
                   "named action once");
 
     // Re-authorize the requester at execution time (its key may have been
-    // dropped or its capability expired since the challenge was issued).
+    // dropped or its capability expired since the challenge was issued). A
+    // token-resolved user is checked the way Registry::call checks it — the
+    // per-tool invoke right, then the capability's own right — since a user id
+    // is not an access key and the key path would refuse every user (#999).
     if (!challenge->requested_by.empty()) {
-        auto decision = context.node.authorize(challenge->requested_by,
-                                               entry->required_operation);
+        zetta::governance::AccessDecision decision{true, {}};
+        if (challenge->requested_is_user) {
+            const zetta::governance::Operation kInvokeRight{
+                zetta::governance::CapabilityDomain::Api, "query"};
+            if (!context.node.may_call_tool(challenge->requested_by,
+                                            /*acting_is_user=*/true, entry->name)) {
+                decision = {false, "no mcp:call grant for tool '" + entry->name + "'"};
+            } else if (!(entry->required_operation == kInvokeRight)) {
+                decision = context.node.authorize_user(challenge->requested_by,
+                                                       entry->required_operation);
+            }
+        } else {
+            decision = context.node.authorize(challenge->requested_by,
+                                              entry->required_operation);
+        }
         if (!decision) {
             ledger.record_outcome(challenge_id, /*ok=*/false, {},
                                   "requester no longer authorized: " +
@@ -624,6 +641,7 @@ ApiResult Registry::decide_consent(const std::string& challenge_id,
     // audit lands under the requester (both sides are now on the trail).
     ApiContext execution = context;
     execution.acting_key = challenge->requested_by;
+    execution.acting_is_user = challenge->requested_is_user;
     execution.consent_challenge_id = challenge->id;
     execution.consent_outcome_deferred = false;
     zetta::observability::ScopedSpan action_span(

@@ -493,6 +493,12 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;}
 .pill.ok{color:var(--ok-fg);background:var(--ok-bg);} .pill.warn{color:var(--warn-fg);background:var(--warn-bg);}
 .pill.err{color:var(--err-fg);background:var(--err-bg);}
+/* A pending consent challenge on Governance -> Consent requests (#999). */
+.consentcard{border:1px solid var(--rule-card);border-left:3px solid var(--warn-fg);border-radius:10px;padding:12px 14px;margin-bottom:12px;background:var(--surface);}
+.consenthd{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+.consentcard ul{margin:4px 0 8px;padding-left:18px;font-size:12px;}
+.consentact{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px;}
+.consentact input[type=text]{font:12px var(--font-sans);padding:5px 8px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--ink-primary);margin-right:6px;}
 .status{display:inline-flex;align-items:center;gap:6px;color:var(--ink-secondary);}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--dot-inactive);}
 .status.ok .dot{background:var(--dot-active);}

@@ -224,10 +224,11 @@ headless is a complete node
 | *(default)* | consent gating **off** — cloud-touching calls execute and audit as `consent_bypassed` |
 | `--governance` | the first call to a cloud-touching capability returns a one-time consent challenge a **different** principal must approve |
 
-Do not turn `--governance` on for his session. On a one-person node there is nobody to
-approve with, and the surfaces the refusal names are the ones
-[§4.2](#42--two-bugs-that-used-to-stop-41-dead--and-which-build-has-them) explains are
-missing.
+Do not turn `--governance` on for his session; nothing in it needs the gate. If it is on,
+a challenge is decided in the desktop app's **Governance** page (the person at the machine
+may approve) or in the web console by a second user holding `cloud:manage`
+([docs/api/consent.md](../api/consent.md#a-one-person-node)). Remote sources are guarded
+per database by **safe mode** instead ([docs/api/safe-mode.md](../api/safe-mode.md)).
 
 The node documents itself, and all three routes are public (no token needed to read them):
 `$ZETTA/cli.md` (every flag) · `$ZETTA/mcp.md` (how to connect an MCP client) ·
@@ -500,9 +501,10 @@ execute; consent challenge <id> was issued and is waiting for approval at /gover
 requested it … approving from the same session that made the request is refused by design.
 ```
 
-The web console's `/governance` page has no consent list, the desktop app's approval
-surface is on **Admin & audit** (not Governance), and a one-person laptop has no second
-principal — so the challenge could be issued and then decided by nobody.
+At the time the web console's `/governance` page had no consent list, the desktop app's
+approval surface was on **Admin & audit** (not Governance), and a one-person laptop had no
+second principal — so the challenge could be issued and then decided by nobody. Both
+surfaces were fixed in [#999](https://github.com/oramasearch/zetta/issues/999).
 
 **Underneath it, the call had never worked on Postgres at all.** Every connector config
 went through Snowflake's REST protocol regardless of `type`, so his `postgres` connection

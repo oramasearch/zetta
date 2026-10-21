@@ -2459,6 +2459,110 @@ struct ApiServer::Impl {
         return "<div class=\"toolbar\">" + buttons + "</div>" + dialogs;
     }
 
+    // The web console's consent approval surface (#999): every PENDING challenge
+    // as a card naming exactly what would be read and run, with Approve / Deny
+    // forms that POST /run as `approve_consent` / `deny_consent`. Nothing here
+    // decides anything itself: the form goes through Registry::call like MCP and
+    // REST, so the engine authorizes the signed-in user (the
+    // `orchestration:approve_consent` right, from `cloud:manage`), refuses an
+    // approval from the requester (decide_consent's different-principal rule)
+    // and audits the decision as `consent_decided`. The list is read through
+    // `list_consent_requests` under the same identity, so a viewer who may not
+    // read the ledger sees the engine's refusal, never the rows.
+    std::string render_consent_requests(ApiContext& context) {
+        std::string out;
+        if (!context.node.config().enforce_consent) {
+            out += "<div class=\"bannerrow warnb\"><span class=\"bico\">" +
+                   web_ui_icon("governance") +
+                   "</span><span class=\"bbody\"><b>Consent gating is off on this "
+                   "node</b><span>Cloud-touching calls run without approval and park "
+                   "nothing here; each one is still audited as consent_bypassed. "
+                   "Start the node with --governance (or ZETTA_GOVERNANCE=1) "
+                   "to require an approval.</span></span></div>";
+        }
+        const ApiResult listed = capability_registry.call(
+            "list_consent_requests", nlohmann::json::object(), context);
+        if (!listed.ok) {
+            return out + web_ui_panel("Pending approvals", "",
+                                      "<div class=\"err-box\">" +
+                                          web_ui_escape(listed.error.code) + ": " +
+                                          web_ui_escape(listed.error.message) + "</div>");
+        }
+        const auto text = [](const nlohmann::json& object, const char* key) {
+            const auto found = object.find(key);
+            return found != object.end() && found->is_string() ? found->get<std::string>()
+                                                                : std::string{};
+        };
+        const std::string return_to = "/?view=governance&amp;tab=consent";
+        std::string cards;
+        std::size_t pending = 0;
+        for (const auto& challenge :
+             listed.value.value("consent_requests", nlohmann::json::array())) {
+            if (!challenge.is_object() || text(challenge, "status") != "pending") continue;
+            ++pending;
+            const std::string id = text(challenge, "id");
+            const std::string requested_by = text(challenge, "requested_by");
+            const nlohmann::json action = challenge.value("action", nlohmann::json::object());
+            std::string card = "<div class=\"consentcard\" data-challenge=\"" +
+                               web_ui_escape(id) + "\"><div class=\"consenthd\">"
+                               "<span class=\"pill warn\">Approval required</span>"
+                               "<span class=\"mono\">" +
+                               web_ui_escape(text(challenge, "capability")) +
+                               "</span></div><p>" + web_ui_escape(text(action, "summary")) +
+                               "</p><div class=\"kvs\"><div class=\"kv\"><span>Requested by"
+                               "</span><b class=\"mono\">" + web_ui_escape(requested_by) +
+                               "</b></div><div class=\"kv\"><span>Expires</span><b "
+                               "class=\"mono\">" + web_ui_escape(text(challenge, "expires_at")) +
+                               "</b></div><div class=\"kv\"><span>Challenge</span><b "
+                               "class=\"mono\">" + web_ui_escape(id) + "</b></div></div>";
+            const auto list = [&](const char* key, const char* label) {
+                const auto found = action.find(key);
+                if (found == action.end() || !found->is_array() || found->empty()) return;
+                card += "<div class=\"eyebrow\">" + std::string(label) + "</div><ul class=\"mono\">";
+                for (const auto& item : *found)
+                    if (item.is_string())
+                        card += "<li>" + web_ui_escape(item.get<std::string>()) + "</li>";
+                card += "</ul>";
+            };
+            list("reads", "May read");
+            list("runs", "Would run");
+            const std::string hidden =
+                "<input type=\"hidden\" name=\"challenge_id\" value=\"" + web_ui_escape(id) +
+                "\"><input type=\"hidden\" name=\"_return\" value=\"" + return_to + "\">";
+            card += "<div class=\"consentact\">";
+            // The requester can never approve its own action, so it is not
+            // offered one; the engine refuses it anyway if posted by hand.
+            if (requested_by == context.acting_key) {
+                card += "<span class=\"q\">You requested this; a different approver must "
+                        "approve it. You can withdraw it.</span>";
+            } else {
+                card += "<form method=\"post\" action=\"/run\" class=\"inline\">"
+                        "<input type=\"hidden\" name=\"cap\" value=\"approve_consent\">" +
+                        hidden +
+                        "<button class=\"btn btn-primary small\">Approve and run once"
+                        "</button></form>";
+            }
+            card += "<form method=\"post\" action=\"/run\" class=\"inline\">"
+                    "<input type=\"hidden\" name=\"cap\" value=\"deny_consent\">" +
+                    hidden +
+                    "<input type=\"text\" name=\"reason\" placeholder=\"Reason (optional)\" "
+                    "aria-label=\"Reason\"><button class=\"btn small\">" +
+                    std::string(requested_by == context.acting_key ? "Withdraw" : "Deny") +
+                    "</button></form></div></div>";
+            cards += card;
+        }
+        if (pending == 0) {
+            cards = "<div class=\"empty\">No pending consent requests. A cloud-touching call "
+                    "parks a challenge here for a different approver to decide; approvals "
+                    "are per-action and never remembered.</div>";
+        }
+        return out + web_ui_panel("Pending approvals",
+                                  std::to_string(pending) +
+                                      " waiting \xC2\xB7 approval needs cloud:manage and a "
+                                      "different user than the requester",
+                                  cards);
+    }
+
     // A read table with server-side pagination — run the query, slice a 50-row page, add prev/next
     // links. Each table on a view uses a distinct query key so several can page independently.
     std::string render_paged_table(ApiContext& context, const std::string& statement,
@@ -3634,7 +3738,9 @@ struct ApiServer::Impl {
             out += "<div class=\"segtabs\">" + gtab("users", "Users and roles") +
                    gtab("tokens", "Tokens") + gtab("consent", "Consent requests") +
                    gtab("audit", "Audit") + "</div>";
-            out += render_action_bar(context, view, {"approve_consent", "deny_consent", "submit_feedback"});
+            // Approve / Deny live on each pending challenge (the Consent tab), not
+            // as free-standing dialogs that ask for a challenge id (#999).
+            out += render_action_bar(context, view, {"submit_feedback"});
             if (tab == "users") {
                 out += web_ui_panel(
                     "Users",
@@ -3658,8 +3764,9 @@ struct ApiServer::Impl {
                     "as hashes; this view carries no secret material",
                     ptable("SELECT * FROM system.tokens", "tok"));
             } else if (tab == "consent") {
-                out += web_ui_panel("Consent requests",
-                                    "pending cloud-action approvals (deny-by-default)",
+                out += render_consent_requests(context);
+                out += web_ui_panel("Consent ledger",
+                                    "every challenge on this node: pending, decided, executed",
                                     ptable("SELECT * FROM system.consent_requests", "cons"));
             } else {
                 out += web_ui_panel(

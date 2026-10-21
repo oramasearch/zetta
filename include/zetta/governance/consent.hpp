@@ -66,6 +66,9 @@ struct ConsentChallenge {
     ConsentAction action;             // exactly what would be read/run
     std::string requested_by;         // acting AccessKey id; empty = the local session
     std::string requested_principal;  // the requesting key's principal id; empty = local
+    // `requested_by` is a token-resolved USER id, not an AccessKey id (#999):
+    // approval re-authorizes and executes as that user, through the user path.
+    bool requested_is_user = false;
     std::string created_at;           // ISO-8601 UTC
     std::string expires_at;           // ISO-8601 UTC; pending past this = expired
     ConsentStatus status = ConsentStatus::Pending;
@@ -118,7 +121,8 @@ public:
                                                    nlohmann::json input,
                                                    ConsentAction action,
                                                    std::string requested_by,
-                                                   std::string requested_principal);
+                                                   std::string requested_principal,
+                                                   bool requested_is_user = false);
 
     std::shared_ptr<const ConsentChallenge> find(const std::string& id) const;
 
