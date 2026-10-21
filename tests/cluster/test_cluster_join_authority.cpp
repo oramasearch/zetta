@@ -207,11 +207,136 @@ TEST(ClusterJoinAuthority, AMemberCannotGrantItselfAuthority) {
         EXPECT_EQ(node->node->authenticate_token(issued.secret), nullptr);
         EXPECT_FALSE(node->node->find_user("mallory"));
         auto role = node->node->find_role_by_id(reader->id());
-        // The widened role is not honored: it is gone, never widened.
+        // The widened role is not honored: the node keeps the sealed reader role
+        // it holds (#1341), never the widened one.
         if (role) {
             EXPECT_FALSE(role->capabilities().permits(
                 Operation{CapabilityDomain::Api, "cluster_admin"}, "2026-10-21T00:00:00Z"));
         }
         EXPECT_NE(node->node->authenticate_token(kClusterOwner), nullptr);
     }
+}
+
+// #1341, replay: a member that kept an earlier sealed value of a record writes
+// it back after the owner changed it. The old value still carries a valid seal,
+// so before the seal bound a version, it opened and undid the change. Two
+// changes are replayed: a token before its revocation, and a role assignment
+// before it was removed. Every node keeps the newer value, and the document is
+// put back to it, so a node that joins later sees the revocation too.
+TEST(ClusterJoinAuthority, AMemberCannotUndoARevocationByReplayingAnOldSealedRecord) {
+    Member founder(root_of(kClusterOwner));
+    Member member(IdentityAuthority::verify_only(root_of(kClusterOwner).public_key_hex()));
+    found_and_join(founder, member, 43846);
+
+    auto alice = founder.node->create_user("alice");
+    ASSERT_TRUE(alice);
+    const auto issued =
+        founder.node->create_token(alice->id(), zetta::governance::TokenType::Access);
+    ASSERT_TRUE(issued.token);
+    auto admin = founder.node->find_role("admin");
+    ASSERT_TRUE(admin);
+    auto assignment = founder.node->assign_role(alice->id(), admin->id());
+    ASSERT_TRUE(assignment);
+    const std::string token_key = "token:" + issued.token->id();
+    const std::string assignment_key = "user_role:" + assignment->id();
+    ASSERT_TRUE(converge(founder, member, [&] {
+        return member.node->authenticate_token(issued.secret) != nullptr &&
+               member.node->user_roles().size() == founder.node->user_roles().size();
+    }));
+
+    // The member keeps the sealed values it holds now...
+    nlohmann::json snapshot = member.replication.snapshot();
+    const nlohmann::json old_token = snapshot[token_key];
+    const nlohmann::json old_assignment = snapshot[assignment_key];
+
+    // ...the owner revokes the token and removes the assignment...
+    ASSERT_TRUE(founder.node->revoke_token(issued.token->id()));
+    ASSERT_TRUE(founder.node->unassign_role(alice->id(), admin->id()));
+    const auto has_assignment = [&](Member& m) {
+        for (const auto& held : m.node->user_roles()) {
+            if (held->id() == assignment->id()) return true;
+        }
+        return false;
+    };
+    ASSERT_TRUE(converge(founder, member, [&] {
+        return member.node->authenticate_token(issued.secret) == nullptr &&
+               !has_assignment(member);
+    })) << "the revocation never reached the member";
+
+    // ...and the member writes the old sealed values back.
+    member.replication.set(token_key, old_token);
+    member.replication.set(assignment_key, old_assignment);
+    // Give the replay time to reach the founder and every node to reconcile it.
+    converge(founder, member, [] { return false; }, 2000);
+    ASSERT_TRUE(converge(founder, member, [&] { return in_sync(founder, member); }));
+
+    for (Member* m : {&founder, &member}) {
+        EXPECT_EQ(m->node->authenticate_token(issued.secret), nullptr)
+            << "a replayed sealed token undid its revocation";
+        EXPECT_FALSE(has_assignment(*m))
+            << "a replayed sealed assignment undid its removal";
+        EXPECT_NE(m->node->authenticate_token(kClusterOwner), nullptr);
+    }
+    // The document holds the revoked token again, not the replayed one.
+    nlohmann::json now = member.replication.snapshot();
+    ASSERT_TRUE(now.contains(token_key));
+    EXPECT_EQ(now[token_key].value("revoked", false), true);
+    EXPECT_NE(now[assignment_key], old_assignment);
+}
+
+// #1341, removals: a removal is a sealed tombstone issued by the root. A member
+// that deletes identity records straight from the document (the CRDT's own
+// unsealed tombstone) or writes a tombstone-shaped value of its own deletes
+// nothing anyone honors.
+TEST(ClusterJoinAuthority, AMemberCannotDeleteIdentityWithAnUnsealedRemoval) {
+    Member founder(root_of(kClusterOwner));
+    Member member(IdentityAuthority::verify_only(root_of(kClusterOwner).public_key_hex()));
+    found_and_join(founder, member, 43848);
+
+    auto alice = founder.node->create_user("alice");
+    ASSERT_TRUE(alice);
+    const auto issued =
+        founder.node->create_token(alice->id(), zetta::governance::TokenType::Access);
+    ASSERT_TRUE(issued.token);
+    auto reader = founder.node->find_role("reader");
+    ASSERT_TRUE(reader);
+    ASSERT_TRUE(founder.node->assign_role(alice->id(), reader->id()));
+    ASSERT_TRUE(converge(founder, member, [&] {
+        return member.node->authenticate_token(issued.secret) != nullptr;
+    }));
+    const std::size_t assignments = founder.node->user_roles().size();
+
+    // Through the Node: refused, as every identity write is on a verify-only node.
+    EXPECT_FALSE(member.node->revoke_token(issued.token->id()));
+    EXPECT_FALSE(member.node->drop_user("alice"));
+
+    // Straight into the document.
+    member.replication.remove("token:" + issued.token->id());
+    member.replication.remove("user:" + alice->id());
+    member.replication.set("role:" + reader->id(),
+                           nlohmann::json{{"_tombstone", true}, {"_v", 1u << 30}});
+    for (const auto& held : member.node->user_roles()) {
+        member.replication.remove("user_role:" + held->id());
+    }
+    converge(founder, member, [] { return false; }, 2000);
+    ASSERT_TRUE(converge(founder, member, [&] { return in_sync(founder, member); }));
+
+    for (Member* m : {&founder, &member}) {
+        EXPECT_NE(m->node->authenticate_token(issued.secret), nullptr)
+            << "an unsealed removal deleted a token";
+        EXPECT_TRUE(m->node->find_user("alice")) << "an unsealed removal deleted a user";
+        EXPECT_TRUE(m->node->find_role_by_id(reader->id()))
+            << "a forged tombstone deleted a role";
+        EXPECT_EQ(m->node->user_roles().size(), assignments)
+            << "an unsealed removal deleted a role assignment";
+        EXPECT_NE(m->node->authenticate_token(kClusterOwner), nullptr);
+    }
+
+    // A removal the owner makes is sealed, and it reaches every node.
+    ASSERT_TRUE(founder.node->revoke_token(issued.token->id()));
+    ASSERT_TRUE(founder.node->drop_user("alice"));
+    ASSERT_TRUE(converge(founder, member, [&] {
+        return !member.node->find_user("alice") &&
+               member.node->authenticate_token(issued.secret) == nullptr;
+    })) << "a sealed removal did not reach the member";
 }

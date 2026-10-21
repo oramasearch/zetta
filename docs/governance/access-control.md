@@ -402,7 +402,9 @@ issued programmatically via `Node::create_token`.
 > replicates in full; the plaintext never enters the document. Every one of these
 > records is **sealed** by the cluster's identity root when written, and a node
 > materializes a replicated record only when its seal verifies
-> ([identity-seal.md](identity-seal.md), #764).
+> ([identity-seal.md](identity-seal.md), #764). The seal covers a per-key version
+> and a removal is a sealed tombstone, so a revoked token or a removed
+> assignment cannot be replayed back, and only the root removes a record (#1341).
 
 ### Connection-owned app credentials (#1280)
 

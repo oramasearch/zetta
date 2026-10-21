@@ -23,13 +23,19 @@
 // verify pins the root's public key (--identity-root). The pinned public key is
 // stored in <data_dir>/security/identity-root.json and wins over any later flag.
 //
+// Versions and removals (#1341). A seal also covers a per-key version (`_v`)
+// and the root's public key, and a removal is itself a sealed record (a
+// tombstone, `_tombstone: true`). A node keeps the newest sealed record it has
+// accepted for every identity key and refuses an older one, so a member that
+// kept an earlier sealed value (a token before its revocation) cannot write it
+// back, and a member cannot delete a record without the root.
+//
 // What it does not cover, by design: a node that holds the owner token IS the
 // owner, so a compromised node that was handed that token can issue identity.
-// Removals are tombstones and carry no seal, so a member can still delete an
-// identity record (denial of service, never a grant). A member can replay an
-// earlier sealed value of the same key. Both are recorded in the doc page.
+// Recorded in the doc page.
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -42,8 +48,32 @@ namespace zetta::governance {
 // key and every other field of the value.
 inline constexpr std::string_view kIdentitySealField = "_seal";
 
-// The seal's version prefix ("ed25519-v1:<128 hex>").
-inline constexpr std::string_view kIdentitySealPrefix = "ed25519-v1:";
+// The seal's format prefix ("ed25519-v2:<128 hex>"). v2 signs the root's public
+// key and the record's version along with the key and value (#1341).
+inline constexpr std::string_view kIdentitySealPrefix = "ed25519-v2:";
+
+// The field a sealed record carries its version in: a positive integer, larger
+// for every later record of the same key. The seal covers it.
+inline constexpr std::string_view kIdentityVersionField = "_v";
+
+// The field that marks a sealed removal. A sealed tombstone is
+// {"_tombstone": true, "_v": N, "_seal": ...} and carries nothing else.
+inline constexpr std::string_view kIdentityTombstoneField = "_tombstone";
+
+// A sealed identity record that opened: its fields (without `_seal`, `_v` and
+// `_tombstone`), its version, whether it is a removal, and its seal text (which
+// orders two records of the same version, so every node picks the same one).
+struct OpenedIdentityRecord {
+    nlohmann::json value;
+    std::uint64_t version = 0;
+    bool removed = false;
+    std::string seal;
+};
+
+// Whether `a` replaces `b` (two records of one key): a higher version, or the
+// same version and a larger seal. A total order, so every node agrees.
+bool identity_record_supersedes(const OpenedIdentityRecord& a,
+                                const OpenedIdentityRecord& b);
 
 // True when `key` is an identity record's catalogue key (user:, role:,
 // token:, user_role:, policy:, principal:, key:) — the records a seal guards.
@@ -73,15 +103,21 @@ public:
     // generated root is ever written to disk.
     std::string seed_hex() const;
 
-    // `value` with its seal set (an existing seal is replaced). Empty optional
-    // when this root cannot seal or `value` is not a JSON object.
-    std::optional<nlohmann::json> seal(std::string_view key,
-                                       nlohmann::json value) const;
-    // `value` without its seal, when the seal is this root's signature over
-    // `key` and the rest of `value`. Empty optional otherwise: no seal, a
-    // malformed seal, another root's seal, a changed field, or another key.
-    std::optional<nlohmann::json> open(std::string_view key,
-                                       const nlohmann::json& value) const;
+    // `value` with its version and seal set (an existing seal is replaced).
+    // Empty optional when this root cannot seal, `value` is not a JSON object,
+    // `value` carries a tombstone marker, or `version` is zero.
+    std::optional<nlohmann::json> seal(std::string_view key, nlohmann::json value,
+                                       std::uint64_t version) const;
+    // A sealed removal of `key` at `version`. Empty optional when this root
+    // cannot seal or `version` is zero.
+    std::optional<nlohmann::json> seal_removal(std::string_view key,
+                                               std::uint64_t version) const;
+    // The record, when its seal is this root's signature over the root, `key`,
+    // and the rest of `value`, and it carries a positive version. Empty optional
+    // otherwise: no seal, a malformed seal, another root's seal, a changed
+    // field or version, another key, no version, or a malformed tombstone.
+    std::optional<OpenedIdentityRecord> open(std::string_view key,
+                                             const nlohmann::json& value) const;
 
     // A UUID-shaped id fixed by this root and `purpose` ("owner-user",
     // "builtin-role:admin", ...). Every node that bootstraps the same root
@@ -97,12 +133,25 @@ private:
     IdentityAuthority() = default;
     static std::optional<IdentityAuthority> from_seed(
         const std::array<unsigned char, 32>& seed);
+    // `value` (no seal yet) with this root's seal added.
+    std::optional<nlohmann::json> sign(std::string_view key,
+                                       nlohmann::json value) const;
 
     bool has_seed_ = false;
     std::array<unsigned char, 32> seed_{};
     std::array<unsigned char, 32> public_key_{};
     std::string public_key_hex_;
 };
+
+// The version the next sealed record of a key takes: larger than `current`'s
+// (the record the document holds now, when it opens under `root`) and than
+// `floor` (the newest the caller holds), and at least the wall clock in
+// milliseconds, so writers on different nodes that never saw each other's
+// records still order by time.
+std::uint64_t next_identity_version(const IdentityAuthority& root,
+                                    std::string_view key,
+                                    const nlohmann::json* current,
+                                    std::uint64_t floor = 0);
 
 // What load_or_create_identity_root decided, for the startup log.
 struct IdentityRootSetup {

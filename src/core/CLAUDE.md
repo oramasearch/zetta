@@ -30,7 +30,9 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   through the tombstone — `migrate_to_replication`, which would otherwise
   re-capture a dropped entity from a stale disk projection — asks `knows_key()`.
   `row:` keeps its own `{tbl, deleted:true}` shape, because reconcile has to see
-  that entry to route the delete to a table.
+  that entry to route the delete to a table. Identity keys under an identity
+  root are removed with a **sealed** tombstone instead (`Node::remove_identity`,
+  #1341): the CRDT's tombstone carries no seal, so any member could write one.
 - **Read the replicated catalogue in place, never by copying it** (#1227).
   `ReplicationManager::snapshot()` deep-copies every key under the replication
   mutex; a read path takes `shared_snapshot()` and does a direct `find(<key>)`

@@ -45,5 +45,7 @@ TLS with real `Node`s and identity roots, in `main.cpp`'s order (join, sync,
 then seed). A joiner with its own `--admin-token` mints no owner the cluster
 honors, a joiner with the cluster's token adds no second owner, and a member
 that does not hold the root cannot issue identity, through its node or by
-writing the replicated catalogue (#763, #764,
-[identity-seal.md](../../docs/governance/identity-seal.md)).
+writing the replicated catalogue (#763, #764). A member that replays an old
+sealed token or role assignment after the owner revoked or removed it changes
+nothing, and a member's unsealed removals delete nothing (#1341). See
+[identity-seal.md](../../docs/governance/identity-seal.md).

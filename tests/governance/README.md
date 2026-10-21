@@ -27,7 +27,9 @@ See [the proof runbook](../../docs/testing/audit-replication.md).
 `test_identity_seal.cpp` covers the identity root (#763, #764): seal and open,
 the pin in `<data_dir>/security/identity-root.json`, sealed writes, refused
 writes on a verify-only node, unsealed records not materialized, and the
-one-time sealing on upgrade. See
+one-time sealing on upgrade. For #1341: versions and sealed tombstones, the
+order between two records, an older sealed record refused on a node, and the
+held records surviving a restart (`identity-held.json`). See
 [identity-seal.md](../../docs/governance/identity-seal.md).
 
 `test_authz_regressions.cpp` is the authorization regression harness (#780): one

@@ -1,4 +1,4 @@
-# The identity root: sealed identity records (#763, #764)
+# The identity root: sealed identity records (#763, #764, #1341)
 
 **Membership is not authority.** The join token ([../cluster/security.md](../cluster/security.md))
 lets a node into the cluster's replicated document. It does not let the node decide who the users
@@ -24,10 +24,19 @@ Every record under the seven identity prefixes of the catalogue:
 | `principal:<id>` | a legacy principal |
 | `key:<id>` | a legacy access key |
 
-A sealed value carries one extra field, `_seal`: `"ed25519-v1:<128 hex>"`, the root's Ed25519
-signature over `zetta-identity-seal-v1`, the key, and the value without `_seal` (nlohmann's ordered
-dump, so every node builds the same bytes). The seal binds the value to its key: a sealed record
-copied to another key does not open.
+A sealed value carries two extra fields:
+
+- `_v`, its **version**: a positive integer, larger for every later record of the same key (#1341);
+- `_seal`: `"ed25519-v2:<128 hex>"`, the root's Ed25519 signature over `zetta-identity-seal-v2`, the
+  root's public key, the key, and the value without `_seal`, `_v` included (nlohmann's ordered dump,
+  so every node builds the same bytes).
+
+The seal binds the value to its key, its version and its root: a sealed record copied to another key,
+or given another version, does not open. A record with no `_v` does not open either.
+
+A **removal** is a sealed record of its own, a tombstone: `{"_tombstone": true, "_v": N, "_seal":
+"..."}` and nothing else. The CRDT's own removal marker (`{"_removed": true}`) carries no seal, so a
+node never treats it as a removal of an identity record.
 
 ## How a node uses it
 
@@ -37,11 +46,46 @@ copied to another key does not open.
   `create_user`, `create_role`, `grant_permissions`, `create_token`, `assign_role`,
   `create_policy`, `create_principal`, their drops and revokes, `ensure_builtin_roles` and
   `bootstrap_owner` all return their failure value and write nothing.
+- **Removing.** Every identity removal in `Node` goes through `Node::remove_identity`, which writes
+  a sealed tombstone (`Principal::drop_key` does the same for access keys). Dropping a user, a role
+  or a principal writes one tombstone per record it removes (its tokens, its assignments, its keys).
 - **Reading.** The identity reconcilers never read the raw document. `Node::trusted_identity` hands
-  them only the records whose seal opens, with `_seal` removed. A record with no seal, another
-  root's seal, a changed field or a moved key is **absent**: it is never materialized, and a copy
-  already on disk is dropped. Tampering with a sealed record therefore removes it; it never widens
-  it.
+  them, for each identity key, the **newest sealed record this node has accepted**, with `_seal` and
+  `_v` removed; a tombstone is handed over as absence. See [Versions](#versions-and-removals-1341).
+  A record with no seal, another root's seal, a changed field or a moved key is never materialized.
+
+## Versions and removals (#1341)
+
+The CRDT document converges on the last write to each key, whoever made it. A seal alone says the
+root issued a value once, not that it is the current one, so before versions a member that kept an
+earlier sealed value (a token before its revocation, an assignment before its removal) could write it
+back and every node honored it again; and a member could remove any identity record with the CRDT's
+unsealed tombstone. Versions close both.
+
+- **Choosing a version.** A write or a removal takes `next_identity_version`: larger than the version
+  of the record the document holds now, larger than the one the node holds, and at least the wall
+  clock in milliseconds, so issuers on different nodes that never saw each other's records still
+  order by time. Two records of one key and one version (two issuers at the same millisecond) are
+  ordered by their seal text, so every node picks the same one (`identity_record_supersedes`).
+- **Holding the newest.** Each node keeps, per identity key, the newest sealed record it has accepted
+  (`Node::identity_held_`). When the document's record opens and is not older, it becomes the held
+  one. When the document holds an older sealed record, one that does not open, or nothing (the CRDT's
+  tombstone), the node keeps its held record and **writes it back** to the document, so a node that
+  joins later receives the newer record and not the replay. Only an identical sealed value is ever
+  written back, so this settles in one round and never loops.
+- **Across restarts.** The held records are kept in `<data_dir>/security/identity-held.json`
+  (`{"version": 1, "records": {"<key>": <sealed value>}}`), written atomically whenever they change
+  and on stop, and loaded in `Node::start` before the first reconcile. Each record in it is verified
+  again on load, so the file is only as trusted as its seals; one that does not open is ignored. A
+  file that does not parse refuses the start, rather than forgetting what the node held.
+
+So a member that replays an old sealed value changes nothing anyone honors, and a member that deletes
+an identity record from the document, or writes a tombstone of its own, deletes nothing. Tampering
+with a sealed record neither widens it nor removes it: the node keeps the record it holds.
+
+A node that has **never** seen the newer record and is told only the older one (it was offline, and
+every node that held the newer one is gone) accepts the older one: it holds nothing to compare
+against. That needs every node that saw the change to be lost at once.
 
 ## Where the root comes from
 
@@ -101,12 +145,8 @@ nodes drop every sealed token and answer 401. Stop the old nodes, upgrade every 
 - **A node handed the owner token is the owner.** It holds the root's private key and can issue
   anything. Under the operator every node has the token, so a compromised node can still issue
   identity. Narrowing that needs identity issued by a key no node holds, which is not built.
-- **Removals carry no seal.** A removal is a CRDT tombstone, so a member can still delete an identity
-  record: denial of service, never a grant. Deleting a row policy can widen what a user reads only
-  while an empty policy admits every row (#765).
-- **Replay.** A member that kept an earlier sealed value of a key (a token before its revocation)
-  can write it again, and it opens. Revocation that survives replay needs a sealed version or
-  tombstone that the reconciler orders; tracked as a follow-up.
+- **A node that never saw a change** accepts an older sealed record when no node that holds the newer
+  one is left to write it back (see [Versions](#versions-and-removals-1341)).
 - **Rotating the owner token does not move the root.** The pin wins, so after a rotation the nodes
   become verify-only (existing tokens keep working; no new identity can be issued) until the root is
   moved deliberately. Root rotation is a follow-up.
@@ -121,10 +161,14 @@ nodes drop every sealed token and answer 401. Stop the old nodes, upgrade every 
 
 - `include/zetta/governance/identity_seal.hpp`, `src/core/governance/identity_seal.cpp` — the root,
   seal and open, derived ids, the pin file and its schema.
-- `src/core/node.cpp` — `replicate_identity`, `trusted_identity`, `identity_writable`,
+- `src/core/node.cpp` — `replicate_identity`, `remove_identity`, `trusted_identity`,
+  `hold_identity`, `load_identity_held`/`persist_identity_held`, `identity_writable`,
   `seal_preexisting_identity`, `seeded_identity_id`, `bootstrap_owner`.
-- `src/core/governance/principal.cpp` — sealed access keys.
+- `src/core/governance/principal.cpp` — sealed access keys and their sealed removal.
 - `src/main.cpp` — root setup, seeding after the join, the join command with `--identity-root`.
-- Tests: `tests/governance/test_identity_seal.cpp` (seal, pin, node behaviour, upgrade),
-  `tests/cluster/test_cluster_join_authority.cpp` (two nodes over mutual TLS: #848 steps 4 and 5),
+- Tests: `tests/governance/test_identity_seal.cpp` (seal, versions, tombstones, pin, node
+  behaviour, the held records across a restart, upgrade),
+  `tests/cluster/test_cluster_join_authority.cpp` (two nodes over mutual TLS: #848 steps 4 and 5, and
+  #1341: a member replaying a revoked token and a removed assignment, and deleting identity with
+  unsealed removals),
   `tests/governance/test_authz_regressions.cpp` (`AuthzCluster.Finding763_*`, `Finding764_*`).
