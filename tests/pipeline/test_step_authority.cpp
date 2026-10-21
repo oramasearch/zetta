@@ -118,13 +118,13 @@ TEST(StepAuthority, EveryStepKindNamesAnExistingRight) {
     EXPECT_EQ(zetta::pipeline::step_operation(StepKind::Connect),
               (Operation{CapabilityDomain::Data, "read"}));
     EXPECT_EQ(zetta::pipeline::step_operation(StepKind::Clean),
-              (Operation{CapabilityDomain::Data, "write"}));
+              (Operation{CapabilityDomain::Orchestration, "create_dataset_from_query"}));
     EXPECT_EQ(zetta::pipeline::step_operation(StepKind::Model),
               (Operation{CapabilityDomain::Orchestration, "train_model"}));
     EXPECT_EQ(zetta::pipeline::step_operation(StepKind::Index),
               (Operation{CapabilityDomain::Orchestration, "create_index"}));
     EXPECT_EQ(zetta::pipeline::step_operation(StepKind::Serve),
-              (Operation{CapabilityDomain::Orchestration, "expose_model"}));
+              (Operation{CapabilityDomain::Data, "predict"}));
     EXPECT_EQ(zetta::pipeline::step_operation(StepKind::Act),
               (Operation{CapabilityDomain::Orchestration, "deliver_action_task"}));
 }
@@ -246,7 +246,7 @@ TEST_F(StepAuthorityNode, AuthorizeGraphStepsStopsAtTheFirstDenial) {
     zetta::pipeline::GraphAuthorization authorized =
         zetta::pipeline::authorize_graph_steps(node, {reader, true}, graph);
     EXPECT_FALSE(authorized);
-    // The reader holds data:read but not data:write: the clean step is the first refused.
+    // The reader holds data:read but no pipelines:manage: the clean step is the first refused.
     EXPECT_EQ(authorized.step_id, graph.nodes_of_kind(StepKind::Clean).front()->id);
     EXPECT_EQ(step_events(node).size(), 2u);  // connect granted, clean denied, no more
 
@@ -326,8 +326,8 @@ TEST_F(StepAuthorityNode, ApiRunExecutesStepsAsTheCaller) {
     EXPECT_FALSE(events.back()->allowed());
     EXPECT_EQ(events.back()->actor(), runner);
 
-    // Granting the data rights lets the same caller run the same pipeline.
-    ASSERT_TRUE(node.grant_permissions("runner", {"sql:read", "sql:write"}));
+    // Granting the read right lets the same caller run the same pipeline.
+    ASSERT_TRUE(node.grant_permissions("runner", {"sql:read"}));
     const auto granted =
         registry.call("run", {{"project", "p843"}, {"graph", "g843"}}, context);
     ASSERT_TRUE(granted.ok) << granted.error.message;

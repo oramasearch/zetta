@@ -33,10 +33,10 @@ The rights are the existing permission vocabulary's, so no new permission atom i
 | Step kind | Right | Granted by |
 |---|---|---|
 | connect | `data:read`, or `sql:read` on the table its `source` + `table` attributes name | `sql:read` (flat, or `ON TABLE`) |
-| clean | `data:write` (it materializes a dataset) | `sql:write` |
+| clean | `orchestration:create_dataset_from_query` (it derives a dataset from data the run already read, and reaches no new source) | `pipelines:manage` |
 | model | `orchestration:train_model` | `pipelines:manage` |
 | index | `orchestration:create_index` | `pipelines:manage` |
-| serve | `orchestration:expose_model` | `serving:manage` |
+| serve | `data:predict` (it answers from a model; exposing an endpoint stays the separate `expose_model` call) | `serving:read` |
 | act | `orchestration:deliver_action_task` | `pipelines:manage` |
 
 The built-in `admin` role holds every right, so an admin's runs are unchanged. A custom role

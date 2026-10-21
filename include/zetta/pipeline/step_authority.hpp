@@ -45,10 +45,12 @@ struct RunPrincipal {
 // may run a pipeline end to end needs no new atom:
 //
 //   connect -> data/read                     (sql:read)
-//   clean   -> data/write                    (sql:write: it materializes a dataset)
+//   clean   -> orchestration/create_dataset_from_query (pipelines:manage: it derives
+//              a dataset from data the run already read; it reaches no new source)
 //   model   -> orchestration/train_model     (pipelines:manage)
 //   index   -> orchestration/create_index    (pipelines:manage)
-//   serve   -> orchestration/expose_model    (serving:manage)
+//   serve   -> data/predict                  (serving:read: it answers from a model;
+//              exposing an endpoint stays the separate expose_model call)
 //   act     -> orchestration/deliver_action_task (pipelines:manage)
 zetta::governance::Operation step_operation(ir::StepKind kind);
 

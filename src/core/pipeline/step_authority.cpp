@@ -36,10 +36,11 @@ std::string string_attribute(const ir::Node& step, const char* key) {
 Operation step_operation(ir::StepKind kind) {
     switch (kind) {
         case ir::StepKind::Connect: return {CapabilityDomain::Data, "read"};
-        case ir::StepKind::Clean: return {CapabilityDomain::Data, "write"};
+        case ir::StepKind::Clean:
+            return {CapabilityDomain::Orchestration, "create_dataset_from_query"};
         case ir::StepKind::Model: return {CapabilityDomain::Orchestration, "train_model"};
         case ir::StepKind::Index: return {CapabilityDomain::Orchestration, "create_index"};
-        case ir::StepKind::Serve: return {CapabilityDomain::Orchestration, "expose_model"};
+        case ir::StepKind::Serve: return {CapabilityDomain::Data, "predict"};
         case ir::StepKind::Act:
             return {CapabilityDomain::Orchestration, "deliver_action_task"};
     }
