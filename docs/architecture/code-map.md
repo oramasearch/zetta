@@ -817,6 +817,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
   api/test_study_driver.cpp  server-level real Study journeys: dataset and Pipeline trials, published-space round trips, validation/create agreement, restart recovery, stop propagation, budgets, curves, analysis and actual-model promotion (#1205/#1207)
   api/test_web_ui_studio.cpp  the imported Studio design contract over the pure web renderers (#874, docs/product/experience/design-sync.md): tokens (IBM Plex / Blue 60 / paired dark), the five-group shell, the vocabulary contract, icon semantics
+  api/test_web_blob_authz.cpp  the web UI's cookie blob routes check the session user's sql:write / blob:read grants and audit every decision (#1389)
   data/test_featurize_plan.cpp semantic inference, entity/event/time-series/snapshot grain, key-overlap joins, leakage detection, methodology-specific plans, and required dataset corrections (#1062)
   solutions/test_snapshot.cpp snapshot cutoff/idempotence/replication, as-of join future-row exclusion, and boundary refusal tests (#1103)
   ml/test_anomaly.cpp       tabular/KPI anomaly correctness: planted outliers, exact budgets, label-only evaluation, seasonal spike handling, and future-point invariance (#1046)
