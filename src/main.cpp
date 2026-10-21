@@ -371,6 +371,22 @@ Options parse_args(int argc, char** argv) {
             break;
         }
     }
+    // Peers refuse a HELLO whose endpoints break the #771 bounds, so a bad
+    // --advertise is refused here, where the operator sees it, instead of
+    // silently cutting this node off from the cluster.
+    for (const std::string& endpoint : o.cluster.advertise) {
+        if (!zetta::cluster::is_valid_peer_endpoint(endpoint)) {
+            std::fprintf(stderr,
+                         "zetta: --advertise wants HOST:PORT endpoints; '%s' is not one\n",
+                         endpoint.c_str());
+            o.bad_usage = true;
+        }
+    }
+    if (o.cluster.advertise.size() > zetta::cluster::kMaxAdvertisedEndpoints) {
+        std::fprintf(stderr, "zetta: --advertise takes at most %zu endpoints\n",
+                     zetta::cluster::kMaxAdvertisedEndpoints);
+        o.bad_usage = true;
+    }
     return o;
 }
 

@@ -195,6 +195,26 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   just the unreachable bound pod IP — the root cause of the membership flap). A
   legacy single-address HELLO parses as a one-element set (backward compatible).
   `Cluster::advertised_endpoints()` is the set a node sends.
+- **A HELLO is bounded and shape-checked before anything is recorded** (#771). The
+  node id and endpoints a peer sends are stored, shown in the node list and logs,
+  and dialed by the reconnect loop, so `zetta::cluster::parse_hello` refuses (and the
+  connection is dropped, logged without echoing the peer's text) a HELLO whose:
+  - node id is not 1–128 characters of `[A-Za-z0-9._-]` (`is_valid_node_id`);
+  - endpoint list has more than **16** entries (`kMaxAdvertisedEndpoints`);
+  - endpoints include one that is not `HOST:PORT` (port 1–65535, digits only; host of
+    `[A-Za-z0-9._-]` plus the IPv6 characters `: [ ] %`; at most 261 bytes —
+    `is_valid_peer_endpoint`), so control characters and terminal escapes never
+    reach the node list or stderr;
+  - reachability is `wan` with no endpoint at all.
+
+  The HELLO frame itself is read under a **16 KiB** bound (`kMaxHelloBytes`); the
+  64 MiB steady-state frame bound applies only once the HELLO is accepted, so an
+  unidentified peer cannot make a node buffer megabytes per short connection. A
+  node never sends more than 16 endpoints: `advertised_endpoints()` keeps every
+  `--advertise` extra and drops trailing listen addresses to fit, and `zetta`
+  refuses to start with a malformed `--advertise` entry or more than 16 of them.
+  Addresses learned from the replicated `node:<id>` entries are checked the same
+  way before the reconnect loop dials them.
 - **The reached endpoint is per-observer.** Each side records the endpoint it
   actually reached the peer on (the address it dialed; for the acceptor, the peer's
   advertised front) — the reachable path differs by vantage point (a home node

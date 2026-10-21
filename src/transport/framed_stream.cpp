@@ -107,11 +107,20 @@ capy::task<std::optional<std::string>> FramedStream::read_frame() {
             if (impl_->pending.find('\n') != std::string::npos) {
                 break;
             }
+            // Stop draining a frame that has already outgrown the bound; the
+            // outer loop rejects it (#771).
+            if (impl_->pending.size() > impl_->options.maximum_frame_bytes) {
+                break;
+            }
             if (count < sizeof tls_buffer) {
                 break;
             }
         }
     }
+}
+
+void FramedStream::set_maximum_frame_bytes(std::size_t maximum_frame_bytes) {
+    impl_->options.maximum_frame_bytes = maximum_frame_bytes;
 }
 
 capy::task<bool> FramedStream::write_frame(std::string frame) {

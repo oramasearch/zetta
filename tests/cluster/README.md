@@ -12,3 +12,8 @@ checks ordinary catalog ticks while new audit records append outside the catalog
 two zetta-tunnel gateway hops with byte-forwarding fixtures and proves that
 dial-out-only nodes with overlapping private addresses retain end-to-end mutual
 TLS and bidirectional CRDT convergence (#1282).
+`test_cluster_hello_bounds.cpp` covers the HELLO bounds (#771): the node-id and
+`HOST:PORT` checks, the 16-endpoint cap, refusal of HELLOs carrying escape
+sequences or too many endpoints over a live plaintext connection (with a
+well-formed HELLO as the positive control), the 16 KiB pre-HELLO frame bound, and
+the capped advertised set.
