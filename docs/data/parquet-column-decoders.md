@@ -114,6 +114,29 @@ second row group decoded "successfully": the merged column kept the first
 group's type, counted every group's rows, and the transpose read past the end
 of the `int64` vector.
 
+### Hybrid run bounds (LSR-176, #1409)
+
+Dictionary indices (`PLAIN_DICTIONARY` and `RLE_DICTIONARY`) and definition
+levels share the same RLE/bit-packed decoder. It accepts widths from 0 through
+64, checks the declared group count before multiplying it by eight values or
+by the bit width in bytes, and requires the entire run to fit its input span.
+Each bit-packed byte is then read through a cursor restricted to that run.
+For definition levels, this span ends before the PLAIN value bytes that follow
+it in the page. A partially used final group still needs all its encoded bytes;
+its unused values are discarded as before.
+
+The shared compact reader rejects varints whose tenth byte exceeds one, before
+shifting it into a 64-bit header. Zero-length runs, truncated RLE values, and
+RLE values exceeding the declared width also fail. Bit extraction handles
+64-bit values without shifting by 64 or overflowing an intermediate buffer.
+Valid zero-bit streams and padded groups remain supported. These checks change
+no API or JSON schema; malformed imports return a decode error.
+
+Regression tests construct exact uncompressed page bodies with wrapped byte
+counts, wrapped value counts, overflowing headers, and truncated dictionary and
+level streams. Positive cases cover zero-bit streams, padded groups, and widths
+through 64 bits.
+
 ## How a page is read
 
 1. **Page header** — each page begins with a Thrift compact `PageHeader`
@@ -202,5 +225,5 @@ decompress + decode them into typed values + a validity bitmap; the
 [reader → DDF wiring](parquet-reader.md) (#508) turns those into typed
 [DDF](../ddf/ddf.md) columns (with column projection) and removes the
 `ChurnDataFormat::Parquet` "not yet supported" error. zstd page decompression is
-the sibling codec to add behind the [Snappy](parquet-snappy.md) per-page seam
+the sibling codec to add behind the [Snappy](parquet-snappy.md) per-page decoder
 when a target file needs it.
