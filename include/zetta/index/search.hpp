@@ -30,7 +30,7 @@
 //      given, records the whole search as ONE trace: a root `search` span with
 //      `search:local` / `search:peer` child spans (observability.md).
 //
-// Non-throwing (the zetta-core seam convention): the result carries an
+// Non-throwing (the zetta-core boundary convention): the result carries an
 // IndexStatus with a path-qualified reason. Main-thread only (it reads the Node
 // tree and may build local sub-indexes). See docs/indexing/node-search.md.
 namespace zetta { class Node; }
@@ -52,6 +52,11 @@ struct SearchRequest {
     std::optional<std::vector<std::string>> fields;
     std::chrono::milliseconds timeout =
         DistributedFulltextIndex::kDefaultTimeout;  // per-peer scatter budget
+
+    // Supplied by the authenticated surface, never from request JSON (#1403).
+    // Empty is reserved for trusted in-process callers, as with SQL Executor.
+    std::string acting_id;
+    bool acting_is_user = false;
 };
 
 // One ranked hit of the global ranking (score descending, row id ascending on a

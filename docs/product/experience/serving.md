@@ -27,3 +27,9 @@ with the data and the model never leaving the cluster.
 exposure state, `data:predict` / `data:search` key scoping, `serve:*` spans,
 `exposed`/`endpoint` in `system.models` / `system.indexes`, allow + deny
 journeys in-process and over loopback HTTP.
+
+Search endpoints enforce the caller's SQL table, indexed-column and SELECT row
+policies (#1403), including IDs-only requests; a distributed search subject
+to row security is refused. Publishing an index does not
+grant access to its source data. A column-limited caller needs an index whose
+fields are all readable.

@@ -21,7 +21,12 @@
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
 #include "zetta/index/search.hpp"
+#include "zetta/connect/connection_store.hpp"
 #include "zetta/node.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/api/registry.hpp"
+#include "zetta/api/serving.hpp"
+#include "zetta/query/service.hpp"
 #include "zetta/observability/trace.hpp"
 
 // The canonical distributed search entry point (#641): Node::search resolves the
@@ -176,9 +181,7 @@ TEST(NodeSearch, ResolvesTargetByIndexIdAndByTableName) {
                                       table->store()))
                     .ok());
 
-    SearchRequest by_table;
-    by_table.target = "articles";
-    by_table.query = "postgres";
+    SearchRequest by_table{"articles", "postgres"};
     const SearchResult from_table = node.search(by_table);
     ASSERT_TRUE(from_table.ok()) << from_table.status.message;
     EXPECT_EQ(from_table.index_id, index->id());
@@ -468,4 +471,291 @@ TEST(NodeSearch, DistributedSearchMatchesOracleWithProvenanceAndOneTrace) {
         EXPECT_EQ(count_spans_named(spans, "search:peer"), kNodes - 1)
             << "node " << index;
     }
+}
+
+// A native user can invoke search while holding only column-scoped SQL rights.
+// Both public surfaces must carry that identity to the canonical engine path.
+TEST(NodeSearch, PublicSurfacesEnforceTableColumnsAndRows) {
+    TempDir dir;
+    Node node(node_config(dir));
+    ASSERT_TRUE(node.start());
+    node.index_registry().add(std::make_shared<TermFrequencyBackend>());
+    auto database = node.create_database("data");
+    auto table = database->create_table("articles");
+    table->add_row(
+        {{"title", "postgres"}, {"body", "private alice"}, {"owner", "alice"}});
+    table->add_row({{"title", "postgres postgres postgres"},
+                    {"body", "private bob"},
+                    {"owner", "bob"}});
+    auto index = node.create_index(articles_index("tf_reference"));
+    ASSERT_TRUE(index);
+    const auto spec = index->spec();
+    ASSERT_TRUE(
+        node.index_registry()
+            .resolve(spec)
+            ->build(spec, zetta::index::read_index_partitions(table->store()))
+            .ok());
+    index->set_exposed(true);
+    zetta::query::QueryService sql(node);
+    const auto setup =
+        sql.run("CREATE ROLE searcher; GRANT mcp:call, "
+                "serving:read TO ROLE searcher; "
+                "CREATE USER alice; GRANT ROLE searcher TO alice; "
+                "CREATE POLICY own_articles ON data.articles "
+                "FOR SELECT USING (owner = current_user());",
+                "data");
+    ASSERT_TRUE(setup.ok()) << setup.error;
+    const auto user = node.find_user("alice");
+    ASSERT_TRUE(user);
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{node};
+    context.acting_key = user->id();
+    context.acting_is_user = true;
+    auto call = [&](nlohmann::json input) {
+        return registry.call("search", input, context);
+    };
+    nlohmann::json input{{"target", index->id()},
+                         {"query", "postgres"},
+                         {"field", "title"},
+                         {"top_k", 1}};
+    EXPECT_FALSE(
+        call(input).ok); // Tool invocation alone grants no table access.
+    auto forged = input;
+    forged["acting_id"] = "";
+    EXPECT_FALSE(
+        call(forged).ok); // Caller identity cannot come from tool input.
+    ASSERT_TRUE(
+        sql.run("GRANT sql:read ON data.articles(title) TO ROLE searcher;",
+                "data")
+            .ok());
+    auto sql_rows = sql.acting_as(user->id(), true)
+                        .run("SELECT title FROM articles;", "data");
+    ASSERT_TRUE(sql_rows.ok()) << sql_rows.error;
+    ASSERT_EQ(sql_rows.rows.size(), 1u);
+    auto implicit_all = input;
+    implicit_all.erase("field");
+    EXPECT_FALSE(call(implicit_all)
+                     .ok); // Even ids/scores can reveal a hidden column match.
+    implicit_all["fields"] = nlohmann::json::array();
+    EXPECT_FALSE(call(implicit_all).ok);
+    auto hidden = input;
+    hidden["field"] = "body";
+    EXPECT_FALSE(call(hidden).ok);
+    EXPECT_FALSE(
+        call(input).ok); // Named-field search also fails closed until #1363.
+    ASSERT_TRUE(
+        sql.run("GRANT sql:read ON data.articles(body) TO ROLE searcher;",
+                "data")
+            .ok());
+    input["fields"] = {"title"};
+    for (bool served : {false, true}) {
+        zetta::api::ServeRequest request;
+        request.target = "articles";
+        request.input = input;
+        request.input.erase("target");
+        request.acting_key = user->id();
+        request.acting_is_user = true;
+        auto result =
+            served ? zetta::api::serve_search(node, request) : call(input);
+        ASSERT_TRUE(result.ok) << result.error.message;
+        ASSERT_EQ(result.value.at("hits").size(), 1u);
+        EXPECT_EQ(result.value.at("hits")[0].at("fields"), sql_rows.rows[0]);
+    }
+    input["fields"] = nlohmann::json::array();
+    auto ids_only = call(input);
+    ASSERT_TRUE(ids_only.ok);
+    ASSERT_EQ(ids_only.value.at("hits").size(), 1u);
+    EXPECT_TRUE(ids_only.value.at("hits")[0].at("fields").empty());
+    ASSERT_TRUE(
+        sql.run("REVOKE sql:read ON data.articles(title) FROM ROLE searcher;",
+                "data")
+            .ok());
+    EXPECT_FALSE(call(input).ok);
+    ASSERT_TRUE(
+        sql.run("GRANT sql:read ON data.articles(title) TO ROLE searcher;",
+                "data")
+            .ok());
+    // The index still holds Alice's old hit. Its current owner now denies it,
+    // and deleting it must not leave an IDs-only disclosure either.
+    const auto alice_row = table->store().id_at(0);
+    table->update_row(
+        alice_row,
+        {{"title", "postgres"}, {"body", "private alice"}, {"owner", "bob"}});
+    auto changed_owner = call(input);
+    ASSERT_TRUE(changed_owner.ok) << changed_owner.error.message;
+    EXPECT_TRUE(changed_owner.value.at("hits").empty());
+    table->delete_row(alice_row);
+    auto deleted = call(input);
+    ASSERT_TRUE(deleted.ok) << deleted.error.message;
+    EXPECT_TRUE(deleted.value.at("hits").empty());
+    node.stop();
+}
+
+TEST(NodeSearch, DistributedSearchRequiresAllColumnsAndRefusesRowSecurity) {
+    SearchNode first(
+        "auth-search-a", 47160, {},
+        {{{"title", "postgres"}, {"body", "alice-a"}, {"owner", "alice"}},
+         {{"title", "postgres postgres postgres"},
+          {"body", "bob-a"},
+          {"owner", "bob"}}});
+    SearchNode second("auth-search-b", 47161, {"127.0.0.1:47160"},
+                      {{{"title", "postgres postgres"},
+                        {"body", "alice-b"},
+                        {"owner", "alice"}},
+                       {{"title", "postgres postgres postgres postgres"},
+                        {"body", "bob-b"},
+                        {"owner", "bob"}}});
+    for (auto* entry : {&first, &second}) {
+        entry->cluster.start();
+        entry->node.attach_cluster(entry->cluster);
+        entry->node.tick();
+    }
+    ASSERT_TRUE(wait_for([&] {
+        return first.cluster.peer_count() == 1 &&
+               second.cluster.peer_count() == 1;
+    }));
+    zetta::query::QueryService sql(first.node);
+    const auto setup =
+        sql.run("CREATE ROLE searcher; GRANT sql:read ON data.articles(title) "
+                "TO ROLE searcher; "
+                "CREATE USER alice; GRANT ROLE searcher TO alice;",
+                "data");
+    ASSERT_TRUE(setup.ok()) << setup.error;
+    SearchRequest request;
+    request.acting_id = first.node.find_user("alice")->id();
+    request.acting_is_user = true;
+    request.target = "articles";
+    request.query = "postgres";
+    request.field = "title";
+    request.top_k = 1;
+    request.fields = std::vector<std::string>{"title"};
+    EXPECT_FALSE(first.node.search(request).ok());
+    ASSERT_TRUE(
+        sql.run("GRANT sql:read ON data.articles(body) TO ROLE searcher;",
+                "data")
+            .ok());
+    auto result = first.node.search(request);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    EXPECT_EQ(result.path, SearchPath::Distributed);
+    ASSERT_EQ(result.hits.size(), 1u);
+    EXPECT_EQ(
+        result.hits[0].fields,
+        (nlohmann::json{{"title", "postgres postgres postgres postgres"}}));
+
+    // A peer must not answer from a same-named table in another database.
+    const auto spec = first.node.indexes().front()->spec();
+    IndexQuery query;
+    query.term = "postgres";
+    zetta::index::IndexStatus status;
+    const std::string other_database = "other";
+    EXPECT_TRUE(first.node.distributed_fulltext()
+                    ->query_local(spec, query, &status, nullptr, nullptr,
+                                  &other_database)
+                    .empty());
+    EXPECT_FALSE(status.ok());
+
+    ASSERT_TRUE(
+        sql.run("CREATE POLICY own_articles ON data.articles FOR SELECT "
+                "USING (owner = current_user());",
+                "data")
+            .ok());
+    for (bool ids_only : {false, true}) {
+        if (ids_only) request.fields = std::vector<std::string>{};
+        result = first.node.search(request);
+        EXPECT_FALSE(result.ok());
+        EXPECT_NE(result.status.message.find("row-level security"),
+                  std::string::npos);
+    }
+    // An old indexed owner must never authorize a row after its raw owner changes.
+    const auto row_id = first.table->store().id_at(0);
+    first.table->update_row(
+        row_id, {{"title", "postgres"}, {"body", "alice-a"}, {"owner", "bob"}});
+    EXPECT_FALSE(first.node.search(request).ok());
+
+    // Trusted local/admin bypass follows SQL; ordinary readers can search again
+    // once the policy is removed.
+    auto trusted = request;
+    trusted.acting_id.clear();
+    EXPECT_TRUE(first.node.search(trusted).ok());
+    ASSERT_TRUE(sql.run("DROP POLICY own_articles;", "data").ok());
+    EXPECT_TRUE(first.node.search(request).ok());
+}
+
+TEST(NodeSearch, RejectsMalformedDistributedDatabase) {
+    zetta::index::FulltextQueryRequest request;
+    request.table = "articles";
+    request.fields = {"title"};
+    request.term = "postgres";
+    auto document =
+        nlohmann::json::parse(zetta::index::encode_fulltext_query(request));
+    document["database"] = 42;
+    EXPECT_FALSE(zetta::index::decode_fulltext_query(document.dump()));
+    document["database"] = "";
+    EXPECT_FALSE(zetta::index::decode_fulltext_query(document.dump()));
+    request.database = "data";
+    const auto decoded = zetta::index::decode_fulltext_query(
+        zetta::index::encode_fulltext_query(request));
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded->database, request.database);
+}
+
+TEST(NodeSearch, DatabaseRenameRefreshesDistributedAuthorizationMetadata) {
+    SearchNode entry("auth-search-rename", 47162, {},
+                     {article("postgres", "permitted")});
+    entry.cluster.start();
+    entry.node.attach_cluster(entry.cluster);
+    SearchRequest request;
+    request.target = "articles";
+    request.query = "postgres";
+    const auto before = entry.node.search(request);
+    ASSERT_TRUE(before.ok()) << before.status.message;
+    ASSERT_EQ(before.path, SearchPath::Distributed);
+    ASSERT_EQ(before.hits.size(), 1u);
+    ASSERT_TRUE(entry.node.rename_database("data", "renamed"));
+    const auto after = entry.node.search(request);
+    ASSERT_TRUE(after.ok()) << after.status.message;
+    EXPECT_EQ(after.path, SearchPath::Distributed);
+    EXPECT_EQ(after.hits, before.hits);
+}
+
+TEST(NodeSearch, SqlReservedDatabasesCannotBeSearched) {
+    const std::string database_name = zetta::connect::kConnectionDatabase;
+    TempDir dir;
+    Node node(node_config(dir));
+    ASSERT_TRUE(node.start());
+    node.index_registry().add(std::make_shared<TermFrequencyBackend>());
+    auto database = node.create_database(database_name);
+    ASSERT_TRUE(database);
+    auto table = database->create_table("indexed_private_fixture");
+    ASSERT_TRUE(table);
+    table->add_row(article("postgres", "private configuration"));
+    auto value = articles_index("tf_reference");
+    value.table = table->name();
+    const auto index = node.create_index(std::move(value));
+    ASSERT_TRUE(index);
+    const auto spec = index->spec();
+    ASSERT_TRUE(node.index_registry().resolve(spec)->build(
+        spec, zetta::index::read_index_partitions(table->store())).ok());
+    zetta::query::QueryService sql(node);
+    const auto setup = sql.run(
+        "CREATE ROLE index_reader; GRANT sql:read, mcp:call TO ROLE index_reader; "
+        "CREATE USER reader; GRANT ROLE index_reader TO reader;", "");
+    ASSERT_TRUE(setup.ok()) << setup.error;
+    const auto user = node.find_user("reader");
+    ASSERT_TRUE(user);
+    const auto sql_result = sql.acting_as(user->id(), true).run(
+        "SELECT title FROM " + database_name + "." + table->name() + ";", "");
+    EXPECT_FALSE(sql_result.ok());
+    SearchRequest request;
+    request.target = index->id();
+    request.query = "postgres";
+    request.acting_id = user->id();
+    request.acting_is_user = true;
+    const auto result = node.search(request);
+    EXPECT_FALSE(result.ok());
+    EXPECT_NE(result.status.message.find("reserved by SQL"), std::string::npos);
+    request.acting_id.clear();
+    EXPECT_FALSE(node.search(request).ok());
+    node.stop();
 }

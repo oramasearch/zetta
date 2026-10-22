@@ -1448,9 +1448,9 @@ void Node::reconcile_search_indexes() {
     const std::string& self = node_id();
 
     // The desired local builds: one per distinct Search-kind spec key, each with
-    // a fingerprint of THIS node's build inputs — the backend + the placed
-    // partitions this node owns. A build is (re)run only when its fingerprint
-    // changed, so the steady-state tick cost is string compares.
+    // a fingerprint of THIS node's build inputs — the backend, source database
+    // and placed partitions this node owns. A build is (re)run only when this
+    // fingerprint changes, so the steady-state tick cost is string compares.
     std::map<std::string, std::pair<zetta::index::IndexSpec, std::string>> desired;
     for (const std::shared_ptr<zetta::index::Index>& index : indexes_) {
         if (!index || index->kind() != zetta::index::IndexKind::Search) continue;
@@ -1460,14 +1460,17 @@ void Node::reconcile_search_indexes() {
 
         // Partitions record the table's ID; the spec names it by NAME.
         std::string table_id = spec.table;
+        std::string source_database;
         for (const std::shared_ptr<zetta::data::Database>& database : databases_) {
             if (const std::shared_ptr<zetta::data::Table> found =
                     database->find_table(spec.table)) {
                 table_id = found->id();
+                source_database = database->name();
                 break;
             }
         }
-        std::string fingerprint = spec.backend + '\n' + table_id + '\n';
+        std::string fingerprint = spec.backend + '\n' + source_database + '\n' +
+                                  table_id + '\n';
         for (const std::shared_ptr<zetta::data::DatasetPartition>& partition :
              dataset_partitions()) {
             if (!partition || partition->table() != table_id) continue;

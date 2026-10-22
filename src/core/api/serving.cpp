@@ -581,6 +581,8 @@ ApiResult serve_search(Node& node, const ServeRequest& request) {
                                             {"table", index->table()}});
 
     zetta::index::SearchRequest search_request;
+    search_request.acting_id = request.acting_key;
+    search_request.acting_is_user = request.acting_is_user;
     search_request.target = index->id();  // already resolved: exact
     search_request.query = input.at("query").get<std::string>();
     search_request.field = input.value("field", std::string{});

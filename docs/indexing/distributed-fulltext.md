@@ -122,6 +122,10 @@ reaches the index:
   its sub-indexes up by (`table` / `kind` / `fields`, with `backend` for provenance)
   plus the query (`field` / `term` / `top_k`), and an optional `return_fields`
   list: the row fields each hit should carry back ([#1243](https://github.com/oramasearch/zetta/issues/1243)).
+  `Node::search` also sends `database`, the database it authorized (#1403).
+  A peer refuses hits from a same-named table built from another database.
+  Direct in-process callers may omit it; the public search surfaces always
+  set it after table/column authorization and refuse searches subject to RLS.
   `encode_fulltext_query` / `decode_fulltext_query`.
 - **request `statistics`** — the merged corpus statistics every shard scores with
   (#851): `{ doc_count, term_doc_freq: {term: n}, fields: {field: {total_len,

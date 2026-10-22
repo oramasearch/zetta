@@ -15,7 +15,10 @@ relay it to a person.
   schema-validated tool whose description is one agent-actionable sentence
   stating side effects; **prompts as progressive disclosure** (orientation →
   use-case runs → journeys → investigation → feedback) so an agent never
-  needs the full tool table to start.
+  needs the full tool table to start. `search` inherits the caller's SQL table,
+  indexed-column and row permissions (#1403). Consolidated hits are checked
+  against current rows; distributed searches subject to row security are
+  refused ([search authorization](../../indexing/node-search.md#caller-authorization-1403)).
 - **`llms.txt` progressive-disclosure endpoints** — built
   ([#645](https://github.com/oramasearch/zetta/issues/645),
   [../../api/llms-endpoints.md](../../api/llms-endpoints.md)): the node serves

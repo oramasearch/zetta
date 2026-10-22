@@ -135,6 +135,10 @@ struct FulltextQueryRequest {
     // `fulltext.stats` request itself and for a backend that does not use them.
     std::optional<CorpusStatistics> statistics;
 
+    // The database authorized by the coordinator. A peer must have built its
+    // index from this same database (#1403).
+    std::optional<std::string> database;
+
     // The IndexSpec this request names (table/kind/backend/fields) — what a peer
     // looks its sub-indexes up by.
     IndexSpec spec() const;
@@ -300,7 +304,8 @@ public:
                       std::chrono::milliseconds timeout = kDefaultTimeout,
                       zetta::observability::SpanRecorder* recorder = nullptr,
                       const zetta::observability::TraceContext* parent = nullptr,
-                      const std::vector<std::string>* return_fields = nullptr) const;
+                      const std::vector<std::string>* return_fields = nullptr,
+                      const std::string* database = nullptr) const;
 
     // Query only this node's local sub-indexes (no scatter) → its merged, ranked
     // hits, capped to `query.top_k`. Used by query() for the local contribution and
@@ -312,7 +317,8 @@ public:
                                          const IndexQuery& query,
                                          IndexStatus* status = nullptr,
                                          std::size_t* sub_indexes = nullptr,
-                                         const std::vector<std::string>* return_fields = nullptr) const;
+                                         const std::vector<std::string>* return_fields = nullptr,
+                                         const std::string* database = nullptr) const;
 
     // Sum this node's local sub-indexes' corpus statistics for `query` (no
     // scatter) — this node's part of the statistics round, used by query() and by
@@ -344,6 +350,7 @@ private:
     mutable std::mutex mutex_;
     // base IndexSpec::key() -> the per-partition sub-index specs built into backend_.
     std::map<std::string, std::vector<IndexSpec>> sub_specs_;
+    std::map<std::string, std::string> source_databases_;
     // base IndexSpec::key() -> row id -> the row's values for the index's own
     // fields, kept from the build (#1243). A hit's fields come from here, on the
     // node that owns the row: the network thread answering a peer cannot read

@@ -244,3 +244,10 @@ output table.
 - TLS on the served ingress rides the same #466 beast2 `https_server` slice
   as the rest of the API surface; per-entity serving keys minted from the
   GUI.
+
+Search also requires the caller's SQL read rights on the source table and every
+indexed field, and applies SELECT row policies to current consolidated rows (#1403).
+Distributed searches subject to row security are refused.
+This includes named-field and IDs-only requests. Exposure publishes the route;
+it does not bypass source-data authorization. See
+[search authorization](../indexing/node-search.md#caller-authorization-1403).
