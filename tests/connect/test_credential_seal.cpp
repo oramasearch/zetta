@@ -2,6 +2,8 @@
 // under a key derived from a root secret held outside the replicated catalogue.
 #include <gtest/gtest.h>
 
+#include <sys/stat.h>
+
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -118,4 +120,41 @@ TEST(CredentialSeal, TheLocalRootSecretIsCreatedPrivateAndReused) {
     EXPECT_FALSE(zetta::connect::load_or_create_local_keyring(dir.path().string(),
                                                               &reason));
     EXPECT_FALSE(reason.empty());
+}
+
+TEST(CredentialSeal, LocalRootDirectoryIsPrivateAndLegacyPermissionsAreRestricted) {
+    zetta::test::TempDir temporary;
+    const mode_t previous_umask = ::umask(0);
+    const auto first = zetta::connect::load_or_create_local_keyring(temporary.path().string());
+    ::umask(previous_umask);
+    ASSERT_TRUE(first);
+    const auto directory = temporary.path() / "security";
+    const auto path = directory / "connection-root-secret";
+    struct stat status {};
+    ASSERT_EQ(::stat(directory.c_str(), &status), 0);
+    EXPECT_EQ(status.st_mode & 0777, 0700);
+    ASSERT_EQ(::chmod(directory.c_str(), 0777), 0);
+    ASSERT_EQ(::chmod(path.c_str(), 0666), 0);
+    ASSERT_TRUE(zetta::connect::load_or_create_local_keyring(temporary.path().string()));
+    ASSERT_EQ(::stat(directory.c_str(), &status), 0);
+    EXPECT_EQ(status.st_mode & 0777, 0700);
+    ASSERT_EQ(::stat(path.c_str(), &status), 0);
+    EXPECT_EQ(status.st_mode & 0777, 0600);
+}
+
+TEST(CredentialSeal, LocalRootRefusesLinksAndSpecialFiles) {
+    zetta::test::TempDir temporary;
+    const auto directory = temporary.path() / "security";
+    std::filesystem::create_directory(directory);
+    const auto path = directory / "connection-root-secret";
+    const auto outside = temporary.path() / "outside";
+    std::ofstream(outside) << std::string(64, 'a');
+    std::filesystem::create_symlink(outside, path);
+    EXPECT_FALSE(zetta::connect::load_or_create_local_keyring(temporary.path().string()));
+    std::filesystem::remove(path);
+    std::filesystem::create_hard_link(outside, path);
+    EXPECT_FALSE(zetta::connect::load_or_create_local_keyring(temporary.path().string()));
+    std::filesystem::remove(path);
+    ASSERT_EQ(::mkfifo(path.c_str(), 0600), 0);
+    EXPECT_FALSE(zetta::connect::load_or_create_local_keyring(temporary.path().string()));
 }

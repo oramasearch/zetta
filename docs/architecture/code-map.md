@@ -754,6 +754,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     example_script.cpp      run_example_script — parse->IR->gate->run + expectation checks + offending-statement reconstruction (#523)
     cases_examples.cpp      example_scripts() built-in catalog + register_example_cases (each sim-Python example a TestCase under TestCategory::Examples)
   util/
+    private_directory.hpp / private_directory.cpp  internal zetta::util::PrivateDirectory: 0700 directories, exclusive 0600 staging files, checked reads and atomic replacement for cluster and connector secrets (#1413)
     uuid.cpp
     bytes.cpp / duration.cpp  the size / time formatter impls
     sha256.cpp              self-contained SHA-256 (no crypto dependency)
@@ -809,6 +810,7 @@ modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   CMakeLists.txt            the test target — every test TU is listed here, grouped by domain
+  util/test_private_directory.cpp permissions before writing, failed-publication cleanup and filename validation (#1413)
   transport/test_security.cpp reusable credential-file loading, valid context creation, and malformed/mismatched PEM refusal (#1283)
   memory/README.md          navigation for memory-accounting registry and node-log tests
   memory/test_accounting.cpp probe aggregation, fixture explanation ratio, unattributed accounting, unregister, and periodic log formatting (#1163)

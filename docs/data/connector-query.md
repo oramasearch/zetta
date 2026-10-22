@@ -273,6 +273,9 @@ catalogue every node gossips and persists, and was readable through
   sealed and the distributed fetch still finds the credential on every node. A node
   embedded without a join token (the library, a test) creates a node-local secret
   in `<data_dir>/security/connection-root-secret` (0600) on first use.
+  Both paths create the security directory at 0700 and secret files at 0600
+  before writing; the local root loader also restricts legacy permissions and
+  rejects links and special files ([storage contract](../cluster/security.md#on-disk--data_dirsecurity), #1413).
 - **Rotation re-seals.** A sealed value names its key id. When a node is re-keyed
   with `--join-token`, the secret file keeps the earlier token in
   `retired_join_tokens` (at most four), the keyring can still open values sealed

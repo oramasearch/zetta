@@ -139,6 +139,21 @@ own environment once read so no child process inherits it; see
 
 ## On disk — `<data_dir>/security/`
 
+The directory is created with mode **0700**, and files with mode **0600**
+before any secret bytes are written, independently of the process umask
+(#1413, LSR-240). Cluster identity persistence and the connector's local root
+secret use the same directory-relative storage helper. Existing directories
+and files are restricted before use; symlinks, multiply linked files,
+non-regular files and objects owned by another UID refuse the load.
+Unreadable files fail the load rather than being treated as missing.
+
+Each write uses an exclusive private staging file and renames it over the
+destination after the bytes are written and synced. An already-open descriptor
+to an earlier inode cannot read a newly rotated secret. Failed writes remove
+their staging file and leave the destination intact. Operators must keep the
+data directory and its ancestors under trusted control; changing permissions
+cannot revoke secret bytes an earlier reader already obtained.
+
 | File | What | Mode |
 |---|---|---|
 | `cluster-secret.json` | `{"version": 1, "join_token": "<64 hex>", "retired_join_tokens"?: ["<64 hex>", …]}` — schema-validated on load (`cluster_secret_schema()`, generated `schemas/cluster_secret.schema.json`); a malformed file **fails the start with a reason**, it is never silently clobbered. A `--join-token` that replaces the stored token moves it to `retired_join_tokens` (newest first, at most four) | 0600 |
@@ -174,6 +189,9 @@ previous one; its next start re-seals those entries under the current token. See
 - `src/core/cluster/cluster.cpp` — cluster connection lifecycle and protocol;
   it creates the shared context and wraps every socket in `FramedStream` before
   HELLO. The read-pump + link-writer pattern and line bytes are unchanged.
+- `src/core/util/private_directory.{hpp,cpp}` — shared owner-only directory
+  creation, checked reads and private file replacement for cluster and
+  connector secret persistence; no JSON or wire-format changes (#1413).
 - `tests/cluster/test_cluster_security.cpp` — token/derivation/persistence
   units + real-TCP mTLS convergence, wrong-token rejection, plaintext
   rejection.
