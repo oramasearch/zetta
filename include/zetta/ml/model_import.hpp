@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -39,6 +40,17 @@ std::optional<ModelFileFormat> model_file_format_from_string(std::string_view na
 // The formats a brought model may be in, as one sentence for a refusal.
 std::string supported_model_formats();
 
+// Import resource ceilings (#1419). Native callers may choose smaller or larger
+// budgets; feature indices must still fit the engine's int representation.
+struct ModelImportLimits {
+    std::size_t max_features = 1'048'576;
+    std::size_t max_bytes = 1'073'741'824;
+};
+
+// Operator settings for register_model: ZETTA_MODEL_IMPORT_MAX_FEATURES and
+// ZETTA_MODEL_IMPORT_MAX_BYTES. Invalid or zero values refuse imports.
+std::optional<ModelImportLimits> model_import_limits_from_environment(std::string* error);
+
 struct ModelImportOptions {
     // The file's format; detected from its contents when absent.
     std::optional<ModelFileFormat> format;
@@ -46,6 +58,7 @@ struct ModelImportOptions {
     // which names no columns (its features are f0, f1, … otherwise); for the other
     // formats it replaces the names the file carries.
     std::vector<std::string> feature_names;
+    ModelImportLimits limits;
 };
 
 struct ImportedModel {

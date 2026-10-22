@@ -36140,7 +36140,7 @@
                     "type": "string"
                   },
                   "weights": {
-                    "description": "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's text model, or the engine's own JSON weights (objective, base_score, feature_names, trees). Give this or `weights_base64`",
+                    "description": "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's text model, or the engine's own JSON weights (objective, base_score, feature_names, trees). Give this or `weights_base64`. Import limits default to 1 GiB of decoded model bytes and 1,048,576 features; operators can configure them",
                     "minLength": 2,
                     "type": "string"
                   },
