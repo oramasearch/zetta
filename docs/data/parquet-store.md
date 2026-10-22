@@ -163,6 +163,13 @@ asserts:
   body truncated under a live store returning a failed handle — while `id_at`
   still answers, so **data loss stays distinguishable from absence**.
 
+A page is decoded with `decode_column_chunk`, which refuses a chunk whose
+physical type disagrees with its schema leaf, and `decode_page` checks
+`validate_decoded_column` before transposing the column into rows. A body from
+a peer whose chunk lies about its type is a failed handle with a reason, never
+a read past the decoded values (LSR-167,
+[the decoders](parquet-column-decoders.md)).
+
 ## Where it fits
 
 This is the read side of "partition bodies become Parquet"
