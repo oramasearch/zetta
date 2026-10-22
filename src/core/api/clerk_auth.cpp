@@ -16,7 +16,9 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -73,15 +75,13 @@ struct JwkKey {
     std::string exponent_e;   // base64url
 };
 
-// The JWKS cache: issuer → keys, with a fetch time. TTL keeps a rotated key set
-// from being stale forever while avoiding a fetch per request.
-struct CachedJwks {
-    std::vector<JwkKey> keys;
-    std::chrono::steady_clock::time_point fetched;
-};
-std::mutex g_jwks_mutex;
-std::map<std::string, CachedJwks, std::less<>> g_jwks_cache;
-constexpr std::chrono::minutes kJwksTtl{60};
+runtime::io_task<connect::HttpResponse> offloaded_transport(
+    connect::HttpTransport transport, connect::HttpRequest request);
+
+constexpr std::chrono::minutes kJwksTtl{55};
+constexpr std::chrono::minutes kJwksStaleGrace{5};
+constexpr std::chrono::seconds kJwksFailureTtl{5};
+constexpr std::chrono::seconds kJwksDeadline{2};
 
 std::vector<JwkKey> parse_jwks(const std::string& body) {
     std::vector<JwkKey> keys;
@@ -95,40 +95,6 @@ std::vector<JwkKey> parse_jwks(const std::string& body) {
         jwk.modulus_n = key.value("n", "");
         jwk.exponent_e = key.value("e", "");
         if (!jwk.modulus_n.empty() && !jwk.exponent_e.empty()) keys.push_back(std::move(jwk));
-    }
-    return keys;
-}
-
-// Fetch (or return cached) JWKS for an issuer over the transport.
-std::optional<std::vector<JwkKey>> jwks_for(std::string_view issuer,
-                                            const zetta::connect::HttpTransport& transport) {
-    {
-        std::lock_guard<std::mutex> lock(g_jwks_mutex);
-        if (auto it = g_jwks_cache.find(issuer);
-            it != g_jwks_cache.end() &&
-            std::chrono::steady_clock::now() - it->second.fetched < kJwksTtl) {
-            return it->second.keys;
-        }
-    }
-    const zetta::connect::HttpTransport& send =
-        transport ? transport : zetta::connect::default_http_transport();
-    if (!send) return std::nullopt;  // no transport installed → cannot verify
-
-    std::string url(issuer);
-    if (!url.empty() && url.back() == '/') url.pop_back();
-    url += "/.well-known/jwks.json";
-    zetta::connect::HttpRequest request;
-    request.method = "GET";
-    request.url = url;
-    request.timeout_seconds = 10;
-    const zetta::connect::HttpResponse response = send(request);
-    if (!response.ok()) return std::nullopt;
-
-    std::vector<JwkKey> keys = parse_jwks(response.body);
-    if (keys.empty()) return std::nullopt;
-    {
-        std::lock_guard<std::mutex> lock(g_jwks_mutex);
-        g_jwks_cache[std::string(issuer)] = {keys, std::chrono::steady_clock::now()};
     }
     return keys;
 }
@@ -185,69 +151,245 @@ bool looks_like_jwt(std::string_view token) {
     return split_jwt(token).has_value();
 }
 
-void clear_clerk_jwks_cache() {
-    std::lock_guard<std::mutex> lock(g_jwks_mutex);
-    g_jwks_cache.clear();
+struct ClerkJwksCache::State {
+    struct Entry {
+        std::vector<JwkKey> keys;
+        std::chrono::steady_clock::time_point fetched{};
+        std::chrono::steady_clock::time_point retry_at{};
+        std::shared_ptr<runtime::async_event> fetching;
+    };
+
+    explicit State(Clock read_clock) : clock(std::move(read_clock)) {}
+
+    // Lowest-level handoff between the HTTP executors and the refresh coroutine.
+    // No lock spans an await or transport call; cache state never touches Node.
+    std::mutex mutex;
+    std::map<std::string, std::shared_ptr<Entry>, std::less<>> entries;
+    Clock clock;
+
+    static runtime::task<> refresh(std::shared_ptr<State> state,
+                                    std::shared_ptr<Entry> entry,
+                                    std::shared_ptr<runtime::async_event> finished,
+                                    std::string issuer,
+                                    connect::AsyncHttpTransport transport) {
+        std::vector<JwkKey> keys;
+        try {
+            if (!transport) transport = connect::default_async_http_transport();
+            if (!transport) {
+                // Preserve callers that installed only the synchronous shape.
+                // The real native client always supplies the async shape above.
+                if (auto synchronous = connect::default_http_transport()) {
+                    transport = [synchronous](const connect::HttpRequest& request) {
+                        return offloaded_transport(synchronous, request);
+                    };
+                }
+            }
+            if (transport) {
+                connect::HttpRequest request;
+                request.method = "GET";
+                request.url = issuer + "/.well-known/jwks.json";
+                request.timeout_seconds = static_cast<int>(kJwksDeadline.count());
+                request.max_response_bytes = 1024 * 1024;
+                auto [error, response] = co_await runtime::timeout(
+                    transport(request), kJwksDeadline);
+                if (!error && response.ok()) keys = parse_jwks(response.body);
+            }
+        } catch (...) {
+            // Malformed JWKS field types and transport exceptions are failures,
+            // just like HTTP/DNS errors. They must release and cache this flight.
+        }
+        {
+            const std::lock_guard lock(state->mutex);
+            const auto now = state->clock();
+            if (!keys.empty()) {
+                entry->keys = std::move(keys);
+                entry->fetched = now;
+                entry->retry_at = now + kJwksTtl;
+            } else {
+                entry->retry_at = now + kJwksFailureTtl;
+            }
+            entry->fetching.reset();
+        }
+        finished->set();
+    }
+
+    static runtime::task<std::vector<JwkKey>> keys_for(
+        std::shared_ptr<State> state, std::string issuer,
+        connect::AsyncHttpTransport transport) {
+        std::shared_ptr<Entry> entry;
+        std::shared_ptr<runtime::async_event> finished;
+        bool start = false;
+        {
+            const std::lock_guard lock(state->mutex);
+            auto& slot = state->entries[issuer];
+            if (!slot) slot = std::make_shared<Entry>();
+            entry = slot;
+            const auto now = state->clock();
+            if (!entry->keys.empty() && now - entry->fetched < kJwksTtl)
+                co_return entry->keys;
+            if (!entry->fetching && now >= entry->retry_at) {
+                entry->fetching = std::make_shared<runtime::async_event>();
+                start = true;
+            }
+            finished = entry->fetching;
+        }
+        if (start) {
+            // The initiating request owns the refresh, bounded by its own timer.
+            // Defer its cancellation so another waiter cannot lose the flight,
+            // and server shutdown joins this work with the initiating request.
+            co_await runtime::with_stop_token(
+                refresh(state, entry, finished, std::move(issuer),
+                        std::move(transport)), {});
+        } else if (finished) {
+            const auto [error] = co_await runtime::timeout(finished->wait(), kJwksDeadline);
+            if (error) co_return std::vector<JwkKey>{};
+        }
+        const std::lock_guard lock(state->mutex);
+        if (state->clock() - entry->fetched < kJwksTtl + kJwksStaleGrace)
+            co_return entry->keys;
+        co_return std::vector<JwkKey>{};
+    }
+
+    static runtime::task<std::optional<ClerkClaims>> verify(
+        std::shared_ptr<State> state, std::string issuer, std::string token,
+        connect::AsyncHttpTransport transport, long now_unix);
+};
+
+ClerkJwksCache::ClerkJwksCache(Clock clock)
+    : state_(std::make_shared<State>(std::move(clock))) {}
+
+void ClerkJwksCache::clear() {
+    const std::lock_guard lock(state_->mutex);
+    // Existing flights finish into their original entry, never repopulating a
+    // cleared cache or waking waiters for a newer fetch.
+    state_->entries.clear();
 }
 
-std::optional<ClerkClaims> verify_clerk_jwt(std::string_view issuer, std::string_view token,
-                                            const zetta::connect::HttpTransport& transport,
-                                            long now_unix) {
-    if (issuer.empty()) return std::nullopt;
-    const auto parts = split_jwt(token);
-    if (!parts) return std::nullopt;
-
-    // Header: RS256 + a kid.
-    const auto header_json = base64url_decode((*parts)[0]);
-    if (!header_json) return std::nullopt;
-    const nlohmann::json header = nlohmann::json::parse(*header_json, nullptr, false);
-    if (header.is_discarded() || header.value("alg", "") != "RS256") return std::nullopt;
-    const std::string kid = header.value("kid", "");
-
-    // Payload: iss must match, exp/nbf must hold.
-    const auto payload_json = base64url_decode((*parts)[1]);
-    if (!payload_json) return std::nullopt;
-    const nlohmann::json payload = nlohmann::json::parse(*payload_json, nullptr, false);
-    if (payload.is_discarded()) return std::nullopt;
-
-    std::string token_iss = payload.value("iss", "");
-    std::string want_iss(issuer);
-    auto strip_slash = [](std::string& s) { if (!s.empty() && s.back() == '/') s.pop_back(); };
-    strip_slash(token_iss);
-    strip_slash(want_iss);
-    if (token_iss != want_iss) return std::nullopt;
-
-    const long now = now_unix != 0
-                         ? now_unix
-                         : static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(
-                                                 std::chrono::system_clock::now().time_since_epoch())
-                                                 .count());
-    if (payload.contains("exp") && payload["exp"].is_number()) {
-        if (now >= payload["exp"].get<long>()) return std::nullopt;  // expired
-    }
-    if (payload.contains("nbf") && payload["nbf"].is_number()) {
-        if (now < payload["nbf"].get<long>()) return std::nullopt;  // not yet valid
-    }
-
-    // Signature over "header.payload".
-    const auto signature = base64url_decode((*parts)[2]);
-    if (!signature) return std::nullopt;
-    const std::string_view signed_input(token.data(), (*parts)[1].data() + (*parts)[1].size() - token.data());
-
-    const auto keys = jwks_for(want_iss, transport);
-    if (!keys) return std::nullopt;
-    const JwkKey* match = nullptr;
-    for (const auto& key : *keys) {
-        if (kid.empty() || key.kid == kid) { match = &key; if (!kid.empty()) break; }
-    }
-    if (!match) return std::nullopt;
-    if (!rs256_verify(*match, signed_input, *signature)) return std::nullopt;
-
-    ClerkClaims claims;
-    claims.subject = payload.value("sub", "");
-    claims.email = payload.value("email", "");
-    if (claims.subject.empty()) return std::nullopt;  // no subject → no principal to map
-    return claims;
+runtime::task<std::optional<ClerkClaims>> ClerkJwksCache::verify(
+    std::string issuer, std::string token, connect::AsyncHttpTransport transport,
+    long now_unix) const {
+    return State::verify(state_, std::move(issuer), std::move(token),
+                         std::move(transport), now_unix);
 }
+
+runtime::task<std::optional<ClerkClaims>> ClerkJwksCache::State::verify(
+    std::shared_ptr<State> state, std::string issuer, std::string token,
+    connect::AsyncHttpTransport transport, long now_unix) {
+    try {
+        if (issuer.empty()) co_return std::nullopt;
+        const auto parts = split_jwt(token);
+        if (!parts) co_return std::nullopt;
+
+        // Header: RS256 + a kid.
+        const auto header_json = base64url_decode((*parts)[0]);
+        if (!header_json) co_return std::nullopt;
+        const nlohmann::json header = nlohmann::json::parse(*header_json, nullptr, false);
+        if (header.is_discarded() || header.value("alg", "") != "RS256") co_return std::nullopt;
+        const std::string kid = header.value("kid", "");
+
+        // Payload: iss must match, exp/nbf must hold.
+        const auto payload_json = base64url_decode((*parts)[1]);
+        if (!payload_json) co_return std::nullopt;
+        const nlohmann::json payload = nlohmann::json::parse(*payload_json, nullptr, false);
+        if (payload.is_discarded()) co_return std::nullopt;
+
+        std::string token_iss = payload.value("iss", "");
+        std::string want_iss(issuer);
+        auto strip_slash = [](std::string& s) { if (!s.empty() && s.back() == '/') s.pop_back(); };
+        strip_slash(token_iss);
+        strip_slash(want_iss);
+        if (token_iss != want_iss) co_return std::nullopt;
+
+        const long now = now_unix != 0
+                             ? now_unix
+                             : static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(
+                                                     std::chrono::system_clock::now().time_since_epoch())
+                                                     .count());
+        if (payload.contains("exp") && payload["exp"].is_number()) {
+            if (now >= payload["exp"].get<long>()) co_return std::nullopt;  // expired
+        }
+        if (payload.contains("nbf") && payload["nbf"].is_number()) {
+            if (now < payload["nbf"].get<long>()) co_return std::nullopt;  // not yet valid
+        }
+
+        // Signature over "header.payload".
+        const auto signature = base64url_decode((*parts)[2]);
+        if (!signature) co_return std::nullopt;
+        const std::string_view signed_input(token.data(), (*parts)[1].data() + (*parts)[1].size() - token.data());
+
+        const auto keys = co_await keys_for(state, want_iss, std::move(transport));
+        if (keys.empty()) co_return std::nullopt;
+        const JwkKey* match = nullptr;
+        for (const auto& key : keys) {
+            if (kid.empty() || key.kid == kid) { match = &key; if (!kid.empty()) break; }
+        }
+        if (!match) co_return std::nullopt;
+        if (!rs256_verify(*match, signed_input, *signature)) co_return std::nullopt;
+
+        ClerkClaims claims;
+        claims.subject = payload.value("sub", "");
+        claims.email = payload.value("email", "");
+        if (claims.subject.empty()) co_return std::nullopt;  // no subject → no principal to map
+        co_return claims;
+    } catch (...) {
+        co_return std::nullopt;
+    }
+}
+
+namespace {
+ClerkJwksCache& shared_cache() {
+    static ClerkJwksCache cache;
+    return cache;
+}
+
+struct BlockingExchange {
+    std::optional<connect::HttpResponse> response;
+    runtime::async_event finished;
+};
+
+runtime::task<> run_blocking_transport(connect::HttpTransport transport,
+                                       connect::HttpRequest request,
+                                       std::shared_ptr<BlockingExchange> exchange) {
+    try {
+        exchange->response = transport(request);
+    } catch (...) {
+        exchange->response = connect::HttpResponse{0, {}, "JWKS transport failed"};
+    }
+    exchange->finished.set();
+    co_return;
+}
+
+runtime::io_task<connect::HttpResponse> offloaded_transport(
+    connect::HttpTransport transport, connect::HttpRequest request) {
+    auto exchange = std::make_shared<BlockingExchange>();
+    runtime::spawn(run_blocking_transport(std::move(transport), std::move(request),
+                                          exchange), {});
+    const auto [error] = co_await exchange->finished.wait();
+    if (error) co_return {error, connect::HttpResponse{}};
+    co_return {{}, std::move(*exchange->response)};
+}
+}  // namespace
+
+runtime::task<std::optional<ClerkClaims>> verify_clerk_jwt_async(
+    std::string issuer, std::string token, connect::AsyncHttpTransport transport,
+    long now_unix) {
+    return shared_cache().verify(std::move(issuer), std::move(token),
+                                 std::move(transport), now_unix);
+}
+
+std::optional<ClerkClaims> verify_clerk_jwt(
+    std::string_view issuer, std::string_view token,
+    const connect::HttpTransport& transport, long now_unix) {
+    connect::AsyncHttpTransport asynchronous;
+    if (transport) {
+        asynchronous = [transport](const connect::HttpRequest& request) {
+            return offloaded_transport(transport, request);
+        };
+    }
+    return runtime::block_on(verify_clerk_jwt_async(
+        std::string(issuer), std::string(token), std::move(asynchronous), now_unix));
+}
+
+void clear_clerk_jwks_cache() { shared_cache().clear(); }
 
 }  // namespace zetta::api

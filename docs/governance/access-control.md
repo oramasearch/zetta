@@ -443,8 +443,8 @@ their own. The gate is **always on** (#799) — there is no mode switch:
   error, exit 2.)
 - **No shared-secret path anywhere.** The legacy `--mcp-token` CLI flag is gone,
   and the embedded `ApiServer` no longer carries a `bearer_token` (or
-  `require_auth`) option — its gate is **unconditional**. A bearer that resolves to
-  a user via the token store is the *only* way in; there is no shared secret to
+  `require_auth`) option — its gate is **unconditional**. A native bearer or
+  configured Clerk JWT must resolve to a user; there is no shared secret to
   configure. (The OpenAPI document still *names* its security scheme `bearer_token`
   — that is just the scheme identifier saying a bearer is required.)
 - **The in-process headed-GUI local session is unaffected.** The governed console
@@ -455,6 +455,38 @@ their own. The gate is **always on** (#799) — there is no mode switch:
 
 The CORS preflight (`OPTIONS`) is answered by the `cors()` middleware **before**
 the gate, so a credential-less browser preflight is never blocked.
+
+### Clerk key caching (#1416)
+
+When `--clerk-issuer` is configured, the gate tries the native token store first,
+then verifies JWT-shaped bearers (including `zetta_session` cookie values)
+against the configured issuer's JWKS. The subject maps to `clerk:<sub>` under
+the same role and capability checks. Without an issuer, authentication needs no
+Clerk egress.
+
+`ClerkJwksCache` uses the installed asynchronous native HTTP transport. One
+refresh per issuer serves every concurrent miss; callers suspend on
+a completion event, leaving the HTTP executor free to authenticate native tokens.
+The fetch and each cold-cache wait have a two-second deadline. The response is
+limited to 1 MiB. The initiating request owns the refresh and defers cancellation until its
+deadline; cancelling another waiter leaves that refresh running;
+a cancelled transport waiter never reads the response while I/O still owns it.
+
+Successful key sets stay fresh for 55 minutes. After that, existing keys can
+verify signatures for at most five more minutes after a refresh fails.
+A failed refresh never advances that cutoff; at 60 minutes without a successful
+refresh, Clerk authentication returns 401. A successful refresh replaces the
+whole key set, so removed keys stop verifying immediately. Unknown key IDs do
+not force another fetch or extend any deadline.
+
+Network errors, timeouts, non-2xx status, malformed or empty JWKS, and transport
+exceptions all defer the next fetch for five seconds. Retry timing uses the
+monotonic clock. Issuer mismatch, expired/not-yet-valid tokens, and malformed
+headers fail before fetching. Signature checks still apply to cached and stale
+keys. These are node-local public-key caches, not replicated identity state;
+each node verifies independently. There is no new JSON format or capability.
+The synchronous verifier remains available to non-coroutine callers and shares
+the same cache; custom blocking transports must honor `timeout_seconds`.
 
 ### From bearer to a capability decision
 

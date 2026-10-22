@@ -4526,7 +4526,7 @@ bool ApiServer::start() {
         // on first sight). No issuer configured → this never runs (bearer-only).
         if (resolved_user_id.empty() && !impl.options.clerk_issuer.empty() &&
             looks_like_jwt(bearer)) {
-            if (auto claims = verify_clerk_jwt(impl.options.clerk_issuer, bearer)) {
+            if (auto claims = co_await verify_clerk_jwt_async(impl.options.clerk_issuer, bearer)) {
                 const std::string principal_name = "clerk:" + claims->subject;
                 co_await impl.bridge.run_on_owner([&] {
                     auto user = impl.node.find_user(principal_name);
