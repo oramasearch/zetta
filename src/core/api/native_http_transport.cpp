@@ -264,7 +264,7 @@ void apply_headers(http::request& message, const connect::HttpRequest& request,
 // Returns the reason on failure, empty on success. Never names a secret. When the
 // status is a 3xx and `redirects_remaining > 0`, captures `Location` into
 // `location` and stops before the body (the caller re-dials). Otherwise the body
-// streams to `request.download_to_path` when set, else into `response.body`.
+// streams to the download sink or path when set, else into `response.body`.
 template <class Stream>
 runtime::io_task<std::string> exchange_over(Stream& stream,
                                             const connect::HttpRequest& request,
@@ -321,7 +321,9 @@ runtime::io_task<std::string> exchange_over(Stream& stream,
     // error status (404, ...) is buffered so the caller sees the reason and no
     // junk file is left behind.
     std::ofstream file;
-    const bool to_file = !request.download_to_path.empty() &&
+    const bool to_sink = request.download_sink &&
+                         response.status >= 200 && response.status < 300;
+    const bool to_file = !to_sink && !request.download_to_path.empty() &&
                          response.status >= 200 && response.status < 300;
     if (to_file) {
         file.open(request.download_to_path,
@@ -342,7 +344,12 @@ runtime::io_task<std::string> exchange_over(Stream& stream,
         }
         std::size_t consumed = 0;
         for (const boost::capy::const_buffer& buffer : buffers) {
-            if (to_file) {
+            if (to_sink) {
+                if (!request.download_sink(std::string_view(
+                        static_cast<const char*>(buffer.data()), buffer.size()))) {
+                    co_return {{}, "could not write the download sink"};
+                }
+            } else if (to_file) {
                 file.write(static_cast<const char*>(buffer.data()),
                            static_cast<std::streamsize>(buffer.size()));
             } else {
