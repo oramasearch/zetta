@@ -966,17 +966,13 @@ struct ApiServer::Impl {
         return jsonrpc_error(id, -32601, "unknown method '" + method + "'");
     }
 
-    // Serve one llms.txt page (#645): `page` is "index" (/llms.txt), "full"
-    // (/llms-full.txt), or a topic name (/llms/<topic>.txt). Auth is enforced
-    // at the router authorization filter (#745); rendering touches the Node, so it is
-    // marshaled onto the owning loop via the bridge, wrapped in a span (every
-    // operation is observable). Shared by the three GET routes in start().
+    // Public discovery docs (#645, #1402): index, full, or one topic. Renderers
+    // accept only the registry, so every route is independent of workspace
+    // inventory. Marshal for registry access and the owner-thread span recorder.
     boost::http::route_task serve_llms(boost::http::route_params& route,
                                        std::string page) {
         namespace http = boost::http;
 
-        // Auth is enforced once, up front, by the router authorization filter (#745) —
-        // this route only runs for an already-authorized request.
         std::string traceparent;
         if (route.req.count("traceparent") != 0) {
             traceparent = std::string(route.req.at("traceparent"));
@@ -992,12 +988,12 @@ struct ApiServer::Impl {
                 &node.span_recorder(), trace, "llms:" + page);
             span.set_attribute("page", page);
             if (page == "index") {
-                body = render_llms_index(node, capability_registry);
+                body = render_llms_index(capability_registry);
             } else if (page == "full") {
-                body = render_llms_full(node, capability_registry);
+                body = render_llms_full(capability_registry);
             } else {
                 auto rendered =
-                    render_llms_topic(node, capability_registry, page);
+                    render_llms_topic(capability_registry, page);
                 found = rendered.has_value();
                 if (found) body = std::move(*rendered);
             }
@@ -4251,7 +4247,8 @@ bool ApiServer::start() {
 
     // Discovery docs are PUBLIC (registered before the gate, like /mcp.md): llms.txt is meant to be
     // fetched credential-free (an agent reads it to learn how to authenticate), and the OpenAPI
-    // document is the API's own spec. The capability routes + /v1/specs stay bearer-gated below.
+    // document is the API's own spec. LLM renderers take no Node state (#1402).
+    // The capability routes + /v1/specs stay bearer-gated below.
     impl.openapi_body = openapi_document(impl.capability_registry).dump(2);
     router.add(http::method::get, "/llms.txt", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_llms(route, "index");

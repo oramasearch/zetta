@@ -552,8 +552,8 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   dataset.
 - **#645 llms.txt endpoints built**: the MCP server also answers plain
   `GET /llms.txt` / `/llms/<topic>.txt` / `/llms-full.txt` — agent docs
-  generated live from the registry + node state, no second prose source
-  ([api/llms-endpoints.md](api/llms-endpoints.md)).
+  generated from the registry and build version, with no workspace inventory
+  (#1402; [api/llms-endpoints.md](api/llms-endpoints.md)).
 - **#646 spec index built** (and the #469 fold completed with it):
   `GET /v1/specs` + `/v1/specs/<name>` and the `list_specs`/`get_spec` tools
   serve the OpenAPI document + every capability schema + all 86 boundary
