@@ -180,3 +180,9 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
 See also [../data/connector-query.md](../data/connector-query.md) (what the
 transport is for) and [../cluster/README.md](../cluster/README.md) (the inbound
 half of the networking boundary).
+
+Source connector requests carry `DestinationPolicy::Connector` (#1414). They
+require HTTPS and apply the separate exact-host/port connector allowance to
+private and loopback addresses on every resolved candidate and redirect;
+metadata and link-local are always denied. See the
+[connector destination policy](../data/connector-query.md#connector-destination-approval-1414-lsr-241).

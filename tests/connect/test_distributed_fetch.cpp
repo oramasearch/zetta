@@ -152,6 +152,7 @@ struct FakeSource {
     }
 
     HttpResponse answer(const HttpRequest& request) {
+        EXPECT_EQ(request.destinations, zetta::connect::DestinationPolicy::Connector);
         HttpResponse response;
         response.status = 200;
         if (request.method == "POST") {
@@ -222,6 +223,7 @@ struct SlowSource : FakeSource {
     std::atomic<int> pending{2};
 
     HttpResponse answer_slow(const HttpRequest& request) {
+        EXPECT_EQ(request.destinations, zetta::connect::DestinationPolicy::Connector);
         HttpResponse response;
         if (request.method == "POST" || pending.fetch_sub(1) > 0) {
             response.status = 202;
@@ -382,3 +384,30 @@ TEST(DistributedFetch, RunConnectorQueryUsesTheConcurrentPathWhenGivenOne) {
 }
 
 }  // namespace
+
+TEST(DistributedFetch, RefusesANonSnowflakeConfigBeforeTransport) {
+    auto wrong_protocol = config();
+    wrong_protocol.type = "postgres";
+    wrong_protocol.host = "db.workspace.svc";
+    wrong_protocol.user = "reader";
+    wrong_protocol.database = "app";
+    // The account is unused for Postgres, so only protocol binding prevents
+    // these public fetch functions from turning it into an HTTP authority.
+    wrong_protocol.account = "other.example/path";
+    int calls = 0;
+    const zetta::connect::HttpTransport sync = [&](const HttpRequest&) {
+        ++calls;
+        return HttpResponse{};
+    };
+    const AsyncHttpTransport async = [&](const HttpRequest&)
+        -> zetta::runtime::io_task<HttpResponse> {
+        ++calls;
+        co_return {{}, HttpResponse{}};
+    };
+    EXPECT_FALSE(zetta::connect::submit_connector_statement(wrong_protocol, "SELECT 1", 1, sync).ok());
+    zetta::connect::StatementPlan plan;
+    plan.handle = "handle";
+    EXPECT_FALSE(zetta::connect::fetch_result_partitions_serially(wrong_protocol, plan, {1}, 1, sync).ok());
+    EXPECT_FALSE(zetta::connect::fetch_result_partitions(wrong_protocol, plan, {1}, 1, 1, async).ok());
+    EXPECT_EQ(calls, 0);
+}

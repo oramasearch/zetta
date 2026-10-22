@@ -116,7 +116,7 @@ Two qualifications on that, both per-call rather than per-tool
   (#995). Off, the call executes and audits as `consent_bypassed`.
 - **A loopback Postgres, MySQL, TiDB or lake service is not an external system.** The capability's
   `ConsentDescriber` reads the resolved connector: a host of `127.0.0.1` /
-  `localhost` / `::1` or a unix socket never leaves the machine, so it is not
+  `localhost` / `::1` stays on the machine, so it is not
   gated even with `--governance` on (#994). A remote source's challenge names
   that connector's real type and target — it used to describe every source as
   Snowflake.
@@ -156,6 +156,61 @@ escape-spelling and SQL-shaped inputs preserve both their value and the query
 structure, including the column-catalog query. Postgres fake-runner tests
 check both string settings. These fake tests need no warehouse or database;
 the local Postgres adapter test verifies UTF-8 overrides `PGCLIENTENCODING=SJIS`.
+
+## Connector destination approval (#1414, LSR-241)
+
+`list_source_tables` accepts a saved connection for a reader with discovery
+permission. An inline connector also requires `orchestration:create_connection`
+(and, for a user identity, access to the `create_connection` tool). The same
+rule applies to REST, MCP and calls made by agents through the registry.
+
+All Postgres and Snowflake query paths validate their authority before any
+protocol exchange, including direct C++ calls, asynchronous submission and
+serial/concurrent distributed partition reads. Snowflake accounts are DNS host
+prefixes, never URLs. Protocol-specific C++ entry points also reject other
+connector types before transport, including a saved connection whose type
+changed between Snowflake submission and partition fetch. Postgres accepts one DNS hostname or bare IP literal and
+a numeric TCP port (default 5432). Socket paths, host lists, authority
+punctuation, IPv6 zone IDs and embedded NULs are refused.
+
+Resolved public addresses are allowed. A private or loopback address requires
+an exact operator-approved hostname and port:
+
+```sh
+zetta --connector-allow-destinations db.workspace.svc.cluster.local:5432
+ZETTA_CONNECTOR_ALLOW_DESTINATIONS="db.workspace.svc.cluster.local:5432,localhost:5433"
+```
+
+The flag overrides the environment. Entries are comma/space-separated, with
+`[address]:port` for IPv6. DNS comparisons ignore case and one final dot; IP
+literals are canonicalized and ports compared numerically. There are no
+wildcards or broad private-range grants. Invalid settings stop startup.
+Metadata, link-local, reserved and multicast addresses are always denied,
+including IPv4 addresses embedded in IPv6, even for an approved hostname.
+Action-delivery allowances and `ZETTA_EGRESS_ALLOW=*` do not grant connector
+access. Consent approval does not grant destination access either.
+
+The HTTP transport checks every resolved candidate and every redirect hop,
+and requires HTTPS for Snowflake requests. Postgres resolves once on its
+existing offload worker and passes only approved numeric `hostaddr` entries
+to libpq, alongside the original host for TLS verification. Neither protocol
+looks the host up again between policy approval and connection. A refusal
+occurs before protocol connection and returns no peer response.
+
+**Deployment change:** set `ZETTA_CONNECTOR_ALLOW_DESTINATIONS` on every
+workspace Zetta, including every distributed-fetch participant, to the exact
+service DNS names and ports of that workspace's approved databases. Use only
+its own namespace's services; do not grant another workspace's service name,
+a broad cluster address range, or a link-local destination. New connector
+implementations must apply this policy at their dialer too; adding a connector
+type does not grant network access. Existing private/loopback sources need
+this setting before their next query; Unix-socket and multi-host configs must
+be replaced by a single approved TCP authority. No new JSON format is added.
+
+`test_connector_destinations.cpp` covers exact authority matching, malformed
+settings, address encodings, unconditional metadata/link-local denial and
+native HTTP/Postgres refusing before any TCP connection. The registry test
+covers user and AccessKey readers, saved sources and privileged inline discovery.
 
 ## No foreign runtime (ADR-17)
 

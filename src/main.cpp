@@ -14,6 +14,7 @@
 #include "zetta/compute/mlx_serving.hpp"
 #include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
+#include "zetta/connect/connector_destinations.hpp"
 #include "zetta/connect/model_fetch.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
@@ -150,6 +151,7 @@ struct Options {
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
     std::string webapp_dir;                     // --webapp-dir PATH (the Studio SPA bundle)
     std::string clerk_issuer;                   // --clerk-issuer URL (Clerk JWT verify; else bearer-only)
+    std::optional<std::string> connector_allow_destinations;  // exact host:port entries (#1414)
     std::optional<std::string> action_allow_destinations;  // --action-allow-destinations LIST (#1394)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
@@ -259,6 +261,8 @@ void print_usage(const char* argv0) {
         "                      executes on the first call and the bypass is\n"
         "                      audited as consent_bypassed. Turn this on to\n"
         "                      require a distinctly-privileged approval again\n"
+        "  --connector-allow-destinations LIST\n"
+        "                exact host:port entries allowed for private/loopback connectors\n"
         "  --action-allow-destinations LIST\n"
         "                      Address classes an action or report delivery\n"
         "                      endpoint may reach besides public addresses:\n"
@@ -284,6 +288,7 @@ void print_usage(const char* argv0) {
         "  ZETTA_PUBSUB_DISPATCH_THREADS -> --pubsub-dispatch-threads\n"
         "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
+        "  ZETTA_CONNECTOR_ALLOW_DESTINATIONS -> --connector-allow-destinations\n"
         "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
         "  ZETTA_EGRESS_ALLOW  Egress allowlist -> --egress-allow\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
@@ -468,6 +473,9 @@ Options parse_args(int argc, char** argv) {
             o.audit_summary_retention_from_cli = true;
         } else if (arg == "--governance") {
             o.node.enforce_consent = true;
+        } else if (arg == "--connector-allow-destinations") {
+            const char* value = take_value(argc, argv, i, o, "--connector-allow-destinations");
+            if (value) o.connector_allow_destinations = value;
         } else if (arg == "--action-allow-destinations") {
             const char* v = take_value(argc, argv, i, o, "--action-allow-destinations");
             if (v) o.action_allow_destinations = v;
@@ -762,6 +770,21 @@ int main(int argc, char** argv) {
     }
     if (!apply_pubsub_environment(opts)) {
         return 2;
+    }
+    {
+        auto list = opts.connector_allow_destinations;
+        if (!list) {
+            if (const char* environment = std::getenv("ZETTA_CONNECTOR_ALLOW_DESTINATIONS"))
+                list = environment;
+        }
+        std::string error;
+        const auto allowed =
+            zetta::connect::ConnectorDestinations::parse(list.value_or(""), &error);
+        if (!allowed) {
+            std::fprintf(stderr, "zetta: --connector-allow-destinations: %s\n", error.c_str());
+            return 2;
+        }
+        zetta::connect::set_connector_destinations(*allowed);
     }
     // Where an author-chosen action or report delivery endpoint may reach (#1394):
     // public addresses only, plus the classes named here. An explicit flag wins

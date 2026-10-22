@@ -9124,28 +9124,24 @@ const nlohmann::json& create_dataset_from_query_output_schema() {
     return schema;
 }
 
-// Does this connector stay on the machine the node runs on? A loopback host or
-// a unix-socket path never crosses the network, so it is not "a cloud provider"
-// by any reading (#994). Kept deliberately narrow — loopback and sockets only.
-// A private-range address may still be a different machine across a VPN, and
-// that is a network reach worth naming.
+// Consent and destination approval are separate checks. A loopback source may
+// skip cloud consent, but still needs an exact operator connector allowance.
 bool is_local_source(const zetta::connect::ConnectorConfig& config) {
+    const auto loopback = [](const std::string& host) {
+        return host == "localhost" || host == "127.0.0.1" || host == "::1";
+    };
     // A lake service is local only when its endpoint names a loopback host.
     // (Keyed on the type: an `endpoint` on any other type is never read.)
     if (config.type == "lake_sqlite" || config.type == "lake_duckdb" ||
         config.type == "lake_polars") {
-        const std::string host = zetta::connect::endpoint_host(config.endpoint);
-        return host == "localhost" || host == "127.0.0.1" || host == "::1";
+        return loopback(zetta::connect::endpoint_host(config.endpoint));
     }
-    // warehouses are remote by construction
+    // Warehouses are remote by construction. Socket paths and an empty host are
+    // refused by the connector authority check, so only a loopback name is local.
     if (config.type != "postgres" && config.type != "mysql" && config.type != "tidb") {
         return false;
     }
-    const std::string& host = config.host;
-    if (host.empty()) return true;          // libpq default: the local socket
-    if (host.front() == '/') return true;   // an explicit unix-socket directory
-    return host == "localhost" || host == "127.0.0.1" || host == "::1" ||
-           host == "[::1]";
+    return loopback(config.host);
 }
 
 // Resolve the connector this call should use: either a saved connection by name
@@ -9276,7 +9272,8 @@ const nlohmann::json& list_source_tables_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description",
-             "a saved connection by name (give this OR an inline connector)"}}},
+             "a saved connection by name (inline discovery requires create_connection "
+             "permission)"}}},
           {"connector", connector_property_schema()},
           {"schema",
            {{"type", "string"},
@@ -9333,6 +9330,27 @@ const nlohmann::json& list_source_tables_output_schema() {
 
 ApiResult handle_list_source_tables(const nlohmann::json& input,
                                     ApiContext& context) {
+    // A reader may browse an approved saved source, but cannot choose a new
+    // network destination through an inline connector (#1414).
+    if (input.contains("connector")) {
+        bool permitted = context.acting_key.empty() && !context.acting_is_user;
+        context.node.run_on_owner([&] {
+            const zetta::governance::Operation operation{
+                zetta::governance::CapabilityDomain::Orchestration, "create_connection"};
+            if (context.acting_is_user) {
+                permitted =
+                    context.node.may_call_tool(context.acting_key, true, "create_connection") &&
+                    static_cast<bool>(context.node.authorize_user(context.acting_key, operation));
+            } else if (!context.acting_key.empty()) {
+                permitted =
+                    static_cast<bool>(context.node.authorize(context.acting_key, operation));
+            }
+        });
+        if (!permitted)
+            return ApiResult::failure(
+                "unauthorized",
+                "inline discovery requires create_connection permission; use a saved connection");
+    }
     std::string reason;
     const std::optional<zetta::connect::ConnectorConfig> config =
         resolve_query_connector(input, context, reason);
@@ -13103,7 +13121,9 @@ void register_core_capabilities(Registry& registry) {
         "this to FIND a table, then create_dataset_from_query to pull it. "
         "Filter with match='score' to locate scoring tables. A saved "
         "connection in safe mode warn_all answers safe_mode_warning naming the "
-        "catalog statements first; repeat with safe_mode_confirmation to run them.",
+        "catalog statements first; repeat with safe_mode_confirmation to run them. "
+        "Inline connectors require create_connection permission; saved and inline "
+        "sources share the operator connector destination policy.",
         list_source_tables_schema(),
         list_source_tables_output_schema(),
         CapabilityKind::Read,

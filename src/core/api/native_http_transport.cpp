@@ -31,6 +31,7 @@
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/runtime/net.hpp"
+#include "zetta/connect/connector_destinations.hpp"
 
 // The native coroutine HTTPS client behind the connector transport interface (#827).
 //
@@ -471,6 +472,12 @@ private:
             co_return refuse();
         }
 
+        const bool connector = request.destinations == connect::DestinationPolicy::Connector;
+        if (connector && (!parsed.secure || !connect::valid_connector_host(parsed.host) ||
+                          !connect::connector_port(parsed.port))) {
+            co_return std::string("connector: expected an HTTPS URL with one valid authority");
+        }
+        const auto connector_policy = connect::connector_destinations();
         net::resolver resolver(io_context_);
         auto [resolve_error, results] = co_await runtime::timeout(
             resolver.resolve(parsed.host, parsed.port), remaining());
@@ -488,7 +495,7 @@ private:
             request.destinations == connect::DestinationPolicy::PublicOnly;
         const connect::AllowedDestinations allowed =
             public_only ? connect::allowed_destinations() : connect::AllowedDestinations{};
-        bool any_allowed = !public_only;
+        bool any_allowed = !public_only && !connector;
         std::string refused_reason;
 
         net::tcp_socket socket(io_context_);
@@ -507,15 +514,18 @@ private:
                 if (!policy.allows_address(address, port_number)) continue;
                 any_address_allowed = true;
             }
-            if (public_only) {
+            if (public_only || connector) {
                 const std::string address = endpoint.is_v4()
                                                 ? endpoint.v4_address().to_string()
                                                 : endpoint.v6_address().to_string();
                 const connect::AddressClass kind = connect::classify_address(address);
-                if (!connect::destination_allowed(kind, allowed)) {
+                if (connector ? !connector_policy.allows(parsed.host, parsed.port, address)
+                              : !connect::destination_allowed(kind, allowed)) {
                     if (refused_reason.empty()) {
                         refused_reason =
-                            connect::destination_refused_reason(parsed.host, address, kind);
+                            connector
+                                ? "destination refused: connector has no approved resolved address"
+                                : connect::destination_refused_reason(parsed.host, address, kind);
                     }
                     continue;
                 }

@@ -14,6 +14,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include "zetta/connect/connector_destinations.hpp"
 
 namespace zetta::connect {
 namespace {
@@ -292,6 +293,7 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
         }
     }
 
+    if (!config.destination_rejection().empty()) return std::nullopt;
     return config;
 }
 
@@ -299,6 +301,34 @@ std::string endpoint_host(const std::string& endpoint) {
     const std::optional<lake_sql::Endpoint> parsed =
         lake_sql::parse_endpoint(endpoint, nullptr);
     return parsed ? parsed->host : std::string{};
+}
+
+std::string ConnectorConfig::destination_rejection() const {
+    // C APIs consume terminated strings: embedded NULs must never truncate a
+    // validated authority or connection parameter on the way to the protocol.
+    for (const auto* field : {&type, &account, &token, &auth, &database, &schema, &warehouse, &role,
+                              &host, &port, &user, &sslmode}) {
+        if (field->find('\0') != std::string::npos) return "connector: embedded NUL is not allowed";
+    }
+    if (type == "snowflake") {
+        if (account.empty() || account.ends_with('.') || account.find(':') != account.npos ||
+            !valid_connector_host(account + ".snowflakecomputing.com")) {
+            return "connector.account: expected a Snowflake account identifier";
+        }
+        if (auth != "pat" && auth != "oauth") return "connector.auth: expected pat or oauth";
+        return {};
+    }
+    if (type == "postgres") {
+        if (!valid_connector_host(host))
+            return "connector.host: expected one DNS host or IP literal";
+        if (!port.empty() && !connector_port(port))
+            return "connector.port: expected a TCP port from 1 to 65535";
+        if (!sslmode.empty() && sslmode != "disable" && sslmode != "allow" && sslmode != "prefer" &&
+            sslmode != "require" && sslmode != "verify-ca" && sslmode != "verify-full")
+            return "connector.sslmode: unsupported TLS mode";
+        return {};
+    }
+    return "connector.type: unknown connector type '" + type + "'";
 }
 
 // --- The registry + the guard -------------------------------------------------
@@ -320,22 +350,22 @@ const nlohmann::json& connector_config_schema() {
   "additionalProperties": false,
   "properties": {
     "type": {"type": "string", "enum": ["snowflake", "postgres", "mysql", "tidb", "lake_sqlite", "lake_duckdb", "lake_polars"], "description": "Which connector implementation to use. tidb speaks the MySQL protocol (default port 4000). lake_sqlite, lake_duckdb and lake_polars read lake's SQLite, DuckDB and Polars services over their HTTP API."},
-    "account": {"type": "string", "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1)."},
+    "account": {"type": "string", "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation."},
     "token": {"type": "string", "description": "The secret: a Snowflake programmatic access / OAuth token, a Postgres, MySQL or TiDB password, or a lake service's bearer token. Never serialized back out."},
     "auth": {"type": "string", "enum": ["pat", "oauth"], "default": "pat", "description": "Snowflake: how to present the bearer token."},
     "database": {"type": "string", "description": "Session database (Snowflake, Postgres; MySQL's optional default schema)."},
     "schema": {"type": "string", "description": "Session schema (Snowflake, Postgres)."},
     "warehouse": {"type": "string", "description": "Snowflake compute warehouse (required for token auth)."},
     "role": {"type": "string", "description": "Optional session role."},
-    "host": {"type": "string", "description": "Postgres, MySQL or TiDB host, e.g. 127.0.0.1."},
-    "port": {"type": "string", "description": "Postgres, MySQL or TiDB port (default 5432 / 3306 / 4000)."},
+    "host": {"type": "string", "description": "Postgres, MySQL or TiDB: one DNS hostname or bare IP literal. Private and loopback destinations require an exact operator host:port approval; socket paths and multiple hosts are refused."},
+    "port": {"type": "string", "description": "Postgres, MySQL or TiDB numeric TCP port, 1 through 65535 (default 5432 / 3306 / 4000)."},
     "user": {"type": "string", "description": "Postgres role / MySQL or TiDB user."},
     "sslmode": {"type": "string", "description": "Postgres sslmode (disable / require / verify-full / …). MySQL and TiDB: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named)."},
-    "endpoint": {"type": "string", "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL, e.g. http://orders.ws-1.svc.cluster.local:8080. Without a scheme it is https://; plaintext http:// must be written out. No credentials, query or fragment in it: the bearer token goes in `token`."}
+    "endpoint": {"type": "string", "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL with its protocol written out, http:// or https://, e.g. http://orders.ws-1.svc.cluster.local:8080. Private and loopback destinations require an exact operator host:port approval. No credentials, query or fragment in it: the bearer token goes in `token`."}
   }
 })JSON",
-                                                              nullptr,
-                                                              /*allow_exceptions=*/false);
+                                                               nullptr,
+                                                               /*allow_exceptions=*/false);
     return schema;
 }
 
@@ -400,6 +430,10 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
                                     const HttpTransport& transport,
                                     const AsyncHttpTransport& async_transport) {
     ConnectorResult result;
+    if (const auto reason = config.destination_rejection(); !reason.empty()) {
+        result.error = reason;
+        return result;
+    }
 
     const std::string rejection = connector_query_rejection(config, sql);
     if (!rejection.empty()) {

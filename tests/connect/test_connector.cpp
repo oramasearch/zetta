@@ -13,6 +13,7 @@
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/connect/postgres_runner.hpp"
 #include "zetta/connect/source_catalog.hpp"
+#include "zetta/connect/distributed_fetch.hpp"
 
 // #827 — source connectors: run a read-only query against an external system and
 // return rows, which data::add_dataset_rows then shards across the cluster. The
@@ -92,6 +93,10 @@ TEST(ConnectorConfig, ParsesAValidSnowflakeConfig) {
     EXPECT_EQ(config->auth, "pat");  // default
     EXPECT_EQ(config->warehouse, "WH");
     EXPECT_EQ(config->role, "R");
+    // An underscore is part of an identifier, never an authority delimiter.
+    auto underscored = value;
+    underscored["account"] = "org-account_name";
+    EXPECT_TRUE(ConnectorConfig::from_json(underscored));
 }
 
 TEST(ConnectorConfig, NeverSerializesTheToken) {
@@ -169,6 +174,7 @@ TEST(SnowflakeConnector, BuildsTheSqlApiRequestAndTypesTheRows) {
     // The request went to the SQL API v2 statements endpoint…
     ASSERT_EQ(seen.size(), 1u);
     EXPECT_EQ(seen[0].method, "POST");
+    EXPECT_EQ(seen[0].destinations, zetta::connect::DestinationPolicy::Connector);
     EXPECT_EQ(seen[0].url,
               "https://ab12345.us-east-1.snowflakecomputing.com/api/v2/statements");
 
@@ -475,6 +481,9 @@ protected:
         statements.clear();
         ConnectorConfig config;
         config.type = "postgres";
+        config.host = "db.example.com";  // a valid authority (#1414); the fake runner dials nothing
+        config.user = "reader";
+        config.database = "app";
         const auto catalog = zetta::connect::list_source_catalog(config, request);
         EXPECT_TRUE(catalog.ok()) << catalog.error;
         EXPECT_EQ(catalog.tables.size(), 1u);
@@ -538,3 +547,56 @@ TEST_P(PostgresCatalog, TableMatchesRemainOneLiteral) {
 INSTANTIATE_TEST_SUITE_P(StringSettings, PostgresCatalog, testing::Bool());
 
 }  // namespace
+
+TEST(ConnectorConfig, RejectsAuthorityAndProtocolInjectionBeforeAnyTransport) {
+    for (const std::string account :
+         {"localhost:80/", "user@evil", "evil/path", "evil?query", "evil#fragment", "evil%2fpath",
+          "evil\\path", "evil..name", "evil."}) {
+        auto config = snowflake_config();
+        config.account = account;
+        auto value = config.to_json();
+        value["token"] = "test";
+        EXPECT_FALSE(ConnectorConfig::from_json(value)) << account;
+        std::vector<HttpRequest> seen;
+        const auto result =
+            run_connector_query(config, "SELECT 1", 1, canned(200, result_body({}), &seen));
+        EXPECT_FALSE(result.ok()) << account;
+        EXPECT_TRUE(seen.empty()) << account;
+        const auto submitted = zetta::connect::submit_connector_statement(
+            config, "SELECT 1", 1, canned(200, result_body({}), &seen));
+        EXPECT_FALSE(submitted.ok()) << account;
+        zetta::connect::StatementPlan plan;
+        plan.handle = "handle";
+        EXPECT_FALSE(zetta::connect::fetch_result_partitions_serially(
+                         config, plan, {1}, 1, canned(200, result_body({}), &seen))
+                         .ok());
+        const zetta::connect::AsyncHttpTransport async = [&](const HttpRequest& request)
+            -> zetta::runtime::io_task<HttpResponse> {
+            seen.push_back(request);
+            co_return {{}, HttpResponse{}};
+        };
+        EXPECT_FALSE(zetta::connect::fetch_result_partitions(config, plan, {1}, 1, 1, async).ok());
+        EXPECT_TRUE(seen.empty()) << account;
+    }
+    for (const std::string host :
+         {"/var/run/postgresql", "@socket", "a,b", "user@host", "https://host", "host:5432",
+          "host/path", "fe80::1%lo0", "[::1]", "::1/128", "::1 ", "host\nother"}) {
+        EXPECT_FALSE(ConnectorConfig::from_json(
+            {{"type", "postgres"}, {"host", host}, {"user", "u"}, {"database", "d"}}))
+            << host;
+    }
+    for (const char* port : {"0", "65536", "5432,80", "postgres", "-1", " 5432"}) {
+        EXPECT_FALSE(ConnectorConfig::from_json({{"type", "postgres"},
+                                                 {"host", "db"},
+                                                 {"port", port},
+                                                 {"user", "u"},
+                                                 {"database", "d"}}))
+            << port;
+    }
+    auto config = snowflake_config();
+    config.account = std::string("valid\0.evil", 11);
+    auto value = config.to_json();
+    value["token"] = "test";
+    EXPECT_FALSE(ConnectorConfig::from_json(value));
+    EXPECT_FALSE(run_connector_query(config, "SELECT 1", 1, canned(200, result_body({}))).ok());
+}

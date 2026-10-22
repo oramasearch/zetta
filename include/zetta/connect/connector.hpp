@@ -69,11 +69,13 @@ struct ConnectorConfig {
     // line may carry.
     nlohmann::json to_json() const;
 
+    // Validate authority and protocol fields for JSON and direct C++ callers (#1414).
+    // Returns an empty string on success; never includes credential values.
+    std::string destination_rejection() const;
 
-    // Parse + validate at the boundary. Returns std::nullopt (never throws)
-    // unless `value` is an object with a known non-empty `type`, a non-empty
-    // `account`, a non-empty `token`, an `auth` of "pat"/"oauth", optional
-    // string database/schema/warehouse/role, and no unknown keys.
+    // Parse + validate at the boundary. Unknown keys/types and malformed
+    // authority/protocol fields fail without throwing. Snowflake needs an
+    // account + token; Postgres needs host + user + database.
     static std::optional<ConnectorConfig> from_json(const nlohmann::json& value);
 };
 

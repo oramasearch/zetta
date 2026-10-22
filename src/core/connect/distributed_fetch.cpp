@@ -11,6 +11,11 @@
 namespace zetta::connect {
 namespace {
 
+std::string snowflake_config_rejection(const ConnectorConfig& config) {
+    if (config.type != "snowflake") return "snowflake: expected connector.type='snowflake'";
+    return config.destination_rejection();
+}
+
 // How long to wait for an asynchronously-executing statement before giving up.
 // The SQL API answers 202 while a statement is still running; we poll its handle.
 constexpr int kMaxAsyncPolls = 40;
@@ -116,6 +121,10 @@ runtime::task<StatementSubmission> submit_connector_statement_async(
     ConnectorConfig config, std::string sql, std::size_t max_rows,
     HttpTransport transport) {
     StatementSubmission submission;
+    if (const auto reason = snowflake_config_rejection(config); !reason.empty()) {
+        submission.error = reason;
+        co_return submission;
+    }
     if (!transport) {
         submission.error =
             "no outbound HTTP transport is installed in this build — a "
@@ -124,6 +133,7 @@ runtime::task<StatementSubmission> submit_connector_statement_async(
     }
 
     HttpRequest request;
+    request.destinations = DestinationPolicy::Connector;
     request.method = "POST";
     request.url = snowflake::statements_url(config);
     request.headers = snowflake::headers(config);
@@ -213,6 +223,10 @@ PartitionFetchResult fetch_result_partitions_serially(
     const std::vector<std::size_t>& partitions, std::size_t max_rows,
     const HttpTransport& transport) {
     PartitionFetchResult result;
+    if (const auto reason = snowflake_config_rejection(config); !reason.empty()) {
+        result.error = reason;
+        return result;
+    }
     if (partitions.empty()) return result;
     if (!transport) {
         result.error =
@@ -259,6 +273,10 @@ PartitionFetchResult fetch_result_partitions(const ConnectorConfig& config,
                                              std::size_t max_in_flight,
                                              const AsyncHttpTransport& transport) {
     PartitionFetchResult result;
+    if (const auto reason = snowflake_config_rejection(config); !reason.empty()) {
+        result.error = reason;
+        return result;
+    }
     if (partitions.empty()) return result;
     if (!transport) {
         result.error =

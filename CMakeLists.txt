@@ -743,6 +743,7 @@ add_library(zetta-core STATIC
   src/core/connect/http_transport.cpp
   src/core/connect/model_fetch.cpp
   src/core/connect/destination_policy.cpp
+  src/core/connect/connector_destinations.cpp
   src/core/usecases/churn/churn_dataset.cpp
   src/core/pipeline/n8n_import.cpp
   src/core/pipeline/n8n_compile.cpp

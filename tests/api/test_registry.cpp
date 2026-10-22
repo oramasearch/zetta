@@ -46,6 +46,8 @@
 #include "zetta/observability/feedback.hpp"
 #include "zetta/solutions/roi_readout.hpp"
 #include "zetta/version.hpp"
+#include "zetta/connect/connection_store.hpp"
+#include "zetta/connect/postgres_runner.hpp"
 
 namespace {
 
@@ -2484,4 +2486,69 @@ TEST_F(RegistryFixture, TheMonitorAndImproveVerbsAreReachableReads) {
             << name << " must be a read — reads are GET, actions are POST (#954)";
         EXPECT_FALSE(capability->mutates) << name << " reports; it does not act";
     }
+}
+
+// #1414: discovery reads use saved connections; choosing an inline destination
+// requires the same authority as creating one, for both identity systems.
+TEST_F(RegistryFixture, ConnectorDiscoveryRequiresApprovalForInlineDestinations) {
+    struct RunnerScope {
+        zetta::connect::PostgresQueryRunner previous = zetta::connect::postgres_query_runner();
+        ~RunnerScope() { zetta::connect::install_postgres_query_runner(std::move(previous)); }
+    } restore;
+    int calls = 0;
+    zetta::connect::install_postgres_query_runner([&](const auto&, const auto&, auto) {
+        ++calls;
+        return zetta::connect::ConnectorResult{};
+    });
+    const nlohmann::json connector{{"type", "postgres"},
+                                   {"host", "db.workspace.svc"},
+                                   {"port", "5432"},
+                                   {"user", "reader"},
+                                   {"token", "test"},
+                                   {"database", "app"}};
+    const auto config = zetta::connect::ConnectorConfig::from_json(connector);
+    ASSERT_TRUE(config);
+    const std::string save_error = zetta::connect::save_connection(node, "approved", *config);
+    ASSERT_TRUE(save_error.empty()) << save_error;
+    const auto role = node.create_role("discoverer");
+    ASSERT_TRUE(role);
+    auto permissions = role->permissions();
+    permissions.capabilities.grant(zetta::governance::CapabilityDomain::Api, "query");
+    permissions.capabilities.grant(zetta::governance::CapabilityDomain::Orchestration,
+                                   "list_source_tables");
+    role->set_metadata(role->name(), permissions, role->created());
+    const auto user = node.create_user("reader");
+    ASSERT_TRUE(user);
+    ASSERT_TRUE(node.assign_role(user->id(), node.find_role("discoverer")->id()));
+    ApiContext context{node, nullptr, user->id(), trace, &node.span_recorder()};
+    context.acting_is_user = true;
+    auto result = registry.call("list_source_tables", {{"connector", connector}}, context);
+    EXPECT_EQ(result.error.code, "unauthorized") << result.error.message;
+    EXPECT_EQ(calls, 0);
+    result = registry.call("list_source_tables", {{"connection", "approved"}}, context);
+    EXPECT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(calls, 1);
+    permissions.capabilities.grant(zetta::governance::CapabilityDomain::Orchestration,
+                                   "create_connection");
+    role->set_metadata(role->name(), permissions, role->created());
+    result = registry.call("list_source_tables", {{"connector", connector}}, context);
+    EXPECT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(calls, 2);
+
+    const auto principal =
+        node.create_principal("legacy-reader", zetta::governance::PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    zetta::governance::CapabilitySet grants;
+    grants.grant(zetta::governance::CapabilityDomain::Orchestration, "list_source_tables");
+    const auto key =
+        principal->create_key(zetta::governance::unrestricted_scope(), std::move(grants));
+    ASSERT_TRUE(key);
+    context.acting_key = key->id();
+    context.acting_is_user = false;
+    result = registry.call("list_source_tables", {{"connector", connector}}, context);
+    EXPECT_EQ(result.error.code, "unauthorized") << result.error.message;
+    EXPECT_EQ(calls, 2);
+    result = registry.call("list_source_tables", {{"connection", "approved"}}, context);
+    EXPECT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(calls, 3);
 }

@@ -4657,7 +4657,7 @@
                     "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                     "properties": {
                       "account": {
-                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                        "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                         "type": "string"
                       },
                       "auth": {
@@ -4870,7 +4870,7 @@
                     "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                     "properties": {
                       "account": {
-                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                        "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                         "type": "string"
                       },
                       "auth": {
@@ -27321,12 +27321,12 @@
         "operationId": "list_source_tables",
         "parameters": [
           {
-            "description": "a saved connection by name (give this OR an inline connector)",
+            "description": "a saved connection by name (inline discovery requires create_connection permission)",
             "in": "query",
             "name": "connection",
             "required": false,
             "schema": {
-              "description": "a saved connection by name (give this OR an inline connector)",
+              "description": "a saved connection by name (inline discovery requires create_connection permission)",
               "minLength": 1,
               "type": "string"
             }
@@ -27339,7 +27339,7 @@
                   "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                   "properties": {
                     "account": {
-                      "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                      "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                       "type": "string"
                     },
                     "auth": {

@@ -2,13 +2,13 @@
 //
 // This is the ONE translation unit that names libpqxx / libpq (the module-split
 // rule, like Corosio in cluster.cpp). It lives in the zetta-api target so
-// zetta-core links no libpq; it installs itself into the connector seam
+// zetta-core links no libpq; it installs itself into the connector interface
 // (postgres_runner.hpp) at startup via install_postgres_protocol().
 //
 // **Coroutine-wrapped so it never disturbs zetta's threading.** libpqxx is
 // blocking; every libpq call runs inside `runtime::offload`, i.e. on a runtime
 // pool worker, so no zetta network/main/coroutine thread is ever pinned by a DB
-// round-trip. The synchronous `ConnectorResult(...)` the seam expects is
+// round-trip. The synchronous `ConnectorResult(...)` the interface expects is
 // `block_on(offload(...))` — the blocking work is on the pool, the result flows
 // back.
 //
@@ -23,8 +23,14 @@
 
 #include "zetta/connect/postgres_runner.hpp"
 #include "zetta/connect/connector.hpp"
+#include "zetta/connect/connector_destinations.hpp"
 #include "zetta/runtime.hpp"
 
+#include <arpa/inet.h>
+#include <netdb.h>
+
+#include <array>
+#include <memory>
 #include <cstddef>
 #include <string>
 
@@ -47,7 +53,7 @@ std::string quote_conninfo(const std::string& value) {
 }
 
 // Build a libpq connection string from the config. The password rides in `token`.
-std::string connection_string(const ConnectorConfig& config) {
+std::string connection_string(const ConnectorConfig& config, const std::string& address) {
     std::string conn;
     const auto add = [&](const char* key, const std::string& value) {
         if (value.empty()) return;
@@ -56,7 +62,10 @@ std::string connection_string(const ConnectorConfig& config) {
         conn += '=';
         conn += quote_conninfo(value);
     };
+    // host retains the TLS hostname; hostaddr pins libpq to the checked address
+    // and prevents a second DNS lookup (including a PGHOSTADDR environment default).
     add("host", config.host);
+    add("hostaddr", address);
     add("port", config.port.empty() ? std::string("5432") : config.port);
     add("user", config.user);
     add("password", config.token);
@@ -97,8 +106,64 @@ nlohmann::json coerce(const pqxx::field& field, pqxx::oid type_oid) {
 ConnectorResult run_blocking(const ConnectorConfig& config, const std::string& sql,
                              std::size_t max_rows) {
     ConnectorResult result;
+    if (config.type != "postgres") {
+        result.error = "postgres: expected connector.type='postgres'";
+        return result;
+    }
+    if (const auto reason = config.destination_rejection(); !reason.empty()) {
+        result.error = reason;
+        return result;
+    }
+    // This adapter already runs on the offload pool. Resolve once there, check
+    // every candidate, then give libpq only checked numeric hostaddr entries.
+    const auto policy = connector_destinations();
+    const std::string port = config.port.empty() ? "5432" : config.port;
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_NUMERICSERV;
+    addrinfo* resolved = nullptr;
+    const int failure = ::getaddrinfo(config.host.c_str(), port.c_str(), &hints, &resolved);
+    const std::unique_ptr<addrinfo, decltype(&::freeaddrinfo)> addresses(resolved, ::freeaddrinfo);
+    if (failure != 0) {
+        result.error = "postgres: could not resolve connector host";
+        return result;
+    }
+    std::string pinned_addresses;
+    std::string pinned_hosts;
+    std::string pinned_ports;
+    for (const addrinfo* candidate = addresses.get(); candidate; candidate = candidate->ai_next) {
+        std::array<char, INET6_ADDRSTRLEN> buffer{};
+        const void* bytes = nullptr;
+        if (candidate->ai_family == AF_INET) {
+            bytes = &reinterpret_cast<const sockaddr_in*>(candidate->ai_addr)->sin_addr;
+        } else if (candidate->ai_family == AF_INET6) {
+            bytes = &reinterpret_cast<const sockaddr_in6*>(candidate->ai_addr)->sin6_addr;
+        } else
+            continue;
+        if (!::inet_ntop(candidate->ai_family, bytes, buffer.data(), buffer.size())) continue;
+        const std::string address(buffer.data());
+        if (!policy.allows(config.host, port, address)) continue;
+        if (!pinned_addresses.empty()) {
+            pinned_addresses += ',';
+            pinned_hosts += ',';
+            pinned_ports += ',';
+        }
+        pinned_addresses += address;
+        pinned_hosts += config.host;
+        pinned_ports += port;
+    }
+    if (pinned_addresses.empty()) {
+        result.error = "destination refused: Postgres connector has no approved resolved address";
+        return result;
+    }
+    ConnectorConfig pinned = config;
+    // Matching host/hostaddr/port lists preserve multi-address failover without
+    // allowing libpq to select an unvalidated hostname or a socket directory.
+    pinned.host = std::move(pinned_hosts);
+    pinned.port = std::move(pinned_ports);
     try {
-        pqxx::connection conn(connection_string(config));
+        pqxx::connection conn(connection_string(pinned, pinned_addresses));
         // A read-only transaction: SET TRANSACTION READ ONLY, and never
         // committed (it aborts on scope exit) — the source cannot be mutated.
         pqxx::read_transaction tx(conn);
@@ -130,7 +195,7 @@ ConnectorResult run_blocking(const ConnectorConfig& config, const std::string& s
 }  // namespace
 
 // The installed runner: wrap the blocking body in offload so the libpq call runs
-// on a pool worker, and block_on it to satisfy the synchronous seam. Inputs are
+// on a pool worker, and block_on it to satisfy the synchronous interface. Inputs are
 // captured by value into the offload frame.
 void install_postgres_protocol() {
     install_postgres_query_runner(

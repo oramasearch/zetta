@@ -56,9 +56,11 @@ An IPv6 address that carries an IPv4 one (`::ffff:a.b.c.d`, `::a.b.c.d`,
 `64:ff9b::/96`) is classified by that IPv4 address, so `::ffff:127.0.0.1` is
 loopback. Allowing `link-local` does not allow `metadata`.
 
-Requests to destinations the operator configured keep `DestinationPolicy::Any`
-and are unchanged: a warehouse connector, the model-weights fetch, the Clerk
-JWKS.
+Model-weights fetches and Clerk JWKS keep `DestinationPolicy::Any`. Warehouse
+connectors use the independent `DestinationPolicy::Connector`: private and
+loopback addresses require an exact operator-approved host:port; metadata and
+link-local addresses are always denied. See the
+[connector policy](../data/connector-query.md#connector-destination-approval-1414-lsr-241).
 
 ## Configuration
 
