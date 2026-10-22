@@ -24,7 +24,11 @@ lens on a cluster that is primarily driven programmatically
   REPL with `/` commands · Notebooks · Agents · Chat · Data generators), **Documentation**
   (llms.txt · MCP · OpenAPI), and **Advanced** (Infrastructure — the cluster view, demoted per the
   design). User-facing copy follows the Studio vocabulary contract (Pipeline / Verification; raw
-  graph terms only in the explicitly labeled Technical view).
+  graph terms only in the explicitly labeled Technical view). Stored names and
+  Pipeline attributes remain text in the fallback page's embedded JSON (#1405);
+  [script-context encoding](../../api/registry-design.md#json-embedded-in-html-1405)
+  preserves their values without letting them become HTML. An installed Studio
+  bundle receives data through the authenticated API instead.
 - **A coding agent (Claude Code first)** — for many users the primary way to
   operate zetta: they say what they want in their own words, the agent drives
   the MCP surface on their behalf, and the desktop/web lens shows them what

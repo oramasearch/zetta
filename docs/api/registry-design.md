@@ -50,6 +50,20 @@ reads (`server_info`, `list_runs`, `get_run`). No `zetta_` prefix — the server
 provides the namespace; MCP clients that aggregate servers already qualify by
 server name.
 
+## JSON embedded in HTML (#1405)
+
+The standalone server-rendered pages use `web_ui_script_json` whenever JSON
+enters a script body, including `type="application/json"` data blocks. It
+serializes JSON with ASCII escapes and encodes every `<` as `\u003c`, so stored
+strings cannot close a script element or change the HTML parser's state.
+Parsing the result restores the original values, including nested attributes
+and object keys. The graph editor, file panel and assistant rail share this
+encoder. HTML text and attributes continue to use `web_ui_escape`.
+
+This changes HTML output only; stored graph data and API JSON formats are
+unchanged. With an installed Studio bundle, `/` redirects to `/studio/` and
+serves the bundle unchanged; graph data comes through authenticated API reads.
+
 ## Threading — the main-thread bridge (the key decision)
 
 The `Node` tree is **main-thread-only** (the same invariant the network thread

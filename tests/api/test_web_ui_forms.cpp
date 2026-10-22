@@ -14,12 +14,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 
 #include "temp_dir.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/connect/connection_store.hpp"
+#include "zetta/governance/user.hpp"
 #include "zetta/node.hpp"
 
 namespace {
@@ -114,6 +117,88 @@ struct WebUiFormsFixture : ::testing::Test {
         return response;
     }
 };
+
+TEST_F(WebUiFormsFixture, StoredGraphJsonStaysInsideItsDataElement) {
+    const std::string sensitive = "</ScRiPt ><script>inert</script><!--<script>\"&\\u003c";
+    const std::string graph_name = "Pipeline " + sensitive;
+    const std::string project_name = "Project " + sensitive;
+    const auto owner = node.authenticate_token(owner_secret);
+    ASSERT_TRUE(owner);
+    zetta::api::ApiContext context{node};
+    context.acting_key = owner->id();
+    context.acting_is_user = true;
+    auto& registry = server->registry();
+    ASSERT_TRUE(registry.call("create_project", {{"name", project_name}}, context).ok);
+    const nlohmann::json nodes = nlohmann::json::array({
+        {{"id", "step " + sensitive}, {"kind", "connect"}, {"name", "Step " + sensitive},
+         {"attributes", {{sensitive, nlohmann::json::array({sensitive})}}}}});
+    const auto saved = registry.call("save_graph",
+        {{"project", project_name}, {"graph", graph_name}, {"nodes", nodes},
+         {"edges", nlohmann::json::array()}}, context);
+    ASSERT_TRUE(saved.ok) << saved.error.message;
+    const auto read = registry.call("get_graph",
+        {{"project", project_name}, {"graph", graph_name}}, context);
+    ASSERT_TRUE(read.ok) << read.error.message;
+
+    const auto page = request("GET", "/?view=pipeline");
+    ASSERT_EQ(page.status, 200);
+    const std::string marker = "<script id=\"ge-data\" type=\"application/json\">";
+    const auto start = page.body.find(marker);
+    ASSERT_NE(start, std::string::npos);
+    const auto value_start = start + marker.size();
+    const auto end = page.body.find("</script>", value_start);
+    ASSERT_NE(end, std::string::npos);
+    const std::string encoded = page.body.substr(value_start, end - value_start);
+    EXPECT_EQ(encoded.find('<'), std::string::npos);
+    const auto parsed = nlohmann::json::parse(encoded, nullptr, false);
+    ASSERT_FALSE(parsed.is_discarded());
+    ASSERT_EQ(parsed.at("graphs").size(), 1);
+    EXPECT_EQ(parsed.at("graphs").at(0), read.value);
+    EXPECT_EQ(parsed.at("graphs").at(0).at("nodes"), nodes);
+    EXPECT_EQ(page.body.find(sensitive), std::string::npos);
+}
+
+TEST_F(WebUiFormsFixture, FilePanelEmbedsItsDatabaseAsScriptJson) {
+    const auto page = request("GET", "/?view=data&db=example");
+    ASSERT_EQ(page.status, 200);
+    EXPECT_NE(page.body.find("<script>(function(){var db=\"example\""), std::string::npos);
+    const auto invalid = request("GET", "/?view=data&db=%3C%2Fscript%3E");
+    ASSERT_EQ(invalid.status, 200);
+    EXPECT_EQ(invalid.body.find("<script>(function(){var db="), std::string::npos);
+}
+
+TEST_F(WebUiFormsFixture, InstalledWebappDoesNotEmbedStoredGraphData) {
+    const std::string sensitive = "</script><script>inert</script>";
+    ASSERT_TRUE(node.create_project(sensitive));
+    const auto owner = node.authenticate_token(owner_secret);
+    ASSERT_TRUE(owner);
+    zetta::api::ApiContext context{node};
+    context.acting_key = owner->id();
+    context.acting_is_user = true;
+    const auto saved = server->registry().call("save_graph",
+        {{"project", sensitive}, {"graph", sensitive},
+         {"nodes", nlohmann::json::array({
+             {{"id", "step"}, {"kind", "connect"}, {"name", sensitive}}})},
+         {"edges", nlohmann::json::array()}}, context);
+    ASSERT_TRUE(saved.ok) << saved.error.message;
+    const auto bundle = dir.path() / "webapp";
+    std::filesystem::create_directory(bundle);
+    const std::string index = "<!doctype html><html><body>Studio fixture</body></html>";
+    { std::ofstream output(bundle / "index.html"); output << index; }
+    server->stop();
+    zetta::api::ServerOptions options;
+    options.port = 0;
+    options.webapp_dir = bundle.string();
+    server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
+    ASSERT_TRUE(server->start()) << server->reason();
+    const auto root = request("GET", "/?view=pipeline");
+    EXPECT_EQ(root.status, 302);
+    EXPECT_NE(root.headers.find("/studio/"), std::string::npos);
+    EXPECT_EQ(root.body.find(sensitive), std::string::npos);
+    const auto app = request("GET", "/studio/pipeline");
+    EXPECT_EQ(app.status, 200);
+    EXPECT_EQ(app.body, index);
+}
 
 TEST_F(WebUiFormsFixture, RendersANestedConnectorGroupWithAMaskedToken) {
     const WebResponse page = request("GET", "/?view=data");

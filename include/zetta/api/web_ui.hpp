@@ -22,6 +22,11 @@ namespace zetta::api {
 // HTML-escape text for safe interpolation into an element body or a double-quoted attribute.
 std::string web_ui_escape(std::string_view text);
 
+// JSON for an HTML script body, including application/json data blocks (#1405).
+// Escapes '<' so stored values cannot end the element or alter HTML parsing.
+// Use web_ui_escape instead for HTML text and attributes.
+std::string web_ui_script_json(const nlohmann::json& value);
+
 // A named inline line-icon (24x24 SVG, currentColor stroke) from the shared set — sized by CSS at the
 // use site (nav, panel/card headers, empty states, action forms). Unknown names render an empty SVG.
 std::string web_ui_icon(std::string_view name);

@@ -1,5 +1,11 @@
 # API tests
 
+Fallback-page tests save HTML-sensitive graph names, step ids and nested
+attributes, then parse the embedded data back to the stored values (#1405).
+Pure-renderer tests cover script end tags, HTML comment tokens, Unicode and
+the assistant rail; HTTP fixtures also check the file panel and installed
+Studio bundle mode.
+
 Real loopback HTTP tests cover REST and MCP. Pub/sub CRUD parity compares registry,
 OpenAPI and tools/list schemas and calls every operation through each transport.
 Long-poll tests exercise both transports while owner work continues and assert
