@@ -39,6 +39,7 @@
 #include <boost/http/server/cors.hpp>
 #include <boost/http/server/router.hpp>
 #include <boost/json.hpp>
+#include <boost/url/parse.hpp>
 
 #include "zetta_web_font_mono_400.hpp"
 #include "zetta_web_font_sans_400.hpp"
@@ -558,6 +559,43 @@ bool request_is_https(const boost::http::route_params& route) {
            std::string_view(route.req.at("x-forwarded-proto")) == "https";
 }
 
+// Bind browser credentials to this request's exact scheme and authority. The
+// ingress must preserve Host and overwrite X-Forwarded-Proto when terminating TLS.
+bool trusted_browser_origin(const boost::http::route_params& route, bool allow_read_metadata = false) {
+    namespace http = boost::http;
+    if (route.req.count(http::field::host) != 1) return false;
+    if (route.req.count("x-forwarded-proto") > 1) return false;
+    if (route.req.count("x-forwarded-proto") == 1) {
+        const std::string_view proto = route.req.at("x-forwarded-proto");
+        if (proto != "http" && proto != "https") return false;
+    }
+    const std::string expected = std::string(request_is_https(route) ? "https://" : "http://") +
+                                 std::string(route.req.at(http::field::host));
+    const auto target = boost::urls::parse_uri(expected);
+    if (!target || !target->has_authority() || target->encoded_host().empty() ||
+        target->has_userinfo() || !target->encoded_path().empty() || target->has_query() ||
+        target->has_fragment()) return false;
+
+    // A sibling origin is same-site, but it must never exercise our cookies.
+    if (route.req.count("sec-fetch-site") > 1) return false;
+    const std::string_view site = route.req.count("sec-fetch-site") == 1
+                                      ? std::string_view(route.req.at("sec-fetch-site")) : std::string_view{};
+    if (route.req.count("sec-fetch-site") == 1 && site != "same-origin" && site != "none") return false;
+    if (route.req.count(http::field::origin) != 0) {
+        return route.req.count(http::field::origin) == 1 &&
+               std::string_view(route.req.at(http::field::origin)) == expected;
+    }
+    const bool read = route.req.method() == http::method::get ||
+                      route.req.method() == http::method::head;
+    if (!allow_read_metadata || !read) return false;
+    if (site == "same-origin" || site == "none") return true;
+    if (route.req.count(http::field::referer) != 1) return false;
+    const auto referer = boost::urls::parse_uri(route.req.at(http::field::referer));
+    return referer && referer->has_authority() && !referer->has_userinfo() &&
+           !referer->has_fragment() &&
+           std::string(referer->scheme()) + "://" + std::string(referer->encoded_authority()) == expected;
+}
+
 // A capy WriteSink that collects a request body into a std::string — the form-urlencoded bodies the
 // server-rendered login + Console POSTs send (json_sink parses JSON, which form bodies are not).
 struct StringBodySink {
@@ -611,6 +649,22 @@ std::string transport_error_body(std::string_view code,
         {"ok", false},
         {"error",
          {{"code", code}, {"message", message}, {"path", ""}}}}.dump();
+}
+
+boost::http::route_task refuse_browser_origin(boost::http::route_params& route) {
+    namespace http = boost::http;
+    route.status(http::status::forbidden);
+    // The body was deliberately left unread. End the connection instead of
+    // letting its remaining bytes reach another request on the worker.
+    route.res.set_keep_alive(false);
+    route.res.set(http::field::content_type, "application/json");
+    route.res.set(http::field::cache_control, "no-store");
+    const std::string body = transport_error_body(
+        "forbidden", "same-origin browser request required");
+    stamp_response_headers(route, body);
+    auto [send_error] = co_await route.send(body);
+    if (send_error) co_return http::route_error(send_error);
+    co_return http::route_done;
 }
 
 // rest_status's integer mapped onto the wire enum.
@@ -1094,6 +1148,29 @@ struct ApiServer::Impl {
                     query.emplace_back(parameter.key, parameter.value);
                 }
                 input = rest_input_from_query(*capability, query);
+                if (capability->name == "sql" && bearer_of(route).empty()) {
+                    // Classify the entire parsed batch before executing any of
+                    // it. A SELECT followed by DDL must not partially execute.
+                    bool read_only = false;
+                    try {
+                        const auto statement = input.find("statement");
+                        if (statement != input.end() && statement->is_string()) {
+                            const auto parsed = zetta::query::PostgresDialect{}.parse(
+                                statement->get_ref<const std::string&>());
+                            read_only = parsed.ok() && !parsed.statements.empty() &&
+                                std::ranges::all_of(parsed.statements, [](const auto& sql) {
+                                    return std::holds_alternative<zetta::query::SelectStmt>(sql);
+                                });
+                        }
+                    } catch (...) {
+                        // Parser failures cannot grant permission to execute.
+                    }
+                    if (!read_only) {
+                        status = http::status::forbidden;
+                        response_body = transport_error_body(
+                            "forbidden", "cookie-authenticated GET SQL requires SELECT; use POST for writes");
+                    }
+                }
             } else {
                 http::json_sink body_sink;
                 auto [read_error, bytes_read] =
@@ -4304,7 +4381,25 @@ bool ApiServer::start() {
     if (impl.is_running.load()) return true;
 
     http::router router;
+    router.use([](http::route_params& route) -> http::route_task {
+        // Workers retain response fields across requests and cached connections.
+        // Only the current handler may establish a session or choose a redirect,
+        // including on public GETs and CORS preflight responses.
+        route.res.erase(http::field::set_cookie);
+        route.res.erase(http::field::location);
+        co_return http::route_next;
+    });
     router.use(http::cors());
+    // Browser POST routes always require origin binding, including login (which
+    // has no existing session) and logout, before reading a body or changing state.
+    auto browser_post = [&router, &impl](const char* path, auto handler) {
+        router.add(http::method::post, path,
+                   [&impl, handler](http::route_params& route) -> http::route_task {
+                       if (!trusted_browser_origin(route))
+                           co_return co_await refuse_browser_origin(route);
+                       co_return co_await (impl.*handler)(route);
+                   });
+    };
     // GET / — the server-rendered web dashboard (#647, web_ui.cpp). PUBLIC route: it self-authenticates
     // from the HttpOnly `zetta_session` cookie and serves the login page when it is absent/invalid.
     // POST /login, /logout, /run are its companions — all registered BEFORE the auth gate (they do
@@ -4312,37 +4407,16 @@ bool ApiServer::start() {
     router.add(http::method::get, "/", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_root(route);
     });
-    router.add(http::method::post, "/login", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_web_login(route);
-    });
-    router.add(http::method::post, "/session", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_session_login(route);
-    });
-    router.add(http::method::post, "/session/logout", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_session_logout(route);
-    });
-    router.add(http::method::post, "/logout", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_web_logout(route);
-    });
-    router.add(http::method::post, "/run", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_web_run(route);
-    });
-    router.add(http::method::post, "/assist", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_assist(route);
-    });
-    router.add(http::method::post, "/shell", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_web_shell(route);
-    });
-    router.add(http::method::post, "/graph-save", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_graph_save(route);
-    });
-    router.add(http::method::post, "/blob", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_blob_upload(route);
-    });
-    router.add(http::method::post, "/blob/delete",
-               [&impl](http::route_params& route) -> http::route_task {
-                   return impl.serve_blob_delete(route);
-               });
+    browser_post("/login", &Impl::serve_web_login);
+    browser_post("/session", &Impl::serve_session_login);
+    browser_post("/session/logout", &Impl::serve_session_logout);
+    browser_post("/logout", &Impl::serve_web_logout);
+    browser_post("/run", &Impl::serve_web_run);
+    browser_post("/assist", &Impl::serve_assist);
+    browser_post("/shell", &Impl::serve_web_shell);
+    browser_post("/graph-save", &Impl::serve_graph_save);
+    browser_post("/blob", &Impl::serve_blob_upload);
+    browser_post("/blob/delete", &Impl::serve_blob_delete);
     router.add(http::method::get, "/blob/download",
                [&impl](http::route_params& route) -> http::route_task {
                    return impl.serve_blob_download(route);
@@ -4507,7 +4581,14 @@ bool ApiServer::start() {
         // web app authenticates its /v1 calls with the session cookie set by
         // POST /session, the token never touching the page's JavaScript.
         std::string bearer = bearer_of(route);
-        if (bearer.empty()) bearer = cookie_value(route, "zetta_session");
+        if (bearer.empty()) {
+            bearer = cookie_value(route, "zetta_session");
+            // Check every cookie-authenticated API method: a GET capability can
+            // have effects too (SQL and consuming reads). Explicit bearers retain
+            // the programmatic contract and never fall back after auth failure.
+            if (!bearer.empty() && !trusted_browser_origin(route, true))
+                co_return co_await refuse_browser_origin(route);
+        }
         RequestIdentity identity;
         bool authorized = false;
 

@@ -9,6 +9,16 @@ offloaded for its segment rewrite and has REST/MCP/OpenAPI parity. See
 [CRUD](../../../docs/pubsub/crud.md) and
 [REST/OpenAPI](../../../docs/api/rest-openapi.md).
 
+Browser POST registration checks an exact `Origin` before invoking a handler.
+Origin refusals close the connection with its body unread. The first middleware
+clears cached session/redirect headers on every request, including public GETs.
+The auth gate also binds every cookie-authenticated API request to this origin;
+GET/HEAD may use same-origin Fetch Metadata or a strictly parsed Referer.
+Cookie GET SQL permits only parsed SELECT batches; writes use POST. Explicit
+bearer API clients retain their contract. Proxy requirements and failure behavior
+are in [registry design](../../../docs/api/registry-design.md#auth-governance-audit--nothing-new)
+(#1415, LSR-242).
+
 `node_memory` renders the node's memory-accounting registry through the same
 REST/MCP declaration. HTTP sessions, cached parsers, active requests, and
 long-poll waiters add their counters to the node's registry while the server

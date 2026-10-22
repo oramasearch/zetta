@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -38,9 +39,14 @@ struct WebResponse {
 // without going through the login form.
 WebResponse web_request(unsigned short port, const std::string& method,
                         const std::string& target, const std::string& session,
-                        const std::string& form = {}) {
+                        const std::string& form = {},
+                        const std::string& headers = "Origin: http://zetta.example.test:4800\r\n",
+                        bool use_session = true, bool keep_alive = false) {
     const int socket_descriptor = ::socket(AF_INET, SOCK_STREAM, 0);
     if (socket_descriptor < 0) return {};
+    const timeval receive_timeout{5, 0};
+    ::setsockopt(socket_descriptor, SOL_SOCKET, SO_RCVTIMEO,
+                 &receive_timeout, sizeof(receive_timeout));
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
@@ -51,13 +57,14 @@ WebResponse web_request(unsigned short port, const std::string& method,
         return {};
     }
     std::string request = method + " " + target + " HTTP/1.1\r\n";
-    request += "Host: 127.0.0.1\r\n";
-    request += "Cookie: zetta_session=" + session + "\r\n";
+    request += "Host: zetta.example.test:4800\r\n";
+    if (use_session) request += "Cookie: zetta_session=" + session + "\r\n";
+    request += headers;
     if (!form.empty()) {
         request += "Content-Type: application/x-www-form-urlencoded\r\n";
     }
     request += "Content-Length: " + std::to_string(form.size()) + "\r\n";
-    request += "Connection: close\r\n\r\n";
+    request += keep_alive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n";
     request += form;
     ::send(socket_descriptor, request.data(), request.size(), 0);
 
@@ -99,12 +106,14 @@ struct WebUiFormsFixture : ::testing::Test {
     }
 
     WebResponse request(const std::string& method, const std::string& target,
-                        const std::string& form = {}) {
+                        const std::string& form = {},
+                        const std::string& headers = "Origin: http://zetta.example.test:4800\r\n",
+                        bool use_session = true, bool keep_alive = false) {
         WebResponse response;
         std::atomic<bool> finished{false};
         std::thread client([&] {
             response = web_request(server->port(), method, target, owner_secret,
-                                   form);
+                                   form, headers, use_session, keep_alive);
             finished = true;
         });
         const auto deadline =
@@ -253,6 +262,144 @@ TEST_F(WebUiFormsFixture, TheSavedConnectionPickerListsNamesAndNeverTheToken) {
     // …and nothing on the page carries the credential (the system.connections
     // panel renders the same redacted source).
     EXPECT_EQ(page.body.find("the-secret-token"), std::string::npos);
+}
+
+TEST_F(WebUiFormsFixture, BrowserLoginAndLogoutRequireTheirExactOrigin) {
+    for (const std::string path : {"/login", "/session", "/logout", "/session/logout"}) {
+        const std::string body = path == "/session"
+            ? "{\"token\":\"" + owner_secret + "\"}" : "token=" + owner_secret;
+        for (const std::string headers : {
+                 "", "Origin: null\r\n", "Origin: http://sibling.example.test:4800\r\n",
+                 "Origin: https://zetta.example.test:4800\r\n",
+                 "Origin: http://zetta.example.test:4801\r\n",
+                 "Origin: http://zetta.example.test:4800/\r\n",
+                 "Origin: http://zetta.example.test:4800\\evil.test\r\n",
+                 "Origin: http://zetta.example.test:4800%2F.evil.test\r\n",
+                 "Origin: http://zetta.example.test:4800.evil.test\r\n",
+                 "Origin: http://zetta.example.test:4800\r\nOrigin: http://zetta.example.test:4800\r\n",
+                 "Referer: http://zetta.example.test:4800/\r\nSec-Fetch-Site: same-origin\r\n"}) {
+            SCOPED_TRACE(path + " " + headers);
+            // Login is protected even before a victim has a cookie.
+            const auto refused = request("POST", path, body, headers, false);
+            EXPECT_EQ(refused.status, 403);
+            EXPECT_EQ(refused.headers.find("zetta_session="), std::string::npos);
+        }
+        const auto accepted = request("POST", path, body);
+        EXPECT_EQ(accepted.status, path == "/session" || path == "/session/logout" ? 200 : 302);
+        EXPECT_NE(accepted.headers.find("zetta_session="), std::string::npos);
+        // Public GETs are allowed, but cannot replay another request's cookie
+        // or redirect when a cached worker previously handled login/logout.
+        const auto page = request("GET", "/", "", "Sec-Fetch-Site: same-site\r\n", false);
+        EXPECT_EQ(page.status, 200);
+        EXPECT_EQ(page.headers.find("zetta_session="), std::string::npos);
+        EXPECT_EQ(page.headers.find("\r\nLocation:"), std::string::npos);
+    }
+    const auto secure = request("POST", "/login", "token=" + owner_secret,
+        "Origin: https://zetta.example.test:4800\r\nX-Forwarded-Proto: https\r\n", false);
+    EXPECT_EQ(secure.status, 302);
+    EXPECT_NE(secure.headers.find("; Secure"), std::string::npos);
+}
+
+TEST_F(WebUiFormsFixture, OriginRefusalsCloseConnectionsWithUnreadBodies) {
+    const std::string form = "token=" + owner_secret;
+    const std::string forged =
+        "POST /login HTTP/1.1\r\nHost: zetta.example.test:4800\r\n"
+        "Origin: http://zetta.example.test:4800\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: " +
+        std::to_string(form.size()) + "\r\nConnection: close\r\n\r\n" + form;
+    const auto refused = request("POST", "/login", forged,
+        "Origin: http://sibling.example.test:4800\r\n", false, true);
+    EXPECT_EQ(refused.status, 403);
+    EXPECT_NE(refused.headers.find("\r\nConnection: close"), std::string::npos);
+    EXPECT_EQ(refused.headers.find("zetta_session="), std::string::npos);
+    EXPECT_EQ(refused.body.find("HTTP/1.1"), std::string::npos);
+    EXPECT_EQ(refused.body.find("zetta_session="), std::string::npos);
+}
+
+TEST_F(WebUiFormsFixture, EveryBrowserActionRefusesSiblingAndMissingOrigins) {
+    for (const std::string path : {"/run", "/assist", "/shell", "/graph-save", "/blob", "/blob/delete"}) {
+        for (const std::string headers : {"", "Origin: http://sibling.example.test:4800\r\n"}) {
+            SCOPED_TRACE(path + " " + headers);
+            const auto refused = request("POST", path, "cap=create_project&name=forged", headers);
+            EXPECT_EQ(refused.status, 403);
+            EXPECT_NE(refused.body.find("same-origin browser request required"), std::string::npos);
+        }
+    }
+    EXPECT_FALSE(node.find_project("forged"));
+    const auto accepted = request("POST", "/run", "cap=create_project&name=trusted&_return=%2F%3Fview%3Dprojects");
+    EXPECT_EQ(accepted.status, 302) << accepted.body;
+    EXPECT_TRUE(node.find_project("trusted"));
+}
+
+TEST_F(WebUiFormsFixture, CookieRestAndMcpCannotDispatchCrossOriginActions) {
+    const std::string action = R"({"name":"forged"})";
+    const std::string rpc = R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_project","arguments":{"name":"forged"}}})";
+    for (const std::string headers : {"", "Origin: http://sibling.example.test:4800\r\n"}) {
+        EXPECT_EQ(request("POST", "/v1/create_project", action, headers).status, 403);
+        EXPECT_EQ(request("POST", "/mcp", rpc, headers).status, 403);
+        EXPECT_EQ(request("PUT", "/v1/objects/bucket/key", "bytes", headers).status, 403);
+        EXPECT_EQ(request("PATCH", "/v1/objects/bucket/key", "bytes", headers).status, 403);
+        EXPECT_EQ(request("DELETE", "/v1/objects/bucket/key", "", headers).status, 403);
+    }
+    EXPECT_FALSE(node.find_project("forged"));
+    EXPECT_EQ(request("POST", "/v1/create_project", R"({"name":"trusted-rest"})").status, 200);
+    EXPECT_EQ(request("POST", "/mcp", rpc).status, 200);
+    EXPECT_TRUE(node.find_project("trusted-rest"));
+    EXPECT_TRUE(node.find_project("forged"));
+}
+
+TEST_F(WebUiFormsFixture, CookieReadsNeedUnambiguousOriginEvidence) {
+    for (const std::string headers : {
+             "", "Sec-Fetch-Site: same-site\r\n", "Sec-Fetch-Site: cross-site\r\n",
+             "Referer: http://sibling.example.test:4800/page\r\n",
+             "Referer: http://zetta.example.test:4800@evil.test/page\r\n",
+             "Referer: http://zetta.example.test:4800.evil.test/page\r\n",
+             "Referer: http://zetta.example.test:4800/\r\nReferer: http://zetta.example.test:4800/\r\n",
+             "Sec-Fetch-Site: \r\nReferer: http://zetta.example.test:4800/\r\n",
+             "Sec-Fetch-Site: same-origin\r\nSec-Fetch-Site: same-origin\r\n",
+             "Origin: null\r\nSec-Fetch-Site: same-origin\r\n",
+             "Origin: http://sibling.example.test:4800\r\nReferer: http://zetta.example.test:4800/\r\n",
+             "Referer: http://zetta.example.test:4800/\r\nSec-Fetch-Site: cross-site\r\n"}) {
+        SCOPED_TRACE(headers);
+        EXPECT_EQ(request("GET", "/v1/server_info", "", headers).status, 403);
+    }
+    for (const std::string headers : {
+             "Sec-Fetch-Site: same-origin\r\n", "Sec-Fetch-Site: none\r\n",
+             "Referer: http://zetta.example.test:4800/studio/?view=data\r\n",
+             "Origin: http://zetta.example.test:4800\r\n"}) {
+        SCOPED_TRACE(headers);
+        EXPECT_EQ(request("GET", "/v1/server_info", "", headers).status, 200);
+    }
+    EXPECT_EQ(request("GET", "/v1/server_info", "",
+        "oRiGiN: http://zetta.example.test:4800\r\nX-Forwarded-Host: sibling.example.test\r\n").status, 200);
+}
+
+TEST_F(WebUiFormsFixture, CookieGetSqlChecksTheEntireParsedBatchBeforeExecution) {
+    for (const std::string sql : {
+             "CREATE+DATABASE+forged", "SELECT+name+FROM+system.users%3BCREATE+DATABASE+forged",
+             "%2F*comment*%2FCREATE+DATABASE+forged", "CREATE+USER+forged"}) {
+        const auto refused = request("GET", "/v1/sql?statement=" + sql, "", "Sec-Fetch-Site: same-origin\r\n");
+        EXPECT_EQ(refused.status, 403) << refused.body;
+    }
+    EXPECT_FALSE(node.find_database("forged"));
+    EXPECT_FALSE(node.find_user("forged"));
+    const auto read = request("GET", "/v1/sql?statement=SELECT+name+FROM+system.users", "",
+                              "Sec-Fetch-Site: same-origin\r\n");
+    EXPECT_EQ(read.status, 200) << read.body;
+    EXPECT_EQ(request("POST", "/v1/sql", R"({"statement":"CREATE DATABASE trusted_post"})").status, 200);
+    EXPECT_TRUE(node.find_database("trusted_post"));
+}
+
+TEST_F(WebUiFormsFixture, ExplicitBearersKeepTheirProgrammaticContract) {
+    const std::string bearer = "Authorization: Bearer " + owner_secret + "\r\n";
+    EXPECT_EQ(request("POST", "/v1/create_project", R"({"name":"bearer-project"})", bearer, false).status, 200);
+    EXPECT_EQ(request("GET", "/v1/sql?statement=CREATE+DATABASE+bearer_db", "", bearer, false).status, 200);
+    EXPECT_TRUE(node.find_database("bearer_db"));
+    EXPECT_EQ(request("POST", "/v1/create_project", R"({"name":"invalid-bearer"})",
+                      "Authorization: Bearer invalid\r\n").status, 401);
+    EXPECT_FALSE(node.find_project("invalid-bearer"));
+    // A bearer header cannot bypass origin binding on the browser login path.
+    EXPECT_EQ(request("POST", "/login", "token=" + owner_secret, bearer, false).status, 403);
 }
 
 }  // namespace
