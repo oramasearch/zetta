@@ -139,7 +139,7 @@ const nlohmann::json& agent_schema() {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
-        "model": { "type": "string", "description": "native agents: checkpoint dir, model:<uuid>, or a HuggingFace repo id" },
+        "model": { "type": "string", "description": "native agents: exact operator-registered checkpoint selector; registration is checked before serving" },
         "kind": { "type": "string", "enum": ["custom", "orama"] },
         "runtime": { "type": "string", "enum": ["native", "python", "service"] },
         "purpose": { "type": "string" },

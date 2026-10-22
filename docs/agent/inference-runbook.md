@@ -14,6 +14,10 @@ fits in the pipeline, see [`rlvr-to-production.md`](rlvr-to-production.md) and
 
 ## Prerequisites
 
+For REST/MCP and desktop agent serving, first [register the checkpoint](checkpoints.md)
+(#1411). `ZETTA_QWEN_DIR` selects a checkpoint only for the local test drivers below;
+it does not authorize arbitrary agent model paths on a running node.
+
 - **A checkpoint:** `data/checkpoints/base-agent-0.6b/` (the trained base agent) — or any
   Qwen3 checkpoint dir with `config.json` + `model.safetensors` + the tokenizer files. Point
   `ZETTA_QWEN_DIR` at it. To compare the trained agent against the untrained start, point it

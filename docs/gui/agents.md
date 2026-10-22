@@ -22,8 +22,9 @@ agents you can chat with. A thin viewer over the replicated `agent:<id>` records
 - **Live source**: agents are re-read from `AgentStore(node.replication()).list()` each
   frame; no panel-owned copy. A standalone (unreplicated) node shows the empty state.
 
-Model to point an agent at: a local checkpoint dir (pull open weights with `zetta pull`), a
-`model:<uuid>`, or a HuggingFace repo id.
+The model field selects an [operator-registered checkpoint](../agent/checkpoints.md).
+The default `base-agent` and `/data/models/base-agent` selectors use the operator's base model.
+Other existing model strings need an explicit registration before chat or preloading.
 
 ## Chat view
 

@@ -35,11 +35,12 @@ public:
     // The process-wide instance (the serving path + the GUI share it).
     static ModelCache& instance();
 
-    // The loaded model for `path` — a cache hit, or loaded now (evicting the LRU past
-    // capacity). std::nullopt semantics: returns nullptr (+ *error) if it can't be loaded.
+    // `path` is an exact operator-registered checkpoint selector (checkpoint.hpp, #1411).
+    // Resolve and validate it before even a cache hit; key resident entries by canonical
+    // directory. Returns nullptr (+ *error) if it is unregistered or cannot be loaded.
     std::shared_ptr<const LoadedModel> get(const std::string& path, std::string* error);
 
-    // Preload `path` without generating (the GUI "Load" button). false (+ *error) on failure.
+    // Preload a registered selector without generating (the GUI "Load" button).
     bool load(const std::string& path, std::string* error);
     void unload(const std::string& path);  // the GUI "Unload" button; no-op if not resident
     void unload_all();

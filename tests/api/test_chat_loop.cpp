@@ -54,6 +54,7 @@
 #include "zetta/pipeline/run_proposal.hpp"
 #include "zetta/tokenizer/bpe.hpp"
 #include "zetta/tokenizer/byte_encoding.hpp"
+#include "agent/checkpoint_registration.hpp"
 
 namespace {
 
@@ -93,6 +94,7 @@ public:
     using Script = std::function<std::string(const std::string& prompt)>;
 
     ScriptedModel() {
+        registration_.add(path(), path());
         Json vocab = Json::object();
         for (int byte = 0; byte < 256; ++byte) {
             std::string symbol;
@@ -130,7 +132,7 @@ public:
     }
     ~ScriptedModel() { zetta::agent::install_qwen_inference_runner(previous_); }
 
-    std::string path() const { return directory_.path().string(); }
+    std::string path() const { return std::filesystem::canonical(directory_.path()).string(); }
     void script(Script next) {
         std::lock_guard<std::mutex> lock(mutex_);
         script_ = std::move(next);
@@ -142,6 +144,7 @@ public:
     }
 
 private:
+    zetta::test::CheckpointRegistration registration_;
     zetta::test::TempDir directory_;
     std::shared_ptr<zetta::tokenizer::BpeTokenizer> tokenizer_;
     zetta::agent::QwenInferenceRunner previous_;

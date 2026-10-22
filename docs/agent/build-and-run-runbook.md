@@ -29,7 +29,8 @@ ask ──▶ agent.respond ──▶ (recognizes churn)
 ## Prerequisites
 
 - A **running node** (`./build/bin/zetta …`) with a bearer token that resolves to a user.
-- A **served agent** whose `model` is a local base-agent checkpoint. Check with `list_agents`;
+- A **served agent** whose `model` selects an [operator-registered checkpoint](checkpoints.md)
+  (#1411), such as `base-agent`. Check with `list_agents`;
   create one in the **Agents** view (or `create_agent`) if there are none. Pull open weights
   first with `zetta pull <owner/model>` if the checkpoint isn't on disk
   (see [training-runbook.md](training-runbook.md)).
@@ -110,7 +111,8 @@ reaches `succeeded` with a trained churn model — in a single ~18 s call.
 |---|---|
 | `no agents on a standalone node` | The node has no `ReplicationManager`. Use a normal (replicated) node. |
 | `no agent '<id>'` | Wrong id — list with `list_agents` and pass the `id`. |
-| `could not load the tokenizer/model from '<path>'` | The agent's `model` path isn't a checkpoint. Pull it (`zetta pull`) or fix the path. |
+| `agent.model: checkpoint is not registered` | Ask the node operator to register the model selector; a download alone does not authorize serving. |
+| `could not load the tokenizer/model from '<path>'` | The registered directory lacks a usable checkpoint. The operator must install the expected files. |
 | `run is a job capability and this embedding wired no background action owner` | `agent_run`'s churn run needs the server's background owner — call it over MCP/REST/web (all wire it), not a bare embedding. |
 | `blocked by gate: …` | The compiled graph failed a correctness check; the reason names the failing check. |
 | `shape:"generic"` (not churn) | The ask didn't match the churn heuristic; the generic graph runs **structurally** (no trained model). Rephrase toward the use case, or grow the compiler's use-case coverage. |

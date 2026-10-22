@@ -106,8 +106,8 @@ std::string build_chat_prompt(const AgentRecord& agent, const std::string& messa
 Sandbox chat_sandbox(const AgentRecord& agent, const AgentToolRunner& tools = {},
                      const std::vector<AgentToolSpec>& tool_specs = {});
 
-// Talk to `agent`: load its model + tokenizer (device-agnostic; `agent.model` is a local
-// checkpoint dir), wire its tools into a sandbox, and run one tool-calling chat turn for
+// Talk to `agent`: resolve its operator-registered model selector (checkpoint.hpp, #1411),
+// load its model + tokenizer, wire its tools into a sandbox, and run one chat turn for
 // `message`. Non-throwing — a load failure is ok=false + a reason. BLOCKS for seconds while
 // the model loads + generates, so call it OFF the UI thread. Shared by the `chat` capability
 // (MCP/REST) and the GUI chat panel, so both behave identically.

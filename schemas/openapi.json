@@ -2731,7 +2731,7 @@
     },
     "/v1/chat": {
       "get": {
-        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads the agent's model (a local checkpoint dir). It changes nothing on the node: a turn that asks to build something returns a run PROPOSAL (propose_run, under the caller's own rights) with an impact preview, and nothing is created until approve_run_proposal. Also accepts a JSON-body POST. Requires api:query.",
+        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads only an operator-registered checkpoint. It changes nothing on the node: a turn that asks to build something returns a run PROPOSAL (propose_run, under the caller's own rights) with an impact preview, and nothing is created until approve_run_proposal. Also accepts a JSON-body POST. Requires api:query.",
         "operationId": "chat",
         "parameters": [
           {
@@ -2969,7 +2969,7 @@
         ]
       },
       "post": {
-        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads the agent's model (a local checkpoint dir). It changes nothing on the node: a turn that asks to build something returns a run PROPOSAL (propose_run, under the caller's own rights) with an impact preview, and nothing is created until approve_run_proposal. Also accepts a JSON-body POST. Requires api:query.",
+        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads only an operator-registered checkpoint. It changes nothing on the node: a turn that asks to build something returns a run PROPOSAL (propose_run, under the caller's own rights) with an impact preview, and nothing is created until approve_run_proposal. Also accepts a JSON-body POST. Requires api:query.",
         "operationId": "chat_post",
         "requestBody": {
           "content": {
@@ -3932,7 +3932,7 @@
     },
     "/v1/create_agent": {
       "post": {
-        "description": "Create a served, selectable agent — a model (checkpoint dir, model:<uuid>, or a HuggingFace repo id) plus an optional system prompt and the tools it may call. Returns the stored record with its generated id; replicates to every node. Requires orchestration:create_agent.",
+        "description": "Create a served, selectable agent — an operator-registered model selector plus an optional system prompt and the tools it may call. Returns the stored record with its generated id; replicates to every node. Requires orchestration:create_agent.",
         "operationId": "create_agent",
         "requestBody": {
           "content": {
@@ -4023,7 +4023,7 @@
                     "type": "string"
                   },
                   "model": {
-                    "description": "native agents (required there): checkpoint dir, model:<uuid>, or a HuggingFace repo id",
+                    "description": "native agents (required there): exact operator-registered checkpoint selector; registration is checked before serving",
                     "type": "string"
                   },
                   "model_name": {

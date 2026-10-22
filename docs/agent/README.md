@@ -28,6 +28,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 (nibble-dev); shipped so far:
 
 - **The reward primitive** — `EndState` + `EndStateGrader` (below).
+- **Checkpoint registration** — [checkpoints.md](checkpoints.md): operator-selected directories, serving checks and legacy selectors (#1411).
 - **The task/game** — `Task` (below).
 - **Tool calls + the sandbox** — `ToolCall` + `Sandbox` (below).
 - **The rollout** — `AgentPolicy` + `run_rollout` (below).
@@ -74,8 +75,8 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 
 - **`AgentRecord`** (`agent_record.hpp`) — the first-class **agent** a user lists, selects,
   and **chats with** ([#849](https://github.com/oramasearch/zetta/issues/849)): an id + name +
-  description binding a **model** (a local checkpoint dir, a `model:<uuid>`, or a HuggingFace
-  repo id `zetta pull` fetches) to a system prompt and the **tools** it may call. Stored as a
+  description binding a **model** (an exact operator-registered checkpoint selector,
+  [checkpoint registration](checkpoints.md), #1411) to a system prompt and the **tools** it may call. Stored as a
   replicated `agent:<uuid>` entity (`catalog.hpp`); non-throwing `agent_from_json` +
   `agent_schema()` are the boundary.
 - **`AgentStore`** (`agent_store.hpp`) — CRUD over the `agent:` entities (put/get/list/remove
@@ -121,6 +122,8 @@ Verify: `AgentApiFixture.KindsRuntimesStudioShapeAndPipelineGrants`.
 
 Validation: a `native` agent needs `model`; a `python` agent a valid `definition`; a `service`
 agent an `endpoint`. `chat` and `agent_run` refuse non-native agents and say where they run.
+Native serving also refuses unregistered model selectors before loading any checkpoint files;
+records remain portable across nodes with different local registrations.
 `agent_training_status` reports a non-native agent as *not trained by Zetta* rather than
 untrained. Verify: `AgentApiFixture.KindsRuntimesStudioShapeAndPipelineGrants`.
 

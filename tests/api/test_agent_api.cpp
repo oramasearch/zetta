@@ -7,6 +7,7 @@
 #include <string>
 
 #include "temp_dir.hpp"
+#include "agent/checkpoint_registration.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/replication.hpp"
@@ -92,12 +93,36 @@ TEST_F(AgentApiFixture, CreateListGetUpdateDelete) {
     EXPECT_TRUE(listed.value.at("agents").empty());
 }
 
+TEST_F(AgentApiFixture, PersistedModelSelectorsCannotProbeUnregisteredDirectories) {
+    zetta::test::CheckpointRegistration checkpoint;
+    checkpoint.configure("{}");
+    const auto outside = std::filesystem::canonical(dir.path()).string();
+    const auto created = call("create_agent", {{"name", "Unchecked model"}, {"model", outside}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const auto id = created.value.at("id").get<std::string>();
+    for (const auto* capability : {"chat", "agent_run"}) {
+        SCOPED_TRACE(capability);
+        const auto response = call(capability, {{"agent", id}, {"message", "hello"}});
+        EXPECT_FALSE(response.ok);
+        EXPECT_EQ(response.error.message, "agent.model: checkpoint is not registered");
+    }
+    const auto updated = call("update_agent", {{"id", id}, {"model", outside + "/../outside"}});
+    ASSERT_TRUE(updated.ok) << updated.error.message;
+    for (const auto* capability : {"chat", "agent_run"}) {
+        const auto response = call(capability, {{"agent", id}, {"message", "hello"}});
+        EXPECT_FALSE(response.ok);
+        EXPECT_EQ(response.error.message, "agent.model: checkpoint is not registered");
+    }
+}
+
 // The full chat path with a REAL model: create an agent pointing at a checkpoint, then
 // chat. Guarded on ZETTA_QWEN_DIR (a local checkpoint dir), skipped otherwise so CI needs
 // no weights. Small max_new_tokens keeps the CPU generation quick.
 TEST_F(AgentApiFixture, ChatWithARealModel) {
     const char* dir = std::getenv("ZETTA_QWEN_DIR");
     if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to a checkpoint dir to run";
+    zetta::test::CheckpointRegistration checkpoint;
+    checkpoint.add(dir, std::filesystem::canonical(dir).string());
 
     ApiResult created = call("create_agent",
                              {{"name", "Base agent"},
@@ -133,6 +158,8 @@ TEST_F(AgentApiFixture, AgentRunIsRegisteredAsAJob) {
 TEST_F(AgentApiFixture, AgentRunBuildsAndRunsFromRealModel) {
     const char* dir = std::getenv("ZETTA_QWEN_DIR");
     if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to a checkpoint dir to run";
+    zetta::test::CheckpointRegistration checkpoint;
+    checkpoint.add(dir, std::filesystem::canonical(dir).string());
 
     ApiResult created = call("create_agent",
                              {{"name", "Base agent"},
