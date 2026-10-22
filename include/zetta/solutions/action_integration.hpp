@@ -80,6 +80,9 @@ struct ActionTask {
     std::string currency;
     std::string created_at;
     std::string updated_at;
+    // Immutable idempotency binding (#1410); empty on readable legacy rows.
+    std::string actor;
+    std::string spec_digest;
 };
 
 struct ReportPublicationSpec {
@@ -118,6 +121,9 @@ struct ReportPublication {
     std::string currency;
     std::string created_at;
     std::string updated_at;
+    std::string actor;
+    std::string spec_digest;
+    int timeout_seconds = 30;
 };
 
 nlohmann::json to_json(const ActionTask& task);
@@ -181,6 +187,9 @@ public:
         zetta::Node& node,
         zetta::connect::HttpTransport transport = {});
 
+    // Keys bind the nonempty actor and complete non-secret specification.
+    // Reuse, direct delivery, and report preparation reject missing/mismatched
+    // bindings before using credentials; see docs/solutions/action-integration.md (#1410).
     std::optional<ActionTask> enqueue_task(
         ActionTaskSpec spec,
         std::string actor,

@@ -8,8 +8,8 @@ C++ and uses the same capability registry for MCP tools and REST routes.
 
 1. **Report to forum.** `publish_report` sends a driver report together with its
    decision log to a forum webhook. The publication record is written before
-   delivery, and the idempotency key makes a repeated call return the original
-   record.
+   delivery, and a repeated call with the same actor and specification returns
+   the original record.
 2. **Task in a system of work.** `enqueue_action_task` writes a task with an
    owner and SLA to the replicated `action_delivery.outbox` table.
    `deliver_action_task` sends it through the selected connector. Generic
@@ -58,6 +58,51 @@ to `action_delivery.dead_letter`. Both tables are ordinary Node catalog tables;
 their rows therefore use the existing table CRDT capture and reconciliation
 path. `action_delivery.report_publications` stores report delivery state in the
 same way.
+
+## Idempotency and credential binding
+
+[#1410](https://github.com/oramasearch/zetta/issues/1410) binds each key to the
+enqueuing actor and a SHA-256 digest of the complete non-secret specification.
+The digest uses canonical JSON with sorted object keys and includes the
+decision, owner, SLA, connector kind, exact endpoint, timeout, payload, attempt
+limit, and ledger context. Report publications bind the run, title, driver
+report, decision log, webhook endpoint, timeout, attempt limit, and all version,
+cell, and currency fields. Delivery status, timestamps, acknowledgements, and
+attempt counters can change without changing the binding.
+
+An enqueue or closed-loop retry with a different actor or specification fails
+before attaching the supplied token to an HTTP request. Direct delivery by
+task id also requires the enqueuing actor and verifies the stored specification
+against its digest. Report preparation applies the same checks before building
+the request, covering both direct publication and a solution run's deferred
+delivery. Checks also apply to delivered and dead-letter records. Endpoint and
+actor strings are compared exactly; no URL or identity normalization merges
+distinct caller inputs. Native callers must provide a nonempty actor; the API
+uses its caller id, falling back to `local` when that id is empty.
+
+Tokens remain request-local and are excluded from the digest so the same actor
+can rotate credentials for an unchanged specification. Actor and digest fields
+replicate with the existing table row. These are consistency checks on the
+authorized action APIs, not authentication of arbitrary catalogue writes.
+Raw SQL writers with grants on `action_delivery.outbox` or
+`action_delivery.report_publications` can replace the stored actor and digest.
+Protecting direct task-id delivery against those writers needs a separate
+authority boundary: reserve these internal tables from ordinary SQL writes, or
+keep authoritative bindings outside the writable tables. Closed-loop calls
+still compare the incoming specification with the stored contents before using
+fresh credentials.
+Concurrent peers retain the existing eventual-consistency model; the binding
+does not add cluster-wide exactly-once delivery.
+
+Legacy rows without bindings remain readable for inspection but cannot be
+reused or delivered. Recreate pending work under a new key with a known actor
+and the intended specification; the runtime never assigns an owner to an old
+row from the caller who first retries it. The existing `action_task` and
+`report_publication` JSON boundaries gain optional `actor` and `spec_digest`
+fields, and publications also store `timeout_seconds` (legacy default 30).
+Upgrade every node serving action APIs before relying on these checks. Older
+versions reject the new record fields and still permit unsafe reuse of legacy
+rows.
 
 The Salesforce plugin maps owner, entity, SLA date, subject, and description to
 a Salesforce Task request. The HubSpot plugin maps the same neutral task fields
@@ -109,7 +154,7 @@ therefore splits the report into three steps:
 1. `ActionRuntime::prepare_report` (owner): validate, persist the
    `report_publication`, append its ledger action, and build the request. It
    sends nothing. A publication already delivered or dead-lettered under the
-   same idempotency key returns with no request.
+   same actor, specification, and idempotency key returns with no request.
 2. `send_report_request` (the run's coroutine, never the owner): the installed
    async transport, or the synchronous one run on a runtime pool worker.
 3. `ActionRuntime::record_report_attempt` (owner): count the attempt, record
