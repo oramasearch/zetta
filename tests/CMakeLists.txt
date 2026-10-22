@@ -284,6 +284,7 @@ add_executable(zetta-tests
   compute/test_node_job_coordinator.cpp
   cluster/test_cluster.cpp
   cluster/test_listen_port.cpp
+  cluster/test_cluster_setup.cpp
   cluster/test_cluster_hello_bounds.cpp
   cluster/test_cluster_routing.cpp
   cluster/test_cluster_security.cpp

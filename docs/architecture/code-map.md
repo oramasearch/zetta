@@ -818,6 +818,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   CMakeLists.txt            the test target — every test TU is listed here, grouped by domain
   util/test_private_directory.cpp permissions before writing, failed-publication cleanup and filename validation (#1413)
+  cluster/test_cluster_setup.cpp TLS/HELLO setup deadline, shared admission cap, slot recovery, and accept recovery after subprocess-local descriptor exhaustion (#1401)
   transport/test_security.cpp reusable credential-file loading, valid context creation, and malformed/mismatched PEM refusal (#1283)
   memory/README.md          navigation for memory-accounting registry and node-log tests
   memory/test_accounting.cpp probe aggregation, fixture explanation ratio, unattributed accounting, unregister, and periodic log formatting (#1163)
