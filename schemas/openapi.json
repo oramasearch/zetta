@@ -20692,7 +20692,7 @@
     },
     "/v1/get_trace": {
       "get": {
-        "description": "Read every recorded span of one trace by its 32-hex trace id. No side effects. Requires api:query.",
+        "description": "Read every recorded span of one trace by its 32-hex trace id. Requires cluster:admin. No side effects. Requires api:cluster_admin.",
         "operationId": "get_trace",
         "parameters": [
           {
@@ -27940,7 +27940,7 @@
     },
     "/v1/list_traces": {
       "get": {
-        "description": "Read the most recent observability spans on this node (intent, timings, result shapes). No side effects. Requires api:query.",
+        "description": "Read the most recent node-wide observability spans (intent, timings, result shapes). Requires cluster:admin. No side effects. Requires api:cluster_admin.",
         "operationId": "list_traces",
         "parameters": [
           {
@@ -40109,7 +40109,7 @@
     },
     "/v1/submit_feedback": {
       "post": {
-        "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Requires api:query.",
+        "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Only callers with cluster:admin attach diagnostics; other callers submit their description and version information only. Requires api:query.",
         "operationId": "submit_feedback",
         "requestBody": {
           "content": {

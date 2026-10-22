@@ -84,46 +84,48 @@ const nlohmann::json& feedback_bundle_schema() { return schema_document(); }
 std::optional<nlohmann::json> build_feedback_bundle(
     const Node& node, const FeedbackBundleOptions& options,
     std::string* error) {
-    const SpanRecorder& recorder = node.span_recorder();
-
-    // Which traces to attach: the caller's, or the most recent ones observed.
-    std::vector<std::string> trace_ids = options.trace_ids;
-    if (trace_ids.empty()) {
-        std::unordered_set<std::string> seen;
-        for (const Span& span : recorder.recent(200)) {
-            if (seen.insert(span.trace_id).second) {
-                trace_ids.push_back(span.trace_id);
-            }
-            if (trace_ids.size() >= kMaxAttachedTraces) break;
-        }
-    } else if (trace_ids.size() > kMaxAttachedTraces) {
-        trace_ids.resize(kMaxAttachedTraces);
-    }
-
     nlohmann::json traces = nlohmann::json::array();
-    for (const std::string& trace_id : trace_ids) {
-        nlohmann::json spans = nlohmann::json::array();
-        for (const Span& span : recorder.trace(trace_id)) {
-            spans.push_back(to_json(span));
-        }
-        traces.push_back(
-            {{"trace_id", trace_id}, {"spans", std::move(spans)}});
-    }
-
     nlohmann::json recent_errors = nlohmann::json::array();
-    for (const Span& span : recorder.recent(500)) {
-        if (span.ok) continue;
-        recent_errors.push_back(to_json(span));
-        if (recent_errors.size() >= kMaxErrorSpans) break;
-    }
-
     nlohmann::json crashes = nlohmann::json::array();
-    const std::string crashes_dir =
-        (std::filesystem::path(node.config().data_dir) / "crashes").string();
-    for (const LoadedCrashReport& loaded : load_crash_reports(crashes_dir)) {
-        if (!loaded.report) continue;  // corrupt files stay on disk, not here
-        crashes.push_back(to_json(*loaded.report));
-        if (crashes.size() >= kMaxCrashReports) break;
+    if (options.include_diagnostics) {
+        const SpanRecorder& recorder = node.span_recorder();
+
+        // Which traces to attach: the caller's, or the most recent ones observed.
+        std::vector<std::string> trace_ids = options.trace_ids;
+        if (trace_ids.empty()) {
+            std::unordered_set<std::string> seen;
+            for (const Span& span : recorder.recent(200)) {
+                if (seen.insert(span.trace_id).second) {
+                    trace_ids.push_back(span.trace_id);
+                }
+                if (trace_ids.size() >= kMaxAttachedTraces) break;
+            }
+        } else if (trace_ids.size() > kMaxAttachedTraces) {
+            trace_ids.resize(kMaxAttachedTraces);
+        }
+
+        for (const std::string& trace_id : trace_ids) {
+            nlohmann::json spans = nlohmann::json::array();
+            for (const Span& span : recorder.trace(trace_id)) {
+                spans.push_back(to_json(span));
+            }
+            traces.push_back(
+                {{"trace_id", trace_id}, {"spans", std::move(spans)}});
+        }
+
+        for (const Span& span : recorder.recent(500)) {
+            if (span.ok) continue;
+            recent_errors.push_back(to_json(span));
+            if (recent_errors.size() >= kMaxErrorSpans) break;
+        }
+
+        const std::string crashes_dir =
+            (std::filesystem::path(node.config().data_dir) / "crashes").string();
+        for (const LoadedCrashReport& loaded : load_crash_reports(crashes_dir)) {
+            if (!loaded.report) continue;  // corrupt files stay on disk, not here
+            crashes.push_back(to_json(*loaded.report));
+            if (crashes.size() >= kMaxCrashReports) break;
+        }
     }
 
     nlohmann::json bundle{{"description", options.description},

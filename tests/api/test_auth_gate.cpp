@@ -19,6 +19,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "temp_dir.hpp"
@@ -237,6 +238,45 @@ TEST_F(RequireAuthFixture, CapabilityCheckRunsAgainstResolvedUser) {
         drive(*server, "GET", "/v1/server_info", {}, issued.secret);
     EXPECT_EQ(denied.status, 403);
     EXPECT_NE(denied.body.find("unauthorized"), std::string::npos);
+}
+
+// #1408: the same diagnostic grant protects REST and MCP with real native tokens.
+TEST_F(RequireAuthFixture, TraceReadsRequireDiagnosticRightsOnRestAndMcp) {
+    const auto victim = drive(*server, "POST", "/v1/create_project",
+                              R"({"name":"victim","intent":"private request content"})",
+                              owner_secret);
+    ASSERT_EQ(victim.status, 200);
+    const auto trace_id = nlohmann::json::parse(victim.body).at("trace_id").get<std::string>();
+    const auto reader = node.create_user("trace-reader");
+    ASSERT_TRUE(reader);
+    ASSERT_TRUE(node.assign_role(reader->id(), node.find_role("reader")->id()));
+    const auto issued = node.create_token(reader->id(), zetta::governance::TokenType::Api);
+    ASSERT_TRUE(issued.token);
+
+    for (const char* name : {"list_traces", "get_trace"}) {
+        SCOPED_TRACE(name);
+        const std::string route = std::string("/v1/") + name +
+            (std::string_view(name) == "get_trace" ? "?trace_id=" + trace_id : "?limit=50");
+        const auto denied = drive(*server, "GET", route, {}, issued.secret);
+        EXPECT_EQ(denied.status, 403);
+        EXPECT_EQ(denied.body.find("private request content"), std::string::npos);
+        const auto admin_read = drive(*server, "GET", route, {}, owner_secret);
+        EXPECT_EQ(admin_read.status, 200);
+        EXPECT_EQ(admin_read.body.find(owner_secret), std::string::npos);
+        EXPECT_EQ(admin_read.body.find(issued.secret), std::string::npos);
+
+        const nlohmann::json arguments = std::string_view(name) == "get_trace"
+            ? nlohmann::json{{"trace_id", trace_id}} : nlohmann::json{{"limit", 50}};
+        const nlohmann::json request{{"jsonrpc", "2.0"}, {"id", 1},
+                                      {"method", "tools/call"},
+                                      {"params", {{"name", name}, {"arguments", arguments}}}};
+        const auto mcp = drive(*server, "POST", "/mcp", request.dump(), issued.secret);
+        ASSERT_EQ(mcp.status, 200);
+        const auto result = nlohmann::json::parse(mcp.body).at("result");
+        EXPECT_TRUE(result.at("isError").get<bool>());
+        EXPECT_EQ(result.at("structuredContent").at("error").at("code"), "unauthorized");
+        EXPECT_EQ(mcp.body.find("private request content"), std::string::npos);
+    }
 }
 
 // Auth is unconditional (#799): there is NO unauthenticated-local HTTP mode and no

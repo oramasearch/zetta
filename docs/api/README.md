@@ -11,10 +11,11 @@ MCP/HTTP work.
 - [registry-design.md](registry-design.md) — **read first**: the settled design
   — one registry/many renderings, the main-thread bridge, auth = AccessKey +
   per-capability audit policy, long work = Run/ComputeJob handles (no new job infra),
-  the error mapping (schema rejections carry `path`, #1217), the consent challenge, awaitable reads,
-  independent connection admission (#1076), and script-safe JSON in fallback pages (#1405).
   the error mapping (schema rejections carry `path`, #1217), browser origin binding (#1415),
-  the consent challenge, awaitable reads and independent connection admission (#1076).
+  the consent challenge, awaitable reads, independent connection admission (#1076), and
+  script-safe JSON in fallback pages (#1405).
+- [../architecture/observability.md](../architecture/observability.md) — trace
+  tools require `cluster:admin`; feedback omits diagnostics for other callers (#1408).
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
 - [../pubsub/crud.md](../pubsub/crud.md) — topic and message CRUD examples,
@@ -191,8 +192,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_ledger` | read | api:query | immutable action and outcome entries from the replicated [solutions audit ledger](../solutions/audit-ledger.md) |
 | `list_solutions` | read | api:query | all 20 runnable catalogue solutions, with composition, product contract, `levels` objects, missing components, and runnable status |
 | `get_solution` | read | api:query | one runnable catalogue solution by id; `solution.levels[].level` is the integer posted to `create_solution` |
-| `list_traces` | read | api:query | recent observability spans |
-| `get_trace` | read | api:query | every span of one trace id |
+| `list_traces` | read | api:cluster_admin | recent node-wide observability spans; requires `cluster:admin` (#1408) |
+| `get_trace` | read | api:cluster_admin | every span of one trace id; requires `cluster:admin` (#1408) |
 | `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
 | `get_study` | read | api:query | one study's objective, search space, sampler, pruner, budgets, usage, state, and Run trials |
 | `validate_study` | read | api:query | validate and normalize a create-study candidate without storing it, returning a field path and repair reason when invalid |
@@ -214,7 +215,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `object_barrier` | action | data:objects_write (`objects:write`) | fsync every write to the bucket acknowledged before the call, on every live node; also `POST /v1/objects/<bucket>:barrier` |
 | `delete_object` | action | data:objects_write | remove one object, fenced once the bucket has a lease holder; also `DELETE /v1/objects/<bucket>/<key>` |
 | `acquire_object_lease` / `renew_object_lease` / `release_object_lease` | action | data:objects_write | the bucket's owner lease: `acquire` waits up to `wait_ms` without holding a thread and returns the fence, the bucket's `incarnation` and `object_log_prefix_durability` (409 `held` otherwise); also `POST /v1/objects/<bucket>:acquire` / `:renew` / `:release` |
-| `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
+| `submit_feedback` | action | api:query | store feedback as a large object; only `cluster:admin` attaches traces, errors and crashes; export is explicit (#640, #1408) |
 | `record_action` | action | orchestration:record_action | append score, decision, action, actor, versions, experiment cell, cost, and timestamps to the solutions audit ledger |
 | `record_outcome` | action | orchestration:record_outcome | append a connector or manual outcome referencing an existing action entry |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |

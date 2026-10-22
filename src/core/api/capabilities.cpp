@@ -4771,6 +4771,15 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
     }
     options.actor =
         context.acting_key.empty() ? std::string("local") : context.acting_key;
+    // Trace ids are client-controlled and do not prove ownership of any span.
+    // Feedback remains available to everyone, but node-wide diagnostics need
+    // the same explicit right as list_traces/get_trace and the SQL views (#1408).
+    const zetta::governance::Operation diagnostics{
+        zetta::governance::CapabilityDomain::Api, "cluster_admin"};
+    options.include_diagnostics = context.acting_key.empty() ||
+        (context.acting_is_user
+             ? context.node.authorize_user(context.acting_key, diagnostics).allowed
+             : context.node.authorize(context.acting_key, diagnostics).allowed);
 
     std::string reason;
     const auto bundle =
@@ -11842,12 +11851,12 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "list_traces",
         "List recent traces",
-        "Read the most recent observability spans on this node (intent, "
-        "timings, result shapes). No side effects.",
+        "Read the most recent node-wide observability spans (intent, "
+        "timings, result shapes). Requires cluster:admin. No side effects.",
         list_traces_schema(),
         list_traces_output_schema(),
         CapabilityKind::Read,
-        Operation{CapabilityDomain::Api, "query"},
+        Operation{CapabilityDomain::Api, "cluster_admin"},
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_list_traces});
@@ -11855,12 +11864,12 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "get_trace",
         "Get one trace",
-        "Read every recorded span of one trace by its 32-hex trace id. No "
-        "side effects.",
+        "Read every recorded span of one trace by its 32-hex trace id. "
+        "Requires cluster:admin. No side effects.",
         get_trace_schema(),
         get_trace_output_schema(),
         CapabilityKind::Read,
-        Operation{CapabilityDomain::Api, "query"},
+        Operation{CapabilityDomain::Api, "cluster_admin"},
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_trace});
@@ -12310,7 +12319,8 @@ void register_core_capabilities(Registry& registry) {
         "Snapshot a feedback bundle — your description plus the relevant "
         "traces, recent errors, crash reports, and versions — stored as a "
         "large object you explicitly export; nothing leaves the cluster on "
-        "its own.",
+        "its own. Only callers with cluster:admin attach diagnostics; other "
+        "callers submit their description and version information only.",
         submit_feedback_schema(),
         submit_feedback_output_schema(),
         CapabilityKind::Action,
