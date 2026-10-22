@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,7 +24,9 @@ namespace zetta::dataset {
 // What a caller asks a generator to produce. Deterministic given the same spec (no RNG in the
 // product path — #873 reproducibility), so the same spec yields the same corpus.
 struct DatasetGenSpec {
-    int variants_per_subject = 1;     // task variants per plan subject (intent-invariance)
+    // Task variants per plan subject (intent-invariance). Below 1 means 1; above
+    // kMaxVariantsPerSubject the generator refuses the spec (#1398).
+    int variants_per_subject = 1;
     double held_out_fraction = 0.0;   // fraction of subjects reserved as a canary (0 = none)
     // Path to an AUTHORED corpus artifact (JSONL), for generators that load rather than
     // synthesize. Empty for the synthesizing generators, which ignore it.
@@ -48,7 +51,42 @@ struct GeneratedDataset {
     std::vector<zetta::agent::AdmissionCase> cases;  // the admission-gated tasks
     std::vector<std::string> subjects;               // plan subject ids covered (e.g. "UC-1", "search")
     std::size_t held_out = 0;                         // how many cases are canary (held out of train)
+    // Why the generator refused the spec (e.g. a variant count over the ceiling). Non-empty means
+    // nothing was expanded and `cases` is empty; callers report it rather than gate an empty set.
+    std::string error;
 };
+
+// Work ceilings for a spec (#1398). Every variant is built, held in memory, gated and optionally
+// serialized on the node's owner thread, and the content of a case is engine-authored, so the
+// variant count is the only caller-controlled multiplier of that work. It is bounded per subject
+// and, multiplied by the subject count, per corpus — both checked before anything is expanded.
+inline constexpr int kMaxVariantsPerSubject = 16;
+inline constexpr std::size_t kMaxExpandedCases = 2048;
+
+// The variant count to expand `subject_count` subjects with: `spec.variants_per_subject`, with
+// values below 1 meaning 1. Nullopt, with `reason` set, when the count is over
+// kMaxVariantsPerSubject or the expansion would exceed kMaxExpandedCases. The product is checked
+// by division, so no count can overflow it.
+inline std::optional<int> bounded_variants(const DatasetGenSpec& spec, std::size_t subject_count,
+                                           std::string* reason) {
+    const int variants = spec.variants_per_subject < 1 ? 1 : spec.variants_per_subject;
+    if (variants > kMaxVariantsPerSubject) {
+        if (reason) {
+            *reason = "variants_per_subject " + std::to_string(variants) +
+                      " is over the maximum of " + std::to_string(kMaxVariantsPerSubject);
+        }
+        return std::nullopt;
+    }
+    if (subject_count > kMaxExpandedCases / static_cast<std::size_t>(variants)) {
+        if (reason) {
+            *reason = std::to_string(subject_count) + " subjects x " + std::to_string(variants) +
+                      " variants is over the maximum of " + std::to_string(kMaxExpandedCases) +
+                      " generated cases";
+        }
+        return std::nullopt;
+    }
+    return variants;
+}
 
 // How many trailing subjects to reserve as the canary for `fraction`. Deterministic — the
 // trailing subjects, no RNG — so the same spec yields the same split (#873 reproducibility).

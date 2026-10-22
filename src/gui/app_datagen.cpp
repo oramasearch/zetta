@@ -8,6 +8,7 @@
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
+#include <algorithm>
 #include <cfloat>
 #include <fstream>
 #include <memory>
@@ -29,8 +30,9 @@ void App::draw_datagen() {
     ImGui::TextUnformatted("Variants per subject");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(90.0f);
-    if (ImGui::InputInt("##dg_variants", &datagen_variants_) && datagen_variants_ < 1) {
-        datagen_variants_ = 1;
+    if (ImGui::InputInt("##dg_variants", &datagen_variants_)) {
+        datagen_variants_ =
+            std::clamp(datagen_variants_, 1, zetta::dataset::kMaxVariantsPerSubject);
     }
     ImGui::TextUnformatted("Write JSONL to (optional)");
     ImGui::SetNextItemWidth(-FLT_MIN);
@@ -55,8 +57,10 @@ void App::draw_datagen() {
             const zetta::dataset::GeneratedDataset dataset = generator->generate(spec);
             const zetta::agent::AdmissionResult gate =
                 zetta::agent::admit_corpus(dataset.cases);
-            datagen_failed_ = !gate.admitted;
-            if (!gate.admitted) {
+            datagen_failed_ = !dataset.error.empty() || !gate.admitted;
+            if (!dataset.error.empty()) {
+                datagen_status_ = "Not generated: " + dataset.error;
+            } else if (!gate.admitted) {
                 datagen_status_ =
                     std::string("Gate failed: ") +
                     std::string(zetta::agent::to_string(gate.failures.front().kind)) + " (task '" +

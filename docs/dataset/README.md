@@ -41,6 +41,26 @@ their subjects are the last entries of `subjects`. Train on `cases[0 .. size()-h
 evaluate on the rest. Every generator must honor this — a corpus that returns
 `held_out == 0` for a non-zero fraction is silently training without a memorization check.
 
+## Work ceilings
+
+A generator runs on the node's owner thread and holds the whole corpus in memory while it is
+gated and serialized, so a spec is bounded before anything is expanded (#1398). The content of
+a case is engine-authored; the only caller-controlled multiplier is
+`DatasetGenSpec::variants_per_subject`.
+
+- **`kMaxVariantsPerSubject`** (16): the most copies of one subject a spec may ask for. Below 1
+  means 1. `generate_dataset`'s schema carries it as `maximum`, so the capability answers
+  `invalid_input` at `/variants_per_subject` before the handler runs.
+- **`kMaxExpandedCases`** (2048): subjects × variants, checked by division so no count can
+  overflow it. It keeps the bound as the plan catalogue grows.
+- **`bounded_variants(spec, subject_count, &reason)`** is the one check; every synthesizing
+  generator calls it before building a variant. A refused spec comes back with
+  `GeneratedDataset::error` set and no cases, and the capability and the GUI report that reason
+  instead of gating an empty corpus.
+
+The interaction families add a fixed set of cases the spec cannot multiply, so a corpus is at
+most its one-variant size plus `kMaxExpandedCases`.
+
 ## Related
 
 - The action + solution-graph bridge it builds on: `zetta::agent::action` /
