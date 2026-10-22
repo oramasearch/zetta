@@ -16,18 +16,21 @@ std::string lowered(std::string text) {
     return text;
 }
 
+enum class LiteralSyntax { Standard, BackslashEscapes, PostgresEscape };
+
 // A single-quoted SQL literal. The inputs here are caller-supplied filters that
 // go into a catalog query, so they are escaped rather than concatenated raw —
 // the connector's read-only guard stops a second statement, but it is not an
-// argument for building the first one carelessly. MySQL also treats a
-// backslash inside a literal as an escape (unless NO_BACKSLASH_ESCAPES), so for
-// it a backslash is doubled too — otherwise a trailing `\` would escape the
-// closing quote.
-std::string sql_literal(const std::string& value, bool backslash_escapes = false) {
-    std::string out = "'";
+// argument for building the first one carelessly. Snowflake and MySQL treat
+// backslashes as escapes, so they must be doubled as well as quotes. Postgres
+// uses E'…' so the encoding is independent of standard_conforming_strings.
+// SQLite and DuckDB use ordinary SQL literals, where backslashes are text.
+std::string sql_literal(const std::string& value,
+                        LiteralSyntax syntax = LiteralSyntax::Standard) {
+    std::string out = syntax == LiteralSyntax::PostgresEscape ? "E'" : "'";
     for (const char character : value) {
         if (character == '\'') out += '\'';
-        if (backslash_escapes && character == '\\') out += '\\';
+        if (syntax != LiteralSyntax::Standard && character == '\\') out += '\\';
         out += character;
     }
     out += "'";
@@ -74,6 +77,11 @@ CatalogStatements information_schema_statements(const ConnectorConfig& config,
     // system schemas in upper case under a binary collation, so the schema is
     // lower-cased before it is compared.
     const bool is_mysql = config.type == "mysql" || config.type == "tidb";
+    const LiteralSyntax literal_syntax = config.type == "postgres"
+        ? LiteralSyntax::PostgresEscape
+        : is_mysql || config.type == "snowflake"
+            ? LiteralSyntax::BackslashEscapes
+            : LiteralSyntax::Standard;
     const std::string excluded_schemas =
         is_mysql ? "('information_schema', 'mysql', 'performance_schema', 'sys', "
                    "'metrics_schema')"
@@ -92,11 +100,11 @@ CatalogStatements information_schema_statements(const ConnectorConfig& config,
         " WHERE " + table_schema + " NOT IN " + excluded_schemas;
     if (!request.schema.empty()) {
         statements.tables +=
-            " AND t.table_schema = " + sql_literal(request.schema, is_mysql);
+            " AND t.table_schema = " + sql_literal(request.schema, literal_syntax);
     }
     if (!request.match.empty()) {
         statements.tables += " AND LOWER(t.table_name) LIKE " +
-                             sql_literal("%" + lowered(request.match) + "%", is_mysql);
+                             sql_literal("%" + lowered(request.match) + "%", literal_syntax);
     }
     statements.tables += " ORDER BY t.table_schema, t.table_name";
 
@@ -108,7 +116,7 @@ CatalogStatements information_schema_statements(const ConnectorConfig& config,
         " WHERE " + column_schema + " NOT IN " + excluded_schemas;
     if (!request.schema.empty()) {
         statements.columns +=
-            " AND c.table_schema = " + sql_literal(request.schema, is_mysql);
+            " AND c.table_schema = " + sql_literal(request.schema, literal_syntax);
     }
     statements.columns += " ORDER BY c.table_schema, c.table_name, c.ordinal_position";
     return statements;

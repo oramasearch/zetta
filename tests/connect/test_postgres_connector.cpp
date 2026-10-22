@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,7 +50,36 @@ bool postgres_reachable() {
     return result.ok();
 }
 
+class ScopedClientEncoding {
+public:
+    explicit ScopedClientEncoding(const char* encoding) {
+        if (const char* existing = std::getenv("PGCLIENTENCODING")) previous = existing;
+        EXPECT_EQ(::setenv("PGCLIENTENCODING", encoding, 1), 0);
+    }
+
+    ~ScopedClientEncoding() {
+        if (previous) {
+            ::setenv("PGCLIENTENCODING", previous->c_str(), 1);
+        } else {
+            ::unsetenv("PGCLIENTENCODING");
+        }
+    }
+
+private:
+    std::optional<std::string> previous;
+};
+
 }  // namespace
+
+TEST(PostgresConnector, PinsUtf8EvenWhenTheEnvironmentRequestsSjis) {
+    const ScopedClientEncoding encoding{"SJIS"};
+    if (!postgres_reachable()) GTEST_SKIP() << "no local Postgres reachable";
+    const auto result = zetta::connect::run_connector_query(
+        local_pg("postgres"), "SELECT current_setting('client_encoding') AS encoding", 1);
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_EQ(result.data.rows.size(), 1u);
+    EXPECT_EQ(result.data.rows.front().at("encoding"), "UTF8");
+}
 
 TEST(PostgresConnector, RunsAReadOnlyQueryAndCoercesTypes) {
     if (!postgres_reachable()) GTEST_SKIP() << "no local Postgres reachable";
