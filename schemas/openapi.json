@@ -10386,6 +10386,9 @@
                         "acknowledgement": {
                           "type": "object"
                         },
+                        "actor": {
+                          "type": "string"
+                        },
                         "agent_version": {
                           "minLength": 1,
                           "type": "string"
@@ -10450,6 +10453,10 @@
                         },
                         "sla_due_at": {
                           "minLength": 1,
+                          "type": "string"
+                        },
+                        "spec_digest": {
+                          "pattern": "^([0-9a-f]{64})?$",
                           "type": "string"
                         },
                         "status": {
@@ -11300,6 +11307,9 @@
                         "acknowledgement": {
                           "type": "object"
                         },
+                        "actor": {
+                          "type": "string"
+                        },
                         "agent_version": {
                           "minLength": 1,
                           "type": "string"
@@ -11364,6 +11374,10 @@
                         },
                         "sla_due_at": {
                           "minLength": 1,
+                          "type": "string"
+                        },
+                        "spec_digest": {
+                          "pattern": "^([0-9a-f]{64})?$",
                           "type": "string"
                         },
                         "status": {
@@ -11585,6 +11599,9 @@
                         "acknowledgement": {
                           "type": "object"
                         },
+                        "actor": {
+                          "type": "string"
+                        },
                         "agent_version": {
                           "minLength": 1,
                           "type": "string"
@@ -11649,6 +11666,10 @@
                         },
                         "sla_due_at": {
                           "minLength": 1,
+                          "type": "string"
+                        },
+                        "spec_digest": {
+                          "pattern": "^([0-9a-f]{64})?$",
                           "type": "string"
                         },
                         "status": {
@@ -32934,6 +32955,9 @@
                         "acknowledgement": {
                           "type": "object"
                         },
+                        "actor": {
+                          "type": "string"
+                        },
                         "agent_version": {
                           "minLength": 1,
                           "type": "string"
@@ -32998,6 +33022,10 @@
                           "minLength": 1,
                           "type": "string"
                         },
+                        "spec_digest": {
+                          "pattern": "^([0-9a-f]{64})?$",
+                          "type": "string"
+                        },
                         "status": {
                           "enum": [
                             "pending",
@@ -33006,6 +33034,11 @@
                             "dead_letter"
                           ],
                           "type": "string"
+                        },
+                        "timeout_seconds": {
+                          "maximum": 300,
+                          "minimum": 1,
+                          "type": "integer"
                         },
                         "title": {
                           "minLength": 1,

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -454,6 +455,279 @@ TEST_F(ActionIntegrationFixture, HoldoutDecisionCannotEnterTheOutbox) {
     EXPECT_FALSE(database);
 }
 
+TEST_F(ActionIntegrationFixture, IdempotencyBindsEveryTaskFieldAndActorBeforeHttp) {
+    const auto [policy_id, decision_id] = create_decision("binding");
+    const auto [other_policy, other_decision] = create_decision("other-binding");
+    ASSERT_FALSE(policy_id.empty());
+    ASSERT_FALSE(other_policy.empty());
+    int requests = 0;
+    ActionRuntime runtime(node, [&](const zetta::connect::HttpRequest&) {
+        ++requests;
+        return zetta::connect::HttpResponse{200, "{}", {}};
+    });
+    const std::vector<std::pair<std::string, std::function<void(ActionTaskSpec&)>>>
+        changes = {
+            {"actor", [](ActionTaskSpec&) {}},
+            {"decision",
+             [&](ActionTaskSpec& spec) { spec.decision_id = other_decision; }},
+            {"owner", [](ActionTaskSpec& spec) { spec.owner += "-other"; }},
+            {"sla", [](ActionTaskSpec& spec) { spec.sla_due_at += "-other"; }},
+            {"connector",
+             [](ActionTaskSpec& spec) {
+                 spec.connector.kind = ActionConnectorKind::Salesforce;
+             }},
+            {"endpoint",
+             [](ActionTaskSpec& spec) { spec.connector.endpoint += "/other"; }},
+            {"timeout", [](ActionTaskSpec& spec) { ++spec.connector.timeout_seconds; }},
+            {"payload",
+             [](ActionTaskSpec& spec) { spec.payload["subject"] = "Other task"; }},
+            {"attempts", [](ActionTaskSpec& spec) { ++spec.max_attempts; }},
+            {"model", [](ActionTaskSpec& spec) { spec.model_version += "-other"; }},
+            {"agent", [](ActionTaskSpec& spec) { spec.agent_version += "-other"; }},
+            {"cell", [](ActionTaskSpec& spec) { spec.cell += "-other"; }},
+            {"currency", [](ActionTaskSpec& spec) { spec.currency = "EUR"; }},
+        };
+    for (const auto& [name, change] : changes) {
+        SCOPED_TRACE(name);
+        auto original = task_spec(decision_id, "https://example.test/tasks",
+                                  ActionConnectorKind::Webhook, "binding-" + name);
+        std::string error;
+        const auto queued = runtime.enqueue_task(original, "first-actor", &error);
+        ASSERT_TRUE(queued) << error;
+        auto retry = original;
+        change(retry);
+        retry.connector.token = "new-dummy-token";
+        const std::string actor = name == "actor" ? "second-actor" : "first-actor";
+        EXPECT_FALSE(runtime.enqueue_task(retry, actor, &error));
+        EXPECT_NE(error.find("idempotency"), std::string::npos) << error;
+        EXPECT_FALSE(runtime.execute_closed_loop(retry, actor, &error));
+        EXPECT_EQ(requests, 0);
+        const auto unchanged = runtime.find_task(queued->task_id, &error);
+        ASSERT_TRUE(unchanged) << error;
+        EXPECT_EQ(unchanged->attempts, 0u);
+        EXPECT_EQ(unchanged->status, ActionTaskStatus::Pending);
+        EXPECT_EQ(unchanged->endpoint, original.connector.endpoint);
+    }
+    EXPECT_EQ(node.ledger_entry_count(), 0u);
+}
+
+TEST_F(ActionIntegrationFixture,
+       DirectDeliveryRequiresTheEnqueuingActorEvenAfterSettlement) {
+    const auto [policy_id, decision_id] = create_decision("direct-binding");
+    ASSERT_FALSE(policy_id.empty());
+    int requests = 0;
+    ActionRuntime runtime(node, [&](const zetta::connect::HttpRequest& request) {
+        ++requests;
+        EXPECT_EQ(request.url, "https://example.test/tasks");
+        return zetta::connect::HttpResponse{200, "{}", {}};
+    });
+    std::string error;
+    auto spec = task_spec(decision_id, "https://example.test/tasks",
+                          ActionConnectorKind::Webhook, "direct-binding");
+    const auto queued = runtime.enqueue_task(spec, "first-actor", &error);
+    ASSERT_TRUE(queued) << error;
+    EXPECT_FALSE(runtime.deliver_task(queued->task_id, "new-dummy-token",
+                                      "second-actor", &error));
+    EXPECT_EQ(requests, 0);
+    // Credentials may rotate while the actor and authorized specification stay fixed.
+    spec.connector.token = "rotated-dummy-token";
+    const auto delivered = runtime.execute_closed_loop(spec, "first-actor", &error);
+    ASSERT_TRUE(delivered) << error;
+    EXPECT_EQ(delivered->task_id, queued->task_id);
+    EXPECT_EQ(delivered->status, ActionTaskStatus::Delivered);
+    EXPECT_FALSE(runtime.deliver_task(queued->task_id, "new-dummy-token",
+                                      "second-actor", &error));
+    spec.connector.endpoint += "/other";
+    EXPECT_FALSE(runtime.execute_closed_loop(spec, "first-actor", &error));
+    EXPECT_EQ(requests, 1);
+}
+
+TEST_F(ActionIntegrationFixture, LegacyAndChangedOutboxBindingsFailClosed) {
+    const auto [policy_id, decision_id] = create_decision("legacy-binding");
+    ASSERT_FALSE(policy_id.empty());
+    int requests = 0;
+    ActionRuntime runtime(node, [&](const zetta::connect::HttpRequest&) {
+        ++requests;
+        return zetta::connect::HttpResponse{200, "{}", {}};
+    });
+    for (const bool legacy : {true, false}) {
+        SCOPED_TRACE(legacy);
+        auto spec =
+            task_spec(decision_id, "https://example.test/tasks",
+                      ActionConnectorKind::Webhook, legacy ? "legacy" : "changed");
+        std::string error;
+        const auto queued = runtime.enqueue_task(spec, "first-actor", &error);
+        ASSERT_TRUE(queued) << error;
+        const auto outbox = node.find_database("action_delivery")->find_table("outbox");
+        const auto index = outbox->store().size() - 1;
+        Json row = *outbox->store().at(index);
+        if (legacy) {
+            row.erase("actor");
+            row.erase("spec_digest");
+        } else {
+            row["endpoint"] = "https://other.example.test/tasks";
+        }
+        outbox->update_row(outbox->store().id_at(index), row);
+        EXPECT_TRUE(runtime.find_task(queued->task_id, &error)) << error;
+        EXPECT_FALSE(runtime.enqueue_task(spec, "first-actor", &error));
+        EXPECT_FALSE(runtime.deliver_task(queued->task_id, "new-dummy-token",
+                                          "first-actor", &error));
+        EXPECT_FALSE(runtime.execute_closed_loop(spec, "first-actor", &error));
+    }
+    EXPECT_EQ(requests, 0);
+    EXPECT_EQ(node.ledger_entry_count(), 0u);
+}
+
+TEST_F(ActionIntegrationFixture, ReportIdempotencyBindsActorAndCompleteSpecification) {
+    int requests = 0;
+    ActionRuntime runtime(node, [&](const zetta::connect::HttpRequest&) {
+        ++requests;
+        return zetta::connect::HttpResponse{200, "{}", {}};
+    });
+    const std::vector<
+        std::pair<std::string, std::function<void(ReportPublicationSpec&)>>>
+        changes = {
+            {"actor", [](ReportPublicationSpec&) {}},
+            {"run", [](ReportPublicationSpec& spec) { spec.run_id += "-other"; }},
+            {"title", [](ReportPublicationSpec& spec) { spec.title += "-other"; }},
+            {"report",
+             [](ReportPublicationSpec& spec) {
+                 spec.driver_report["driver"] = "other";
+             }},
+            {"decisions",
+             [](ReportPublicationSpec& spec) {
+                 spec.decision_log.push_back({{"decision", "other"}});
+             }},
+            {"endpoint",
+             [](ReportPublicationSpec& spec) { spec.connector.endpoint += "/other"; }},
+            {"timeout",
+             [](ReportPublicationSpec& spec) { ++spec.connector.timeout_seconds; }},
+            {"attempts", [](ReportPublicationSpec& spec) { ++spec.max_attempts; }},
+            {"model",
+             [](ReportPublicationSpec& spec) { spec.model_version += "-other"; }},
+            {"policy",
+             [](ReportPublicationSpec& spec) { spec.policy_version += "-other"; }},
+            {"agent",
+             [](ReportPublicationSpec& spec) { spec.agent_version += "-other"; }},
+            {"cell", [](ReportPublicationSpec& spec) { spec.cell += "-other"; }},
+            {"currency", [](ReportPublicationSpec& spec) { spec.currency = "EUR"; }},
+        };
+    for (const auto& [name, change] : changes) {
+        SCOPED_TRACE(name);
+        ReportPublicationSpec spec;
+        spec.run_id = "binding-run";
+        spec.title = "Driver report";
+        spec.connector.endpoint = "https://example.test/reports";
+        spec.idempotency_key = "report-binding-" + name;
+        spec.model_version = "model-v1";
+        spec.policy_version = "policy-v1";
+        spec.agent_version = "agent-v1";
+        spec.cell = "population";
+        spec.currency = "USD";
+        std::string error;
+        const auto prepared = runtime.prepare_report(spec, "first-actor", &error);
+        ASSERT_TRUE(prepared) << error;
+        const auto ledger_entries = node.ledger_entry_count();
+        const auto original = spec;
+        change(spec);
+        spec.connector.token = "new-dummy-token";
+        const std::string actor = name == "actor" ? "second-actor" : "first-actor";
+        EXPECT_FALSE(runtime.prepare_report(spec, actor, &error));
+        EXPECT_NE(error.find("idempotency"), std::string::npos) << error;
+        EXPECT_FALSE(runtime.publish_report(spec, actor, &error));
+        EXPECT_EQ(requests, 0);
+        EXPECT_EQ(node.ledger_entry_count(), ledger_entries);
+        auto retry = original;
+        retry.connector.token = "rotated-dummy-token";
+        const auto repeated = runtime.prepare_report(retry, "first-actor", &error);
+        ASSERT_TRUE(repeated) << error;
+        EXPECT_EQ(repeated->publication.publication_id,
+                  prepared->publication.publication_id);
+    }
+}
+
+TEST_F(ActionIntegrationFixture,
+       ReportBindingsRejectLegacyChangedAndSettledMismatches) {
+    int requests = 0;
+    ActionRuntime runtime(node, [&](const zetta::connect::HttpRequest&) {
+        ++requests;
+        return zetta::connect::HttpResponse{200, "{}", {}};
+    });
+    for (const std::string state : {"legacy", "changed", "delivered", "dead-letter"}) {
+        SCOPED_TRACE(state);
+        ReportPublicationSpec spec;
+        spec.run_id = "binding-run";
+        spec.title = "Driver report";
+        spec.connector.endpoint = "https://example.test/reports";
+        spec.idempotency_key = "report-" + state;
+        spec.max_attempts = 1;
+        spec.model_version = "model-v1";
+        spec.policy_version = "policy-v1";
+        spec.agent_version = "agent-v1";
+        spec.cell = "population";
+        spec.currency = "USD";
+        std::string error;
+        const auto prepared = runtime.prepare_report(spec, "first-actor", &error);
+        ASSERT_TRUE(prepared) << error;
+        if (state == "legacy" || state == "changed") {
+            const auto table = node.find_database("action_delivery")
+                                   ->find_table("report_publications");
+            const auto index = table->store().size() - 1;
+            Json row = *table->store().at(index);
+            if (state == "legacy") {
+                row.erase("actor");
+                row.erase("spec_digest");
+                row.erase("timeout_seconds");
+            } else {
+                row["endpoint"] = "https://other.example.test/reports";
+            }
+            table->update_row(table->store().id_at(index), row);
+            EXPECT_TRUE(zetta::solutions::parse_report_publication(row, &error))
+                << error;
+            EXPECT_FALSE(runtime.prepare_report(spec, "first-actor", &error));
+            EXPECT_FALSE(runtime.publish_report(spec, "first-actor", &error));
+        } else {
+            const auto recorded = runtime.record_report_attempt(
+                prepared->publication,
+                zetta::connect::HttpResponse{
+                    state == "delivered" ? 200 : 500, "{}", {}},
+                &error);
+            ASSERT_TRUE(recorded) << error;
+            const auto repeated = runtime.prepare_report(spec, "first-actor", &error);
+            ASSERT_TRUE(repeated) << error;
+            EXPECT_FALSE(repeated->request);
+            EXPECT_FALSE(runtime.prepare_report(spec, "second-actor", &error));
+            spec.connector.endpoint += "/other";
+            EXPECT_FALSE(runtime.publish_report(spec, "first-actor", &error));
+        }
+    }
+    EXPECT_EQ(requests, 0);
+}
+
+TEST_F(ActionIntegrationFixture, BindingsRequireAnActorAndValidateStoredTypes) {
+    const auto [policy_id, decision_id] = create_decision("invalid-binding");
+    ASSERT_FALSE(policy_id.empty());
+    ActionRuntime runtime(node);
+    auto spec = task_spec(decision_id, "https://example.test/tasks",
+                          ActionConnectorKind::Webhook, "invalid-binding");
+    std::string error;
+    EXPECT_FALSE(runtime.enqueue_task(spec, {}, &error));
+    auto invalid = spec;
+    invalid.payload["invalid_utf8"] = std::string(1, '\xff');
+    EXPECT_FALSE(runtime.enqueue_task(invalid, "first-actor", &error));
+    const auto queued = runtime.enqueue_task(spec, "first-actor", &error);
+    ASSERT_TRUE(queued) << error;
+    auto row = zetta::solutions::to_json(*queued);
+    EXPECT_EQ(row.at("actor"), "first-actor");
+    EXPECT_EQ(row.at("spec_digest").get<std::string>().size(), 64u);
+    EXPECT_EQ(row.dump().find(spec.connector.token), std::string::npos);
+    row["actor"] = 42;
+    EXPECT_FALSE(zetta::solutions::parse_action_task(row, &error));
+    row = zetta::solutions::to_json(*queued);
+    row["spec_digest"] = "invalid-digest";
+    EXPECT_FALSE(zetta::solutions::parse_action_task(row, &error));
+}
+
 TEST_F(ActionIntegrationFixture, OutboxRowsReconcileThroughTheNodeCatalog) {
     const auto [policy_id, decision_id] = create_decision("replicated-outbox");
     ASSERT_FALSE(policy_id.empty());
@@ -485,7 +759,41 @@ TEST_F(ActionIntegrationFixture, OutboxRowsReconcileThroughTheNodeCatalog) {
     ASSERT_EQ(outbox->store().size(), 1u);
     EXPECT_EQ(outbox->store().at(0)->at("task_id"), task->task_id);
     EXPECT_FALSE(outbox->store().at(0)->contains("token"));
+    EXPECT_EQ(outbox->store().at(0)->at("actor"), "agent-key");
+    EXPECT_EQ(outbox->store().at(0)->at("spec_digest"),
+              zetta::solutions::to_json(*task).at("spec_digest"));
+    int requests = 0;
+    ActionRuntime peer_runtime(peer_node, [&](const zetta::connect::HttpRequest&) {
+        ++requests;
+        return zetta::connect::HttpResponse{200, "{}", {}};
+    });
+    EXPECT_FALSE(peer_runtime.deliver_task(task->task_id, "new-dummy-token", "other-actor", &error));
+    EXPECT_EQ(requests, 0);
     peer_node.stop();
+
+    ReplicationManager restored_replication{zetta::util::new_uuid()};
+    zetta::Node restored_node{{peer_directory.path().string(), false},
+                              &restored_replication};
+    ASSERT_TRUE(restored_node.start());
+    ActionRuntime restored_runtime(
+        restored_node, [&](const zetta::connect::HttpRequest&) {
+            ++requests;
+            return zetta::connect::HttpResponse{200, "{}", {}};
+        });
+    const auto restored = restored_runtime.find_task(task->task_id, &error);
+    ASSERT_TRUE(restored) << error;
+    EXPECT_EQ(zetta::solutions::to_json(*restored).at("actor"), "agent-key");
+    EXPECT_EQ(zetta::solutions::to_json(*restored).at("spec_digest"),
+              zetta::solutions::to_json(*task).at("spec_digest"));
+    EXPECT_FALSE(restored_runtime.deliver_task(task->task_id, "new-dummy-token",
+                                               "other-actor", &error));
+    EXPECT_EQ(requests, 0);
+    const auto delivered = restored_runtime.deliver_task(
+        task->task_id, "rotated-dummy-token", "agent-key", &error);
+    ASSERT_TRUE(delivered) << error;
+    EXPECT_EQ(delivered->status, ActionTaskStatus::Delivered);
+    EXPECT_EQ(requests, 1);
+    restored_node.stop();
 }
 
 TEST_F(ActionIntegrationFixture, PublishesDriverReportAndDecisionLog) {
