@@ -2644,6 +2644,24 @@ std::optional<QueryResult> execute_grouped_ddf(const SelectStmt& s,
 
 }  // namespace
 
+bool ReadFilter::allows(const nlohmann::json& row) const {
+    if (unrestricted) return true;
+    return std::ranges::any_of(
+        predicates, [&](const PolicyPredicate& predicate) {
+            return policy_predicate_matches(predicate, row, user, roles);
+        });
+}
+
+ReadFilter read_filter(const Node& node, const std::string& acting_id,
+                       bool acting_is_user, const std::string& database,
+                       const std::string& table) {
+    const RlsContext context = rls_context(node, acting_id, acting_is_user);
+    const RlsFilter filter =
+        build_rls_filter(node, context, database, table, RlsAccess::Read);
+    return {filter.bypass || !filter.engaged, context.user,
+            context.roles, filter.predicates};
+}
+
 QueryResult Executor::execute(const Statement& stmt,
                               const std::string& current_database) {
     // A statement's effects (a database the Node creates or drops, a graph run)

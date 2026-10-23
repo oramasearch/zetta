@@ -63,7 +63,7 @@ MCP/HTTP work.
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
-  data:predict / data:search key scoping, reversible text entity ids, every
+  data:predict / data:search key scoping, source-data authorization for search (#1403), reversible text entity ids, every
   request a span + audited; #957), and published pipelines (zetta#1289):
   expose_pipeline pins a pipeline behind POST /v1/pipelines/{name}/run, run
   with the caller's own grants, a declared input schema, size and rate limits.

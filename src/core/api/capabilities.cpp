@@ -503,6 +503,8 @@ const nlohmann::json& search_schema() {
 // path the GUI drives, so MCP/REST and the GUI can never diverge.
 ApiResult handle_search(const nlohmann::json& input, ApiContext& context) {
     zetta::index::SearchRequest request;
+    request.acting_id = context.acting_key;
+    request.acting_is_user = context.acting_is_user;
     request.target = input.at("target").get<std::string>();
     request.query = input.at("query").get<std::string>();
     request.field = input.value("field", std::string{});

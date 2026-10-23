@@ -5,6 +5,10 @@
     "backend": {
       "type": "string"
     },
+    "database": {
+      "minLength": 1,
+      "type": "string"
+    },
     "field": {
       "type": "string"
     },
