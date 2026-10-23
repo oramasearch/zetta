@@ -1,6 +1,6 @@
 // The llms.txt progressive-disclosure endpoints (#645,
 // docs/api/llms-endpoints.md). Two layers: the zetta-core renderers (content
-// is generated from the registry + live node state — the no-drift rule), and
+// is generated from the registry without workspace state), and
 // plain GET over a real socket beside /mcp (auth, content type, 404).
 #include <gtest/gtest.h>
 
@@ -20,6 +20,7 @@
 #include "zetta/api/llms.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/data/database.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/node.hpp"
 
@@ -40,10 +41,10 @@ struct LlmsRenderFixture : ::testing::Test {
 };
 
 TEST_F(LlmsRenderFixture, IndexTeachesTheFirstThreeReadsInOrder) {
-    const std::string page = zetta::api::render_llms_index(node, registry);
+    const std::string page = zetta::api::render_llms_index(registry);
 
-    // Live node identity is embedded.
-    EXPECT_NE(page.find(node.node_id()), std::string::npos);
+    EXPECT_NE(page.find("# Orama Zetta"), std::string::npos);
+    EXPECT_EQ(page.find(node.node_id()), std::string::npos);
 
     // The orientation sequence: server_info -> sql -> list_traces, each with
     // its registry description verbatim (no second prose source).
@@ -71,7 +72,7 @@ TEST_F(LlmsRenderFixture, IndexTeachesTheFirstThreeReadsInOrder) {
 
 TEST_F(LlmsRenderFixture, CapabilitiesTopicRendersEveryRegistryEntry) {
     const auto page =
-        zetta::api::render_llms_topic(node, registry, "capabilities");
+        zetta::api::render_llms_topic(registry, "capabilities");
     ASSERT_TRUE(page.has_value());
     for (const auto& capability : registry.list()) {
         EXPECT_NE(page->find("`" + capability->name + "`"), std::string::npos)
@@ -81,7 +82,7 @@ TEST_F(LlmsRenderFixture, CapabilitiesTopicRendersEveryRegistryEntry) {
     }
 }
 
-TEST_F(LlmsRenderFixture, ContentUpdatesWhenCapabilitiesAndStateChange) {
+TEST_F(LlmsRenderFixture, RegistryUpdatesAppearWhileWorkspaceStateStaysPrivate) {
     // A newly registered capability appears on the next render — the content
     // is generated from the registry, not a snapshot.
     ASSERT_TRUE(registry.add(zetta::api::Capability{
@@ -99,37 +100,25 @@ TEST_F(LlmsRenderFixture, ContentUpdatesWhenCapabilitiesAndStateChange) {
             return zetta::api::ApiResult::success({});
         }}));
     const auto capabilities =
-        zetta::api::render_llms_topic(node, registry, "capabilities");
+        zetta::api::render_llms_topic(registry, "capabilities");
     ASSERT_TRUE(capabilities.has_value());
     EXPECT_NE(capabilities->find("frobnicate_widgets"), std::string::npos);
 
-    // Live state changes show up the same way: a new index, database, project.
+    const auto before = zetta::api::render_llms_full(registry);
     ASSERT_TRUE(node.create_index(zetta::index::IndexValue{
         "customers", zetta::index::IndexKind::Search, "memory_search",
         {"name"}, ""}));
-    const auto indexes = zetta::api::render_llms_topic(node, registry, "indexes");
-    ASSERT_TRUE(indexes.has_value());
-    EXPECT_NE(indexes->find("`customers`"), std::string::npos);
-    EXPECT_NE(indexes->find("memory_search"), std::string::npos);
-
     ASSERT_TRUE(node.create_database("warehouse"));
-    const auto data = zetta::api::render_llms_topic(node, registry, "data");
-    ASSERT_TRUE(data.has_value());
-    EXPECT_NE(data->find("`warehouse`"), std::string::npos);
-
     ASSERT_TRUE(node.create_project("churn-2026"));
-    const auto projects =
-        zetta::api::render_llms_topic(node, registry, "projects");
-    ASSERT_TRUE(projects.has_value());
-    EXPECT_NE(projects->find("`churn-2026`"), std::string::npos);
+    EXPECT_EQ(zetta::api::render_llms_full(registry), before);
 }
 
 TEST_F(LlmsRenderFixture, UnknownTopicIsRejectedAndFullConcatenatesAll) {
     EXPECT_FALSE(
-        zetta::api::render_llms_topic(node, registry, "no-such-topic"));
+        zetta::api::render_llms_topic(registry, "no-such-topic"));
 
-    const std::string full = zetta::api::render_llms_full(node, registry);
-    EXPECT_NE(full.find(node.node_id()), std::string::npos);
+    const std::string full = zetta::api::render_llms_full(registry);
+    EXPECT_EQ(full.find(node.node_id()), std::string::npos);
     EXPECT_NE(full.find("# Capabilities"), std::string::npos);
     EXPECT_NE(full.find("# Cluster"), std::string::npos);
     EXPECT_NE(full.find("# Data"), std::string::npos);
@@ -177,8 +166,8 @@ struct LlmsHttpFixture : ::testing::Test {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     std::unique_ptr<zetta::api::ApiServer> server;
-    // Auth is always on (#799): seed the owner (admin) so this secret
-    // authenticates as it, and every fixture GET carries it as the bearer.
+    // Seed owner credentials for comparisons with anonymous and unprivileged
+    // callers; documentation itself is public.
     std::string owner_secret = "llms-owner-secret";
 
     void SetUp() override {
@@ -194,15 +183,12 @@ struct LlmsHttpFixture : ::testing::Test {
         node.stop();
     }
 
-    // Issue a GET from a helper thread while this (owning) thread drains. An
-    // empty bearer defaults to the seeded owner's secret.
+    // Issue a GET while the owning thread drains; an empty bearer is anonymous.
     std::string get(const std::string& target, const std::string& bearer = {}) {
-        const std::string effective_bearer =
-            bearer.empty() ? owner_secret : bearer;
         std::string response;
         std::atomic<bool> finished{false};
         std::thread client([&] {
-            response = http_get(server->port(), target, effective_bearer);
+            response = http_get(server->port(), target, bearer);
             finished = true;
         });
         const auto deadline =
@@ -216,11 +202,72 @@ struct LlmsHttpFixture : ::testing::Test {
     }
 };
 
+// Every public route must be independent of workspace state, including counts.
+TEST_F(LlmsHttpFixture, DocumentationNeverDisclosesWorkspaceInventory) {
+    auto nobody = node.create_user("docs-no-permissions");
+    ASSERT_TRUE(nobody);
+    const auto issued =
+        node.create_token(nobody->id(), zetta::governance::TokenType::Api);
+    ASSERT_TRUE(issued.token);
+
+    std::vector<std::string> targets{
+        "/llms.txt", "/llms-full.txt", "/llms/index", "/llms/index.txt",
+        "/llms/full", "/llms/full.txt"};
+    for (const auto& topic : zetta::api::llms_topics()) {
+        targets.push_back("/llms/" + topic.name);
+        targets.push_back("/llms/" + topic.name + ".txt");
+    }
+    std::vector<std::string> before;
+    for (const auto& target : targets) before.push_back(get(target));
+
+    auto database = node.create_database("private-inventory-database");
+    ASSERT_TRUE(database);
+    ASSERT_TRUE(database->create_table("private-inventory-table"));
+    ASSERT_TRUE(node.create_index(zetta::index::IndexValue{
+        "private-inventory-table", zetta::index::IndexKind::Search,
+        "memory_search", {"private-inventory-field"}, ""}));
+    ASSERT_TRUE(node.create_project("private-inventory-project"));
+    zetta::data::DatasetPartitionValue partition;
+    partition.table = "private-inventory-partition-table";
+    partition.blob_ref = "private-inventory-blob";
+    partition.row_range = {0, 42};
+    partition.stats = nlohmann::json::object();
+    partition.owner_nodes = {node.node_id()};
+    ASSERT_TRUE(node.create_dataset_partition(std::move(partition)));
+
+    for (std::size_t position = 0; position < targets.size(); ++position) {
+        SCOPED_TRACE(targets[position]);
+        for (const std::string& bearer :
+             {std::string{}, std::string{"invalid-docs-token"}, issued.secret,
+              owner_secret}) {
+            const auto response = get(targets[position], bearer);
+            EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
+            const auto body_start = response.find("\r\n\r\n");
+            const auto before_start = before[position].find("\r\n\r\n");
+            ASSERT_NE(body_start, std::string::npos);
+            ASSERT_NE(before_start, std::string::npos);
+            const auto body = response.substr(body_start + 4);
+            EXPECT_TRUE(body == before[position].substr(before_start + 4));
+            EXPECT_EQ(body.find(node.node_id()), std::string::npos);
+            EXPECT_EQ(body.find("private-inventory-"), std::string::npos);
+        }
+    }
+    EXPECT_TRUE(get("/v1/server_info").starts_with("HTTP/1.1 401"));
+    EXPECT_TRUE(get("/v1/server_info", issued.secret).starts_with("HTTP/1.1 403"));
+    EXPECT_TRUE(get("/v1/server_info", owner_secret).starts_with("HTTP/1.1 200"));
+    const auto denied_projects = get("/v1/list_projects", issued.secret);
+    EXPECT_TRUE(denied_projects.starts_with("HTTP/1.1 403"));
+    EXPECT_EQ(denied_projects.find("private-inventory-project"), std::string::npos);
+    const auto owner_projects = get("/v1/list_projects", owner_secret);
+    EXPECT_TRUE(owner_projects.starts_with("HTTP/1.1 200"));
+    EXPECT_NE(owner_projects.find("private-inventory-project"), std::string::npos);
+}
+
 TEST_F(LlmsHttpFixture, OneGetOrientsANoMcpAgent) {
     const std::string response = get("/llms.txt");
     EXPECT_NE(response.find("200"), std::string::npos);
     EXPECT_NE(response.find("text/plain"), std::string::npos);
-    EXPECT_NE(response.find(node.node_id()), std::string::npos);
+    EXPECT_EQ(response.find(node.node_id()), std::string::npos);
     EXPECT_NE(response.find("`server_info`"), std::string::npos);
     EXPECT_NE(response.find("`sql`"), std::string::npos);
     EXPECT_NE(response.find("`list_traces`"), std::string::npos);
@@ -251,8 +298,8 @@ TEST(LlmsHttpHeaders, ContentLengthIsCorrectOnEveryResponseOfOneWorker) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     ASSERT_TRUE(node.start());
-    // Auth is always on (#799): seed the owner so its secret authenticates the
-    // three GETs — the header regression is about successful (200) bodies.
+    // Exercise the public pages with the owner's bearer too; the header
+    // regression is about successful (200) bodies.
     const std::string owner_secret = "llms-headers-owner-secret";
     ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
     zetta::api::ServerOptions options;

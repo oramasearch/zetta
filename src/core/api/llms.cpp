@@ -1,6 +1,6 @@
 // The llms.txt renderers (#645, docs/api/llms-endpoints.md). Every page is
 // generated at request time from the capability registry's own descriptions
-// plus live Node reads — the no-drift rule: this file adds structure (headings,
+// and build version — the no-drift rule: this file adds structure (headings,
 // ordering), never a second prose description of a capability.
 #include "zetta/api/llms.hpp"
 
@@ -8,9 +8,6 @@
 
 #include "zetta/api/registry.hpp"
 #include "zetta/api/rest.hpp"
-#include "zetta/data/database.hpp"
-#include "zetta/index/index.hpp"
-#include "zetta/node.hpp"
 #include "zetta/version.hpp"
 
 namespace zetta::api {
@@ -50,7 +47,7 @@ void append_capability_line(std::string& out, const Registry& registry,
 
 // ---- topic renderers --------------------------------------------------------
 
-std::string render_capabilities(const Node&, const Registry& registry) {
+std::string render_capabilities(const Registry& registry) {
     std::string out = "# Capabilities\n\n";
     out += "Every entry on this node's control surface, rendered live from "
            "the capability registry (`tools/list` over POST /mcp returns the "
@@ -63,18 +60,10 @@ std::string render_capabilities(const Node&, const Registry& registry) {
     return out;
 }
 
-std::string render_cluster(const Node& node, const Registry& registry) {
+std::string render_cluster(const Registry& registry) {
     std::string out = "# Cluster\n\n";
-    out += "This node, live:\n\n";
-    out += "- node id: " + node.node_id() + "\n";
-    out += "- version: " + std::string(zetta::kVersion) + "\n";
-    const auto members = node.cluster_members();
-    out += "- cluster members (" + std::to_string(members.size()) + "):\n";
-    for (const auto& member : members) {
-        out += "  - " + member +
-               (member == node.node_id() ? "  (this node)" : "") + "\n";
-    }
-    out += "\nRead the same facts programmatically:\n\n";
+    out += "Read cluster identity and membership with an authenticated "
+           "capability call:\n\n";
     append_capability_line(out, registry, "server_info");
     append_capability_line(out, registry, "sql");
     out += "\nThe `system.nodes` view (via `sql`) lists every member with its "
@@ -82,98 +71,43 @@ std::string render_cluster(const Node& node, const Registry& registry) {
     return out;
 }
 
-std::string render_data(const Node& node, const Registry& registry) {
+std::string render_data(const Registry& registry) {
     std::string out = "# Data\n\n";
-    out += "Databases and tables on this node, live:\n\n";
-    const auto database_names = node.database_names();
-    if (database_names.empty()) {
-        out += "(no databases yet)\n";
-    }
-    for (const auto& database_name : database_names) {
-        const auto database = node.find_database(database_name);
-        if (!database) continue;
-        out += "- database `" + database_name + "`";
-        const auto table_names = database->table_names();
-        if (table_names.empty()) {
-            out += " (no tables)\n";
-            continue;
-        }
-        out += " — tables:";
-        for (const auto& table_name : table_names) {
-            out += " `" + table_name + "`";
-        }
-        out += "\n";
-    }
-    const auto partitions = node.dataset_partitions();
-    out += "\nDataset partitions (the replicate-to-all placement catalog): " +
-           std::to_string(partitions.size()) + "\n";
-    for (const auto& partition : partitions) {
-        out += "- `" + partition->id() + "` — table " + partition->table() +
-               ", rows [" + std::to_string(partition->row_range().start) +
-               ", " + std::to_string(partition->row_range().end) + "), " +
-               std::to_string(partition->owner_nodes().size()) +
-               " owner node(s)\n";
-    }
-    out += "\nQuery any of it (every `system.*` view included):\n\n";
+    out += "Query databases, tables and the dataset-partition placement "
+           "catalog through authenticated SQL. Results require the caller's "
+           "resource permissions:\n\n";
     append_capability_line(out, registry, "sql");
     return out;
 }
 
-std::string render_indexes(const Node& node, const Registry& registry) {
+std::string render_indexes(const Registry& registry) {
     std::string out = "# Indexes\n\n";
-    const auto indexes = node.indexes();
-    out += "Registered indexes on this node, live (" +
-           std::to_string(indexes.size()) + "):\n\n";
-    if (indexes.empty()) {
-        out += "(no indexes yet)\n";
-    }
-    for (const auto& index : indexes) {
-        out += "- `" + index->id() + "` — " + std::string(index->kind_name()) +
-               " index over table `" + index->table() + "` (fields:";
-        for (const auto& field : index->fields()) {
-            out += " `" + field + "`";
-        }
-        out += ") via backend `" + index->backend() + "`, created " +
-               index->created() + "\n";
-    }
-    out += "\nUse them:\n\n";
+    out += "Search an index with an authenticated capability call and "
+           "permission to search that index:\n\n";
     append_capability_line(out, registry, "search");
     out += "\nThe `system.indexes` view (via `sql`) shows the same registry.\n";
     return out;
 }
 
-std::string render_projects(const Node& node, const Registry& registry) {
+std::string render_projects(const Registry& registry) {
     std::string out = "# Projects\n\n";
-    const auto project_names = node.project_names();
-    out += "AI projects on this node, live (" +
-           std::to_string(project_names.size()) + "):\n\n";
-    if (project_names.empty()) {
-        out += "(no projects yet)\n";
-    }
-    for (const auto& project_name : project_names) {
-        out += "- `" + project_name + "`\n";
-    }
-    out += "\nRelated engine state, live: " +
-           std::to_string(node.runs().size()) + " run(s), " +
-           std::to_string(node.models().size()) + " model(s), " +
-           std::to_string(node.jobs().size()) + " job(s) — all readable as "
-           "`system.runs` / `system.models` / `system.jobs` via `sql`.\n";
-    out += "\nWork with projects:\n\n";
+    out += "Read projects through authenticated capabilities. Related "
+           "runs, models and jobs are available through `system.runs`, "
+           "`system.models` and `system.jobs` via authenticated SQL.\n\n";
+    out += "Work with projects:\n\n";
     append_capability_line(out, registry, "list_projects");
     append_capability_line(out, registry, "create_project");
     return out;
 }
 
-std::string render_observability(const Node& node, const Registry& registry) {
+std::string render_observability(const Registry& registry) {
     std::string out = "# Observability\n\n";
     out += "Every operation on this node records OpenTelemetry-style spans — "
            "intent, plan, timings, result shape — threaded by trace id. Every "
            "capability result carries `trace_id`, `span_id`, and "
            "`duration_ms`, so you can always read back what actually "
            "happened.\n\n";
-    out += "Recent spans on this node, live: " +
-           std::to_string(node.span_recorder().recent().size()) + "\n\n";
-    out += "Read them:\n\n";
+    out += "Read them with authenticated capability calls:\n\n";
     append_capability_line(out, registry, "list_traces");
     append_capability_line(out, registry, "get_trace");
     append_capability_line(out, registry, "submit_feedback");
@@ -181,7 +115,7 @@ std::string render_observability(const Node& node, const Registry& registry) {
     return out;
 }
 
-using TopicRenderer = std::string (*)(const Node&, const Registry&);
+using TopicRenderer = std::string (*)(const Registry&);
 
 struct TopicEntry {
     LlmsTopic topic;
@@ -194,15 +128,15 @@ const std::vector<TopicEntry>& topic_entries() {
           "every capability on the control surface, with kind, required "
           "operation, description, and input schema"},
          render_capabilities},
-        {{"cluster", "this node's id, version, and live cluster membership"},
+        {{"cluster", "how to read cluster identity and membership"},
          render_cluster},
         {{"data",
-          "live databases, tables, and the dataset-partition placement "
-          "catalog"},
+          "how to query databases, tables, and the dataset-partition "
+          "placement catalog"},
          render_data},
-        {{"indexes", "live registered indexes and how to search them"},
+        {{"indexes", "how to query and search indexes"},
          render_indexes},
-        {{"projects", "live AI projects, runs, models, and jobs"},
+        {{"projects", "how to read projects, runs, models, and jobs"},
          render_projects},
         {{"observability",
           "traces and spans: how to read back what actually happened"},
@@ -222,19 +156,14 @@ const std::vector<LlmsTopic>& llms_topics() {
     return topics;
 }
 
-std::string render_llms_index(const Node& node, const Registry& registry) {
-    std::string out = "# Orama Zetta node " + node.node_id() + "\n\n";
+std::string render_llms_index(const Registry& registry) {
+    std::string out = "# Orama Zetta\n\n";
     out += "> A zetta node: a distributed database + AI-project engine, "
            "driven entirely through a capability registry you can call over "
-           "plain HTTP. This page is generated live from that registry and "
-           "this node's state — it is always current.\n\n";
-    out += "Live facts: version " + std::string(zetta::kVersion) + " · " +
-           std::to_string(node.cluster_members().size()) +
-           " cluster member(s) · " + std::to_string(node.database_count()) +
-           " database(s) · " + std::to_string(node.project_count()) +
-           " project(s) · " + std::to_string(node.index_count()) +
-           " index(es) · " + std::to_string(node.dataset_partition_count()) +
-           " dataset partition(s)\n\n";
+           "plain HTTP. This documentation describes the build's API; "
+           "workspace inventory is available through authenticated "
+           "capabilities.\n\n";
+    out += "Version: " + std::string(zetta::kVersion) + "\n\n";
 
     out += "## First three reads\n\n";
     out += "Orient by calling these, in order:\n\n";
@@ -249,7 +178,7 @@ std::string render_llms_index(const Node& node, const Registry& registry) {
     out += "\n## How to call a capability\n\n";
     out += "Every capability is an MCP tool served by this same host and "
            "port: JSON-RPC 2.0 over `POST /mcp` (add `Authorization: Bearer "
-           "<token>` if this node requires one). For example:\n\n";
+           "<token>` to authenticate). For example:\n\n";
     out += "    POST /mcp\n";
     out += "    {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
            "\"params\":{\"name\":\"server_info\",\"arguments\":{}}}\n\n";
@@ -273,19 +202,18 @@ std::string render_llms_index(const Node& node, const Registry& registry) {
     return out;
 }
 
-std::optional<std::string> render_llms_topic(const Node& node,
-                                             const Registry& registry,
+std::optional<std::string> render_llms_topic(const Registry& registry,
                                              const std::string& topic) {
     for (const auto& entry : topic_entries()) {
-        if (entry.topic.name == topic) return entry.render(node, registry);
+        if (entry.topic.name == topic) return entry.render(registry);
     }
     return std::nullopt;
 }
 
-std::string render_llms_full(const Node& node, const Registry& registry) {
-    std::string out = render_llms_index(node, registry);
+std::string render_llms_full(const Registry& registry) {
+    std::string out = render_llms_index(registry);
     for (const auto& entry : topic_entries()) {
-        out += "\n---\n\n" + entry.render(node, registry);
+        out += "\n---\n\n" + entry.render(registry);
     }
     return out;
 }

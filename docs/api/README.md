@@ -31,8 +31,8 @@ MCP/HTTP work.
   GET /v1/<name>, actions → POST /v1/<name>, output schemas, and the
   drift-checked OpenAPI document generated from the registry.
 - [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
-  pages (#645): plain-GET agent docs generated live from the registry + node
-  state, no second prose source.
+  pages (#645, #1402): public agent docs from the registry, with no workspace
+  inventory.
 - [specs-index.md](specs-index.md) — the spec index (#646): `/v1/specs` +
   `list_specs`/`get_spec` serving the OpenAPI document + every capability and
   boundary schema from their C++ accessors, drift-checked through one shared
@@ -83,8 +83,8 @@ statuses (`forbidden` is 403 and `runner_required` 409, #1261); `GET /v1/openapi
 registered schemas (drift-checked into `schemas/openapi.json`).
 
 The same server also answers plain `GET /llms.txt` / `/llms/<topic>.txt` /
-`/llms-full.txt` — agent-readable pages generated live from the registry +
-node state, so a no-MCP agent orients with one GET
+`/llms-full.txt` — public agent-readable pages generated from the registry,
+with no workspace inventory, so a no-MCP agent orients with one GET
 ([llms-endpoints.md](llms-endpoints.md), #645) — and `GET /v1/specs` /
 `/v1/specs/<name>`, the spec index over every schema in the system
 ([specs-index.md](specs-index.md), #646).

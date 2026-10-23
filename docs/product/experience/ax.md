@@ -22,9 +22,10 @@ relay it to a person.
   its own agent-readable documentation over plain HTTP — `/llms.txt` (what
   this cluster is, the first three reads, where everything lives) →
   `/llms/<topic>.txt` → `/llms-full.txt` — generated at request time from the
-  live registry's own descriptions, embedding **live cluster facts** (node id,
-  indexes, catalog entries); never a second prose source. Custom beyond the
-  community convention wherever AX demands it.
+  registry's own descriptions and the build version. These public pages contain
+  no workspace inventory or counts (#1402); live facts come from authenticated
+  capabilities and their authorization checks. Custom beyond the community
+  convention wherever AX demands it.
 - **The spec index** — built
   ([#646](https://github.com/oramasearch/zetta/issues/646),
   [../../api/specs-index.md](../../api/specs-index.md)): `/v1/specs` +
