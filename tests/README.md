@@ -53,3 +53,11 @@ the quota, and rf = 2 on three real nodes with a node lost, repaired and replace
 liquid-shaped load (`ZETTA_OBJECT_SOAK_BYTES`); `api/test_object_routes.cpp`
 runs the raw byte routes over loopback HTTP, with the six latency budgets as
 failing benchmarks (#1005). See [the object capability](../docs/data/object-store.md).
+
+`connect/test_connector_destinations.cpp` covers exact connector authorities,
+resolved-address approval, and native HTTP, Postgres, MySQL, TiDB and the lake
+SQL types refusing an unapproved private target before a connection, reaching an
+exact approved `host:port`, never reaching metadata or link-local addresses, and
+re-validating a saved connection whose type changed (#1414). The MySQL driver
+tests approve their loopback fake server's exact `host:port`; `RegistryFixture.ConnectorDiscoveryRequiresApprovalForInlineDestinations`
+covers saved discovery and privileged inline discovery for both identity systems.

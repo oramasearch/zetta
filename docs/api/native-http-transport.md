@@ -180,3 +180,13 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
 See also [../data/connector-query.md](../data/connector-query.md) (what the
 transport is for) and [../cluster/README.md](../cluster/README.md) (the inbound
 half of the networking boundary).
+
+Source connector requests carry `DestinationPolicy::Connector` (#1414). They
+apply the separate exact host:port connector allowance to private and loopback
+addresses on every resolved candidate and redirect hop; metadata, link-local
+and reserved addresses are always refused. They require HTTPS unless the
+request sets `connector_plaintext`, which only a lake SQL connector configured
+with an explicit `http://` endpoint does, so an HTTPS source is never followed
+to plaintext. The egress allowlist (#75) still applies first to the same
+addresses. See the
+[connector destination policy](../data/connector-query.md#connector-destination-approval-1414-lsr-241).

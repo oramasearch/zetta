@@ -31,6 +31,7 @@
 
 #include "system_trust_store.hpp"
 #include "zetta/connect/connector.hpp"
+#include "zetta/connect/connector_destinations.hpp"
 #include "zetta/connect/mysql_client.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/runtime/net.hpp"
@@ -118,6 +119,16 @@ bool configure_tls(net::tls_context& context, MysqlTlsMode mode, const std::stri
 // completion before reading it).
 runtime::task<> run_session(net::io_context& io, ConnectorConfig config, std::string sql,
                             std::size_t max_rows, ConnectorResult& result) {
+    // Bound to its connector types and re-validated for direct C++ callers
+    // (#1414): one DNS host or IP literal, one numeric port, a known TLS mode.
+    if (config.type != "mysql" && config.type != "tidb") {
+        result.error = "mysql: expected connector.type 'mysql' or 'tidb'";
+        co_return;
+    }
+    if (const std::string reason = config.destination_rejection(); !reason.empty()) {
+        result.error = reason;
+        co_return;
+    }
     const std::optional<MysqlTlsMode> mode = parse_mysql_tls_mode(config.sslmode);
     if (!mode) {
         result.error = "mysql: unknown sslmode '" + config.sslmode +
@@ -146,19 +157,36 @@ runtime::task<> run_session(net::io_context& io, ConnectorConfig config, std::st
                        resolve_error.message();
         co_return;
     }
+    // The connector destination policy (#1414): every resolved address is
+    // checked, and only a checked numeric address is dialled, so no second
+    // lookup can change where the connection goes. Public addresses pass;
+    // private and loopback ones need an exact operator host:port approval;
+    // metadata, link-local and reserved addresses never pass. TLS still
+    // verifies the certificate against `config.host`, not the address.
+    const ConnectorDestinations policy = connector_destinations();
     net::tcp_socket socket(io);
     socket.open();
     bool connected = false;
+    bool any_allowed = false;
     std::string connect_reason = "mysql: no address resolved for " + config.host;
     for (const auto& entry : endpoints) {
+        const net::endpoint endpoint = entry.get_endpoint();
+        const std::string address = endpoint.is_v4() ? endpoint.v4_address().to_string()
+                                                     : endpoint.v6_address().to_string();
+        if (!policy.allows(config.host, port, address)) continue;
+        any_allowed = true;
         auto [connect_error] =
-            co_await runtime::timeout(socket.connect(entry.get_endpoint()), kConnectTimeout);
+            co_await runtime::timeout(socket.connect(endpoint), kConnectTimeout);
         if (!connect_error) {
             connected = true;
             break;
         }
         connect_reason = "mysql: could not connect to " + where + ": " +
                          connect_error.message();
+    }
+    if (!any_allowed) {
+        result.error = "destination refused: MySQL connector has no approved resolved address";
+        co_return;
     }
     if (!connected) {
         result.error = std::move(connect_reason);

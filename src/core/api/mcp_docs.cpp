@@ -86,6 +86,9 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--no-preflight` | skip the startup data integrity check |\n";
     out += "| `--log-cluster` | log cluster gossip to stderr (debugging) |\n";
     out += "| `--governance` | enforce consent gating on cloud-touching calls (off by default) |\n";
+    out +=
+        "| `--connector-allow-destinations LIST` | exact host:port entries allowed for "
+        "private/loopback source connectors; metadata and link-local are always denied |\n";
     out += "| `--action-allow-destinations LIST` | address classes an action or report delivery endpoint may reach besides public ones: `loopback`, `private`, `link-local`, `metadata` (default none) |\n";
     out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration |\n";
     out += "| `--audit-summary-retention-days N` | keep audit summaries for N days (default 365); zero disables expiration |\n";
@@ -150,6 +153,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n";
     out += "| `ZETTA_IDENTITY_ROOT` | `--identity-root` |\n";
     out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n";
+    out += "| `ZETTA_CONNECTOR_ALLOW_DESTINATIONS` | `--connector-allow-destinations` |\n";
     out += "| `ZETTA_ACTION_ALLOW_DESTINATIONS` | `--action-allow-destinations` |\n";
     out += "| `ZETTA_EGRESS_ALLOW` | `--egress-allow` (used when no flag is given) |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_MODE` | `--pubsub-dispatch-mode` |\n";

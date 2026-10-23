@@ -20,6 +20,7 @@
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/connect/connector_destinations.hpp"
 
 #if defined(ZETTA_WITH_POSTGRES)
 
@@ -69,9 +70,21 @@ private:
     std::optional<std::string> previous;
 };
 
+struct PostgresConnector : ::testing::Test {
+    void SetUp() override {
+        const auto config = local_pg("postgres");
+        const std::string host =
+            config.host.find(':') == config.host.npos ? config.host : "[" + config.host + "]";
+        const auto allowed = zetta::connect::ConnectorDestinations::parse(host + ":" + config.port);
+        ASSERT_TRUE(allowed);
+        zetta::connect::set_connector_destinations(*allowed);
+    }
+    void TearDown() override { zetta::connect::set_connector_destinations({}); }
+};
+
 }  // namespace
 
-TEST(PostgresConnector, PinsUtf8EvenWhenTheEnvironmentRequestsSjis) {
+TEST_F(PostgresConnector, PinsUtf8EvenWhenTheEnvironmentRequestsSjis) {
     const ScopedClientEncoding encoding{"SJIS"};
     if (!postgres_reachable()) GTEST_SKIP() << "no local Postgres reachable";
     const auto result = zetta::connect::run_connector_query(
@@ -81,7 +94,7 @@ TEST(PostgresConnector, PinsUtf8EvenWhenTheEnvironmentRequestsSjis) {
     EXPECT_EQ(result.data.rows.front().at("encoding"), "UTF8");
 }
 
-TEST(PostgresConnector, RunsAReadOnlyQueryAndCoercesTypes) {
+TEST_F(PostgresConnector, RunsAReadOnlyQueryAndCoercesTypes) {
     if (!postgres_reachable()) GTEST_SKIP() << "no local Postgres reachable";
     zetta::connect::install_postgres_protocol();
 
@@ -104,7 +117,7 @@ TEST(PostgresConnector, RunsAReadOnlyQueryAndCoercesTypes) {
     EXPECT_TRUE(row.at("nothing").is_null());
 }
 
-TEST(PostgresConnector, CapsRowsAtMaxRows) {
+TEST_F(PostgresConnector, CapsRowsAtMaxRows) {
     if (!postgres_reachable()) GTEST_SKIP() << "no local Postgres reachable";
     zetta::connect::install_postgres_protocol();
     const auto result = zetta::connect::run_connector_query(
@@ -113,7 +126,7 @@ TEST(PostgresConnector, CapsRowsAtMaxRows) {
     EXPECT_EQ(result.data.rows.size(), 5u);  // the LIMIT cap held
 }
 
-TEST(PostgresConnector, RejectsAWriteBeforeItReachesTheSource) {
+TEST_F(PostgresConnector, RejectsAWriteBeforeItReachesTheSource) {
     // The shared read-only guard blocks anything but SELECT/WITH — no connection
     // is even opened. Needs no database, so it never skips.
     const auto result = zetta::connect::run_connector_query(
@@ -122,7 +135,7 @@ TEST(PostgresConnector, RejectsAWriteBeforeItReachesTheSource) {
     EXPECT_NE(result.error.find("read-only"), std::string::npos);
 }
 
-TEST(PostgresConnector, MissingRequiredFieldsFailValidation) {
+TEST_F(PostgresConnector, MissingRequiredFieldsFailValidation) {
     // Postgres requires host + user + database (from_json boundary).
     EXPECT_FALSE(zetta::connect::ConnectorConfig::from_json(
         nlohmann::json{{"type", "postgres"}, {"host", "h"}}));  // no user/database
@@ -137,7 +150,7 @@ TEST(PostgresConnector, MissingRequiredFieldsFailValidation) {
 // Postgres connection failed with "snowflake: could not resolve
 // .snowflakecomputing.com". The consent gate refused the call first, which is
 // why the dispatch bug went unseen for as long as the gate was on.
-TEST(PostgresConnector, DistributedIngestLandsARealPostgresResultSet) {
+TEST_F(PostgresConnector, DistributedIngestLandsARealPostgresResultSet) {
     if (!postgres_reachable()) GTEST_SKIP() << "no local Postgres reachable";
     zetta::connect::install_postgres_protocol();
 

@@ -35,6 +35,7 @@ std::vector<std::pair<std::string, std::string>> headers(
 HttpRequest partition_request(const ConnectorConfig& config,
                               const std::string& handle, long long partition) {
     HttpRequest request;
+    request.destinations = DestinationPolicy::Connector;
     request.method = "GET";
     request.url = statements_url(config) + "/" + handle;
     if (partition >= 0) {

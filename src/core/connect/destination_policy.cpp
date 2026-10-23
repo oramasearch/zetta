@@ -78,11 +78,16 @@ AddressClass classify_v6(const Ipv6& a) {
     }
     if (range({0xfe, 0x80}, 10)) return AddressClass::LinkLocal;
     if (range({0xfc, 0x00}, 7) || range({0xfe, 0xc0}, 10)) return AddressClass::Private;
-    if (range({0xff, 0x00}, 8) ||                    // multicast
-        range({0x20, 0x01, 0x0d, 0xb8}, 32) ||       // documentation
-        range({0x01, 0x00}, 64) ||                   // discard-only
-        range({0x20, 0x02}, 16) ||                   // 6to4: carries an arbitrary IPv4
-        range({0x20, 0x01, 0x00, 0x00}, 32)) {       // Teredo: likewise
+    if (range({0xff, 0x00}, 8) ||                     // multicast
+        !range({0x20}, 3) ||                          // outside global unicast 2000::/3
+        range({0x3f, 0xff}, 20) ||                    // documentation
+        range({0x20, 0x01, 0x00, 0x10}, 28) ||        // ORCHID
+        range({0x20, 0x01, 0x00, 0x20}, 28) ||        // ORCHIDv2
+        range({0x20, 0x01, 0x00, 0x02, 0, 0}, 48) ||  // benchmarking
+        range({0x20, 0x01, 0x0d, 0xb8}, 32) ||        // documentation
+        range({0x01, 0x00}, 64) ||                    // discard-only
+        range({0x20, 0x02}, 16) ||                    // 6to4: carries an arbitrary IPv4
+        range({0x20, 0x01, 0x00, 0x00}, 32)) {        // Teredo: likewise
         return AddressClass::Reserved;
     }
     return AddressClass::Public;

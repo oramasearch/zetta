@@ -16,6 +16,7 @@
 
 #include "zetta/api/native_http_transport.hpp"
 #include "zetta/connect/destination_policy.hpp"
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 
 namespace {
@@ -171,9 +172,19 @@ const std::string kOk =
     "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
 
 struct NativeTransportDestinations : ::testing::Test {
-    void SetUp() override { zetta::api::install_native_http_transport(); }
+    // The egress allowlist (#1321) runs first in the same dial loop and denies
+    // non-loopback by default. Allow everything, as Lake's Zettas do
+    // (ZETTA_EGRESS_ALLOW=*), so these tests exercise the destination policy
+    // itself rather than an earlier egress refusal.
+    void SetUp() override {
+        const auto everything = zetta::connect::EgressPolicy::parse("*");
+        ASSERT_TRUE(everything);
+        zetta::connect::set_egress_policy(*everything);
+        zetta::api::install_native_http_transport();
+    }
     void TearDown() override {
         zetta::connect::set_allowed_destinations({});
+        zetta::connect::set_egress_policy({});
         zetta::api::shutdown_native_http_transport();
     }
 

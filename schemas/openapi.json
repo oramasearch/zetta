@@ -4657,7 +4657,7 @@
                     "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                     "properties": {
                       "account": {
-                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                        "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                         "type": "string"
                       },
                       "auth": {
@@ -4674,15 +4674,15 @@
                         "type": "string"
                       },
                       "endpoint": {
-                        "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL, e.g. http://orders.ws-1.svc.cluster.local:8080. Without a scheme it is https://; plaintext http:// must be written out. No credentials, query or fragment in it: the bearer token goes in `token`.",
+                        "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL with its protocol written out, http:// or https://, e.g. http://orders.ws-1.svc.cluster.local:8080. Private and loopback destinations require an exact operator host:port approval. No credentials, query or fragment in it: the bearer token goes in `token`.",
                         "type": "string"
                       },
                       "host": {
-                        "description": "Postgres, MySQL or TiDB host, e.g. 127.0.0.1.",
+                        "description": "Postgres, MySQL or TiDB: one DNS hostname or bare IP literal. Private and loopback destinations require an exact operator host:port approval; socket paths and multiple hosts are refused.",
                         "type": "string"
                       },
                       "port": {
-                        "description": "Postgres, MySQL or TiDB port (default 5432 / 3306 / 4000).",
+                        "description": "Postgres, MySQL or TiDB numeric TCP port, 1 through 65535 (default 5432 / 3306 / 4000).",
                         "type": "string"
                       },
                       "role": {
@@ -4870,7 +4870,7 @@
                     "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                     "properties": {
                       "account": {
-                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                        "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                         "type": "string"
                       },
                       "auth": {
@@ -4887,15 +4887,15 @@
                         "type": "string"
                       },
                       "endpoint": {
-                        "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL, e.g. http://orders.ws-1.svc.cluster.local:8080. Without a scheme it is https://; plaintext http:// must be written out. No credentials, query or fragment in it: the bearer token goes in `token`.",
+                        "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL with its protocol written out, http:// or https://, e.g. http://orders.ws-1.svc.cluster.local:8080. Private and loopback destinations require an exact operator host:port approval. No credentials, query or fragment in it: the bearer token goes in `token`.",
                         "type": "string"
                       },
                       "host": {
-                        "description": "Postgres, MySQL or TiDB host, e.g. 127.0.0.1.",
+                        "description": "Postgres, MySQL or TiDB: one DNS hostname or bare IP literal. Private and loopback destinations require an exact operator host:port approval; socket paths and multiple hosts are refused.",
                         "type": "string"
                       },
                       "port": {
-                        "description": "Postgres, MySQL or TiDB port (default 5432 / 3306 / 4000).",
+                        "description": "Postgres, MySQL or TiDB numeric TCP port, 1 through 65535 (default 5432 / 3306 / 4000).",
                         "type": "string"
                       },
                       "role": {
@@ -27317,16 +27317,16 @@
     },
     "/v1/list_source_tables": {
       "get": {
-        "description": "Browse a connected source's catalog WITHOUT ingesting from it: the tables (optionally with their columns and types) behind a saved connection, filtered by schema and by a name substring. Opens one connection, runs one read-only catalog query, lands nothing — use this to FIND a table, then create_dataset_from_query to pull it. Filter with match='score' to locate scoring tables. A saved connection in safe mode warn_all answers safe_mode_warning naming the catalog statements first; repeat with safe_mode_confirmation to run them. Requires orchestration:list_source_tables. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
+        "description": "Browse a connected source's catalog WITHOUT ingesting from it: the tables (optionally with their columns and types) behind a saved connection, filtered by schema and by a name substring. Opens one connection, runs one read-only catalog query, lands nothing — use this to FIND a table, then create_dataset_from_query to pull it. Filter with match='score' to locate scoring tables. A saved connection in safe mode warn_all answers safe_mode_warning naming the catalog statements first; repeat with safe_mode_confirmation to run them. Inline connectors require create_connection permission; saved and inline sources share the operator connector destination policy. Requires orchestration:list_source_tables. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "list_source_tables",
         "parameters": [
           {
-            "description": "a saved connection by name (give this OR an inline connector)",
+            "description": "a saved connection by name (inline discovery requires create_connection permission)",
             "in": "query",
             "name": "connection",
             "required": false,
             "schema": {
-              "description": "a saved connection by name (give this OR an inline connector)",
+              "description": "a saved connection by name (inline discovery requires create_connection permission)",
               "minLength": 1,
               "type": "string"
             }
@@ -27339,7 +27339,7 @@
                   "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                   "properties": {
                     "account": {
-                      "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                      "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                       "type": "string"
                     },
                     "auth": {
@@ -27356,15 +27356,15 @@
                       "type": "string"
                     },
                     "endpoint": {
-                      "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL, e.g. http://orders.ws-1.svc.cluster.local:8080. Without a scheme it is https://; plaintext http:// must be written out. No credentials, query or fragment in it: the bearer token goes in `token`.",
+                      "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL with its protocol written out, http:// or https://, e.g. http://orders.ws-1.svc.cluster.local:8080. Private and loopback destinations require an exact operator host:port approval. No credentials, query or fragment in it: the bearer token goes in `token`.",
                       "type": "string"
                     },
                     "host": {
-                      "description": "Postgres, MySQL or TiDB host, e.g. 127.0.0.1.",
+                      "description": "Postgres, MySQL or TiDB: one DNS hostname or bare IP literal. Private and loopback destinations require an exact operator host:port approval; socket paths and multiple hosts are refused.",
                       "type": "string"
                     },
                     "port": {
-                      "description": "Postgres, MySQL or TiDB port (default 5432 / 3306 / 4000).",
+                      "description": "Postgres, MySQL or TiDB numeric TCP port, 1 through 65535 (default 5432 / 3306 / 4000).",
                       "type": "string"
                     },
                     "role": {

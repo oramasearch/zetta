@@ -10,6 +10,10 @@ and audit everything their agent did. Good AX is therefore also UX: every
 tool description, error, and read-back is written for an agent that must
 relay it to a person.
 
+- **Source discovery**: readers browse saved connections; inline
+  `list_source_tables` needs `create_connection` permission. Private/loopback
+  sources also need exact operator destination approval on each node
+  ([connector policy](../../data/connector-query.md#connector-destination-approval-1414-lsr-241), #1414).
 - **MCP with full parity**
   ([../api/registry-design.md](../../api/registry-design.md)): every capability a
   schema-validated tool whose description is one agent-actionable sentence

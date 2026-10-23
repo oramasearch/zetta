@@ -46,6 +46,7 @@
 #include "zetta/api/mysql_protocol.hpp"
 #include "zetta/cluster/security.hpp"
 #include "zetta/connect/connector.hpp"
+#include "zetta/connect/connector_destinations.hpp"
 #include "zetta/connect/mysql_client.hpp"
 
 namespace {
@@ -799,12 +800,23 @@ private:
     std::thread thread_;
 };
 
+// Loopback is a private destination (#1414): each driver test approves the
+// exact host:port its fake server listens on, and the fixture clears it.
 ConnectorConfig loopback_config(int port, const std::string& sslmode) {
     ConnectorConfig config = mysql_config();
     config.port = std::to_string(port);
     config.sslmode = sslmode;
+    const auto approved = zetta::connect::ConnectorDestinations::parse(
+        config.host + ":" + config.port + ",localhost:" + config.port);
+    if (approved) zetta::connect::set_connector_destinations(*approved);
     return config;
 }
+
+struct LoopbackDriverTest : ::testing::Test {
+    void TearDown() override { zetta::connect::set_connector_destinations({}); }
+};
+struct MysqlDriver : LoopbackDriverTest {};
+struct TidbDriver : LoopbackDriverTest {};
 
 // A server certificate signed by a throwaway CA, minted with the cluster CA code
 // (Ed25519, TLS 1.3). Its name is the node id, so it does NOT match 127.0.0.1.
@@ -838,7 +850,7 @@ private:
 
 }  // namespace
 
-TEST(MysqlDriver, RunsAQueryOverLoopbackInPlaintextWhenAskedByName) {
+TEST_F(MysqlDriver, RunsAQueryOverLoopbackInPlaintextWhenAskedByName) {
     zetta::connect::install_mysql_protocol();
     FakeMysqlServer server({});
     const auto result = zetta::connect::run_connector_query(
@@ -856,7 +868,7 @@ TEST(MysqlDriver, RunsAQueryOverLoopbackInPlaintextWhenAskedByName) {
                                         "ROLLBACK"}));
 }
 
-TEST(MysqlDriver, TheDefaultRefusesAPlaintextServer) {
+TEST_F(MysqlDriver, TheDefaultRefusesAPlaintextServer) {
     zetta::connect::install_mysql_protocol();
     FakeMysqlServer server({});
     const auto result = zetta::connect::run_connector_query(
@@ -867,7 +879,7 @@ TEST(MysqlDriver, TheDefaultRefusesAPlaintextServer) {
     EXPECT_TRUE(server.user().empty());  // no handshake response was ever sent
 }
 
-TEST(MysqlDriver, RunsAQueryOverRealTls) {
+TEST_F(MysqlDriver, RunsAQueryOverRealTls) {
     zetta::connect::install_mysql_protocol();
     const auto identity = mint_server_identity();
     FakeMysqlServer server({.offer_tls = true,
@@ -883,7 +895,7 @@ TEST(MysqlDriver, RunsAQueryOverRealTls) {
     EXPECT_EQ(result.data.rows[0].at("name").get<std::string>(), "Ad\xc3\xa1");
 }
 
-TEST(MysqlDriver, VerifyCaTrustsOnlyTheConfiguredRoots) {
+TEST_F(MysqlDriver, VerifyCaTrustsOnlyTheConfiguredRoots) {
     zetta::connect::install_mysql_protocol();
     zetta::test::TempDir dir;
     const auto identity = mint_server_identity();
@@ -914,7 +926,7 @@ TEST(MysqlDriver, VerifyCaTrustsOnlyTheConfiguredRoots) {
     }
 }
 
-TEST(MysqlDriver, VerifyFullRejectsACertificateForAnotherName) {
+TEST_F(MysqlDriver, VerifyFullRejectsACertificateForAnotherName) {
     zetta::connect::install_mysql_protocol();
     zetta::test::TempDir dir;
     const auto identity = mint_server_identity();
@@ -931,7 +943,7 @@ TEST(MysqlDriver, VerifyFullRejectsACertificateForAnotherName) {
     EXPECT_TRUE(server.user().empty());
 }
 
-TEST(MysqlDriver, AWrongPasswordFailsWithoutEchoingIt) {
+TEST_F(MysqlDriver, AWrongPasswordFailsWithoutEchoingIt) {
     zetta::connect::install_mysql_protocol();
     FakeMysqlServer server({.password = "the-real-one"});
     const auto result = zetta::connect::run_connector_query(
@@ -943,7 +955,7 @@ TEST(MysqlDriver, AWrongPasswordFailsWithoutEchoingIt) {
     EXPECT_EQ(result.error.find("the-real-one"), std::string::npos);
 }
 
-TEST(MysqlDriver, AnUnreachableServerFailsCleanly) {
+TEST_F(MysqlDriver, AnUnreachableServerFailsCleanly) {
     zetta::connect::install_mysql_protocol();
     // Bind and close a port so nothing listens on it.
     int probe = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -1046,7 +1058,7 @@ TEST(TidbQueryGuard, AdmitsReadsAndRefusesWritesAnywhere) {
     }
 }
 
-TEST(TidbDriver, RunsAgainstATidbOverLoopbackWhicheverTypeNamedIt) {
+TEST_F(TidbDriver, RunsAgainstATidbOverLoopbackWhicheverTypeNamedIt) {
     zetta::connect::install_mysql_protocol();
     for (const char* type : {"tidb", "mysql"}) {
         FakeMysqlServer::Options options;

@@ -116,7 +116,7 @@ Two qualifications on that, both per-call rather than per-tool
   (#995). Off, the call executes and audits as `consent_bypassed`.
 - **A loopback Postgres, MySQL, TiDB or lake service is not an external system.** The capability's
   `ConsentDescriber` reads the resolved connector: a host of `127.0.0.1` /
-  `localhost` / `::1` or a unix socket never leaves the machine, so it is not
+  `localhost` / `::1` stays on the machine, so it is not
   gated even with `--governance` on (#994). A remote source's challenge names
   that connector's real type and target — it used to describe every source as
   Snowflake.
@@ -156,6 +156,77 @@ escape-spelling and SQL-shaped inputs preserve both their value and the query
 structure, including the column-catalog query. Postgres fake-runner tests
 check both string settings. These fake tests need no warehouse or database;
 the local Postgres adapter test verifies UTF-8 overrides `PGCLIENTENCODING=SJIS`.
+
+## Connector destination approval (#1414, LSR-241)
+
+`list_source_tables` accepts a saved connection for a reader with discovery
+permission. An inline connector also requires `orchestration:create_connection`
+(and, for a user identity, access to the `create_connection` tool). The same
+rule applies to REST, MCP and calls made by agents through the registry.
+
+Every connector type validates its authority before any protocol exchange,
+including direct C++ calls, asynchronous submission and serial/concurrent
+distributed partition reads. Each protocol adapter (Snowflake, Postgres, the
+MySQL driver that also serves TiDB, and the lake SQL connector) refuses any
+other connector type before transport, so a saved connection whose type changed
+is validated again as its new type.
+
+| Type | Authority | Protocol | Where the address is checked |
+|---|---|---|---|
+| `snowflake` | `account` is a DNS host prefix of `snowflakecomputing.com`, never a URL | HTTPS only | the native HTTP transport, every resolved address and redirect hop |
+| `postgres` | `host`: one DNS name or bare IP literal; `port` 1 to 65535 (default 5432) | libpq, `sslmode` from the libpq list | resolved once on the offload worker; libpq gets only approved numeric `hostaddr` entries |
+| `mysql`, `tidb` | `host`: one DNS name or bare IP literal; `port` 1 to 65535 (default 3306 / 4000) | the MySQL wire protocol; `sslmode` verify-full, verify-ca, require or disable | the MySQL driver resolves once and dials only approved numeric addresses |
+| `lake_sqlite`, `lake_duckdb`, `lake_polars` | `endpoint`: `http://` or `https://` written out, one DNS name or bare IP literal, optional port | the scheme the endpoint names; an `https://` service is never followed to `http://` | the native HTTP transport, every resolved address and redirect hop |
+
+Socket paths, host lists, authority punctuation, IPv6 zone IDs and embedded
+NULs are refused for every type. A lake endpoint without a scheme is refused:
+lake's services run inside the cluster on plain `http://` or on `https://`, and
+the protocol the node dials is the one the connection states.
+
+Resolved public addresses are allowed. A private or loopback address requires
+an exact operator-approved hostname and port:
+
+```sh
+zetta --connector-allow-destinations db.workspace.svc.cluster.local:5432
+ZETTA_CONNECTOR_ALLOW_DESTINATIONS="db.workspace.svc.cluster.local:5432,orders.ws-1.svc.cluster.local:8080"
+```
+
+The flag overrides the environment. Entries are comma/space-separated, with
+`[address]:port` for IPv6. DNS comparisons ignore case and one final dot; IP
+literals are canonicalized and ports compared numerically. There are no
+wildcards or broad private-range grants. Invalid settings stop startup.
+Metadata, link-local, reserved and multicast addresses are always denied,
+including IPv4 addresses embedded in IPv6, even for an approved hostname.
+Action-delivery allowances and `ZETTA_EGRESS_ALLOW=*` do not grant connector
+access. Consent approval does not grant destination access either.
+
+The HTTP transport checks every resolved candidate and every redirect hop
+(after the egress allowlist, #75, which still applies). It requires HTTPS for
+Snowflake and for an `https://` lake endpoint; only a lake endpoint written
+with `http://` sets `HttpRequest::connector_plaintext`. Postgres resolves once
+on its existing offload worker and passes only approved numeric `hostaddr`
+entries to libpq, alongside the original host for TLS verification. The MySQL
+driver dials the checked numeric address and still verifies the server
+certificate against the configured host name (verify-full). No protocol looks
+the host up again between policy approval and connection. A refusal
+occurs before protocol connection and returns no peer response.
+
+**Deployment change:** set `ZETTA_CONNECTOR_ALLOW_DESTINATIONS` on every
+workspace Zetta, including every distributed-fetch participant, to the exact
+service DNS names and ports of that workspace's approved databases. Use only
+its own namespace's services; do not grant another workspace's service name,
+a broad cluster address range, or a link-local destination. New connector
+implementations must apply this policy at their dialer too; adding a connector
+type does not grant network access. Existing private/loopback sources need
+this setting before their next query; Unix-socket and multi-host configs must
+be replaced by a single approved TCP authority. No new JSON format is added.
+
+`test_connector_destinations.cpp` covers exact authority matching, malformed
+settings, address encodings, unconditional metadata/link-local denial, and the
+native HTTP transport, Postgres, MySQL, TiDB and every lake SQL type refusing an
+unapproved private or loopback target before any TCP connection (a local
+listener sees none) while an exact approved `host:port` connects. The registry test
+covers user and AccessKey readers, saved sources and privileged inline discovery.
 
 ## No foreign runtime (ADR-17)
 

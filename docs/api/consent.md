@@ -138,12 +138,17 @@ The describer sees the validated input, so consent is judged per call, not per
 tool: `add_nodes {target: "local"}` brings up no machines and touches no cloud
 — it executes on the first call, matching the GUI's plain-click parity — while
 any cloud target challenges. `create_dataset_from_query` reads its resolved
-connector the same way: a Postgres on a loopback host or a unix socket never
-leaves the machine, so it is not a cloud and is not gated (#994), and a remote
+connector the same way: a Postgres on a loopback host stays on the machine,
+so it is not a cloud and is not gated (#994), and a remote
 source's challenge names **that connector's** real type and target rather than
 a fixed sentence about Snowflake (#995). A `requires_consent` capability without a
 describer always challenges with a generic action built from its description
 (fail closed).
+
+Consent does not grant connector destination access (#1414). Even an ungated
+loopback source requires an exact operator host:port allowance; Unix-socket
+sources are rejected. See the
+[connector destination policy](../data/connector-query.md#connector-destination-approval-1414-lsr-241).
 
 ## Boundaries
 

@@ -29,8 +29,8 @@
 // A request whose host resolves to no allowed address is refused before any
 // connection, with a reason starting `destination refused:`.
 //
-// Requests to destinations the operator configured (a warehouse connector, the
-// model-weights fetch, the Clerk JWKS) keep `DestinationPolicy::Any`.
+// Warehouse sources use `DestinationPolicy::Connector` and their separate exact
+// authority allowance (#1414). Model-weights fetches and Clerk JWKS keep `Any`.
 //
 // Full statement and configuration: docs/governance/destination-policy.md.
 namespace zetta::connect {
@@ -39,6 +39,7 @@ namespace zetta::connect {
 enum class DestinationPolicy {
     Any,         // the default: every resolved address may be dialled
     PublicOnly,  // only public addresses, plus the classes allowed on this node
+    Connector,   // public, or an exact connector host:port approved by the operator
 };
 
 // What kind of address one IP address is.

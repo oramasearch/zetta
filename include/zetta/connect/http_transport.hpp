@@ -73,12 +73,22 @@ struct HttpRequest {
     // default. A model shard exceeds the connector default, so the fetch lifts it.
     std::size_t max_response_bytes = 0;
 
-    // Which resolved addresses may be dialled (#1394, connect/destination_policy.hpp).
+    // Which resolved addresses may be dialled (#1394, #1414).
+    // `Connector` checks the separate exact connector authority allowance on
+    // every resolved address and every redirect hop; metadata, link-local and
+    // reserved addresses never pass that policy. It requires HTTPS unless
+    // `connector_plaintext` says the connector's configured protocol is http.
     // `PublicOnly` is for a URL a caller chose (an action connector's endpoint): the
     // transport resolves the host once, refuses loopback, private, link-local,
     // metadata and reserved addresses unless the node allows their class, connects
     // only to an address it checked, and checks again on every redirect hop.
     DestinationPolicy destinations = DestinationPolicy::Any;
+
+    // With `DestinationPolicy::Connector` only: the connector was configured with
+    // an explicit `http://` URL (a lake service inside the cluster, #1414), so a
+    // plaintext hop is allowed. False (the default) keeps a Connector request on
+    // HTTPS on every hop, so an HTTPS source cannot be redirected to plaintext.
+    bool connector_plaintext = false;
 
     // Stream a 2xx body to a caller-owned destination instead of opening a path
     // (#1412). Takes precedence over download_to_path; false reports a write

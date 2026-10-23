@@ -1,5 +1,9 @@
 # API docs
 
+Source discovery uses saved connections for readers; inline `list_source_tables`
+requires `create_connection` permission. All connector dials enforce the
+[connector destination policy](../data/connector-query.md#connector-destination-approval-1414-lsr-241).
+
 The programmatic control surface: the capability registry rendered as **MCP
 tools** and **REST routes** — drive the cluster without the GUI, with
 the same governance as every other surface. Product framing:

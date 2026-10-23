@@ -30,6 +30,15 @@ runs one read-only statement, and lands the rows as a partitioned dataset throug
   TLS is refused before the password leaves the process. MySQL's own
   `--ssl-mode` spellings (`REQUIRED`, `VERIFY_CA`, `VERIFY_IDENTITY`, `DISABLED`)
   are accepted; `PREFERRED` is not, because it falls back to plaintext silently.
+- **Destination:** `host` is one DNS name or bare IP literal and `port` a number
+  from 1 to 65535; socket paths, host lists and URL punctuation are refused
+  (#1414). The driver resolves the host once and dials only addresses the
+  connector destination policy approves: public addresses, or a private or
+  loopback one whose exact `host:port` the operator lists in
+  `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`. Metadata, link-local and reserved
+  addresses never pass. It connects to the checked numeric address, so a second
+  DNS answer cannot redirect it, and `verify-full` still matches the certificate
+  to `host`. See [../connector-query.md](../connector-query.md#connector-destination-approval-1414-lsr-241).
 - **Credentials:** `user` + the password in `token` — saved once with
   `create_connection` (sealed, replicated, never echoed) and referenced by name.
   The password is never logged and never appears in an error.

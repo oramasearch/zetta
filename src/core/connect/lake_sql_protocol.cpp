@@ -37,6 +37,15 @@ std::string authorization(const ConnectorConfig& config) {
     return "Bearer " + config.token;
 }
 
+// The protocol adapter is bound to its connector types, and re-checks the
+// authority for direct C++ callers that never went through from_json (#1414).
+std::string config_rejection(const ConnectorConfig& config) {
+    if (!is_lake_sql_type(config.type)) {
+        return "lake service: expected connector.type lake_sqlite, lake_duckdb or lake_polars";
+    }
+    return config.destination_rejection();
+}
+
 }  // namespace
 
 bool is_lake_sql_type(std::string_view type) {
@@ -136,6 +145,11 @@ nlohmann::json cell(const nlohmann::json& raw) {
 HttpRequest query_request(const ConnectorConfig& config, const Endpoint& endpoint,
                           const std::string& sql) {
     HttpRequest request;
+    // A connector destination (#1414): exact operator approval for a private or
+    // loopback service, metadata and link-local never. The protocol is the one
+    // the endpoint names, and an https:// service is never followed to http.
+    request.destinations = DestinationPolicy::Connector;
+    request.connector_plaintext = !endpoint.secure;
     request.method = "POST";
     request.url = endpoint.base_url() + "/v1/query";
     request.headers = {{"Content-Type", "application/json"},
@@ -151,6 +165,11 @@ HttpRequest query_request(const ConnectorConfig& config, const Endpoint& endpoin
 
 HttpRequest datasets_request(const ConnectorConfig& config, const Endpoint& endpoint) {
     HttpRequest request;
+    // A connector destination (#1414): exact operator approval for a private or
+    // loopback service, metadata and link-local never. The protocol is the one
+    // the endpoint names, and an https:// service is never followed to http.
+    request.destinations = DestinationPolicy::Connector;
+    request.connector_plaintext = !endpoint.secure;
     request.method = "GET";
     request.url = endpoint.base_url() + "/v1/datasets";
     request.headers = {{"Accept", "application/json"},
@@ -248,6 +267,11 @@ ConnectorResult read_query_response(const ConnectorConfig& config,
 
 ConnectorResult run_query(const ConnectorConfig& config, const std::string& sql,
                           std::size_t max_rows, const HttpTransport& transport) {
+    if (const std::string reason = config_rejection(config); !reason.empty()) {
+        ConnectorResult result;
+        result.error = reason;
+        return result;
+    }
     std::string why;
     const std::optional<Endpoint> endpoint = parse_endpoint(config.endpoint, &why);
     if (!endpoint) {
@@ -263,6 +287,10 @@ ConnectorResult run_query(const ConnectorConfig& config, const std::string& sql,
 ConnectorResult list_datasets(const ConnectorConfig& config,
                               const HttpTransport& transport) {
     ConnectorResult result;
+    if (const std::string reason = config_rejection(config); !reason.empty()) {
+        result.error = reason;
+        return result;
+    }
     std::string why;
     const std::optional<Endpoint> endpoint = parse_endpoint(config.endpoint, &why);
     if (!endpoint) {
