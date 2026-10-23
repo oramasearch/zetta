@@ -1,6 +1,6 @@
 // The native model-weights fetch (connect/model_fetch.hpp) driven against a FAKE
 // transport — no network. The fake honors the transport contract the real client
-// implements: a 2xx with `download_to_path` set writes the body to that file and
+// implements: a 2xx with a download sink or path writes the body there and
 // leaves `HttpResponse::body` empty; anything else returns the body/ status.
 #include <gtest/gtest.h>
 
@@ -10,6 +10,9 @@
 #include <map>
 #include <string>
 #include <utility>
+#include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
 #include "zetta/connect/http_transport.hpp"
@@ -20,7 +23,7 @@ namespace {
 using Route = std::pair<int, std::string>;  // (status, body)
 
 // A transport that serves a fixed url -> (status, body) map, mimicking the native
-// client: on a 2xx download it writes the body to `download_to_path`.
+// client: on a 2xx download it streams the body to the sink or path.
 zetta::connect::HttpTransport fake_transport(std::map<std::string, Route> routes) {
     return [routes = std::move(routes)](
                const zetta::connect::HttpRequest& request) -> zetta::connect::HttpResponse {
@@ -32,7 +35,9 @@ zetta::connect::HttpTransport fake_transport(std::map<std::string, Route> routes
         }
         response.status = found->second.first;
         const std::string& body = found->second.second;
-        if (response.status >= 200 && response.status < 300 &&
+        if (response.status >= 200 && response.status < 300 && request.download_sink) {
+            if (!request.download_sink(body)) response.error = "download sink failed";
+        } else if (response.status >= 200 && response.status < 300 &&
             !request.download_to_path.empty()) {
             std::ofstream file(request.download_to_path,
                                std::ios::binary | std::ios::trunc);
@@ -124,6 +129,172 @@ TEST(ModelFetch, ReportsAnEmptyTransport) {
                                                        dir.path().string());
     EXPECT_FALSE(result.ok);
     EXPECT_NE(result.reason.find("transport"), std::string::npos) << result.reason;
+}
+
+std::map<std::string, Route> model_routes(const nlohmann::json& weight_map) {
+    return {
+        {url("config.json"), {200, "{}"}},
+        {url("tokenizer.json"), {200, "{}"}},
+        {url("tokenizer_config.json"), {200, "{}"}},
+        {url("model.safetensors.index.json"),
+         {200, nlohmann::json{{"weight_map", weight_map}}.dump()}},
+        {url("model.safetensors"), {200, "WEIGHTS"}},
+    };
+}
+
+TEST(ModelFetch, RejectsUnsafeShardNamesBeforeAnyShardRequest) {
+    zetta::test::TempDir root;
+    const auto destination = root.path() / "model";
+    const auto outside = root.path() / "outside.safetensors";
+    std::ofstream(outside) << "KEEP";
+    std::vector<std::string> names{
+        "../outside.safetensors",
+        "../new.safetensors",
+        outside.string(),
+        "sub/model.safetensors",
+        "sub/../outside.safetensors",
+        "..\\outside.safetensors",
+        "C:\\outside.safetensors",
+        "C:outside.safetensors",
+        "",
+        ".",
+        "..",
+        "%2e%2e%2foutside.safetensors",
+        "model.safetensors?x",
+        "model.safetensors#x",
+        "model.safetensors\n",
+        std::string("model\0.safetensors", 18),
+        std::string(256, 'a') + ".safetensors",
+        "config.json",
+    };
+    for (const auto& name : names) {
+        SCOPED_TRACE(nlohmann::json(name).dump());
+        auto routes = model_routes({{"a", "a-valid.safetensors"}, {"z", name}});
+        routes[url(name)] = {200, "OVERWRITE"};
+        routes[url("a-valid.safetensors")] = {200, "VALID"};
+        const auto serve = fake_transport(std::move(routes));
+        int shard_requests = 0;
+        bool index_requested = false;
+        const auto result = zetta::connect::fetch_hf_model(
+            [&](const zetta::connect::HttpRequest& request) {
+                if (index_requested &&
+                    (request.url == url(name) || request.url == url("a-valid.safetensors"))) {
+                    ++shard_requests;
+                }
+                if (request.url == url("model.safetensors.index.json")) index_requested = true;
+                return serve(request);
+            },
+            "Vendor/Model", "main", destination.string());
+        EXPECT_FALSE(result.ok);
+        EXPECT_NE(result.reason.find("invalid shard basename"), std::string::npos);
+        EXPECT_EQ(shard_requests, 0);
+        EXPECT_EQ(read_file(outside.string()), "KEEP");
+        EXPECT_FALSE(std::filesystem::exists(root.path() / "new.safetensors"));
+        EXPECT_FALSE(std::filesystem::exists(destination / "a-valid.safetensors"));
+    }
+}
+
+TEST(ModelFetch, RejectsNonStringShardEntries) {
+    zetta::test::TempDir directory;
+    const auto result = zetta::connect::fetch_hf_model(
+        fake_transport(model_routes({{"a", "model.safetensors"}, {"b", 7}})), "Vendor/Model",
+        "main", directory.path().string());
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(std::filesystem::exists(directory.path() / "model.safetensors"));
+}
+
+TEST(ModelFetch, NeverTruncatesLinkedDestinationsForAnyDownloadKind) {
+    // Fixed metadata, the index, indexed shards and fallback weights all use
+    // the same descriptor-based creation and atomic publication.
+    for (const auto& name :
+         {"config.json", "tokenizer.json", "tokenizer_config.json", "generation_config.json",
+          "special_tokens_map.json", "vocab.json", "merges.txt", "model.safetensors.index.json",
+          "part.safetensors", "model.safetensors"}) {
+        for (const bool hard_link : {false, true}) {
+            SCOPED_TRACE(name);
+            SCOPED_TRACE(hard_link);
+            zetta::test::TempDir root;
+            const auto destination = root.path() / "model";
+            std::filesystem::create_directory(destination);
+            const auto outside = root.path() / "outside";
+            std::ofstream(outside) << "KEEP";
+            if (hard_link)
+                std::filesystem::create_hard_link(outside, destination / name);
+            else
+                std::filesystem::create_symlink(outside, destination / name);
+            auto routes = model_routes({{"a", "part.safetensors"}});
+            routes[url("part.safetensors")] = {200, "SHARD"};
+            if (!routes.contains(url(name))) routes[url(name)] = {200, "OPTIONAL"};
+            if (std::string_view(name) == "model.safetensors") {
+                routes[url("model.safetensors.index.json")] = {404, ""};
+            }
+            const auto result = zetta::connect::fetch_hf_model(
+                fake_transport(std::move(routes)), "Vendor/Model", "main", destination.string());
+            ASSERT_TRUE(result.ok) << result.reason;
+            EXPECT_EQ(read_file(outside.string()), "KEEP");
+            EXPECT_FALSE(std::filesystem::is_symlink(destination / name));
+            EXPECT_FALSE(std::filesystem::equivalent(outside, destination / name));
+        }
+    }
+}
+
+TEST(ModelFetch, PinsTheDirectoryAcrossPathReplacementDuringDownload) {
+    zetta::test::TempDir root;
+    const auto destination = root.path() / "model";
+    const auto moved = root.path() / "moved";
+    const auto outside = root.path() / "outside";
+    std::filesystem::create_directory(outside);
+    std::ofstream(outside / "config.json") << "KEEP";
+    const auto serve = fake_transport(model_routes({{"a", "model.safetensors"}}));
+    bool replaced = false;
+    const auto result = zetta::connect::fetch_hf_model(
+        [&](const zetta::connect::HttpRequest& request) {
+            if (!replaced) {
+                std::filesystem::rename(destination, moved);
+                std::filesystem::create_directory_symlink(outside, destination);
+                replaced = true;
+            }
+            return serve(request);
+        },
+        "Vendor/Model", "main", destination.string());
+    ASSERT_TRUE(result.ok) << result.reason;
+    EXPECT_EQ(read_file((outside / "config.json").string()), "KEEP");
+    EXPECT_EQ(read_file((moved / "model.safetensors").string()), "WEIGHTS");
+    EXPECT_FALSE(std::filesystem::exists(outside / "model.safetensors"));
+}
+
+TEST(ModelFetch, RejectsASymlinkAsTheChosenDirectoryBeforeRequesting) {
+    zetta::test::TempDir root;
+    const auto destination = root.path() / "model";
+    std::filesystem::create_directory_symlink(root.path(), destination);
+    for (const auto& path : {destination.string(), destination.string() + "/"}) {
+        int requests = 0;
+        const auto result = zetta::connect::fetch_hf_model(
+            [&](const zetta::connect::HttpRequest&) {
+                ++requests;
+                return zetta::connect::HttpResponse{};
+            },
+            "Vendor/Model", "main", path);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(requests, 0);
+    }
+}
+
+TEST(ModelFetch, FailedDownloadPreservesThePreviousFileAndRemovesTemporaryFiles) {
+    zetta::test::TempDir directory;
+    std::ofstream(directory.path() / "config.json") << "KEEP";
+    const auto result = zetta::connect::fetch_hf_model(
+        [](const zetta::connect::HttpRequest& request) {
+            EXPECT_TRUE(request.download_to_path.empty());
+            EXPECT_TRUE(request.download_sink("PARTIAL"));
+            return zetta::connect::HttpResponse{200, {}, "interrupted"};
+        },
+        "Vendor/Model", "main", directory.path().string());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(read_file((directory.path() / "config.json").string()), "KEEP");
+    EXPECT_EQ(std::distance(std::filesystem::directory_iterator(directory.path()),
+                            std::filesystem::directory_iterator{}),
+              1);
 }
 
 }  // namespace

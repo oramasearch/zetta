@@ -24,6 +24,11 @@ method + why it works: [`rlvr-to-production.md`](rlvr-to-production.md); the two
   `zetta pull` fetches config + tokenizer + safetensors (single or sharded) over the
   engine's own HTTPS client, following the LFS redirect and streaming each shard to disk
   (`connect/model_fetch.hpp`). Set `HF_TOKEN` for a gated repo; `--dir PATH` to choose where.
+  The destination itself must be a real directory. Indexed shards must be flat
+  ASCII `.safetensors` basenames (letters, digits, `.`, `_`, `-`, up to 255 bytes);
+  unsafe names fail before shard requests. Successful files replace existing
+  directory entries atomically without following links; interrupted downloads
+  preserve previous files ([download contract](../api/native-http-transport.md), #1412).
 - **The build:** MLX-on for the fast GPU path (`cmake -S . -B build -DZETTA_ENABLE_MLX=ON`);
   the default CPU build always works, just slower.
 

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -78,6 +79,11 @@ struct HttpRequest {
     // metadata and reserved addresses unless the node allows their class, connects
     // only to an address it checked, and checks again on every redirect hop.
     DestinationPolicy destinations = DestinationPolicy::Any;
+
+    // Stream a 2xx body to a caller-owned destination instead of opening a path
+    // (#1412). Takes precedence over download_to_path; false reports a write
+    // failure. The callback and its destination must survive the exchange.
+    std::function<bool(std::string_view)> download_sink;
 };
 
 // The result of one exchange. `error` is a **transport-level** failure (DNS,

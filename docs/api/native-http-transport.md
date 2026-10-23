@@ -136,10 +136,29 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
   natively ([`connect/model_fetch.hpp`](../../include/zetta/connect/model_fetch.hpp)):
   `max_redirects` follows up to N `Location` hops (dropping the secret headers on a
   cross-host hop, so a bearer never reaches a different origin — a HuggingFace LFS
-  URL 302-redirects to a CDN); `download_to_path` streams the 2xx body straight to a
-  file so a multi-GB shard never sits on the heap (`HttpResponse::body` stays empty);
+  URL 302-redirects to a CDN); `download_sink` streams the 2xx body to a
+  caller-owned destination, taking precedence over `download_to_path` (the
+  legacy path-based option). A sink returning false fails the exchange.
+  Neither option buffers a multi-GB shard on the heap (`HttpResponse::body` stays empty);
   `max_response_bytes` raises the 512 MiB connector body cap. All default to off, so a
   connector is unchanged.
+- **Confined model downloads (#1412, LSR-239)** — the complete `weight_map` is
+  validated before any shard request. Each value must be an ASCII basename
+  using only letters, digits, `.`, `_`, or `-`, at most 255 bytes, ending in
+  `.safetensors`. Empty names, non-string values, separators, traversal,
+  percent escapes, query syntax and control characters fail the pull.
+  The fetch opens the chosen directory once with `O_DIRECTORY | O_NOFOLLOW`.
+  Every metadata, index, single-weight and shard download first creates a
+  private temporary file with `openat(O_CREAT | O_EXCL | O_NOFOLLOW)` in that
+  directory, then streams through its held descriptor using `download_sink`.
+  A successful response is flushed and published with `renameat`, retaining
+  the new file's owner-only permissions (`0600`, subject to umask); existing
+  files are replaced without opening symlinks or truncating hard-linked
+  targets. A failed response removes its temporary entry and preserves the
+  previous file. Index parsing uses the held file, so pathname replacement
+  cannot substitute another index. A chosen directory that is itself a
+  symlink is rejected before contacting the upstream. No new JSON format or
+  capability is introduced; valid flat safetensors repositories still work.
 - **No connection pooling** and **no HTTP/2** — both are changes behind the same
   interface, invisible to connectors.
 - **TLS is not directly tested** beyond the handshake deadline (a loopback

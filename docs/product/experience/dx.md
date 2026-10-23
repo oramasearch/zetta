@@ -27,3 +27,7 @@ that look like the system.
   exploratory agent finds is promoted to a permanent regression.
 - **Docs land in the same commit as the change** — the disclosure network is
   only useful while every level can be trusted.
+- **Model pulls stay in the chosen directory** (#1412): `zetta pull --dir PATH`
+  rejects unsafe shard names and a symlink destination directory, and publishes
+  successful downloads atomically without truncating linked targets. See the
+  [download contract](../../api/native-http-transport.md).

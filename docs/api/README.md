@@ -43,7 +43,7 @@ MCP/HTTP work.
   table.
 - [native-http-transport.md](native-http-transport.md) — the **outbound** HTTP
   client (#827): the coroutine HTTPS client behind `connect::HttpTransport`, why
-  it lives in `zetta-api`, the sync/async shapes, and the no-leak contract.
+  it lives in `zetta-api`, the sync/async shapes, the no-leak contract, and confined model downloads (#1412).
 - [../pubsub/exposure.md](../pubsub/exposure.md) — pub/sub on the control surface
   (#1033, #1076): create_topic / drop_topic / list_topics / publish_event / receive_events,
   exposed topics and long polls that suspend without holding threads.
