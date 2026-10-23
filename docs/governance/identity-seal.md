@@ -94,7 +94,7 @@ decides it at startup and pins it in `<data_dir>/security/identity-root.json`:
 
 | On the first start the node has | It pins | It can issue identity |
 |---|---|---|
-| `--admin-token` / `ZETTA_ADMIN_TOKEN` | the root **derived** from the token: Ed25519 seeded by `SHA-256("zetta-identity-root-v1\n" + token)`; only the public key is written | yes |
+| `--admin-token` / `ZETTA_ADMIN_TOKEN` | the root **derived** from the token: Ed25519 seeded by `SHA-256("zetta-identity-root-v1\n" + token)`; its seed is stored (file mode 0600), so the root outlives a token rotation | yes |
 | `--identity-root KEY` / `ZETTA_IDENTITY_ROOT` | that public key | only if its admin token derives the same key |
 | neither | a **generated** root; its seed is stored (file mode 0600) | yes |
 
@@ -147,9 +147,13 @@ nodes drop every sealed token and answer 401. Stop the old nodes, upgrade every 
   identity. Narrowing that needs identity issued by a key no node holds, which is not built.
 - **A node that never saw a change** accepts an older sealed record when no node that holds the newer
   one is left to write it back (see [Versions](#versions-and-removals-1341)).
-- **Rotating the owner token does not move the root.** The pin wins, so after a rotation the nodes
-  become verify-only (existing tokens keep working; no new identity can be issued) until the root is
-  moved deliberately. Root rotation is a follow-up.
+- **Rotating the owner token keeps the root, on nodes that already hold it.** The root's seed is
+  stored in `identity-root.json` (mode 0600) the first time it is derived, so a node restarted with a
+  new `ZETTA_ADMIN_TOKEN` keeps issuing identity under the same root. A node pinned by the earlier build
+  (public key only) stores the seed on its next start with the old token. A node **new to the cluster
+  after the rotation** derives a different root from the new token and joins verify-only: handing it
+  the root's seed is not built yet ([zetta#1479](https://github.com/oramasearch/zetta/issues/1479)).
+  Moving to a new root is a separate follow-up.
 - **Provisioned burst nodes** get `ZETTA_SEED_PEER` and `ZETTA_CLUSTER_TOKEN` but not the root yet,
   so they make their own and honor none of the cluster's accounts. They cannot issue identity the
   cluster honors either. Passing `ZETTA_IDENTITY_ROOT` through the provisioners is a follow-up.

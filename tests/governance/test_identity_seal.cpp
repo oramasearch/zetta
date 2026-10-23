@@ -205,10 +205,13 @@ TEST(IdentityRoot, TheFirstStartPinsTheOwnerTokensRoot) {
     EXPECT_TRUE(setup.authority->can_seal());
     EXPECT_EQ(setup.authority->public_key_hex(),
               root_from("owner-token").public_key_hex());
-    // Only the public key is written: the owner token is the private half.
+    // The seed is kept (mode 0600), so the root outlives a token rotation.
     std::ifstream in(root_file(dir));
     const nlohmann::json file = nlohmann::json::parse(in);
-    EXPECT_FALSE(file.contains("seed"));
+    EXPECT_EQ(file.value("seed", ""), root_from("owner-token").seed_hex());
+    struct stat info {};
+    ASSERT_EQ(::stat(root_file(dir).c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777, 0600);
 
     // A restart with the same token issues identity again.
     const auto again = load_or_create_identity_root(dir.path().string(),
@@ -218,7 +221,9 @@ TEST(IdentityRoot, TheFirstStartPinsTheOwnerTokensRoot) {
     EXPECT_TRUE(again.authority->can_seal());
 }
 
-TEST(IdentityRoot, ADifferentTokenLaterIsVerifyOnlyWithAWarning) {
+// A rotated admin token keeps the root: the node still issues identity, sealed by
+// the same root every peer pinned.
+TEST(IdentityRoot, ARotatedTokenKeepsIssuingWithTheStoredRoot) {
     TempDir dir;
     ASSERT_TRUE(load_or_create_identity_root(dir.path().string(), "owner-token", "")
                     .authority);
@@ -226,9 +231,47 @@ TEST(IdentityRoot, ADifferentTokenLaterIsVerifyOnlyWithAWarning) {
     const auto setup = load_or_create_identity_root(dir.path().string(),
                                                     "another-token", "", &reason);
     ASSERT_TRUE(setup.authority) << reason;
-    EXPECT_FALSE(setup.authority->can_seal());
+    EXPECT_TRUE(setup.authority->can_seal());
     EXPECT_EQ(setup.authority->public_key_hex(),
               root_from("owner-token").public_key_hex());
+    EXPECT_TRUE(setup.warning.empty()) << setup.warning;
+}
+
+// A pin from the build that stored only the public key gains the seed on the
+// next start whose token still derives it; from then on a rotation keeps it.
+TEST(IdentityRoot, APinWithoutASeedGainsItWhileTheTokenStillDerivesIt) {
+    TempDir dir;
+    std::filesystem::create_directories(root_file(dir).parent_path());
+    const std::string key = root_from("owner-token").public_key_hex();
+    std::ofstream(root_file(dir)) << nlohmann::json{{"version", 1}, {"public_key", key}}.dump();
+    std::string reason;
+    const auto upgraded =
+        load_or_create_identity_root(dir.path().string(), "owner-token", "", &reason);
+    ASSERT_TRUE(upgraded.authority) << reason;
+    EXPECT_TRUE(upgraded.authority->can_seal());
+    std::ifstream in(root_file(dir));
+    EXPECT_EQ(nlohmann::json::parse(in).value("seed", ""),
+              root_from("owner-token").seed_hex());
+    const auto rotated =
+        load_or_create_identity_root(dir.path().string(), "another-token", "", &reason);
+    ASSERT_TRUE(rotated.authority) << reason;
+    EXPECT_TRUE(rotated.authority->can_seal());
+    EXPECT_EQ(rotated.authority->public_key_hex(), key);
+}
+
+// Without a stored seed and with a token that does not derive the pin, nothing
+// can recover the private key: verify-only, and the log says why.
+TEST(IdentityRoot, APinWithoutASeedAndADifferentTokenIsVerifyOnly) {
+    TempDir dir;
+    std::filesystem::create_directories(root_file(dir).parent_path());
+    const std::string key = root_from("owner-token").public_key_hex();
+    std::ofstream(root_file(dir)) << nlohmann::json{{"version", 1}, {"public_key", key}}.dump();
+    std::string reason;
+    const auto setup =
+        load_or_create_identity_root(dir.path().string(), "another-token", "", &reason);
+    ASSERT_TRUE(setup.authority) << reason;
+    EXPECT_FALSE(setup.authority->can_seal());
+    EXPECT_EQ(setup.authority->public_key_hex(), key);
     EXPECT_FALSE(setup.warning.empty());
 }
 
