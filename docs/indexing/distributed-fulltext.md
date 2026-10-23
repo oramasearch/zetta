@@ -8,13 +8,15 @@ index over a whole table, this builds a **full-text sub-index per LOCAL partitio
 (compute-near-data) and answers a query by **scatter-gather + merge/rank** across
 those sub-indexes — never one big index.
 
-This is the standard sharded-search shape — per-shard local scoring, then a
-coordinator merges the ranked hits by score — exactly how production search
-engines default to local-IDF *query-then-fetch*. Its contract: the **hit set is
-exact** and every coordinator agrees on **one global ranking**; the rank *order*
-equals a single consolidated index's only when every shard's corpus statistics
-agree with the consolidated ones (see
-[the exactness analysis below](#when-per-partition-matches-a-single-index)).
+This is the standard sharded-search shape — per-shard scoring, then a coordinator
+merges the ranked hits by score — preceded by a **global-statistics pass** (the
+`dfs_query_then_fetch` analogue, [#851](https://github.com/oramasearch/zetta/issues/851))
+whenever the backend scores with corpus statistics: every sub-index scores with the
+merged statistics of all of them. Its contract: **a search over the sharded table
+returns exactly what the same search over one consolidated index returns** —
+membership, order and scores — at any `top_k`, however the rows are distributed, and
+every coordinator returns the same list (see
+[why the statistics pass is needed](#why-every-shard-scores-with-the-merged-statistics)).
 
 ## Shape
 
@@ -24,10 +26,13 @@ build_local(node, spec)   each node enumerates the partitions it OWNS, reads eac
                           per partition into an owned IndexBackend (no LOREQ, no
                           full-dataset pull — compute-near-data).
 
-query(spec, query)        the coordinator queries its OWN local sub-indexes, then
-   ┌── node A ─ sub-idx p0,p1 ──┐   scatters the query to every peer over the
-   ├── node B ─ sub-idx p2 ─────┤── `fulltext.query` signal-plane RPC, gathers each
-   └── node C ─ sub-idx p3,p4 ──┘   node's ranked hits, and MERGES everything into
+query(spec, query)        (0) the coordinator sums its own sub-indexes' corpus
+                          statistics for the query and gathers every peer's over
+                          the `fulltext.stats` RPC, then merges them;
+   ┌── node A ─ sub-idx p0,p1 ──┐   (1) it queries its OWN local sub-indexes and
+   ├── node B ─ sub-idx p2 ─────┤── scatters the query, merged statistics attached,
+   └── node C ─ sub-idx p3,p4 ──┘   to every peer over `fulltext.query`, gathers each
+                                    node's ranked hits, and MERGES everything into
                                     one global ranked list (identical on every node).
 ```
 
@@ -59,15 +64,25 @@ partitions). It reports near-data instrumentation: `partitions_indexed`, `rows_i
 
 `query(spec, query)`:
 
-1. **local** — query this node's own per-partition sub-indexes and merge them.
-2. **scatter** — send the query to every connected peer over the `fulltext.query`
-   RPC (`Cluster::request`, from the application thread — never the network thread).
-   Each peer answers from its own local sub-indexes via the same handler.
+0. **statistics** — when the backend scores with corpus statistics
+   (`IndexBackend::uses_corpus_statistics()`, true for BM25F): sum this node's
+   sub-indexes' statistics for the query (`collect_local_statistics`), ask every
+   peer for its own over the `fulltext.stats` RPC, and merge them all
+   (`CorpusStatistics::merge`). Recorded as one `search:statistics` span.
+1. **local** — query this node's own per-partition sub-indexes, each scoring with
+   the merged statistics, and merge them.
+2. **scatter** — send the query, merged statistics attached, to every peer over the
+   `fulltext.query` RPC (`Cluster::request`, from the application thread — never the
+   network thread). Each peer answers from its own local sub-indexes via the same
+   handler, scoring with the statistics it was sent.
 3. **gather + merge** — collect every node's ranked hits and merge into one global
    ranking, capped to `query.top_k`.
 
-An unreachable / failing peer **fails the query** (a missing partition would silently
-skew the ranking), the way the [collectives](../cluster/collectives.md) fail a round on an
+Both rounds go to the same peers (one snapshot of `Cluster::peers()`), so a peer
+that joins between them cannot answer with rows the statistics never counted.
+
+An unreachable / failing peer, in either round, **fails the query** (a missing
+partition would silently skew the ranking), the way the [collectives](../cluster/collectives.md) fail a round on an
 unreachable peer. A single-node cluster (no peers) returns its local ranking. The
 result is the **same global ranking on every node**, so single-node == multi-node.
 
@@ -81,8 +96,11 @@ std::vector<FulltextHit> merge_fulltext_hits(
 It flattens every source, **dedups by row id** (collapsing a duplicate to its highest
 score so a row is never listed twice or double-counted), orders **score descending,
 row id ascending** on a tie (deterministic + reproducible), and caps to `top_k`.
+The BM25F backend caps each sub-index in the same order (it widens its engine fetch
+until a score tie at the cutoff is wholly inside it), so a tie at the boundary is
+cut by row id everywhere, never by insertion order.
 
-### Scores in the seam
+### Scores in the interface
 
 A global merge needs scores, so [`IndexQueryResult`](../../include/zetta/index/index_backend.hpp)
 gained a `scores` vector, **aligned to `row_ids`**, higher = better. A *ranked* backend
@@ -105,6 +123,14 @@ reaches the index:
   plus the query (`field` / `term` / `top_k`), and an optional `return_fields`
   list: the row fields each hit should carry back ([#1243](https://github.com/oramasearch/zetta/issues/1243)).
   `encode_fulltext_query` / `decode_fulltext_query`.
+- **request `statistics`** — the merged corpus statistics every shard scores with
+  (#851): `{ doc_count, term_doc_freq: {term: n}, fields: {field: {total_len,
+  doc_count}} }`, keyed by the analyzed term. Present on the `fulltext.query`
+  scatter after the statistics round; absent on the `fulltext.stats` request (which
+  is the same `FulltextQueryRequest`) and for a backend that uses no statistics.
+- **statistics response** — `schemas/fulltext_stats.schema.json`: one node's corpus
+  statistics for the query, summed across its sub-indexes, plus `from` and
+  `sub_indexes`. `encode_fulltext_stats` / `decode_fulltext_stats`.
 - **response** — `schemas/fulltext_hits.schema.json`: one node's ranked
   `{ id, score, fields? }` hits (`fields` = the requested values of a row this
   node owns, read from what `build_local` kept for the index's fields), plus an
@@ -113,47 +139,48 @@ reaches the index:
   [#643](https://github.com/oramasearch/zetta/issues/643); a payload without
   it decodes to 0). `encode_fulltext_hits` / `decode_fulltext_hits`.
 
-These are hand-mirrored embedded schemas (like `collective_message.schema.json`), not
-the generated/drift-checked [schema-as-code](../architecture/schemas.md) set.
+The embedded schemas are the source of truth; `schemas/fulltext_*.schema.json` are
+generated from them and drift-checked ([schema-as-code](../architecture/schemas.md)).
+A node without the statistics round rejects `fulltext.stats` and a request carrying
+`statistics`, so a cluster running mixed versions fails such a query loudly rather
+than ranking it wrongly.
 
-## When per-partition matches a single index
+## Why every shard scores with the merged statistics
 
-BM25F scoring uses corpus statistics (per-term document frequency, average field
-length), so a per-partition sub-index scores with **local** statistics — the standard
-sharded-search caveat. What that guarantees, precisely
-([#611](https://github.com/oramasearch/zetta/issues/611) settled this):
+BM25F scoring uses corpus statistics (per-term document frequency, the document
+count, average field lengths). A per-partition sub-index scoring with its **local**
+statistics ranks against a different corpus than the table's
+([#611](https://github.com/oramasearch/zetta/issues/611) measured it): the `k1`
+saturation `tf~/(k1 + tf~)` compresses any tf separation into a bounded score ratio
+(about 2.2x at `k1 = 1.2`), while local IDF varies with shard composition by more
+than that — a shard where the term matches one of two rows scores it `ln 2 ≈ 0.69`
+against `ln(1 + 0.5/2.5) ≈ 0.18` for a shard where both rows match, a 3.8x swing.
 
-- **The hit set is exact.** Whether a row matches is a per-row property, so a full
-  query returns exactly the rows the consolidated index would.
-- **Every coordinator agrees.** Each node's scatter-gather runs the same
-  deterministic merge over the same per-shard answers — one identical global
-  ranking on every node.
-- **The rank order is exact only when every shard's statistics agree with the
-  consolidated ones.** "Clearly separated term frequencies" are NOT sufficient:
-  the `k1` saturation `tf~/(k1 + tf~)` compresses *any* tf separation into a
-  bounded score ratio (about 2.2× at `k1 = 1.2`), while local IDF varies with
-  shard composition by more than that — a shard where the term matches one of two
-  rows scores it `ln 2 ≈ 0.69` against `ln(1 + 0.5/2.5) ≈ 0.18` for a shard where
-  both rows match, a 3.8× swing. A tf-1 row sharing a shard with a non-matching
-  row can outrank a tf-5 row whose shard-mates all match — the exact failure #611
-  observed.
+With `top_k = 0` that only reorders hits. With a `top_k` — any paged or limited
+search — it **loses** them: each shard truncates to `top_k` on its local scores, so a
+row that belongs in the global top k can fall below its own shard's cutoff and never
+reach the merge, with nothing to show it is missing
+([#851](https://github.com/oramasearch/zetta/issues/851)).
 
-So an *acceptance fixture* for exact rank equality must pin the statistics, not
-the term frequencies: give every shard the **same df/N ratio** as the consolidated
-corpus (then IDF cancels — `ln(1 + (N−n+0.5)/(n+0.5))` is equal whenever `n/N`
-is) and **uniform per-field token lengths** (then the length normalization
-cancels), leaving each row's score a function of its own tf only. The gtest
-corpus is engineered exactly so (one matching + one non-matching row per
-partition, uniform field lengths — see `postgres_corpus` in
-[`tests/index/test_distributed_fulltext.cpp`](../../tests/index/test_distributed_fulltext.cpp)),
-and the test asserts the fixture invariant explicitly so a placement change fails
-with the reason rather than as a ranking flip.
+The statistics round removes the cause. Every sub-index reports, for the query's
+analyzed terms, its document count, each term's document frequency (0 for a term it
+has never seen, so the merge covers every term) and every field's
+`{total_len, doc_count}`; the coordinator sums them and every sub-index scores with
+the sums. Those are the integers the consolidated index computes IDF and `avglen`
+from, so each row's score is **bit-identical** to its consolidated score, the per-shard
+order is the consolidated order restricted to that shard, and a row in the global
+top k is in its own shard's top k. The cutoff becomes safe by construction.
 
-Exact rank equality for *arbitrary* corpora and shardings needs the
-**global-statistics pass** (the `dfs_query_then_fetch` analogue: gather per-term
-df + field-length totals across shards first, score every shard with the merged
-globals) — a later slice behind this same API, tracked in
-[#657](https://github.com/oramasearch/zetta/issues/657).
+The cost is one extra round trip per peer per query, carrying a few counts per
+query term and per field — no rows and no hits. A backend whose scores do not depend
+on the corpus (the exact-match `InMemoryIndexBackend`, the tests' term-frequency
+reference scorer) reports `uses_corpus_statistics() == false` and skips the round.
+
+The engine side is `oramacore::index::MemoryIndex::stats(query)` and
+`search(query, top_k, global)` in the
+[oramacore-cpp](https://github.com/oramasearch/oramacore-cpp) submodule; the
+`IndexBackend` side is `uses_corpus_statistics()`, `collect_statistics()` and
+`IndexQuery::statistics` ([index-backend.md](index-backend.md)).
 
 ## Tests
 
@@ -166,6 +193,17 @@ globals) — a later slice behind this same API, tracked in
 - **single node, many local partitions** — a real `Node` with a
   [partitioned](../data/partitioned-write-path.md) table; the per-partition merge equals the
   consolidated oracle.
+- **a limited search over a skewed corpus equals one index (#851)** — with the real
+  BM25F engine, a corpus whose matches are concentrated (one weak match among misses,
+  strong matches together), spread over 2, 3, 4 and 7 partitions on one node and over
+  two nodes: at top 1, 2, 3, 4, 5, 10, 50 and all, every coordinator returns exactly
+  the consolidated index's first k rows with identical scores, and the top 3 is the
+  prefix of the top 50. Without the statistics round the top 2 drops a strong match.
+- **the statistics wire boundary** — `fulltext.stats` responses and a request
+  carrying `statistics` round-trip; malformed statistics are rejected.
+- **the BM25F backend's cap** — collected shard statistics merge to the consolidated
+  index's, a shard scored with them returns the whole table's top k; a cap cuts a
+  score tie by row id, and keeps the best hits whatever order the engine meets them in.
 - **multi-node scatter-gather** — a real 3-node loopback cluster, each node holding a
   disjoint shard; every node's distributed query produces the **identical** global
   ranking, equal to the consolidated oracle over all rows.
@@ -174,21 +212,19 @@ The merge + scatter-gather are proven **engine-agnostically** with a determinist
 **partition-independent** reference scorer (term frequency — a doc's score depends only
 on the doc + query), so the suite runs without the private `oramacore-cpp` submodule;
 the real **BM25F** path is exercised when the engine is compiled in (skipped otherwise,
-like the other [oramacore tests](oramacore-fulltext-index.md)) on the
-statistics-engineered corpus described above — its distributed ranking *and scores*
-equal the consolidated oracle's exactly, and the test asserts the
-one-match-one-miss-per-partition fixture invariant explicitly.
+like the other [oramacore tests](oramacore-fulltext-index.md)), on the skewed corpus
+above and on the original statistics-engineered corpus — its distributed ranking
+*and scores* equal the consolidated oracle's exactly.
 
 The same acceptance is a **GUI-runnable [test-suite](../testing/test-suite.md) case**,
 `cluster.fulltext_index` (the **TC-13** acceptance, the way TC-9/TC-10/TC-11 each surface
 as a runnable case): it builds the per-partition full-text index over a real loopback
 cluster and asserts against the consolidated oracle on every node. Its knobs (`nodes` /
-`copies` / `partitions` / `top_k`) compose shards freely, so the assertion follows the
-backend's contract: with the real `oramacore_fulltext` (BM25F) backend it asserts the
-**exact hit set** plus **one identical global ranking on every coordinator** (local-IDF
-query-then-fetch); with the partition-independent reference scorer (used when the
-submodule is absent — the same plumbing, always green) the ranking is additionally
-**exactly equal** to the oracle. Runnable headless (`tests/testkit/test_testkit.cpp`)
+`copies` / `partitions` / `top_k`) compose shards freely, and for either backend — the
+real `oramacore_fulltext` (BM25F) or the partition-independent reference scorer used
+when the submodule is absent — every coordinator's ranking must **exactly equal** the
+oracle's at the chosen `top_k` (before #851 the BM25F path could assert only the hit
+set). Runnable headless (`tests/testkit/test_testkit.cpp`)
 and in the **Operations → Test suite** panel.
 
 ## What this slice is (and isn't)
@@ -203,20 +239,22 @@ plane's signal handler via `Cluster::signal_handler()`), keeps its sub-indexes
 current from `tick()` (`Node::reconcile_search_indexes()`), and routes every
 [`Node::search`](node-search.md) over a placed-partition table through it —
 `QueryResult` now also carries per-node `contributions` (node id / hits /
-sub-indexes consulted / latency / wire bytes), and `query()` optionally records
-`search:local` / `search:peer` child spans under a caller trace. Wiring it into the deploy/run path as the default
-`index`-step behaviour, exact global-statistics scoring
-([#657](https://github.com/oramasearch/zetta/issues/657)), a true point-to-point
-gather (vs. one RPC per peer), and the other index kinds (vector / semantic /
-feature) remain additive behind the same seam.
+sub-indexes consulted / latency / wire bytes, both rounds included), and `query()`
+optionally records `search:statistics` / `search:local` / `search:peer` child spans
+under a caller trace. Wiring it into the deploy/run path as the default
+`index`-step behaviour, a true point-to-point gather (vs. one RPC per peer), and the
+other index kinds (vector / semantic / feature) remain additive behind the same
+interface. Global-statistics scoring landed with
+[#851](https://github.com/oramasearch/zetta/issues/851) (the design was
+[#657](https://github.com/oramasearch/zetta/issues/657)).
 
 ## Pointers
 
 - [`include/zetta/index/distributed_fulltext.hpp`](../../include/zetta/index/distributed_fulltext.hpp) /
   [`src/core/index/distributed_fulltext.cpp`](../../src/core/index/distributed_fulltext.cpp) —
   the component, the pure merge, and the schema-validated wire messages.
-- [index-backend.md](index-backend.md) — the `IndexBackend` seam (now carrying scores)
-  + `IndexRegistry` + the `Index` entity.
+- [index-backend.md](index-backend.md) — the `IndexBackend` interface (scores, corpus
+  statistics) + `IndexRegistry` + the `Index` entity.
 - [oramacore-fulltext-index.md](oramacore-fulltext-index.md) — the BM25F backend the
   sub-indexes are built into by default.
 - [index-step-executor.md](index-step-executor.md) — the consolidated (one-index)

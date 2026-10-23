@@ -147,15 +147,18 @@ registry (`list_indexes` → `search` → `get_trace` with its per-peer spans,
 #642) — in
 [`tests/api/test_search_journey.cpp`](../../tests/api/test_search_journey.cpp).
 
-Known platform issue: the **real-BM25F** ranking-oracle assertions
-([#611](https://github.com/oramasearch/zetta/issues/611)) fail deterministically
-on some checkouts — a per-shard IDF tie-break, unrelated to this entry point
+With the real BM25F backend the distributed query runs a statistics round first
+(`fulltext.stats`, recorded as one `search:statistics` span) so every shard scores
+with the merged corpus statistics and ranks exactly as one index would
+([#851](https://github.com/oramasearch/zetta/issues/851)); the per-shard IDF
+divergence behind the old **real-BM25F** ranking-oracle failures
+([#611](https://github.com/oramasearch/zetta/issues/611)) no longer applies. This
+is unrelated to this entry point
 (the entry-point suite uses the partition-independent reference scorer).
 
 ## Later slices
 
-Vector / semantic kinds behind the same `SearchRequest`; global-statistics
-scoring (`dfs_query_then_fetch`); dropping stale sub-indexes when an index
+Vector / semantic kinds behind the same `SearchRequest`; dropping stale sub-indexes when an index
 entity is dropped mid-flight (today they linger, unqueried, until restart);
 peer-side spans stitched into the coordinator's trace (cross-node propagation,
 [#640](https://github.com/oramasearch/zetta/issues/640)).

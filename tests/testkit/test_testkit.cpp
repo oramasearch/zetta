@@ -151,6 +151,16 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
         o.set_int("copies", 3);
     });
     EXPECT_EQ(fulltext.outcome, TestOutcome::Pass) << fulltext.error;
+    // The same at a limited depth over a different distribution (#851): the top_k
+    // cuts inside a run of tied copies, and the ranking must still equal the
+    // consolidated oracle's exactly on every node.
+    const TestResult fulltext_top_k = run("cluster.fulltext_index", [](TestOptions& o) {
+        o.set_int("nodes", 3);
+        o.set_int("copies", 3);
+        o.set_int("partitions", 3);
+        o.set_int("top_k", 4);
+    });
+    EXPECT_EQ(fulltext_top_k.outcome, TestOutcome::Pass) << fulltext_top_k.summary;
     // TC-12: the capstone UC-1-at-scale E2E — one sim-Python program loads the saas
     // parquet as one partitioned table, bursts within its cost_cap= (over-cap
     // blocked), rebalances partitions onto the burst node, trains a calibrated
