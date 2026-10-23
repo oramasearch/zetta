@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <map>
 
@@ -48,6 +49,43 @@ struct ClusterPeer {
     bool dial_out_only = false;
     unsigned audit_protocol_version = 0;
 };
+
+// --- HELLO bounds (#771) -------------------------------------------------------
+//
+// A peer's HELLO is untrusted input: its node id and advertised endpoints are
+// stored in the peer table, shown in the node list and logs, and dialed by the
+// reconnect loop. These bounds keep one connection from holding more than a few
+// kilobytes of peer-chosen text, and keep that text to the shapes a node emits.
+
+// The most endpoints a HELLO may advertise. A HELLO listing more is refused, and a
+// node never advertises more than this (Cluster::advertised_endpoints trims).
+inline constexpr std::size_t kMaxAdvertisedEndpoints = 16;
+// The longest node id accepted (node ids are UUIDs, 36 characters).
+inline constexpr std::size_t kMaxNodeIdBytes = 128;
+// The longest advertised endpoint: a 253-byte DNS name, a colon, a 5-digit port,
+// plus room for IPv6 brackets.
+inline constexpr std::size_t kMaxEndpointBytes = 261;
+// The largest HELLO frame read off a new connection, before the steady-state
+// frame limit applies. Comfortably above the longest valid HELLO
+// (16 endpoints of 261 bytes, a 128-byte id and the fixed tokens: under 4.5 KiB).
+inline constexpr std::size_t kMaxHelloBytes = 16 * 1024;
+
+// True when `node_id` is 1..kMaxNodeIdBytes of [A-Za-z0-9._-]: no spaces, control
+// characters or terminal escapes can reach the node list or stderr through it.
+bool is_valid_node_id(std::string_view node_id);
+
+// True when `endpoint` is HOST:PORT, at most kMaxEndpointBytes long, with a port
+// of 1..65535 (digits only) and a non-empty host of [A-Za-z0-9._-] plus the IPv6
+// literal characters `:`, `[`, `]` and `%`: an IPv4 address, a DNS name or an IPv6
+// literal. Anything else (spaces, control characters, quotes, escapes) fails.
+bool is_valid_peer_endpoint(std::string_view endpoint);
+
+// Parse "ZETTA/1 HELLO <node_id> <ep1[,ep2,...]|-> [wan|dial-out] [audit-version]".
+// Returns a peer with an EMPTY node_id when the line is malformed: the wrong
+// protocol or verb, an invalid node id, more than kMaxAdvertisedEndpoints
+// endpoints, any endpoint failing is_valid_peer_endpoint, or a wan HELLO with no
+// endpoint. The caller drops such a connection before recording anything.
+ClusterPeer parse_hello(std::string_view line);
 
 // A node's replication state, as last learned over the gossip exchange. For the
 // local node it's read straight from its ReplicationManager; for a peer it's

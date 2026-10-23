@@ -392,6 +392,12 @@ struct Cluster::State {
             if (node_id.empty() || node_id == my_node_id || endpoint.empty()) {
                 return;
             }
+            // The replicated membership document is peer-written too: dial only a
+            // well-formed node id and HOST:PORT (#771). HELLO-derived entries
+            // were already checked by parse_hello.
+            if (!is_valid_node_id(node_id) || !is_valid_peer_endpoint(endpoint)) {
+                return;
+            }
             std::vector<std::string>& list = members[node_id];
             if (std::find(list.begin(), list.end(), endpoint) == list.end()) {
                 list.push_back(endpoint);
@@ -499,6 +505,42 @@ std::vector<std::string> split_endpoints(const std::string& text) {
     return parts;
 }
 
+}  // namespace
+
+bool is_valid_node_id(std::string_view node_id) {
+    if (node_id.empty() || node_id.size() > kMaxNodeIdBytes) return false;
+    return std::ranges::all_of(node_id, [](char character) {
+        return (character >= 'a' && character <= 'z') ||
+               (character >= 'A' && character <= 'Z') ||
+               (character >= '0' && character <= '9') || character == '-' ||
+               character == '_' || character == '.';
+    });
+}
+
+bool is_valid_peer_endpoint(std::string_view endpoint) {
+    if (endpoint.size() > kMaxEndpointBytes) return false;
+    const auto colon = endpoint.rfind(':');
+    if (colon == std::string_view::npos || colon == 0) return false;
+    const std::string_view host = endpoint.substr(0, colon);
+    const std::string_view port_text = endpoint.substr(colon + 1);
+    if (port_text.empty() || port_text.size() > 5 ||
+        !std::ranges::all_of(port_text, [](char character) {
+            return character >= '0' && character <= '9';
+        })) {
+        return false;
+    }
+    unsigned port = 0;
+    std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+    if (port == 0 || port > 65535) return false;
+    return std::ranges::all_of(host, [](char character) {
+        return (character >= 'a' && character <= 'z') ||
+               (character >= 'A' && character <= 'Z') ||
+               (character >= '0' && character <= '9') || character == '-' ||
+               character == '_' || character == '.' || character == ':' ||
+               character == '[' || character == ']' || character == '%';
+    });
+}
+
 // Parse "ZETTA/1 HELLO <node_id> <ep1[,ep2,...]|-> [wan|dial-out]". The endpoints
 // are a single whitespace-delimited, comma-separated token — the peer's advertised
 // candidate SET (#739) — or "-" for the empty set of a dial-out-only node (#803).
@@ -507,20 +549,35 @@ std::vector<std::string> split_endpoints(const std::string& text) {
 // address and must never be dialed. A legacy single-address HELLO parses as a
 // one-element wan set (backward compatible). `address` defaults to the first
 // advertised endpoint; the observer overrides it with the endpoint it actually
-// reached the peer on. Returns an empty node_id on anything malformed.
-ClusterPeer parse_hello(const std::string& line) {
-    std::istringstream parser(line);
+// reached the peer on. Returns an empty node_id on anything malformed, including
+// a HELLO that breaks the #771 bounds (see cluster.hpp): the node id and every
+// endpoint are stored, shown in the node list and logs, and dialed, so a peer
+// cannot plant control characters there or hold an unbounded endpoint list.
+ClusterPeer parse_hello(std::string_view line) {
+    std::istringstream parser{std::string(line)};
     std::string protocol, verb, endpoints_token, reachability_token;
     ClusterPeer peer;
     parser >> protocol >> verb >> peer.node_id >> endpoints_token >>
         reachability_token;
     if (protocol != kProtocol || verb != "HELLO") return ClusterPeer{};
+    if (!is_valid_node_id(peer.node_id)) return ClusterPeer{};
     if (endpoints_token != "-") peer.endpoints = split_endpoints(endpoints_token);
+    if (peer.endpoints.size() > kMaxAdvertisedEndpoints) return ClusterPeer{};
+    if (!std::ranges::all_of(peer.endpoints, [](const std::string& endpoint) {
+            return is_valid_peer_endpoint(endpoint);
+        })) {
+        return ClusterPeer{};
+    }
     peer.dial_out_only = (reachability_token == "dial-out");
+    // A wan peer must name somewhere it can be reached; only a dial-out-only peer
+    // advertises the empty set.
+    if (!peer.dial_out_only && peer.endpoints.empty()) return ClusterPeer{};
     parser >> peer.audit_protocol_version;
     if (!peer.endpoints.empty()) peer.address = peer.endpoints.front();
     return peer;
 }
+
+namespace {
 
 std::string hello_line(const std::string& node_id,
                        const std::vector<std::string>& endpoints,
@@ -917,6 +974,10 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
 
     // FramedStream owns the persistent receive buffer shared by the HELLO and
     // steady-state read pump.
+    // The peer's HELLO is read under a small frame bound (#771): before it is
+    // parsed, an unidentified peer must not be able to make us buffer megabytes.
+    // The steady-state bound is restored once the HELLO is accepted.
+    link->stream->set_maximum_frame_bytes(kMaxHelloBytes);
     std::optional<std::string> their_hello;
     if (initiate) {
         co_await link->stream->write_frame(
@@ -934,10 +995,20 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         co_return;
     }
     const ClusterPeer peer = parse_hello(*their_hello);
-    if (peer.node_id.empty() || peer.node_id == my_node_id) {
-        link->stream->close();  // malformed, or we dialed ourselves
+    if (peer.node_id.empty()) {
+        // Malformed or outside the #771 bounds. The peer's text is not echoed:
+        // it is exactly what the bounds keep out of the logs.
+        log_event(self, std::string("refused a malformed HELLO (") +
+                            (initiate ? "dialed" : "accepted") + ")");
+        link->stream->close();
         co_return;
     }
+    if (peer.node_id == my_node_id) {
+        link->stream->close();  // we dialed ourselves
+        co_return;
+    }
+    link->stream->set_maximum_frame_bytes(
+        zetta::transport::FramedStreamOptions{}.maximum_frame_bytes);
     // Record which node id this seed resolved to BEFORE dedup, so the reconnect loop
     // can skip the seed while this node is linked — even if this very link then loses
     // the register_link tiebreak (the winning link still holds the node). Ends the
@@ -1418,7 +1489,34 @@ std::vector<std::string> Cluster::advertised_endpoints() const {
             endpoints.push_back(extra);
         }
     }
-    return endpoints;
+    // Peers refuse a HELLO with more than kMaxAdvertisedEndpoints (#771), so the
+    // set is capped here, in order. Every --advertise extra is kept (main.cpp
+    // refuses more than the cap); a wildcard bind on a host with many interfaces
+    // gives up its last listen addresses to make room for them.
+    if (endpoints.size() <= kMaxAdvertisedEndpoints) return endpoints;
+    const auto is_explicit = [&](const std::string& endpoint) {
+        return std::find(config_.advertise.begin(), config_.advertise.end(),
+                         endpoint) != config_.advertise.end();
+    };
+    const std::size_t explicit_count = static_cast<std::size_t>(
+        std::ranges::count_if(endpoints, is_explicit));
+    const std::size_t explicit_kept =
+        std::min(explicit_count, kMaxAdvertisedEndpoints);
+    const std::size_t listen_budget = kMaxAdvertisedEndpoints - explicit_kept;
+    std::vector<std::string> capped;
+    std::size_t listen_kept = 0;
+    std::size_t extras_kept = 0;
+    for (std::string& endpoint : endpoints) {
+        if (is_explicit(endpoint)) {
+            if (extras_kept == explicit_kept) continue;
+            ++extras_kept;
+        } else {
+            if (listen_kept == listen_budget) continue;
+            ++listen_kept;
+        }
+        capped.push_back(std::move(endpoint));
+    }
+    return capped;
 }
 
 bool Cluster::dial_out_only() const { return config_.dial_out_only; }

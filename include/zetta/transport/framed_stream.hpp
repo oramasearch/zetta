@@ -51,6 +51,10 @@ class FramedStream {
     boost::capy::task<std::optional<std::string>> read_frame();
     boost::capy::task<bool> write_frame(std::string frame);
 
+    // Change the frame bound for later reads. Cluster handshakes read the peer's
+    // HELLO under a small bound (#771), then restore the steady-state one.
+    void set_maximum_frame_bytes(std::size_t maximum_frame_bytes);
+
     bool secure() const;
     void close();
 

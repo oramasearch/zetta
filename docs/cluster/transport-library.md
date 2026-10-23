@@ -76,7 +76,10 @@ OpenSSL `SSL` object cannot be driven concurrently. The first read drains any
 application record already buffered by the handshake; later reads wait for raw
 socket readability before taking the async lock, drain decrypted data, then
 release it so writes continue. The default maximum frame size is 64 MiB, which
-preserves the cluster's existing limit and can be lowered per stream.
+preserves the cluster's existing limit and can be lowered per stream, either at
+construction (`FramedStreamOptions`) or between reads
+(`FramedStream::set_maximum_frame_bytes`). The bound is checked inside the TLS
+drain loop too, so one read never buffers far past it.
 
 ## Zetta cluster integration
 
@@ -88,7 +91,9 @@ minting, and persistence remain cluster-specific in
 `FramedStream` before any `ZETTA/1 HELLO` byte is exchanged.
 
 The extraction changes no cluster wire format, handshake order, reconnect
-logic, frame bound, or plaintext behavior for embedded test clusters. Existing
+logic, or plaintext behavior for embedded test clusters. The cluster reads a
+peer's HELLO under a 16 KiB frame bound and restores the 64 MiB bound once the
+HELLO is accepted (#771; see [cluster](cluster.md)). Existing
 cluster tests exercise the library through the same public `Cluster` surface.
 
 ## Boundaries and later work
