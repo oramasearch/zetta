@@ -69,13 +69,16 @@ public:
     }
 
     // Unsigned LEB128 varint (lengths, sizes, field-header deltas). Capped at 10
-    // continuation bytes (a full 64-bit value); overlong input fails.
+    // bytes (a full 64-bit value); unterminated or overflowing input fails.
     bool read_uvarint(std::uint64_t& out) {
         std::uint64_t value = 0;
         unsigned shift = 0;
         for (unsigned byte_index = 0; byte_index < 10; ++byte_index) {
             std::uint8_t byte = 0;
             if (!read_byte(byte)) return false;
+            // Only bit 63 remains in the tenth byte. Reject before shifting,
+            // otherwise higher payload bits silently wrap to a smaller value.
+            if (byte_index == 9 && byte > 1) return false;
             value |= static_cast<std::uint64_t>(byte & 0x7f) << shift;
             if ((byte & 0x80) == 0) {
                 out = value;
