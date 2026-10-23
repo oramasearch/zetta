@@ -19,7 +19,6 @@ the GUI calls**, so RULE-1/RULE-3 cannot be bypassed by construction:
 | `compile_intent` | `Project::compile_intent_to_graph` | one-shot compile + store; audits `graph_created` |
 | `compile_n8n` | `pipeline::compile_n8n_workflow` → `Project::create_graph` | engine reasons verbatim (`nodes[2]: unsupported…`) |
 | `compile_python` | `input::PythonFrontend::compile` → `Project::create_graph` | lowers sim-Python; never runs Python |
-| `approve_plan` | `Project::approve_graph` | review-before-build (#885): flips a proposed plan → approved; audits `graph_approved`; `gate`/`deploy` require it |
 | `propose_run` / `approve_run_proposal` / `reject_run_proposal` | `pipeline::RunProposalStore`; approval → `Node::create_project` + `Project::create_graph` + `Project::approve_graph`, then `run` through the registry | the chat agent proposes a run with an impact preview and creates nothing; approval creates exactly what the preview named, under the approver's rights (#969, [run-proposals](../pipeline/run-proposals.md)) |
 | `approve_plan` | `Project::approve_graph` | review-before-build (#885): flips a proposed plan → approved; audits `graph_approved`; `gate`/`deploy`/`agent_run` require it, and `agent_run` never records it (#913) |
 | `gate` | `pipeline::default_gate().run` | returns the whole `ValidationReport` (checks + verdict + block_deploy); evaluation only, `mutates=false`; refuses a `proposed` plan with `not_approved` |
