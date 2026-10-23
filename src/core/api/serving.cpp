@@ -1,5 +1,6 @@
 #include "zetta/api/serving.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -18,7 +19,12 @@
 #include "zetta/ml/gbdt_score.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/score_table.hpp"
+#include "zetta/data/table.hpp"
+#include "zetta/ir/serialization.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/project.hpp"
+#include "zetta/pipeline/project_graph.hpp"
+#include "zetta/pipeline/run.hpp"
 
 namespace zetta::api {
 
@@ -647,6 +653,348 @@ ApiResult serve_blob(Node& node, const ServeRequest& request) {
     return serve.finish(ApiResult::failure(
         "not_found",
         "no blob '" + request.target + "' with a local body on this node"));
+}
+
+
+// --- published pipelines (zetta#1289) ---------------------------------------
+
+namespace {
+
+const zetta::governance::Operation kRunPipeline{zetta::governance::CapabilityDomain::Data,
+                                                "run_pipeline"};
+const zetta::governance::Operation kReadData{zetta::governance::CapabilityDomain::Data, "read"};
+
+// May the caller run pipelines of `project`? A user: `data:run_pipeline` flat,
+// or scoped ON PROJECT to it. A legacy key: the flat right. The empty key is the
+// unauthenticated local session (only with the gate off). Empty = allowed.
+std::string run_pipeline_refusal(Node& node, const ServeRequest& request,
+                                 const zetta::pipeline::Project& project) {
+    if (request.acting_key.empty()) return {};
+    if (request.acting_is_user) {
+        zetta::governance::Resource scope;
+        scope.kind = zetta::governance::ResourceKind::Project;
+        scope.name = project.name();
+        if (node.authorize_object(request.acting_key, true, kRunPipeline, scope)) return {};
+        return "no data:run_pipeline grant for project '" + project.name() + "'";
+    }
+    auto decision = node.authorize(request.acting_key, kRunPipeline);
+    return decision ? std::string() : decision.reason;
+}
+
+// May the caller read `database`.`table`? The caller's own grants decide what a
+// served run may read, never the exposer's. Empty = allowed.
+std::string table_read_refusal(Node& node, const ServeRequest& request,
+                               const std::string& database, const std::string& table) {
+    if (request.acting_key.empty()) return {};
+    const std::string named = database + "." + table;
+    if (request.acting_is_user) {
+        if (node.column_scope(request.acting_key, true, kReadData, database, table)
+                .table_allowed) {
+            return {};
+        }
+        return "no sql:read grant for the table " + named + " this pipeline reads";
+    }
+    if (auto right = node.authorize(request.acting_key, kReadData); !right) {
+        return right.reason + " (the pipeline reads " + named + ")";
+    }
+    zetta::governance::Resource scope;
+    scope.kind = zetta::governance::ResourceKind::Database;
+    scope.name = database;
+    if (auto scoped = node.authorize(request.acting_key, scope); !scoped) {
+        return scoped.reason + " (the pipeline reads " + named + ")";
+    }
+    return {};
+}
+
+// The tables a run of `graph` with `input` reads: its connect steps, and a
+// `database.table` dataset_path the caller passed.
+std::vector<std::pair<std::string, std::string>> pipeline_tables(
+    Node& node, const zetta::ir::ExecutionGraph& graph, const nlohmann::json& input) {
+    std::vector<std::pair<std::string, std::string>> tables;
+    const auto add = [&](std::string database, std::string table) {
+        if (database.empty() || table.empty()) return;
+        std::pair<std::string, std::string> entry{std::move(database), std::move(table)};
+        if (std::ranges::find(tables, entry) == tables.end()) tables.push_back(std::move(entry));
+    };
+    for (const auto& step : graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!step || !step->attributes.is_object()) continue;
+        add(step->attributes.value("source", std::string{}),
+            step->attributes.value("table", std::string{}));
+    }
+    if (const auto path = input.find("dataset_path"); path != input.end() && path->is_string()) {
+        const auto parsed = zetta::data::parse_dataset_path(path->get<std::string>());
+        if (parsed.kind == zetta::data::DatasetPathKind::Table) add(parsed.database, parsed.table);
+    }
+    (void)node;
+    return tables;
+}
+
+std::string caller_of(const ServeRequest& request) {
+    return request.acting_key.empty() ? std::string("local") : request.acting_key;
+}
+
+nlohmann::json outputs_json(const zetta::pipeline::Run& run) {
+    nlohmann::json outputs = nlohmann::json::array();
+    for (const auto& output : run.outputs()) {
+        outputs.push_back({{"kind", output.kind}, {"name", output.name}, {"ref", output.ref}});
+    }
+    return outputs;
+}
+
+// The last error a run logged, for a failed run's answer.
+std::string last_error(const zetta::pipeline::Run& run) {
+    for (auto entry = run.logs().rbegin(); entry != run.logs().rend(); ++entry) {
+        if (entry->level == "error") return entry->message;
+    }
+    return {};
+}
+
+}  // namespace
+
+const nlohmann::json& pipeline_run_response_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"pipeline_id", "version", "run_id", "status", "outputs"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"pipeline_id", {{"type", "string"}}},
+          {"project", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"version", {{"type", "integer"}}},
+          {"run_id", {{"type", "string"}}},
+          {"status",
+           {{"type", "string"}, {"enum", {"pending", "running", "succeeded", "failed"}}}},
+          {"outputs",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"kind", {{"type", "string"}}},
+                {"name", {{"type", "string"}}},
+                {"ref", {{"type", "string"}}}}}}}}},
+          {"status_endpoint", {{"type", "string"}}},
+          {"error",
+           {{"type", "string"}, {"description", "why a failed run failed (its last error)"}}}}}};
+    return schema;
+}
+
+std::string pipeline_endpoint_path(const std::string& graph_id) {
+    return "/v1/pipelines/" + graph_id + "/run";
+}
+
+std::string pipeline_run_status_path(const std::string& graph_id, const std::string& run_id) {
+    return "/v1/pipelines/" + graph_id + "/runs/" + run_id;
+}
+
+const nlohmann::json& default_pipeline_input_schema() {
+    static const nlohmann::json schema = {{"type", "object"},
+                                          {"properties", nlohmann::json::object()},
+                                          {"additionalProperties", false}};
+    return schema;
+}
+
+ApiResult resolve_published_pipeline(Node& node, const std::string& target,
+                                     PublishedPipeline& found) {
+    for (const auto& project : node.projects()) {
+        if (auto graph = project->find_graph_by_id(target)) {
+            found = {project, graph};
+            return ApiResult::success({});
+        }
+    }
+    std::vector<PublishedPipeline> named;
+    for (const auto& project : node.projects()) {
+        for (const auto& graph : project->graphs()) {
+            if (graph->name() == target && graph->exposure().exposed) {
+                named.push_back({project, graph});
+            }
+        }
+    }
+    if (named.size() == 1) {
+        found = named.front();
+        return ApiResult::success({});
+    }
+    if (named.size() > 1) {
+        return ApiResult::failure("conflict", "several exposed pipelines are named '" + target +
+                                                  "'; call it by its id (" +
+                                                  pipeline_endpoint_path(named.front().graph->id()) +
+                                                  ", ...)");
+    }
+    return ApiResult::failure("not_found", "no exposed pipeline named '" + target + "'");
+}
+
+ApiResult serve_pipeline_run(Node& node, const ServeRequest& request) {
+    ServeSpan serve(request, "serve:run_pipeline");
+    PublishedPipeline published;
+    if (ApiResult resolved = resolve_published_pipeline(node, request.target, published);
+        !resolved.ok) {
+        // An unknown name is answered only to a caller who may run pipelines.
+        if (!request.acting_key.empty()) {
+            const bool may = request.acting_is_user
+                                 ? static_cast<bool>(node.authorize_user(request.acting_key,
+                                                                          kRunPipeline))
+                                 : static_cast<bool>(node.authorize(request.acting_key,
+                                                                    kRunPipeline));
+            if (!may) {
+                audit_serve(node, "run_pipeline", request.target, request.acting_key, false,
+                            "no data:run_pipeline grant");
+                return serve.finish(ApiResult::failure("unauthorized", "no data:run_pipeline grant"));
+            }
+        }
+        return serve.finish(std::move(resolved));
+    }
+    const auto& graph = *published.graph;
+    const std::string pipeline_id = graph.id();
+    if (const std::string refusal = run_pipeline_refusal(node, request, *published.project);
+        !refusal.empty()) {
+        audit_serve(node, "run_pipeline", pipeline_id, request.acting_key, false, refusal);
+        return serve.finish(ApiResult::failure("unauthorized", refusal));
+    }
+    const zetta::pipeline::PipelineExposure& exposure = graph.exposure();
+    if (!exposure.exposed) {
+        audit_serve(node, "run_pipeline", pipeline_id, request.acting_key, false, "not exposed");
+        return serve.finish(ApiResult::failure(
+            "not_found", "pipeline '" + request.target +
+                             "' is not exposed; expose_pipeline publishes " +
+                             pipeline_endpoint_path(pipeline_id)));
+    }
+    serve.span.set_attribute("version", static_cast<std::int64_t>(exposure.version));
+
+    nlohmann::json input = strip_intent(request.input, serve.span);
+    if (input.is_null()) input = nlohmann::json::object();
+    if (const std::size_t bytes = input.dump().size(); bytes > exposure.max_input_bytes) {
+        audit_serve(node, "run_pipeline", pipeline_id, request.acting_key, false,
+                    "input too large");
+        return serve.finish(ApiResult::failure(
+            "payload_too_large", "the input is " + std::to_string(bytes) +
+                                     " bytes; this pipeline accepts at most " +
+                                     std::to_string(exposure.max_input_bytes)));
+    }
+    std::string reason;
+    if (!validate_request(exposure.input_schema, input, &reason)) {
+        audit_serve(node, "run_pipeline", pipeline_id, request.acting_key, false,
+                    "invalid input: " + reason);
+        return serve.finish(ApiResult::failure(
+            "invalid_input", "the input does not match the schema this pipeline declares: " +
+                                 reason));
+    }
+    const auto admitted = node.serving_rate_limiter().admit(caller_of(request) + "|" + pipeline_id,
+                                                           exposure.rate_limit_per_minute);
+    if (!admitted.admitted) {
+        audit_serve(node, "run_pipeline", pipeline_id, request.acting_key, false, "rate limited");
+        ApiResult limited = ApiResult::failure(
+            "rate_limited", "this caller may run this pipeline " +
+                                std::to_string(exposure.rate_limit_per_minute) +
+                                " times a minute on this node; retry in " +
+                                std::to_string(admitted.retry_after_seconds) + " s");
+        limited.error.details = {{"retry_after_seconds", admitted.retry_after_seconds}};
+        return serve.finish(std::move(limited));
+    }
+
+    std::optional<zetta::ir::ExecutionGraph> pinned = zetta::ir::from_json(exposure.pinned);
+    if (!pinned) {
+        return serve.finish(ApiResult::failure(
+            "engine_error", "pipeline '" + request.target + "' has no valid pinned version"));
+    }
+    // The caller's own grants decide what the run may read (never the exposer's).
+    for (const auto& [database, table] : pipeline_tables(node, *pinned, input)) {
+        if (const std::string refusal = table_read_refusal(node, request, database, table);
+            !refusal.empty()) {
+            audit_serve(node, "run_pipeline", pipeline_id, request.acting_key, false, refusal);
+            return serve.finish(ApiResult::failure("unauthorized", refusal));
+        }
+    }
+
+    const std::shared_ptr<const Capability> run_capability =
+        request.registry != nullptr ? request.registry->find("run") : nullptr;
+    if (run_capability == nullptr) {
+        return serve.finish(ApiResult::failure("engine_error", "no `run` capability on this node"));
+    }
+    nlohmann::json run_input = input;
+    run_input["project"] = published.project->id();
+    run_input["graph"] = pipeline_id;
+    if (!validate_request(run_capability->input_schema, run_input, &reason)) {
+        return serve.finish(ApiResult::failure(
+            "invalid_input", "the declared input admitted a field `run` does not take: " + reason));
+    }
+    audit_serve(node, "run_pipeline", pipeline_id, request.acting_key, true,
+                "served run of version " + std::to_string(exposure.version));
+
+    ApiContext context{node,
+                       request.cluster,
+                       request.acting_key,
+                       zetta::observability::TraceContext{request.trace.trace_id,
+                                                          serve.span.span_id()},
+                       request.recorder,
+                       request.background};
+    context.acting_is_user = request.acting_is_user;
+    context.registry = request.registry;
+    context.served_graph = std::make_shared<zetta::pipeline::ProjectGraph>(
+        pipeline_id, published.project->id(), graph.name(), std::move(*pinned),
+        std::filesystem::path{});
+    ApiResult ran;
+    try {
+        ran = run_capability->handler(run_input, context);
+    } catch (const std::exception& error) {
+        ran = ApiResult::failure("engine_error", std::string("the run failed: ") + error.what());
+    } catch (...) {
+        ran = ApiResult::failure("engine_error", "the run failed on an unknown error");
+    }
+    if (!ran.ok) return serve.finish(std::move(ran));
+    const std::string run_id = ran.value.value("run_id", std::string{});
+    const std::shared_ptr<zetta::pipeline::Run> run = node.find_run(run_id);
+    if (!run) {
+        return serve.finish(ApiResult::failure("engine_error", "the run record was not created"));
+    }
+    run->set_published({exposure.version, caller_of(request)});
+    nlohmann::json output{{"pipeline_id", pipeline_id},
+                          {"project", published.project->name()},
+                          {"name", graph.name()},
+                          {"version", exposure.version},
+                          {"run_id", run_id},
+                          {"status", std::string(zetta::pipeline::to_string(run->status()))},
+                          {"outputs", outputs_json(*run)},
+                          {"status_endpoint", pipeline_run_status_path(pipeline_id, run_id)}};
+    return serve.finish(ApiResult::success(std::move(output)));
+}
+
+ApiResult serve_pipeline_run_status(Node& node, const ServeRequest& request) {
+    ServeSpan serve(request, "serve:pipeline_run_status");
+    PublishedPipeline published;
+    if (ApiResult resolved = resolve_published_pipeline(node, request.target, published);
+        !resolved.ok) {
+        return serve.finish(std::move(resolved));
+    }
+    const std::string pipeline_id = published.graph->id();
+    if (const std::string refusal = run_pipeline_refusal(node, request, *published.project);
+        !refusal.empty()) {
+        audit_serve(node, "pipeline_run_status", pipeline_id, request.acting_key, false, refusal);
+        return serve.finish(ApiResult::failure("unauthorized", refusal));
+    }
+    const std::string run_id = request.input.is_object()
+                                   ? request.input.value("run_id", std::string{})
+                                   : std::string{};
+    const std::shared_ptr<zetta::pipeline::Run> run = node.find_run(run_id);
+    // Only a run this pipeline served to this caller: another caller's run, or
+    // a run started some other way, is not this route's to show.
+    if (!run || run->graph() != pipeline_id || !run->published() ||
+        run->published()->caller != caller_of(request)) {
+        return serve.finish(ApiResult::failure(
+            "not_found", "pipeline '" + request.target + "' served no run '" + run_id +
+                             "' to this caller"));
+    }
+    nlohmann::json output{{"pipeline_id", pipeline_id},
+                          {"version", run->published()->version},
+                          {"run_id", run_id},
+                          {"status", std::string(zetta::pipeline::to_string(run->status()))},
+                          {"outputs", outputs_json(*run)}};
+    if (run->status() == zetta::pipeline::RunStatus::Failed) output["error"] = last_error(*run);
+    return serve.finish(ApiResult::success(std::move(output)));
+}
+
+bool pipeline_run_finished(const ApiResult& status) {
+    if (!status.ok || !status.value.is_object()) return true;
+    const std::string state = status.value.value("status", std::string{});
+    return state == "succeeded" || state == "failed";
 }
 
 }  // namespace zetta::api

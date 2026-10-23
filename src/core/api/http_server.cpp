@@ -58,6 +58,8 @@
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/governance/credential_redaction.hpp"
 #include "zetta/api/serving.hpp"
+#include "zetta/pipeline/project_graph.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
 #include "zetta/agent/agent_store.hpp"
@@ -675,8 +677,10 @@ boost::http::status http_status_of(int status_code) {
         case 403: return boost::http::status::forbidden;
         case 404: return boost::http::status::not_found;
         case 409: return boost::http::status::conflict;
+        case 413: return boost::http::status::payload_too_large;
         case 416: return boost::http::status::range_not_satisfiable;
         case 422: return boost::http::status::unprocessable_entity;
+        case 429: return boost::http::status::too_many_requests;
         case 503: return boost::http::status::service_unavailable;
         case 507: return boost::http::status::insufficient_storage;
         default: return boost::http::status::internal_server_error;
@@ -2013,6 +2017,120 @@ struct ApiServer::Impl {
             });
             status = http_status_of(rest_status(serve_result));
             response_body = rest_envelope(serve_result).dump();
+        }
+
+        route.status(status);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, response_body);
+        auto [send_error] = co_await route.send(response_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // Serve a published pipeline (zetta#1289, docs/api/serving.md): POST
+    // /v1/pipelines/{name}/run runs its pinned version with the JSON body as the
+    // declared input; GET /v1/pipelines/{name}/runs/{run_id} answers a run it
+    // served to the same caller. Governance, limits, audit and the run itself are
+    // the HTTP-free serving layer on the owning loop. The synchronous mode is
+    // this route's: after the run starts it waits, on a timer that holds no
+    // thread, for the run to finish within the pipeline's sync_timeout_ms
+    // (`?wait=false` skips it), then answers its outputs (200), or its id and
+    // status endpoint while it still runs (202).
+    boost::http::route_task serve_pipeline_endpoint(boost::http::route_params& route,
+                                                    bool status_read) {
+        namespace http = boost::http;
+        const RequestIdentity identity = identity_of(route);
+        std::string target;
+        std::string run_id;
+        for (const auto& [parameter, value] : route.params) {
+            if (parameter == "name") target = value;
+            if (parameter == "run_id") run_id = value;
+        }
+        bool wait = true;
+        for (const auto& parameter : route.url.params()) {
+            if (parameter.key == "wait" && parameter.value == "false") wait = false;
+        }
+
+        std::string response_body;
+        http::status status = http::status::ok;
+        nlohmann::json input = nlohmann::json::object();
+        if (status_read) {
+            input = {{"run_id", run_id}};
+        } else {
+            http::json_sink body_sink;
+            auto [read_error, bytes_read] =
+                co_await boost::capy::push_to(route.req_body, body_sink);
+            if (read_error) {
+                status = http::status::bad_request;
+                response_body = transport_error_body(
+                    "invalid_input", "could not read the request body as JSON");
+            } else if (bytes_read > 0) {
+                input = to_nlohmann(body_sink.release());
+                if (input.is_discarded()) {
+                    status = http::status::bad_request;
+                    response_body = transport_error_body(
+                        "invalid_input", "the request body is not valid JSON");
+                }
+            }
+        }
+
+        if (response_body.empty()) {
+            std::string traceparent;
+            if (route.req.count("traceparent") != 0) {
+                traceparent = std::string(route.req.at("traceparent"));
+            }
+            const auto trace = zetta::observability::parse_traceparent(traceparent)
+                                   .value_or(zetta::observability::make_root_trace());
+            ServeRequest request{target, input, identity.acting_key, trace,
+                                 &node.span_recorder()};
+            request.acting_is_user = identity.is_user;
+            request.registry = &capability_registry;
+            request.background = &background;
+            request.cluster = cluster;
+            ApiResult result;
+            std::uint32_t sync_timeout_ms = 0;
+            co_await bridge.run_on_owner([&] {
+                result = status_read ? serve_pipeline_run_status(node, request)
+                                     : serve_pipeline_run(node, request);
+                PublishedPipeline published;
+                if (!status_read && result.ok &&
+                    resolve_published_pipeline(node, target, published).ok) {
+                    sync_timeout_ms = published.graph->exposure().sync_timeout_ms;
+                }
+            });
+            if (!status_read && result.ok && wait && !pipeline_run_finished(result)) {
+                const std::string started = result.value.value("run_id", std::string{});
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(sync_timeout_ms);
+                bool finished = false;
+                while (!finished && std::chrono::steady_clock::now() < deadline) {
+                    [[maybe_unused]] auto waited =
+                        co_await runtime::delay(std::chrono::milliseconds(50));
+                    co_await bridge.run_on_owner([&] {
+                        const auto run = node.find_run(started);
+                        finished = !run ||
+                                   run->status() == zetta::pipeline::RunStatus::Succeeded ||
+                                   run->status() == zetta::pipeline::RunStatus::Failed;
+                    });
+                }
+                if (finished) {
+                    co_await bridge.run_on_owner([&] {
+                        ServeRequest read = request;
+                        read.input = {{"run_id", started}};
+                        ApiResult answered = serve_pipeline_run_status(node, read);
+                        if (answered.ok) {
+                            answered.value["status_endpoint"] =
+                                result.value.value("status_endpoint", std::string{});
+                            answered.value["project"] = result.value.value("project", std::string{});
+                            answered.value["name"] = result.value.value("name", std::string{});
+                            result = std::move(answered);
+                        }
+                    });
+                }
+            }
+            status = http_status_of(rest_status(result));
+            if (result.ok && !pipeline_run_finished(result)) status = http::status::accepted;
+            response_body = rest_envelope(result).dump();
         }
 
         route.status(status);
@@ -4857,6 +4975,16 @@ bool ApiServer::start() {
     router.add(http::method::get, "/v1/indexes/:name/search",
                [&impl](http::route_params& route) -> http::route_task {
                    return impl.serve_entity_endpoint(route, /*predict=*/false);
+               });
+    // Published pipelines (zetta#1289): answered per request from the
+    // replicated exposure, like the model and index routes.
+    router.add(http::method::post, "/v1/pipelines/:name/run",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_pipeline_endpoint(route, /*status_read=*/false);
+               });
+    router.add(http::method::get, "/v1/pipelines/:name/runs/:run_id",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_pipeline_endpoint(route, /*status_read=*/true);
                });
 
     // LAST: answer whatever no route above matched (#1007) — an unknown path, or

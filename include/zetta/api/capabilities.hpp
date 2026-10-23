@@ -115,6 +115,10 @@ void register_run_metrics_capabilities(Registry& registry);
 // validation, published search spaces, analysis, stopping and
 // permission-separated model promotion.
 void register_study_capabilities(Registry& registry);
+
+// Published pipelines (zetta#1289, docs/api/serving.md): expose_pipeline,
+// unexpose_pipeline, run_published_pipeline, get_published_pipeline_run.
+void register_pipeline_serving_capabilities(Registry& registry);
 nlohmann::json study_search_space_for_methodology(
     std::string_view methodology);
 

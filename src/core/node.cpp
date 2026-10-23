@@ -6189,6 +6189,7 @@ void Node::reconcile_graphs(
         bool approved = false;  // #885: the replicated plan-approval state
         std::string approved_by;
         std::string approved_at;
+        zetta::pipeline::PipelineExposure exposure;  // zetta#1289
     };
     std::map<std::string, GraphEntry> desired_graphs;  // id -> entry
     for (const auto& [key, value] : snapshot.items()) {
@@ -6200,13 +6201,21 @@ void Node::reconcile_graphs(
         std::optional<ir::ExecutionGraph> graph =
             ir::from_json(value["graph"]);
         if (!graph) continue;  // boundary validation: drop a malformed graph
+        // A malformed exposure is not served: the graph reconciles unexposed.
+        zetta::pipeline::PipelineExposure exposure;
+        if (const auto found = value.find("exposure"); found != value.end()) {
+            if (auto parsed = zetta::pipeline::pipeline_exposure_from_json(*found)) {
+                exposure = std::move(*parsed);
+            }
+        }
         desired_graphs.emplace(
             std::move(id),
             GraphEntry{value.value("project", std::string{}),
                        value.value("name", std::string{}), std::move(*graph),
                        value.value("approval", std::string{}) == "approved",
                        value.value("approved_by", std::string{}),
-                       value.value("approved_at", std::string{})});
+                       value.value("approved_at", std::string{}),
+                       std::move(exposure)});
     }
     for (const auto& project : projects_) {
         std::vector<std::string> local_graph_ids;
@@ -6228,16 +6237,23 @@ void Node::reconcile_graphs(
         if (!project) continue;  // dangling graph (project gone) — ignore
         auto existing = project->find_graph_by_id(id);
         if (!existing) {
-            project->materialize_graph(id, entry.name, std::move(entry.graph),
-                                       entry.approved, entry.approved_by,
-                                       entry.approved_at);
+            auto created = project->materialize_graph(id, entry.name, std::move(entry.graph),
+                                                      entry.approved, entry.approved_by,
+                                                      entry.approved_at);
+            if (created && entry.exposure.version > 0) {
+                created->set_exposure(std::move(entry.exposure));
+                created->persist();
+            }
         } else if (existing->name() != entry.name ||
                    existing->approved() != entry.approved ||
+                   !(existing->exposure() == entry.exposure) ||
                    ir::to_json(existing->graph()) != ir::to_json(entry.graph)) {
-            // A peer changed the plan and/or its approval — mirror both, then
-            // persist once (set_approval is pure; set_contents writes the file).
+            // A peer changed the plan, its approval and/or its publication —
+            // mirror them, then persist once (set_approval and set_exposure are
+            // pure; set_contents writes the file).
             existing->set_approval(entry.approved, entry.approved_by,
                                    entry.approved_at);
+            existing->set_exposure(std::move(entry.exposure));
             existing->set_contents(entry.name, std::move(entry.graph));
         }
     }

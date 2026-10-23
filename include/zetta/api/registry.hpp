@@ -20,6 +20,9 @@ class Node;
 namespace zetta::cluster {
 class Cluster;
 }
+namespace zetta::pipeline {
+class ProjectGraph;
+}
 namespace zetta::cloud {
 class Provisioner;
 }
@@ -49,7 +52,10 @@ struct ApiError {
                           // "forbidden" (read-only by design: Orama's catalogue
                           // methodologies, zetta#1261) | "runner_required" (a
                           // workspace methodology's pipeline runs in Lake's runner;
-                          // `details` says what to run, zetta#1261)
+                          // `details` says what to run, zetta#1261) |
+                          // "rate_limited" (a published pipeline's per-caller
+                          // limit, zetta#1289) | "payload_too_large" (its input
+                          // size limit, zetta#1289)
     std::string message;  // the engine's reason, verbatim where one exists
     std::string path;     // JSON pointer / field path when the input is at fault
     // Structured payload riding with the failure — the consent challenge for
@@ -168,6 +174,13 @@ struct ApiContext {
     // the route's co_await cannot be missed (#1076). In-process callers leave it
     // empty and receive the same immediate answer as wait_ms 0.
     std::shared_ptr<runtime::async_event> wait_event;
+
+    // A published pipeline's pinned version (zetta#1289, docs/api/serving.md).
+    // Set only by the served run path for its one inner `run`: `run` executes
+    // this graph in place of the stored graph with the same id, so an edit made
+    // after the pipeline was exposed is not what its callers get. Null
+    // everywhere else.
+    std::shared_ptr<zetta::pipeline::ProjectGraph> served_graph;
 };
 
 using CapabilityHandler =

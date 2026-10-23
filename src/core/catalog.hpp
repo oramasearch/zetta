@@ -32,7 +32,7 @@
 //                          the document, it lives on disk like a large object;
 //                          see project_input.hpp)
 //   graph:<graph_uuid> -> { project: <proj_uuid>, name,       (an ExecutionGraph
-//                          graph: { nodes, edges } }            IR under a project
+//                          graph: { nodes, edges }, exposure? } IR under a project
 //                          — the whole serialized graph as one value; see
 //                          project_graph.hpp / docs/pipeline/execution-graph.md)
 //   deployment:<dep_uuid> -> { graph_name, target: {…}, node, node_count,

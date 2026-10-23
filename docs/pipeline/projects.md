@@ -175,6 +175,7 @@ reverse path used by reconciliation.
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
 | `compile_intent_to_graph(input_id, name = {}, options = {}, error = nullptr, template_name = nullptr)` | `shared_ptr<ProjectGraph>` | Resolve a runnable [methodology](../ml/methodologies.md), compile the stored **intent** with that methodology's shape callback, and store it through `create_graph` (without a name, named from the intent's words and numbered on a collision, #1238). `options` may select a methodology or primary solution and carry hints. Empty handle on an invalid input, unsupported methodology, missing body, or an explicit name's collision; `error` explains compilation refusal and `template_name` receives the template the steps started from. |
 | `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection, refreshes denormalized names on matching Runs, Models, and Studies, and re-captures `graph:<uuid>`. **Re-proposes the plan** (resets approval → proposed, #885). Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
+| `set_graph_exposure(id, exposure)` | `shared_ptr<ProjectGraph>` | Publish or withdraw the graph as a served route (zetta#1289): stores the `PipelineExposure` (exposed, version, the pinned IR, the declared input schema, the limits), rewrites the projection and re-captures `graph:<uuid>`. Reached over `expose_pipeline` / `unexpose_pipeline` ([../api/serving.md](../api/serving.md#published-pipelines-zetta1289)). An edit keeps the exposure: callers get the pinned version until it is exposed again. |
 | `approve_graph(name, approver, at)` | `shared_ptr<ProjectGraph>` | Mark a proposed plan **approved** (#885, review-before-build): stamps the approver + ISO instant, re-captures `graph:<uuid>`, and audits `graph_approved`. Idempotent. Empty handle if no graph by `name`. Reached over the governed `approve_plan` capability. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
 | `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |
@@ -186,7 +187,8 @@ else:
 
 - **Replicated state.** One flat key per graph,
   `graph:<uuid> → { project: <proj_uuid>, name, approval, approved_by,
-  approved_at, graph: { nodes, edges } }` (`src/core/catalog.hpp`). The whole
+  approved_at, graph: { nodes, edges }, exposure? }` (`src/core/catalog.hpp`;
+  `exposure` only once the pipeline has been published, zetta#1289). The whole
   graph rides as a single value (a graph is authored and stored as a unit) — the
   serialized form is
   [`ir::to_json`](execution-graph.md#json-serialization). On each `tick()` the

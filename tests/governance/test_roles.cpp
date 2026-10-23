@@ -92,7 +92,12 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
                   {CapabilityDomain::Orchestration, "expose_model"},
                   {CapabilityDomain::Orchestration, "unexpose_model"},
                   {CapabilityDomain::Orchestration, "expose_index"},
-                  {CapabilityDomain::Orchestration, "unexpose_index"}}));
+                  {CapabilityDomain::Orchestration, "unexpose_index"},
+                  {CapabilityDomain::Orchestration, "expose_pipeline"},
+                  {CapabilityDomain::Orchestration, "unexpose_pipeline"}}));
+    // Running a published pipeline is its own data right (zetta#1289).
+    EXPECT_EQ(permission_operations("serving:run"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "run_pipeline"}}));
     EXPECT_EQ(permission_operations("cloud:manage"),
               (std::vector<Operation>{
                   {CapabilityDomain::Orchestration, "cloud_inspect"},
@@ -188,8 +193,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // The canonical list carries the #746 atoms, blob:read (#747), six
     // orchestration atoms, eight pub/sub atoms (#1029/#1136), study promotion
     // (#1138), study deletion (#1158), five record-store and time-series atoms
-    // (#1231), three object atoms (#1005), and two network-record atoms (#1281).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 34u);
+    // (#1231), three object atoms (#1005), two network-record atoms (#1281), and
+    // serving:run (#1289).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 35u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

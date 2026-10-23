@@ -168,6 +168,13 @@ void Project::load() {
                     document.value("approval", std::string{}) == "approved",
                     document.value("approved_by", std::string{}),
                     document.value("approved_at", std::string{}));
+                // The publication (zetta#1289); a malformed one is not served.
+                if (const auto exposure = document.find("exposure");
+                    exposure != document.end()) {
+                    if (auto parsed = pipeline_exposure_from_json(*exposure)) {
+                        loaded->set_exposure(std::move(*parsed));
+                    }
+                }
                 graphs_.push_back(std::move(loaded));
             }
             // Stable order (directory iteration order is unspecified).
@@ -340,6 +347,18 @@ std::shared_ptr<ProjectGraph> Project::approve_graph(const std::string& name,
              true,
              "plan '" + stored->name() + "' approved in project '" + name_ + "'",
              {}});
+    }
+    return stored;
+}
+
+std::shared_ptr<ProjectGraph> Project::set_graph_exposure(const std::string& id,
+                                                          PipelineExposure exposure) {
+    auto stored = find_graph_by_id(id);
+    if (!stored) return nullptr;
+    stored->set_exposure(std::move(exposure));
+    stored->persist();
+    if (replication_) {
+        replication_->set(catalog::graph_key(stored->id()), stored->record());
     }
     return stored;
 }
