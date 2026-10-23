@@ -144,7 +144,12 @@ TEST(LakeSqlGuard, RefusesWritesAndSessionChangesWhereverTheyHide) {
           // so the DELETE after it is code, whichever way the quote is read.
           "WITH x AS (SELECT E'a\\'') DELETE FROM t WHERE 'b' = 'b'",
           // `--1` is not a comment to every engine; what follows is scanned.
-          "WITH x AS (SELECT 1 --1 ) DELETE FROM t\n"}) {
+          "WITH x AS (SELECT 1 --1 ) DELETE FROM t\n",
+          // SQLite and MySQL quote identifiers with [...] and backticks: a quote
+          // inside one opens no string, so the DELETE after it is code.
+          "WITH [a'b] AS (SELECT 1) DELETE FROM t --'",
+          "WITH `a'b` AS (SELECT 1) DELETE FROM t --'",
+          "WITH `a``'b` AS (SELECT 1) DELETE FROM t --'"}) {
         EXPECT_NE(zetta::connect::connector_query_rejection(config, sql), "") << sql;
     }
 }

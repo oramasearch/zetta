@@ -31,13 +31,33 @@ std::string lowered(std::string_view text) {
 
 // The bare words of `sql`, lower-cased, in order: everything outside a '…'
 // string, a "…" identifier or string, a `-- ` comment and a `/* … */` comment.
-// With `backslash_escapes`, a backslash inside a quoted run escapes the next
-// character.
-std::vector<std::string> bare_words(std::string_view sql, bool backslash_escapes) {
+// With `backslash_escapes`, a backslash inside a '…' or "…" run escapes the next
+// character. With `identifier_quotes`, `…` (a doubled backtick escapes one) and
+// […] are identifiers too, as SQLite and MySQL read them: a quote inside one does
+// not open a string, so a write after it is never hidden (`WITH [a'b] AS (SELECT 1)
+// DELETE FROM t --'`).
+std::vector<std::string> bare_words(std::string_view sql, bool backslash_escapes,
+                                    bool identifier_quotes) {
     std::vector<std::string> words;
     std::size_t index = 0;
     while (index < sql.size()) {
         const char character = sql[index];
+        if (identifier_quotes && (character == '`' || character == '[')) {
+            const char close = character == '[' ? ']' : '`';
+            ++index;
+            while (index < sql.size()) {
+                if (sql[index] == close) {
+                    if (close == '`' && index + 1 < sql.size() && sql[index + 1] == '`') {
+                        index += 2;
+                        continue;
+                    }
+                    break;
+                }
+                ++index;
+            }
+            ++index;
+            continue;
+        }
         if (character == '\'' || character == '"') {
             ++index;
             while (index < sql.size()) {
@@ -118,9 +138,16 @@ std::string first_refused(const std::vector<std::string>& words,
 
 std::string write_word_rejection(std::string_view sql, WriteWordDialect dialect,
                                  std::string_view through) {
-    std::string word = first_refused(bare_words(sql, /*backslash_escapes=*/false), dialect);
-    if (word.empty()) {
-        word = first_refused(bare_words(sql, /*backslash_escapes=*/true), dialect);
+    // Every reading an engine could take of the quoting: a word any of them sees
+    // bare is refused.
+    std::string word;
+    for (const bool identifier_quotes : {false, true}) {
+        for (const bool backslash_escapes : {false, true}) {
+            if (word.empty()) {
+                word = first_refused(bare_words(sql, backslash_escapes, identifier_quotes),
+                                     dialect);
+            }
+        }
     }
     if (word.empty()) return {};
     return "'" + word + "' may not appear in a query through " + std::string(through) +
