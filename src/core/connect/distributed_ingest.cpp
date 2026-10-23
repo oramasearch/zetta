@@ -284,6 +284,26 @@ LaunchOutcome run_connector_fetch_launch(
     }
 
     const Json& payload = request.payload;
+
+    // **A launch whose run has already ended** (#844). A participant that was
+    // paused rather than gone still queued this launch, and drains it when it
+    // resumes, possibly after the agreement failed and every other node dropped
+    // the table. The drop replicated as a tombstone, so this node's document
+    // says the target table existed and is gone: the run is over. Decline before
+    // adopting (which would re-create the table causally after its removal),
+    // before fetching (a wasted read of the customer's source), and WITHOUT
+    // joining the agreement: its round is finished, and joining would only hold
+    // this owner thread for the whole coordination timeout.
+    if (node.replicated_table_dropped(payload.at("database").get<std::string>(),
+                                      payload.at("table").get<std::string>())) {
+        return LaunchOutcome{
+            .ok = false,
+            .detail = "the ingest this launch belongs to has already ended: its "
+                      "target table was dropped before this node drained the "
+                      "launch, so it was declined without adopting, fetching or "
+                      "joining the agreement"};
+    }
+
     const std::chrono::milliseconds timeout{
         payload.at("coordination_timeout_ms").get<std::int64_t>()};
 

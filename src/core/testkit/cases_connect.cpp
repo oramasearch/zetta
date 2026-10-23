@@ -832,10 +832,11 @@ TestResult run_import_participant_loss(const TestOptions& options,
     // than on the property.
     // Only the nodes that were RUNNING are ticked. Ticking the idle one would be
     // modelling something else: a node that was merely paused, which on waking
-    // still drains the launch it queued and re-adopts the table AFTER the cleanup
-    // ran. That is a real behaviour and a real race — a late launch beating a
-    // completed cleanup — but it is the behaviour of a node that came back, not
-    // of a node that died, and this case is about the latter.
+    // still drains the launch it queued. That is the behaviour of a node that
+    // came back, not of a node that died, and this case is about the latter. A
+    // resumed node that has merged the cleanup declines the ended launch rather
+    // than re-adopting the table (#844); that is pinned at L1 by
+    // DistributedIngest.APausedParticipantThatResumesDeclinesTheEndedLaunch.
     const auto discarded_everywhere = [&] {
         for (std::size_t index = 0; index + 1 < cluster.size(); ++index) {
             cluster.node(index).tick();
