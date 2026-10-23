@@ -46,11 +46,19 @@ confirmation. A missing entity is `not_found`.
   refuses the same way, so a preview never promises a delete that would be refused. Wait for the
   runs to finish (`get_run`) and stop the study (`stop_study`), then delete it. A run and a study
   record the tables they read when they are created (`reads`, zetta#1258): a run its pipeline's
-  connect steps and the `dataset_path` it was handed, a study its dataset
+  connect steps and the `dataset_path` it was handed, a study its dataset. Runs created outside
+  `run` record theirs too (zetta#1272): methodology runners and solution stages the dataset they
+  were handed, `run_solution` its snapshot tables, a deployment's run its graph's connect steps,
+  `GraphExecutor` the graph it executes
   ([../pipeline/runs.md](../pipeline/runs.md), [../ml/studies.md](../ml/studies.md)).
 
 ## How to verify
 
 `tests/api/test_registry.cpp`: `DeleteDatasetRemovesItsPartitionsAndIndexes`,
-`DeleteDatasetRefusesWhileARunOrAStudyReadsIt`, `DeleteModelStopsServingItAndKeepsItsRun`, `DeleteModelByNameRefusesAnAmbiguousName`,
-`DeleteRunRefusesWhileInFlightAndKeepsItsModels`, `DeleteIndexStopsServingItAndKeepsTheDataset`.
+`DeleteDatasetRefusesWhileARunOrAStudyReadsIt`, `DeleteDatasetRefusesWhileADeploymentRunReadsIt`,
+`DeleteDatasetRefusesWhileAGraphExecutorRunReadsIt`, `DeleteModelStopsServingItAndKeepsItsRun`, `DeleteModelByNameRefusesAnAmbiguousName`,
+`DeleteRunRefusesWhileInFlightAndKeepsItsModels`, `DeleteIndexStopsServingItAndKeepsTheDataset`;
+`tests/api/test_action_journeys.cpp`: `SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly`
+(the solution Run and its stage Runs); `tests/pipeline/test_deployment.cpp`:
+`Deployment.KeepsTheTablesItsGraphReadsAcrossRestart`; `tests/ml/test_bandit.cpp`:
+`BanditState.PolicyTableSurvivesNodeRestartAndFeedsTheNextRun` (a runner handed a dataset).

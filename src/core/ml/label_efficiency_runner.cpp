@@ -226,6 +226,8 @@ LabelEfficiencyRunResult run_label_efficiency_on_dataset(
     node.run_on_owner([&] {
         run = node.create_run(options.project, options.graph);
         if (run) {
+            // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+            run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
             run->set_status(pipeline::RunStatus::Running);
             run->add_log({util::now_iso8601(), "info",
                           "label efficiency: reading dataset " +

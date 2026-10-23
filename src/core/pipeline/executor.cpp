@@ -149,6 +149,11 @@ ExecutionResult GraphExecutor::execute(Node& node,
         });
     }
     if (!result.run) return result;  // node could not create the run
+    // The graph executed may not be the stored one (a deployed graph, one a
+    // caller rewrote): record what its connect steps read before any step runs,
+    // so delete_dataset refuses those tables while the run is in flight
+    // (zetta#1272).
+    node.run_on_owner([&] { result.run->add_reads(node.tables_read(graph)); });
     Run& run = *result.run;
 
     // One trace per run (#640): the id lives on the replicated run record, so

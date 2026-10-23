@@ -274,6 +274,8 @@ api::ApiResult run_forecast_methodology(RunRequest &request) {
     return api::ApiResult::failure("engine_error",
                                    "could not create forecast Run");
   }
+  // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+  run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
   auto work = std::make_shared<ForecastWork>();
   record_run_features(node, run->id(), feature_plan);
   work->node = &node;

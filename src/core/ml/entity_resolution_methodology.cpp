@@ -356,6 +356,8 @@ api::ApiResult run_m2(RunRequest &request) {
     return api::ApiResult::failure("engine_error",
                                    "M-2 could not create its Run record");
   }
+  // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+  run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
   run->set_status(pipeline::RunStatus::Running);
   record_run_features(context.node, run->id(), feature_plan);
   run->add_log({util::now_iso8601(), "info",

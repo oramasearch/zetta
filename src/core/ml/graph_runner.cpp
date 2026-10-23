@@ -145,6 +145,8 @@ GraphRunResult run_graph(Node &node, const data::ResolvedDataset &dataset,
     output.error = "graph: could not create the Run record";
     return output;
   }
+  // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+  run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
   output.run_id = run->id();
   run->set_status(pipeline::RunStatus::Running);
   run->add_log({util::now_iso8601(), "info",

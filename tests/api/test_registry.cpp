@@ -34,6 +34,10 @@
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/deployment.hpp"
+#include "zetta/pipeline/deployment_controller.hpp"
+#include "zetta/pipeline/deployment_target.hpp"
+#include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/solutions/roi_readout.hpp"
@@ -1133,6 +1137,87 @@ TEST_F(RegistryFixture, DeleteDatasetRefusesWhileARunOrAStudyReadsIt) {
     auto deleted = call("delete_dataset", {{"dataset", "data.orders"}});
     ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
     EXPECT_FALSE(database->find_table("orders"));
+}
+
+// zetta#1272: a deployment records the tables its placed graph reads, and the
+// run the deployment controller starts for it records them, so delete_dataset
+// refuses them while that run is pending or running. The deployment has no
+// stored project or pipeline to read them from.
+TEST_F(RegistryFixture, DeleteDatasetRefusesWhileADeploymentRunReadsIt) {
+    auto database = node.create_database("data");
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    zetta::ir::ExecutionGraph graph;
+    auto connect = graph.add_node(zetta::ir::StepKind::Connect, "load_orders");
+    auto clean = graph.add_node(zetta::ir::StepKind::Clean, "dedupe");
+    auto model = graph.add_node(zetta::ir::StepKind::Model, "churn_model");
+    connect->attributes = {{"source", "data"}, {"table", "orders"}};
+    graph.add_edge(connect->id, clean->id);
+    graph.add_edge(clean->id, model->id);
+
+    auto deployment = node.deploy_graph(graph, zetta::pipeline::DeploymentTarget::local(),
+                                        "churn");
+    ASSERT_TRUE(deployment);
+    ASSERT_EQ(deployment->reads().size(), 1u);
+    EXPECT_EQ(deployment->reads().front().table_id, table->id());
+    // Replicated and on disk with the deployment.
+    EXPECT_EQ(zetta::pipeline::table_reads_from_json(deployment->metadata().at("reads")),
+              deployment->reads());
+
+    node.deployment_controller().reconcile();
+    std::shared_ptr<zetta::pipeline::Run> run;
+    for (const auto& candidate : node.runs()) {
+        if (candidate->deployment() == deployment->id()) run = candidate;
+    }
+    ASSERT_TRUE(run);
+    ASSERT_EQ(run->status(), zetta::pipeline::RunStatus::Running);
+    EXPECT_EQ(run->reads(), deployment->reads());
+
+    auto refused = call("delete_dataset", {{"dataset", "data.orders"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_NE(refused.error.message.find(run->id()), std::string::npos)
+        << refused.error.message;
+    EXPECT_TRUE(database->find_table("orders"));
+
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    auto deleted = call("delete_dataset", {{"dataset", "data.orders"}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
+}
+
+// zetta#1272: GraphExecutor records what the graph it executes reads before
+// the first step runs, though the graph is not a stored pipeline, so a
+// delete_dataset that comes while a step runs is refused.
+TEST_F(RegistryFixture, DeleteDatasetRefusesWhileAGraphExecutorRunReadsIt) {
+    auto database = node.create_database("data");
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    zetta::ir::ExecutionGraph graph;
+    auto connect = graph.add_node(zetta::ir::StepKind::Connect, "load_orders");
+    connect->attributes = {{"source", "data"}, {"table", "orders"}};
+
+    // A step that tries the delete while it runs.
+    struct DeletingStep final : zetta::pipeline::StepExecutor {
+        RegistryFixture* fixture = nullptr;
+        mutable ApiResult attempted;
+        zetta::pipeline::StepOutcome run_step(const zetta::ir::Node&) const override {
+            attempted = fixture->call("delete_dataset", {{"dataset", "data.orders"}});
+            return {};
+        }
+    };
+    auto step = std::make_shared<DeletingStep>();
+    step->fixture = this;
+    const zetta::pipeline::ExecutionResult result =
+        zetta::pipeline::GraphExecutor(step).execute(node, graph, "", "");
+    ASSERT_TRUE(result.run);
+    EXPECT_TRUE(result.ok) << result.error;
+    ASSERT_EQ(result.run->reads().size(), 1u);
+    EXPECT_EQ(result.run->reads().front().table_id, table->id());
+    EXPECT_FALSE(step->attempted.ok);
+    EXPECT_EQ(step->attempted.error.code, "engine_error");
+    EXPECT_NE(step->attempted.error.message.find(result.run->id()), std::string::npos)
+        << step->attempted.error.message;
+    EXPECT_TRUE(database->find_table("orders"));
 }
 
 TEST_F(RegistryFixture, DeleteModelStopsServingItAndKeepsItsRun) {

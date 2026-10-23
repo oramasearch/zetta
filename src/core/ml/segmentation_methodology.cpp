@@ -381,6 +381,8 @@ api::ApiResult submit_run(RunRequest &request,
         return api::ApiResult::failure("engine_error",
                                        "segmentation could not create its Run");
     }
+    // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+    run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
     options.run_id = run->id();
     options.output_node = node.coordinated_launch()->node_id();
     options.round_tag = "ml.segmentation:" + run->id();

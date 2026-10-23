@@ -67,6 +67,23 @@ resolve_graph(zetta::pipeline::Project& project,
     return project.find_graph_by_id(name_or_id);
 }
 
+// The tables a solution's snapshot reads and writes, from its binding's
+// `snapshot` (database, source_table, target_table); missing ones are skipped.
+std::vector<zetta::pipeline::TableRead> solution_snapshot_reads(Node& node,
+                                                                const nlohmann::json& binding) {
+    std::vector<zetta::pipeline::TableRead> reads;
+    const auto snapshot = binding.find("snapshot");
+    if (snapshot == binding.end() || !snapshot->is_object()) return reads;
+    const std::string database = snapshot->value("database", std::string{});
+    if (database.empty()) return reads;
+    for (const char* key : {"source_table", "target_table"}) {
+        const std::string table = snapshot->value(key, std::string{});
+        if (table.empty()) continue;
+        zetta::pipeline::merge_table_reads(reads, node.tables_read({}, {}, database + "." + table));
+    }
+    return reads;
+}
+
 void update_master(const std::shared_ptr<SolutionState>& state,
                    const std::function<void(zetta::pipeline::Run&)>& update) {
     state->node->run_on_owner([&] {
@@ -227,6 +244,11 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
         fail_master(state, prepared.error.message);
         co_return;
     }
+    // The snapshot table exists now; the stages read it (zetta#1272).
+    update_master(state, [&](zetta::pipeline::Run& run) {
+        run.add_reads(state->node->tables_read(
+            {}, {}, prepared.value.at("dataset_path").get<std::string>()));
+    });
     state->input["dataset_path"] = prepared.value.at("dataset_path");
     state->input["dataset"] = state->binding.at("dataset");
     if (state->input["dataset"].is_object()) {
@@ -502,6 +524,10 @@ api::ApiResult run_composed_solution(const nlohmann::json& input, ApiContext& co
     if (!master) {
         return ApiResult::failure("engine_error", "could not create the solution Run");
     }
+    // What the solution reads, before it reads it (zetta#1272): the snapshot's
+    // source table, and its snapshot table when one is already there. The
+    // stages' own runs record what each of them reads.
+    master->add_reads(solution_snapshot_reads(context.node, manifest->attributes.at("foundation")));
     master->set_status(zetta::pipeline::RunStatus::Running);
     master->add_log({zetta::util::now_iso8601(), "info",
                      "running snapshot, methodologies and governed solution foundation"});

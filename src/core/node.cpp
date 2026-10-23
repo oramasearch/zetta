@@ -1631,7 +1631,9 @@ void Node::load_deployments() {
             meta.value("node", std::string{}),
             meta.value("node_count", std::size_t{0}),
             meta.value("edge_count", std::size_t{0}),
-            meta.value("created", std::string{}), entry.path()));
+            meta.value("created", std::string{}), entry.path(),
+            zetta::pipeline::table_reads_from_json(
+                meta.value("reads", nlohmann::json::array()))));
     }
     // Stable, chronological order (id breaks ties on equal stamps).
     std::sort(deployments_.begin(), deployments_.end(),
@@ -2002,18 +2004,22 @@ std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(const ir::Execut
     const std::string now = zetta::util::now_iso8601();
     const std::size_t node_count = graph.node_count();
     const std::size_t edge_count = graph.edge_count();
+    // The tables the graph reads (zetta#1272): every run the deployment
+    // controller starts for it records them, so delete_dataset refuses them.
+    std::vector<zetta::pipeline::TableRead> reads = tables_read(graph);
     if (replication_) {
-        replication_->set(catalog::deployment_key(id),
-                          nlohmann::json{{"graph_name", graph_name},
-                                         {"target", target.to_json()},
-                                         {"node", node_id_},
-                                         {"node_count", node_count},
-                                         {"edge_count", edge_count},
-                                         {"created", now}});
+        nlohmann::json value{{"graph_name", graph_name},
+                             {"target", target.to_json()},
+                             {"node", node_id_},
+                             {"node_count", node_count},
+                             {"edge_count", edge_count},
+                             {"created", now}};
+        if (!reads.empty()) value["reads"] = zetta::pipeline::to_json(reads);
+        replication_->set(catalog::deployment_key(id), std::move(value));
     }
     auto deployment = materialize_deployment(id, graph_name, std::move(target),
                                              node_id_, node_count, edge_count,
-                                             now);
+                                             now, std::move(reads));
     // Audit the deploy (FEAT-9): placing a graph onto a target is a governed
     // action. Record it once the placement is materialized.
     if (deployment) {
@@ -2030,7 +2036,7 @@ std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(const ir::Execut
 std::shared_ptr<zetta::pipeline::Deployment> Node::materialize_deployment(
     std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,
     std::string node_id, std::size_t node_count, std::size_t edge_count,
-    std::string created) {
+    std::string created, std::vector<zetta::pipeline::TableRead> reads) {
     if (auto existing = find_deployment(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
@@ -2038,7 +2044,8 @@ std::shared_ptr<zetta::pipeline::Deployment> Node::materialize_deployment(
     if (ec) return nullptr;
     auto deployment = std::make_shared<zetta::pipeline::Deployment>(
         std::move(id), std::move(graph_name), std::move(target),
-        std::move(node_id), node_count, edge_count, std::move(created), dir);
+        std::move(node_id), node_count, edge_count, std::move(created), dir,
+        std::move(reads));
     deployment->persist_meta();
     deployments_.push_back(deployment);
     return deployment;
@@ -2166,10 +2173,23 @@ std::vector<zetta::pipeline::TableRead> Node::tables_read(
     std::shared_ptr<zetta::pipeline::ProjectGraph> stored_graph = stored->find_graph_by_id(graph);
     if (!stored_graph) stored_graph = stored->find_graph(graph);
     if (!stored_graph) return reads;
-    for (const auto& step : stored_graph->graph().nodes_of_kind(zetta::ir::StepKind::Connect)) {
+    zetta::pipeline::merge_table_reads(reads, tables_read(stored_graph->graph()));
+    return reads;
+}
+
+std::vector<zetta::pipeline::TableRead> Node::tables_read(
+    const zetta::ir::ExecutionGraph& graph) const {
+    std::vector<zetta::pipeline::TableRead> reads;
+    for (const auto& step : graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
         if (!step || !step->attributes.is_object()) continue;
-        add(step->attributes.value("source", std::string{}),
-            step->attributes.value("table", std::string{}));
+        const std::string database = step->attributes.value("source", std::string{});
+        const std::string table = step->attributes.value("table", std::string{});
+        if (database.empty() || table.empty()) continue;
+        const std::shared_ptr<zetta::data::Database> owner = find_database(database);
+        const std::shared_ptr<zetta::data::Table> found =
+            owner ? owner->find_table(table) : nullptr;
+        if (!found) continue;
+        zetta::pipeline::merge_table_reads(reads, {{database, table, found->id()}});
     }
     return reads;
 }
@@ -6027,6 +6047,7 @@ void Node::reconcile_deployments(
         std::size_t node_count;
         std::size_t edge_count;
         std::string created;
+        std::vector<zetta::pipeline::TableRead> reads;
     };
     std::map<std::string, DeploymentEntry> deployments;  // id -> entry
     for (const auto& [key, value] : snapshot.items()) {
@@ -6044,7 +6065,9 @@ void Node::reconcile_deployments(
                             value.value("node", std::string{}),
                             value.value("node_count", std::size_t{0}),
                             value.value("edge_count", std::size_t{0}),
-                            value.value("created", std::string{})});
+                            value.value("created", std::string{}),
+                            zetta::pipeline::table_reads_from_json(
+                                value.value("reads", nlohmann::json::array()))});
     }
     std::vector<std::string> local_deployment_ids;
     for (const auto& deployment : deployments_) {
@@ -6061,7 +6084,7 @@ void Node::reconcile_deployments(
         if (!find_deployment(id)) {
             materialize_deployment(id, entry.graph_name, entry.target,
                                    entry.node_id, entry.node_count,
-                                   entry.edge_count, entry.created);
+                                   entry.edge_count, entry.created, entry.reads);
         }
     }
 }

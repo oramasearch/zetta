@@ -60,6 +60,7 @@
 #include "zetta/observability/trace.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
+#include "zetta/pipeline/run.hpp"
 
 namespace {
 
@@ -756,6 +757,19 @@ TEST_F(SolutionJourney,
          {"graph", created.value.at("graph")},
          {"delivery_token", "fixture-only-token"}});
     ASSERT_TRUE(started.ok) << started.error.message;
+    // zetta#1272: the solution's Run records the table its snapshot reads
+    // before it reads anything, so delete_dataset refuses it while it runs.
+    const std::string master_id = started.value.at("run_id");
+    const auto master = node.find_run(master_id);
+    ASSERT_TRUE(master);
+    EXPECT_TRUE(zetta::pipeline::reads_table(master->reads(), "demand", "history", ""))
+        << master->metadata().dump(2);
+    const ApiResult refused =
+        call("delete_dataset", {{"dataset", "demand.history"}, {"dry_run", true}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_NE(refused.error.message.find(master_id), std::string::npos)
+        << refused.error.message;
     ApiResult status;
     for (int attempt = 0; attempt < 8000; ++attempt) {
         node.tick();
@@ -774,6 +788,24 @@ TEST_F(SolutionJourney,
     }
     ASSERT_EQ(status.value.at("status"), "succeeded")
         << status.value.dump(2);
+    // The snapshot the stages read is recorded on the solution's Run, and each
+    // stage's own Run (M-2, the coordinated M-4 forecast, M-3) records what it
+    // read: the snapshot it was handed, or its pipeline's table (zetta#1272).
+    EXPECT_TRUE(zetta::pipeline::reads_table(master->reads(), "demand",
+                                             "planning_snapshot", ""))
+        << master->metadata().dump(2);
+    std::size_t stage_runs = 0;
+    std::size_t snapshot_readers = 0;
+    for (const auto& run : node.runs()) {
+        if (run->id() == master_id || run->project() != project->id()) continue;
+        ++stage_runs;
+        EXPECT_FALSE(run->reads().empty()) << run->metadata().dump(2);
+        if (zetta::pipeline::reads_table(run->reads(), "demand", "planning_snapshot", "")) {
+            ++snapshot_readers;
+        }
+    }
+    EXPECT_EQ(stage_runs, 3u);
+    EXPECT_GE(snapshot_readers, 2u);  // M-2 and M-3 are handed the snapshot
 
     zetta::solutions::DecisionPolicyStore policies(
         *node.replication(), &node, &node.experiment_manager());

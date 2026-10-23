@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <filesystem>
 #include <string>
 #include <thread>
 
@@ -8,6 +9,8 @@
 
 #include "temp_dir.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/ir/execution_graph.hpp"
@@ -267,6 +270,47 @@ TEST(Deployment, PersistsAcrossRestartViaCRDT) {
     EXPECT_EQ(deployment->graph_name(), "churn");
     EXPECT_EQ(deployment->node_id(), node_id);
     node.stop();
+}
+
+// zetta#1272: the tables a deployed graph reads are kept with the deployment,
+// on disk and in the replicated document, so a restarted node's controller
+// still records them on the runs it starts.
+TEST(Deployment, KeepsTheTablesItsGraphReadsAcrossRestart) {
+    for (const bool replicated : {false, true}) {
+        TempDir tmp;
+        const std::string node_id = zetta::util::new_uuid();
+        std::string id;
+        std::string table_id;
+        {
+            ReplicationManager replication{node_id};
+            Node node{config_for(tmp), replicated ? &replication : nullptr};
+            node.start();
+            auto table = node.create_database("data")->create_table("orders");
+            ASSERT_TRUE(table);
+            table_id = table->id();
+            ExecutionGraph graph = sample_graph();
+            graph.nodes_of_kind(StepKind::Connect).front()->attributes = {
+                {"source", "data"}, {"table", "orders"}};
+            auto deployment = node.deploy_graph(graph, DeploymentTarget::local(), "churn");
+            ASSERT_TRUE(deployment);
+            ASSERT_EQ(deployment->reads().size(), 1u);
+            id = deployment->id();
+            node.tick();
+            node.stop();
+        }
+        // Replicated: the document alone rebuilds it.
+        if (replicated) std::filesystem::remove(tmp.path() / id / "deployment.json");
+        ReplicationManager replication{node_id};
+        Node node{config_for(tmp), replicated ? &replication : nullptr};
+        node.start();
+        auto deployment = node.find_deployment(id);
+        ASSERT_TRUE(deployment) << "replicated=" << replicated;
+        ASSERT_EQ(deployment->reads().size(), 1u) << "replicated=" << replicated;
+        EXPECT_EQ(deployment->reads().front().database, "data");
+        EXPECT_EQ(deployment->reads().front().table, "orders");
+        EXPECT_EQ(deployment->reads().front().table_id, table_id);
+        node.stop();
+    }
 }
 
 // ---- replication to a peer -------------------------------------------------

@@ -367,6 +367,8 @@ api::ApiResult run_anomaly(RunRequest &request) {
     return api::ApiResult::failure("engine_error",
                                    "anomaly: could not create Run");
   }
+  // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+  run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
   run->set_trace_id(context.trace.trace_id);
   record_run_features(context.node, run->id(), feature_plan);
   compute::CoordinatedLaunchRequest launch;
