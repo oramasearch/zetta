@@ -109,6 +109,34 @@ TEST(WebUiStudio, AskOramaRailAndThemeToggle) {
     EXPECT_TRUE(contains(with_agent, "zetta-theme"));
 }
 
+TEST(WebUiStudio, ScriptJsonPreservesValuesWithoutHtmlParserTokens) {
+    const std::string sensitive =
+        "</script><script>inert</script></ScRiPt ><!--<script>"
+        "<&>\"'\\\n\xE2\x80\xA8\xE2\x80\xA9\xF0\x9F\x8C\x8D\\u003c";
+    const nlohmann::json value = {
+        {sensitive, {nullptr, true, 42, 3.5, sensitive}},
+        {"nested", {{"name", sensitive}}}};
+    const std::string encoded = zetta::api::web_ui_script_json(value);
+    EXPECT_EQ(encoded.find('<'), std::string::npos);
+    EXPECT_EQ(nlohmann::json::parse(encoded), value);
+    EXPECT_NE(encoded.find("\\u2028"), std::string::npos);
+    EXPECT_NE(encoded.find("\\u2029"), std::string::npos);
+}
+
+TEST(WebUiStudio, AssistantIdentityStaysInsideItsScript) {
+    const std::string identity = "</ScRiPt><script>inert</script><!--<script>";
+    const std::string html = web_ui_shell("overview", "owner", "", "", -1, identity);
+    const std::string marker = "<script>(function(){var agent=";
+    const auto start = html.find(marker);
+    ASSERT_NE(start, std::string::npos);
+    const auto value_start = start + marker.size();
+    const auto value_end = html.find(";var chat=", value_start);
+    ASSERT_NE(value_end, std::string::npos);
+    const std::string encoded = html.substr(value_start, value_end - value_start);
+    EXPECT_EQ(encoded.find('<'), std::string::npos);
+    EXPECT_EQ(nlohmann::json::parse(encoded), identity);
+}
+
 TEST(WebUiStudio, VocabularyContractHolds) {
     const std::string shell = web_ui_shell("overview", "", "", "");
     const std::string login = web_ui_login("");

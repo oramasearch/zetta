@@ -11,7 +11,8 @@ MCP/HTTP work.
 - [registry-design.md](registry-design.md) — **read first**: the settled design
   — one registry/many renderings, the main-thread bridge, auth = AccessKey +
   per-capability audit policy, long work = Run/ComputeJob handles (no new job infra),
-  the error mapping (schema rejections carry `path`, #1217), the consent challenge, awaitable reads and independent connection admission (#1076).
+  the error mapping (schema rejections carry `path`, #1217), the consent challenge, awaitable reads,
+  independent connection admission (#1076), and script-safe JSON in fallback pages (#1405).
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
 - [../pubsub/crud.md](../pubsub/crud.md) — topic and message CRUD examples,

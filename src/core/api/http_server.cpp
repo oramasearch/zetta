@@ -2440,7 +2440,7 @@ struct ApiServer::Impl {
             "<div class=\"filebar\"><input type=\"file\" id=\"blobfile\">"
             "<button class=\"btn btn-primary\" id=\"blobup\">Upload</button>"
             "<span id=\"blobmsg\" class=\"actionsub\"></span></div><div class=\"filelist\">" +
-            list + "</div><script>(function(){var db=" + nlohmann::json(db).dump() +
+            list + "</div><script>(function(){var db=" + web_ui_script_json(db) +
             ",f=document.getElementById('blobfile'),up=document.getElementById('blobup'),"
             "msg=document.getElementById('blobmsg');"
             "up.onclick=async function(){var file=f.files[0];if(!file){msg.textContent='choose a "
@@ -2859,7 +2859,7 @@ struct ApiServer::Impl {
             "from a step's right dot onto another to connect \xC2\xB7 click a link to remove it "
             "\xC2\xB7 \xC3\x97 deletes a step</div>"
             "<div id=\"ge-toast\" class=\"getoast\"></div>"
-            "<script id=\"ge-data\" type=\"application/json\">" + data.dump() + "</script>"
+            "<script id=\"ge-data\" type=\"application/json\">" + web_ui_script_json(data) + "</script>"
             "<script>" + std::string(kGraphEditorJs) + "</script>";
         return web_ui_panel("Pipeline editor",
                             "Technical view \xC2\xB7 the Pipeline as its raw execution graph \xC2\xB7 "
