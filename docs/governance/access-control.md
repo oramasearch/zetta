@@ -641,6 +641,15 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
 - **Blobs** (`src/core/api/serving.cpp`, `serve_blob`): `Node::authorize_blob` gates
   a large-object body read on `blob:read` covering the id (a flat right or a prefix
   grant).
+- **The web UI's cookie blob routes** (`src/core/api/http_server.cpp`, #1389): `POST
+  /blob`, `POST /blob/delete` and `GET /blob/download` are registered before the main
+  gate, so each checks the session user itself. Upload and delete need `sql:write` on
+  the database (`Node::authorize_object` against `database <db>`: a flat right or a
+  grant `ON DATABASE <db>`); download needs `blob:read` covering the id
+  (`Node::authorize_blob`, as `serve_blob`). An app credential is an ordinary token,
+  so it is held to its own roles. Every decision, allowed or refused, is an audit
+  event (`DataChanged` for upload and delete, `DataAccess` for download) with target
+  `web:blob_<verb>:<db>/<object>`.
 
 `system.roles` gains a **`scoped_grants`** column rendering each grant as
 `<perm> ON <object>` (e.g. `sql:read ON sales.customers(id, email)`).
@@ -815,6 +824,7 @@ user via `find_user_by_id` + `roles_for_user`.
 - `src/core/query/executor.cpp` — the SQL choke point that denies ungranted tables, masks ungranted columns on read, and rejects writes to ungranted columns (#747); `src/core/api/registry.cpp` (per-tool `mcp:call`), `src/core/api/http_server.cpp` (`tools/list` filter), `src/core/api/serving.cpp` (`serve_blob`).
 - `tests/query/test_sql_write_permissions.cpp` — per-statement enforcement (#1229): a reader refused and a writer allowed for every statement kind, object and column scope on `UPDATE`/`DELETE`, row security on `UPDATE`/`DELETE`/`TRUNCATE`, `users:manage`/`tokens:manage`, the legacy-AccessKey flat right, the `data_changed` audit, and the unreachable connection store.
 - `tests/governance/test_scoped_grants.cpp` + `tests/api/test_scoped_grants_api.cpp` — the scoped-grants coverage (#747): covering decision, column masking, table denial, write rejection, per-tool `mcp:call` + `tools/list` filter, blob-prefix serve, admin/local bypass.
+- `tests/api/test_web_blob_authz.cpp` — the cookie blob routes (#1389): a scoped app token and a read-only user cannot upload, download or delete outside their grants, the owner still can, and refusals are audited.
 - `include/zetta/governance/policy.hpp` — row-level security (#748): `zetta::governance::Policy` / `PolicyValue` / `policy_value_from_json` / `policy_schema` (the `policy:<uuid>` entity + its trust boundary).
 - `include/zetta/query/ast.hpp` — the RLS predicate AST (#748): `PolicyPredicate` / `PolicyTerm` / `PolicyCommand` + `CreatePolicyStmt` / `DropPolicyStmt` (the dialect-neutral parsed form the executor evaluates with `compare_cell`).
 - `include/zetta/node.hpp` — policy CRUD + the RLS bypass decision (#748): `Node::create_policy` / `drop_policy` / `find_policy` / `policies` / `bypasses_row_security`.

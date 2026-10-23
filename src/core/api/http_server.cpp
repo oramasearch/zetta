@@ -64,6 +64,8 @@
 #include "zetta/data/object_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/scope.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
@@ -3951,9 +3953,59 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // ----- the cookie blob routes: who may touch which large object (#1389) -----
+    // These three routes are registered before the main gate (the web UI posts the
+    // raw file body with its session cookie), so a resolved session is only who is
+    // asking. Each route then checks what that user may do, the way the governed
+    // serving path does (serve_blob), and audits the decision either way:
+    //  - upload and delete change a database's large objects: sql:write on that
+    //    database (a flat right, or a grant ON DATABASE <db>);
+    //  - download reads one object: blob:read covering its id (a flat right, or a
+    //    blob id/prefix grant), exactly what serve_blob requires.
+    // An app credential is an ordinary token for a user with its own roles, so it
+    // is held to the same rules.
+    static zetta::governance::Resource blob_database(const std::string& db) {
+        zetta::governance::Resource database;
+        database.kind = zetta::governance::ResourceKind::Database;
+        database.name = db;
+        return database;
+    }
+
+    // Owner-thread only. Empty when `user_id` may write large objects in `db`,
+    // else the refusal.
+    std::string blob_write_refusal(const std::string& user_id, const std::string& db) const {
+        const zetta::governance::Operation write{zetta::governance::CapabilityDomain::Data,
+                                                 "write"};
+        if (node.authorize_object(user_id, /*acting_is_user=*/true, write, blob_database(db))) {
+            return {};
+        }
+        return "permission denied: no sql:write grant on database '" + db + "'";
+    }
+
+    // Owner-thread only. Empty when `user_id` may read the large object `id`, else
+    // the refusal.
+    std::string blob_read_refusal(const std::string& user_id, const std::string& id) const {
+        if (node.authorize_blob(user_id, /*acting_is_user=*/true, id)) return {};
+        return "permission denied: no blob:read grant for blob '" + id + "'";
+    }
+
+    // Owner-thread only. One audit event per blob route decision.
+    void audit_blob_route(zetta::governance::AuditAction action, const std::string& user_id,
+                          const std::string& verb, const std::string& target, bool allowed,
+                          const std::string& detail) {
+        zetta::governance::AuditEventValue event;
+        event.action = action;
+        event.actor = user_id;
+        event.target = "web:blob_" + verb + ":" + target;
+        event.allowed = allowed;
+        event.detail = detail;
+        node.record_audit_event(std::move(event));
+    }
+
     // POST /blob?db=<database>&name=<filename> — store the raw request body as a large object
     // (file/blob) in the database's LargeObjectStore. Cookie-authed like the rest of the web UI;
     // the body IS the file bytes (the client reads the File and posts it raw — no multipart parser).
+    // Needs sql:write on the database (#1389).
     boost::http::route_task serve_blob_upload(boost::http::route_params& route) {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
@@ -3980,6 +4032,13 @@ struct ApiServer::Impl {
             json_body = R"({"error":"empty file"})";
         } else {
             co_await bridge.run_on_owner([&] {
+                const std::string refusal = blob_write_refusal(user_id, db);
+                if (!refusal.empty()) {
+                    audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id,
+                                     "upload", db + "/" + name, /*allowed=*/false, refusal);
+                    json_body = nlohmann::json{{"error", refusal}}.dump();
+                    return;
+                }
                 const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
                 if (!database) {
                     json_body = nlohmann::json{{"error", "no such database '" + db + "'"}}.dump();
@@ -3987,6 +4046,9 @@ struct ApiServer::Impl {
                 }
                 const std::optional<zetta::data::LargeObject> stored =
                     database->large_objects().import_bytes(name, sink.data);
+                audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id, "upload",
+                                 db + "/" + (stored ? stored->id : name), stored.has_value(),
+                                 stored ? "stored a large object" : "could not store the file");
                 json_body = stored ? nlohmann::json{{"ok", true},
                                                     {"id", stored->id},
                                                     {"name", stored->name},
@@ -4003,7 +4065,8 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
-    // POST /blob/delete?db=<database>&id=<object_id> — unlink a large object.
+    // POST /blob/delete?db=<database>&id=<object_id> — unlink a large object. Needs
+    // sql:write on the database (#1389).
     boost::http::route_task serve_blob_delete(boost::http::route_params& route) {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
@@ -4026,12 +4089,22 @@ struct ApiServer::Impl {
             json_body = R"({"error":"unauthorized"})";
         } else {
             co_await bridge.run_on_owner([&] {
+                const std::string refusal = blob_write_refusal(user_id, db);
+                if (!refusal.empty()) {
+                    audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id,
+                                     "delete", db + "/" + id, /*allowed=*/false, refusal);
+                    json_body = nlohmann::json{{"error", refusal}}.dump();
+                    return;
+                }
                 const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
                 if (!database) {
                     json_body = R"({"error":"no such database"})";
                     return;
                 }
                 const bool ok = database->large_objects().unlink(id);
+                audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id, "delete",
+                                 db + "/" + id, ok,
+                                 ok ? "unlinked a large object" : "no such large object");
                 json_body = nlohmann::json{{"ok", ok}}.dump();
             });
         }
@@ -4044,6 +4117,7 @@ struct ApiServer::Impl {
     }
 
     // GET /blob/download?db=<database>&id=<object_id> — stream a stored blob back as an attachment.
+    // Needs blob:read covering the id, as serve_blob does (#1389).
     boost::http::route_task serve_blob_download(boost::http::route_params& route) {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
@@ -4053,9 +4127,15 @@ struct ApiServer::Impl {
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         const std::string db = query_param(route, "db", "");
         const std::string id = query_param(route, "id", "");
-        std::string bytes, filename, error;
+        std::string bytes, filename, error, refusal;
         if (!user_id.empty())
             co_await bridge.run_on_owner([&] {
+                refusal = blob_read_refusal(user_id, id);
+                if (!refusal.empty()) {
+                    audit_blob_route(zetta::governance::AuditAction::DataAccess, user_id,
+                                     "download", db + "/" + id, /*allowed=*/false, refusal);
+                    return;
+                }
                 const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
                 if (!database) {
                     error = "no such database";
@@ -4073,10 +4153,21 @@ struct ApiServer::Impl {
                         filename = object.name;
                         break;
                     }
+                audit_blob_route(zetta::governance::AuditAction::DataAccess, user_id, "download",
+                                 db + "/" + id, /*allowed=*/true, "served a large object");
             });
         if (user_id.empty()) {
             const std::string body = R"({"error":"unauthorized"})";
             route.status(http::status::unauthorized);
+            route.res.set(http::field::content_type, "application/json");
+            stamp_response_headers(route, body);
+            auto [send_error] = co_await route.send(body);
+            if (send_error) co_return http::route_error(send_error);
+            co_return http::route_done;
+        }
+        if (!refusal.empty()) {
+            const std::string body = nlohmann::json{{"error", refusal}}.dump();
+            route.status(http::status::forbidden);
             route.res.set(http::field::content_type, "application/json");
             stamp_response_headers(route, body);
             auto [send_error] = co_await route.send(body);
