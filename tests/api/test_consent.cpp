@@ -445,6 +445,49 @@ TEST_F(ConsentFixture, ARemoteSourceChallengesAndTheSummaryNamesItsRealType) {
     EXPECT_EQ(result.error.details.at("action").at("runs")[0], "SELECT 1");
 }
 
+// --- An inline credential never rides a challenge out (#74, CTL-3) -----------
+
+// A remote source given inline (no saved connection) is consent-gated, and the
+// challenge freezes the input to execute it. That input carries the token, and
+// the challenge is returned in the refusal and listed to a DIFFERENT principal
+// by list_consent_requests — neither may carry the credential.
+TEST_F(ConsentFixture, AnInlineConnectorTokenNeverAppearsInTheChallenge) {
+    const std::string token = "pat-inline-s3cr3t-74";
+    auto result = call("create_dataset_from_query",
+                       {{"connector",
+                         {{"type", "snowflake"},
+                          {"account", "ab12345.us-east-1"},
+                          {"token", token},
+                          {"warehouse", "COMPUTE_WH"}}},
+                        {"query", "SELECT 1"}});
+    ASSERT_FALSE(result.ok);
+    ASSERT_EQ(result.error.code, "consent_required") << result.error.message;
+    EXPECT_EQ(result.error.details.dump().find(token), std::string::npos)
+        << result.error.details.dump();
+    EXPECT_EQ(result.error.message.find(token), std::string::npos);
+    EXPECT_EQ(result.error.details.at("input").at("connector").at("token"),
+              "[redacted]");
+    EXPECT_EQ(result.error.details.at("input").at("connector").at("account"),
+              "ab12345.us-east-1");
+
+    auto listed = call("list_consent_requests", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok);
+    ASSERT_EQ(listed.value.at("consent_requests").size(), 1u);
+    EXPECT_EQ(listed.value.dump().find(token), std::string::npos)
+        << listed.value.dump();
+
+    auto rows = call(
+        "sql", {{"statement", "SELECT * FROM system.consent_requests;"}});
+    ASSERT_TRUE(rows.ok) << rows.error.message;
+    EXPECT_EQ(rows.value.dump().find(token), std::string::npos);
+
+    // The ledger itself still holds the real token: approval executes exactly
+    // the frozen request, credential included.
+    const auto pending = node.consent_ledger().pending();
+    ASSERT_EQ(pending.size(), 1u);
+    EXPECT_EQ(pending[0]->input.at("connector").at("token"), token);
+}
+
 // --- Consent enforcement is OFF by default (#995) -----------------------------
 
 // The gate points a refused caller at approval surfaces that a one-person node

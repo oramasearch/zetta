@@ -43,7 +43,10 @@ an agent auto-approves its own billable actions and the hard rule is hollow.
    `ConsentDescriber` says the input touches a cloud — issues a **one-time
    consent challenge** on the node's ledger and fails with code
    `consent_required`. The challenge rides as structured `error.details`:
-   the frozen input, and exactly what would be read/run in the **Cloud
+   the frozen input (with every credential field, such as an inline
+   connector's `token`, rendered as `"[redacted]"`; the ledger keeps the real
+   value to execute, #74 and [secret-references.md](../governance/secret-references.md)),
+   and exactly what would be read/run in the **Cloud
    Inspector grammar** (`action.summary` · `action.reads` = the config paths
    the provider CLI may read · `action.runs` = the commands / billable
    create). The calling key repeating the call only ever mints another

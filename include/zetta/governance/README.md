@@ -21,3 +21,10 @@ governance — its actor, object and outcome, refused or not (#1229). See
 so `objects:read`, `objects:write` and `objects:manage` are object-scopable
 `ON BUCKET <prefix>` (#1005). See
 [the object capability](../../../docs/data/object-store.md#rights).
+
+`credential_redaction.hpp` is the one rule for which input fields hold a
+credential (`is_credential_field`: `token`, `secret`, `password`, `api_key`,
+`*_token`, `*_secret`, `*_password`) and `redact_credentials`, which the consent
+challenge JSON and the web form use so an inline credential is never rendered
+back out (#74). See
+[secret references](../../../docs/governance/secret-references.md).

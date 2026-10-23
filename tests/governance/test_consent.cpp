@@ -6,6 +6,7 @@
 #include <string>
 
 #include "zetta/governance/consent.hpp"
+#include "zetta/governance/credential_redaction.hpp"
 #include "zetta/util/timestamp.hpp"
 
 namespace {
@@ -90,6 +91,58 @@ TEST(ConsentLedger, CapacityDropsTheOldestDecidedChallengeFirst) {
     EXPECT_FALSE(ledger.find(first->id));
     EXPECT_TRUE(ledger.find(second->id));
     EXPECT_TRUE(ledger.find(third->id));
+}
+
+// --- A credential in the frozen input is never rendered (#74, CTL-3) ----------
+
+TEST(ConsentLedger, AnInlineCredentialIsHeldToExecuteButNeverRendered) {
+    ConsentLedger ledger;
+    const nlohmann::json input = {
+        {"query", "SELECT 1"},
+        {"connector",
+         {{"type", "snowflake"}, {"account", "ab12345"}, {"token", "pat-s3cr3t"}}},
+        {"targets", {{{"password", "pw-s3cr3t"}}, {{"name", "kept"}}}},
+        {"delivery_token", "dt-s3cr3t"},
+        {"max_tokens", 64}};
+    auto challenge =
+        ledger.create("create_dataset_from_query", input, named_action(), "", "");
+    ASSERT_TRUE(challenge);
+    // The ledger keeps the real input: approval executes exactly what was asked.
+    EXPECT_EQ(challenge->input, input);
+
+    const nlohmann::json rendered = zetta::governance::to_json(*challenge);
+    const std::string text = rendered.dump();
+    for (const char* secret : {"pat-s3cr3t", "pw-s3cr3t", "dt-s3cr3t"}) {
+        EXPECT_EQ(text.find(secret), std::string::npos) << secret << " in " << text;
+    }
+    // The approver still sees that a credential was given, and everything else.
+    EXPECT_EQ(rendered["input"]["connector"]["token"], "[redacted]");
+    EXPECT_EQ(rendered["input"]["connector"]["account"], "ab12345");
+    EXPECT_EQ(rendered["input"]["targets"][0]["password"], "[redacted]");
+    EXPECT_EQ(rendered["input"]["targets"][1]["name"], "kept");
+    EXPECT_EQ(rendered["input"]["delivery_token"], "[redacted]");
+    EXPECT_EQ(rendered["input"]["max_tokens"], 64);
+    EXPECT_EQ(rendered["input"]["query"], "SELECT 1");
+    std::string error;
+    EXPECT_TRUE(zetta::governance::validate_consent_challenge(rendered, &error))
+        << error;
+}
+
+TEST(CredentialRedaction, NamesTheCredentialFieldsAndOnlyThose) {
+    using zetta::governance::is_credential_field;
+    for (const char* key : {"token", "secret", "password", "api_key",
+                            "delivery_token", "client_secret", "db_password"}) {
+        EXPECT_TRUE(is_credential_field(key)) << key;
+    }
+    for (const char* key : {"max_tokens", "answer_tokens", "key", "name",
+                            "credential", "idempotency_key", "Token", ""}) {
+        EXPECT_FALSE(is_credential_field(key)) << key;
+    }
+    // A null credential stays null: nothing was given, so nothing is claimed.
+    const nlohmann::json redacted =
+        zetta::governance::redact_credentials({{"token", nullptr}, {"n", 1}});
+    EXPECT_TRUE(redacted["token"].is_null());
+    EXPECT_EQ(redacted["n"], 1);
 }
 
 }  // namespace
