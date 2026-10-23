@@ -891,6 +891,71 @@ TEST(OramaCoreFulltextIndexOrder, CollectsStatisticsAndScoresWithThem) {
               zetta::index::IndexStatusCode::InvalidArgument);
 }
 
+TEST(OramaCoreFulltextIndexOrder, AFieldQueryMergesAndScoresThatFieldAlone) {
+    if (!OramaCoreFulltextIndex::engine_available()) {
+        GTEST_SKIP() << "oramacore-cpp engine not compiled in (submodule absent)";
+    }
+    // "postgres" sits in the title of some rows and the body of others. A query
+    // naming `body` searches the body's own index (lake#782), so its statistics,
+    // gathered per shard and merged, must be the body's alone (#851), and a shard
+    // scored with them must rank exactly as the whole table's body query.
+    std::vector<nlohmann::json> corpus;
+    for (int i = 0; i < 4; ++i) corpus.push_back(article("Postgres tuning", "boil water pasta salt"));
+    for (int tf = 4; tf >= 1; --tf) corpus.push_back(article("notes", postgres_body(tf)));
+    for (int i = 0; i < 4; ++i) corpus.push_back(article("notes", "prune roses mulch beds"));
+    const IndexSpec spec = articles_spec(std::string(OramaCoreFulltextIndex::kName));
+    IndexSpec spec_a = spec;
+    spec_a.table = "articles-a";
+    IndexSpec spec_b = spec;
+    spec_b.table = "articles-b";
+    IndexPartition a{"a", {}};
+    IndexPartition b{"b", {}};
+    IndexPartition whole{"all", {}};
+    for (std::size_t i = 0; i < corpus.size(); ++i) {
+        IndexDocument document{"row-" + std::to_string(100 + i), corpus[i]};
+        (i % 2 == 0 ? a : b).documents.push_back(document);
+        whole.documents.push_back(document);
+    }
+    OramaCoreFulltextIndex backend;
+    ASSERT_TRUE(backend.build(spec_a, std::span<const IndexPartition>(&a, 1)).ok());
+    ASSERT_TRUE(backend.build(spec_b, std::span<const IndexPartition>(&b, 1)).ok());
+    ASSERT_TRUE(backend.build(spec, std::span<const IndexPartition>(&whole, 1)).ok());
+
+    IndexQuery query = text_query("postgres", 2);
+    query.field = "body";
+    zetta::index::CorpusStatistics merged;
+    ASSERT_TRUE(backend.collect_statistics(spec_a, query, merged).ok());
+    ASSERT_TRUE(backend.collect_statistics(spec_b, query, merged).ok());
+    zetta::index::CorpusStatistics consolidated;
+    ASSERT_TRUE(backend.collect_statistics(spec, query, consolidated).ok());
+    EXPECT_EQ(merged, consolidated);
+    EXPECT_EQ(merged.doc_count, corpus.size());
+    // Only the body's lengths: the title is not part of a body query's scoring.
+    EXPECT_FALSE(merged.fields.contains("title"));
+    EXPECT_TRUE(merged.fields.contains("body"));
+    // Four rows carry "postgres" in the body; the title matches do not count.
+    ASSERT_EQ(merged.term_doc_freq.size(), 1u);
+    EXPECT_EQ(merged.term_doc_freq.begin()->second, 4u);
+
+    IndexQuery oracle_query = text_query("postgres", 2);
+    oracle_query.field = "body";
+    const auto oracle = backend.query(spec, oracle_query);
+    ASSERT_TRUE(oracle.status.ok());
+    ASSERT_EQ(oracle.row_ids.size(), 2u);
+    query.statistics = merged;
+    for (const IndexSpec* shard : {&spec_a, &spec_b}) {
+        const auto ranked = backend.query(*shard, query);
+        ASSERT_TRUE(ranked.status.ok());
+        for (std::size_t i = 0; i < ranked.row_ids.size(); ++i) {
+            const auto at = std::find(oracle.row_ids.begin(), oracle.row_ids.end(),
+                                      ranked.row_ids[i]);
+            if (at == oracle.row_ids.end()) continue;  // below the global top 2
+            EXPECT_EQ(ranked.scores[i], oracle.scores[at - oracle.row_ids.begin()])
+                << ranked.row_ids[i];
+        }
+    }
+}
+
 TEST(OramaCoreFulltextIndexOrder, CapKeepsTheBestHitsInAnyInsertionOrder) {
     if (!OramaCoreFulltextIndex::engine_available()) {
         GTEST_SKIP() << "oramacore-cpp engine not compiled in (submodule absent)";
