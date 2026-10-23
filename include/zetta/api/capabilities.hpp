@@ -88,6 +88,13 @@ void register_record_capabilities(Registry& registry);
 //   list_network_records  read    decoded, indexed, retained record pages
 void register_network_capabilities(Registry& registry);
 
+// Safe mode per database (#1373, docs/api/safe-mode.md):
+//
+//   set_safe_mode  action  set a database's or connection's level (off |
+//                          warn_writes | warn_all); needs the right to manage it
+//   get_safe_mode  read    its level, and whether that is the default
+void register_safe_mode_capabilities(Registry& registry);
+
 // The object capability (#1005, docs/data/object-store.md):
 //
 //   create_bucket         action  declare a bucket, its quota and replication factor

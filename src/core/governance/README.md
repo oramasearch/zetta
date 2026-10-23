@@ -25,6 +25,12 @@ schemas now list the `topic` and `collection` resource kinds the parser accepts.
 bucket name prefix (`ResourceKind::Bucket`, #1005); the role and access-key schemas
 list the `bucket` kind.
 
+`safe_mode.cpp` is safe mode per database (#1373,
+[safe mode](../../../docs/api/safe-mode.md)): the three levels and their
+defaults, the reserved replicated `zetta_safe_mode.levels` store, the
+confirmation hash and statement redaction. The `safe_mode_changed` and
+`safe_mode_confirmed` audit actions record level changes and confirmed warnings.
+
 `credential_redaction.cpp` implements the credential-field rule and
 `redact_credentials`; `consent.cpp` renders a challenge's frozen input and
 result through it, while the ledger keeps the real input to execute (#74). See

@@ -198,6 +198,17 @@ SourceCatalog polars_catalog(const ConnectorConfig& config,
 
 }  // namespace
 
+std::vector<std::string> source_catalog_statements(const ConnectorConfig& config,
+                                                   const SourceCatalogRequest& request) {
+    if (config.type == "lake_polars") return {"GET /v1/datasets"};
+    const CatalogStatements statements = config.type == "lake_sqlite"
+                                             ? sqlite_statements(request)
+                                             : information_schema_statements(config, request);
+    std::vector<std::string> out{statements.tables};
+    if (request.include_columns) out.push_back(statements.columns);
+    return out;
+}
+
 SourceCatalog list_source_catalog(const ConnectorConfig& config,
                                   const SourceCatalogRequest& request,
                                   const HttpTransport& transport) {

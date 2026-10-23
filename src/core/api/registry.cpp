@@ -54,6 +54,18 @@ bool Registry::add(Capability capability) {
         (capability.kind != CapabilityKind::Action || !capability.mutates)) {
         return false;
     }
+    // A safe-mode-guarded capability accepts the confirmation its warning hands
+    // out (#1373). Added here, once, so every such entry's schema says the same
+    // thing and the REST/MCP/OpenAPI renderings carry it.
+    if (capability.describe_safe_mode && capability.input_schema.is_object()) {
+        capability.input_schema["properties"][kSafeModeConfirmationField] = {
+            {"type", "string"},
+            {"pattern", "^[0-9a-f]{64}$"},
+            {"description",
+             "the `confirmation` from a safe_mode_warning: repeat the same call "
+             "with it to run the statements the warning named (it confirms "
+             "those statements against that database, nothing else)"}};
+    }
     entries_.push_back(std::make_shared<const Capability>(std::move(capability)));
     return true;
 }
@@ -360,6 +372,91 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         return std::nullopt;
     }(); });
     if (refused) return finish(std::move(*refused));
+
+    // Safe mode per database (#1373, docs/api/safe-mode.md). Checked after
+    // authorization (a caller that may not run the statement learns nothing
+    // about it) and before consent (a consent challenge freezes the input, so
+    // the person running it confirms first). Levels live in a node table, so
+    // the check runs on the owner thread.
+    std::string safe_mode_confirmation;
+    if (effective_input.is_object()) {
+        if (const auto field = effective_input.find(kSafeModeConfirmationField);
+            field != effective_input.end()) {
+            if (field->is_string()) safe_mode_confirmation = field->get<std::string>();
+            effective_input.erase(field);
+        }
+    }
+    if (capability->describe_safe_mode) {
+        std::optional<ApiResult> warned;
+        context.node.run_on_owner([&] {
+            std::vector<zetta::governance::SafeModeStatements> warning;
+            zetta::governance::SafeMode first_mode = zetta::governance::SafeMode::Off;
+            for (zetta::governance::SafeModeStatements& entry :
+                 capability->describe_safe_mode(effective_input, context)) {
+                const zetta::governance::SafeMode mode =
+                    zetta::governance::effective_safe_mode(context.node, entry.target,
+                                                           entry.name);
+                if (!zetta::governance::safe_mode_warns(mode, entry)) continue;
+                if (warning.empty()) first_mode = mode;
+                warning.push_back(std::move(entry));
+            }
+            if (warning.empty()) return;
+            const std::string expected =
+                zetta::governance::safe_mode_confirmation(warning);
+            const zetta::governance::SafeModeStatements& first = warning.front();
+            const std::string selector = std::string(to_string(first.target));
+            if (safe_mode_confirmation == expected) {
+                zetta::governance::AuditEventValue event;
+                event.action = zetta::governance::AuditAction::SafeModeConfirmed;
+                event.actor = context.acting_key.empty() ? "local" : context.acting_key;
+                event.target = selector + ":" + first.name;
+                event.allowed = true;
+                // The statement hash, never the statement: a statement can carry
+                // a value the trail must not keep.
+                event.detail = "api:" + name + " confirmed under " +
+                               std::string(to_string(first_mode)) +
+                               "; statement sha256 " + expected;
+                context.node.record_audit_event(std::move(event));
+                span.set_attribute("safe_mode", "confirmed");
+                return;
+            }
+            nlohmann::json details;
+            details[selector] = first.name;
+            details["mode"] = std::string(to_string(first_mode));
+            details["statements"] = first.statements;
+            details["confirmation"] = expected;
+            if (warning.size() > 1) {
+                // A multi-statement input touching several databases: the one
+                // confirmation covers every database that warned.
+                nlohmann::json also = nlohmann::json::array();
+                for (std::size_t index = 1; index < warning.size(); ++index) {
+                    also.push_back({{std::string(to_string(warning[index].target)),
+                                     warning[index].name},
+                                    {"statements", warning[index].statements}});
+                }
+                details["also"] = std::move(also);
+            }
+            const std::string why =
+                first_mode == zetta::governance::SafeMode::WarnAll
+                    ? "every statement"
+                    : "a statement that writes";
+            std::string message =
+                "'" + name + "' did NOT run: " + selector + " '" + first.name +
+                "' is in safe mode " + std::string(to_string(first_mode)) +
+                ", which warns before " + why + ". Read the statements in "
+                "details.statements; to run them, repeat the same call with "
+                "\"safe_mode_confirmation\": \"" + expected + "\".";
+            if (!safe_mode_confirmation.empty()) {
+                message += " The confirmation given was for a different statement "
+                           "or database.";
+            }
+            ApiResult refusal = ApiResult::failure("safe_mode_warning", std::move(message));
+            refusal.error.details = std::move(details);
+            span.set_attribute("safe_mode", "warned");
+            warned = std::move(refusal);
+        });
+        if (warned) return finish(std::move(*warned));
+    }
 
     // Consent-gated capabilities never execute on a plain call (#621, the
     // cloud hard rule over the wire): when the input touches a cloud, issue a

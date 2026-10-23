@@ -28,9 +28,15 @@ MCP/HTTP work.
 - [consent.md](consent.md) — remote consent for cloud-touching tools (#621):
   the challenge protocol (never executes on first call), the
   distinctly-privileged approval rule (approver key / headed surface), the
-  consent ledger + `system.consent_requests`, audit + spans on both sides —
-  and why enforcement is **off by default** until a reachable approval surface
-  ships (#995).
+  consent ledger + `system.consent_requests`, audit + spans on both sides,
+  where a challenge is decided (web console and desktop app Governance →
+  Consent requests, #999) — and why enforcement stays **off by default**
+  (#995; remote reads are guarded by safe mode instead).
+- [safe-mode.md](safe-mode.md) — safe mode per database (#1373): `off`,
+  `warn_writes`, `warn_all` on each saved connection (default `warn_writes`)
+  and Zetta database (default `off`); the `safe_mode_warning` refusal naming
+  the exact statements, the `safe_mode_confirmation` retry,
+  `set_safe_mode` / `get_safe_mode`, rights, audit and where the level lives.
 - [rest-openapi.md](rest-openapi.md) — the REST rendering (#618): reads →
   GET /v1/<name>, actions → POST /v1/<name>, output schemas, and the
   drift-checked OpenAPI document generated from the registry.
@@ -280,6 +286,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_consent_requests` | read | api:query | the node's consent ledger — pending challenges, decisions, and executed results |
 | `approve_consent` | action | orchestration:approve_consent | approve one challenge and execute exactly the named action once — must be a **different principal** than the requester |
 | `deny_consent` | action | orchestration:deny_consent | refuse (or withdraw) a pending challenge; the action never runs |
+| `set_safe_mode` | action | api:query + `sql:ddl` on the database, or `create_connection` | set a database's or saved connection's safe mode level (`off` / `warn_writes` / `warn_all`); audited as `safe_mode_changed` ([safe-mode.md](safe-mode.md)) |
+| `get_safe_mode` | read | api:query (+ `list_connections` for a connection) | a database's or connection's safe mode level and whether it is the default ([safe-mode.md](safe-mode.md)) |
 
 All accept the reserved optional `intent` field (recorded to the span,
 stripped before schema validation).
