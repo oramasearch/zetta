@@ -735,6 +735,15 @@ that key (`QueryService::acting_as`), not as the local session.
 Row-level security applies to `UPDATE` and `DELETE` — see
 [Enforcement](#enforcement-deny-by-default-admin--unrestricted--local-bypass) below.
 
+**Existence is not disclosed** (#252). A statement on a table the caller holds no
+right on at all (`SELECT` without `sql:read`; `INSERT`, `UPDATE`, `DELETE`,
+`TRUNCATE` without `sql:write`) is refused **before** the table is looked up, so
+the answer is the same `permission denied: no <right> grant on "<db>.<table>"`
+whether the table exists, the table does not, or the database does not. A caller
+with some right on the name still gets `does not exist`. `DROP TABLE` and
+`CREATE TABLE` already checked `sql:ddl` first. (`system.datasets` still lists
+every table to any caller until #766 restricts the `system.*` views.)
+
 The reserved `zetta_connect` database (saved connector credentials, #1230) is
 not reachable through SQL for anyone, the local session included; its governed
 surfaces are `system.connections` and the connection capabilities.
@@ -746,6 +755,12 @@ for the trusted session), the target (`sql:table:<db>.<table>`,
 `sql:database:<db>`, `sql:user:<name>`, `sql:token:<user>`, `sql:role:<name>`,
 `sql:policy:<name>`, `sql:virtual_table:<name>`), `allowed` (false for a
 refusal), and the statement's status line or error — never a value it wrote.
+A **refused `SELECT`** (no `sql:read` on the table, or a `WHERE`, `GROUP BY`,
+aggregate or `ORDER BY` over a masked column) records a `data_access` row with
+`allowed: false`, the target `sql:table:<db>.<table>` and the refusal (#252):
+the registry's per-call row only says the `sql` tool was called, so without it an
+attempt to read past a grant left no refusal on record. A permitted `SELECT`
+records nothing beyond the per-call row.
 See [audit trail](audit-trail.md).
 
 **Callers.** Every automated writer authenticates as the bootstrap `owner`

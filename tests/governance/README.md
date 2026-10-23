@@ -26,3 +26,8 @@ test per auth review finding, #759 to #769. Fixed findings are plain assertions;
 open ones are `KNOWN_DEFECT` probes that skip with the issue number while the
 defect reproduces and fail once it does not, so the fix flips them. See
 [authz-regressions.md](../../docs/testing/authz-regressions.md).
+
+`test_sandbox_escape.cpp` is TC-5 (#252): an analyst with one column grant tries
+every listed jailbreak step through `Registry::call`, and each attempt must be
+refused and recorded as refused. Open gaps are `KNOWN_DEFECT` probes. See
+[TC-5 coverage](../../docs/testing/tc-5-coverage.md).

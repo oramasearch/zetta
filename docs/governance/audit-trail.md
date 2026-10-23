@@ -75,7 +75,10 @@ records `data_changed` from the executor, whatever surface ran it. Its target is
 `sql:<kind>:<object>` (for example `sql:table:app.docs`), `allowed` is false for
 a refusal, and the detail is the statement's status line (`UPDATE 3`) or its
 error — never a value it wrote, so `CREATE TOKEN`'s secret is not in it. The
-`sql` capability's own per-call `data_access` row is recorded as before. See
+`sql` capability's own per-call `data_access` row is recorded as before. A
+`SELECT` the executor refuses (no `sql:read` on the table, or a filter, grouping,
+aggregate or ordering over a masked column) records `data_access` with
+`allowed: false` and the target `sql:table:<db>.<table>` (#252). See
 [per-statement enforcement](access-control.md#per-statement-enforcement).
 A node that predates this action does not accept it in an audit range, which is
 one more reason the upgrade policy below upgrades all nodes together.
@@ -100,7 +103,7 @@ second event for a peer's action. Important emitters include:
 | Decision policy store | Policy creation/update and decision approval. |
 | Pub/sub administration | Topic setting changes and event edits/deletions. |
 | Audit administration | `audit_purged`, recorded after an explicit purge. |
-| SQL executor | `data_changed` for every statement that changes data, schema or governance, allowed or refused (#1229). |
+| SQL executor | `data_changed` for every statement that changes data, schema or governance, allowed or refused (#1229); `data_access` with `allowed: false` for a refused `SELECT` (#252). |
 
 `AuditSink::record_audit_event` decouples these emitters from the node-owned
 store. `Node` assigns the id and time and appends the event to its origin log
