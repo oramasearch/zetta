@@ -372,6 +372,41 @@ TEST_F(StandaloneModels, BringCommonFormatsAndDownloadWeights) {
     EXPECT_EQ(call("export_model", {{"model_id", "no-such-model"}}).error.code, "not_found");
 }
 
+// zetta#1390 (LSR-070): a brought file whose splits read past its own final
+// feature list is refused before anything can score or explain it, and leaves
+// nothing behind.
+TEST_F(StandaloneModels, AModelWhoseSplitsReadPastItsFeaturesIsRefused) {
+    // The engine's own weights format: two features, a split on feature 9.
+    const Json crafted = {
+        {"objective", "binary_logistic"},
+        {"base_score", 0.0},
+        {"learning_rate", 0.3},
+        {"feature_names", {"support_tickets", "tenure_months"}},
+        {"trees",
+         {{{"nodes",
+            {{{"feature", 9}, {"threshold", 0.5}, {"left", 1}, {"right", 2}, {"value", 0.0},
+              {"cover", 2.0}},
+             {{"feature", -1}, {"threshold", 0.0}, {"left", -1}, {"right", -1}, {"value", -1.0},
+              {"cover", 1.0}},
+             {{"feature", -1}, {"threshold", 0.0}, {"left", -1}, {"right", -1}, {"value", 1.0},
+              {"cover", 1.0}}}}}}}};
+    const ApiResult zetta_file =
+        call("register_model", {{"name", "crafted"}, {"weights", crafted.dump()}});
+    EXPECT_EQ(zetta_file.error.code, "not_supported") << zetta_file.error.message;
+
+    // XGBoost: the file names four features and splits on all four, declares one,
+    // and the caller names one.
+    Json xgboost = Json::parse(model_fixture("xgboost_binary.json"));
+    xgboost["learner"]["learner_model_param"]["num_feature"] = "1";
+    const ApiResult shortened = call("register_model", {{"name", "crafted"},
+                                                        {"weights", xgboost.dump()},
+                                                        {"feature_names", {"tenure_months"}}});
+    EXPECT_EQ(shortened.error.code, "not_supported") << shortened.error.message;
+
+    EXPECT_TRUE(models_named("crafted").empty());
+    EXPECT_FALSE(node.find_project("crafted (standalone model)"));
+}
+
 TEST_F(StandaloneModels, MoveIntoAProjectShowsItWithItsVersions) {
     const std::string project_id = train_churn();
     const std::string model_id = models_named("churn").at(0).at("id");

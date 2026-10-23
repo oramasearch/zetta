@@ -812,6 +812,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   ml/test_segmentation.cpp  segmentation recovery, preprocessing, selection, cluster equivalence and persisted output acceptance (#1042)
   ml/test_segmentation_methodology.cpp M-3/S-9/intent shape and graph-gate refusal tests (#1042)
   ml/test_segmentation_launch.cpp off-root registry submission over three owned partitions and single-node metric equivalence (#1042)
+  ml/test_model_bounds.cpp  crafted models refused at every boundary (splits past the feature list, backward children, caller-shortened XGBoost names); predict and TreeSHAP stay in bounds (#1390)
   solutions/test_experiment.cpp deterministic balance and restart stability, protected actions, attributed exemptions, malformed boundaries, and concurrent peer convergence (#1105)
   temp_dir.hpp              per-test isolated data_dir helper
   cluster/test_refused_start_exit.cpp  process test: an occupied --listen port exits 1 without an abort (#1078)

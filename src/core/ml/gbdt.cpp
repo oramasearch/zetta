@@ -343,12 +343,52 @@ int TreeNode::child_for(double value) const noexcept {
 
 double RegressionTree::predict(const std::vector<double>& features) const {
     if (nodes.empty()) return 0.0;
-    int cursor = 0;
-    while (!nodes[cursor].is_leaf()) {
+    // A validated tree (GbdtModel::validate_structure) only steps forward, so it
+    // reaches a leaf in at most nodes.size() steps. The bounds below hold for any
+    // tree anyway (#1390): a feature the row lacks reads 0.0, as TreeSHAP pads a
+    // short row, and a step out of the tree or past the step budget stops.
+    std::size_t cursor = 0;
+    for (std::size_t steps = 0; steps < nodes.size(); ++steps) {
         const TreeNode& node = nodes[cursor];
-        cursor = node.child_for(features[static_cast<std::size_t>(node.feature)]);
+        if (node.is_leaf()) return node.value;
+        const auto feature = static_cast<std::size_t>(node.feature);
+        const double value = feature < features.size() ? features[feature] : 0.0;
+        const int next = node.child_for(value);
+        if (next < 0 || static_cast<std::size_t>(next) >= nodes.size()) return 0.0;
+        cursor = static_cast<std::size_t>(next);
     }
-    return nodes[cursor].value;
+    return 0.0;
+}
+
+bool GbdtModel::validate_structure(std::string* error) const {
+    const std::size_t features = feature_count();
+    for (std::size_t tree_index = 0; tree_index < trees.size(); ++tree_index) {
+        const std::vector<TreeNode>& nodes = trees[tree_index].nodes;
+        const auto node_count = static_cast<long long>(nodes.size());
+        for (std::size_t index = 0; index < nodes.size(); ++index) {
+            const TreeNode& node = nodes[index];
+            if (node.is_leaf()) continue;
+            const std::string where = "trees[" + std::to_string(tree_index) + "].nodes[" +
+                                      std::to_string(index) + "]";
+            if (static_cast<std::size_t>(node.feature) >= features) {
+                if (error) {
+                    *error = where + ": the split reads feature " +
+                             std::to_string(node.feature) + ", and the model has " +
+                             std::to_string(features);
+                }
+                return false;
+            }
+            // Children come after their parent: that is what makes every walk
+            // from the root finite, for predict and for TreeSHAP's recursion.
+            const auto self = static_cast<long long>(index);
+            if (node.left <= self || node.right <= self || node.left >= node_count ||
+                node.right >= node_count || node.left == node.right) {
+                if (error) *error = where + ": child index out of range";
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 double GbdtModel::predict_raw(const std::vector<double>& features) const {
@@ -410,7 +450,6 @@ std::optional<GbdtModel> GbdtModel::from_json(const nlohmann::json& value,
     for (const nlohmann::json& tree_json : value.at("trees")) {
         RegressionTree tree;
         const nlohmann::json& nodes_json = tree_json.at("nodes");
-        const auto node_count = static_cast<int>(nodes_json.size());
         for (const nlohmann::json& node_json : nodes_json) {
             TreeNode node;
             node.feature = node_json.at("feature").get<int>();
@@ -420,19 +459,13 @@ std::optional<GbdtModel> GbdtModel::from_json(const nlohmann::json& value,
             node.value = node_json.at("value").get<double>();
             node.cover = node_json.at("cover").get<double>();
             node.missing_left = node_json.value("missing_left", false);
-            // Structural rule the schema can't express: an internal node's
-            // children must be valid, distinct, forward indices in this tree.
-            if (!node.is_leaf()) {
-                if (node.left < 0 || node.right < 0 || node.left >= node_count ||
-                    node.right >= node_count || node.left == node.right) {
-                    if (error) *error = "trees: child index out of range";
-                    return std::nullopt;
-                }
-            }
             tree.nodes.push_back(node);
         }
         model.trees.push_back(std::move(tree));
     }
+    // The structural rules the schema can't express: every split reads a
+    // feature the model has, and every child is a distinct, forward index.
+    if (!model.validate_structure(error)) return std::nullopt;
     // An attached calibration is validated by its own boundary (the loose object
     // the model schema allows is pinned down strictly here, like the tree child
     // indices above).

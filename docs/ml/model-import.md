@@ -81,6 +81,17 @@ be brought.
 | a multiclass or multi-target model | the engine scores one value |
 | a classifier without a logistic link (random forest, decision tree, `post_transform` `NONE`) | its probabilities are averaged, and the engine's classifier output is a sigmoid. Bringing these needs an output rule of its own, which is deferred |
 | categorical splits, LightGBM linear trees or `reg_sqrt`, XGBoost `dart` or `gblinear`, exponential objectives (`count:poisson`, `reg:gamma`, `tweedie`), `EQ`/`NEQ` splits | no exact form in the engine's trees |
+| a tree whose split reads a feature past the model's final feature list, or whose child is not a distinct node after its parent (a cycle, a self-loop, an index outside the tree) | scoring would read past the row and TreeSHAP would write past its output (#1390) |
+
+**Every model is checked as a whole after it is read (#1390).** Each reader checks splits as it
+goes, but against the counts it saw then, and the caller's `feature_names` can still replace the
+file's after that. So `import_model` runs `GbdtModel::validate_structure` on the finished model,
+against its own final feature list: every split reads a feature in `[0, feature_count)`, and every
+internal node's two children are distinct indices after it, so every walk from the root ends at a
+leaf. `GbdtModel::from_json`, which reads every stored weights body, runs the same check. Scoring
+and TreeSHAP also stay inside their buffers for a model built in memory without it: a feature the
+row lacks reads `0.0` (the padding TreeSHAP has always used), a walk that leaves the tree stops,
+and TreeSHAP never writes past its explanation.
 
 ## `export_model`
 
@@ -119,6 +130,12 @@ answers `{model_id, name, format, file_name, media_type, encoding, content, byte
   - an ONNX export reads back to the same scores;
   - a Platt calibration folds into the export;
   - `missing_left` round-trips and leaves a trained body unchanged.
+- **`tests/ml/test_model_bounds.cpp`** (#1390) crafts models that must be refused: a split past
+  the feature list in the weights format and as a brought file, a child pointing back up the tree,
+  and an XGBoost file whose caller-shortened `feature_names` leave its splits past the end. It also
+  scores and explains models built in memory without the check, so under AddressSanitizer nothing
+  is read or written out of bounds. `tests/api/test_standalone_models.cpp` checks `register_model`
+  refuses the same files and keeps nothing.
 - **Checking exports against onnxruntime.** Run the suite with `ZETTA_MODEL_EXPORT_DIR=<dir>` to
   write each export and the engine's scores. Then
   `scripts/gen-model-import-fixtures.py --check-exports <dir>` scores them with onnxruntime.
