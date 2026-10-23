@@ -170,11 +170,57 @@ TEST(OramaCoreFulltextIndex, RejectsBadSpecsAndQueries) {
     EXPECT_EQ(backend.query(spec, bad_term).status.code,
               IndexStatusCode::InvalidArgument);
 
-    // A named field that IS indexed is accepted (scoring still spans all fields).
+    // A named field that IS indexed is accepted.
     IndexQuery good_field;
     good_field.field = "title";
     good_field.term = "postgres";
     EXPECT_TRUE(backend.query(spec, good_field).status.ok());
+}
+
+// lake#782: a query naming a field searches that field only. A row whose match is
+// in another indexed field is not a hit.
+TEST(OramaCoreFulltextIndex, ANamedFieldLimitsTheSearchToThatField) {
+    if (!OramaCoreFulltextIndex::engine_available()) {
+        GTEST_SKIP() << "oramacore-cpp engine not compiled in (submodule absent)";
+    }
+    OramaCoreFulltextIndex backend;
+    const IndexSpec spec = fulltext_spec();
+    ASSERT_TRUE(backend.build(spec, sample_partitions()).ok());
+    const auto search = [&](const std::string& field, const std::string& term) {
+        IndexQuery q;
+        q.field = field;
+        q.term = term;
+        const auto result = backend.query(spec, q);
+        EXPECT_TRUE(result.status.ok()) << result.status.message;
+        EXPECT_EQ(result.row_ids.size(), result.scores.size());
+        return result.row_ids;
+    };
+
+    // "postgres" is in r1's title and body, and only in r3's body.
+    EXPECT_EQ(search("", "postgres"), (std::vector<std::string>{"r1", "r3"}));
+    EXPECT_EQ(search("title", "postgres"), (std::vector<std::string>{"r1"}));
+    EXPECT_EQ(search("body", "postgres"), (std::vector<std::string>{"r1", "r3"}));
+
+    // "guide" is only in r4's body: every field finds it, the title does not.
+    EXPECT_EQ(search("", "guide"), (std::vector<std::string>{"r4"}));
+    EXPECT_TRUE(search("title", "guide").empty());
+    EXPECT_EQ(search("body", "guide"), (std::vector<std::string>{"r4"}));
+
+    // "catalog" is only in r4's title; the row missing both fields (r5) never matches.
+    EXPECT_EQ(search("title", "catalog"), (std::vector<std::string>{"r4"}));
+    EXPECT_TRUE(search("body", "catalog").empty());
+
+    // An index over one field answers the same with or without naming it.
+    const IndexSpec titles{
+        "articles", IndexKind::Search, std::string(OramaCoreFulltextIndex::kName), {"title"}};
+    ASSERT_TRUE(backend.build(titles, sample_partitions()).ok());
+    IndexQuery named;
+    named.field = "title";
+    named.term = "postgres";
+    IndexQuery unnamed;
+    unnamed.term = "postgres";
+    EXPECT_EQ(backend.query(titles, named).row_ids, (std::vector<std::string>{"r1"}));
+    EXPECT_EQ(backend.query(titles, unnamed).row_ids, (std::vector<std::string>{"r1"}));
 }
 
 // ----- end-to-end via the registry (resolve an IR index step, then build+query) -

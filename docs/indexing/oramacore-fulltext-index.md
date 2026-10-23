@@ -63,7 +63,14 @@ NLP runtime), applied identically to documents and queries.
   and reproducible because the build order is deterministic), capped to
   `query.top_k`.
 - When set, `query.field` must be one of the index's fields (else
-  `InvalidArgument`), for parity with the seam — scoring still spans all fields.
+  `InvalidArgument`), and **only that field is searched**
+  ([lake#782](https://github.com/oramasearch/lake/issues/782)): a row whose match
+  is in another field is not a hit, and the score is BM25 over that field alone.
+  The engine's `search` always scores across every field, so a build over more
+  than one field also keeps one single-field `MemoryIndex` per field, fed every
+  row in the same order (a row without the field as an empty document) so its
+  DocIds map through the same row-id vector. That costs a second copy of the
+  postings; an index over one field keeps none, since the combined index is it.
 - A term that is not a text/scalar value (an array/object/null) → `InvalidArgument`;
   a stop-word-only or no-match query → an **empty but successful** result;
   querying before a build → `NotFound`.
