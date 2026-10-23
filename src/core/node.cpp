@@ -4631,14 +4631,17 @@ const zetta::connect::CredentialKeyring* Node::connection_keyring(
 bool Node::bypasses_row_security(const std::string& acting_id,
                                  bool acting_is_user) const {
     if (acting_id.empty()) return true;   // trusted unauthenticated-local session
-    if (!acting_is_user) return true;     // legacy AccessKey — no RLS tier (#747 parity)
+    const governance::Operation admin_marker{governance::CapabilityDomain::Api,
+                                             "cluster_admin"};
+    // A legacy AccessKey bypasses only when it holds cluster:admin itself (#762):
+    // otherwise row security binds it like any non-admin (it has no user name or
+    // roles, so only a policy that names no roles can admit a row).
+    if (!acting_is_user) return static_cast<bool>(authorize(acting_id, admin_marker));
     auto user = find_user_by_id(acting_id);
     if (!user || !user->active()) return false;  // unknown/disabled — no bypass
     // Admin bypasses RLS: only the built-in admin role grants cluster:admin
     // (api:cluster_admin), so it distinguishes an admin from writer/reader/custom
     // users. Deny-by-default otherwise — an ordinary user is subject to policy.
-    const governance::Operation admin_marker{governance::CapabilityDomain::Api,
-                                             "cluster_admin"};
     const std::string now = zetta::util::now_iso8601();
     for (const std::string& role_id : roles_for_user(acting_id)) {
         auto role = find_role_by_id(role_id);
@@ -5262,7 +5265,9 @@ bool Node::authorize_object(const std::string& acting_id, bool acting_is_user,
                             const zetta::governance::Operation& operation,
                             const zetta::governance::Resource& object) const {
     if (acting_id.empty()) return true;    // trusted unauthenticated-local session
-    if (!acting_is_user) return true;      // legacy AccessKey — no object tier
+    // A legacy AccessKey has no object-scoped grants (#762): it reaches an object
+    // only by holding the operation as a flat capability of its own.
+    if (!acting_is_user) return static_cast<bool>(authorize(acting_id, operation));
     auto user = find_user_by_id(acting_id);
     if (!user || !user->active()) return false;  // unknown/disabled user — denied
     const std::string now = zetta::util::now_iso8601();
@@ -5279,7 +5284,12 @@ zetta::governance::ColumnAccess Node::column_scope(
     bypass.table_allowed = true;
     bypass.all_columns = true;
     if (acting_id.empty()) return bypass;   // trusted local
-    if (!acting_is_user) return bypass;     // legacy AccessKey bypass
+    // A legacy AccessKey (#762): the whole table when it holds the operation as a
+    // flat capability, nothing otherwise. It has no column grants to mask by.
+    if (!acting_is_user) {
+        return authorize(acting_id, operation) ? bypass
+                                               : zetta::governance::ColumnAccess{};
+    }
     auto user = find_user_by_id(acting_id);
     if (!user || !user->active()) return {};  // table_allowed=false — denied
     const std::string now = zetta::util::now_iso8601();

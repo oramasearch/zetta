@@ -137,7 +137,8 @@ TEST_F(RowSecurityNode, BypassDecisionMirrorsObjectScoping) {
     EXPECT_TRUE(node.bypasses_row_security(admin_id, true));    // admin bypasses
     EXPECT_FALSE(node.bypasses_row_security(writer_id, true));  // a writer does NOT
     EXPECT_TRUE(node.bypasses_row_security("", false));         // trusted-local session
-    EXPECT_TRUE(node.bypasses_row_security("legacy-key", false));  // legacy AccessKey
+    // A legacy AccessKey bypasses only with cluster:admin of its own (#762).
+    EXPECT_FALSE(node.bypasses_row_security("legacy-key", false));
     EXPECT_FALSE(node.bypasses_row_security("no-such-user", true));  // unknown user
 }
 

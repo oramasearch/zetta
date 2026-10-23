@@ -39,6 +39,8 @@ State on `dev` at `e9587213` (2026-10-20).
 | [#760](https://github.com/oramasearch/zetta/issues/760) | column masking bypassed with an aggregate | **fixed** (the column-grant guard checks an aggregate's column) | `AggregateOverAMaskedColumnIsRefused` | masked column null; `MAX`/`MIN` over it refused |
 | [#761](https://github.com/oramasearch/zetta/issues/761) | `roles:manage` is unbounded; built-in roles mutable | **fixed** (bounded role management, [access control](../governance/access-control.md#bounded-role-management-761)) | `RoleManagerCannotGrantWhatItDoesNotHold`, `BuiltinRolesCannotBeEditedOrDropped`; more in `BoundedRoles.*` (`tests/governance/test_roles.cpp`) | a `roles:manage`-only delegate refused admin and `tokens:manage`; built-in tamper in-process only |
 | [#762](https://github.com/oramasearch/zetta/issues/762) | auth off by default; object controls skipped for non-user identities | part 1 **fixed** (#799); part 2 not reachable remotely (see below) | `RowSecurityBindsATokenResolvedUser`, `AuthzHttp.OnlyATokenThatResolvesToAUserGetsIn` | no / bogus bearer refused on REST and `/mcp`; RLS and admin bypass |
+| [#761](https://github.com/oramasearch/zetta/issues/761) | `roles:manage` is unbounded; built-in roles mutable | open | `RoleManagerCannotGrantWhatItDoesNotHold`, `BuiltinRolesCannotBeEditedOrDropped` (`KNOWN_DEFECT`) | a `roles:manage`-only delegate granting itself admin; built-in tamper in-process only |
+| [#762](https://github.com/oramasearch/zetta/issues/762) | auth off by default; object controls skipped for non-user identities | part 1 **fixed** (#799); part 2 **fixed** (a legacy AccessKey is held to row security and grants, see below) | `RowSecurityBindsATokenResolvedUser`, `ALegacyAccessKeyIsHeldToRowSecurityAndGrants`, `AuthzHttp.OnlyATokenThatResolvesToAUserGetsIn` | no / bogus bearer refused on REST and `/mcp`; RLS and admin bypass |
 | [#763](https://github.com/oramasearch/zetta/issues/763) | a joining node mints a second owner | open | `AuthzCluster.AJoiningNodeDoesNotMintASecondOwner` (`KNOWN_DEFECT`, two in-process nodes) | in-process only |
 | [#764](https://github.com/oramasearch/zetta/issues/764) | replicated identity records trusted with no proof of origin | open | `AuthzCluster.AnUnsignedReplicatedCredentialIsNotHonored` (`KNOWN_DEFECT`) | in-process only |
 | [#765](https://github.com/oramasearch/zetta/issues/765) | a row policy with no condition admits every row | **fixed** (a missing predicate denies, `build_rls_filter`) | `APolicyWithNoConditionDeniesInsteadOfAllowingAll`; more in `RowSecuritySql.*` (`tests/governance/test_row_security.cpp`) | the grammar refuses it; the replicated/restored path in-process only |
@@ -47,11 +49,14 @@ State on `dev` at `e9587213` (2026-10-20).
 | [#768](https://github.com/oramasearch/zetta/issues/768) | orchestration ungrantable under auth | **fixed** (7b1ac08) | `EveryRegisteredOperationIsGrantable` | admin runs `create_project`, the reader is refused it |
 | [#769](https://github.com/oramasearch/zetta/issues/769) | hardening: owner token KDF, atomic seed, shared-secret compare, SQL audit | **fixed**: KDF and seed ([#1311](https://github.com/oramasearch/zetta/pull/1311)), shared secret and audit (#799/#806, #1229) | `TheOwnerTokenIsStoredThroughAKdf`, `AuthzSeed.AnInterruptedOwnerSeedIsResumed`, `RefusedPrivilegedSqlIsAudited`, `AuthzHttp.OnlyATokenThatResolvesToAUserGetsIn` | bogus bearer refused; the reader's refused writes audited as refused `data_changed` |
 
-**#762 part 2.** The local session and a legacy `AccessKey` still bypass row security, masking and
-per-tool grants (`Node::bypasses_row_security`, `Node::authorize_object`). Neither reaches a node
-from outside: the one HTTP and `/mcp` auth gate resolves a bearer only through the token store, to
-a user, and an `AccessKey` id presented as a bearer is refused (401), as
-`AuthzHttp.Finding762_OnlyATokenThatResolvesToAUserGetsIn` asserts.
+**#762 part 2.** A legacy `AccessKey` no longer bypasses row security, masking or object grants
+(`Node::bypasses_row_security`, `Node::authorize_object`, `Node::column_scope`): it reaches a table,
+tool or blob only with the flat right of its own, and row security binds it unless it holds
+`cluster:admin`. Over the network it never arrives at all: the one HTTP and `/mcp` auth gate
+resolves a bearer only through the token store, to a user, and an `AccessKey` id presented as a
+bearer is refused (401), as `AuthzHttp.Finding762_OnlyATokenThatResolvesToAUserGetsIn` asserts.
+The trusted local session (an empty acting id: the library, the headed app) still reads
+everything; no network surface produces it.
 
 **#766 scope.** `/v1/openapi.json`, `/llms.txt`, `/llms-full.txt` and `/llms/:topic` are served
 before the auth gate on purpose (public discovery documents), so they are not probed. `/v1/specs`
