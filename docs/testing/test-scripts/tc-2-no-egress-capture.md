@@ -6,8 +6,9 @@ network. They have been told "the data never leaves". They do not take that on t
 put a capture on the box and look.
 **Goal:** watch everything Zetta sends while it does a full day's work, and decide whether
 the claim is true.
-**Status:** **Part 1 runnable today. Part 2 not yet runnable** — the deny-by-default control
-it verifies does not exist (#75).
+**Status:** **Both parts runnable.** Part 2 verifies the deny-by-default egress policy (#75,
+[`docs/governance/egress-policy.md`](../../governance/egress-policy.md)); it has not yet been run
+under capture.
 
 This script has two parts and they answer different questions. **Part 1: what does it send
 today?** **Part 2: can it be told not to?**
@@ -58,22 +59,28 @@ claim — and if the pile is not empty, it is the bug list.
 
 ---
 
-## Part 2 — can it be told not to? (needs #75)
+## Part 2 — can it be told not to? (#75)
 
-8. **Turn egress off** — configure the node to deny outbound traffic by default.
-   → *It accepts the setting and tells you what it will now refuse.*
+Egress is denied by default: start the node with no `--egress-allow` and no `ZETTA_EGRESS_ALLOW`
+(and no Clerk issuer, which would be allowed for sign-in). See
+[`docs/governance/egress-policy.md`](../../governance/egress-policy.md).
+
+8. **Turn egress off** — start the node with no allowlist.
+   → *It prints `zetta: egress deny (loopback only)` at startup.*
 
 9. **Repeat steps 2–5 with egress denied.**
    → *The things that need the network fail cleanly, saying so. Nothing sneaks out anyway.*
 
-10. **Allow exactly one destination — your warehouse — and nothing else.**
+10. **Allow exactly one destination — your warehouse — and nothing else**
+    (`--egress-allow <account>.snowflakecomputing.com:443`, for example).
     → *Ingest works. Everything else that would have gone out is still refused.*
 
 11. **Try to make it reach somewhere not on the list**, by whatever means the product offers.
     → *You cannot. Refused, and recorded.*
 
-12. **Read back the record of what was refused.**
-    → *Every denial is there — what was attempted, by what, when.*
+12. **Read back the record of what was refused** (the audit trail's `egress_denied` events).
+    → *Every denial is there — what was attempted, by what, when.* The node records the
+    destination and the time; which run asked is not recorded yet (#843).
 
 **Part 2 passes if:** with egress denied, nothing left the machine at all; with one
 destination allowed, only that destination was reached; and every refusal was recorded.
@@ -93,7 +100,7 @@ customer chose, **and** the product can be told to deny egress and actually hono
   those are exactly where telemetry and update checks hide.
 - **Do not accept "that destination is fine" without tracing it.** Step 7 exists because an
   explainable connection and an unexplained one look identical in a capture.
-- **Run Part 1 even though Part 2 cannot run yet.** We are already making this claim publicly
+- **Run Part 1 as well as Part 2.** We are already making this claim publicly
   — `docs/product/positioning.md:9` cites TC-2 by name as what makes "the data never leaves"
   testable. Part 1 either substantiates that sentence or tells us to change it.
 - Record the product version, the platform, and every destination you saw — including the
@@ -104,7 +111,7 @@ customer chose, **and** the product can be told to deny egress and actually hono
 
 ## Related
 
-- #75 `[CTL-4]` — the deny-by-default egress control that Part 2 verifies. Part 2 is blocked
-  on it; Part 1 is not.
+- #75 `[CTL-4]` — the deny-by-default egress control that Part 2 verifies
+  ([`docs/governance/egress-policy.md`](../../governance/egress-policy.md)).
 - `docs/product/positioning.md:9` — the public claim this test substantiates.
 - #843 — authority over graph execution, the other half of "what can this thing reach".

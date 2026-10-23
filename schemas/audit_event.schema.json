@@ -50,7 +50,8 @@
         "pubsub_event_updated",
         "pubsub_event_deleted",
         "audit_purged",
-        "data_changed"
+        "data_changed",
+        "egress_denied"
       ],
       "type": "string"
     },

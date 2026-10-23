@@ -40,6 +40,12 @@ truncates a sentinel outside it, through an absolute path, `..`, or a link (#139
 client refuses a public-only request to loopback, by literal, by name and on a
 redirect hop to the metadata address, before connecting (#1394).
 
+`connect/test_egress_policy.cpp` covers the egress allowlist (every entry kind,
+ports, loopback, ranges, malformed entries), and the egress cases in
+`connect/test_native_http_transport.cpp` prove the dialler refuses an outside
+address by default, an unlisted name before DNS, and a redirect to an outside
+destination (#75).
+
 `data/test_object_store.cpp` covers the object capability's contracts, a
 conditional-create race, fencing, torn tails after a kill, compaction and restart,
 the quota, and rf = 2 on three real nodes with a node lost, repaired and replaced;

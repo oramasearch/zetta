@@ -64,6 +64,7 @@ enum class AuditAction {
     PubSubEventDeleted,
     AuditPurged,
     DataChanged,  // a SQL statement changed data, schema or governance (#1229)
+    EgressDenied,  // the egress policy refused an outbound connection (CTL-4, #75)
 };
 
 // Completeness metadata for an authorised high-frequency read window (#1154).

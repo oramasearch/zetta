@@ -16,6 +16,8 @@ reserved `legacy` records never ship (#1164).
 `data_changed` records every SQL statement that changes data, schema or
 governance — its actor, object and outcome, refused or not (#1229). See
 [access control](../../../docs/governance/access-control.md#per-statement-enforcement).
+`egress_denied` records each outbound connection the egress policy refused
+(#75, [egress policy](../../../docs/governance/egress-policy.md)).
 
 `ResourceKind::Bucket` (`Resource::bucket`) names an object bucket by name prefix,
 so `objects:read`, `objects:write` and `objects:manage` are object-scopable

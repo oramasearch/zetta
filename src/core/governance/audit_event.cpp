@@ -58,7 +58,8 @@ const nlohmann::json& schema_document() {
                               "consent_bypassed", "decision_policy_created",
                               "decision_policy_updated", "decision_approved",
                               "pubsub_topic_updated", "pubsub_event_updated", "pubsub_event_deleted",
-                              "audit_purged", "data_changed"] },
+                              "audit_purged", "data_changed",
+                              "egress_denied"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -144,6 +145,7 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::PubSubEventDeleted: return "pubsub_event_deleted";
         case AuditAction::AuditPurged: return "audit_purged";
         case AuditAction::DataChanged: return "data_changed";
+        case AuditAction::EgressDenied: return "egress_denied";
     }
     return "data_access";
 }
@@ -173,6 +175,7 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "pubsub_event_deleted") return AuditAction::PubSubEventDeleted;
     if (name == "audit_purged") return AuditAction::AuditPurged;
     if (name == "data_changed") return AuditAction::DataChanged;
+    if (name == "egress_denied") return AuditAction::EgressDenied;
     return std::nullopt;
 }
 

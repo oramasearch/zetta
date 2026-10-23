@@ -71,6 +71,12 @@ Dataset-backed scoring and explanation accept text business identifiers and
 return them unchanged; their schemas are generated from the registry alongside
 the dataset contract (#957).
 
+`native_http_transport.cpp` checks the egress policy before DNS and before every
+connection and redirect hop: outbound is denied by default and each refusal is
+reported for the `egress_denied` audit event (#75,
+[egress policy](../../../docs/governance/egress-policy.md)). `/cli.md` documents
+`--egress-allow` and `ZETTA_EGRESS_ALLOW`.
+
 `mcp_docs.cpp` also renders `/cli.md`. Its pub/sub and audit sections document
 the dispatch-pool and class-specific retention flags with their environment
 variables; the CLI parity test keeps that page synchronized with `src/main.cpp`.
