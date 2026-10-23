@@ -1,4 +1,5 @@
 #include "zetta/agent/model_cache.hpp"
+#include "zetta/agent/checkpoint.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -54,19 +55,22 @@ std::shared_ptr<const LoadedModel> ModelCache::get_locked(const std::string& pat
 }
 
 std::shared_ptr<const LoadedModel> ModelCache::get(const std::string& path, std::string* error) {
+    const auto directory = checkpoint_directory(path, error);
+    if (!directory) return nullptr;
     const std::lock_guard<std::mutex> lock(mutex_);
-    return get_locked(path, error);
+    return get_locked(*directory, error);
 }
 
 bool ModelCache::load(const std::string& path, std::string* error) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return get_locked(path, error) != nullptr;
+    return get(path, error) != nullptr;
 }
 
 void ModelCache::unload(const std::string& path) {
+    const auto directory = checkpoint_directory(path);
+    const std::string& key = directory ? *directory : path;
     const std::lock_guard<std::mutex> lock(mutex_);
-    models_.erase(path);
-    lru_.erase(std::remove(lru_.begin(), lru_.end(), path), lru_.end());
+    models_.erase(key);
+    lru_.erase(std::remove(lru_.begin(), lru_.end(), key), lru_.end());
 }
 
 void ModelCache::unload_all() {
@@ -92,8 +96,10 @@ std::vector<std::string> ModelCache::loaded() const {
 }
 
 bool ModelCache::is_loaded(const std::string& path) const {
+    const auto directory = checkpoint_directory(path);
+    if (!directory) return false;
     const std::lock_guard<std::mutex> lock(mutex_);
-    return models_.find(path) != models_.end();
+    return models_.find(*directory) != models_.end();
 }
 
 ModelCache::MemoryUsage ModelCache::memory_usage() const {

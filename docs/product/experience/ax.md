@@ -209,3 +209,8 @@ relay it to a person.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.
+
+Native agents select [operator-registered checkpoints](../../agent/checkpoints.md) (#1411).
+CRUD preserves portable model selectors; serving refuses unregistered selectors before
+any tokenizer, configuration, weights or warm-cache access. `base-agent` and the legacy
+`/data/models/base-agent` selector are registered by default.

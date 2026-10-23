@@ -9968,8 +9968,8 @@ const nlohmann::json& create_agent_schema() {
           {"model",
            {{"type", "string"},
             {"description",
-             "native agents (required there): checkpoint dir, model:<uuid>, or a HuggingFace "
-             "repo id"}}},
+             "native agents (required there): exact operator-registered checkpoint selector; "
+             "registration is checked before serving"}}},
           // zetta#1015: the agent's family and runtime, the Studio agent shape, the Ask Orama
           // contract, granted Pipelines, a Python agent's definition and a service's endpoint.
           {"kind", {{"type", "string"}, {"enum", {"custom", "orama"}}}},
@@ -10916,8 +10916,8 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     };
 
     // Run the agent (loads its model, runs the tool-calling loop) — the shared path the GUI
-    // chat panel also uses, so both behave identically. agent.model must be a local
-    // checkpoint dir; pull it first with `zetta pull` if it isn't present.
+    // chat panel also uses, so both behave identically. agent.model must select an
+    // operator-registered checkpoint; respond checks it before any filesystem loader.
     // Ground the answer in what this Project's pipeline actually produced (#914).
     // The two questions a churn buyer asks — "what's driving churn" and "which are
     // most at risk" — are answerable from the trained model's ranked drivers and its
@@ -12454,8 +12454,8 @@ void register_core_capabilities(Registry& registry) {
     Capability create_agent_capability{
         "create_agent",
         "Create an agent",
-        "Create a served, selectable agent — a model (checkpoint dir, model:<uuid>, or a "
-        "HuggingFace repo id) plus an optional system prompt and the tools it may call. "
+        "Create a served, selectable agent — an operator-registered model selector "
+        "plus an optional system prompt and the tools it may call. "
         "Returns the stored record with its generated id; replicates to every node.",
         create_agent_schema(),
         agent_fields_schema(),
@@ -12591,7 +12591,7 @@ void register_core_capabilities(Registry& registry) {
         "Chat with an agent",
         "Send a message to an agent and get its reply, with tool-calling: the agent's model "
         "generates, any tool calls it emits run in its sandbox and feed back, until it "
-        "answers. Loads the agent's model (a local checkpoint dir). It changes nothing on "
+        "answers. Loads only an operator-registered checkpoint. It changes nothing on "
         "the node: a turn that asks to build something returns a run PROPOSAL (propose_run, "
         "under the caller's own rights) with an impact preview, and nothing is created until "
         "approve_run_proposal. Also accepts a JSON-body POST.",

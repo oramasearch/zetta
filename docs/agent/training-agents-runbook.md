@@ -138,9 +138,13 @@ is not the deliverable — the report is.
 
 ## 5. Install and operate (MCP / REST / web UI)
 
+The node operator must [register the checkpoint](checkpoints.md) before serving it (#1411).
+Use the registered selector in the record; downloading or training a checkpoint does not
+grant workspace writers access to its directory.
+
 ```sh
-# point an agent at a checkpoint
-create_agent  {"name":"...","model":"/abs/path/to/checkpoint","tools":["connect","clean","model","serve"]}
+# select a checkpoint registered by the operator
+create_agent  {"name":"...","model":"customer-agent","tools":["connect","clean","model","serve"]}
 
 # what it is rewarded for — importance is a real weight
 update_agent  {"id":"<id>","goals":[

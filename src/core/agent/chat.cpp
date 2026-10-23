@@ -14,6 +14,7 @@
 
 #include "zetta/agent/action.hpp"
 #include "zetta/agent/base_prompt.hpp"
+#include "zetta/agent/checkpoint.hpp"
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/interaction.hpp"
 #include "zetta/agent/solution_graph.hpp"
@@ -244,13 +245,18 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      const std::vector<PriorTurn>& history) {
     ChatResponse response;
     std::string error;
+    const auto directory = checkpoint_directory(agent.model, &error);
+    if (!directory) {
+        response.error = error;
+        return response;
+    }
     // The tokenizer is cheap and always needed (encode/decode); load it from a small
     // process-wide cache. The multi-GB autograd model is NOT loaded here: when the fast
     // MLX serving runner is installed it decodes without the CPU model, so we load that
     // model lazily in `generate` below only as the fallback — avoiding a wasted second
     // full-checkpoint load on the first turn.
     const std::shared_ptr<const zetta::tokenizer::BpeTokenizer> tokenizer_handle =
-        cached_tokenizer(agent.model, &error);
+        cached_tokenizer(*directory, &error);
     if (!tokenizer_handle) {
         response.error = error;
         return response;
@@ -263,7 +269,7 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // trained without a stop token repeats — see the SFT driver). Read from config.json.
     int eos_id = 151645;  // fallback: Qwen <|im_end|>
     {
-        std::ifstream config_file(agent.model + "/config.json");
+        std::ifstream config_file(*directory + "/config.json");
         if (config_file) {
             const nlohmann::json config =
                 nlohmann::json::parse(config_file, nullptr, /*allow_exceptions=*/false);
@@ -278,8 +284,8 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // the MLX build wired one in; fall back to the native autograd CPU inference. The
     // fast path is gated to the same logits, so it returns the same greedy tokens —
     // just ~6x faster on Apple Silicon (no per-op host<->device sync).
-    const std::string model_path = agent.model;
-    const auto generate = [&tokenizer, model_path, max_new_tokens, eos_id](
+    const std::string model_path = *directory;
+    const auto generate = [&tokenizer, model_path, selector = agent.model, max_new_tokens, eos_id](
                               const std::string& prompt) -> std::string {
         const std::vector<int> prompt_tokens = tokenizer.encode(prompt);
         if (has_qwen_inference_runner()) {
@@ -291,7 +297,7 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
         // Fallback: load the CPU autograd model lazily (only when MLX didn't serve).
         std::string load_error;
         const std::shared_ptr<const LoadedModel> loaded =
-            ModelCache::instance().get(model_path, &load_error);
+            ModelCache::instance().get(selector, &load_error);
         if (!loaded) return std::string();
         return tokenizer.decode(zetta::autograd::QwenInference(loaded->model)
                                     .generate_greedy(prompt_tokens, max_new_tokens, eos_id));

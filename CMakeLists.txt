@@ -832,6 +832,7 @@ add_library(zetta-core STATIC
   src/core/dataset/product_claims.cpp
   src/core/agent/chat.cpp
   src/core/agent/model_cache.cpp
+  src/core/agent/checkpoint.cpp
   src/core/agent/inference_runner.cpp
   src/core/agent/grader.cpp
   src/core/agent/sandbox.cpp
