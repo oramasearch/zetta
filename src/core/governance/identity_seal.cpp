@@ -1,7 +1,10 @@
 #include "zetta/governance/identity_seal.hpp"
 
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -107,15 +110,25 @@ std::optional<std::string> read_file(const fs::path& path) {
 
 bool write_file(const fs::path& path, const std::string& contents,
                 bool is_private) {
-    {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
-        out << contents;
-        if (!out) return false;
-    }
+    // The mode is set before any byte is written, so a file holding the root's
+    // seed is never readable by others, not even briefly (#1413).
     const mode_t mode = is_private ? (S_IRUSR | S_IWUSR)
                                    : (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    return ::chmod(path.c_str(), mode) == 0;
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
+    if (fd < 0) return false;
+    bool ok = ::fchmod(fd, mode) == 0;  // an existing file keeps its old mode otherwise
+    std::size_t written = 0;
+    while (ok && written < contents.size()) {
+        const ssize_t n = ::write(fd, contents.data() + written, contents.size() - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        written += static_cast<std::size_t>(n);
+    }
+    ok = (::close(fd) == 0) && ok;
+    return ok;
 }
 
 class collecting_error_handler : public nlohmann::json_schema::error_handler {
@@ -435,7 +448,16 @@ IdentityRootSetup load_or_create_identity_root(const std::string& data_dir,
             }
             setup.authority = std::move(generated);
         } else if (owner_root && owner_root->public_key_hex() == file->public_key) {
+            // Pinned by a build that stored only the public key: store the seed
+            // now, while the token still derives it, so a later token rotation
+            // does not leave this node verify-only.
             setup.authority = std::move(owner_root);
+            if (!write_root_file(path, *setup.authority, /*keep_seed=*/true)) {
+                setup.warning = "cannot store the identity root's seed in " +
+                                path.string() +
+                                ": a later admin-token rotation will leave this node "
+                                "verify-only";
+            }
         } else {
             setup.authority = IdentityAuthority::verify_only(file->public_key);
             if (owner_root) {
@@ -451,8 +473,9 @@ IdentityRootSetup load_or_create_identity_root(const std::string& data_dir,
         return setup;
     }
 
-    // First start: pin the root.
-    bool keep_seed = false;
+    // First start: pin the root. A root this node can seal with keeps its seed in
+    // the file (mode 0600), whether derived from the admin token or generated, so
+    // the root outlives a rotation of the token it was derived from.
     if (override_root) {
         if (owner_root && owner_root->public_key_hex() == override_root->public_key_hex()) {
             setup.authority = std::move(owner_root);
@@ -468,13 +491,12 @@ IdentityRootSetup load_or_create_identity_root(const std::string& data_dir,
         setup.authority = std::move(owner_root);
     } else {
         setup.authority = IdentityAuthority::generate();
-        keep_seed = true;
         if (!setup.authority) {
             set_reason(reason, "failed to generate an identity root");
             return setup;
         }
     }
-    if (!write_root_file(path, *setup.authority, keep_seed)) {
+    if (!write_root_file(path, *setup.authority, setup.authority->can_seal())) {
         set_reason(reason, "cannot write " + path.string());
         setup.authority.reset();
         return setup;
