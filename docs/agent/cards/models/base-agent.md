@@ -25,7 +25,7 @@ skill.
 
 **Served to lake's native agents as a model image** — `oramasearch/base-agent-0.6b:<version>`
 (private Docker Hub), built from one Hub version folder by
-[`images/base-agent/`](../../../../images/base-agent/README.md). Every Lake workspace Zetta copies
+the private repository [oramasearch/base-agent-0.6b](https://github.com/oramasearch/base-agent-0.6b) (pinned by zetta-bridge). Every Lake workspace Zetta copies
 it to `/data/models/base-agent`, the checkpoint a native agent created without a model runs on
 ([lake#246](https://github.com/oramasearch/lake/issues/246)). The operator's default is `v16`.
 
