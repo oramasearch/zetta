@@ -234,14 +234,19 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
                 return Result::failure("blocked by gate: " + why);
             }
             // Gate passed → execute the lowered graph into a real, audited Run. The
-            // graph runner is the injectable execution seam: by default the structural
+            // graph runner is an injected dependency: by default the structural
             // DefaultStepExecutor (Node::run_graph), or a host-supplied runner that
             // routes a churn-shaped graph through the real churn engine on the node's
             // live JobCoordinator (#580). Governance (capability check above + the
             // audit record below) is identical either way.
-            const zetta::pipeline::ExecutionResult exec = graph_runner_
-                                             ? graph_runner_(lowered.graph)
-                                             : node_.run_graph(lowered.graph);
+            // A key session's steps run as that key (#843): each step must be
+            // authorized for it before it executes. The local session is the
+            // trusted principal and runs unchecked.
+            const zetta::pipeline::ExecutionResult exec =
+                graph_runner_ ? graph_runner_(lowered.graph)
+                              : node_.run_graph(lowered.graph, {}, {},
+                                                zetta::pipeline::RunPrincipal{
+                                                    session_key_, /*acting_is_user=*/false});
             Result result = sim_python_result(lowered.graph, exec);
             record(true, "console sim-python · " + summary + " · run " +
                              (exec.run ? short_id(exec.run->id()) : "-") +

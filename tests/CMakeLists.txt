@@ -171,6 +171,7 @@ add_executable(zetta-tests
   governance/test_row_security.cpp
   governance/test_consent.cpp
   pipeline/test_executor.cpp
+  pipeline/test_step_authority.cpp
   pipeline/test_run_progress.cpp
   usecases/churn/test_churn_step_executor.cpp
   usecases/churn/test_churn_solution.cpp

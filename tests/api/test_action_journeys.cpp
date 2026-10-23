@@ -8093,6 +8093,16 @@ TEST_F(Uc1Journey, JourneyUc1EndToEndWithActingKey) {
           "gate", "deploy", "run"}) {
         grants.grant(zetta::governance::CapabilityDomain::Orchestration, action);
     }
+    // The run's steps execute as the key (#843), so it also holds each step
+    // kind's right: connect reads, clean derives a dataset, model trains, index
+    // builds, serve exposes, act delivers.
+    grants.grant(zetta::governance::CapabilityDomain::Data, "read");
+    grants.grant(zetta::governance::CapabilityDomain::Data, "predict");
+    for (const char* action :
+         {"create_dataset_from_query", "train_model", "create_index",
+          "deliver_action_task"}) {
+        grants.grant(zetta::governance::CapabilityDomain::Orchestration, action);
+    }
     auto key = principal->create_key(zetta::governance::unrestricted_scope(),
                                      std::move(grants));
     ASSERT_TRUE(key);
@@ -9533,7 +9543,7 @@ TEST_F(Uc1Journey, JourneyLanguageMethodologyCompilesRunsAndReports) {
 
     ASSERT_TRUE(node.create_role("language-reader"));
     ASSERT_TRUE(node.grant_permissions(
-        "language-reader", {"mcp:call", "pipelines:manage"}));
+        "language-reader", {"mcp:call", "pipelines:manage", "serving:read"}));
     ASSERT_TRUE(node.grant_scoped_permissions(
         "language-reader", {"sql:read"},
         zetta::governance::Resource::column(

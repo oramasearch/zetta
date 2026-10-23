@@ -313,9 +313,12 @@ TEST(GovernedConsole, CapabilityGrantAllowsTheRun) {
     ASSERT_TRUE(principal);
     CapabilitySet caps;
     // The setup creates a database and a table and inserts: the key needs the
-    // schema and write rights, not only the query right (#1229).
+    // schema and write rights, not only the query right (#1229). The pipeline's
+    // steps run as the key too (#843): its connect reads, its model trains.
     caps.grant(CapabilityDomain::Api, "query")
         .grant(CapabilityDomain::Orchestration, "start_run")
+        .grant(CapabilityDomain::Orchestration, "train_model")
+        .grant(CapabilityDomain::Data, "read")
         .grant(CapabilityDomain::Data, "ddl")
         .grant(CapabilityDomain::Data, "write");
     auto key = principal->create_key(Scope{}, caps);
@@ -329,8 +332,9 @@ TEST(GovernedConsole, CapabilityGrantAllowsTheRun) {
     EXPECT_EQ(node.run_count(), 1u);
 
     // Both ran + are audited as allowed against the key: one data_access per
-    // run, and one data_changed per setup statement.
-    ASSERT_EQ(count_action(node, AuditAction::DataAccess), 2u);
+    // run, one per pipeline step the key was authorized for (#843: connect and
+    // model), and one data_changed per setup statement.
+    ASSERT_EQ(count_action(node, AuditAction::DataAccess), 4u);
     ASSERT_EQ(count_action(node, AuditAction::DataChanged), 3u);
     for (const auto& event : node.audit_events()) {
         EXPECT_TRUE(event->allowed());

@@ -41,8 +41,12 @@ straight into `ConsoleModel::submit`. Each statement runs the same chain:
 3. **Execute.** SQL runs through the [query service](../data/query.md); simulated-Python
    executes the gated graph through the console's **graph runner**, producing a real,
    persisted [Run](../pipeline/runs.md) (so an ad-hoc Python statement shows up in the Runs
-   panel). The graph runner is an **injectable seam** (`set_graph_runner`): by default
-   `Node::run_graph` (the structural `DefaultStepExecutor`), but a host may inject one
+   panel). The graph runner is an **injected dependency** (`set_graph_runner`): by default
+   `Node::run_graph` (the structural `DefaultStepExecutor`) run as the session key, so
+   each step must be authorized for the key before it executes and each decision is
+   audited ([step authority](step-authority.md), #843: a key with `start_run` alone can
+   start the run, but its connect step also needs `data:read` and its model step
+   `orchestration:train_model`). A host may inject one
    that routes a **churn-shaped** graph through the **real** churn engine — the one
    public runner `run_churn_solution_on_node` (#637) on the node's live
    `JobCoordinator` (#580 — the headed app does this, so an interactive churn

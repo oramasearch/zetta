@@ -5254,6 +5254,14 @@ zetta::pipeline::ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph
                                    std::move(graph_id));
 }
 
+zetta::pipeline::ExecutionResult Node::run_graph(
+    const ir::ExecutionGraph& graph, std::string project, std::string graph_id,
+    const zetta::pipeline::RunPrincipal& principal) {
+    zetta::pipeline::GraphExecutor executor;
+    executor.run_as(principal);
+    return executor.execute(*this, graph, std::move(project), std::move(graph_id));
+}
+
 // ----- replication: persistence ---------------------------------------------
 
 fs::path Node::replication_path() const {

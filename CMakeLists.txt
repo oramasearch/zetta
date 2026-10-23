@@ -688,6 +688,7 @@ add_library(zetta-core STATIC
   src/core/usecases/churn/entity_resolution_check.cpp
   src/core/usecases/churn/entity_resolution.cpp
   src/core/pipeline/executor.cpp
+  src/core/pipeline/step_authority.cpp
   src/core/pipeline/run_progress.cpp
   src/core/usecases/churn/churn_step_executor.cpp
   src/core/usecases/churn/churn_solution.cpp

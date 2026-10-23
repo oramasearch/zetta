@@ -7,5 +7,9 @@ metric from persisted series; caller-supplied steps remain strict (#1205).
 A trainer logging every round coalesces the Run's replicated capture to at
 most one per second; the Node's tick and stop write the last one (#1217).
 
+`executor.cpp` authorizes each step for the run's principal before it executes
+when one is set, through `step_authority.cpp` (deny-by-default, audited as
+`data_access`; [step authority](../../../docs/governance/step-authority.md), #843).
+
 See [Run metrics](../../../docs/ml/run-metrics.md) and
 [pipeline documentation](../../../docs/pipeline/README.md).
