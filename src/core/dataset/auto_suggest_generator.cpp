@@ -1,5 +1,6 @@
 #include "zetta/dataset/auto_suggest_generator.hpp"
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,8 +54,11 @@ std::vector<SolutionTemplate> auto_suggest_scenarios() {
 
 GeneratedDataset AutoSuggestDatasetGenerator::generate(const DatasetGenSpec& spec) const {
     GeneratedDataset dataset;
-    const int variants = spec.variants_per_subject < 1 ? 1 : spec.variants_per_subject;
     const std::vector<SolutionTemplate> scenarios = auto_suggest_scenarios();
+    // Bound the expansion before any variant is built (#1398).
+    const std::optional<int> variants =
+        bounded_variants(spec, scenarios.size(), &dataset.error);
+    if (!variants) return dataset;
 
     // Held-out data states are emitted LAST (the canary convention on GeneratedDataset): the
     // canary is a whole data state the model never saw, which is what tests whether it
@@ -64,7 +68,7 @@ GeneratedDataset AutoSuggestDatasetGenerator::generate(const DatasetGenSpec& spe
     const auto emit = [&](std::size_t begin, std::size_t end) {
         std::size_t emitted = 0;
         for (std::size_t index = begin; index < end; ++index) {
-            for (int variant = 0; variant < variants; ++variant) {
+            for (int variant = 0; variant < *variants; ++variant) {
                 // Reuse the gate builder; auto-suggest cases carry no pipeline action (this
                 // model emits suggestions, not a pipeline).
                 dataset.cases.push_back(case_from_template(scenarios[index]));

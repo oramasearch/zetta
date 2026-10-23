@@ -12632,6 +12632,7 @@
                   },
                   "variants_per_subject": {
                     "description": "task variants per plan subject",
+                    "maximum": 16,
                     "minimum": 1,
                     "type": "integer"
                   }

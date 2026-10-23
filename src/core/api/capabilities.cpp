@@ -11325,7 +11325,10 @@ const nlohmann::json& generate_dataset_schema() {
             {"minLength", 1},
             {"description", "a generator kind from list_dataset_generators (e.g. 'base-agent')"}}},
           {"variants_per_subject",
-           {{"type", "integer"}, {"minimum", 1}, {"description", "task variants per plan subject"}}},
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", zetta::dataset::kMaxVariantsPerSubject},
+            {"description", "task variants per plan subject"}}},
           {"held_out_fraction",
            {{"type", "number"}, {"minimum", 0}, {"maximum", 1}, {"description", "canary fraction"}}},
           {"path",
@@ -11355,9 +11358,18 @@ ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
         return ApiResult::failure("not_found", "no dataset generator '" + kind + "'");
     }
     zetta::dataset::DatasetGenSpec spec;
-    spec.variants_per_subject = input.value("variants_per_subject", 1);
+    // Read wide and clamp before narrowing, so a huge count cannot wrap into range on the way to
+    // int; anything over the ceiling stays over it and the generator refuses it (#1398).
+    const std::int64_t variants = input.value("variants_per_subject", std::int64_t{1});
+    spec.variants_per_subject = static_cast<int>(std::clamp<std::int64_t>(
+        variants, 0, std::int64_t{zetta::dataset::kMaxVariantsPerSubject} + 1));
     spec.held_out_fraction = input.value("held_out_fraction", 0.0);
     const zetta::dataset::GeneratedDataset dataset = generator->generate(spec);
+    // The generator refuses a spec over its work ceilings before expanding it (#1398).
+    if (!dataset.error.empty()) {
+        return ApiResult::failure("invalid_input", "/variants_per_subject: " + dataset.error,
+                                  "/variants_per_subject");
+    }
 
     // Gate it (blender-lr discipline) — the generator builds gated cases, but the corpus is only
     // trusted once admit_corpus confirms it (reference passes, controls fail).
