@@ -800,7 +800,7 @@ the executor before it touches anything:
 | `DELETE`, `TRUNCATE` | `sql:write` | the **whole** table (they remove whole rows) |
 | `CREATE TABLE`, `DROP TABLE` | `sql:ddl` | the whole table (a grant `ON db.*` or `ON db.t`) |
 | `CREATE DATABASE`, `DROP DATABASE` | `sql:ddl` | the database (`ON db.*` / `ON DATABASE db`) or flat |
-| `CREATE VIRTUAL TABLE` | `sql:ddl` | flat only: it is a global name over a replicated key family |
+| `CREATE VIRTUAL TABLE` | `sql:ddl` and `cluster:admin` | flat only: it is a global name over a replicated key family, read raw. Reading one needs `cluster:admin`, and no one declares or reads one over a reserved family such as `row:` (#1392, [virtual-tables.md](../data/virtual-tables.md)) |
 | `CREATE USER` | `users:manage` | flat |
 | `CREATE TOKEN` | `tokens:manage` | flat — without it a caller could mint a token for the owner |
 | `CREATE/DROP ROLE`, `GRANT`/`REVOKE`, `CREATE/DROP POLICY` | `roles:manage` | flat (#746); the role statements are also bounded by the caller's own rights and never change a built-in ([#761](#bounded-role-management-761)) |

@@ -67,6 +67,32 @@ Aggregates and `GROUP BY` fold the composed rows through the same
 counts as the table's columns, so a declared column no row carries yet is
 `null`, not an error; an undeclared one no row carries is.
 
+## Who may declare and read one (#1392)
+
+A virtual table returns raw replicated values, before any table or column
+grant, row-level security policy or the connection-store refusal could apply.
+So it is an admin's tool, like `system.nodes` (#766):
+
+- **Declaring** one needs flat `sql:ddl` **and** `cluster:admin`. The writer
+  role (`sql:ddl` alone) cannot.
+- **Reading** one needs `cluster:admin`. The trusted local session (the library,
+  the headed app, tests) counts as admin, as it does for the system tables.
+- **Reserved families are never projected**, by anyone, admin and local
+  included: `row:`, `tbl:`, `db:`, `cols:`, `part:`, `mfst:` (table data and
+  structure), `lo:` (large objects), `user:`, `role:`, `token:`, `user_role:`,
+  `key:`, `principal:`, `policy:`, `audit:` (identities, credentials and the
+  access-control registry), `record_collection:`, `object_bucket:`,
+  `object_lease:`, `metric:` (families with their own scoped grants) and
+  `vtable:`. A prefix reaches a family when either starts with the other, so
+  `'r'` and `'row:abc'` are refused as well as `'row:'`. Those families are read
+  through their own surfaces (SQL on the table, the system tables, the record and
+  object capabilities), which apply their grants and strip secret material.
+- A definition over a reserved family that already exists (declared before
+  this rule, or replicated from an older node) is refused at `SELECT`.
+
+The list is `kReservedVirtualTableFamilies` in `src/core/query/executor.cpp`.
+Tests: `tests/governance/test_virtual_table_access.cpp`.
+
 ## Naming + resolution
 
 Virtual tables have **global, unqualified names** (`SELECT * FROM my_nodes`, not
@@ -114,7 +140,8 @@ is rejected.
 - **A `system.virtual_tables` catalog view** over `Node::virtual_tables()`.
 - **A registered draft-07 boundary schema** for the `vtable:` value (currently a
   hand-written non-throwing `from_json`).
-- **Governance** (RLS / column scoping) over virtual tables.
+- **Per-row governance** over virtual tables (row or column scoping for a
+  non-admin reader). Until then only an admin reads one (#1392, above).
 
 ## Code
 
@@ -128,4 +155,5 @@ is rejected.
 - `src/core/node.cpp` — `create_virtual_table` / `find_virtual_table` /
   `virtual_tables` / `virtual_table_rows` / `drop_virtual_table`.
 - Tests: `tests/data/test_query.cpp` (parse, project, read-only, restart, the
-  needs-a-CRDT + shadow rejections).
+  needs-a-CRDT + shadow rejections); `tests/governance/test_virtual_table_access.cpp`
+  (admin-only declare and read, reserved families, #1392).

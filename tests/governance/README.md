@@ -47,3 +47,8 @@ statement's effects attributed to its session.
 partitions narrowed to the caller's tables, each person's own audit rows, and
 tables that follow a read tool's scope. See
 [system-catalog-access](../../docs/governance/system-catalog-access.md).
+
+`test_virtual_table_access.cpp` covers virtual tables (#1392): declaring one
+needs `cluster:admin` as well as `sql:ddl`, reading one needs `cluster:admin`,
+and no one declares or reads one over a reserved key family such as `row:`. See
+[virtual-tables](../../docs/data/virtual-tables.md).

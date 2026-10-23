@@ -42,6 +42,8 @@
 #include "zetta/data/object_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/distributed_select.hpp"
+
+#include "../catalog.hpp"
 #include "zetta/query/predicate.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/data/table.hpp"
@@ -424,6 +426,43 @@ std::string no_such_system_table(const std::string& name) {
     }
     return "no such system table \"" + name +
            "\" (see SELECT * FROM system.tables; available: " + available + ")";
+}
+
+// ----- virtual tables: which CRDT key families they may project (#1392) -----
+// A virtual table returns raw replicated values, before any table or column
+// grant, row-level security policy or the connection-store refusal could apply.
+// So the families those protections guard, and the ones holding credential or
+// governance material, are never projected, by anyone, admin included: an admin
+// reads them through the system tables, which strip secret material. Each entry
+// is a family prefix from catalog.hpp.
+constexpr std::array kReservedVirtualTableFamilies = {
+    // Table data and structure: governed by table/column grants, row-level
+    // security and the connection-store refusal (whose rows hold sealed
+    // credentials).
+    catalog::kRowPrefix, catalog::kTablePrefix, catalog::kDatabasePrefix,
+    catalog::kColumnOrderPrefix, catalog::kPartitionPrefix, catalog::kManifestPrefix,
+    // Large objects: governed by blob:read.
+    catalog::kLargeObjectPrefix,
+    // Identities, credentials and the access-control registry.
+    catalog::kUserPrefix, catalog::kRolePrefix, catalog::kTokenPrefix,
+    catalog::kUserRolePrefix, catalog::kAccessKeyPrefix, catalog::kPrincipalPrefix,
+    catalog::kPolicyPrefix, catalog::kAuditPrefix,
+    // Keyed records, objects and metrics: governed by their own scoped grants.
+    catalog::kRecordCollectionPrefix, catalog::kObjectBucketPrefix,
+    catalog::kObjectLeasePrefix, catalog::kMetricPrefix,
+    // The virtual-table definitions themselves.
+    catalog::kVirtualTablePrefix,
+};
+
+// The reserved family a virtual-table prefix would reach, or empty. A key is
+// projected when it starts with the prefix, so the prefix reaches a family when
+// either one starts with the other: 'ro' reaches 'row:' and 'role:', and
+// 'row:abc' is inside 'row:'.
+std::string_view reserved_family_reached(std::string_view prefix) {
+    for (const std::string_view family : kReservedVirtualTableFamilies) {
+        if (family.starts_with(prefix) || prefix.starts_with(family)) return family;
+    }
+    return {};
 }
 
 // The pre-#538 table names: `system.zetta_<table>` still resolves to
@@ -3002,12 +3041,27 @@ QueryResult Executor::execute(const Statement& stmt,
                     return deny("permission denied: CREATE VIRTUAL TABLE needs a "
                                 "sql:ddl grant on every database (" + *why + ")");
                 }
+                // It projects raw replicated state, the node's internals, so it is
+                // an admin's tool, like system.nodes (#766, #1392): sql:ddl alone
+                // (the writer role) does not make one.
+                if (!reads_whole_system()) {
+                    return deny("permission denied: CREATE VIRTUAL TABLE projects raw "
+                                "replicated state and needs cluster:admin");
+                }
                 // OVER CRDT is required (the must-extend-a-CRDT invariant). The
                 // grammar can't reach here without it, but a bare '' is possible.
                 if (s.crdt_prefix.empty()) {
                     return error("CREATE VIRTUAL TABLE requires a non-empty OVER "
                                  "CRDT '<prefix>' (a virtual table must extend a "
                                  "CRDT key-family)");
+                }
+                // Never over a family whose data has its own protections (#1392).
+                if (const std::string_view family = reserved_family_reached(s.crdt_prefix);
+                    !family.empty()) {
+                    return deny("permission denied: OVER CRDT '" + s.crdt_prefix +
+                                "' reaches the reserved key family '" + std::string(family) +
+                                "', whose data is read through its own grants and "
+                                "policies, never as a virtual table");
                 }
                 // Exactly one DURABLE KEY column — the convergent row identity.
                 int key_count = 0;
@@ -3527,6 +3581,22 @@ QueryResult Executor::execute(const Statement& stmt,
                 // name (a real table takes precedence). Its durable rows are
                 // projected from the CRDT; WHERE/projection reuse select_over_rows.
                 if (auto vtable = resolve_virtual_table(s.table)) {
+                    // Raw replicated state, read before any table grant or policy
+                    // could apply: an admin's read, like system.nodes (#1392).
+                    if (!reads_whole_system()) {
+                        return deny("permission denied: virtual table \"" + vtable->name +
+                                    "\" projects raw replicated state and is readable by "
+                                    "an admin only (cluster:admin)");
+                    }
+                    // A definition over a reserved family (made before this check,
+                    // or replicated from an older node) is never read.
+                    if (const std::string_view family =
+                            reserved_family_reached(vtable->crdt_prefix);
+                        !family.empty()) {
+                        return deny("permission denied: virtual table \"" + vtable->name +
+                                    "\" reaches the reserved key family '" +
+                                    std::string(family) + "'");
+                    }
                     std::vector<std::string> declared;
                     for (const zetta::data::VirtualColumn& column : vtable->columns) {
                         declared.push_back(column.name);
