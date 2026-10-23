@@ -55,9 +55,11 @@ if(APPLE AND CMAKE_CXX_COMPILER MATCHES "^(/opt/homebrew/opt/llvm[^/]*)/")
   # one (the keg's own caveat). Linked against the system unwinder, a thrown
   # exception is sometimes not caught by a matching handler and std::terminate()s
   # instead — a catch that works in a toy program and fails in a real frame. It
-  # made the registry's exception containment (#1007) a no-op on macOS, and is
-  # likely also what the postgres.cpp "-O1 miscompile" note below describes (that
-  # workaround is left in place until it is re-verified without it).
+  # made the registry's exception containment (#1007) a no-op on macOS, and it is
+  # what was taken for a Clang miscompile of the SQL parser (#758): linked against
+  # the system unwinder, a ParseError thrown in postgres.cpp escaped the parser's
+  # own catch at every -O level and ended the node (#793, #819); with this
+  # libunwind it is caught even at -O3. The parser no longer throws at all.
   add_link_options(-L${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++
                    -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++
                    -L${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/unwind
@@ -888,7 +890,6 @@ add_library(zetta-core STATIC
   src/core/repl/console_model.cpp
   src/core/repl/governed_console.cpp
   src/core/query/postgres.cpp
-  src/core/query/statement_builders.cpp
   src/core/query/predicate.cpp
   src/core/query/distributed_select.cpp
   src/core/query/executor.cpp
@@ -896,35 +897,6 @@ add_library(zetta-core STATIC
   src/core/headless.cpp
   src/core/signals.cpp
 )
-
-# Toolchain workaround: the pinned Homebrew Clang miscompiles the SQL parser's
-# exception unwinding at -O3 + -fexperimental-library — a thrown ParseError
-# escapes run()'s try/catch and std::terminate()s the process. It first bit the
-# two-string CREATE TOKEN branch (isolated with a [[gnu::noinline]] helper + an
-# out-of-TU statement builder; see src/core/query/statement_builders.cpp), but
-# that mitigation is fragile: growing the grammar (the role-management DDL, #746)
-# tips it over again TU-wide, aborting even pre-existing parse-error paths.
-# Building just this one TU at -O1 makes its exception tables correct; it is a
-# text parser over tiny inputs, so the optimization level is immaterial to
-# performance. -O1 is a genuine sweet spot: BOTH -O3 (the target default) and -O0
-# miscompile this TU's exception unwinding (a thrown ParseError escapes run()'s
-# try/catch), so -O0 is NOT a safe "more conservative" fallback. The last -O flag
-# wins, so this overrides the target's -O3.
-#
-# Two more constraints keep the miscompile at bay (both learned the hard way while
-# adding CREATE VIRTUAL TABLE, #809):
-#   1. Unwinding OUT OF a [[gnu::noinline]] parse helper is itself miscompiled at
-#      -O1 (the throw is not caught), even though the helper is what keeps a big
-#      grammar branch from bloating parse_create/run and tipping the TU-wide EH
-#      over. So a helper that would throw must instead be NON-throwing — set a
-#      pending-error member + return std::nullopt — and the caller does the actual
-#      `throw` from its inline frame (inline throws ARE caught at -O1). See
-#      parse_create_virtual_table_or_error.
-#   2. The multi-string Statement *construction* miscompiles in-TU, so it is
-#      routed out via statement_builders.cpp.
-# Drop this whole dance when the compiler is bumped.
-set_source_files_properties(src/core/query/postgres.cpp
-  PROPERTIES COMPILE_OPTIONS "-O1")
 
 target_compile_features(zetta-core PUBLIC cxx_std_26)
 

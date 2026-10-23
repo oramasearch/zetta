@@ -148,6 +148,7 @@ add_executable(zetta-tests
   index/test_distributed_fulltext.cpp
   query/test_distributed_select.cpp
   query/test_sql_write_permissions.cpp
+  query/test_parse_errors_never_crash.cpp
   index/test_node_search.cpp
   compute/test_compute_job.cpp
   compute/test_checkpoint.cpp

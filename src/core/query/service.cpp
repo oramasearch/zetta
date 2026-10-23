@@ -24,14 +24,10 @@ QueryService::Outcome QueryService::run(std::string_view sql,
         }
     } stopwatch{std::chrono::steady_clock::now(), out.elapsed};
 
-    // The parser/executor still THROW on some unsupported syntax (e.g. DISTINCT,
-    // `SELECT * FROM system.*`). This boundary should be non-throwing (the zetta-core
-    // seam rule), so contain any throw as a normal query error.
-    // NOTE (#819): a known Clang miscompile of postgres.cpp's exception unwinding at
-    // -O1 + -fexperimental-library (see the CMakeLists "Toolchain workaround" note)
-    // can std::terminate() the process mid-unwind *before* this catch runs, so this
-    // does NOT yet fully contain those specific parses — it is the correct backstop
-    // once the compiler is bumped / the throwing helper is made non-throwing.
+    // This boundary is non-throwing (the zetta-core boundary rule). The parser never
+    // throws: it returns every error as a value (#793, #819). The executor may still
+    // throw on something it does not handle, so contain any throw as a normal query
+    // error rather than let one statement end the node.
     try {
         const ParseResult parsed = dialect_.parse(sql);
         if (!parsed.ok()) {

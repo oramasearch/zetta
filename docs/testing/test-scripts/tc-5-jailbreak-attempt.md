@@ -6,8 +6,8 @@ analyst, a contractor, a compromised credential. They can submit scripts, becaus
 product. They are now trying to get something they are not entitled to.
 **Goal:** escape the governance boundary. See data they should not see, do something they are
 not allowed to do, take the node down, or act without leaving a trace.
-**Status:** **fails today** — several escapes below are known-open (#793, #819, #759, #760,
-#765, #761).
+**Status:** **fails today** — several escapes below are known-open (#759, #760, #765, #761).
+The node-down escapes #793 and #819 are fixed: no statement can stop the node.
 
 This is the **adversarial pass**. #780 is the automated regression harness for escapes we
 already know about; this script is for finding the ones nobody has written a test for. A
@@ -107,9 +107,11 @@ record. **And** the hour of unlisted attempts produced nothing.
 
 ## Notes for the tester
 
-- **Step 1 is currently expected to fail.** A malformed table reference can take the node down
-  today (#819 — SIGABRT), and several statements crash it on a parse error (#793). Confirm
-  whether they still do, and stop treating them as the only ones — go looking for siblings.
+- **Step 1 should pass.** A malformed table reference (#819) and `REVOKE TOKEN`, a scoped
+  `GRANT ON t(cols)` and `SELECT current_user()` (#793) used to end the node; the parser no
+  longer throws, and `tests/query/test_parse_errors_never_crash.cpp` holds it. Confirm it,
+  and go looking for siblings outside the parser — anything that still takes the node down
+  is a finding.
 - **Never use the privileged account to perform an attempt**, only to verify results. The
   moment you use it to make something happen, the run is void.
 - **Record the refusals too.** "It said no" is the result; *how* it said no is the finding —
@@ -128,7 +130,7 @@ record. **And** the hour of unlisted attempts produced nothing.
   that finds what that harness does not yet cover; anything found here should become a
   regression there.
 - #843 — deny-by-default authority over graph execution; steps 9–11 are its verification.
-- Known-open escapes: #793, #819 (node down), #759, #761 (escalation), #760, #765, #767
+- Known-open escapes: #759, #761 (escalation), #760, #765, #767
   (reading past scope), #766 (catalogue disclosure).
 - [`tc-2-no-egress-capture`](tc-2-no-egress-capture.md) — step 9 overlaps its Part 2; run the
   capture from that script here.

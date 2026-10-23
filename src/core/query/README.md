@@ -27,6 +27,16 @@ reads, for the unknown-column and column-grant checks. A partition scan request
 carries the tree as nested `and` / `or` / `not` objects. The DDF path takes one
 comparison or an AND of them; anything else folds through the rows.
 
+The parser never throws (#793, #819, #758): `Parser::fail` records the first
+error and parks the cursor on the End token, so every caller falls through and
+`run()` returns the error. A statement from any client reaches this code, and a
+throw from it once escaped its own catch and ended the node: libc++abi paired with
+the system unwinder on macOS, which was taken for a Clang miscompile (see the
+`CMakeLists.txt` note). Keep new grammar on `fail()`, never `throw`. The old
+workarounds for that "miscompile" (the TU built at `-O1`, `[[gnu::noinline]]`
+helpers, the out-of-TU `statement_builders.cpp`) are gone with the throws.
+`tests/query/test_parse_errors_never_crash.cpp` is the regression test.
+
 `system.datasets` has a `source_format` column: what the rows were loaded from,
 recorded on the table at create time (#1221). See
 [system.datasets](../../../docs/data/system-datasets.md).
