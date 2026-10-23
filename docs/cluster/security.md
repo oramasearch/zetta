@@ -69,27 +69,28 @@ the command to join, with the token masked:
 ```bash
 # First node — generates data_dir/security/, prints:
 #   zetta: inter-node mTLS on (join token in .../security/cluster-secret.json)
-#   zetta: add another node with: zetta --peer 192.168.1.10:7777 --join-token <join-token>
-zetta
+#   zetta: add another node with: zetta --peer 192.168.1.10:7777 --join-token <join-token> # Another machine joins with that command, the token read from the file above (or passed as ZETTA_CLUSTER_TOKEN): <64-hex> --identity-root <64-hex> exact command:
+zetta --peer 192.168.1.10:7777 --join-token <64-hex> --identity-root <64-hex>
 
-# Another machine joins with that command, the token read from the file above
-# (or passed as ZETTA_CLUSTER_TOKEN):
-zetta --peer 192.168.1.10:7777 --join-token <64-hex>
 ```
-
 **The token is never printed or logged (#1393).** It derives the cluster CA key
 and is the connector-credential sealing root (#1230), so anyone holding it can
 mint a trusted peer identity. `Cluster::peer_command()` (the headless banner and
 the Cluster panel's text) puts `kJoinTokenPlaceholder` (`<join-token>`) where the
-token goes. Only `Cluster::peer_command_with_join_token()` returns the clear
+token goes. Only `Cluster::peer_command_with_join_token()` returns the clear from `--join-token`, from `ZETTA_CLUSTER_TOKEN` and generated on first
 token, and its one caller is the headed Cluster panel's **Copy command** button,
 an explicit operator action. A refused secret file or `--join-token` names the
 file and the field, never the value. The process test
 `tests/cluster/test_startup_log_redaction.cpp` starts the real binary with the
-token from `--join-token`, from `ZETTA_CLUSTER_TOKEN` and generated on first
 start, and fails if any output line contains it. A cluster whose token reached
 logs before this change should be re-keyed (pass a new `--join-token`; the old
 one is kept as a retired token so sealed connector credentials still open).
+The join token makes a node a **member**; it confers no authority over
+identity. `--identity-root` is the public key of the cluster's identity root,
+which seals every account, role and token: the joiner pins it and honors only
+records sealed by it. It is not a secret. A node given the cluster's
+`--admin-token` (every node under the operator) derives the same root and needs
+no flag. See [identity-seal.md](../governance/identity-seal.md) (#763, #764).
 
 `--join-token` is persisted in the joiner's own data dir on first use, so it is
 needed only once. Passing a *different* token to a node that already has one
@@ -175,6 +176,8 @@ cannot revoke secret bytes an earlier reader already obtained.
 | `connection-root-secret` | only on a node embedded **without** a join token (the library, a test): the 64-hex root secret its saved connector credentials are sealed under (#1230) | 0600 |
 | `node-cert.pem` | this node's CA-signed identity certificate (`CN` = node id) | 0600 |
 | `node-key.pem` | this node's Ed25519 private key | 0600 |
+| `identity-root.json` | the pinned identity root: `{"version": 1, "public_key": "<64 hex>", "seed"?: "<64 hex>"}`; `seed` only for a root the node generated (no owner token). Schema `identity_root_schema()`. See [identity-seal.md](../governance/identity-seal.md) | 0600 with a seed, else 0644 |
+| `identity-sealed` | marker: the one-time sealing of identity records held before the root ran | — |
 
 The stored identity is reused while it still verifies against the derived CA
 and carries this node's id; a token change or a node-id mismatch re-mints it.

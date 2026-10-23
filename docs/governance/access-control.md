@@ -370,6 +370,15 @@ store is empty and the next start retries the whole seed. And a store whose only
 user is `owner` with no token, which is what a seed cut short by a crash leaves,
 is **resumed**: the next start reuses that user, assigns `admin` (idempotent) and
 writes the token, instead of skipping because the store is not empty.
+**After the join, under the identity root (#763).** `main.cpp` seeds the owner
+only after the cluster starts and, with seeds configured, after a peer's
+document matches its own (bounded wait), so a node joining an existing cluster
+sees the cluster's owner before it decides the store is empty. Only a node that
+holds the cluster's identity root seeds (`Node::bootstrap_owner` refuses on a
+verify-only node), and the owner, its token, its assignment and the built-in
+roles have ids fixed by the root, so nodes that seed at once converge to one
+owner. Every identity record is sealed and verified on arrival; see
+[identity-seal.md](identity-seal.md).
 
 ### Read views + issuance
 
@@ -390,7 +399,10 @@ issued programmatically via `Node::create_token`.
 > `Node::tick()` reconciles the on-disk projection (materialize-only), and each
 > entity persists to a UUID-named folder under the data dir
 > (`user.json` / `role.json` / `token.json` / `user_role.json`). A token's hash
-> replicates in full; the plaintext never enters the document.
+> replicates in full; the plaintext never enters the document. Every one of these
+> records is **sealed** by the cluster's identity root when written, and a node
+> materializes a replicated record only when its seal verifies
+> ([identity-seal.md](identity-seal.md), #764).
 
 ### Connection-owned app credentials (#1280)
 

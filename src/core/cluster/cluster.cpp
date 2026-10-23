@@ -1625,14 +1625,22 @@ std::vector<std::string> Cluster::listen_addresses() const {
 
 namespace {
 
-// "zetta --peer <best address>", plus "--join-token <token>" when security is on.
+// "zetta --peer <best address>", plus "--join-token <token>" when security is on
+// and "--identity-root <public key>" when the cluster has one.
 std::string build_peer_command(const std::vector<std::string>& addresses,
                                const ClusterSecurity& security,
-                               std::string_view token_text) {
+                               std::string_view token_text,
+                               std::string_view identity_root) {
     std::string command = "zetta --peer " + addresses.front();
     if (security.enabled()) {
         command += " --join-token ";
         command += token_text;
+    }
+    // The identity root's public key: the joiner pins it and honors only the
+    // accounts this cluster's root sealed (#764).
+    if (!identity_root.empty()) {
+        command += " --identity-root ";
+        command += identity_root;
     }
     return command;
 }
@@ -1645,12 +1653,12 @@ std::string Cluster::peer_command() const {
     // next node needs, but it is the cluster root secret, and this command is
     // printed on every headless start (#1393): name where it goes, never the value.
     return build_peer_command(listen_addresses(), config_.security,
-                              kJoinTokenPlaceholder);
+                              kJoinTokenPlaceholder, config_.identity_root);
 }
 
 std::string Cluster::peer_command_with_join_token() const {
     return build_peer_command(listen_addresses(), config_.security,
-                              config_.security.join_token);
+                              config_.security.join_token, config_.identity_root);
 }
 
 std::vector<std::string> Cluster::advertised_endpoints() const {

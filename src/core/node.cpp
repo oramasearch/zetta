@@ -769,6 +769,7 @@ bool Node::start() {
             running_ = false;
             return false;
         }
+        seal_preexisting_identity();  // the first start under a root (#764)
         migrate_to_replication();   // capture any local-only data into it
         const zetta::cluster::ReplicationChanges changes =
             replication_->changes_since(0);
@@ -1689,7 +1690,8 @@ void Node::load_principals() {
         auto principal = std::make_shared<zetta::governance::Principal>(
             entry.path().filename().string(), *kind,
             meta["name"].get<std::string>(),
-            meta.value("created", std::string{}), entry.path(), replication_);
+            meta.value("created", std::string{}), entry.path(), replication_,
+            identity_authority());
         principal->load();  // bring in this principal's keys from disk
         principals_.push_back(std::move(principal));
     }
@@ -2111,11 +2113,12 @@ std::shared_ptr<zetta::pipeline::Deployment> Node::find_deployment(const std::st
 
 std::shared_ptr<zetta::governance::Principal> Node::create_principal(std::string name,
                                                   zetta::governance::PrincipalKind kind) {
+    if (!identity_writable()) return nullptr;
     if (name.empty() || find_principal(name)) return nullptr;
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
     if (replication_) {
-        replication_->set(catalog::principal_key(id),
+        replicate_identity(catalog::principal_key(id),
                           nlohmann::json{{"kind", to_string(kind)},
                                          {"name", name},
                                          {"created", now}});
@@ -2134,7 +2137,7 @@ std::shared_ptr<zetta::governance::Principal> Node::materialize_principal(std::s
     if (ec) return nullptr;
     auto principal = std::make_shared<zetta::governance::Principal>(
         std::move(id), kind, std::move(name), std::move(created), dir,
-        replication_);
+        replication_, identity_authority());
     principal->persist_meta();
     principals_.push_back(principal);
     return principal;
@@ -3606,6 +3609,7 @@ void Node::record_provisioner_config(zetta::cloud::ProvisionerConfig config) {
 // ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
 
 bool Node::drop_principal(const std::string& name) {
+    if (!identity_writable()) return false;
     auto principal = find_principal(name);
     if (!principal) return false;
     // Drop the principal's keys from the document too (their folders go with the
@@ -3633,12 +3637,13 @@ bool Node::materialize_drop_principal(const std::string& id) {
 }
 
 bool Node::rename_principal(const std::string& from, const std::string& to) {
+    if (!identity_writable()) return false;
     if (to.empty() || find_principal(to)) return false;  // empty or clashes
     auto principal = find_principal(from);
     if (!principal) return false;
     principal->set_metadata(principal->kind(), to, principal->created());
     if (replication_) {
-        replication_->set(catalog::principal_key(principal->id()),
+        replicate_identity(catalog::principal_key(principal->id()),
                           principal->metadata());
     }
     return true;
@@ -3712,11 +3717,12 @@ std::shared_ptr<zetta::governance::User> Node::find_user_by_id(
 }
 
 std::shared_ptr<zetta::governance::User> Node::create_user(std::string name) {
+    if (!identity_writable()) return nullptr;
     if (name.empty() || find_user(name)) return nullptr;
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
     if (replication_) {
-        replication_->set(catalog::user_key(id),
+        replicate_identity(catalog::user_key(id),
                           nlohmann::json{{"name", name},
                                          {"status", to_string(
                                               governance::UserStatus::Active)},
@@ -3743,16 +3749,18 @@ std::shared_ptr<zetta::governance::User> Node::materialize_user(
 
 bool Node::set_user_status(const std::string& name,
                            governance::UserStatus status) {
+    if (!identity_writable()) return false;
     auto user = find_user(name);
     if (!user) return false;
     user->set_metadata(user->name(), status, user->created());
     if (replication_) {
-        replication_->set(catalog::user_key(user->id()), user->metadata());
+        replicate_identity(catalog::user_key(user->id()), user->metadata());
     }
     return true;
 }
 
 bool Node::drop_user(const std::string& name) {
+    if (!identity_writable()) return false;
     auto user = find_user(name);
     if (!user) return false;
     const std::string user_id = user->id();
@@ -3887,13 +3895,16 @@ std::shared_ptr<zetta::governance::Role> Node::find_role_by_id(
 
 std::shared_ptr<zetta::governance::Role> Node::create_builtin_role(
     const std::string& name) {
+    if (!identity_writable()) return nullptr;
     if (find_role(name)) return nullptr;  // clash
     const auto permissions = governance::builtin_role_permissions(name);
     if (!permissions) return nullptr;  // not a known built-in
-    const std::string id = zetta::util::new_uuid();
+    // Seeded under a root: every node that creates this built-in writes the same
+    // key, so nodes that seed before they sync converge to one role (#763).
+    const std::string id = seeded_identity_id("builtin-role:" + name);
     const std::string now = zetta::util::now_iso8601();
     if (replication_) {
-        replication_->set(catalog::role_key(id),
+        replicate_identity(catalog::role_key(id),
                           nlohmann::json{{"name", name},
                                          {"scope", permissions->scope},
                                          {"capabilities", permissions->capabilities},
@@ -3903,6 +3914,7 @@ std::shared_ptr<zetta::governance::Role> Node::create_builtin_role(
 }
 
 std::size_t Node::ensure_builtin_roles() {
+    if (!identity_writable()) return 0;
     std::size_t created = 0;
     for (const std::string& name : governance::builtin_role_names()) {
         const auto canonical = governance::builtin_role_permissions(name);
@@ -3921,7 +3933,7 @@ std::size_t Node::ensure_builtin_roles() {
             if (role->permissions() != *canonical) {
                 role->set_metadata(role->name(), *canonical, role->created());
                 if (replication_) {
-                    replication_->set(catalog::role_key(role->id()),
+                    replicate_identity(catalog::role_key(role->id()),
                                       role->metadata());
                 }
             }
@@ -3934,6 +3946,7 @@ std::size_t Node::ensure_builtin_roles() {
 
 std::shared_ptr<zetta::governance::Role> Node::create_role(
     const std::string& name) {
+    if (!identity_writable()) return nullptr;
     if (name.empty() || find_role(name)) return nullptr;  // empty or clash
     // A custom role starts with NO rights (deny-by-default) and an unrestricted
     // scope — scope granularity is a later slice (epic #743 #4); today
@@ -3944,7 +3957,7 @@ std::shared_ptr<zetta::governance::Role> Node::create_role(
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
     if (replication_) {
-        replication_->set(catalog::role_key(id),
+        replicate_identity(catalog::role_key(id),
                           nlohmann::json{{"name", name},
                                          {"scope", permissions.scope},
                                          {"capabilities", permissions.capabilities},
@@ -3954,6 +3967,7 @@ std::shared_ptr<zetta::governance::Role> Node::create_role(
 }
 
 bool Node::drop_role(const std::string& name) {
+    if (!identity_writable()) return false;
     auto role = find_role(name);
     if (!role) return false;
     const std::string role_id = role->id();
@@ -3977,6 +3991,7 @@ bool Node::drop_role(const std::string& name) {
 
 bool Node::grant_permissions(const std::string& role_name,
                              const std::vector<std::string>& permissions) {
+    if (!identity_writable()) return false;
     auto role = find_role(role_name);
     if (!role) return false;
     governance::RolePermissions updated = role->permissions();
@@ -3996,13 +4011,14 @@ bool Node::grant_permissions(const std::string& role_name,
     }
     role->set_metadata(role->name(), std::move(updated), role->created());
     if (replication_) {
-        replication_->set(catalog::role_key(role->id()), role->metadata());
+        replicate_identity(catalog::role_key(role->id()), role->metadata());
     }
     return true;
 }
 
 bool Node::revoke_permissions(const std::string& role_name,
                               const std::vector<std::string>& permissions) {
+    if (!identity_writable()) return false;
     auto role = find_role(role_name);
     if (!role) return false;
     // Collect the operations to remove (the union across the named permissions).
@@ -4028,7 +4044,7 @@ bool Node::revoke_permissions(const std::string& role_name,
     updated.capabilities.grants = std::move(kept);
     role->set_metadata(role->name(), std::move(updated), role->created());
     if (replication_) {
-        replication_->set(catalog::role_key(role->id()), role->metadata());
+        replicate_identity(catalog::role_key(role->id()), role->metadata());
     }
     return true;
 }
@@ -4036,6 +4052,7 @@ bool Node::revoke_permissions(const std::string& role_name,
 bool Node::grant_scoped_permissions(
     const std::string& role_name, const std::vector<std::string>& permissions,
     const governance::Resource& object) {
+    if (!identity_writable()) return false;
     auto role = find_role(role_name);
     if (!role) return false;
     governance::RolePermissions updated = role->permissions();
@@ -4055,7 +4072,7 @@ bool Node::grant_scoped_permissions(
     }
     role->set_metadata(role->name(), std::move(updated), role->created());
     if (replication_) {
-        replication_->set(catalog::role_key(role->id()), role->metadata());
+        replicate_identity(catalog::role_key(role->id()), role->metadata());
     }
     return true;
 }
@@ -4063,6 +4080,7 @@ bool Node::grant_scoped_permissions(
 bool Node::revoke_scoped_permissions(
     const std::string& role_name, const std::vector<std::string>& permissions,
     const governance::Resource& object) {
+    if (!identity_writable()) return false;
     auto role = find_role(role_name);
     if (!role) return false;
     // The (operation, object) pairs to remove — the named permissions' operations
@@ -4089,7 +4107,7 @@ bool Node::revoke_scoped_permissions(
     updated.scoped_grants = std::move(kept);
     role->set_metadata(role->name(), std::move(updated), role->created());
     if (replication_) {
-        replication_->set(catalog::role_key(role->id()), role->metadata());
+        replicate_identity(catalog::role_key(role->id()), role->metadata());
     }
     return true;
 }
@@ -4194,6 +4212,7 @@ std::shared_ptr<zetta::governance::Token> Node::find_token_by_id(
 Node::TokenIssue Node::create_token(const std::string& user_id,
                                     governance::TokenType type,
                                     std::string expires_at) {
+    if (!identity_writable()) return {};
     if (!find_user_by_id(user_id)) return {};  // unknown user
     const std::string secret = governance::generate_token_secret();
     const std::string salt = governance::generate_token_salt();
@@ -4223,7 +4242,7 @@ Node::TokenIssue Node::create_token(const std::string& user_id,
                              {"created", value.created},
                              {"expires_at", value.expires_at},
                              {"revoked", value.revoked}};
-        replication_->set(catalog::token_key(id), std::move(crdt));
+        replicate_identity(catalog::token_key(id), std::move(crdt));
     }
     TokenIssue issue;
     issue.token = materialize_token(id, std::move(value));
@@ -4247,6 +4266,7 @@ std::shared_ptr<zetta::governance::Token> Node::materialize_token(
 }
 
 bool Node::revoke_token(const std::string& id) {
+    if (!identity_writable()) return false;
     auto token = find_token_by_id(id);
     if (!token) return false;
     if (token->revoked()) return true;  // already revoked — idempotent
@@ -4255,7 +4275,7 @@ bool Node::revoke_token(const std::string& id) {
     token->set_value(value);
     if (replication_) {
         nlohmann::json crdt = token->metadata();
-        replication_->set(catalog::token_key(id), std::move(crdt));
+        replicate_identity(catalog::token_key(id), std::move(crdt));
     }
     return true;
 }
@@ -4367,6 +4387,7 @@ void Node::load_user_roles() {
 
 std::shared_ptr<zetta::governance::UserRole> Node::assign_role(
     const std::string& user_id, const std::string& role_id) {
+    if (!identity_writable()) return nullptr;
     if (!find_user_by_id(user_id) || !find_role_by_id(role_id)) return nullptr;
     // Idempotent: return the existing assignment if the pair is already assigned.
     for (const auto& assignment : user_roles_) {
@@ -4377,7 +4398,7 @@ std::shared_ptr<zetta::governance::UserRole> Node::assign_role(
     }
     const std::string id = zetta::util::new_uuid();
     if (replication_) {
-        replication_->set(catalog::user_role_key(id),
+        replicate_identity(catalog::user_role_key(id),
                           nlohmann::json{{"user", user_id}, {"role", role_id}});
     }
     return materialize_user_role(id, user_id, role_id);
@@ -4385,6 +4406,7 @@ std::shared_ptr<zetta::governance::UserRole> Node::assign_role(
 
 bool Node::unassign_role(const std::string& user_id,
                          const std::string& role_id) {
+    if (!identity_writable()) return false;
     std::string assignment_id;
     for (const auto& assignment : user_roles_) {
         if (assignment->user_id() == user_id &&
@@ -4523,17 +4545,19 @@ std::shared_ptr<zetta::governance::Policy> Node::find_policy_by_id(
 
 std::shared_ptr<zetta::governance::Policy> Node::create_policy(
     governance::PolicyValue value) {
+    if (!identity_writable()) return nullptr;
     if (value.name.empty() || find_policy(value.name)) return nullptr;  // empty/clash
     if (value.created.empty()) value.created = zetta::util::now_iso8601();
     const std::string id = zetta::util::new_uuid();
     if (replication_) {
-        replication_->set(catalog::policy_key(id),
+        replicate_identity(catalog::policy_key(id),
                           governance::policy_value_to_json(value));
     }
     return materialize_policy(id, std::move(value));
 }
 
 bool Node::drop_policy(const std::string& name) {
+    if (!identity_writable()) return false;
     auto policy = find_policy(name);
     if (!policy) return false;
     const std::string id = policy->id();
@@ -4729,7 +4753,86 @@ bool Node::bypasses_row_security(const std::string& acting_id,
     return false;
 }
 
-// ----- bootstrap owner (#733) ------------------------------------------------
+// ----- the identity root (#763, #764, docs/governance/identity-seal.md) -------
+
+bool Node::identity_writable() const {
+    return !replication_ || can_issue_identity();
+}
+
+void Node::replicate_identity(const std::string& key, nlohmann::json value) {
+    if (!replication_) return;
+    if (const governance::IdentityAuthority* root = identity_authority()) {
+        std::optional<nlohmann::json> sealed = root->seal(key, std::move(value));
+        if (!sealed) {
+            // Every caller checks identity_writable() first, so this is a value
+            // that is not a JSON object: write nothing a peer would refuse.
+            std::fprintf(stderr, "zetta: identity record %s not sealed — not replicated\n",
+                         key.c_str());
+            return;
+        }
+        replication_->set(key, *sealed);
+        return;
+    }
+    replication_->set(key, value);
+}
+
+nlohmann::json Node::trusted_identity(const nlohmann::json& values) const {
+    nlohmann::json trusted = nlohmann::json::object();
+    const governance::IdentityAuthority* root = identity_authority();
+    for (const auto& [key, value] : values.items()) {
+        if (!governance::is_identity_key(key)) continue;
+        if (!root) {
+            trusted[key] = value;  // unsealed mode: trusted as replicated
+            continue;
+        }
+        if (std::optional<nlohmann::json> opened = root->open(key, value)) {
+            trusted[key] = std::move(*opened);
+        }
+        // Otherwise the record is absent: unsealed, sealed by another root, or
+        // changed since it was sealed. A reconciler drops a local copy of it.
+    }
+    return trusted;
+}
+
+void Node::seal_preexisting_identity() {
+    const governance::IdentityAuthority* root = identity_authority();
+    if (!replication_ || !root) return;
+    const fs::path security = fs::path(config_.data_dir) / "security";
+    const fs::path marker = security / "identity-sealed";
+    std::error_code ec;
+    if (fs::exists(marker, ec)) return;  // done once; never bless a later arrival
+    std::size_t sealed = 0;
+    if (root->can_seal()) {
+        // Only this node's own persisted document is here: start() runs before
+        // the cluster connects, so nothing a peer sends now is blessed.
+        const nlohmann::json snapshot = replication_->snapshot();
+        for (const auto& [key, value] : snapshot.items()) {
+            if (!governance::is_identity_key(key) || !value.is_object()) continue;
+            // A record already carrying a seal is left alone: this root's opens
+            // as it is, and another root's is not this node's to re-issue.
+            if (value.contains(std::string(governance::kIdentitySealField))) continue;
+            replicate_identity(key, value);
+            ++sealed;
+        }
+    }
+    fs::create_directories(security, ec);
+    std::ofstream out(marker, std::ios::trunc);
+    out << "identity root " << root->public_key_hex() << "\n";
+    if (sealed > 0) {
+        std::printf("zetta: sealed %zu identity record(s) this node held before "
+                    "the identity root (#764)\n",
+                    sealed);
+    }
+}
+
+std::string Node::seeded_identity_id(std::string_view purpose) const {
+    if (const governance::IdentityAuthority* root = identity_authority()) {
+        return root->derived_id(purpose);
+    }
+    return zetta::util::new_uuid();
+}
+
+// ----- bootstrap owner (#733, #763) -------------------------------------------
 
 Node::BootstrapResult Node::bootstrap_owner(
     const std::string& admin_token_secret) {
@@ -4737,6 +4840,12 @@ Node::BootstrapResult Node::bootstrap_owner(
     if (admin_token_secret.empty()) {
         result.reason = "no admin token secret supplied";
         return result;  // nothing to seed the owner's credential with
+    }
+    if (!identity_writable()) {
+        // A verify-only node is a member, not an authority: it seeds no owner,
+        // whatever --admin-token it was started with (#763).
+        result.reason = "this node does not hold the cluster's identity root";
+        return result;
     }
     // A seed cut short (#769): the only user is "owner" and it holds no token.
     // Resume it instead of skipping, or the node would have no usable owner.
@@ -4771,10 +4880,23 @@ Node::BootstrapResult Node::bootstrap_owner(
         return result;
     }
     // Mint (or reuse) the owner user, ensure the built-in roles exist, grant it
-    // admin, and issue its access token from the operator's secret. Any failure
-    // after a user was created here drops that user again (with whatever it was
-    // given), leaving the store empty so the next start retries the whole seed.
-    auto owner = resumed ? resumed : create_user("owner");
+    // admin, and issue its access token from the operator's secret. Under a root
+    // each id is fixed by the root, so every node that seeds the same root writes
+    // the same records and the cluster holds one owner (#763). Any failure after
+    // a user was created here drops that user again, leaving the store empty so
+    // the next start retries the whole seed.
+    const std::string now = zetta::util::now_iso8601();
+    std::shared_ptr<governance::User> owner = resumed;
+    if (!owner) {
+        const std::string owner_id = seeded_identity_id("owner-user");
+        replicate_identity(catalog::user_key(owner_id),
+                           nlohmann::json{{"name", "owner"},
+                                          {"status", to_string(
+                                               governance::UserStatus::Active)},
+                                          {"created", now}});
+        owner = materialize_user(owner_id, "owner",
+                                 governance::UserStatus::Active, now);
+    }
     if (!owner) {
         result.reason = "failed to create owner user";
         return result;
@@ -4786,7 +4908,13 @@ Node::BootstrapResult Node::bootstrap_owner(
     };
     ensure_builtin_roles();
     auto admin = find_role("admin");
-    if (!admin || !assign_role(owner->id(), admin->id())) {
+    if (!admin) {
+        return roll_back("failed to assign the admin role to the owner");
+    }
+    const std::string assignment_id = seeded_identity_id("owner-admin-assignment");
+    replicate_identity(catalog::user_role_key(assignment_id),
+                       nlohmann::json{{"user", owner->id()}, {"role", admin->id()}});
+    if (!materialize_user_role(assignment_id, owner->id(), admin->id())) {
         return roll_back("failed to assign the admin role to the owner");
     }
     governance::TokenValue value;
@@ -4794,26 +4922,23 @@ Node::BootstrapResult Node::bootstrap_owner(
     value.type = governance::TokenType::Access;
     value.hash = hash;
     value.salt = salt;
-    value.created = zetta::util::now_iso8601();
+    value.created = now;
     value.revoked = false;
-    const std::string token_id = zetta::util::new_uuid();
-    if (replication_) {
-        replication_->set(catalog::token_key(token_id),
-                          nlohmann::json{{"user", value.user_id},
-                                         {"type", to_string(value.type)},
-                                         {"hash", value.hash},
-                                         {"salt", value.salt},
-                                         {"created", value.created},
-                                         {"revoked", value.revoked}});
-    }
+    const std::string token_id = seeded_identity_id("owner-token");
+    replicate_identity(catalog::token_key(token_id),
+                       nlohmann::json{{"user", value.user_id},
+                                      {"type", to_string(value.type)},
+                                      {"hash", value.hash},
+                                      {"salt", value.salt},
+                                      {"created", value.created},
+                                      {"revoked", value.revoked}});
     auto token = materialize_token(token_id, std::move(value));
     if (!token) {
-        if (replication_) replication_->remove(catalog::token_key(token_id));
         return roll_back("failed to persist the owner token");
     }
     // Verify once now, while the secret is in hand, so the owner's requests take
     // the cheap path from the start.
-    (void)token->validates(admin_token_secret, zetta::util::now_iso8601());
+    (void)token->validates(admin_token_secret, now);
     result.performed = true;
     result.user_id = owner->id();
     result.user_name = owner->name();
@@ -5674,15 +5799,18 @@ void Node::migrate_to_replication() {
                               partition->metadata());
         }
     }
+    // A node that cannot seal captures no identity: anything it wrote would be
+    // refused by every peer (#764).
     for (const auto& principal : principals_) {
+        if (!identity_writable()) break;
         if (!already_replicated(catalog::principal_key(principal->id()))) {
-            replication_->set(catalog::principal_key(principal->id()),
-                              principal->metadata());
+            replicate_identity(catalog::principal_key(principal->id()),
+                               principal->metadata());
         }
         for (const auto& key : principal->keys()) {
             if (!already_replicated(catalog::access_key_key(key->id()))) {
-                replication_->set(catalog::access_key_key(key->id()),
-                                  key->metadata());
+                replicate_identity(catalog::access_key_key(key->id()),
+                                   key->metadata());
             }
         }
     }
@@ -5716,13 +5844,16 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
     reconcile_partitions(snapshot);
-    reconcile_principals(snapshot);
-    reconcile_access_keys(snapshot);
-    reconcile_users(snapshot);
-    reconcile_roles(snapshot);
-    reconcile_tokens(snapshot);
-    reconcile_user_roles(snapshot);
-    reconcile_policies(snapshot);
+    // Identity is read only through trusted_identity: a record whose seal does
+    // not verify is absent to every reconciler below (#764).
+    const nlohmann::json identity = trusted_identity(snapshot);
+    reconcile_principals(identity);
+    reconcile_access_keys(identity);
+    reconcile_users(identity);
+    reconcile_roles(identity);
+    reconcile_tokens(identity);
+    reconcile_user_roles(identity);
+    reconcile_policies(identity);
     reconcile_ledger_entries(snapshot);
 }
 
@@ -5782,28 +5913,28 @@ void Node::reconcile_replication_changes(
                              &batches.partitions.keys);
     }
     if (!batches.principals.keys.empty()) {
-        reconcile_principals(batches.principals.values,
+        reconcile_principals(trusted_identity(batches.principals.values),
                              &batches.principals.keys);
     }
     if (!batches.access_keys.keys.empty()) {
-        reconcile_access_keys(batches.access_keys.values,
+        reconcile_access_keys(trusted_identity(batches.access_keys.values),
                               &batches.access_keys.keys);
     }
     if (!batches.users.keys.empty()) {
-        reconcile_users(batches.users.values, &batches.users.keys);
+        reconcile_users(trusted_identity(batches.users.values), &batches.users.keys);
     }
     if (!batches.roles.keys.empty()) {
-        reconcile_roles(batches.roles.values, &batches.roles.keys);
+        reconcile_roles(trusted_identity(batches.roles.values), &batches.roles.keys);
     }
     if (!batches.tokens.keys.empty()) {
-        reconcile_tokens(batches.tokens.values, &batches.tokens.keys);
+        reconcile_tokens(trusted_identity(batches.tokens.values), &batches.tokens.keys);
     }
     if (!batches.user_roles.keys.empty()) {
-        reconcile_user_roles(batches.user_roles.values,
+        reconcile_user_roles(trusted_identity(batches.user_roles.values),
                              &batches.user_roles.keys);
     }
     if (!batches.policies.keys.empty()) {
-        reconcile_policies(batches.policies.values, &batches.policies.keys);
+        reconcile_policies(trusted_identity(batches.policies.values), &batches.policies.keys);
     }
     if (!batches.ledger_entries.keys.empty()) {
         reconcile_ledger_entries(batches.ledger_entries.values,

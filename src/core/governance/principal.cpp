@@ -34,13 +34,15 @@ std::optional<PrincipalKind> principal_kind_from(std::string_view name) {
 
 Principal::Principal(std::string id, PrincipalKind kind, std::string name,
                      std::string created, fs::path dir,
-                     zetta::cluster::ReplicationManager* replication)
+                     zetta::cluster::ReplicationManager* replication,
+                     const IdentityAuthority* identity_root)
     : id_(std::move(id)),
       kind_(kind),
       name_(std::move(name)),
       created_(std::move(created)),
       dir_(std::move(dir)),
-      replication_(replication) {}
+      replication_(replication),
+      identity_root_(identity_root) {}
 
 void Principal::set_metadata(PrincipalKind kind, std::string name,
                              std::string created) {
@@ -122,11 +124,18 @@ std::shared_ptr<AccessKey> Principal::create_key(Scope scope,
     const std::string id = zetta::util::new_uuid();
     const std::string created = zetta::util::now_iso8601();
     if (replication_) {
-        replication_->set(catalog::access_key_key(id),
-                          nlohmann::json{{"principal", id_},
-                                         {"scope", scope},
-                                         {"capabilities", capabilities},
-                                         {"created", created}});
+        nlohmann::json value{{"principal", id_},
+                             {"scope", scope},
+                             {"capabilities", capabilities},
+                             {"created", created}};
+        if (identity_root_) {
+            // Sealed by the identity root, or not written at all (#764).
+            std::optional<nlohmann::json> sealed =
+                identity_root_->seal(catalog::access_key_key(id), std::move(value));
+            if (!sealed) return nullptr;
+            value = std::move(*sealed);
+        }
+        replication_->set(catalog::access_key_key(id), value);
     }
     return materialize_key(id, std::move(scope), std::move(capabilities),
                            created);
@@ -159,6 +168,7 @@ std::shared_ptr<AccessKey> Principal::find_key(const std::string& id) const {
 bool Principal::drop_key(const std::string& id) {
     auto key = find_key(id);
     if (!key) return false;
+    if (replication_ && identity_root_ && !identity_root_->can_seal()) return false;
     if (replication_) replication_->remove(catalog::access_key_key(id));
     return materialize_drop_key(id);
 }

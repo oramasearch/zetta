@@ -3822,6 +3822,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto why = require_permission(kManageUsers)) {
                     return deny(*why);
                 }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
+                }
                 if (!node_.create_user(s.name)) {
                     return error("user \"" + s.name +
                                  "\" already exists or the name is invalid");
@@ -3834,6 +3842,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 // a token for the owner and act as admin.
                 if (auto why = require_permission(kManageTokens)) {
                     return deny(*why);
+                }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
                 }
                 auto user = node_.find_user(s.user);
                 if (!user) {
@@ -3866,6 +3882,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto why = require_permission(kManageRoles)) {
                     return deny(*why);
                 }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
+                }
                 if (!node_.create_role(s.name)) {
                     return error("role \"" + s.name +
                                  "\" already exists or the name is invalid");
@@ -3880,6 +3904,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto refused = refuse_role_above(s.name, "drop")) {
                     return *refused;
                 }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
+                }
                 if (!node_.drop_role(s.name)) {
                     return error("role \"" + s.name + "\" does not exist");
                 }
@@ -3888,6 +3920,14 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const GrantPermissionStmt& s) -> QueryResult {
                 if (auto why = require_permission(kManageRoles)) {
                     return deny(*why);
+                }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
                 }
                 if (auto bad = first_unknown_permission(s.permissions)) {
                     return error("unknown permission \"" + *bad +
@@ -3922,6 +3962,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto why = require_permission(kManageRoles)) {
                     return deny(*why);
                 }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
+                }
                 if (auto bad = first_unknown_permission(s.permissions)) {
                     return error("unknown permission \"" + *bad +
                                  "\" — not in the permission vocabulary");
@@ -3944,6 +3992,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto why = require_permission(kManageRoles)) {
                     return deny(*why);
                 }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
+                }
                 auto user = node_.find_user(s.user);
                 if (!user) {
                     return error("user \"" + s.user + "\" does not exist");
@@ -3965,6 +4021,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto why = require_permission(kManageRoles)) {
                     return deny(*why);
                 }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
+                }
                 auto user = node_.find_user(s.user);
                 if (!user) {
                     return error("user \"" + s.user + "\" does not exist");
@@ -3985,6 +4049,14 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const CreatePolicyStmt& s) -> QueryResult {
                 if (auto why = require_permission(kManageRoles)) {
                     return deny(*why);
+                }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
                 }
                 const std::string database = db_name(s.table);
                 if (database.empty()) {
@@ -4048,6 +4120,14 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const DropPolicyStmt& s) -> QueryResult {
                 if (auto why = require_permission(kManageRoles)) {
                     return deny(*why);
+                }
+                if (!node_.can_issue_identity()) {
+                    // A verify-only node holds no identity root: it writes no
+                    // account, role, token or policy a peer would honor (#764).
+                    return error("this node does not hold the cluster's identity "
+                                 "root, so it cannot change users, roles, tokens or "
+                                 "policies; run this on a node started with the "
+                                 "cluster's admin token");
                 }
                 if (!node_.drop_policy(s.name)) {
                     return error("policy \"" + s.name + "\" does not exist");

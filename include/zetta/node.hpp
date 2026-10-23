@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -22,6 +23,7 @@
 #include "zetta/governance/consent.hpp"
 #include "zetta/governance/rate_limiter.hpp"
 #include "zetta/governance/grant.hpp"
+#include "zetta/governance/identity_seal.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/cloud/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
@@ -123,6 +125,15 @@ struct NodeConfig {
     // Root secrets of earlier join tokens. Credentials sealed under them still
     // open, and start() re-seals them under the current secret.
     std::vector<std::string> retired_connection_root_secrets;
+    // The cluster's identity root (#763, #764, docs/governance/identity-seal.md).
+    // Set, every identity record this node replicates (user, role, token, role
+    // assignment, row-security policy, principal, access key) is sealed by it,
+    // and a replicated identity record is materialized only when its seal
+    // verifies; a node whose root is verify-only refuses identity writes. main
+    // always sets one (load_or_create_identity_root). Unset is the in-process
+    // test and embedding mode: identity replicates unsealed and is trusted as
+    // it was before the root existed.
+    std::optional<zetta::governance::IdentityAuthority> identity_authority;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -1002,6 +1013,16 @@ public:
     std::vector<std::shared_ptr<zetta::governance::User>> users() const { return users_; }
     std::size_t user_count() const { return users_.size(); }
 
+    // The identity root this node verifies identity against (null when
+    // unsealed — NodeConfig::identity_authority), and whether it may issue
+    // identity: true when unsealed, or when it holds the root's private key.
+    const zetta::governance::IdentityAuthority* identity_authority() const {
+        return config_.identity_authority ? &*config_.identity_authority : nullptr;
+    }
+    bool can_issue_identity() const {
+        return !config_.identity_authority || config_.identity_authority->can_seal();
+    }
+
     // Create a built-in role by name ("admin"/"writer"/"reader") — empty handle
     // on an unknown built-in name or a name clash.
     std::shared_ptr<zetta::governance::Role> create_builtin_role(const std::string& name);
@@ -1333,6 +1354,24 @@ private:
     bool load_replication();           // read the persisted CRDT document
     void persist_replication();        // write the CRDT document to disk
     void migrate_to_replication();     // capture local-only data into the CRDT
+    // --- the identity root (#763, #764) ------------------------------------
+    // Whether an identity write may go ahead here: false on a replicated node
+    // whose root is verify-only, so nothing it could not seal is written.
+    bool identity_writable() const;
+    // Write an identity record into the CRDT, sealed when a root is set.
+    void replicate_identity(const std::string& key, nlohmann::json value);
+    // The identity entries of `values` this node trusts, seals removed: every
+    // entry when unsealed, else only those whose seal the root verifies. The
+    // identity reconcilers read this, never the raw document.
+    nlohmann::json trusted_identity(const nlohmann::json& values) const;
+    // On the first start under a root: seal the identity records already in
+    // this node's own persisted document, which it trusted before the root
+    // existed. Recorded in <data_dir>/security/identity-sealed, so it runs once
+    // and never blesses a record that arrives later.
+    void seal_preexisting_identity();
+    // The id of a record every node of one root seeds identically (the owner,
+    // its token and assignment, the built-in roles); a fresh UUID when unsealed.
+    std::string seeded_identity_id(std::string_view purpose) const;
     // apply the CRDT document (the given snapshot) to the projection
     void reconcile_from_replication(const nlohmann::json& snapshot);
     void reconcile_replication_changes(

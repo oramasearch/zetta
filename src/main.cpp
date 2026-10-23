@@ -18,6 +18,7 @@
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/cloud/node_bootstrap_env.hpp"
+#include "zetta/governance/identity_seal.hpp"
 #include "zetta/node.hpp"
 #include "zetta/cloud/provisioner.hpp"
 #include "zetta/cloud/provisioner_detect.hpp"
@@ -44,6 +45,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -152,6 +154,7 @@ struct Options {
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
+    std::string identity_root;      // --identity-root (the cluster's identity root, #764)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool pubsub_dispatch_mode_from_cli = false;
     bool pubsub_topics_per_thread_from_cli = false;
@@ -229,6 +232,12 @@ void print_usage(const char* argv0) {
         "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
         "                      persisted in data-dir on first use. Inter-node\n"
         "                      mTLS is always on — there is no plaintext mode\n"
+        "  --identity-root KEY The cluster's identity root public key (printed\n"
+        "                      by the first node; or ZETTA_IDENTITY_ROOT). Pinned\n"
+        "                      in data-dir on first start: the node honors only\n"
+        "                      accounts, roles and tokens sealed by this root.\n"
+        "                      Not needed when the node gets the cluster's\n"
+        "                      --admin-token, which derives the same root (#764)\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
         "  --pubsub-dispatch-mode MODE\n"
@@ -377,6 +386,10 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--join-token");
             if (!v) break;
             o.join_token = v;
+        } else if (arg == "--identity-root") {
+            const char* v = take_value(argc, argv, i, o, "--identity-root");
+            if (!v) break;
+            o.identity_root = v;
         } else if (arg == "--log-cluster") {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
@@ -842,6 +855,54 @@ int main(int argc, char** argv) {
         opts.cluster.security = std::move(*security);
     }
 
+    // The owner's admin token (#733 / #744): --admin-token, else ZETTA_ADMIN_TOKEN.
+    // We log WHERE the token lives, never its value.
+    std::string admin_secret = opts.admin_token;
+    if (admin_secret.empty()) {
+        if (const char* env = std::getenv("ZETTA_ADMIN_TOKEN")) admin_secret = env;
+    }
+    if (opts.identity_root.empty()) {
+        if (const char* env = std::getenv("ZETTA_IDENTITY_ROOT")) opts.identity_root = env;
+    }
+
+    // The identity root (#763 / #764, docs/governance/identity-seal.md): who may
+    // write accounts, roles, tokens and policies. Membership (the join token) is
+    // not authority: every identity record is sealed by the root and verified by
+    // every node before it is honored. The root derives from the owner's admin
+    // token, so every node given the cluster's token can issue identity and a
+    // node started with any other token cannot. Pinned in data-dir on first start.
+    {
+        std::string reason;
+        zetta::governance::IdentityRootSetup root =
+            zetta::governance::load_or_create_identity_root(
+                opts.node.data_dir, admin_secret, opts.identity_root, &reason);
+        if (!root.authority) {
+            std::fprintf(stderr, "zetta: identity root setup failed: %s\n",
+                         reason.c_str());
+            return 1;
+        }
+        if (!root.warning.empty()) {
+            std::fprintf(stderr, "zetta: WARNING: %s\n", root.warning.c_str());
+        }
+        if (root.pinned_now && root.authority->can_seal() && admin_secret.empty() &&
+            !opts.cluster.seeds.empty()) {
+            std::fprintf(stderr,
+                         "zetta: WARNING: joining with neither --admin-token nor "
+                         "--identity-root: this node made its own identity root and "
+                         "will not honor the cluster's accounts. Restart it on a "
+                         "fresh data dir with the --identity-root the first node "
+                         "prints.\n");
+        }
+        std::printf("zetta: identity root %s (%s)\n",
+                    root.authority->public_key_hex().c_str(),
+                    root.authority->can_seal() ? "this node issues identity"
+                                               : "verify-only");
+        // The join command carries the root's public key (not a secret), so the
+        // next node pins this cluster's root (Cluster::peer_command).
+        opts.cluster.identity_root = root.authority->public_key_hex();
+        opts.node.identity_authority = std::move(root.authority);
+    }
+
     zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
@@ -884,62 +945,6 @@ int main(int argc, char** argv) {
     if (!node.start()) {
         std::fprintf(stderr, "zetta: failed to start node\n");
         return 1;
-    }
-
-    // Bootstrap the owner (#733 / #744): on an empty user store, mint an "owner"
-    // user + admin role + an access token seeded from --admin-token (or the
-    // ZETTA_ADMIN_TOKEN env). Closes the seeding gap so a node is never locked
-    // out. We log WHERE the token lives, never its value — the operator already
-    // holds the secret they supplied.
-    {
-        std::string admin_secret = opts.admin_token;
-        if (admin_secret.empty()) {
-            if (const char* env = std::getenv("ZETTA_ADMIN_TOKEN")) {
-                admin_secret = env;
-            }
-        }
-        // The default-deny gate is always on (#799), so a fresh node with the MCP
-        // server enabled needs an owner token or every request 401s. If no secret
-        // was supplied, generate one and print it ONCE so the node is never locked
-        // out (#733) — in the operator path a secret is always injected, so this
-        // fires only for a bare local run.
-        bool generated = false;
-        if (admin_secret.empty() && opts.mcp_enabled && node.user_count() == 0) {
-            admin_secret = zetta::governance::generate_token_secret();
-            generated = true;
-        }
-        // Reconcile the built-in admin/writer/reader roles on EVERY startup — not
-        // only fresh-store bootstrap (bootstrap_owner early-returns once the user
-        // store is seeded). The roles live in the replicated store, seeded once at
-        // cluster creation; without this a binary upgrade leaves them frozen at
-        // whatever permission vocabulary first seeded them, so an upgraded cluster
-        // whose 'admin' role predates a newly-added capability keeps denying it
-        // (e.g. orchestration:testsuite_run). Idempotent — writes only on drift.
-        node.ensure_builtin_roles();
-        if (!admin_secret.empty()) {
-            const zetta::Node::BootstrapResult boot =
-                node.bootstrap_owner(admin_secret);
-            if (boot.performed && generated) {
-                std::printf(
-                    "zetta: no --admin-token supplied — generated the owner '%s' "
-                    "access token (id %s). SAVE THIS — it is shown only once:\n"
-                    "    %s\n"
-                    "    authenticate MCP/REST with: Authorization: Bearer <token>\n",
-                    boot.user_name.c_str(), boot.token_id.c_str(),
-                    admin_secret.c_str());
-            } else if (boot.performed) {
-                std::printf(
-                    "zetta: bootstrapped owner user '%s' + admin role + access "
-                    "token %s (stored hashed under %s) — authenticate with the "
-                    "admin token you supplied\n",
-                    boot.user_name.c_str(), boot.token_id.c_str(),
-                    (std::filesystem::path(opts.node.data_dir) / boot.token_id)
-                        .c_str());
-            } else {
-                std::printf("zetta: owner bootstrap skipped (%s)\n",
-                            boot.reason.c_str());
-            }
-        }
     }
 
     // Large-object bodies transfer peer-to-peer (their metadata is in the CRDT).
@@ -990,6 +995,102 @@ int main(int argc, char** argv) {
     // here (not at construction) because the Node is built + started before the
     // Cluster exists; node.stop() tears it down before the cluster shuts down.
     node.attach_cluster(cluster);
+
+    // Bootstrap the owner (#733 / #744 / #763) AFTER joining. A node that is
+    // joining an existing cluster has an empty store until the first state
+    // exchange, so deciding "is there an owner yet?" from its own disk before it
+    // connects mints a second owner. With seeds configured, wait (bounded) until a
+    // peer's document matches ours, reconcile it, and only then look. Seeding is
+    // also idempotent under a root: the owner, its token and assignment, and the
+    // built-in roles have ids fixed by the root, so nodes that seed at once — or a
+    // founder whose peers were not up within the wait — converge to one owner.
+    {
+        if (!opts.cluster.seeds.empty()) {
+            constexpr auto kJoinSyncWait = std::chrono::seconds(10);
+            const auto deadline = std::chrono::steady_clock::now() + kJoinSyncWait;
+            bool synced = false;
+            while (!synced && std::chrono::steady_clock::now() < deadline) {
+                for (const zetta::cluster::NodeStatus& status : cluster.nodes()) {
+                    if (!status.is_self && status.replication.in_sync) synced = true;
+                }
+                if (!synced) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            std::printf("zetta: %s\n",
+                        synced ? "joined: in sync with a peer before seeding identity"
+                               : "no peer in sync within 10s: seeding identity as a "
+                                 "founder (idempotent under the identity root)");
+        }
+        node.tick();  // reconcile what the join brought in
+        // A joiner whose root is not the cluster's honors none of the cluster's
+        // accounts (and they none of its). Say so plainly, once, instead of
+        // leaving every request to 401 with no reason.
+        {
+            std::size_t foreign = 0;
+            const zetta::governance::IdentityAuthority* root = node.identity_authority();
+            for (const auto& [key, value] : replication.snapshot().items()) {
+                if (!zetta::governance::is_identity_key(key) || !value.is_object() ||
+                    !value.contains(std::string(zetta::governance::kIdentitySealField))) {
+                    continue;
+                }
+                if (!root->open(key, value)) ++foreign;
+            }
+            if (foreign > 0) {
+                std::fprintf(stderr,
+                             "zetta: WARNING: %zu identity record(s) in the cluster are "
+                             "sealed by another identity root, so this node does not "
+                             "honor them. Every node of one cluster needs the same "
+                             "--admin-token, or the --identity-root the first node "
+                             "prints (docs/governance/identity-seal.md).\n",
+                             foreign);
+            }
+        }
+
+        // The default-deny gate is always on (#799), so a fresh node with the MCP
+        // server enabled needs an owner token or every request 401s. If no secret
+        // was supplied, generate one and print it ONCE so the node is never locked
+        // out (#733) — in the operator path a secret is always injected, so this
+        // fires only for a bare local run. Decided after the join, so a joining
+        // node that received the cluster's owner never mints its own.
+        bool generated = false;
+        if (admin_secret.empty() && opts.mcp_enabled && node.user_count() == 0 &&
+            node.can_issue_identity()) {
+            admin_secret = zetta::governance::generate_token_secret();
+            generated = true;
+        }
+        // Reconcile the built-in admin/writer/reader roles on EVERY startup — not
+        // only fresh-store bootstrap (bootstrap_owner early-returns once the user
+        // store is seeded). The roles live in the replicated store, seeded once at
+        // cluster creation; without this a binary upgrade leaves them frozen at
+        // whatever permission vocabulary first seeded them, so an upgraded cluster
+        // whose 'admin' role predates a newly-added capability keeps denying it
+        // (e.g. orchestration:testsuite_run). Idempotent — writes only on drift; a
+        // verify-only node writes nothing.
+        node.ensure_builtin_roles();
+        if (!admin_secret.empty()) {
+            const zetta::Node::BootstrapResult boot =
+                node.bootstrap_owner(admin_secret);
+            if (boot.performed && generated) {
+                std::printf(
+                    "zetta: no --admin-token supplied — generated the owner '%s' "
+                    "access token (id %s). SAVE THIS — it is shown only once:\n"
+                    "    %s\n"
+                    "    authenticate MCP/REST with: Authorization: Bearer <token>\n",
+                    boot.user_name.c_str(), boot.token_id.c_str(),
+                    admin_secret.c_str());
+            } else if (boot.performed) {
+                std::printf(
+                    "zetta: bootstrapped owner user '%s' + admin role + access "
+                    "token %s (stored hashed under %s) — authenticate with the "
+                    "admin token you supplied\n",
+                    boot.user_name.c_str(), boot.token_id.c_str(),
+                    (std::filesystem::path(opts.node.data_dir) / boot.token_id)
+                        .c_str());
+            } else {
+                std::printf("zetta: owner bootstrap skipped (%s)\n",
+                            boot.reason.c_str());
+            }
+        }
+    }
 
     // Tell the operator where this node is reachable so they can connect more
     // nodes. A wildcard bind expands to every interface IPv4.

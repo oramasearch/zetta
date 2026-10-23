@@ -8263,7 +8263,7 @@ ApiResult handle_deployment_profile(const nlohmann::json& input, ApiContext& con
          "member; it is not shareable between members"}};
     profile["clustering"] = {
         {"model", "equal peers — no leader, no election"},
-        {"join", "--peer HOST:PORT (repeatable) plus --join-token"},
+        {"join", "--peer HOST:PORT (repeatable) plus --join-token, and --identity-root unless the node has the cluster's admin token"},
         {"members_now", context.cluster != nullptr
                             ? static_cast<long long>(context.cluster->peer_count() + 1)
                             : 1},
@@ -8283,6 +8283,10 @@ ApiResult handle_deployment_profile(const nlohmann::json& input, ApiContext& con
          "air-gapped node works"}};
     profile["identity"] = {
         {"seed", "--admin-token, or ZETTA_ADMIN_TOKEN"},
+        {"cluster",
+         "give every node of one cluster the same admin token: it derives the identity "
+         "root that seals every account, role and token, and a node with any other "
+         "token issues nothing the cluster honors"},
         {"why",
          "a fresh node otherwise generates its owner token and prints it once, which an "
          "automated deploy cannot capture. Seeding makes the deploy deterministic"},

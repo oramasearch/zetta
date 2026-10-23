@@ -670,6 +670,7 @@ add_library(zetta-core STATIC
   src/core/governance/credential_redaction.cpp
   src/core/governance/rate_limiter.cpp
   src/core/governance/token_secret.cpp
+  src/core/governance/identity_seal.cpp
   src/core/governance/user.cpp
   src/core/governance/role.cpp
   src/core/governance/token.cpp
