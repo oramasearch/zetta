@@ -442,8 +442,8 @@ set_tests_properties(zetta-startup-log-redaction PROPERTIES
 # Chaos experiments (#842): an in-process mutual-TLS cluster tormented on a seeded
 # schedule, asserted to heal (cluster/chaos_harness.hpp). Its own executable so
 # every case carries the `chaos` label (`ctest -L chaos`). The default suite runs
-# the fast cases and one short smoke; the long runs skip unless
-# ZETTA_CHAOS_SCHEDULES / ZETTA_CHAOS_PROBE_ROUNDS is set. See
+# the fast cases; the smoke skips unless ZETTA_CHAOS_SMOKE is set (until #835 is
+# fixed), and the long runs unless ZETTA_CHAOS_SCHEDULES / ZETTA_CHAOS_PROBE_ROUNDS is. See
 # docs/testing/chaos-experiments.md.
 add_executable(zetta-chaos-tests
   cluster/test_chaos.cpp

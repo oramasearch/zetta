@@ -19,7 +19,8 @@ exercise the headless core, never the GUI. Run:
   **single-node == multi-node** equivalence.
 - **Chaos experiments** (#842) live in `cluster/test_chaos.cpp` over
   `cluster/chaos_harness.hpp`, built as `zetta-chaos-tests` with the ctest
-  label `chaos`. Long runs never enter the default suite: they skip unless
+  label `chaos`. Only the unit cases run by default: the smoke skips unless
+  `ZETTA_CHAOS_SMOKE=1` (until #835 is fixed), the long runs unless
   `ZETTA_CHAOS_SCHEDULES` / `ZETTA_CHAOS_PROBE_ROUNDS` is set. A chaos step
   must prove its fault landed before its result counts — see
   [docs/testing/chaos-experiments.md](../docs/testing/chaos-experiments.md).
