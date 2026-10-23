@@ -133,6 +133,9 @@ struct Cluster::State {
     // in our HELLO (an empty candidate set + the dial-out marker) — we are a pure
     // initiator. Set from ClusterConfig::dial_out_only in start().
     bool dial_out_only = false;
+    // Chaos fault injection on inbound frames (#842); null outside the chaos
+    // experiments. Set from ClusterConfig::frame_faults in the constructor.
+    std::shared_ptr<FrameFaultInjector> frame_faults;
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
     // At most one live connection per peer node_id (guarded by `mutex`). A reconnect
@@ -931,6 +934,14 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
             link->stream->close();
             break;
         }
+        // Chaos fault injection (#842): apply inbound frames the injector held
+        // back (a delay or a reorder) that are due now.
+        if (self->frame_faults) {
+            for (const std::string& held : self->frame_faults->release_due(peer_node_id)) {
+                link->last_activity = Clock::now();
+                apply_gossip(self, held, peer_node_id);
+            }
+        }
         // Flush queued signals (RPC requests/responses, events, tasks) and any
         // large-object bodies a peer asked us for — promptly, every tick.
         bool flushed = true;
@@ -1169,6 +1180,17 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     for (;;) {
         std::optional<std::string> line = co_await link->stream->read_frame();
         if (!line) break;  // peer disconnected / link timed out
+        if (self->frame_faults) {
+            // Chaos fault injection (#842): the injector decides what this frame
+            // becomes. Activity is credited only for frames actually applied, so a
+            // dropped stream looks silent and idles the link out like a partition.
+            for (const std::string& frame :
+                 self->frame_faults->on_inbound(peer.node_id, std::move(*line))) {
+                link->last_activity = std::chrono::steady_clock::now();
+                apply_gossip(self, frame, peer.node_id);
+            }
+            continue;
+        }
         link->last_activity = std::chrono::steady_clock::now();
         apply_gossip(self, *line, peer.node_id);
     }
@@ -1450,6 +1472,7 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
         std::chrono::seconds(config_.membership_grace_seconds);
     state_->log_events = config_.log_events;
     state_->dial_out_only = config_.dial_out_only;
+    state_->frame_faults = config_.frame_faults;
 }
 
 Cluster::~Cluster() { stop(); }

@@ -31,3 +31,9 @@ acceptance after descriptor exhaustion (#1401). The descriptor-limit case runs i
 an isolated subprocess, observes an actual accept error, releases its temporary
 files and proves a healthy peer joins. Completed setup remains connected after
 its former deadline.
+
+`chaos_harness.hpp` + `test_chaos.cpp` are the chaos experiments (#842): a seeded
+schedule of single faults on a 3–5 node mutual-TLS mesh under load, each proven
+to have landed and then asserted to heal. They build as their own executable,
+`zetta-chaos-tests`, labelled `chaos`; the long runs are opt-in. See
+[chaos-experiments.md](../../docs/testing/chaos-experiments.md).
