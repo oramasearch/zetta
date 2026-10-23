@@ -49,8 +49,8 @@ Or include the focused headers:
 - `zetta/transport/credentials.hpp` provides the standard-library-only
   `TlsCredentials` value used by Zetta's public cluster configuration.
 - `zetta/transport/security.hpp` provides `TlsCredentialFiles`,
-  `load_tls_credentials`, and
-  `make_mutual_tls_context`.
+  `load_tls_credentials`,
+  `make_mutual_tls_context`, and `certificate_common_name`.
 - `zetta/transport/framed_stream.hpp` provides `FramedStream`,
   `FramedStreamOptions`, and `HandshakeRole`.
 
@@ -81,6 +81,13 @@ construction (`FramedStreamOptions`) or between reads
 (`FramedStream::set_maximum_frame_bytes`). The bound is checked inside the TLS
 drain loop too, so one read never buffers far past it.
 
+After a TLS handshake, `FramedStream::peer_certificate_der()` returns the DER
+certificate the peer presented (Corosio's `tls_stream::peer_certificate_der()`,
+corosio#14); it is empty on a plaintext stream. `certificate_common_name(der)`
+reads its subject common name, refusing bytes that are not exactly one
+certificate and subjects with no common name or more than one. It does not
+verify the certificate: the handshake already did, against the context's CA.
+
 ## Zetta cluster integration
 
 `zetta::cluster::ClusterSecurity` extends the reusable `TlsCredentials` with
@@ -88,7 +95,9 @@ Zetta's join token and retired-token history. Token derivation, node certificate
 minting, and persistence remain cluster-specific in
 `src/core/cluster/security.cpp`. `Cluster::start()` passes those credentials to
 `make_mutual_tls_context`; each accepted or dialed socket is then wrapped in a
-`FramedStream` before any `ZETTA/1 HELLO` byte is exchanged.
+`FramedStream` before any `ZETTA/1 HELLO` byte is exchanged. Once the peer's
+HELLO is parsed, the cluster refuses the link unless the stated node id is the
+common name of the peer's certificate (`hello_matches_peer_certificate`, #669).
 
 The extraction changes no cluster wire format, handshake order, reconnect
 logic, or plaintext behavior for embedded test clusters. The cluster reads a

@@ -13,10 +13,12 @@
 // the handshake — the join is token-gated at the transport, with no enrollment
 // RPC and no leader (matching the equal-peer cluster).
 //
-// Known limitation (documented, follow-up): Corosio exposes no peer-certificate
-// accessor, so a node that IS enrolled could still claim another member's node
-// id in its HELLO. CTL-2's boundary (TB-3, outsiders) is closed; member-vs-
-// member impersonation needs the CSR-enrollment upgrade.
+// The cluster refuses a peer whose HELLO node id is not its certificate's CN
+// (hello_matches_peer_certificate, #669). Known limitation (documented,
+// follow-up): the CA key is derivable from the token, so a member that holds
+// the token can still mint a certificate for another node's id. Closing that
+// needs CSR-based enrollment (#1319), which also makes per-node revocation
+// (#1320) meaningful.
 
 #include <cstddef>
 #include <nlohmann/json.hpp>

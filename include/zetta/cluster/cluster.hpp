@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -126,6 +127,14 @@ struct ClusterMember {
     bool is_self = false;
     bool directly_connected = false;  // a live link is held to it right now
 };
+
+// Does the node id a peer states in its HELLO match the certificate it
+// presented in the mutual-TLS handshake (#669)? True only when the certificate
+// parses, carries exactly one subject common name, and that name equals
+// `stated_node_id`. The handshake has already verified the certificate against
+// the cluster CA; this binds the protocol identity to it.
+bool hello_matches_peer_certificate(std::string_view stated_node_id,
+                                    std::span<const unsigned char> peer_certificate_der);
 
 struct ClusterConfig {
     // Zero models a legacy peer in protocol tests. The binary always uses 1.

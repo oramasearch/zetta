@@ -26,14 +26,17 @@ bytes per round and convergence time.
 
 `test_cluster_setup.cpp` covers the shared TLS/HELLO deadline, partial-frame
 progress, outbound setup, pending-setup refusal and slot recovery, dials that
-an inbound flood cannot block, and continued
+an inbound flood cannot block, and continued isolated subprocess, observes an actual accept error, releases its temporary
 acceptance after descriptor exhaustion (#1401). The descriptor-limit case runs in
-an isolated subprocess, observes an actual accept error, releases its temporary
 files and proves a healthy peer joins. Completed setup remains connected after
 its former deadline.
-
 `chaos_harness.hpp` + `test_chaos.cpp` are the chaos experiments (#842): a seeded
 schedule of single faults on a 3–5 node mutual-TLS mesh under load, each proven
 to have landed and then asserted to heal. They build as their own executable,
 `zetta-chaos-tests`, labelled `chaos`; the long runs are opt-in. See
 [chaos-experiments.md](../../docs/testing/chaos-experiments.md).
+`ClusterSecurity.CertificateCommonNameIsTheNodeId` and
+`ClusterSecurity.PeerWhoseHelloIsNotItsCertificateIsRefused` cover the pin of a
+peer's `HELLO` node id to the common name of the certificate mutual TLS verified
+(#669): a valid member certificate naming another node is refused, while a
+matching peer joins the same node in the same window.

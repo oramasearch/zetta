@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace zetta::transport {
 
@@ -56,6 +57,9 @@ class FramedStream {
     void set_maximum_frame_bytes(std::size_t maximum_frame_bytes);
 
     bool secure() const;
+    // The DER certificate the peer presented in the TLS handshake. Empty on a
+    // plaintext stream, before the handshake, or when the peer sent none.
+    std::vector<unsigned char> peer_certificate_der() const;
     void close();
 
    private:
