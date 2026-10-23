@@ -117,9 +117,13 @@ struct PipelineServingFixture : ::testing::Test {
         return key->id();
     }
 
+    // A served run executes as the caller, so the caller also holds the right
+    // each step of the pinned pipeline exercises (#843): this pipeline's clean
+    // step derives a dataset (orchestration:create_dataset_from_query).
     std::string runner_key(const std::string& name) {
         return make_key(name, {{CapabilityDomain::Data, "run_pipeline"},
-                               {CapabilityDomain::Data, "read"}});
+                               {CapabilityDomain::Data, "read"},
+                               {CapabilityDomain::Orchestration, "create_dataset_from_query"}});
     }
 
     ApiResult expose(nlohmann::json extra = nlohmann::json::object()) {
