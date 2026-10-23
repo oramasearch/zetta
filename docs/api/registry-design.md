@@ -173,6 +173,29 @@ reaps the child before joining clients so a regression cannot strand the suite.
 
 ## Auth, governance, audit — nothing new
 
+- **Browser origin binding (#1415, LSR-242).** Every browser POST route
+  (`/login`, `/session`, both logout routes, `/run`, `/assist`, `/shell`,
+  `/graph-save`, `/blob`, `/blob/delete`) requires exactly one `Origin` matching
+  the request's scheme and `Host`, including the port. Missing, opaque (`null`),
+  duplicate and sibling origins return 403 before dispatch or cookie changes.
+  The first router middleware discards cached `Set-Cookie` and `Location` fields
+  on every request, including public GETs and preflight responses. Only the
+  current handler may set a session or redirect. Origin refusals close the
+  connection with the body unread, preventing those bytes from reaching another
+  request on the worker.
+  Cookie-authenticated REST, MCP and object routes apply the same check on every
+  method. For GET/HEAD without `Origin`, `Sec-Fetch-Site: same-origin` or `none`
+  is accepted; older clients may send one absolute, same-origin `Referer` without
+  userinfo or a fragment. Cross-site and same-site Fetch Metadata are refused,
+  even with another matching header. Cookie GET SQL accepts only batches of
+  parsed SELECT statements, checked in full before execution; send writes by
+  POST. Explicit bearer API requests keep their existing contract.
+  TLS ingress must preserve the browser's `Host` and overwrite
+  `X-Forwarded-Proto` with `https` (`http` for plain HTTP); forwarded host headers
+  are not used. Direct HTTP uses `http://Host`. Headers stripped by a proxy or
+  privacy policy can cause a 403; browser callers must retain origin evidence.
+  No capability schema or new JSON format is added. Return URL normalization is
+  tracked separately under LSR-262.
 - **Bearer token = an `AccessKey` id.** Possession of the key id is the
   credential, exactly the strength of the existing model (V1); minting a
   dedicated API-secret rides the existing key entity later, not a parallel

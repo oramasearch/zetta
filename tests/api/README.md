@@ -10,6 +10,13 @@ Real loopback HTTP tests cover REST and MCP. Pub/sub CRUD parity compares regist
 OpenAPI and tools/list schemas and calls every operation through each transport.
 Long-poll tests exercise both transports while owner work continues and assert
 that their reads share an audit session instead of creating one row per return.
+`test_web_ui_forms.cpp` covers origin binding for login, logout, every browser
+POST, cookie REST/MCP and object writes, read metadata, cookie GET SQL batches,
+and bearer compatibility (#1415, LSR-242). Forged requests leave no project,
+database or session cookie behind. GET after login/logout cannot replay cached
+cookies or redirects; origin refusals close connections with unread bodies.
+Blob authorization fixtures send a trusted
+Origin so their permission checks still run.
 The SQL parity path also compares pub/sub dispatch metrics from `system.pubsub_topics`
 and `system.node_metrics` over REST and MCP.
 Segment-backed `system.audit` rows, the audit protocol metric, admin-only

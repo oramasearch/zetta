@@ -53,6 +53,7 @@ WebResponse web_request(unsigned short port, const std::string& method, const st
     std::string request = method + " " + target + " HTTP/1.1\r\n";
     request += "Host: 127.0.0.1\r\n";
     request += "Cookie: zetta_session=" + session + "\r\n";
+    request += "Origin: http://127.0.0.1\r\n";
     request += "Content-Type: application/octet-stream\r\n";
     request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     request += "Connection: close\r\n\r\n";
