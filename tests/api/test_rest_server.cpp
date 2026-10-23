@@ -1075,6 +1075,21 @@ TEST_F(RestServerFixture, UploadDatasetOverRestAcceptsALargeBody) {
         }
     }
     EXPECT_TRUE(found) << listed.body;
+
+    // #1195: the lean list over the wire, as a query parameter.
+    auto lean = request("GET", "/v1/list_datasets?detail=summary");
+    ASSERT_EQ(lean.status, 200) << lean.body;
+    const nlohmann::json lean_value = json_of(lean).at("value");
+    EXPECT_EQ(lean_value.at("detail"), "summary");
+    found = false;
+    for (const auto& dataset : lean_value.at("datasets")) {
+        if (dataset.at("name") != "uploaded") continue;
+        found = true;
+        EXPECT_EQ(dataset.at("rows"), rows);
+        EXPECT_GT(dataset.at("size_bytes").get<std::uint64_t>(), 0u);
+        EXPECT_FALSE(dataset.contains("columns"));
+    }
+    EXPECT_TRUE(found) << lean.body;
 }
 
 TEST_F(RestServerFixture, OpenApiDocumentIsServed) {

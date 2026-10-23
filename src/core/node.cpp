@@ -57,6 +57,7 @@
 #include <system_error>
 #include <thread>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -608,6 +609,8 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
                                      partition->owner_nodes()});
             }
 
+            dataset.partition_count = dataset.partitions.size();
+
             // Degraded (#837): the manifest says how many catalog entries the
             // finished dataset has. When fewer are visible here, `rows` above is
             // a fraction of the truth — say so rather than under-report it. The
@@ -622,6 +625,61 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
                 dataset.degraded = !dataset.degraded_reason.empty();
             }
 
+            result.push_back(std::move(dataset));
+        }
+    }
+    return result;
+}
+
+std::vector<zetta::data::DatasetSummary> Node::dataset_list_summaries() const {
+    // The list fields of datasets(), from counters only (#1195). One pass over
+    // the partition catalog first: per table, how many entries and how many
+    // rows their ranges cover — the same sums datasets() makes per table.
+    struct CatalogCounts {
+        std::uint64_t partitions = 0;
+        std::uint64_t rows = 0;
+    };
+    std::unordered_map<std::string, CatalogCounts> catalog;
+    for (const auto& partition : dataset_partitions_) {
+        const zetta::data::PartitionRowRange& range = partition->row_range();
+        CatalogCounts& counts = catalog[partition->table()];
+        ++counts.partitions;
+        counts.rows += range.end > range.start ? range.end - range.start : 0;
+    }
+
+    std::vector<zetta::data::DatasetSummary> result;
+    for (const auto& database : databases_) {
+        for (const auto& table : database->tables()) {
+            zetta::data::DatasetSummary dataset;
+            dataset.name = table->name();
+            dataset.database = database->name();
+            dataset.table_id = table->id();
+            const zetta::storage::StorageEngine& store = table->store();
+            dataset.format = store.name();
+            dataset.source_format = table->source_format();
+            dataset.replication =
+                std::string(to_string(table->replication_strategy().kind()));
+            dataset.column_order_recorded = !table->column_order().empty();
+
+            const auto counted = catalog.find(table->id());
+            const CatalogCounts counts =
+                counted == catalog.end() ? CatalogCounts{} : counted->second;
+            dataset.partition_count = counts.partitions;
+            // A partition-only table (#833) counts its rows from the catalog,
+            // as datasets() does; any other table's local store is its rows.
+            dataset.rows = table->partition_only() ? counts.rows : store.size();
+            // The engine's own count of its chunk files' bytes. Every table's
+            // engine keeps one (JsonlStore); one that does not reports 0 here
+            // rather than listing files.
+            dataset.size_bytes = store.stored_bytes().value_or(0);
+
+            if (const auto& manifest = table->partition_manifest(); manifest) {
+                dataset.expected_partitions = manifest->partitions;
+                dataset.expected_rows = manifest->rows;
+                dataset.degraded_reason =
+                    zetta::data::catalog_shortfall(*manifest, counts.partitions);
+                dataset.degraded = !dataset.degraded_reason.empty();
+            }
             result.push_back(std::move(dataset));
         }
     }

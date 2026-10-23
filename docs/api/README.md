@@ -169,7 +169,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_models` | read | api:query | model-version rows with Project/Pipeline display names, producing Run, metrics, feature schema, serving state and creation time |
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
-| `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
+| `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays); `detail: "summary"` (#1195) answers only the list fields (rows, size_bytes, format, partition_count, degraded, …) from counters, reading no row and no file ([system-datasets.md](../data/system-datasets.md#the-lean-list-list_datasets-detail-summary-1195)) |
 | `list_methodologies` | read | api:query | all 21 catalogue methodologies, their data and result contracts, study support and published search spaces, primary solutions, model kinds, implementation status, and tracking issues, then the workspace's own; every entry says `source` (`orama` or `workspace`) and `editable` ([workspace methodologies](../ml/workspace-methodologies.md), #1261) |
 | `get_methodology` | read | api:query | one methodology by id: a catalogue entry (M-n, read-only) or a workspace methodology (W-<8 hex>) with its interface, code location, image and validation (#1261) |
 | `register_methodology` | action | orchestration:register_methodology | register a workspace methodology whose Python code Lake's runner runs (never the engine); returns its W- id, not validated (#1261) |

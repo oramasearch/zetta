@@ -13145,7 +13145,8 @@
                           "type": "array"
                         },
                         "replication": {
-                          "type": "integer"
+                          "description": "replicate_to_all, partitioned or partitioned_with_replicas",
+                          "type": "string"
                         },
                         "rows": {
                           "type": "integer"
@@ -22127,9 +22128,24 @@
     },
     "/v1/list_datasets": {
       "get": {
-        "description": "Read the computed summary of every dataset — schema, row count, size, format, replication, partition placement. No side effects. Requires api:query.",
+        "description": "Read the computed summary of every dataset — schema, row count, size, format, replication, partition placement. With detail \"summary\", only the fields a dataset list shows, from counters, reading no row and no file. No side effects. Requires api:query.",
         "operationId": "list_datasets",
         "parameters": [
+          {
+            "description": "full (the default): every dataset's whole summary, as before — columns, partition placement, and size_bytes measured from the files. summary (#1195): only what a dataset list shows, from counters the engine keeps, reading no row and no file; columns, types and placement stay on get_dataset",
+            "in": "query",
+            "name": "detail",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "description": "full (the default): every dataset's whole summary, as before — columns, partition placement, and size_bytes measured from the files. summary (#1195): only what a dataset list shows, from counters the engine keeps, reading no row and no file; columns, types and placement stay on get_dataset",
+              "enum": [
+                "full",
+                "summary"
+              ],
+              "type": "string"
+            }
+          },
           {
             "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
             "in": "query",
@@ -22163,117 +22179,208 @@
                       "additionalProperties": false,
                       "properties": {
                         "datasets": {
+                          "description": "one entry per dataset: the full summary, or with detail \"summary\" the summary form",
                           "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "column_order": {
-                                "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
-                                "enum": [
-                                  "source",
-                                  "first_seen"
-                                ],
-                                "type": "string"
-                              },
-                              "columns": {
-                                "description": "the column names, in the source's order when column_order is \"source\" (#1021)",
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "database": {
-                                "type": "string"
-                              },
-                              "degraded": {
-                                "type": "boolean"
-                              },
-                              "degraded_reason": {
-                                "type": "string"
-                              },
-                              "expected_partitions": {
-                                "type": "integer"
-                              },
-                              "expected_rows": {
-                                "type": "integer"
-                              },
-                              "format": {
-                                "description": "how the rows are stored (jsonl); not the upload's format",
-                                "type": "string"
-                              },
-                              "name": {
-                                "type": "string"
-                              },
-                              "partitions": {
-                                "items": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "blob_ref": {
-                                      "type": "string"
-                                    },
-                                    "owner_nodes": {
-                                      "items": {
-                                        "type": "string"
-                                      },
-                                      "type": "array"
-                                    },
-                                    "partition_id": {
-                                      "type": "string"
-                                    },
-                                    "row_end": {
-                                      "type": "integer"
-                                    },
-                                    "row_start": {
-                                      "type": "integer"
-                                    }
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "column_order": {
+                                    "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
+                                    "enum": [
+                                      "source",
+                                      "first_seen"
+                                    ],
+                                    "type": "string"
                                   },
-                                  "required": [
-                                    "partition_id",
-                                    "blob_ref",
-                                    "row_start",
-                                    "row_end",
-                                    "owner_nodes"
-                                  ],
-                                  "type": "object"
+                                  "columns": {
+                                    "description": "the column names, in the source's order when column_order is \"source\" (#1021)",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "database": {
+                                    "type": "string"
+                                  },
+                                  "degraded": {
+                                    "type": "boolean"
+                                  },
+                                  "degraded_reason": {
+                                    "type": "string"
+                                  },
+                                  "expected_partitions": {
+                                    "type": "integer"
+                                  },
+                                  "expected_rows": {
+                                    "type": "integer"
+                                  },
+                                  "format": {
+                                    "description": "how the rows are stored (jsonl); not the upload's format",
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "partitions": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "blob_ref": {
+                                          "type": "string"
+                                        },
+                                        "owner_nodes": {
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "partition_id": {
+                                          "type": "string"
+                                        },
+                                        "row_end": {
+                                          "type": "integer"
+                                        },
+                                        "row_start": {
+                                          "type": "integer"
+                                        }
+                                      },
+                                      "required": [
+                                        "partition_id",
+                                        "blob_ref",
+                                        "row_start",
+                                        "row_end",
+                                        "owner_nodes"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "replication": {
+                                    "description": "replicate_to_all, partitioned or partitioned_with_replicas",
+                                    "type": "string"
+                                  },
+                                  "rows": {
+                                    "type": "integer"
+                                  },
+                                  "size_bytes": {
+                                    "type": "integer"
+                                  },
+                                  "source_format": {
+                                    "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                                    "type": "string"
+                                  },
+                                  "table_id": {
+                                    "type": "string"
+                                  }
                                 },
-                                "type": "array"
+                                "required": [
+                                  "name",
+                                  "database",
+                                  "table_id",
+                                  "format",
+                                  "source_format",
+                                  "replication",
+                                  "rows",
+                                  "size_bytes",
+                                  "columns",
+                                  "column_order",
+                                  "partitions",
+                                  "degraded",
+                                  "degraded_reason",
+                                  "expected_partitions",
+                                  "expected_rows"
+                                ],
+                                "type": "object"
                               },
-                              "replication": {
-                                "type": "integer"
-                              },
-                              "rows": {
-                                "type": "integer"
-                              },
-                              "size_bytes": {
-                                "type": "integer"
-                              },
-                              "source_format": {
-                                "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
-                                "type": "string"
-                              },
-                              "table_id": {
-                                "type": "string"
+                              {
+                                "additionalProperties": false,
+                                "description": "a dataset in list_datasets' summary form (#1195)",
+                                "properties": {
+                                  "column_order": {
+                                    "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
+                                    "enum": [
+                                      "source",
+                                      "first_seen"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "database": {
+                                    "type": "string"
+                                  },
+                                  "degraded": {
+                                    "type": "boolean"
+                                  },
+                                  "degraded_reason": {
+                                    "type": "string"
+                                  },
+                                  "expected_partitions": {
+                                    "type": "integer"
+                                  },
+                                  "expected_rows": {
+                                    "type": "integer"
+                                  },
+                                  "format": {
+                                    "description": "how the rows are stored (jsonl); not the upload's format",
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "partition_count": {
+                                    "description": "the partition catalog entries this node sees (0 = not partitioned); the full form's partitions array has this many entries",
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "replication": {
+                                    "description": "replicate_to_all, partitioned or partitioned_with_replicas",
+                                    "type": "string"
+                                  },
+                                  "rows": {
+                                    "description": "the row count: the local store's, or for a partition-only dataset the sum of the partition catalog's row ranges (a fraction when degraded)",
+                                    "type": "integer"
+                                  },
+                                  "size_bytes": {
+                                    "description": "bytes of row data in the table's chunk files, from the engine's own counter: equal to the full form's measured value once pending writes are flushed",
+                                    "type": "integer"
+                                  },
+                                  "source_format": {
+                                    "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                                    "type": "string"
+                                  },
+                                  "table_id": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "column_order",
+                                  "database",
+                                  "degraded",
+                                  "degraded_reason",
+                                  "expected_partitions",
+                                  "expected_rows",
+                                  "format",
+                                  "name",
+                                  "partition_count",
+                                  "replication",
+                                  "rows",
+                                  "size_bytes",
+                                  "source_format",
+                                  "table_id"
+                                ],
+                                "type": "object"
                               }
-                            },
-                            "required": [
-                              "name",
-                              "database",
-                              "table_id",
-                              "format",
-                              "source_format",
-                              "replication",
-                              "rows",
-                              "size_bytes",
-                              "columns",
-                              "column_order",
-                              "partitions",
-                              "degraded",
-                              "degraded_reason",
-                              "expected_partitions",
-                              "expected_rows"
-                            ],
-                            "type": "object"
+                            ]
                           },
                           "type": "array"
+                        },
+                        "detail": {
+                          "description": "the form each entry of datasets takes",
+                          "enum": [
+                            "full",
+                            "summary"
+                          ],
+                          "type": "string"
                         }
                       },
                       "required": [

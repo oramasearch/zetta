@@ -25,6 +25,7 @@ add_executable(zetta-tests
   memory/test_accounting.cpp
   transport/test_security.cpp
   api/test_registry.cpp
+  api/test_dataset_list_summary.cpp
   api/test_agent_api.cpp
   api/test_chat_loop.cpp
   api/test_workspace_methodology_api.cpp

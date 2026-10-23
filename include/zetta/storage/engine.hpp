@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -88,6 +89,13 @@ public:
     // copy, and nearly every caller copied already (a CRDT key, an error string,
     // an element pushed into a vector).
     virtual std::string id_at(std::size_t i) const = 0;
+
+    // The bytes of row data this engine keeps on disk, kept as a counter that
+    // every write updates, so answering costs nothing per row and reads no file
+    // (#1195, the lean `list_datasets`). A deferred write is counted when it is
+    // made, not when it is flushed: after a flush the counter equals the files.
+    // `std::nullopt` from an engine that keeps no such counter.
+    virtual std::optional<std::uint64_t> stored_bytes() const { return std::nullopt; }
 
     // Make every pending write durable.
     //

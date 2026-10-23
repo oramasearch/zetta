@@ -103,7 +103,66 @@ aggregates, per table:
   ref, row range, and owner nodes) — the cross-cluster placement.
 
 It touches the local filesystem only to size the row chunks (like
-`system.checkpoints`); everything else is read from in-memory handles.
+`system.checkpoints`); everything else is read from in-memory handles. It also
+walks every stored row to infer the schema and the column types, so its cost
+grows with the rows: use the lean list below when only the list fields are
+needed.
+
+## The lean list: `list_datasets` `detail: "summary"` (#1195)
+
+A page that lists datasets shows names, row counts, sizes and formats, not
+schemas. `Node::datasets()` computes those by walking every row (for the
+schema) and listing every chunk file (for the size), so a list cost grew with
+the data. `list_datasets` therefore takes an optional `detail`:
+
+- **`"full"`** (the default, the answer every existing caller gets): the whole
+  `DatasetSummary` per dataset, as before.
+- **`"summary"`**: one object per dataset with only the list fields, computed by
+  `Node::dataset_list_summaries()` from counters, reading **no row and no file**.
+
+```http
+GET /v1/list_datasets?detail=summary
+```
+
+Over MCP it is `tools/call` of `list_datasets` with arguments `{"detail": "summary"}`.
+
+```json
+{
+  "detail": "summary",
+  "datasets": [
+    { "name": "accounts", "database": "crm", "table_id": "<uuid>",
+      "format": "jsonl", "source_format": "csv", "replication": "replicate_to_all",
+      "rows": 120, "size_bytes": 9876, "column_order": "source",
+      "partition_count": 0,
+      "degraded": false, "degraded_reason": "",
+      "expected_partitions": 0, "expected_rows": 0 }
+  ]
+}
+```
+
+Each field has the same name and value as in the full form. `partition_count` is
+the length of the full form's `partitions` array. `columns`, their types, and the
+partition placement stay on the full form and on `get_dataset`. The answer carries
+`detail` so a caller can tell which form it got (the full form says `"full"`).
+
+Where each value comes from:
+
+| field | source | cost |
+| --- | --- | --- |
+| `rows` | the store's size; for a [partition-only](partition-only-tables.md) table, the sum of the catalog's row ranges, as the full form | per dataset |
+| `size_bytes` | `StorageEngine::stored_bytes()`: `JsonlStore` keeps each row's line size and their sum, updated by every add, update, removal and chunk rewrite | per dataset |
+| `partition_count`, `degraded`, `degraded_reason` | one pass over the partition catalog, counting entries per table, then the same `catalog_shortfall` rule against the manifest | per partition entry, once |
+| the rest | table metadata in memory | per dataset |
+
+An update is counted when it is made; the chunk file catches up at the owner
+loop's next flush, after which `size_bytes` equals the full form's measured value.
+A degraded partition-only dataset reports the same fractional `rows` and the same
+reason in both forms.
+
+**Access** is the full form's: it is the same tool (`list_datasets`, `api:query`,
+a per-tool `mcp:call` scope included) and lists the same datasets. Neither form
+lists anything `get_dataset` would not show; the column-level `sql:read` rule
+applies to column types, which the summary does not carry.
 
 ## No new JSON boundary
 
@@ -133,6 +192,18 @@ an empty node has no datasets; a plain table reports its inferred schema / rows 
 size / `jsonl` format with no placement; a table with two partition-catalog
 entries reports `partition_count = 2` and a `placement` naming each slice's owner
 nodes; `WHERE` + projection work over the view.
+
+`tests/api/test_dataset_list_summary.cpp` (#1195): the summary equals the full
+form on every shared field (plain, empty, same-named and partition-only datasets,
+and the default answer is unchanged); with 19 and with 50 datasets, one of them
+25,000 rows, a read-counting engine wrapped around every table sees **no row read**
+by the summary (and every row read by the full form), and with the chunk files
+deleted the summary still reports their bytes (where the full form now finds 0),
+so it read no file; and the counters follow inserts, an update, a deletion, a
+dropped table, and a partition-only dataset that turns degraded.
+`tests/data/test_jsonl_store.cpp` → `JsonlStore.StoredBytesFollowsEveryWriteWithoutReadingTheFiles`
+checks the counter against the chunk files after each kind of write, a reload and
+a legacy line.
 
 ## See also
 
