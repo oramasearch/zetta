@@ -33,6 +33,7 @@ src/core/connect/source_catalog.cpp          information_schema (Postgres/Snowfl
 include/zetta/api/native_http_transport.hpp  install/shutdown the native client
 src/core/api/native_http_transport.cpp       the native coroutine HTTPS client (zetta-api target)
 tests/connect/test_connector.cpp             the boundary, the guard, and Snowflake against a fake transport
+tests/connect/test_postgres_connector.cpp    the Postgres adapter against a local server, including its UTF-8 wire encoding
 tests/connect/test_connection_store.cpp      the store, its boundary, and the no-leak contract
 tests/connect/test_distributed_fetch.cpp     the tiling's exactly-once property + the bounded concurrent read
 tests/connect/test_distributed_ingest.cpp    the cross-node ingest over a real loopback cluster
@@ -119,6 +120,34 @@ Two qualifications on that, both per-call rather than per-tool
   gated even with `--governance` on (#994). A remote source's challenge names
   that connector's real type and target — it used to describe every source as
   Snowflake.
+
+## Catalog filters: `list_source_tables`
+
+`list_source_tables` browses tables and optional columns through
+`connect::list_source_catalog`, using either a saved connection or an inline
+connector. Its `schema` and `match` filters are encoded as SQL string values;
+Snowflake and MySQL require both single quotes and backslashes to be doubled.
+Postgres uses explicit `E'…'` literals with the same escaping, so catalog reads
+remain safe with either setting of `standard_conforming_strings`. SQLite and
+DuckDB retain their ordinary SQL literal encoding.
+The schema filter uses the same encoding in the table and column queries
+([#1404](https://github.com/oramasearch/zetta/issues/1404)).
+
+Snowflake's [string constant grammar](https://docs.snowflake.com/en/sql-reference/data-types-text#string-constants)
+treats backslashes as escapes, so quote doubling alone cannot contain a filter.
+Postgres likewise enables backslash escapes in ordinary strings when
+[`standard_conforming_strings` is off](https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-STRINGS-ESCAPE);
+explicit `E'…'` literals make the encoding independent of that setting.
+The Postgres adapter pins `client_encoding=UTF8` so its wire encoding matches
+the JSON input, even when `PGCLIENTENCODING` requests a different encoding.
+The connector's single-statement, read-only check remains a separate guard.
+The request and response formats are unchanged; `%` and `_` in `match` retain
+their existing LIKE wildcard behavior. Tests in `tests/connect/test_connector.cpp`
+decode outgoing Snowflake filter literals and verify that quote, backslash,
+escape-spelling and SQL-shaped inputs preserve both their value and the query
+structure, including the column-catalog query. Postgres fake-runner tests
+check both string settings. These fake tests need no warehouse or database;
+the local Postgres adapter test verifies UTF-8 overrides `PGCLIENTENCODING=SJIS`.
 
 ## No foreign runtime (ADR-17)
 

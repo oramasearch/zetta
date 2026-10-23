@@ -62,6 +62,9 @@ std::string connection_string(const ConnectorConfig& config) {
     add("password", config.token);
     add("dbname", config.database);
     add("sslmode", config.sslmode);
+    // Query text and JSON are UTF-8. An inherited multibyte client encoding
+    // must not change the character boundaries of escaped catalog literals.
+    add("client_encoding", "UTF8");
     // Never block a pool worker forever on an unreachable host.
     add("connect_timeout", "10");
     return conn;
