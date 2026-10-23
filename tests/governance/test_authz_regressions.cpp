@@ -362,12 +362,10 @@ TEST_F(AuthzNode, Finding769_TheOwnerTokenIsStoredThroughAKdf) {
         if (token->user_id() == owner->id()) hash = token->value().hash;
     }
     ASSERT_FALSE(hash.empty());
-    // A KDF hash names itself (`pbkdf2-sha256$<iterations>$<hex>`, PR #1311); a
-    // bare 64-hex value is a single salted SHA-256.
-    const bool single_sha256 = hash.find('$') == std::string::npos;
-    // The plain assertion, once fixed: EXPECT_FALSE(single_sha256).
-    KNOWN_DEFECT(769, single_sha256,
-                 "the --admin-token owner secret is stored as one salted SHA-256");
+    // A KDF hash names itself (`pbkdf2-sha256$<iterations>$<hex>`, fixed by PR
+    // #1311); a bare 64-hex value is a single salted SHA-256.
+    EXPECT_NE(hash.find('$'), std::string::npos)
+        << "the --admin-token owner secret is stored as one salted SHA-256";
 }
 
 TEST(AuthzSeed, Finding769_AnInterruptedOwnerSeedIsResumed) {
@@ -379,11 +377,9 @@ TEST(AuthzSeed, Finding769_AnInterruptedOwnerSeedIsResumed) {
     const auto boot = node.bootstrap_owner(kOwnerSecret);
     const bool locked_out = node.authenticate_token(kOwnerSecret) == nullptr;
     node.stop();
-    // The plain assertion, once fixed:
-    //   EXPECT_TRUE(boot.performed); EXPECT_FALSE(locked_out);
-    KNOWN_DEFECT(769, locked_out,
-                 "an owner left without a token is never re-seeded (" + boot.reason +
-                     ")");
+    // Fixed by PR #1311: an owner left without a token is resumed.
+    EXPECT_TRUE(boot.performed) << boot.reason;
+    EXPECT_FALSE(locked_out) << "an owner left without a token is never re-seeded";
 }
 
 TEST_F(AuthzNode, Finding769_RefusedPrivilegedSqlIsAudited) {

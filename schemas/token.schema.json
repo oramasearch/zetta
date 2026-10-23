@@ -2,7 +2,7 @@
   "$id": "https://oramasearch.github.io/zetta/schemas/token.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A bearer credential (FEAT-9 / #744) that authenticates as a user, stored HASHED at rest — the plaintext secret is shown once at creation and never persisted. The on-disk token.json projection of the replicated `token:<uuid>` CRDT value. Mirrored by zetta::governance::Token in include/zetta/governance/token.hpp and enforced by token_value_from_json() + Node::load_tokens()/reconcile_tokens() — keep them in sync. `hash` = hex SHA-256(salt || secret); the secret itself never appears here or in system.tokens.",
+  "description": "A bearer credential (FEAT-9 / #744) that authenticates as a user, stored HASHED at rest — the plaintext secret is shown once at creation and never persisted. The on-disk token.json projection of the replicated `token:<uuid>` CRDT value. Mirrored by zetta::governance::Token in include/zetta/governance/token.hpp and enforced by token_value_from_json() + Node::load_tokens()/reconcile_tokens() — keep them in sync. `hash` = hex SHA-256(salt || secret), or for the bootstrap owner's operator-chosen secret the PBKDF2 form `pbkdf2-sha256$<iterations>$<hex>` (#769); the secret itself never appears here or in system.tokens.",
   "properties": {
     "created": {
       "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
@@ -13,7 +13,7 @@
       "type": "string"
     },
     "hash": {
-      "description": "Hex SHA-256(salt || secret) — the at-rest hash of the secret. The plaintext is never stored.",
+      "description": "The at-rest hash of the secret: hex SHA-256(salt || secret) for a generated secret, or `pbkdf2-sha256$<iterations>$<hex>` (PBKDF2-HMAC-SHA256 over the salt) for the bootstrap owner's operator-chosen secret (#769). The plaintext is never stored.",
       "type": "string"
     },
     "id": {

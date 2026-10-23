@@ -267,7 +267,8 @@ UserRole (user_role:<uuid>)  a user↔role assignment. A user's effective
 Token  (token:<uuid>)        a bearer credential that authenticates as a user,
   user, type (api|access),     stored HASHED at rest. The plaintext secret is
   hash, salt, created,         shown ONCE at creation and never persisted; only
-  expires_at?, revoked         hash = SHA-256(salt || secret) + salt is stored.
+  expires_at?, revoked         hash = SHA-256(salt || secret) + salt is stored
+                               (the bootstrap owner's: the PBKDF2 form, below).
 ```
 
 ### Hashed tokens
@@ -282,6 +283,36 @@ tokens, and resolves to the owning **User**. The crypto lives in one OpenSSL TU,
 `src/core/cluster/security.cpp`) allowed to name libcrypto directly. The
 self-contained `zetta::util::sha256_hex` is deliberately **not** used for secrets
 (it is not constant-time — "content fingerprints, never secrets").
+
+**The bootstrap owner's token is stored through a key-derivation function (#769).**
+A generated secret carries 256 bits of entropy, so one SHA-256 is enough at rest.
+The owner's secret is the operator's `--admin-token` / `ZETTA_ADMIN_TOKEN`, which a
+person may have chosen, so it is stored as PBKDF2-HMAC-SHA256 over the salt with
+600,000 iterations (OWASP's figure; OpenSSL `PKCS5_PBKDF2_HMAC`). The stored
+`hash` names its form, `pbkdf2-sha256$<iterations>$<64 hex>`, so the field and
+the schema are unchanged and a plain 64-hex hash keeps meaning single SHA-256.
+Owner tokens seeded before #769 stay in the SHA-256 form and keep working.
+
+Checking a PBKDF2 token costs a full derivation, and validation runs on the node's
+owning loop, so `Node::authenticate_token` takes two passes:
+
+1. Every cheap match first: SHA-256 tokens, and PBKDF2 tokens already verified in
+   this process. After a PBKDF2 token's first successful check it keeps a
+   **memory-only** SHA-256(salt || secret) verifier (never persisted), so later
+   checks, right or wrong, cost one SHA-256.
+2. Only if nothing matched, the PBKDF2 tokens not yet verified, under a budget: a
+   burst of 4 derivations, refilled at one per second. Past it, an unverified
+   PBKDF2 token answers no. This bounds the CPU an unauthenticated caller can burn
+   and the rate of online guesses at the owner's secret.
+
+`Node::bootstrap_owner` verifies the operator's secret at every start (the
+operator injects it on each start), so the owner normally never reaches pass 2.
+A node started without the secret, or a peer that received the owner token by
+replication, verifies it on the owner's first request instead.
+
+A peer on a release before #769 reads the PBKDF2 form as an ordinary hash and
+never matches it: during a rolling upgrade the owner token authenticates only on
+upgraded nodes.
 
 ### Built-in roles
 
@@ -317,13 +348,21 @@ enabled **always** ends up with an owner token, by one of two paths:
 
 - **Secret supplied** (`--admin-token` / `ZETTA_ADMIN_TOKEN`; the operator always
   injects `ZETTA_ADMIN_TOKEN`). `Node::bootstrap_owner(secret)` seeds the owner
-  from that secret — hashed at rest, **never** logged (the operator already holds
-  it); the node logs only **where** the token record lives.
+  from that secret — stored in the PBKDF2 form (above), **never** logged (the
+  operator already holds it); the node logs only **where** the token record lives.
 - **No secret supplied — never-locked-out auto-seed (#799).** On a fresh node with
   the MCP server enabled and an empty user store, the node **generates** an owner
   access token and prints it **once** ("SAVE THIS — shown only once"), so a node
   that would otherwise be unreachable under the always-on gate is never locked
   out. The generated secret is shown that one time and only its hash is stored.
+
+**Seeding cannot lock the node out (#769).** The token hash is derived before
+anything is written. If assigning `admin` or writing the token fails after the
+`owner` user was created, that user is dropped again (with its assignment), so the
+store is empty and the next start retries the whole seed. And a store whose only
+user is `owner` with no token, which is what a seed cut short by a crash leaves,
+is **resumed**: the next start reuses that user, assigns `admin` (idempotent) and
+writes the token, instead of skipping because the store is not empty.
 
 ### Read views + issuance
 
@@ -839,7 +878,7 @@ user via `find_user_by_id` + `roles_for_user`.
 - `tests/governance/test_authz_regressions.cpp` — the authorization regression harness (#780): one test per auth review finding #759–#769, fixed ones asserted and open ones as `KNOWN_DEFECT` probes that fail once the defect stops reproducing; the map is [docs/testing/authz-regressions.md](../testing/authz-regressions.md).
 - `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
 - `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
-- `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
+- `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `kdf_hash_token_secret` / `verify_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
 - `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token` / `Node::authorize_user` (the token-resolved capability decision, #745).
 - `include/zetta/api/server.hpp` — the embedded `ApiServer` + `ServerOptions`; the auth gate is **unconditional** (#799 removed the `require_auth` and `bearer_token` options — a bearer that resolves to a user is required on every gated route).
 - `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router boundary (`bearer → user`, else 401; #745).

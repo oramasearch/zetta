@@ -362,7 +362,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     token.hpp               zetta::governance::Token/TokenValue/TokenType — a bearer credential hashed at rest (secret shown once); token:<uuid>
     user_role.hpp           zetta::governance::UserRole — a user↔role assignment; user_role:<uuid>
     policy.hpp              zetta::governance::Policy/PolicyValue/policy_value_from_json/policy_schema — a row-level security policy (Postgres-style RLS): a USING read filter + WITH CHECK write filter per table, evaluated by the SQL WHERE engine (#748); policy:<uuid>
-    token_secret.hpp        generate_token_secret/generate_token_salt/hash_token_secret/constant_time_equal — the token crypto (OpenSSL)
+    token_secret.hpp        generate_token_secret/generate_token_salt/hash_token_secret/kdf_hash_token_secret/verify_token_secret/constant_time_equal — the token crypto (OpenSSL)
     audit_event.hpp         zetta::governance::AuditEvent/AuditSink/AuditTrail — immutable values, per-origin segment ranges, high/low watermarks, bounded recent reads + JSON Schema (ENT-23, #1154, #1164)
     consent.hpp             zetta::governance::ConsentAction/ConsentChallenge/ConsentLedger — remote consent for cloud-touching capabilities (#621): one-time challenges naming exactly what would be read/run, consumable exactly once by a distinctly-privileged approval; ephemeral + owner-thread-only, never replicated (docs/api/consent.md)
   solutions/                runtime evidence shared by deployed solutions (docs/solutions/)
@@ -728,7 +728,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     token.cpp               zetta::governance::Token — persist token.json + validates()/expired() + TokenValue JSON boundary validation
     user_role.cpp           zetta::governance::UserRole — persist user_role.json + schema
     policy.cpp              zetta::governance::Policy — persist policy.json + PolicyValue JSON boundary validation + policy schema (RLS, #748)
-    token_secret.cpp        the token crypto (the 2nd OpenSSL-libcrypto user): RAND_bytes secret/salt + SHA-256(salt||secret) + CRYPTO_memcmp constant-time compare (#744)
+    token_secret.cpp        the token crypto (the 2nd OpenSSL-libcrypto user): RAND_bytes secret/salt + SHA-256(salt||secret) + PBKDF2-HMAC-SHA256 for the bootstrap owner (#769) + CRYPTO_memcmp constant-time compare (#744)
     audit_event.cpp         zetta::governance::AuditEvent/AuditTrail — value/schema boundary, compressed segment frames, durable seek index/watermarks, legacy migration, range validation and retention
     credential_redaction.cpp the one rule for which input fields are credentials (`is_credential_field`) + `redact_credentials`, used by the consent challenge JSON and the web form's masked inputs (#74)
     consent.cpp             zetta::governance::ConsentLedger — challenge lifecycle (pending → denied/approved → executed/failed, lazy TTL expiry, capacity that drops decided entries first), challenge JSON + embedded schema (#621)

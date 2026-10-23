@@ -86,7 +86,7 @@ zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
   independent `zetta_transport` target (#1283).
   Within `src/core`, OpenSSL libcrypto is named by exactly two
   TUs — `src/core/cluster/security.cpp` (join-token/CA/cert minting) and
-  `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/constant-time
+  `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/PBKDF2/constant-time
   compare, #744); only `src/core/cluster/replication.cpp` names automerge-cpp.
   Everything else goes through `zetta::runtime` / the public interfaces — never
   `boost::capy`/`boost::corosio`/`openssl/*`.

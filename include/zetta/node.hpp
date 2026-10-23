@@ -1111,7 +1111,18 @@ public:
     // when no live token matches (deny-by-default). Hashes + constant-time
     // compares against every non-revoked, unexpired token, and requires the
     // owning user to exist and be active. This is the boundary issue #2's gate calls.
+    //
+    // Two passes (#769): every cheap match first (SHA-256 tokens, and KDF tokens
+    // already verified in this process), then, only when none matched, the KDF
+    // tokens not yet verified. That slow pass runs PBKDF2 on the owning loop, so
+    // it is budgeted: a burst of kColdKdfBurst checks, refilled at one per
+    // kColdKdfRefill. Past the budget an unverified KDF token answers no, which
+    // bounds both the CPU an unauthenticated caller can burn and the rate of
+    // online guesses against the owner's secret. bootstrap_owner verifies the
+    // operator's secret at start, so the owner normally never takes the slow pass.
     std::shared_ptr<zetta::governance::User> authenticate_token(std::string_view secret) const;
+    static constexpr int kColdKdfBurst = 4;
+    static constexpr std::chrono::milliseconds kColdKdfRefill{1000};
 
     // The outcome of bootstrap_owner: whether an owner was minted this call, and
     // the identifiers to log (never the secret).
@@ -1125,9 +1136,19 @@ public:
     // Bootstrap the owner (#733): if the user store is empty, mint an "owner"
     // user, ensure the built-in roles exist, assign it "admin", and issue an
     // access token whose secret is `admin_token_secret` (the operator's, via
-    // --admin-token / ZETTA_ADMIN_TOKEN). A no-op when a user already exists or
-    // the secret is empty. Never logs / returns the secret — the operator already
-    // holds it.
+    // --admin-token / ZETTA_ADMIN_TOKEN). Never logs / returns the secret — the
+    // operator already holds it.
+    //
+    // The token is stored in the PBKDF2 form (#769), since the secret may be
+    // chosen by a person. Seeding cannot leave the node locked out (#769): the
+    // hash is derived before anything is written; a failure after the owner user
+    // is created drops it again, so the store is empty and the next start
+    // retries; and a store left with only an "owner" user that has no token (a
+    // seed cut short by a crash) is resumed rather than skipped.
+    //
+    // A no-op when the secret is empty or another user exists. On a store that is
+    // already seeded it checks the secret once against the owner's token, so the
+    // owner's first request does not pay for the derivation.
     BootstrapResult bootstrap_owner(const std::string& admin_token_secret);
 
     // The control plane that reconciles local deployments desired → actual and
@@ -1535,6 +1556,10 @@ private:
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
     std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials
+    // The slow-pass budget of authenticate_token (#769): checks left in the burst
+    // and when it was last refilled.
+    mutable int cold_kdf_budget_ = kColdKdfBurst;
+    mutable std::chrono::steady_clock::time_point cold_kdf_refilled_{};
     std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles_; // user↔role assignments
     std::vector<std::shared_ptr<zetta::governance::Policy>> policies_;      // row-level security policies (#748)
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)
