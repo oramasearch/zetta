@@ -249,6 +249,10 @@ void add_common_headers(
     const ActionConnectorConfig& config) {
     request.method = "POST";
     request.url = config.endpoint;
+    // The endpoint is whatever the action or solution author stored, so it may
+    // reach only public addresses (plus the classes the node allows), checked on
+    // the resolved address at delivery (#1394, connect/destination_policy.hpp).
+    request.destinations = zetta::connect::DestinationPolicy::PublicOnly;
     request.timeout_seconds = config.timeout_seconds;
     request.headers.push_back({"Content-Type", "application/json"});
     request.headers.push_back({"Idempotency-Key", message.idempotency_key});

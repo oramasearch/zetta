@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -20,6 +21,7 @@
 #include "temp_dir.hpp"
 #include "zetta/api/native_http_transport.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/connect/destination_policy.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
@@ -199,6 +201,46 @@ private:
     std::atomic<bool> finished_{false};
 };
 
+// A loopback listener that never accepts: whether a client connected shows as a
+// pending connection on its queue. Used to prove a refused delivery never dialled.
+class IdleListener {
+public:
+    IdleListener() {
+        socket_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        socklen_t size = sizeof(address);
+        if (socket_ < 0 ||
+            ::bind(socket_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
+            ::listen(socket_, 8) != 0 ||
+            ::getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &size) != 0) {
+            return;
+        }
+        port_ = ntohs(address.sin_port);
+    }
+    ~IdleListener() {
+        if (socket_ >= 0) ::close(socket_);
+    }
+    IdleListener(const IdleListener&) = delete;
+    IdleListener& operator=(const IdleListener&) = delete;
+
+    std::uint16_t port() const { return port_; }
+    std::string url(const std::string& host, std::string path = "/tasks") const {
+        return "http://" + host + ":" + std::to_string(port_) + path;
+    }
+    // True when some client has connected (a connection waits to be accepted).
+    bool was_dialled() const {
+        pollfd descriptor{socket_, POLLIN, 0};
+        return ::poll(&descriptor, 1, 100) > 0;
+    }
+
+private:
+    int socket_ = -1;
+    std::uint16_t port_ = 0;
+};
+
 Json policy_config(bool kill_switch = false) {
     return {{"kill_switch", kill_switch},
             {"threshold", 0.5},
@@ -234,9 +276,15 @@ struct ActionIntegrationFixture : ::testing::Test {
     void SetUp() override {
         ASSERT_TRUE(node.start());
         zetta::api::install_native_http_transport();
+        // The fixtures listen on 127.0.0.1; an action endpoint reaches loopback
+        // only when the node allows it (#1394).
+        zetta::connect::AllowedDestinations allowed;
+        allowed.loopback = true;
+        zetta::connect::set_allowed_destinations(allowed);
     }
 
     void TearDown() override {
+        zetta::connect::set_allowed_destinations({});
         zetta::api::shutdown_native_http_transport();
         node.stop();
     }
@@ -890,6 +938,78 @@ TEST_F(ActionIntegrationFixture, PreparesAndRecordsReportAttemptsWithoutSending)
     EXPECT_EQ(settled->publication.status, ActionTaskStatus::DeadLetter);
     EXPECT_EQ(settled->publication.publication_id,
               prepared->publication.publication_id);
+}
+
+// #1394 (LSR-161): an action endpoint is author-chosen, so delivery resolves it and
+// dials only public addresses unless the node allows the class. A loopback endpoint
+// is refused before any connection, by name and by literal.
+TEST_F(ActionIntegrationFixture, DeliveryRefusesALoopbackEndpointTheNodeDoesNotAllow) {
+    zetta::connect::set_allowed_destinations({});
+    IdleListener listener;
+    ASSERT_NE(listener.port(), 0);
+    for (const std::string host : {"127.0.0.1", "localhost"}) {
+        const auto [policy_id, decision_id] = create_decision("refused-" + host);
+        ASSERT_FALSE(decision_id.empty());
+        ActionTaskSpec spec = task_spec(decision_id, listener.url(host),
+                                        ActionConnectorKind::Webhook, "refused-key-" + host);
+        spec.max_attempts = 1;
+        spec.connector.timeout_seconds = 2;
+
+        ActionRuntime runtime(node);
+        std::string error;
+        const auto task = runtime.execute_closed_loop(std::move(spec), "agent-key", &error);
+        ASSERT_TRUE(task) << error;
+        EXPECT_EQ(task->status, ActionTaskStatus::DeadLetter) << host;
+        EXPECT_NE(task->last_error.find("destination refused"), std::string::npos)
+            << host << ": " << task->last_error;
+        EXPECT_NE(task->last_error.find("loopback"), std::string::npos) << task->last_error;
+        // The bearer token never left: nothing connected to the listener.
+        EXPECT_FALSE(listener.was_dialled()) << host;
+    }
+}
+
+// The same check guards a solution's report delivery, whose endpoint a writer
+// stores and a later run sends its delivery token to.
+TEST_F(ActionIntegrationFixture, ReportDeliveryRefusesAPrivateOrMetadataEndpoint) {
+    zetta::connect::set_allowed_destinations({});
+    IdleListener listener;
+    ASSERT_NE(listener.port(), 0);
+    const std::vector<std::pair<std::string, std::string>> endpoints = {
+        {listener.url("127.0.0.1", "/forum/reports"), "loopback"},
+        {"http://169.254.169.254/latest/meta-data/", "metadata"},
+        {"http://10.0.0.7:8080/hook", "private"},
+        {"http://[::ffff:127.0.0.1]:" + std::to_string(listener.port()) + "/r", "loopback"},
+    };
+    int index = 0;
+    for (const auto& [endpoint, expected] : endpoints) {
+        ReportPublicationSpec spec;
+        spec.run_id = "run-refused-" + std::to_string(index);
+        spec.title = "Renewal drivers";
+        spec.driver_report = {{"top_driver", "usage_decline"}};
+        spec.decision_log = Json::array();
+        spec.connector.kind = ActionConnectorKind::Webhook;
+        spec.connector.endpoint = endpoint;
+        spec.connector.token = "delivery-token";
+        spec.connector.timeout_seconds = 2;
+        spec.idempotency_key = "report-refused-" + std::to_string(index++);
+        spec.max_attempts = 1;
+        spec.model_version = "model-v3";
+        spec.policy_version = "policy-v4";
+        spec.agent_version = "agent-v2";
+        spec.cell = "population";
+        spec.currency = "USD";
+
+        ActionRuntime runtime(node);
+        std::string error;
+        const auto publication = runtime.publish_report(std::move(spec), "report-agent", &error);
+        ASSERT_TRUE(publication) << error;
+        EXPECT_NE(publication->status, ActionTaskStatus::Delivered) << endpoint;
+        EXPECT_NE(publication->last_error.find("destination refused"), std::string::npos)
+            << endpoint << ": " << publication->last_error;
+        EXPECT_NE(publication->last_error.find(expected), std::string::npos)
+            << publication->last_error;
+    }
+    EXPECT_FALSE(listener.was_dialled());
 }
 
 }  // namespace

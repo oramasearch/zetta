@@ -36,6 +36,10 @@ sealed storage, every read surface, legacy re-sealing and key rotation (#1230).
 `submit_feedback`'s `export_path`) is created new under `<data_dir>/exports` and never
 truncates a sentinel outside it, through an absolute path, `..`, or a link (#1397, #1399).
 
+`connect/test_destination_policy.cpp` classifies addresses and proves the native
+client refuses a public-only request to loopback, by literal, by name and on a
+redirect hop to the metadata address, before connecting (#1394).
+
 `data/test_object_store.cpp` covers the object capability's contracts, a
 conditional-create race, fencing, torn tails after a kill, compaction and restart,
 the quota, and rf = 2 on three real nodes with a node lost, repaired and replaced;
