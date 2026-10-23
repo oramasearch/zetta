@@ -187,6 +187,52 @@ TEST(ModelImport, WhatCannotBeConvertedExactlyIsRefusedByName) {
     EXPECT_NE(error.find("feature_names"), std::string::npos);
 }
 
+// lake#780: the objective line LightGBM writes carries the objective's parameters
+// (`objective=binary sigmoid:1`). The reader once split a temporary copy of that
+// line into views, which dangled once the copy was freed: a line too long for the
+// string's inline buffer was read from freed memory, refused, and the refusal quoted
+// the freed bytes. The lines below are long enough to live on the heap.
+TEST(ModelImport, ALightGbmObjectiveWithParametersIsRead) {
+    const std::string original = read_file(kFixtures / "lightgbm_binary.txt");
+    const json expected = expected_of("lightgbm_binary");
+    const auto names = expected.at("feature_names").get<std::vector<std::string>>();
+    const std::string written = "objective=binary sigmoid:1\n";
+    const auto with_objective = [&](const std::string& line) {
+        std::string text = original;
+        text.replace(text.find(written), written.size(), line + "\n");
+        return text;
+    };
+    const std::vector<double> row = row_of(expected.at("rows")[0]);
+    const double reference = expected.at("expected")[0].get<double>();
+
+    for (const std::string line : {"objective=binary sigmoid:1.000000000000000000000000000000",
+                                   "objective=cross_entropy sigmoid:1.0000000000000000000000",
+                                   "objective=binary sigmoid:1.00000000000000000000 extra:words"}) {
+        SCOPED_TRACE(line);
+        std::string error;
+        const std::optional<ImportedModel> imported =
+            zetta::ml::import_model(with_objective(line), {}, &error);
+        ASSERT_TRUE(imported) << error;
+        EXPECT_EQ(imported->kind, "classifier");
+        EXPECT_EQ(imported->model.feature_names, names);
+        EXPECT_NEAR(score(imported->model, row), reference, 1e-5);
+    }
+
+    // The sigmoid's value is read, not defaulted: sigmoid:2 doubles the margin.
+    std::string error;
+    const std::optional<ImportedModel> doubled = zetta::ml::import_model(
+        with_objective("objective=binary sigmoid:2.0000000000000000000000000"), {}, &error);
+    ASSERT_TRUE(doubled) << error;
+    const double margin = std::log(reference / (1.0 - reference));
+    EXPECT_NEAR(score(doubled->model, row), 1.0 / (1.0 + std::exp(-2.0 * margin)), 1e-5);
+
+    // A refused objective is quoted as written, never from freed memory.
+    EXPECT_FALSE(zetta::ml::import_model(
+        with_objective("objective=lambdarank lambdarank_truncation_level:30 label_gain:0,1,3"), {},
+        &error));
+    EXPECT_NE(error.find("the objective is 'lambdarank'"), std::string::npos) << error;
+}
+
 TEST(ModelImport, AnOnnxModelWithoutNamesReadsF0Onward) {
     std::string error;
     const auto imported =

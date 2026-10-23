@@ -57,7 +57,10 @@ allow 1e-5.
   model trained here behaves, so a trained model's body is unchanged.
 - **Link and base score.**
   - A logistic classifier stays `binary_logistic`: ONNX `LOGISTIC`, XGBoost `binary:logistic`,
-    LightGBM `binary` (its `sigmoid:` factor is folded into the leaves).
+    LightGBM `binary` (its `sigmoid:` factor is folded into the leaves). LightGBM writes the
+    objective's parameters on the same line (`objective=binary sigmoid:1`); the first word is the
+    objective, `sigmoid:` is read, and the other parameters are ignored. A refused objective is
+    quoted by its first word (lake#780).
   - Regressors whose prediction is the sum of their trees become `squared_error`.
   - XGBoost's `base_score` is a probability for a logistic model, so the engine keeps its logit.
   - ONNX `AVERAGE` divides each leaf by the number of trees; so does LightGBM's `average_output`.
@@ -110,6 +113,9 @@ answers `{model_id, name, format, file_name, media_type, encoding, content, byte
   - every format scores as its library does, rows with missing values included;
   - `float_less_bound` is exact at and around every midpoint;
   - each refusal names its reason;
+  - a LightGBM objective line with parameters long enough to be held on the heap is read, its
+    `sigmoid:` value applied, and a refused one quoted as written (lake#780, a use-after-free
+    before);
   - an ONNX export reads back to the same scores;
   - a Platt calibration folds into the export;
   - `missing_left` round-trips and leaves a trained body unchanged.

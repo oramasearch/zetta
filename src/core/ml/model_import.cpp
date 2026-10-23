@@ -946,9 +946,13 @@ std::optional<ImportedModel> import_lightgbm(std::string_view text, const ModelI
         else trees.back()[key] = value;
         if (end == text.size()) break;
     }
-    const auto header_value = [&](std::string_view key) {
+    // A view of the value kept in `header`, which outlives every use below. It once
+    // returned a copy, and split_words() of that temporary left views into freed
+    // memory: the objective was read from it and refused, quoting the freed bytes
+    // (lake#780).
+    const auto header_value = [&](std::string_view key) -> std::string_view {
         const auto found = header.find(key);
-        return found == header.end() ? std::string{} : found->second;
+        return found == header.end() ? std::string_view{} : std::string_view(found->second);
     };
     if (header_value("num_class") != "1" || header_value("num_tree_per_iteration") != "1") {
         return fail("it predicts several classes; the engine reads one score");
@@ -998,9 +1002,10 @@ std::optional<ImportedModel> import_lightgbm(std::string_view text, const ModelI
     model.learning_rate = 1.0;
     const double scale = sigmoid / (average_output ? static_cast<double>(std::max<std::size_t>(trees.size(), 1)) : 1.0);
     for (const auto& tree_fields : trees) {
-        const auto field = [&](std::string_view key) {
+        const auto field = [&](std::string_view key) -> std::string_view {
             const auto found = tree_fields.find(key);
-            return found == tree_fields.end() ? std::string{} : found->second;
+            return found == tree_fields.end() ? std::string_view{}
+                                              : std::string_view(found->second);
         };
         const auto leaves = parse_numbers<int>(field("num_leaves"));
         if (!leaves || leaves->size() != 1 || leaves->front() < 1) return fail("a tree has no num_leaves");
