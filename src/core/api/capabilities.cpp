@@ -11064,17 +11064,20 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
-// --- agent_run: the base agent builds AND runs an execution graph ------------------
+// --- agent_run: the base agent builds a plan, and runs it once it is approved ----------
 //
 // The point of #872: the base (#555) agent is usable RIGHT AWAY — it does not need the
-// RLVR tool-calling fine-tune (#859) to drive real work. This capability closes the loop
-// end to end from plain language:
+// RLVR tool-calling fine-tune (#859) to drive real work. From plain language:
 //   1. the agent reads the message and recognizes the use case (chat/respond),
 //   2. the engine compiles that message into a real ExecutionGraph (pipeline::compile_intent
-//      — the same churn-shape heuristic behind compile_intent), stored on a project,
-//   3. the graph runs through the gate + the real churn engine (delegated to handle_run).
-// So "the agent builds and runs a churn graph for Charles" is one call. #859 later lets the
-// agent emit the graph step-by-step itself; today the engine builds it from the same intent.
+//      — the same churn-shape heuristic behind compile_intent), stored on a project
+//      **proposed**, and nothing runs (#913),
+//   3. once a principal holding orchestration:approve_plan approves it (approve_plan),
+//      agent_run with that project + graph_name runs it through the correctness gate +
+//      the real engine (delegated to handle_run).
+// agent_run never approves a plan itself. It used to record the caller's approval of
+// the plan it had just built, so a caller allowed only orchestration:run trained a model
+// and fired an `act` step on a Pipeline no human had reviewed (#913).
 const nlohmann::json& agent_run_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
@@ -11092,7 +11095,11 @@ const nlohmann::json& agent_run_schema() {
              "land the graph + run on this project (name or uuid); a new project is "
              "created when omitted"}}},
           {"graph_name",
-           {{"type", "string"}, {"description", "name for the stored graph (default derived)"}}},
+           {{"type", "string"},
+            {"description",
+             "name for the stored graph (default derived). With `project`, naming a graph "
+             "already stored there runs that plan if it is approved, and is refused if it "
+             "is only proposed"}}},
           {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
           {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}},
           {"top_k",
@@ -11114,7 +11121,10 @@ const nlohmann::json& agent_run_output_schema() {
         {"properties",
          {{"reply", {{"type", "string"}, {"description", "the agent's recognition of the ask"}}},
           {"shape",
-           {{"type", "string"}, {"description", "the compiled template: 'churn' | 'generic'"}}},
+           {{"type", "string"},
+            {"description",
+             "the compiled template: 'churn' | 'generic', or 'approved' when an approved "
+             "plan already stored on the project ran"}}},
           {"project", {{"type", "string"}}},
           {"graph", {{"type", "string"}}},
           {"graph_id", {{"type", "string"}}},
@@ -11141,6 +11151,56 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
                                       (agent->runtime == "python" ? std::string("agent-runtime")
                                                                   : std::string("its own service")) +
                                       ", outside Zetta; use it from lake");
+    }
+
+    // Run the stored plan the caller named, only if a principal approved it (#913).
+    // This is checked before the model loads: whether a plan may run does not depend
+    // on what the agent says about the ask.
+    const auto named_project = input.find("project");
+    const auto named_graph = input.find("graph_name");
+    if (named_project != input.end() && named_graph != input.end()) {
+        const std::shared_ptr<zetta::pipeline::Project> project =
+            resolve_project(context, named_project->get<std::string>());
+        if (!project) {
+            return ApiResult::failure("not_found", "no project '" +
+                                                       named_project->get<std::string>() +
+                                                       "' (or with that id)");
+        }
+        if (const std::shared_ptr<zetta::pipeline::ProjectGraph> existing =
+                resolve_graph(*project, named_graph->get<std::string>())) {
+            if (!existing->approved()) {
+                return ApiResult::failure(
+                    "not_approved",
+                    "the plan '" + existing->name() + "' on project '" + project->name() +
+                        "' is proposed and nobody has approved it, so agent_run will not "
+                        "run it. Approve it (approve_plan), then call agent_run again");
+            }
+            nlohmann::json run_input;
+            run_input["project"] = project->name();
+            run_input["graph"] = existing->name();
+            for (const char* passthrough :
+                 {"top_k", "dataset_path", "dataset", "model_name", "coordinate"}) {
+                if (const auto found = input.find(passthrough); found != input.end()) {
+                    run_input[passthrough] = *found;
+                }
+            }
+            const ApiResult run_result = handle_run(run_input, context);
+            if (!run_result.ok) return run_result;
+            nlohmann::json output;
+            output["reply"] = "Running the plan '" + existing->name() + "', approved by " +
+                              existing->approved_by() + " at " + existing->approved_at() + ".";
+            output["shape"] = "approved";
+            output["project"] = project->name();
+            output["graph"] = existing->name();
+            output["graph_id"] = existing->id();
+            nlohmann::json steps = nlohmann::json::array();
+            for (const std::shared_ptr<zetta::ir::Node>& node : existing->graph().nodes()) {
+                steps.push_back(node->name);
+            }
+            output["steps"] = std::move(steps);
+            output["run"] = run_result.value;
+            return ApiResult::success(std::move(output));
+        }
     }
 
     // 1. The agent reads the ask and recognizes the use case (the shared respond() path).
@@ -11191,44 +11251,16 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
                                 project->name() + "' (name clash or empty)");
     }
 
-    // `run` refuses a plan nobody approved (#969), and a freshly stored graph is
-    // `proposed`. Calling agent_run IS the approval: the caller asked, in one
-    // act, to build this and run it. So record that approval against the caller
-    // rather than bypass the gate — the audit trail then says who said yes,
-    // which is the whole point of the state existing.
-    //
-    // The conversational path is different and deliberately so: an agent that
-    // PROPOSES a run stops here, and a human approves separately. That is the
-    // `propose` half of #969 and it does not come through this handler.
-    if (!project->approve_graph(stored->name(), actor_of(context),
-                                zetta::util::now_iso8601())) {
-        return ApiResult::failure(
-            "engine_error",
-            "could not record approval for the plan agent_run just built");
-    }
-
-    // 3. Run it through the gate + the real engine — the exact path `run` uses (DRY).
-    nlohmann::json run_input;
-    run_input["project"] = project->name();
-    run_input["graph"] = graph_name;
-    for (const char* passthrough :
-         {"top_k", "dataset_path", "dataset", "model_name", "coordinate"}) {
-        if (const auto found = input.find(passthrough); found != input.end()) {
-            run_input[passthrough] = *found;
-        }
-    }
-    const ApiResult run_result = handle_run(run_input, context);
-    if (!run_result.ok) return run_result;  // reason already carries the failing step
-
-    nlohmann::json output;
-    output["reply"] = chat.result.reply;
-    output["shape"] = shape;
-    output["project"] = project->name();
-    output["graph"] = graph_name;
-    output["graph_id"] = stored->id();
-    output["steps"] = steps;
-    output["run"] = run_result.value;
-    return ApiResult::success(std::move(output));
+    // The plan is stored proposed and nothing runs (#913). Approval is a separate
+    // decision by a principal who holds orchestration:approve_plan, recorded by
+    // approve_plan; agent_run holds only orchestration:run and never approves.
+    return ApiResult::failure(
+        "not_approved",
+        "agent_run built the plan '" + stored->name() + "' on project '" + project->name() +
+            "' (" + std::to_string(steps.size()) + " steps, shape " + shape +
+            ") and stored it proposed; nothing ran. Approve it (approve_plan), then call "
+            "agent_run with project '" + project->name() + "' and graph_name '" +
+            stored->name() + "' to run it");
 }
 
 // --- dataset generation (#873): native, in-Zetta training-corpus synthesis ------------------
@@ -12515,12 +12547,14 @@ void register_core_capabilities(Registry& registry) {
     registry.add(std::move(chat_capability));
     registry.add(Capability{
         "agent_run",
-        "Agent builds + runs a graph",
-        "Give an agent a plain-language ask; it recognizes the use case, compiles a real "
-        "execution graph from it, and runs that graph through the gate + the real engine "
-        "(churn today) — end to end in one call. The base agent needs no tool-calling "
-        "fine-tune for this. Returns the agent's reply, the built graph's steps, and the "
-        "run id (poll get_run / system.runs).",
+        "Agent builds a plan; runs it once approved",
+        "Give an agent a plain-language ask; it recognizes the use case and compiles a real "
+        "execution graph from it, stored on the project as a proposed plan. Nothing runs: "
+        "the call is refused (not_approved) and names the plan to approve. Once it is "
+        "approved (approve_plan), agent_run with that project + graph_name runs it through "
+        "the correctness gate + the real engine (churn today) and returns the reply, the "
+        "graph's steps, and the run id (poll get_run / system.runs). agent_run never "
+        "approves a plan itself (#913).",
         agent_run_schema(),
         agent_run_output_schema(),
         CapabilityKind::Job,

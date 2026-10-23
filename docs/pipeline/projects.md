@@ -223,6 +223,11 @@ both the disk and CRDT paths.
   gate-blocked journey approves the leaky plan, then the gate catches the leak).
   The normal Studio flow is **approve → gate → deploy → run**; `run` inherits
   approval by sequence (it follows a deploy that required it).
+- **agent_run requires approval too** ([#913](https://github.com/oramasearch/zetta/issues/913)).
+  `agent_run` stores the plan it compiles `proposed` and answers `not_approved`
+  without running it; it never approves a plan itself. Given `project` +
+  `graph_name` naming a stored plan, it runs the plan only if it is approved,
+  and refuses a proposed one with `not_approved` before the agent's model loads.
 - **Surfaced for the UI.** `get_project` (per graph), `get_graph`, and the
   compile/save outputs carry `approval`; the two read capabilities also carry
   `methodology` and `runnable`. Studio statuses (Draft / Needs approval / Ready /

@@ -46,7 +46,7 @@ This card is the in-repo datasheet; the Hub card is the same content for a reade
 - **In scope.** A creator (70–80% technical-but-not-ML) describes a data/AI problem in Orama
   Studio; the agent recognizes the use case and emits a `{message, tool_calls, execution_graph}`
   **action** — the pipeline the engine builds + runs, verified by the correctness gate. It also
-  drives `agent_run` (build + run in one call, #872) and is forked + specialized per customer
+  drives `agent_run` (build a proposed plan, #872; run it once a person approves it, #913) and is forked + specialized per customer
   (#853).
 - **In scope, as of the interaction contract (#918).** Beyond intent → pipeline, the agent now
   covers the turns a user actually has with Studio: answering about a Project from **retrieved**
