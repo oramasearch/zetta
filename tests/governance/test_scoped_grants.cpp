@@ -314,6 +314,27 @@ TEST_F(ScopedGrantSql, FilteringOnAMaskedColumnIsDenied) {
     EXPECT_NE(denied.error.find("WHERE"), std::string::npos);
 }
 
+// #912: every column of a compound WHERE is checked, not just the first; a masked
+// column behind an AND, an OR or a NOT is refused the same way.
+TEST_F(ScopedGrantSql, FilteringOnAMaskedColumnInsideACompoundWhereIsDenied) {
+    const std::string uid = reader_scoped_to(
+        "GRANT sql:read ON sales.customers(id, name) TO ROLE readerx;");
+    QueryService clerk{node, nullptr, uid, /*acting_is_user=*/true};
+    for (const std::string sql :
+         {"SELECT id FROM sales.customers WHERE name = 'Ada' AND ssn = '111-22-3333';",
+          "SELECT id FROM sales.customers WHERE name = 'x' OR ssn = '111-22-3333';",
+          "SELECT id FROM sales.customers WHERE NOT (ssn = '111-22-3333');"}) {
+        SCOPED_TRACE(sql);
+        auto denied = clerk.run(sql, "");
+        EXPECT_FALSE(denied.ok());
+        EXPECT_NE(denied.error.find("\"ssn\" used in WHERE"), std::string::npos)
+            << denied.error;
+    }
+    auto allowed =
+        clerk.run("SELECT id FROM sales.customers WHERE name = 'Ada' AND id >= 0;", "");
+    EXPECT_TRUE(allowed.ok()) << allowed.error;
+}
+
 TEST_F(ScopedGrantSql, WriteToAnUngrantedColumnIsBlocked) {
     // A writer scoped to write only (id, name) cannot write ssn.
     QueryService admin{node, nullptr, "", false};

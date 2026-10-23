@@ -133,7 +133,14 @@ them; the answer is the same, only more rows cross the wire.
 ## Where the work happens
 
 - **WHERE and the projection are pushed to the owner** — the filter runs beside
-  the data and only the wanted columns of the surviving rows cross the wire.
+  the data and only the wanted columns of the surviving rows cross the wire. A
+  compound `WHERE` (#912) travels whole: a comparison is `{column, op, value}`,
+  and `{"and": [...]}`, `{"or": [...]}` (two or more each) and `{"not": ...}` nest
+  over the same shape. The owner evaluates it with the same `row_matches` as a
+  local scan. An owner older than #912 refuses a compound `WHERE` at its closed
+  schema, so during a rolling upgrade such a query fails with that `sql.scan: …`
+  error instead of answering from fewer rows; a single comparison is sent in the
+  old shape and still answers.
 - **LIMIT is pushed to the owner** (above) — at most `offset + limit` rows per
   partition, ORDER BY or not.
 - **Column-level access masking stays with the coordinator**, which is the node

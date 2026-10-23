@@ -2,6 +2,83 @@
   "$id": "https://zetta.orama.com/schemas/partition_scan_request.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
+  "definitions": {
+    "where": {
+      "description": "a WHERE predicate: {column, op, value}, {and: [...]}, {or: [...]} or {not: ...} (#912)",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "eq",
+                "ne",
+                "lt",
+                "le",
+                "gt",
+                "ge"
+              ]
+            },
+            "value": {}
+          },
+          "required": [
+            "column",
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "and": {
+              "items": {
+                "$ref": "#/definitions/where"
+              },
+              "minItems": 2,
+              "type": "array"
+            }
+          },
+          "required": [
+            "and"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "or": {
+              "items": {
+                "$ref": "#/definitions/where"
+              },
+              "minItems": 2,
+              "type": "array"
+            }
+          },
+          "required": [
+            "or"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "not": {
+              "$ref": "#/definitions/where"
+            }
+          },
+          "required": [
+            "not"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
   "description": "A scatter-gather SELECT's ask of one partition owner: scan these partitions of this table, filter them, and return rows or per-group aggregate partials (#833).",
   "properties": {
     "aggregates": {
@@ -74,30 +151,7 @@
       "type": "string"
     },
     "where": {
-      "additionalProperties": false,
-      "properties": {
-        "column": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "op": {
-          "enum": [
-            "eq",
-            "ne",
-            "lt",
-            "le",
-            "gt",
-            "ge"
-          ]
-        },
-        "value": {}
-      },
-      "required": [
-        "column",
-        "op",
-        "value"
-      ],
-      "type": "object"
+      "$ref": "#/definitions/where"
     }
   },
   "required": [

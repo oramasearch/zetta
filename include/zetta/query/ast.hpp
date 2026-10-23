@@ -35,11 +35,22 @@ struct ColumnDef {
 // (or lexicographic over strings) — see the executor.
 enum class CompareOp { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual };
 
-// A single-column WHERE predicate: WHERE <column> <op> <value>.
+// A WHERE predicate: either one comparison `<column> <op> <value>`, or AND / OR /
+// NOT over other predicates (#912), e.g. `churned = true AND segment = 'MCS'`.
+//
+// A comparison (`kind == Compare`) uses `column` / `op` / `value`; a compound
+// (`And`, `Or`, `Not`) uses `operands` instead (two or more for AND and OR,
+// exactly one for NOT). The comparison fields come first, so the single
+// comparison is still written `WhereClause{"col", CompareOp::Equal, value}`.
+// Evaluation is SQL's three-valued logic (see row_matches in predicate.hpp).
 struct WhereClause {
+    enum class Kind { Compare, And, Or, Not };
+
     std::string column;
     CompareOp op = CompareOp::Equal;
     nlohmann::json value;
+    Kind kind = Kind::Compare;
+    std::vector<WhereClause> operands;
 };
 
 // An aggregate function in a GROUP BY query's select list. Maps 1:1 to the DDF

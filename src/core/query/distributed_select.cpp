@@ -301,14 +301,7 @@ const nlohmann::json& partition_scan_request_schema() {
          {{"table", {{"type", "string"}, {"minLength", 1}}},
           {"partitions",
            {{"type", "array"}, {"items", {{"type", "string"}, {"minLength", 1}}}}},
-          {"where",
-           {{"type", "object"},
-            {"additionalProperties", false},
-            {"required", {"column", "op", "value"}},
-            {"properties",
-             {{"column", {{"type", "string"}, {"minLength", 1}}},
-              {"op", {{"enum", {"eq", "ne", "lt", "le", "gt", "ge"}}}},
-              {"value", nlohmann::json::object()}}}}},
+          {"where", {{"$ref", "#/definitions/where"}}},
           {"columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
           {"order_by",
            {{"type", "array"},
@@ -334,7 +327,43 @@ const nlohmann::json& partition_scan_request_schema() {
               {"required", {"func"}},
               {"properties",
                {{"func", {{"enum", {"count", "sum", "min", "max", "avg"}}}},
-                {"column", {{"type", "string"}}}}}}}}}}}};
+                {"column", {{"type", "string"}}}}}}}}}}},
+        // The WHERE, applied at the owner: one comparison, or AND / OR over two
+        // or more predicates, or NOT over one (#912).
+        {"definitions",
+         {{"where",
+           {{"description",
+             "a WHERE predicate: {column, op, value}, {and: [...]}, {or: [...]} "
+             "or {not: ...} (#912)"},
+            {"oneOf",
+             {{{"type", "object"},
+               {"additionalProperties", false},
+               {"required", {"column", "op", "value"}},
+               {"properties",
+                {{"column", {{"type", "string"}, {"minLength", 1}}},
+                 {"op", {{"enum", {"eq", "ne", "lt", "le", "gt", "ge"}}}},
+                 {"value", nlohmann::json::object()}}}},
+              {{"type", "object"},
+               {"additionalProperties", false},
+               {"required", {"and"}},
+               {"properties",
+                {{"and",
+                  {{"type", "array"},
+                   {"minItems", 2},
+                   {"items", {{"$ref", "#/definitions/where"}}}}}}}},
+              {{"type", "object"},
+               {"additionalProperties", false},
+               {"required", {"or"}},
+               {"properties",
+                {{"or",
+                  {{"type", "array"},
+                   {"minItems", 2},
+                   {"items", {{"$ref", "#/definitions/where"}}}}}}}},
+              {{"type", "object"},
+               {"additionalProperties", false},
+               {"required", {"not"}},
+               {"properties",
+                {{"not", {{"$ref", "#/definitions/where"}}}}}}}}}}}}};
     return schema;
 }
 
@@ -392,15 +421,77 @@ const nlohmann::json& partition_scan_response_schema() {
 
 // --- wire messages ------------------------------------------------------------
 
+namespace {
+
+// A WHERE on the wire: a comparison is {column, op, value}; a compound is
+// {"and": [...]}, {"or": [...]} or {"not": ...} over the same shape (#912).
+nlohmann::json encode_where(const WhereClause& where) {
+    switch (where.kind) {
+        case WhereClause::Kind::Compare:
+            return {{"column", where.column},
+                    {"op", std::string(compare_op_name(where.op))},
+                    {"value", where.value}};
+        case WhereClause::Kind::Not:
+            return {{"not", where.operands.empty() ? nlohmann::json::object()
+                                                    : encode_where(where.operands.front())}};
+        case WhereClause::Kind::And:
+        case WhereClause::Kind::Or: {
+            nlohmann::json operands = nlohmann::json::array();
+            for (const WhereClause& operand : where.operands) {
+                operands.push_back(encode_where(operand));
+            }
+            return {{where.kind == WhereClause::Kind::And ? "and" : "or",
+                     std::move(operands)}};
+        }
+    }
+    return nlohmann::json::object();
+}
+
+std::optional<WhereClause> decode_where(const nlohmann::json& document) {
+    if (!document.is_object()) return std::nullopt;
+    WhereClause where;
+    if (const auto negated = document.find("not"); negated != document.end()) {
+        std::optional<WhereClause> operand = decode_where(*negated);
+        if (!operand) return std::nullopt;
+        where.kind = WhereClause::Kind::Not;
+        where.operands.push_back(std::move(*operand));
+        return where;
+    }
+    for (const auto& [name, kind] : {std::pair{"and", WhereClause::Kind::And},
+                                     std::pair{"or", WhereClause::Kind::Or}}) {
+        const auto list = document.find(name);
+        if (list == document.end()) continue;
+        if (!list->is_array() || list->size() < 2) return std::nullopt;
+        where.kind = kind;
+        for (const nlohmann::json& item : *list) {
+            std::optional<WhereClause> operand = decode_where(item);
+            if (!operand) return std::nullopt;
+            where.operands.push_back(std::move(*operand));
+        }
+        return where;
+    }
+    const auto column = document.find("column");
+    const auto op_name = document.find("op");
+    const auto value = document.find("value");
+    if (column == document.end() || !column->is_string() || op_name == document.end() ||
+        !op_name->is_string() || value == document.end()) {
+        return std::nullopt;
+    }
+    const std::optional<CompareOp> op = compare_op_from_name(op_name->get<std::string>());
+    if (!op) return std::nullopt;
+    where.column = column->get<std::string>();
+    where.op = *op;
+    where.value = *value;
+    return where;
+}
+
+}  // namespace
+
 std::string encode_partition_scan_request(const PartitionScanRequest& request) {
     nlohmann::json document;
     document["table"] = request.table;
     document["partitions"] = request.partitions;
-    if (request.where) {
-        document["where"] = {{"column", request.where->column},
-                             {"op", std::string(compare_op_name(request.where->op))},
-                             {"value", request.where->value}};
-    }
+    if (request.where) document["where"] = encode_where(*request.where);
     if (!request.columns.empty()) document["columns"] = request.columns;
     if (!request.order_by.empty()) {
         nlohmann::json keys = nlohmann::json::array();
@@ -442,17 +533,11 @@ std::optional<PartitionScanRequest> decode_partition_scan_request(
     request.table = document.at("table").get<std::string>();
     request.partitions = document.at("partitions").get<std::vector<std::string>>();
     if (document.contains("where")) {
-        const nlohmann::json& where = document.at("where");
-        const std::optional<CompareOp> op =
-            compare_op_from_name(where.at("op").get<std::string>());
-        if (!op) {  // the schema enum guards this; stay defensive
-            set_error(error, "/where/op: unknown comparison");
+        std::optional<WhereClause> clause = decode_where(document.at("where"));
+        if (!clause) {  // the schema guards this; stay defensive
+            set_error(error, "/where: not a predicate");
             return std::nullopt;
         }
-        WhereClause clause;
-        clause.column = where.at("column").get<std::string>();
-        clause.op = *op;
-        clause.value = where.at("value");
         request.where = std::move(clause);
     }
     if (document.contains("columns")) {

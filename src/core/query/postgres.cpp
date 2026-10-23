@@ -164,6 +164,9 @@ private:
     const Token& advance() { return tokens_[pos_++]; }
     bool at_end() const { return peek().type == Tok::End; }
 
+    bool at_keyword(std::string_view kw) const {
+        return peek().type == Tok::Ident && iequals(peek().text, kw);
+    }
     bool accept_keyword(std::string_view kw) {
         if (peek().type == Tok::Ident && iequals(peek().text, kw)) {
             advance();
@@ -311,14 +314,50 @@ private:
                          "UPDATE/DELETE/TRUNCATE/SELECT/GRANT/REVOKE, got '" + peek().text + "'"};
     }
 
-    // WHERE <column> <op> <value> — the single-predicate clause shared by SELECT,
-    // UPDATE, and DELETE.
-    WhereClause parse_where_clause() {
-        WhereClause where;
-        where.column = parse_ident();
-        where.op = parse_comparison();
-        where.value = parse_value();
-        return where;
+    // The WHERE predicate shared by SELECT, UPDATE and DELETE (#912): comparisons
+    // `<column> <op> <value>` combined with AND, OR, NOT and parentheses, with
+    // SQL's precedence — NOT binds tightest, then AND, then OR — so
+    // `a = 1 OR b = 2 AND c = 3` is `a = 1 OR (b = 2 AND c = 3)`. A run of the
+    // same operator is one node with every operand (`a AND b AND c`).
+    WhereClause parse_where_clause() { return parse_where_or(); }
+
+    WhereClause parse_where_or() {
+        WhereClause first = parse_where_and();
+        if (!at_keyword("or")) return first;
+        WhereClause any;
+        any.kind = WhereClause::Kind::Or;
+        any.operands.push_back(std::move(first));
+        while (accept_keyword("or")) any.operands.push_back(parse_where_and());
+        return any;
+    }
+
+    WhereClause parse_where_and() {
+        WhereClause first = parse_where_not();
+        if (!at_keyword("and")) return first;
+        WhereClause all;
+        all.kind = WhereClause::Kind::And;
+        all.operands.push_back(std::move(first));
+        while (accept_keyword("and")) all.operands.push_back(parse_where_not());
+        return all;
+    }
+
+    WhereClause parse_where_not() {
+        if (accept_keyword("not")) {
+            WhereClause negation;
+            negation.kind = WhereClause::Kind::Not;
+            negation.operands.push_back(parse_where_not());
+            return negation;
+        }
+        if (accept_punct('(')) {
+            WhereClause inner = parse_where_or();
+            expect_punct(')');
+            return inner;
+        }
+        WhereClause comparison;
+        comparison.column = parse_ident();
+        comparison.op = parse_comparison();
+        comparison.value = parse_value();
+        return comparison;
     }
 
     Statement parse_update() {
@@ -871,13 +910,7 @@ private:
         }
         expect_keyword("from");
         stmt.table = parse_table_ref();
-        if (accept_keyword("where")) {
-            WhereClause where;
-            where.column = parse_ident();
-            where.op = parse_comparison();
-            where.value = parse_value();
-            stmt.where = std::move(where);
-        }
+        if (accept_keyword("where")) stmt.where = parse_where_clause();
         if (accept_keyword("group")) {
             expect_keyword("by");
             do {
