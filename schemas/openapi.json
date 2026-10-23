@@ -2215,7 +2215,7 @@
             "required": false,
             "schema": {
               "description": "long-poll: wait up to this long when nothing is there yet",
-              "maximum": 30000,
+              "maximum": 60000,
               "minimum": 0,
               "type": "integer"
             }
@@ -2427,7 +2427,7 @@
                   },
                   "wait_ms": {
                     "description": "long-poll: wait up to this long when nothing is there yet",
-                    "maximum": 30000,
+                    "maximum": 60000,
                     "minimum": 0,
                     "type": "integer"
                   }
@@ -33948,7 +33948,7 @@
             "required": false,
             "schema": {
               "description": "long-poll: wait up to this long when nothing is there yet",
-              "maximum": 30000,
+              "maximum": 60000,
               "minimum": 0,
               "type": "integer"
             }

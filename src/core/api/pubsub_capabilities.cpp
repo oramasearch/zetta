@@ -25,7 +25,10 @@ using zetta::governance::Operation;
 using zetta::pubsub::Address;
 
 constexpr std::size_t kMaxReceive = 1'000;
-constexpr long long kMaxWaitMs = 30'000;
+// The longest a receive_events or browse_topic long poll may wait (#1174): an
+// idle client polls at most once a minute. A waiting poll holds a socket and a
+// coroutine, never a thread (docs/pubsub/exposure.md).
+constexpr long long kMaxWaitMs = 60'000;
 
 zetta::pubsub::Identity identity_of(const ApiContext& context) {
     if (context.acting_key.empty()) return {Address{"service", "local"}, {}};  // the trusted local session

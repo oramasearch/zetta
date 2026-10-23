@@ -22,7 +22,7 @@ Pub/sub is engine-internal by default. Ten capabilities are registered on every 
 | `publish_event` | action | `events:write` | publish to an exposed topic; `from` is the caller; clamped fields reported |
 | `update_event` | action | `events:write` | revision-checked payload edit, opt-in redelivery |
 | `delete_events` | action | `events:write` | remove held sequences or an exclusive range |
-| `receive_events` | read | `pubsub:subscribe` | events from a sequence number, oldest first; `wait_ms` long-polls (up to 30 s) |
+| `receive_events` | read | `pubsub:subscribe` | events from a sequence number, oldest first; `wait_ms` long-polls (up to 60 s, #1174) |
 
 `receive_events` is stateless: pass the returned `next_sequence` to continue. For REST,
 the handler registers a one-shot `runtime::async_event` with the topic before its
@@ -32,6 +32,11 @@ waiter. The route then reads once more. Both reads use the normal authorization 
 path on the owner loop, so a long poll makes at most two governed calls. MCP
 `tools/call` uses the same event-based bounded suspension and final governed
 read; neither rendering holds a thread while waiting (#1076, #1136, #1137).
+While it waits, the route also watches its own socket for the client closing it
+(`client_left` in `src/core/api/http_server.cpp`: a readiness wait plus a
+non-consuming `MSG_PEEK`), so a client that leaves a 60-second poll frees its
+session at once and costs no final governed read (#1174). The MCP poll's event is
+registered with the server like the REST one, so `stop()` wakes both.
 Non-object MCP request bodies retain the JSON-RPC invalid-request response.
 The same mechanism serves `browse_topic`; it never creates or advances a
 subscription. See [crud.md](crud.md) for schemas, examples, revisions and D39.

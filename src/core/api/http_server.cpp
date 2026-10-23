@@ -12,18 +12,26 @@
 #include <fstream>
 #include <sstream>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <map>
+#include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
+
+#include <sys/socket.h>
 
 #include <boost/beast2/http_worker.hpp>
 #include <boost/capy/error.hpp>
 #include <boost/capy/io/push_to.hpp>
+#include <boost/capy/when_any.hpp>
 #include <boost/capy/write.hpp>
 #include <boost/corosio/io_context.hpp>
 #include <boost/corosio/tcp_acceptor.hpp>
 #include <boost/corosio/socket_option.hpp>
+#include <boost/corosio/tcp_socket.hpp>
+#include <boost/corosio/wait_type.hpp>
 #include <boost/http/field.hpp>
 #include <boost/http/json/json_sink.hpp>
 #include <boost/http/request_parser.hpp>
@@ -618,6 +626,33 @@ boost::http::status http_status_of(int status_code) {
     }
 }
 
+// Completes without error once the client has closed or reset its end of the
+// connection, and consumes no byte: a long poll races it so a client that left
+// stops costing a session and a final governed read (#1174). Bytes the client
+// sent ahead (a pipelined request) are not a close: the watch then ends with
+// an error, which never wins a when_any race, so the poll waits on as before.
+runtime::io_task<> client_left(boost::corosio::tcp_socket& socket) {
+    for (;;) {
+        auto [error] = co_await socket.wait(boost::corosio::wait_type::read);
+        if (error) co_return runtime::io_result<>{error};
+        char byte = 0;
+        const auto peeked =
+            ::recv(socket.native_handle(), &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (peeked == 0) co_return runtime::io_result<>{};
+        if (peeked > 0) {
+            co_return runtime::io_result<>{
+                std::make_error_code(std::errc::operation_in_progress)};
+        }
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+        co_return runtime::io_result<>{};  // reset or failed: the client is gone
+    }
+}
+
+// A long poll's own deadline as a when_any participant.
+runtime::io_task<> poll_deadline(std::chrono::milliseconds wait) {
+    co_return co_await runtime::delay(wait);
+}
+
 }  // namespace
 
 struct ApiServer::Impl {
@@ -654,6 +689,9 @@ struct ApiServer::Impl {
     // no cap but the bucket's quota). Touched only on the IO thread, and at
     // teardown after it has stopped.
     std::map<const boost::http::route_params*, boost::http::request_parser*> parsers;
+    // Each connection's socket, by the same key, so a long poll can notice its
+    // client leave (#1174). Touched only on the IO thread, like `parsers`.
+    std::map<const boost::http::route_params*, boost::corosio::tcp_socket*> sockets;
 
     struct Connection : boost::beast2::http_worker {
         Impl& owner;
@@ -671,8 +709,12 @@ struct ApiServer::Impl {
             rp.res_body = boost::capy::any_buffer_sink(serializer.sink_for(socket));
             stream = boost::capy::any_read_stream(&socket);
             owner.parsers[&rp] = &parser;
+            owner.sockets[&rp] = &socket;
         }
-        ~Connection() { owner.parsers.erase(&rp); }
+        ~Connection() {
+            owner.parsers.erase(&rp);
+            owner.sockets.erase(&rp);
+        }
     };
 
     boost::corosio::io_context io_context;
@@ -1139,6 +1181,24 @@ struct ApiServer::Impl {
         poll_waiter_count.store(poll_events.size(), std::memory_order_relaxed);
     }
 
+    // Suspend a long poll until it is woken: by its event (a publish, a topic
+    // close, or stop()), by its own deadline, or by its client closing the
+    // connection. Answers false only when the client has left, so the caller
+    // makes no further governed read and sends nothing (#1174). Holds no thread.
+    runtime::task<bool> await_poll(std::shared_ptr<runtime::async_event> event,
+                                   std::chrono::milliseconds wait,
+                                   const boost::http::route_params& route) {
+        if (wait.count() <= 0) co_return true;
+        std::vector<runtime::io_task<>> wakes;
+        wakes.push_back(event->wait());
+        wakes.push_back(poll_deadline(wait));
+        if (const auto found = sockets.find(&route); found != sockets.end()) {
+            wakes.push_back(client_left(*found->second));
+        }
+        const auto woken = co_await boost::capy::when_any(std::move(wakes));
+        co_return !(woken.index() == 1 && std::get<1>(woken) == 2);
+    }
+
     // Make one capability call from an already-parsed input and answer it — the
     // REST rendering's second half, shared by /v1/<name> and the object
     // capability's bucket-route aliases (#1005).
@@ -1164,8 +1224,10 @@ struct ApiServer::Impl {
                 // One wait, then one final call (#1076).
                 if (awaitable.should_wait(call_result) && wait_for.count() > 0 &&
                     is_running.load()) {
-                    [[maybe_unused]] auto wait_result =
-                        co_await zetta::runtime::timeout(wait_event->wait(), wait_for);
+                    if (!co_await await_poll(wait_event, wait_for, route)) {
+                        forget_poll_event(wait_event);
+                        co_return http::route_close;  // the client left (#1174)
+                    }
                     call_result = co_await call_capability(capability, input, identity, trace, {});
                 }
             } else {
@@ -1176,8 +1238,10 @@ struct ApiServer::Impl {
                         deadline - std::chrono::steady_clock::now());
                     if (remaining.count() <= 0) break;
                     const auto wait = std::min(remaining, awaitable.retry_within(call_result));
-                    [[maybe_unused]] auto wait_result =
-                        co_await zetta::runtime::timeout(wait_event->wait(), wait);
+                    if (!co_await await_poll(wait_event, wait, route)) {
+                        forget_poll_event(wait_event);
+                        co_return http::route_close;  // the client left (#1174)
+                    }
                     forget_poll_event(wait_event);
                     wait_event = new_poll_event();
                     call_result =
@@ -4442,9 +4506,10 @@ bool ApiServer::start() {
             if (request.is_discarded()) {
                 response_body = jsonrpc_error({}, -32700, "parse error");
             } else {
-                auto wait_event =
-                    std::make_shared<zetta::runtime::async_event>();
+                // Registered like a REST poll's, so stop() wakes it too.
+                auto wait_event = impl.new_poll_event();
                 ApiResult observed;
+                bool client_gone = false;
                 bool blocks = false;
                 if (request.is_object() &&
                     request.value("method", std::string{}) == "tools/call" &&
@@ -4496,9 +4561,15 @@ bool ApiServer::start() {
                             std::chrono::duration_cast<std::chrono::milliseconds>(
                                 deadline - std::chrono::steady_clock::now());
                         if (remaining.count() <= 0) break;
-                        [[maybe_unused]] auto wait_result = co_await zetta::runtime::timeout(
-                            event->wait(), std::min(remaining, awaitable.retry_within(observed)));
-                        event = std::make_shared<zetta::runtime::async_event>();
+                        if (!co_await impl.await_poll(
+                                event, std::min(remaining, awaitable.retry_within(observed)),
+                                route)) {
+                            client_gone = true;
+                            break;
+                        }
+                        impl.forget_poll_event(event);
+                        event = impl.new_poll_event();
+                        wait_event = event;
                         auto again = [&] {
                             return impl.dispatch(request, identity.acting_key, identity.is_user,
                                                  traceparent, event, &observed);
@@ -4520,10 +4591,10 @@ bool ApiServer::start() {
                         const auto wait_for =
                             capability->awaitable_read->wait_for(params.value(
                                 "arguments", nlohmann::json::object()));
-                        if (wait_for.count() > 0) {
-                            [[maybe_unused]] auto wait_result =
-                                co_await zetta::runtime::timeout(
-                                    wait_event->wait(), wait_for);
+                        if (wait_for.count() > 0 && impl.is_running.load() &&
+                            !co_await impl.await_poll(wait_event, wait_for, route)) {
+                            client_gone = true;
+                        } else if (wait_for.count() > 0) {
                             co_await impl.bridge.run_on_owner([&] {
                                 response_body = impl.dispatch(
                                     request, identity.acting_key,
@@ -4532,6 +4603,8 @@ bool ApiServer::start() {
                         }
                     }
                 }
+                impl.forget_poll_event(wait_event);
+                if (client_gone) co_return http::route_close;  // nothing to answer (#1174)
             }
         }
 

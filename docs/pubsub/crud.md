@@ -150,12 +150,30 @@ of sealed `{name,value}` objects. `next_sequence` is the allocator's high-water
 mark, **not a page cursor**: for forward pagination use the last returned
 sequence plus one; for backward use it minus one (stop at sequence 1).
 
-`wait_ms` is bounded to 0–30000. An empty first read registers a one-shot topic
-event before checking the store and suspends a coroutine, on **both REST and
-MCP**. Publish, edit, or topic closure wakes it; timeout also performs one final
-authorized read. There are at most two reads, not a thread per waiter. A wakeup
-may still produce an empty page when the requested range excludes the new event.
+`wait_ms` is bounded to 0–60000 (60 seconds, #1174) on `receive_events` and
+`browse_topic`, on **both REST and MCP**. A larger value is refused with
+`invalid_input` (REST 400); it is not shortened. An empty first read registers a
+one-shot topic event before checking the store and suspends a coroutine.
+Publish, edit, or topic closure wakes it; timeout also performs one final
+authorized read. There are at most two reads, not a thread per waiter, so a
+60-second poll is one governed receive, never two 30-second ones. A wakeup may
+still produce an empty page when the requested range excludes the new event.
 Direct registry calls do not wait without the transport's async event.
+
+**Limits of a long poll** (each applies to the one request that asked for it):
+
+| Limit | Value | What happens |
+|---|---|---|
+| `wait_ms` | 0–60000 per request | Each poll keeps its own deadline; a short poll beside a long one times out on time. An idle client that polls with `wait_ms=60000` makes at most one receive a minute. |
+| `max` (`receive_events`), `limit` (`browse_topic`) | 1–1000, default 100 | Events per answer. |
+| An event arrives | at once | The poll answers with it, well before its deadline. |
+| The client closes the connection | at once | The server stops waiting, makes no final read and sends nothing; the session is freed for another client. Bytes a client sends ahead on the same connection (a pipelined request) are not a close: the poll waits on and the next request is read after it answers. |
+| The node stops | at once | `stop()` wakes every REST and MCP poll; each answers with one final read or is closed. |
+| Sessions | `max_connections` (default 4096) | A waiting poll holds one admitted session and its socket, never a thread; at capacity a new connection gets 503 `busy` ([exposure.md](exposure.md)). |
+
+A client's HTTP timeout must be longer than the `wait_ms` it asks for (for a
+60-second poll, at least 65 seconds), or it gives up on an answer the server is
+still holding; any proxy between them needs the same idle timeout.
 
 `update_event` / MCP `update_event` replaces only the payload:
 
