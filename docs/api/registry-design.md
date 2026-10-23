@@ -246,8 +246,11 @@ Per [../architecture/observability.md](../architecture/observability.md):
 `Registry::call` opens a span (capability, kind, actor, the caller's reserved
 optional `intent` field, input digest) and closes it with status + duration +
 result shape; every `ApiResult` carries `trace_id`/`span_id`/`duration_ms` so
-the MCP response itself tells the agent what happened and where to read more
-(`get_trace`). Inbound `traceparent` is honored; without one the call starts a
+the MCP response itself tells the agent what happened. Reading more with
+`list_traces` / `get_trace` requires `cluster:admin`, because the ring contains
+other actors' request content (#1408). Feedback remains available to ordinary
+callers, with diagnostic attachments only for administrators. Inbound
+`traceparent` is honored; without one the call starts a
 fresh trace. `intent` is stripped before schema validation — every capability
 accepts it.
 

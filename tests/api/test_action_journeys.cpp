@@ -8145,12 +8145,14 @@ TEST_F(Uc1Journey, FeaturePlanKeepsSafeInputsAndHonorsExplicitSafetyAnnotations)
 // =====================================================================
 TEST_F(Uc1Journey, JourneyUc1EndToEndWithActingKey) {
     // The acting key: orchestration rights for exactly the loop's actions,
-    // plus api:query for the read-backs. Deny-by-default everywhere else.
+    // api:query for read-backs, and explicit diagnostic access for get_trace
+    // (#1408). Deny-by-default everywhere else.
     auto principal = node.create_principal(
         "uc1 agent", zetta::governance::PrincipalKind::Service);
     ASSERT_TRUE(principal);
     zetta::governance::CapabilitySet grants;
     grants.grant(zetta::governance::CapabilityDomain::Api, "query");
+    grants.grant(zetta::governance::CapabilityDomain::Api, "cluster_admin");
     for (const char* action :
          {"create_project", "capture_intent", "compile_intent", "approve_plan",
           "gate", "deploy", "run"}) {

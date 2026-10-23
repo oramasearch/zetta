@@ -54,7 +54,8 @@ The canonical three (#619) live as tables in
 `tests/api/journeys_canonical.hpp`, shared verbatim by both layers:
 **UC-1 happy path** (create project → intent → compile → gate → deploy → run
 → ranked at-risk list + drivers read back, every action audited under the
-acting key, and the near-data trace read-back — the train job's `get_trace`
+acting key (including `cluster:admin` for diagnostic reads, #1408), and the
+near-data trace read-back — the train job's `get_trace`
 must show the `near-data:train` span), **blocked deploy** (leakage-annotated
 graph → gate/deploy/run refuse over MCP exactly as in the GUI, with
 read-backs proving nothing placed and nothing executed), **dataset ingest**

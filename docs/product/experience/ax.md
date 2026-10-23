@@ -36,9 +36,10 @@ relay it to a person.
   same table the build enforces. Served per caller (#766): an agent discovers
   the tools it may call, the same set `tools/list` gives it.
 - **Observability threaded back**: every result carries
-  trace/span/duration; `get_trace` shows intent · plan · performance · result
-  shape including per-node spans of distributed work — an agent can always
-  answer "what actually happened?"
+  trace/span/duration. Agents with `cluster:admin` can read intent, plan,
+  performance and result shape through `list_traces` / `get_trace`, including
+  per-node spans of distributed work. Ordinary agents can submit feedback
+  without trace, error or crash attachments (#1408).
   ([../architecture/observability.md](../../architecture/observability.md)).
 - **Solution health is queryable**: `get_monitor` reads current input and score
   drift, calibration, realized cohort performance, declared guardrails, active

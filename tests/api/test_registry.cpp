@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
@@ -41,6 +42,8 @@
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/observability/crash.hpp"
+#include "zetta/observability/feedback.hpp"
 #include "zetta/solutions/roi_readout.hpp"
 #include "zetta/version.hpp"
 
@@ -2027,6 +2030,186 @@ TEST_F(RegistryFixture, FailedCallsRecordErrorSpans) {
         }
     }
     EXPECT_TRUE(found_error_span);
+}
+
+// #1408: client-supplied trace ids and tool grants are not diagnostic rights.
+struct TraceAccessFixture : RegistryFixture {
+    void SetUp() override {
+        RegistryFixture::SetUp();
+        node.ensure_builtin_roles();
+        zetta::observability::ScopedSpan victim(
+            &node.span_recorder(), trace, "api:search");
+        victim.set_attribute("actor", "another-user");
+        victim.set_attribute("intent", "confidential customer query");
+        victim.finish(false, "confidential failure detail");
+
+        zetta::observability::CrashReport crash;
+        crash.id = "prior-crash";
+        crash.signal_number = 11;
+        crash.signal_name = "SIGSEGV";
+        crash.crashed_at = "2026-10-22T00:00:00Z";
+        crash.version = zetta::kVersion;
+        crash.platform = zetta::observability::platform_string();
+        crash.stacktrace = {"confidential stack frame"};
+        crash.recent_spans = {zetta::observability::to_json(
+            node.span_recorder().snapshot().front())};
+        std::filesystem::create_directories(dir.path() / "crashes");
+        std::ofstream(dir.path() / "crashes" / "prior-crash.json")
+            << zetta::observability::to_json(crash).dump();
+        const auto reports = zetta::observability::load_crash_reports(
+            (dir.path() / "crashes").string());
+        ASSERT_EQ(reports.size(), 1u);
+        ASSERT_TRUE(reports.front().report);
+    }
+
+    std::string user_with_role(const std::string& role_name) {
+        const auto user = node.create_user("user-" + role_name);
+        EXPECT_TRUE(user);
+        const auto role = node.find_role(role_name);
+        EXPECT_TRUE(role);
+        if (!user || !role) return {};
+        EXPECT_TRUE(node.assign_role(user->id(), role->id()));
+        return user->id();
+    }
+
+    ApiResult call_as(const std::string& actor, bool is_user,
+                      const std::string& name, nlohmann::json input) {
+        // Deliberately join the victim's trace, as an inbound traceparent can.
+        ApiContext context{node, nullptr, actor, trace, &node.span_recorder()};
+        context.acting_is_user = is_user;
+        return registry.call(name, input, context);
+    }
+
+    nlohmann::json stored_bundle(const ApiResult& result) {
+        const auto database = node.find_database("feedback");
+        if (!database || !result.ok) return {};
+        const auto bytes = database->large_objects().read(
+            result.value.at("feedback_id").get<std::string>());
+        EXPECT_TRUE(bytes);
+        return bytes ? nlohmann::json::parse(*bytes) : nlohmann::json{};
+    }
+};
+
+TEST_F(TraceAccessFixture, NativeReadersWritersAndToolGranteesCannotReadTraces) {
+    ASSERT_TRUE(node.create_role("trace-tools"));
+    for (const char* name : {"list_traces", "get_trace"}) {
+        ASSERT_TRUE(node.grant_scoped_permissions(
+            "trace-tools", {"mcp:call"}, zetta::governance::Resource::tool(name)));
+    }
+    for (const char* role : {"reader", "writer", "trace-tools"}) {
+        SCOPED_TRACE(role);
+        const auto user = user_with_role(role);
+        for (const auto& [name, input] :
+             std::vector<std::pair<std::string, nlohmann::json>>{
+                 {"list_traces", {{"limit", 500}}},
+                 {"get_trace", {{"trace_id", trace.trace_id}}},
+                 {"get_trace", {{"trace_id", std::string(32, 'a')}}}}) {
+            const auto denied = call_as(user, true, name, input);
+            EXPECT_FALSE(denied.ok) << name;
+            EXPECT_EQ(denied.error.code, "unauthorized") << name;
+            EXPECT_TRUE(denied.value.is_null());
+        }
+    }
+}
+
+TEST_F(TraceAccessFixture, ExplicitDiagnosticGrantAllowsTracesAndRevocationDenies) {
+    ASSERT_TRUE(node.create_role("diagnostics"));
+    ASSERT_TRUE(node.grant_permissions("diagnostics", {"mcp:call", "cluster:admin"}));
+    const auto user = user_with_role("diagnostics");
+    for (const auto& [name, input] :
+         std::vector<std::pair<std::string, nlohmann::json>>{
+             {"list_traces", {{"limit", 1}}},
+             {"get_trace", {{"trace_id", trace.trace_id}}}}) {
+        const auto allowed = call_as(user, true, name, input);
+        ASSERT_TRUE(allowed.ok) << allowed.error.message;
+        ASSERT_FALSE(allowed.value.at("spans").empty());
+    }
+    const auto detail = call_as(user, true, "get_trace", {{"trace_id", trace.trace_id}});
+    ASSERT_TRUE(detail.ok);
+    EXPECT_NE(detail.value.dump().find("confidential customer query"), std::string::npos);
+    auto feedback = call_as(user, true, "submit_feedback", {{"description", "debug"}});
+    ASSERT_TRUE(feedback.ok) << feedback.error.message;
+    const auto bundle = stored_bundle(feedback);
+    EXPECT_FALSE(bundle.at("traces").empty());
+    EXPECT_FALSE(bundle.at("recent_errors").empty());
+    EXPECT_EQ(bundle.at("crashes").size(), 1u);
+
+    ASSERT_TRUE(node.revoke_permissions("diagnostics", {"cluster:admin"}));
+    EXPECT_FALSE(call_as(user, true, "list_traces", {{"limit", 1}}).ok);
+    EXPECT_FALSE(call_as(user, true, "get_trace", {{"trace_id", trace.trace_id}}).ok);
+    feedback = call_as(user, true, "submit_feedback", {{"description", "after revoke"}});
+    ASSERT_TRUE(feedback.ok) << feedback.error.message;
+    EXPECT_TRUE(stored_bundle(feedback).at("traces").empty());
+    EXPECT_TRUE(stored_bundle(feedback).at("recent_errors").empty());
+    EXPECT_TRUE(stored_bundle(feedback).at("crashes").empty());
+}
+
+TEST_F(TraceAccessFixture, LegacyKeysNeedAnExplicitDiagnosticGrantToo) {
+    for (const bool diagnostic : {false, true}) {
+        SCOPED_TRACE(diagnostic);
+        const auto principal = node.create_principal(diagnostic ? "operator" : "reader");
+        ASSERT_TRUE(principal);
+        zetta::governance::CapabilitySet capabilities;
+        capabilities.grant(zetta::governance::CapabilityDomain::Api, "query");
+        if (diagnostic) capabilities.grant(zetta::governance::CapabilityDomain::Api,
+                                           "cluster_admin");
+        const auto key = principal->create_key(zetta::governance::unrestricted_scope(),
+                                                capabilities);
+        ASSERT_TRUE(key);
+        EXPECT_EQ(call_as(key->id(), false, "list_traces", {{"limit", 1}}).ok, diagnostic);
+        EXPECT_EQ(call_as(key->id(), false, "get_trace", {{"trace_id", trace.trace_id}}).ok,
+                  diagnostic);
+        const auto submitted = call_as(key->id(), false, "submit_feedback",
+                                        {{"description", "legacy feedback"}});
+        ASSERT_TRUE(submitted.ok) << submitted.error.message;
+        const auto bundle = stored_bundle(submitted);
+        EXPECT_EQ(!bundle.at("traces").empty(), diagnostic);
+        EXPECT_EQ(!bundle.at("recent_errors").empty(), diagnostic);
+        EXPECT_EQ(!bundle.at("crashes").empty(), diagnostic);
+    }
+}
+
+TEST_F(TraceAccessFixture, OrdinaryFeedbackOmitsAllDiagnosticsEvenForNamedTraces) {
+    for (const char* role : {"reader", "writer"}) {
+        const auto user = user_with_role(role);
+        for (const bool explicit_trace : {false, true}) {
+            SCOPED_TRACE(role);
+            SCOPED_TRACE(explicit_trace);
+            nlohmann::json input{{"description", "please improve this"}};
+            if (explicit_trace) input["trace_ids"] = {trace.trace_id};
+            const auto submitted = call_as(user, true, "submit_feedback", input);
+            ASSERT_TRUE(submitted.ok) << submitted.error.message;
+            for (const char* count : {"traces_attached", "errors_attached", "crashes_attached"}) {
+                EXPECT_EQ(submitted.value.at(count), 0);
+            }
+            const auto bundle = stored_bundle(submitted);
+            EXPECT_EQ(bundle.at("description"), "please improve this");
+            EXPECT_EQ(bundle.at("actor"), user);
+            EXPECT_TRUE(bundle.at("traces").empty());
+            EXPECT_TRUE(bundle.at("recent_errors").empty());
+            EXPECT_TRUE(bundle.at("crashes").empty());
+            EXPECT_EQ(bundle.dump().find("confidential"), std::string::npos);
+        }
+    }
+}
+
+TEST_F(TraceAccessFixture, FeedbackBuilderOmitsDiagnosticsByDefault) {
+    zetta::observability::FeedbackBundleOptions options;
+    options.description = "ordinary feedback";
+    options.trace_ids = {trace.trace_id};
+    const auto bundle = zetta::observability::build_feedback_bundle(node, options);
+    ASSERT_TRUE(bundle);
+    EXPECT_TRUE(bundle->at("traces").empty());
+    EXPECT_TRUE(bundle->at("recent_errors").empty());
+    EXPECT_TRUE(bundle->at("crashes").empty());
+
+    // Diagnostic opt-in is trusted internal state, never accepted from the wire.
+    const auto reader = user_with_role("reader");
+    const auto rejected = call_as(reader, true, "submit_feedback",
+                                  {{"description", "feedback"},
+                                   {"include_diagnostics", true}});
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_EQ(rejected.error.code, "invalid_input");
 }
 
 // Coroutine-first bridge: a runtime coroutine awaits run_on_owner and resumes
