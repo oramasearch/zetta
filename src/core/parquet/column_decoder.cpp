@@ -1,5 +1,6 @@
 #include "zetta/parquet/column_decoder.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -490,6 +491,46 @@ public:
 
 }  // namespace
 
+std::string validate_decoded_column(const DecodedColumn& column) {
+    switch (column.type) {
+        case PhysicalType::Boolean:
+        case PhysicalType::Int32:
+        case PhysicalType::Int64:
+        case PhysicalType::Float:
+        case PhysicalType::Double:
+        case PhysicalType::ByteArray:
+        case PhysicalType::FixedLenByteArray:
+            break;
+        default:
+            return "parquet: column " + column.path + " has an unsupported physical type";
+    }
+    if (column.num_rows < 0) {
+        return "parquet: column " + column.path + " has a negative row count";
+    }
+    std::int64_t present = column.num_rows;
+    if (!column.validity.empty()) {
+        if (column.validity.size() != static_cast<std::size_t>(column.num_rows)) {
+            return "parquet: column " + column.path + " has " +
+                   std::to_string(column.validity.size()) + " validity entries for " +
+                   std::to_string(column.num_rows) + " rows";
+        }
+        present = std::ranges::count_if(column.validity,
+                                        [](std::uint8_t valid) { return valid != 0; });
+    }
+    // Exactly one vector is populated: the total across all six is the length of
+    // the one `type` selects.
+    const ColumnValues& values = column.values;
+    const std::size_t total = values.int32_values.size() + values.int64_values.size() +
+                              values.float_values.size() + values.double_values.size() +
+                              values.bool_values.size() + values.byte_array_values.size();
+    if (column.valid_count() != present || total != static_cast<std::size_t>(present)) {
+        return "parquet: column " + column.path + " holds " + std::to_string(total) +
+               " decoded values for " + std::to_string(present) + " present rows of type " +
+               std::string(to_string(column.type));
+    }
+    return {};
+}
+
 std::int64_t DecodedColumn::valid_count() const {
     switch (type) {
         case PhysicalType::Boolean: return static_cast<std::int64_t>(values.bool_values.size());
@@ -522,6 +563,14 @@ DecodedColumnResult decode_column_chunk(std::string_view file_bytes, const FileM
     const LeafColumn& leaf = leaves[column_index];
     if (leaf.max_repetition_level > 0) {
         return fail("parquet: nested / repeated columns are not supported (" + leaf.path + ")");
+    }
+    // The page decoders follow the chunk's type and every consumer follows the
+    // leaf's; a footer that states two different types for one column is refused
+    // here, so no row group can append to a different typed vector (LSR-167).
+    if (chunk.type != leaf.type) {
+        return fail("parquet: column chunk physical type " + std::string(to_string(chunk.type)) +
+                    " does not match the schema's " + std::string(to_string(leaf.type)) +
+                    " for " + leaf.path);
     }
     const int max_definition_level = leaf.max_definition_level;
     const int level_bit_width = bit_width(static_cast<std::uint64_t>(max_definition_level));
@@ -648,6 +697,9 @@ DecodedColumnResult decode_column_chunk(std::string_view file_bytes, const FileM
     // A REQUIRED column carries no definition levels, so validity stays empty
     // (every row present); only OPTIONAL columns accumulate a bitmap.
     column.num_rows = produced;
+    if (std::string shape = validate_decoded_column(column); !shape.empty()) {
+        return fail(std::move(shape));
+    }
 
     DecodedColumnResult result;
     result.column = std::move(column);
@@ -668,6 +720,11 @@ DecodedColumnResult decode_column(std::string_view file_bytes, const FileMetaDat
             merged.path = part.path;
             merged.type = part.type;
             initialized = true;
+        } else if (part.type != merged.type) {
+            return fail("parquet: row group " + std::to_string(group_index) +
+                        " changes the physical type of " + merged.path + " from " +
+                        std::string(to_string(merged.type)) + " to " +
+                        std::string(to_string(part.type)));
         }
         merged.num_rows += part.num_rows;
         // Concatenate validity. If any chunk carries a bitmap the column is
@@ -696,6 +753,9 @@ DecodedColumnResult decode_column(std::string_view file_bytes, const FileMetaDat
     if (!initialized) {
         return fail("parquet: no row groups to decode");
     }
+    if (std::string shape = validate_decoded_column(merged); !shape.empty()) {
+        return fail(std::move(shape));
+    }
     DecodedColumnResult result;
     result.column = std::move(merged);
     return result;
@@ -705,11 +765,13 @@ nlohmann::json to_json(const DecodedColumn& column) {
     nlohmann::json values = nlohmann::json::array();
 
     // Walk logical rows; a present row pops the next dense value, a null row
-    // emits JSON null.
+    // emits JSON null. A present row past the end of the dense values (a column
+    // that fails validate_decoded_column) is emitted as null, never read.
     std::size_t next = 0;
     const ColumnValues& source = column.values;
+    const auto dense_count = static_cast<std::size_t>(column.valid_count());
     for (std::int64_t row = 0; row < column.num_rows; ++row) {
-        if (!column.row_is_valid(row)) {
+        if (!column.row_is_valid(row) || next >= dense_count) {
             values.push_back(nullptr);
             continue;
         }

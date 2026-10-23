@@ -101,7 +101,11 @@ sibling: it decodes **every** leaf column and transposes the values back into on
 a null row becomes JSON null, a `byte_array` becomes a JSON string, numeric and
 boolean columns become their natural JSON scalar. This is the inverse of the
 `JsonlStore`'s row shape, so a `.parquet` file drops into any code path that
-already consumes JSON rows.
+already consumes JSON rows. Before transposing a column it checks the decoded
+shape with `validate_decoded_column` (one dense value per present row, in the
+vector the column's physical type selects), so a crafted file whose row groups
+disagree on a column's physical type fails with a reason instead of reading past
+the values (LSR-167, see [the decoders](parquet-column-decoders.md)).
 
 That is how the **churn dataset loader** ([churn-dataset.md](../use-cases/churn-dataset.md))
 now reads Parquet: `load_churn_dataset(dir, ChurnDataFormat::Parquet)` reads

@@ -88,17 +88,27 @@ struct DecodedColumnResult {
     bool ok() const { return error.empty(); }
 };
 
+// Check the shape every row transpose relies on (LSR-167): a supported physical
+// type, `validity` empty or exactly `num_rows` long, exactly one dense value per
+// present row in the vector `type` selects, and every other value vector empty.
+// Returns "" when the column is consistent, else the reason. The decoders run it
+// on their result; a consumer indexing the dense values by a running row counter
+// runs it before indexing.
+std::string validate_decoded_column(const DecodedColumn& column);
+
 // Decode one column chunk — one row group's slice of a leaf column. `metadata`
 // is the parsed footer (#505); the chunk is `row_groups[row_group_index]
 // .columns[column_index]`, and `column_index` also selects the matching leaf
-// (for its physical type + max definition level). Non-throwing.
+// (for its physical type + max definition level). A chunk whose physical type
+// is not the leaf's fails (LSR-167). Non-throwing.
 DecodedColumnResult decode_column_chunk(std::string_view file_bytes,
                                         const FileMetaData& metadata,
                                         std::size_t row_group_index,
                                         std::size_t column_index);
 
 // Decode a whole leaf column across all row groups, concatenated in row-group
-// order — the full column's typed values. Non-throwing.
+// order — the full column's typed values. Every chunk must carry the leaf's
+// physical type, so the parts never mix types. Non-throwing.
 DecodedColumnResult decode_column(std::string_view file_bytes,
                                   const FileMetaData& metadata,
                                   std::size_t column_index);
@@ -107,6 +117,8 @@ DecodedColumnResult decode_column(std::string_view file_bytes,
 // `{ "path", "type", "values": [ <value-or-null> ... ] }`, the `values` array
 // one entry per logical row (a null row is JSON null; a byte_array is its bytes
 // as a JSON string). Matches the committed golden shape and `parquet_columns_schema`.
+// A present row with no dense value behind it (a column that fails
+// `validate_decoded_column`) is emitted as null rather than read past the end.
 nlohmann::json to_json(const DecodedColumn& column);
 
 // The draft-07 JSON Schema for a decoded-columns document
