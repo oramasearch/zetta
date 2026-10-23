@@ -182,8 +182,15 @@ key for the few it wanted. Concurrent reads queued behind each other's copies.
 
 A read takes the view and reads it in place:
 
-- `shared_snapshot()` costs one reference count under the mutex; the copy-free
-  view is immutable for as long as the reader holds it.
+- `shared_snapshot()` costs one reference count under the **snapshot mutex**,
+  not the replication mutex (#1248); the copy-free view is immutable for as long
+  as the reader holds it. A writer holds both mutexes, replication first, while it
+  changes the parsed cache, and only the replication mutex for the rest. So a read
+  never waits for `save()` (which serializes the whole document once a second) or
+  for the Automerge half of `merge()`, only for a writer's brief cache update.
+  Every record-store read looks its collection up this way, and before #1248 each
+  one waited for the whole save
+  (`RecordStoreLatency.ReadsDoNotWaitForTheCatalogueDocument`).
 - One entity: `view->find(catalog::agent_key(id))` — a single ordered-map lookup.
 - A kind of entity: `catalog::for_each_with_prefix(*view, catalog::kAgentPrefix,
   visit)` (`src/core/catalog.hpp`). The snapshot is a JSON object over an ordered
