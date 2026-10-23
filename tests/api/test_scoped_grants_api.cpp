@@ -90,6 +90,34 @@ TEST_F(ScopedApiFixture, FlatMcpCallCallsEveryTool) {
                     .ok);
 }
 
+// #1185: list_projects' graph summaries are part of get_project's answer, so they
+// are read with get_project's right. A user scoped to list_projects alone gets
+// the names, as before, and no summaries; one who may also call get_project, or
+// holds a flat mcp:call, gets them.
+TEST_F(ScopedApiFixture, ListProjectsSummariesNeedGetProjectsRight) {
+    ASSERT_TRUE(node.create_project("churn"));
+    const std::string uid = user_scoped_to_tool("list_projects");
+
+    auto names_only = call_as_user(uid, "list_projects", nlohmann::json::object());
+    ASSERT_TRUE(names_only.ok) << names_only.error.message;
+    EXPECT_EQ(names_only.value.at("projects"), nlohmann::json::array({"churn"}));
+    EXPECT_FALSE(names_only.value.contains("summaries"));
+    EXPECT_FALSE(call_as_user(uid, "get_project", {{"name", "churn"}}).ok);
+
+    ASSERT_TRUE(node.grant_scoped_permissions("toolrole", {"mcp:call"},
+                                              Resource::tool("get_project")));
+    auto with_detail = call_as_user(uid, "list_projects", nlohmann::json::object());
+    ASSERT_TRUE(with_detail.ok) << with_detail.error.message;
+    ASSERT_EQ(with_detail.value.at("summaries").size(), 1u);
+    EXPECT_EQ(with_detail.value.at("summaries")[0].at("name"), "churn");
+
+    auto reader = node.create_user("rhea");
+    node.assign_role(reader->id(), node.find_role("reader")->id());
+    auto flat = call_as_user(reader->id(), "list_projects", nlohmann::json::object());
+    ASSERT_TRUE(flat.ok) << flat.error.message;
+    EXPECT_EQ(flat.value.at("summaries").size(), 1u);
+}
+
 // The tools/list filter (http_server dispatch) shows only the tools the caller
 // may invoke — exactly the predicate node.may_call_tool over the registry list.
 TEST_F(ScopedApiFixture, ToolsListFilterHidesUncallableTools) {

@@ -53,6 +53,38 @@ node.rename_project("churn", "retention");                // keeps the id
 node.drop_project("retention");
 ```
 
+## Listing projects — `list_projects`
+
+`list_projects` (REST `GET /v1/list_projects`, the MCP tool of the same name) takes
+no input and answers the projects people see (internal projects are left out, see
+[../ml/standalone-models.md](../ml/standalone-models.md)) in one call:
+
+```json
+{
+  "projects": ["churn", "renewals"],
+  "summaries": [
+    { "id": "<uuid>", "name": "churn",
+      "graphs": [ { "id": "<uuid>", "name": "Weekly Churn", "approval": "approved" } ] },
+    { "id": "<uuid>", "name": "renewals", "graphs": [] }
+  ]
+}
+```
+
+- **`projects`** is the list of names, unchanged, for the callers that read it.
+- **`summaries`** (#1185) has one entry per name, in the same order: the project's
+  `id` and `name`, and each pipeline's `id`, `name` and `approval` (`proposed` or
+  `approved`, #885), the same values `get_project` returns. It lets a list page (a
+  project list, the pipelines an agent may be granted) render without one
+  `get_project` per project. It is built from the projects already held in memory,
+  so it costs no reads of disk or of other nodes.
+- **Access.** `list_projects` and `get_project` both need `api:query`. A summary is
+  part of `get_project`'s answer, so it is read with that tool's right: a user whose
+  `mcp:call` is scoped to `list_projects` alone (#747) gets `projects` and no
+  `summaries` field. AccessKeys and the local session are authorized on `api:query`
+  for both tools, so for them the two always agree.
+- Anything else about a pipeline (methodology, runnable, who approved it and when,
+  the inputs) stays on `get_project`.
+
 ## Deleting a project — `delete_project` (#1009)
 
 The control-surface entry is the **`delete_project`** action (REST
@@ -269,3 +301,7 @@ Graph (de)serialization and the in-place `remove_node` / `remove_edge` edits are
 covered in `tests/pipeline/test_execution_graph.cpp`. The `delete_project` capability's journey
 (delete → read back, runs/models kept, missing → `not_found`, refused while a run is in
 flight) is in `tests/api/test_registry.cpp`.
+`list_projects`' summaries (#1185) are checked against `get_project` field by field
+(`RegistryFixture.ListProjectsReturnsGraphSummariesMatchingGetProject`), and their
+access rule in `tests/api/test_scoped_grants_api.cpp`
+(`ScopedApiFixture.ListProjectsSummariesNeedGetProjectsRight`).

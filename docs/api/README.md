@@ -152,7 +152,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `object_usage` | read | data:objects_read | a bucket's objects, bytes and quota; also `GET /v1/objects/<bucket>:usage` |
 | `storage_usage` | read | api:query | the bytes this node holds on its disk, by kind (datasets, files, models, indexes, runs, buckets and each bucket, streams, records, catalogue, system); walks the data directory on the blocking pool; `scope: "cluster"` sums every member's census from the telemetry exchange and names the members missing ([storage-census.md](../data/storage-census.md)) |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
-| `list_projects` | read | api:query | project names |
+| `list_projects` | read | api:query | project names (`projects`), plus `summaries` (#1185): each project's id and name and each pipeline's id, name and approval, in one call; present only when the caller may also call `get_project` ([projects.md](../pipeline/projects.md#listing-projects--list_projects)) |
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
 | `get_run` | read | api:query | one run's validated record (status / logs / outputs / lineage) by uuid |
 | `get_model` | read | api:query | one model's validated record (kind / lineage / feature schema / metrics / weights fingerprint) by uuid |

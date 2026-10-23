@@ -469,13 +469,77 @@ const nlohmann::json& list_projects_output_schema() {
         {"required", {"projects"}},
         {"additionalProperties", false},
         {"properties",
-         {{"projects", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+         {{"projects",
+           {{"type", "array"},
+            {"description", "the project names"},
+            {"items", {{"type", "string"}}}}},
+          {"summaries",
+           {{"type", "array"},
+            {"description",
+             "one entry per name in `projects`, in the same order (#1185): the "
+             "project's id and name and each graph's id, name and approval, "
+             "so a list page needs no get_project per project. Present only "
+             "when the caller may also call get_project"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"id", "name", "graphs"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"name", {{"type", "string"}}},
+                {"graphs",
+                 {{"type", "array"},
+                  {"items",
+                   {{"type", "object"},
+                    {"required", {"id", "name", "approval"}},
+                    {"additionalProperties", false},
+                    {"properties",
+                     {{"id", {{"type", "string"}}},
+                      {"name", {{"type", "string"}}},
+                      {"approval",
+                       {{"type", "string"},
+                        {"enum", {"proposed", "approved"}},
+                        {"description",
+                         "plan-approval state (#885), as get_project"}}}}}}}}}}}}}}}}}};
     return schema;
 }
 
+// `projects` stays the list of names existing callers read; `summaries`
+// (#1185) carries what a list page shows, from the same in-memory projects
+// get_project reads. Internal projects (a standalone model's, lake#654) are left
+// out of both, as project_names() does.
+//
+// A summary is part of get_project's answer, so it is read with get_project's
+// right: a user whose mcp:call is scoped to list_projects alone (#747) gets the
+// names, as before, and no summaries. AccessKeys and the local session are
+// authorized on api:query for both tools, so for them nothing differs.
+bool may_read_project_detail(const ApiContext& context) {
+    return !context.acting_is_user ||
+           context.node.may_call_tool(context.acting_key, /*acting_is_user=*/true,
+                                      "get_project");
+}
+
 ApiResult handle_list_projects(const nlohmann::json&, ApiContext& context) {
+    const bool with_summaries = may_read_project_detail(context);
+    nlohmann::json names = nlohmann::json::array();
+    nlohmann::json summaries = nlohmann::json::array();
+    for (const auto& project : context.node.projects()) {
+        if (project->internal()) continue;
+        names.push_back(project->name());
+        if (!with_summaries) continue;
+        nlohmann::json graphs = nlohmann::json::array();
+        for (const auto& graph : project->graphs()) {
+            graphs.push_back({{"id", graph->id()},
+                              {"name", graph->name()},
+                              {"approval", graph->approval_status()}});
+        }
+        summaries.push_back({{"id", project->id()},
+                             {"name", project->name()},
+                             {"graphs", std::move(graphs)}});
+    }
     nlohmann::json output;
-    output["projects"] = context.node.project_names();
+    output["projects"] = std::move(names);
+    if (with_summaries) output["summaries"] = std::move(summaries);
     return ApiResult::success(std::move(output));
 }
 
@@ -11505,7 +11569,9 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "list_projects",
         "List projects",
-        "Read the names of every AI project on this node. No side effects.",
+        "Read the names of every AI project on this node, with a summary of "
+        "each (id, name, and each graph's id, name and approval) for a caller "
+        "who may also call get_project. No side effects.",
         list_projects_schema(),
         list_projects_output_schema(),
         CapabilityKind::Read,
