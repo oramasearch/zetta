@@ -411,7 +411,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     security.cpp            zetta::cluster security material (the one OpenSSL-libcrypto user): join-token CSPRNG + deterministic Ed25519 CA derivation + per-node cert minting + PEM/secret-file persistence with the schema-validated boundary (#466)
     signal.cpp              zetta::cluster::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
     collectives.cpp         zetta::cluster::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
-    replication.cpp         replication CRDT adapter (the one automerge-cpp user); tombstoned removal + the get_all() conflict scan that makes removal win over a concurrent write (#838)
+    replication.cpp         replication CRDT adapter (the one automerge-cpp user); tombstoned removal + the get_all() conflict scan that makes removal win over a concurrent write (#838); clock() + save_since(), the per-peer gossip delta (#794)
     node_metrics.cpp        zetta::cluster::NodeMetricsSampler — per-platform OS-counter sampling (macOS mach/sysctl/getifaddrs, Linux /proc, POSIX statvfs), CPU/network rates from deltas; the source behind system.node_metrics (#581)
     node_telemetry.cpp      zetta::cluster::NodeTelemetryExchange — the node.metrics wire boundary (embedded draft-07 schema + pboettch validation, encode/decode) + the thread-safe peer cache (receive on the network thread, record local + snapshot on the loop thread, expire stale) (#584)
   data/
@@ -818,6 +818,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   temp_dir.hpp              per-test isolated data_dir helper
   cluster/test_refused_start_exit.cpp  process test: an occupied --listen port exits 1 without an abort (#1078)
   cluster/test_startup_log_redaction.cpp  process test: no startup line carries the join token (flag, env or generated) (#1393)
+  cluster/test_gossip_bandwidth.cpp  steady-state gossip rounds over mutual TLS ship deltas, plus the ZETTA_GOSSIP_BENCH=1 bytes-per-round and convergence measurement (#794)
   cluster/test_peer_gateway.cpp  two dial-out-only Zetta nodes with overlapping private endpoints replicate through two opaque TCP gateway fixtures while retaining end-to-end mutual TLS (#1282)
   api/journey.hpp           the shared MCP-journey driver (#619): Journey/JourneyStep{tool, input, expect} DATA tables + saved-value flow + patient Poll, run by one transport-agnostic driver (layer 1 in-process / layer 2 JSON-RPC); failures name the offending step + assertion
   api/journeys_canonical.hpp  the canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2); and the #969 chat loop (propose → approve → run → report → explain, plus its refusals), replayed at both layers by test_chat_loop.cpp

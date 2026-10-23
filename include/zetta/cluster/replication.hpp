@@ -33,6 +33,18 @@ struct ReplicationMemoryUsage {
     std::uint64_t audit_items = 0;
 };
 
+// What one gossip round ships to one peer (#794): a document blob that merge()
+// accepts, holding either the whole document or only the changes the peer lacks.
+struct ReplicationDelta {
+    // Empty when the peer already holds every change we hold: send nothing.
+    std::vector<std::byte> blob;
+    // The whole document: the peer's clock was unknown or unreadable, or it
+    // lacks at least half of our changes (too far behind for a delta to pay).
+    bool full = false;
+    // How many changes a delta carries (0 for the whole document).
+    std::size_t changes = 0;
+};
+
 // One write of an atomic ReplicationManager::update(): set `key` to `value`, or
 // remove it (a tombstone, exactly like remove()) when `value` is empty.
 struct ReplicationWrite {
@@ -150,8 +162,30 @@ public:
     // empty document.
     std::string version() const;
 
-    // Serialize the whole document, to gossip to a peer.
+    // Serialize the whole document (persistence, and the gossip fallback).
     std::vector<std::byte> save() const;
+
+    // The document's clock (#794): for every actor, the highest change sequence
+    // this document holds. Opaque, compact bytes (about 20 bytes per actor, so per
+    // node). A peer advertises its clock on gossip; save_since() reads it back.
+    std::string clock() const;
+
+    // Only what a peer lacks (#794): the changes whose sequence is above the
+    // peer's clock for their actor, as a document blob merge() accepts. Falls
+    // back to the whole document (`full`) when `peer_clock` is empty or does not
+    // decode, or when the peer lacks at least half of our changes. Changes travel
+    // as stored, so signed or sealed values arrive unchanged. The blob is empty
+    // when the peer lacks nothing.
+    //
+    // Gap-safe by construction: merge() skips a change whose sequence is at or
+    // below the receiver's clock for that actor, so a delta must never start
+    // above what the receiver holds. Basing it on the clock the receiver itself
+    // reported (never on what we think we sent) guarantees that.
+    ReplicationDelta save_since(std::string_view peer_clock) const;
+
+    // Whether `clock` holds every change `other` holds (both from clock()). False
+    // when either does not decode. Gossip uses it to see a peer take a SYNC.
+    static bool clock_covers(std::string_view clock, std::string_view other);
     // Merge a peer's serialized document into ours (conflict-free). Ignored if
     // the blob doesn't decode.
     void merge(std::span<const std::byte> blob);

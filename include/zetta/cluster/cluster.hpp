@@ -202,6 +202,18 @@ struct ClusterConfig {
     ClusterSecurity security;
 };
 
+// Replication gossip this node has sent since start() (#794), summed over every
+// link. `sync_bytes` is the SYNC lines as written to the link (base64 payload plus
+// the verb), before any TLS framing. A round is one gossip tick on one link, so a
+// node with two peers counts two rounds per tick.
+struct GossipStats {
+    std::uint64_t rounds = 0;             // gossip ticks, per link
+    std::uint64_t sync_frames = 0;        // SYNC lines sent
+    std::uint64_t full_syncs = 0;         // ... carrying the whole document
+    std::uint64_t incremental_syncs = 0;  // ... carrying only the changes a peer lacked
+    std::uint64_t sync_bytes = 0;         // bytes of those SYNC lines
+};
+
 // Bounded cross-thread handoff. The network adapter queues wire messages; the
 // Node owner loop reads/writes segment files and validates their event frames.
 struct AuditMessage {
@@ -308,6 +320,10 @@ public:
     // seed whose address never matches the peer's advertised one, or a mutual dial).
     // Kept at parity by the per-node-id link registry — see #739.
     std::size_t connection_count() const;
+
+    // Replication gossip sent so far (#794) — the bytes a round costs, and how
+    // many rounds shipped the whole document versus only a peer's missing changes.
+    GossipStats gossip_stats() const;
 
     void publish_audit_watermarks(
         const std::map<std::string, zetta::governance::AuditWatermark>& watermarks);

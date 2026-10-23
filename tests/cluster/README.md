@@ -17,3 +17,9 @@ TLS and bidirectional CRDT convergence (#1282).
 sequences or too many endpoints over a live plaintext connection (with a
 well-formed HELLO as the positive control), the 16 KiB pre-HELLO frame bound, and
 the capped advertised set.
+`ReplicationDelta.*` (`test_replication.cpp`) prove a gossip delta carries only the
+changes a peer lacks, falls back to the whole document, reaches an audit-retired
+peer, and converges a four-node mesh with stale clocks and partial views without
+leaving a gap (#794). `test_gossip_bandwidth.cpp` checks that steady-state rounds
+over mutual TLS ship deltas, and holds the `ZETTA_GOSSIP_BENCH=1` measurement of
+bytes per round and convergence time.

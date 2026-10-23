@@ -86,6 +86,10 @@ struct Cluster::State {
         bool has_status = false;  // have we received a STATUS from it yet?
         std::size_t entries = 0;
         std::string version;
+        // The replication clock it last reported (#794): what its document holds,
+        // so our gossip ships it only the changes it lacks. Empty when the peer
+        // advertises none (an older node) — it then gets the whole document.
+        std::string clock;
         std::chrono::steady_clock::time_point last_sync{};
         unsigned audit_protocol_version = 0;
     };
@@ -138,6 +142,12 @@ struct Cluster::State {
     // peer_count() in steady state; a higher value would mean links are leaking. An
     // atomic so connection_count() can read it without the peer mutex.
     std::atomic<int> live_connections{0};
+    // Replication gossip sent (#794), summed over links; read by gossip_stats().
+    std::atomic<std::uint64_t> gossip_rounds{0};
+    std::atomic<std::uint64_t> gossip_sync_frames{0};
+    std::atomic<std::uint64_t> gossip_full_syncs{0};
+    std::atomic<std::uint64_t> gossip_incremental_syncs{0};
+    std::atomic<std::uint64_t> gossip_sync_bytes{0};
 
     // --- Reconnect routing (dedup redials by node id, #739) -----------------
     //
@@ -357,10 +367,10 @@ struct Cluster::State {
         const std::lock_guard<std::mutex> lock(route_mutex);
         dialing.erase(seed);
     }
-    // Record a peer's reported replication status (entries + version) and stamp
-    // the sync time. No-op if the peer has since disconnected.
+    // Record a peer's reported replication status (entries + version + clock)
+    // and stamp the sync time. No-op if the peer has since disconnected.
     void update_peer_status(const std::string& node_id, std::size_t entries,
-                            std::string version,
+                            std::string version, std::string clock,
                             std::chrono::steady_clock::time_point when) {
         const std::lock_guard<std::mutex> lock(mutex);
         for (PeerRecord& peer : peers) {
@@ -368,9 +378,27 @@ struct Cluster::State {
             peer.has_status = true;
             peer.entries = entries;
             peer.version = std::move(version);
+            peer.clock = std::move(clock);
             peer.last_sync = when;
             return;
         }
+    }
+
+    // The clock a peer reported on the current link (#794): one stamped at or
+    // after `since`, the moment that link's writer started. A clock from an
+    // earlier link is never trusted — the peer may have restarted from an older
+    // document since — so a new link opens with the whole document. nullopt
+    // until the peer has sent a STATUS on this link; empty when its STATUS
+    // carries no clock (a node from before #794).
+    std::optional<std::string> peer_clock_since(
+        const std::string& node_id, std::chrono::steady_clock::time_point since) const {
+        const std::lock_guard<std::mutex> lock(mutex);
+        for (const PeerRecord& peer : peers) {
+            if (peer.node_id != node_id) continue;
+            if (!peer.has_status || peer.last_sync < since) return std::nullopt;
+            return peer.clock;
+        }
+        return std::nullopt;
     }
 
     // Every OTHER node we know about, keyed by node id, mapped to the endpoint(s)
@@ -599,10 +627,15 @@ std::string hello_line(const std::string& node_id,
 // --- Replication gossip -----------------------------------------------------
 //
 // Once peers have shaken hands they exchange replicated state on a timer:
-//   ZETTA/1 SYNC <base64 of ReplicationManager::save()>   — merge into ours
-//   ZETTA/1 STATUS <entries> <version>                    — its status, for nodes()
-// SYNC carries the whole document (the ReplicateToAllNodes policy); the CRDT
-// merge is conflict-free, so order and duplication don't matter.
+//   ZETTA/1 SYNC <base64 document blob>          — merge into ours
+//   ZETTA/1 STATUS <entries> <version> <clock>   — its status, for nodes(), and
+//                                                  its base64 replication clock
+// SYNC carries only the changes the peer lacks, judged by the clock the peer
+// last reported on this link (ReplicationManager::save_since, #794), and is
+// skipped when it lacks none. It carries the whole document on a new link,
+// to a peer that reports no clock (an older node), or to one too far behind.
+// Either way it is a blob merge() accepts, so the receive path is unchanged;
+// the CRDT merge is conflict-free, so order and duplication don't matter.
 
 // base64 lives in the shared internal header so the signal plane (signal.cpp)
 // uses the same implementation — see src/core/base64.hpp.
@@ -611,16 +644,21 @@ using detail::base64_decode_to_string;
 using detail::base64_encode;
 using detail::base64_encode_bytes;
 
-std::string sync_line(const ReplicationManager& replication) {
-    return std::string(kProtocol) + " SYNC " +
-           base64_encode(replication.save());
+std::string sync_line(const std::vector<std::byte>& blob) {
+    return std::string(kProtocol) + " SYNC " + base64_encode(blob);
 }
 
+// The clock rides as a trailing token, which a node that predates #794 never
+// reads (it parses entries and version and stops), so mixed versions interoperate.
 std::string status_line(const ReplicationManager& replication) {
     return std::string(kProtocol) + " STATUS " +
            std::to_string(replication.entry_count()) + " " +
-           replication.version();
+           replication.version() + " " +
+           base64_encode_bytes(replication.clock());
 }
+
+// A clock is about 20 bytes per node; anything past this is not a clock.
+constexpr std::size_t kMaxClockToken = 64 * 1024;
 
 std::string loreq_line(const std::string& id) {
     return std::string(kProtocol) + " LOREQ " + id;
@@ -729,12 +767,19 @@ void apply_gossip(Cluster::State* self, const std::string& line,
     } else if (verb == "STATUS") {
         std::size_t entries = 0;
         std::string version;
-        parser >> entries >> version;
+        std::string clock_token;
+        parser >> entries >> version >> clock_token;
         log_event(self, "<- STATUS from " + short_id(peer_node_id) +
                             " entries=" + std::to_string(entries) + " ver=" +
                             version);
+        // An absent or oversized clock leaves it empty: that peer is sent the
+        // whole document, as before #794. ReplicationManager::save_since
+        // validates the decoded bytes and falls back the same way.
+        std::string clock = clock_token.size() <= kMaxClockToken
+                                ? base64_decode_to_string(clock_token)
+                                : std::string{};
         self->update_peer_status(peer_node_id, entries, std::move(version),
-                                 std::chrono::steady_clock::now());
+                                 std::move(clock), std::chrono::steady_clock::now());
     } else if (verb == "LOREQ") {
         std::string id;
         parser >> id;
@@ -844,9 +889,18 @@ void apply_gossip(Cluster::State* self, const std::string& line,
 // thread-safe, so a poll keeps producers off the network thread for now.)
 constexpr std::chrono::milliseconds kOutboxPollInterval{20};
 constexpr std::chrono::milliseconds kGossipInterval{500};
+// A link that has sent a SYNC waits for the peer's STATUS clock to show it took it
+// before sending again (#794). A SYNC cut against a clock that predates the last
+// one mostly re-ships what is still in flight, and a peer ingesting a large catch-up
+// keeps reporting its old clock for seconds — re-sending would ship the whole
+// document again. Frames on a link arrive in order or the link drops (a new link
+// starts over with the whole document), so the wait is only a backstop: after
+// kSyncResendAfter without the peer showing our SYNC, we resend from the clock it
+// reports.
+constexpr std::chrono::milliseconds kSyncResendAfter{10000};
 
-// Per-link output pump: flush this peer's queued signals every tick, push our
-// replicated document + status (or a PING keepalive) and request missing
+// Per-link output pump: flush this peer's queued signals every tick, push the
+// changes this peer lacks + our status (or a PING keepalive) and request missing
 // large-object bodies every ~0.5s, and drop the link if the peer goes silent —
 // until the connection dies. FramedStream preserves full-duplex plaintext and
 // serializes access to the TLS engine (#786). Always spawned (the signal plane
@@ -858,6 +912,12 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
     net::timer timer(self->io_context);
     std::map<std::string, Clock::time_point> requested;  // body request cooldown
     Clock::time_point last_gossip = Clock::now() - kGossipInterval;  // gossip now
+    // Only a clock the peer reports on THIS link sizes our SYNC (#794); our own
+    // clock as of the last SYNC tells when the peer has taken it.
+    const Clock::time_point link_started = Clock::now();
+    bool sent_any = false;
+    std::string sent_clock;
+    Clock::time_point last_sync_sent{};
     while (link->alive) {
         // Keepalive: a healthy peer gossips/PINGs us every ~0.5s, so prolonged
         // silence means the link died (e.g. a silent TCP drop). Close it —
@@ -880,12 +940,43 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
         // Periodic gossip + keepalive, every ~0.5s (not every poll tick).
         if (Clock::now() - last_gossip >= kGossipInterval) {
             last_gossip = Clock::now();
+            self->gossip_rounds.fetch_add(1, std::memory_order_relaxed);
             if (self->replication) {
+                // STATUS first: it is what the peer sizes its own SYNC by, so it
+                // must not queue behind a large SYNC of ours (#794).
                 if (!co_await link->stream->write_frame(
-                        sync_line(*self->replication)) ||
-                    !co_await link->stream->write_frame(
                         status_line(*self->replication))) {
                     break;
+                }
+                const std::optional<std::string> reported =
+                    self->peer_clock_since(peer_node_id, link_started);
+                const std::string peer_clock = reported.value_or(std::string{});
+                // A peer that reports no clock (a node from before #794) can never
+                // show it took a SYNC: it gets the whole document every round, as
+                // before.
+                const bool clockless_peer = reported && reported->empty();
+                const bool awaiting_ack =
+                    sent_any && !clockless_peer &&
+                    !ReplicationManager::clock_covers(peer_clock, sent_clock) &&
+                    Clock::now() - last_sync_sent < kSyncResendAfter;
+                // Our clock is read BEFORE the delta, so it never names a change
+                // the delta lacks: the peer's clock covering it means it took ours.
+                std::string clock_now =
+                    awaiting_ack ? std::string{} : self->replication->clock();
+                const ReplicationDelta delta =
+                    awaiting_ack ? ReplicationDelta{}
+                                 : self->replication->save_since(peer_clock);
+                if (!delta.blob.empty()) {
+                    sent_any = true;
+                    sent_clock = std::move(clock_now);
+                    last_sync_sent = Clock::now();
+                    std::string sync = sync_line(delta.blob);
+                    self->gossip_sync_frames.fetch_add(1, std::memory_order_relaxed);
+                    (delta.full ? self->gossip_full_syncs : self->gossip_incremental_syncs)
+                        .fetch_add(1, std::memory_order_relaxed);
+                    self->gossip_sync_bytes.fetch_add(sync.size(),
+                                                      std::memory_order_relaxed);
+                    if (!co_await link->stream->write_frame(std::move(sync))) break;
                 }
             } else if (!co_await link->stream->write_frame(ping_line())) {
                 // No gossip to send — a PING keeps the link alive.
@@ -1606,6 +1697,17 @@ std::size_t Cluster::peer_count() const {
 std::size_t Cluster::connection_count() const {
     const int count = state_->live_connections.load(std::memory_order_relaxed);
     return count > 0 ? static_cast<std::size_t>(count) : 0;
+}
+
+GossipStats Cluster::gossip_stats() const {
+    constexpr auto order = std::memory_order_relaxed;
+    return GossipStats{
+        .rounds = state_->gossip_rounds.load(order),
+        .sync_frames = state_->gossip_sync_frames.load(order),
+        .full_syncs = state_->gossip_full_syncs.load(order),
+        .incremental_syncs = state_->gossip_incremental_syncs.load(order),
+        .sync_bytes = state_->gossip_sync_bytes.load(order),
+    };
 }
 
 std::vector<NodeStatus> Cluster::nodes() const {
