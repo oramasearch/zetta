@@ -7447,7 +7447,8 @@ const nlohmann::json& register_model_schema() {
             {"description",
              "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's "
              "text model, or the engine's own JSON weights (objective, base_score, "
-             "feature_names, trees). Give this or `weights_base64`"}}},
+             "feature_names, trees). Give this or `weights_base64`. Import limits default "
+             "to 1 GiB of decoded model bytes and 1,048,576 features; operators can configure them"}}},
           {"weights_base64",
            {{"type", "string"},
             {"minLength", 4},
@@ -7529,10 +7530,34 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
                                   "`weights_base64`, one of them");
     }
     const std::string field = text ? "/weights" : "/weights_base64";
-    const std::string bytes =
-        text ? input.at("weights").get<std::string>()
-             : zetta::detail::base64_decode_to_string(input.at("weights_base64").get<std::string>());
+    std::string reason;
+    const auto limits = zetta::ml::model_import_limits_from_environment(&reason);
+    if (!limits) return ApiResult::failure("engine_error", reason);
+    const auto& contents = input.at(text ? "weights" : "weights_base64").get_ref<const std::string&>();
+    if (text) {
+        if (contents.size() > limits->max_bytes) {
+            return ApiResult::failure("not_supported", field + ": model bytes exceed the import limit");
+        }
+    } else {
+        // Bound the decoder's allocation before inspecting or copying the body.
+        const std::size_t upper_bytes = contents.size() / 4 * 3;
+        if (upper_bytes > limits->max_bytes && upper_bytes - limits->max_bytes > 2) {
+            return ApiResult::failure("not_supported", field + ": model bytes exceed the import limit");
+        }
+        if (!strict_base64(contents)) {
+            return ApiResult::failure("invalid_input", field + ": expected padded base64");
+        }
+        const std::size_t padding = contents.ends_with("==") ? 2 : (contents.ends_with('=') ? 1 : 0);
+        if (upper_bytes - padding > limits->max_bytes) {
+            return ApiResult::failure("not_supported", field + ": model bytes exceed the import limit");
+        }
+    }
+    if (input.contains("feature_names") && input.at("feature_names").size() > limits->max_features) {
+        return ApiResult::failure("not_supported", "/feature_names: exceeds the import limit");
+    }
+    const std::string bytes = text ? contents : zetta::detail::base64_decode_to_string(contents);
     zetta::ml::ModelImportOptions options;
+    options.limits = *limits;
     if (input.contains("format")) {
         options.format =
             zetta::ml::model_file_format_from_string(input.at("format").get<std::string>());
@@ -7540,7 +7565,6 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
     if (input.contains("feature_names")) {
         options.feature_names = input.at("feature_names").get<std::vector<std::string>>();
     }
-    std::string reason;
     const std::optional<zetta::ml::ImportedModel> imported =
         zetta::ml::import_model(bytes, options, &reason);
     if (!imported) return ApiResult::failure("not_supported", field + ": " + reason);
