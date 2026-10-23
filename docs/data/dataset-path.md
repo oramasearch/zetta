@@ -111,7 +111,9 @@ by native grouping and refuses a collision within the dataset. The resolved cont
 both directions of the mapping. Frame
 loading supplies the derived key to numeric operators; score tables, rankings, segment
 assignments, methodology outputs, decisions, action deliveries and reports restore the
-original business value. Runs and Models persist the mapping for audit and later scoring.
+original business value. Runs and Models persist the mapping for audit and later scoring,
+as rows of the `_entity_keys` table that the record references
+([entity-key-table.md](entity-key-table.md), #1255).
 Integer keys continue unchanged and carry no mapping. A whole-valued **double** is also
 accepted because warehouses commonly return `NUMBER` columns as doubles.
 

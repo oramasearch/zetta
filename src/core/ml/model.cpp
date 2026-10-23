@@ -244,6 +244,12 @@ void Model::set_metrics(nlohmann::json metrics) {
 }
 
 void Model::set_feature_schema(nlohmann::json feature_schema) {
+    if (entity_key_store_ && feature_schema.is_object()) {
+        if (const auto mapping = feature_schema.find("entity_key_mapping");
+            mapping != feature_schema.end() && mapping->is_object()) {
+            *mapping = entity_key_store_("model:" + id_, std::move(*mapping));
+        }
+    }
     value_.feature_schema = std::move(feature_schema);
     capture_and_persist();
 }

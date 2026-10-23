@@ -384,8 +384,15 @@ nlohmann::json entity_key_mapping_summary(const nlohmann::json& mapping) {
         summary["column"] = *column;
     }
     const auto entries = mapping.find("entries");
-    summary["entry_count"] =
-        entries != mapping.end() && entries->is_array() ? entries->size() : 0;
+    if (entries != mapping.end() && entries->is_array()) {
+        summary["entry_count"] = entries->size();
+    } else if (const auto count = mapping.find("entry_count");
+               count != mapping.end() && count->is_number_integer()) {
+        // A reference to the entity-key table (#1255) carries its count.
+        summary["entry_count"] = *count;
+    } else {
+        summary["entry_count"] = 0;
+    }
     return summary;
 }
 
@@ -394,7 +401,7 @@ std::size_t summarize_entity_key_mappings(nlohmann::json& document) {
     if (document.is_object()) {
         for (auto& [key, value] : document.items()) {
             if (key == "entity_key_mapping" && value.is_object() &&
-                value.contains("entries")) {
+                (value.contains("entries") || value.contains("table"))) {
                 value = entity_key_mapping_summary(value);
                 ++replaced;
             } else {

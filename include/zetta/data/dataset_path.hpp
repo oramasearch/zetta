@@ -109,8 +109,9 @@ EntityKeyMappingResult derive_entity_key_mapping(
 // the caller asks for them; the stored record is unchanged.
 nlohmann::json entity_key_mapping_summary(const nlohmann::json& mapping);
 
-// Replace every `entity_key_mapping` object with entries anywhere in
-// `document` by its summary. Returns how many it replaced.
+// Replace every `entity_key_mapping` object with entries, or referencing its
+// entity-key table (#1255), anywhere in `document` by its summary. Returns how
+// many it replaced.
 std::size_t summarize_entity_key_mappings(nlohmann::json& document);
 
 // The JSON Schema of entity_key_mapping_summary()'s answer.
@@ -190,7 +191,8 @@ struct DatasetContract {
     std::vector<CategoricalEncoding> categorical_features;
 
     // Populated only for a text entity column. Serialized with the contract for
-    // distributed launches, and persisted with Runs and Models.
+    // distributed launches. Runs and Models persist it as a reference to their
+    // rows of the entity-key table (#1255).
     std::shared_ptr<const EntityKeyMapping> entity_keys;
 
     bool operator==(const DatasetContract& other) const;

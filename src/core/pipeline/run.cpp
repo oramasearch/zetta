@@ -188,21 +188,38 @@ const nlohmann::json& schema_document() {
         "updated": { "type": "string" },
         "trace_id": { "type": "string" },
         "entity_key_mapping": {
-          "type": "object",
-          "required": ["column", "entries"],
-          "additionalProperties": false,
-          "properties": {
-            "column": {"type": "string", "minLength": 1},
-            "entries": {"type": "array", "items": {
+          "description": "A text entity column's derived-id map: inline, or (since #1255) a reference to its rows in the engine-internal _entity_keys table.",
+          "anyOf": [
+            {
               "type": "object",
-              "required": ["derived_id", "original_value"],
+              "required": ["column", "entries"],
               "additionalProperties": false,
               "properties": {
-                "derived_id": {"type": "integer"},
-                "original_value": {"type": "string", "minLength": 1}
+                "column": {"type": "string", "minLength": 1},
+                "entries": {"type": "array", "items": {
+                  "type": "object",
+                  "required": ["derived_id", "original_value"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "derived_id": {"type": "integer"},
+                    "original_value": {"type": "string", "minLength": 1}
+                  }
+                }}
               }
-            }}
-          }
+            },
+            {
+              "type": "object",
+              "required": ["column", "entry_count", "table", "owner", "chunks"],
+              "additionalProperties": false,
+              "properties": {
+                "column": {"type": "string", "minLength": 1},
+                "entry_count": {"type": "integer", "minimum": 1},
+                "table": {"const": "_entity_keys"},
+                "owner": {"type": "string", "minLength": 1},
+                "chunks": {"type": "integer", "minimum": 1}
+              }
+            }
+          ]
         },
         "metrics_suppressed": { "type": "string",
                                 "enum": ["differential_privacy"] },
@@ -662,6 +679,7 @@ void Run::set_trace_id(std::string trace_id) {
 
 bool Run::set_entity_key_mapping(nlohmann::json mapping,
                                  std::string* error) {
+    if (entity_key_store_) mapping = entity_key_store_("run:" + id_, std::move(mapping));
     nlohmann::json candidate = metadata();
     candidate["entity_key_mapping"] = mapping;
     if (!validate_run_value(candidate, error)) {

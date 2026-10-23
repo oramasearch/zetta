@@ -31,6 +31,7 @@
 #include "zetta/ir/serialization.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/data/entity_key_table.hpp"
 #include "zetta/data/partition_rebalance.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -2285,6 +2286,10 @@ std::shared_ptr<zetta::pipeline::Run> Node::materialize_run(std::string id, zett
     if (ec) return nullptr;
     auto run = std::make_shared<zetta::pipeline::Run>(std::move(id), std::move(value), dir,
                                      replication_);
+    // The run stores a text entity-key mapping as a table reference (#1255).
+    run->set_entity_key_store([this](std::string_view owner, nlohmann::json mapping) {
+        return entity_key_reference(owner, std::move(mapping));
+    });
     run->persist_meta();
     runs_.push_back(run);
     return run;
@@ -2676,6 +2681,15 @@ std::shared_ptr<zetta::ml::Model> Node::create_model(zetta::ml::ModelValue value
     const std::string id = zetta::util::new_uuid();
     value.created = zetta::util::now_iso8601();
     value.weights.reset();  // weights are attached separately via set_weights
+    // The record references its text entity-key mapping instead of carrying
+    // every id (#1255); every model writer sets the mapping before this point.
+    if (value.feature_schema.is_object()) {
+        if (const auto mapping = value.feature_schema.find("entity_key_mapping");
+            mapping != value.feature_schema.end() && mapping->is_object()) {
+            *mapping = entity_key_reference(zetta::data::entity_key_owner("model", id),
+                                            std::move(*mapping));
+        }
+    }
     if (replication_) replication_->set(catalog::model_key(id), to_json(value));
     const std::string detail = "model '" + value.kind + "' registered" +
         (value.project_name.empty() ? std::string{} : " in project '" + value.project_name + "'");
@@ -2692,6 +2706,10 @@ std::shared_ptr<zetta::ml::Model> Node::materialize_model(std::string id, zetta:
     if (ec) return nullptr;
     auto model = std::make_shared<zetta::ml::Model>(std::move(id), std::move(value), dir,
                                          replication_);
+    // The model stores a text entity-key mapping as a table reference (#1255).
+    model->set_entity_key_store([this](std::string_view owner, nlohmann::json mapping) {
+        return entity_key_reference(owner, std::move(mapping));
+    });
     model->persist_meta();
     models_.push_back(model);
     return model;
@@ -2705,7 +2723,15 @@ std::shared_ptr<zetta::ml::Model> Node::find_model(const std::string& id) const 
 }
 
 bool Node::drop_model(const std::string& id) {
-    if (!find_model(id)) return false;
+    const std::shared_ptr<zetta::ml::Model> model = find_model(id);
+    if (!model) return false;
+    if (record_store_ && model->feature_schema().is_object()) {
+        if (const auto mapping = model->feature_schema().find("entity_key_mapping");
+            mapping != model->feature_schema().end()) {
+            zetta::data::drop_entity_key_table(*record_store_, *mapping,
+                                               zetta::data::entity_key_owner("model", id));
+        }
+    }
     if (replication_) replication_->remove(catalog::model_key(id));
     const bool dropped = materialize_drop_model(id);
     if (dropped) record_catalog_change(*this, "model:" + id, true, "model dropped");
@@ -4796,7 +4822,12 @@ Node::BootstrapResult Node::bootstrap_owner(
 }
 
 bool Node::drop_run(const std::string& id) {
-    if (!find_run(id)) return false;
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(id);
+    if (!run) return false;
+    if (record_store_) {
+        zetta::data::drop_entity_key_table(*record_store_, run->entity_key_mapping(),
+                                           zetta::data::entity_key_owner("run", id));
+    }
     if (replication_) replication_->remove(catalog::run_key(id));
     return materialize_drop_run(id);
 }
@@ -5401,6 +5432,37 @@ zetta::pipeline::ExecutionResult Node::run_graph(
     zetta::pipeline::GraphExecutor executor;
     executor.run_as(principal);
     return executor.execute(*this, graph, std::move(project), std::move(graph_id));
+}
+
+// ----- text entity-key tables (#1255) ----------------------------------------
+
+nlohmann::json Node::entity_key_reference(std::string_view owner, nlohmann::json mapping) {
+    if (!record_store_ || !mapping.is_object()) return mapping;
+    if (zetta::data::is_entity_key_reference(mapping) &&
+        mapping.value("owner", std::string()) == owner) {
+        return mapping;
+    }
+    std::string error;
+    const std::shared_ptr<const zetta::data::EntityKeyMapping> entries =
+        resolve_entity_key_mapping(mapping, &error);
+    if (!entries) {
+        // Kept as given: a malformed inline mapping is the validator's to refuse,
+        // and another owner's rows that have not reached this node stay shared.
+        return mapping;
+    }
+    std::optional<nlohmann::json> reference =
+        zetta::data::store_entity_key_table(*record_store_, owner, *entries, &error);
+    if (!reference) {
+        std::fprintf(stderr, "zetta: %s; keeping %s's entity keys inline\n", error.c_str(),
+                     std::string(owner).c_str());
+        return mapping;
+    }
+    return *reference;
+}
+
+std::shared_ptr<const zetta::data::EntityKeyMapping> Node::resolve_entity_key_mapping(
+    const nlohmann::json& mapping, std::string* error) const {
+    return zetta::data::load_entity_key_mapping(record_store_.get(), mapping, error);
 }
 
 // ----- replication: persistence ---------------------------------------------

@@ -39,6 +39,7 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/data/entity_key_table.hpp"
 #include "zetta/data/export_path.hpp"
 #include "zetta/data/import_path.hpp"
 #include "zetta/data/promote_dataset.hpp"
@@ -669,6 +670,19 @@ nlohmann::json id_input_with_entity_keys_schema(std::string_view field,
     return schema;
 }
 
+// include_entity_keys: the stored record references its entity-key table
+// (#1255); the answer carries the entries inline, as it always has. The caller
+// was authorized to read this run or model, which is what reaching the rows
+// requires.
+bool expand_entity_keys(Node& node, nlohmann::json& output, std::string* reason) {
+    return zetta::data::expand_entity_key_mappings(
+        output,
+        [&node](const nlohmann::json& mapping, std::string* error) {
+            return node.resolve_entity_key_mapping(mapping, error);
+        },
+        reason);
+}
+
 const nlohmann::json& get_run_schema() {
     static const nlohmann::json schema = id_input_with_entity_keys_schema(
         "run_id", "the run's uuid (system.runs.run_id)");
@@ -698,6 +712,8 @@ ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
     output["id"] = run->id();
     if (!input.value("include_entity_keys", false)) {
         zetta::data::summarize_entity_key_mappings(output);
+    } else if (std::string reason; !expand_entity_keys(context.node, output, &reason)) {
+        return ApiResult::failure("engine_error", reason);
     }
     return ApiResult::success(std::move(output));
 }
@@ -2199,6 +2215,8 @@ ApiResult handle_get_model(const nlohmann::json& input, ApiContext& context) {
     // feature_schema.entity_key_mapping: a count unless asked for (#1202).
     if (!input.value("include_entity_keys", false)) {
         zetta::data::summarize_entity_key_mappings(output);
+    } else if (std::string reason; !expand_entity_keys(context.node, output, &reason)) {
+        return ApiResult::failure("engine_error", reason);
     }
     return ApiResult::success(std::move(output));
 }
@@ -7903,11 +7921,12 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
         if (const auto mapping = model->feature_schema().find("entity_key_mapping");
             mapping != model->feature_schema().end()) {
             std::string reason;
-            entity_keys = zetta::data::entity_key_mapping_from_json(*mapping, &reason);
+            // Inline, or a reference to the entity-key table (#1255).
+            entity_keys = context.node.resolve_entity_key_mapping(*mapping, &reason);
             if (!entity_keys) {
                 return ApiResult::failure(
                     "engine_error",
-                    "model has an invalid entity key mapping: " + reason);
+                    "model's entity key mapping cannot be read: " + reason);
             }
         }
         std::vector<std::int64_t> entities;
@@ -7934,7 +7953,7 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
             }
         }
         scored = zetta::ml::score_rows(*model, rows->get<std::vector<nlohmann::json>>(),
-                                       entities, top_k);
+                                       entities, top_k, entity_keys);
     } else {
         const zetta::data::DatasetPath path =
             zetta::data::parse_dataset_path(dataset_path->get<std::string>());

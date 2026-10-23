@@ -441,12 +441,14 @@ ApiResult serve_predict(Node& node, const ServeRequest& request) {
     if (const auto mapping = model->feature_schema().find("entity_key_mapping");
         mapping != model->feature_schema().end()) {
         std::string mapping_error;
-        entity_keys = zetta::data::entity_key_mapping_from_json(
-            *mapping, &mapping_error);
+        // Inline, or a reference to the entity-key table (#1255). On a node the
+        // rows have not reached yet this fails with the reason; it never
+        // answers with ids it cannot restore.
+        entity_keys = node.resolve_entity_key_mapping(*mapping, &mapping_error);
         if (!entity_keys) {
             return serve.finish(ApiResult::failure(
                 "engine_error",
-                "model has an invalid entity key mapping: " + mapping_error));
+                "model's entity key mapping cannot be read: " + mapping_error));
         }
     }
     std::vector<std::int64_t> entities;

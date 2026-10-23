@@ -34,7 +34,7 @@ value (`ModelValue`):
 | `project_name` | `std::string` | Denormalized producing Project display name. |
 | `pipeline_name` | `std::string` | Denormalized producing Pipeline display name. |
 | `run_id` | `std::string` | Producing Run uuid; `run` remains the compatible legacy field. |
-| `feature_schema` | `nlohmann::json` | Free-form object: input features (field → type / profile), plus `entity_key_mapping` when text business ids are represented by derived int64 keys during compute. `get_model` and `list_models` answer the mapping as `{column, entry_count}`; `get_model` with `include_entity_keys: true` returns the entries (#1202). The stored record keeps them. |
+| `feature_schema` | `nlohmann::json` | Free-form object: input features (field → type / profile), plus `entity_key_mapping` when text business ids are represented by derived int64 keys during compute. `get_model` and `list_models` answer the mapping as `{column, entry_count}`; `get_model` with `include_entity_keys: true` returns the entries (#1202). The stored record keeps a reference to its rows of the `_entity_keys` table, not the entries; records written before #1255 keep them inline and still load ([entity-key-table.md](../data/entity-key-table.md)). |
 | `metrics` | `nlohmann::json` | Free-form object: evaluation scores (name → **number**, e.g. `{"auc": 0.91}`). |
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
 | `weights` | `optional<ModelWeights>` | `{ size, sha256 }` — set once a weights body is attached. |
