@@ -38,6 +38,7 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/data/import_path.hpp"
 #include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/dataset/dataset_generator_factory.hpp"
@@ -6558,7 +6559,9 @@ const nlohmann::json& run_schema() {
             {"description",
              "the data to train on, in either form: a `database.table` landed by "
              "a connection or a query (what add_dataset / create_dataset_from_query "
-             "produce), or a churn dataset directory on the node's filesystem. "
+             "produce), or a churn dataset directory staged in the node's import "
+             "directory (imports/ under its data directory), named relative to it with "
+             "a separator, e.g. ./churn (#1433). "
              "Default: the table the pipeline's first connect step names (its "
              "`source` + `table` attributes), when this node holds it, with the model "
              "step's `target` as the label; otherwise the built-in demo dataset"}}},
@@ -8263,7 +8266,9 @@ const nlohmann::json& add_dataset_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description",
-             "a parquet/jsonl/json/csv file on the node's filesystem"}}},
+             "a parquet/jsonl/json/csv file staged in the node's import directory "
+             "(imports/ under its data directory), named relative to it: no absolute "
+             "path, no '..', no symbolic link (#1391)"}}},
           {"database",
            {{"type", "string"},
             {"minLength", 1},
@@ -8347,8 +8352,14 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
         input.value("replication_factor", options.replication_factor);
     options.members = context.node.cluster_members();  // live placement roster
 
-    const zetta::data::AddDatasetResult added = zetta::data::add_dataset_file(
-        context.node, input.at("path").get<std::string>(), options);
+    // #1391: the path is relative to the node's import directory, and nothing outside
+    // it (the security directory, the identity files, any other file the node can
+    // read) is reachable from here.
+    const zetta::data::ImportPathResult staged = zetta::data::resolve_import_path(
+        context.node, input.at("path").get<std::string>(), zetta::data::ImportEntry::File);
+    if (!staged.ok()) return ApiResult::failure("invalid_input", "/path: " + staged.error, "/path");
+    const zetta::data::AddDatasetResult added =
+        zetta::data::add_dataset_file(context.node, staged.path, options);
     if (!added.ok()) {
         return ApiResult::failure("engine_error", added.error);
     }
@@ -9461,7 +9472,9 @@ const nlohmann::json& testsuite_run_schema() {
           {"custom_data_path",
            {{"type", "string"},
             {"description", "a churn dataset directory for cases that accept "
-                            "one (default: the built-in synthetic dataset)"}}}}}};
+                            "one, relative to the node's import directory (imports/ "
+                            "under its data directory; #1433) (default: the built-in "
+                            "synthetic dataset)"}}}}}};
     return schema;
 }
 
@@ -9581,9 +9594,21 @@ ApiResult handle_testsuite_run(const nlohmann::json& input, ApiContext& context)
             return *rejected;
         }
     }
+    // #1433: a custom dataset directory is named under the import directory, like
+    // every other path a caller gives.
+    std::string custom_data_path = input.value("custom_data_path", std::string());
+    if (!custom_data_path.empty()) {
+        const zetta::data::ImportPathResult staged = zetta::data::resolve_import_path(
+            context.node, custom_data_path, zetta::data::ImportEntry::Directory);
+        if (!staged.ok()) {
+            return ApiResult::failure("invalid_input", "/custom_data_path: " + staged.error,
+                                      "/custom_data_path");
+        }
+        custom_data_path = staged.path.string();
+    }
     auto handle = zetta::testkit::AsyncCaseRun::start(
         context.node, *test_case, std::move(options),
-        input.value("custom_data_path", ""), context.recorder, context.trace);
+        custom_data_path, context.recorder, context.trace);
     if (!handle) {
         return ApiResult::failure("engine_error",
                                   "the run record could not be created");
@@ -12809,9 +12834,10 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "add_dataset",
         "Add a dataset",
-        "Load a local parquet/jsonl/json/csv file into a new partitioned "
+        "Load a parquet/jsonl/json/csv file staged in the node's import "
+        "directory (imports/ under its data directory) into a new partitioned "
         "table placed across the cluster (audited as dataset_added; visible "
-        "in system.datasets).",
+        "in system.datasets). The path is relative to that directory (#1391).",
         add_dataset_schema(),
         add_dataset_output_schema(),
         CapabilityKind::Action,
@@ -12839,7 +12865,7 @@ void register_core_capabilities(Registry& registry) {
         "Upload a dataset",
         "Load a csv or jsonl file's TEXT, sent in the request, into a new "
         "partitioned table placed across the cluster - for a caller that cannot "
-        "put a file on the node (add_dataset reads the node's filesystem). Same "
+        "put a file on the node (add_dataset reads the node's import directory). Same "
         "parsing, table creation and placement as add_dataset; at most 16 MiB of "
         "content (a larger file goes to a bucket and loads with load_dataset_object). "
         "Audited as dataset_added; the table then appears in "

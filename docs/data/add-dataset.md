@@ -203,8 +203,9 @@ Two small differences from the file path:
 
 ## `add_dataset_content` + `upload_dataset` — a file's text over the API (#1008)
 
-`add_dataset` takes `path`, a file on the **node's** filesystem, which a remote
-caller cannot write. `add_dataset_content` takes the file's **text** instead and
+`add_dataset` takes `path`, a file staged in the **node's** import directory and named
+relative to it ([import-root.md](import-root.md), #1391: no absolute path, no `..`, no
+symbolic link), which a remote caller cannot write. `add_dataset_content` takes the file's **text** instead and
 runs it through the very same decoders (`decode_csv` / `decode_jsonl` /
 `decode_json`) and the same create-table → add-rows → `write_partitioned` → audit
 path:

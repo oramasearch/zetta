@@ -141,8 +141,8 @@ struct DatasetPath {
 
 // Parse `path` under the one grammar:
 //
-//   * anything containing a `/` or `\`, ending in a path separator, starting with
-//     `.` or `~`, or naming an existing filesystem entry → **Directory**;
+//   * anything containing a `/` or `\`, ending in a path separator, or starting
+//     with `.` or `~` → **Directory**;
 //   * `database.table` → **Table**;
 //   * a bare `table` (no dot) → **Table** in `default_database`.
 //
@@ -151,8 +151,10 @@ struct DatasetPath {
 // name may not contain a slash. `~` is NOT expanded here — expansion belongs to the
 // caller that owns the filesystem, not to a grammar.
 //
-// Pure, non-throwing, and does not touch the filesystem except for the
-// existence test, which only ever moves a path INTO the Directory form.
+// Pure, non-throwing, and never touches the filesystem (#1433). A Directory is only
+// a parse: the caller that opens it resolves it under the node's import root with
+// `resolve_import_path` (`zetta/data/import_path.hpp`), which refuses an absolute
+// path, `..`, `~` and symbolic links.
 DatasetPath parse_dataset_path(std::string_view path,
                                const std::string& default_database = "datasets");
 

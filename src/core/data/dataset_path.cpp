@@ -623,14 +623,10 @@ DatasetPath parse_dataset_path(std::string_view path, const std::string& default
         return parsed;
     }
 
-    // An existing filesystem entry wins over the table reading — this only ever
-    // moves a path INTO the Directory form, so it can never steal a live table.
-    std::error_code ignored;
-    if (!path.empty() && std::filesystem::exists(std::filesystem::path(path), ignored)) {
-        parsed.kind = DatasetPathKind::Directory;
-        parsed.directory = std::filesystem::path(path);
-        return parsed;
-    }
+    // A bare name is always a table. The grammar never asks the filesystem (#1433):
+    // an existence test here answered "is there a file called X in the node's
+    // working directory" to any caller, and a directory under the import root is
+    // named with a separator (`./churn`) anyway.
 
     parsed.kind = DatasetPathKind::Table;
     const std::size_t dot = path.rfind('.');

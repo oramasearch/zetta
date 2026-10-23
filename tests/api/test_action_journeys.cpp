@@ -43,6 +43,9 @@
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/data/import_path.hpp"
+#include "zetta/usecases/churn/churn_dataset.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -142,6 +145,16 @@ struct ActionJourneys : ::testing::Test {
                            &node.span_recorder(), &background};
         context.acting_is_user = true;
         return registry.call(name, input, context);
+    }
+
+    // A file staged in the node's import directory (#1391), where add_dataset
+    // reads it from; the caller names it relative to that directory. With
+    // `contents`, the file is written; otherwise the caller writes it.
+    fs::path staged_import(const std::string& name, const std::string& contents = {}) {
+        const fs::path path = zetta::data::import_root(node) / name;
+        fs::create_directories(path.parent_path());
+        if (!contents.empty()) std::ofstream(path) << contents;
+        return path;
     }
 
     // The layer-1 transport: the same registry the MCP endpoint renders,
@@ -8023,6 +8036,56 @@ TEST_F(Uc1Journey, FeaturePlanRefusesEventGrainBeforeStartingM1) {
     EXPECT_TRUE(node.runs().empty());
 }
 
+// LSR-260 (#1433): a run's dataset directory resolves under the node's import
+// directory only. A valid churn dataset anywhere else on the node, or reached through
+// a symbolic link from inside the import directory, is refused before any of its
+// files is opened, and no Run is created.
+TEST_F(Uc1Journey, M1RefusesADatasetDirectoryOutsideTheImportRoot) {
+    const fs::path elsewhere = dir.path() / "elsewhere" / "churn";
+    ASSERT_EQ(zetta::usecases::churn::write_churn_dataset(
+                  zetta::usecases::churn::demo_churn_dataset(), elsewhere),
+              "");
+    const fs::path imports = zetta::data::import_root(node);
+    fs::create_directories(imports);
+    fs::create_directory_symlink(elsewhere, imports / "linked");
+
+    const auto project = node.create_project("directory refusal");
+    const auto* methodology = zetta::ml::find_methodology("M-1");
+    ASSERT_TRUE(project->create_graph("churn", methodology->build_shape({})));
+    for (const std::string& path : {elsewhere.string(), std::string("../elsewhere/churn"),
+                                    std::string("./linked"), std::string("~/churn")}) {
+        const ApiResult started = call(
+            "run", {{"project", "directory refusal"}, {"graph", "churn"}, {"dataset_path", path}});
+        EXPECT_FALSE(started.ok) << path;
+        EXPECT_EQ(started.error.code, "invalid_input") << path;
+        EXPECT_EQ(started.error.path, "/dataset_path") << path;
+    }
+    EXPECT_TRUE(node.runs().empty());
+}
+
+TEST_F(Uc1Journey, M1TrainsOnADatasetDirectoryStagedUnderTheImportRoot) {
+    ASSERT_EQ(zetta::usecases::churn::write_churn_dataset(
+                  zetta::usecases::churn::demo_churn_dataset(),
+                  zetta::data::import_root(node) / "churn"),
+              "");
+    const auto project = node.create_project("directory staged");
+    const auto* methodology = zetta::ml::find_methodology("M-1");
+    ASSERT_TRUE(project->create_graph("churn", methodology->build_shape({})));
+    const ApiResult started = call(
+        "run", {{"project", "directory staged"}, {"graph", "churn"}, {"dataset_path", "./churn"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 8000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    EXPECT_EQ(status.value.at("status"), "succeeded") << status.value.dump(2);
+}
+
 TEST_F(Uc1Journey, FeaturePlanReportsMissingLabelBeforeContractFailure) {
     const auto database = node.create_database("feature_missing");
     const auto table = database->create_table("entities");
@@ -8750,7 +8813,7 @@ TEST_F(Uc1Journey,
 }
 
 TEST_F(Uc1Journey, JourneyForecastReadsItsPipelinesTableAndReportsOutputs) {
-    const fs::path file = dir.path() / "weekly_demand.jsonl";
+    const fs::path file = staged_import("weekly_demand.jsonl");
     {
         std::ofstream output(file);
         for (int series = 1; series <= 2; ++series) {
@@ -8779,7 +8842,7 @@ TEST_F(Uc1Journey, JourneyForecastReadsItsPipelinesTableAndReportsOutputs) {
     forecast.steps = {
         {"land the observation table",
          "add_dataset",
-         {{"path", file.string()},
+         {{"path", file.filename().string()},
           {"database", "demand"},
           {"table_name", "history"},
           {"partition_count", 2}},
@@ -8967,7 +9030,7 @@ TEST_F(Uc1Journey, SurvivalMethodologyRunsItsPipelinesTable) {
 }
 
 TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
-    const fs::path file = fs::path(dir.path()) / "uplift.jsonl";
+    const fs::path file = staged_import("uplift.jsonl");
     {
         std::ofstream out(file);
         for (std::int64_t index = 0; index < 360; ++index) {
@@ -8993,7 +9056,7 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
         }
     }
     const ApiResult landed =
-        call("add_dataset", {{"path", file.string()},
+        call("add_dataset", {{"path", file.filename().string()},
                              {"database", "experiments"},
                              {"table_name", "causal_population"},
                              {"partition_count", 4}});
@@ -9072,7 +9135,7 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
 // =====================================================================
 TEST_F(Uc1Journey,
        JourneyNextBestActionReadsItsPipelineTableAndReportsRecommendations) {
-    const fs::path file = dir.path() / "recommendation_candidates.jsonl";
+    const fs::path file = staged_import("recommendation_candidates.jsonl");
     {
         std::ofstream output(file);
         for (int entity = 0; entity < 48; ++entity) {
@@ -9136,7 +9199,7 @@ TEST_F(Uc1Journey,
     recommendation.steps = {
         {"land candidate actions",
          "add_dataset",
-         {{"path", file.string()},
+         {{"path", file.filename().string()},
           {"database", "offers"},
           {"table_name", "candidates"},
           {"partition_count", 2}},
@@ -9574,7 +9637,7 @@ TEST_F(Uc1Journey, JourneySpeechMethodologyCompilesRunsAndReports) {
       database->large_objects().import_bytes("tone.wav", speech_test_wav());
   ASSERT_TRUE(audio);
 
-  const fs::path source = fs::path(dir.path()) / "recordings.jsonl";
+  const fs::path source = staged_import("recordings.jsonl");
   {
     std::ofstream output(source);
     output << nlohmann::json{{"recording", "call-1"},
@@ -9584,7 +9647,7 @@ TEST_F(Uc1Journey, JourneySpeechMethodologyCompilesRunsAndReports) {
                   .dump()
            << '\n';
   }
-  const ApiResult landed = call("add_dataset", {{"path", source.string()},
+  const ApiResult landed = call("add_dataset", {{"path", source.filename().string()},
                                                 {"database", "media"},
                                                 {"table_name", "recordings"},
                                                 {"partition_count", 1},
@@ -10055,7 +10118,7 @@ TEST_F(Uc1Journey, JourneyEnsembleCompilesRunsAndReportsItsOutputs) {
 }
 
 TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
-    const fs::path file = fs::path(dir.path()) / "label_examples.jsonl";
+    const fs::path file = staged_import("label_examples.jsonl");
     {
         std::ofstream out(file);
         for (int row = 0; row < 240; ++row) {
@@ -10093,7 +10156,7 @@ TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
         {
             {"land the examples table",
              "add_dataset",
-             {{"path", file.string()},
+             {{"path", file.filename().string()},
               {"database", "datasets"},
               {"table_name", "label_examples"},
               {"partition_count", 2}},
@@ -10170,7 +10233,7 @@ TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
 }
 
 TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
-    const fs::path file = fs::path(dir.path()) / "private_training.jsonl";
+    const fs::path file = staged_import("private_training.jsonl");
     {
         std::ofstream output(file);
         for (int index = 0; index < 160; ++index) {
@@ -10187,7 +10250,7 @@ TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
     }
 
     const ApiResult landed =
-        call("add_dataset", {{"path", file.string()},
+        call("add_dataset", {{"path", file.filename().string()},
                              {"database", "privacy_source"},
                              {"table_name", "records"},
                              {"partition_count", 4}});
@@ -10352,7 +10415,7 @@ TEST_F(ActionJourneys, JourneyStreamingMethodologyCompilesRunsAndReports) {
 // system.dataset_partitions view; audited as dataset_added.
 // =====================================================================
 TEST_F(ActionJourneys, JourneyAddDatasetPlacementReadBack) {
-    const fs::path file = fs::path(dir.path()) / "accounts.jsonl";
+    const fs::path file = staged_import("accounts.jsonl");
     {
         std::ofstream out(file);
         for (int i = 0; i < 24; ++i) {
@@ -10362,7 +10425,7 @@ TEST_F(ActionJourneys, JourneyAddDatasetPlacementReadBack) {
 
     const journey::JourneyReport report = journey::run_journey(
         journey::canonical::dataset_ingest(
-            file.string(), (fs::path(dir.path()) / "nope.xlsx").string()),
+            file.filename().string(), staged_import("nope.xlsx", "x").filename().string()),
         caller());
     EXPECT_TRUE(report.ok) << report.summary();
 }

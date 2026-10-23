@@ -11,6 +11,7 @@
 
 #include "zetta/api/background.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/data/import_path.hpp"
 #include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -716,8 +717,18 @@ api::ApiResult run_m1(RunRequest& request) {
                 dataset_notes = table.notes;
             }
         } else {
-            auto loaded =
-                zetta::usecases::churn::load_churn_dataset(path.directory);
+            // #1433: a dataset directory is named under the node's import
+            // directory; anything else on the filesystem is refused before any
+            // file in it is opened, so a run cannot probe or train on it.
+            const zetta::data::ImportPathResult staged = zetta::data::resolve_import_path(
+                context.node, dataset_path->get<std::string>(),
+                zetta::data::ImportEntry::Directory);
+            if (!staged.ok()) {
+                return api::ApiResult::failure("invalid_input",
+                                               "/dataset_path: " + staged.error,
+                                               "/dataset_path");
+            }
+            auto loaded = zetta::usecases::churn::load_churn_dataset(staged.path);
             if (!loaded.ok()) {
                 return api::ApiResult::failure("engine_error", loaded.error);
             }

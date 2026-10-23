@@ -439,17 +439,19 @@ TEST_F(McpServerFixture, SqlOverTheWireReadsSystemViews) {
 // the same table layer 1 runs in-process, here over the wire.
 TEST_F(McpServerFixture, JourneyDatasetIngestReplaysOverTheWire) {
     namespace fs = std::filesystem;
-    const fs::path file = fs::path(dir.path()) / "accounts.jsonl";
+    // add_dataset reads from the node's import directory (#1391).
+    const fs::path imports = fs::path(dir.path()) / "imports";
+    fs::create_directories(imports);
     {
-        std::ofstream out(file);
+        std::ofstream out(imports / "accounts.jsonl");
         for (int i = 0; i < 24; ++i) {
             out << R"({"account":")" << i << R"(","mrr":)" << (100 + i) << "}\n";
         }
     }
+    std::ofstream(imports / "nope.xlsx") << "x";
     const zetta::test::journey::JourneyReport report =
         zetta::test::journey::run_journey(
-            zetta::test::journey::canonical::dataset_ingest(
-                file.string(), (fs::path(dir.path()) / "nope.xlsx").string()),
+            zetta::test::journey::canonical::dataset_ingest("accounts.jsonl", "nope.xlsx"),
             journey_caller());
     EXPECT_TRUE(report.ok) << report.summary();
 }
