@@ -187,6 +187,55 @@ std::string build_chat_prompt(const AgentRecord& agent, const std::string& messa
     return render_interaction_prompt(system_prompt, grounding, ask, history);
 }
 
+Sandbox chat_sandbox(const AgentRecord& agent, const AgentToolRunner& tools,
+                     const std::vector<AgentToolSpec>& tool_specs) {
+    Sandbox sandbox;
+    // The agent is a tool-calling HARNESS: the model decides which steps to call and with what
+    // configuration, and the harness turns each call into a real pipeline node. The harness mints
+    // the node id and wires the edge from the previous step, so the graph is valid by
+    // construction.
+    //
+    // This is the fix for a failure that looked like a model problem and was not. Asked to emit an
+    // execution_graph directly, the model reproduces the placeholder ids it saw in training
+    // (`11111111-…`, `21111111-…`) — so two steps collide on one id, an edge points at itself, and
+    // the graph is rejected. Minting unique ids is mechanical work the harness does correctly every
+    // time; it was never the model's job.
+    //
+    // Steps are executed by the shared builder after the turn (build_pipeline_from_tool_calls);
+    // here they only record that they ran, so a step the model calls is never reported as
+    // unknown. Every step kind is registered, not only the ones the record lists: an agent
+    // whose record names only read tools still builds Pipelines, and reporting its `connect`
+    // as "no tool named 'connect'" while the step was built anyway is a false failure (#969).
+    const auto record = [&sandbox](const std::string& tool) {
+        sandbox.register_tool(tool, [tool](EndState& world, const nlohmann::json&) {
+            world.set("ran_" + tool, true);
+            return ToolResult::success();
+        });
+    };
+    for (const zetta::ir::StepKind kind : zetta::ir::all_step_kinds()) {
+        record(std::string(zetta::ir::to_string(kind)));
+    }
+    for (const std::string& tool : agent.tools) record(tool);
+    // Live tools (#904): each runs through the embedding's runner, which the API layer binds
+    // to the capability registry under the CALLER's identity, and its result is fed back to
+    // the model. Registered after the recorded tools, so a live tool of the same name wins —
+    // a real result beats a marker. This registration was dropped in b5ca4290 while the
+    // sandbox was reworked for pipeline building, which left every live tool a marker: the
+    // agent "called" get_run_report and got back nothing (#969).
+    if (tools) {
+        for (const AgentToolSpec& spec : tool_specs) {
+            const std::string name = spec.name;
+            sandbox.register_tool(name, [name, &tools](EndState& world,
+                                                       const nlohmann::json& arguments) {
+                ToolResult result = tools(name, arguments);
+                world.set("ran_" + name, true);
+                return result;
+            });
+        }
+    }
+    return sandbox;
+}
+
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens, int max_rounds,
                      const AgentToolRunner& tools,
@@ -208,27 +257,7 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     }
     const zetta::tokenizer::BpeTokenizer& tokenizer = *tokenizer_handle;
 
-    // The agent's tools, wired into a sandbox. Real graph-building effects are #859; for now
-    // each records that it ran so the tool-calling loop closes end to end.
-    Sandbox sandbox;
-    // The agent is a tool-calling HARNESS: the model decides which steps to call and with what
-    // configuration, and these tools turn each call into a real pipeline node. The harness mints
-    // the node id and wires the edge from the previous step, so the graph is valid by
-    // construction.
-    //
-    // This is the fix for a failure that looked like a model problem and was not. Asked to emit an
-    // execution_graph directly, the model reproduces the placeholder ids it saw in training
-    // (`11111111-…`, `21111111-…`) — so two steps collide on one id, an edge points at itself, and
-    // the graph is rejected. Minting unique ids is mechanical work the harness does correctly every
-    // time; it was never the model's job.
-    for (const std::string& tool : agent.tools) {
-        // Steps are executed by the shared builder after the turn (see below); here they only
-        // record that they ran, so a tool the model calls is never reported as unknown.
-        sandbox.register_tool(tool, [tool](EndState& world, const nlohmann::json&) {
-            world.set("ran_" + tool, true);
-            return ToolResult::success();
-        });
-    }
+    Sandbox sandbox = chat_sandbox(agent, tools, tool_specs);
 
     // The model's EOS id, so generation STOPS when an EOS-trained model emits it (a model
     // trained without a stop token repeats — see the SFT driver). Read from config.json.

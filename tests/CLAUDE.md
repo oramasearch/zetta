@@ -30,3 +30,10 @@ exercise the headless core, never the GUI. Run:
   cases — each new case gets a runbook under
   [docs/testing/runbooks/test-cases/](../docs/testing/runbooks/test-cases/README.md).
   See [docs/testing/](../docs/testing/README.md).
+- **A chat turn is testable without a checkpoint.** A test that only skips
+  without `ZETTA_QWEN_DIR` proves nothing in a normal run (that is how a broken
+  `agent_run` hid behind a green suite, #969). Use the `ScriptedModel` in
+  `tests/api/test_chat_loop.cpp`: a byte-level tokenizer on disk plus an
+  installed inference runner that answers from a script and records every
+  prompt, so the prompt, envelope parse, tool sandbox, grounding and proposal
+  all run for real. Restore the previous runner when done.

@@ -66,6 +66,19 @@ testsuite_run submit-then-poll, and the denied-key negative);
 `tests/api/test_mcp_server.cpp` replays dataset-ingest and gate-blocked over
 the wire; see [../api/governed-actions.md](../api/governed-actions.md).
 
+The **#969 chat loop** has two tables in the same file, replayed at both layers by
+`tests/api/test_chat_loop.cpp`: `chat_loop_happy_path` (land a dataset → `propose_run` →
+read back that **no Project and no run exist** → `approve_run_proposal` → poll the run to
+`succeeded` with a `report` output → read back the Project and the proposal's `run_id` →
+a second approval refused → `get_run_report` (ranked accounts, the landed row count,
+`held_out_auc`) → `explain` the top account, residual ≈ 0 and contributions ordered by |φ|)
+and `chat_loop_refusals` (an unknown proposal, a missing dataset, approving a rejected
+proposal, an unknown run id, a report from a run that produced none — each asserting the
+engine's reason). The chat turns themselves run against a **scripted model**: a byte-level
+tokenizer on disk and an installed inference runner (`install_qwen_inference_runner`), so
+everything between the model and the node is the production path and no checkpoint is needed.
+See [run proposals](../pipeline/run-proposals.md).
+
 The methodology registry journey in `test_action_journeys.cpp` discovers all
 21 entries, compiles S-1 through M-1 and M-3 through explicit selection or keywords,
 verifies that all 21 methodologies are runnable, rejects an unmatched non-predictive intent,

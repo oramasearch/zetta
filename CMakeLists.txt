@@ -531,6 +531,7 @@ add_library(zetta-core STATIC
   src/core/api/decision_policy_capabilities.cpp
   src/core/api/solution_capabilities.cpp
   src/core/api/action_capabilities.cpp
+  src/core/api/run_proposal_capabilities.cpp
   src/core/api/cloud_capabilities.cpp
   src/core/api/llms.cpp
   src/core/api/mcp_docs.cpp
@@ -587,6 +588,7 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_provider.cpp
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
+  src/core/pipeline/run_proposal.cpp
   src/core/solutions/monitor.cpp
   src/core/solutions/roi_readout.cpp
   src/core/solutions/solution_templates.cpp

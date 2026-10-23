@@ -98,6 +98,14 @@ std::string build_chat_prompt(const AgentRecord& agent, const std::string& messa
                               const std::vector<AgentToolSpec>& tool_specs = {},
                               const std::vector<PriorTurn>& history = {});
 
+// The sandbox one chat turn runs its tool calls in (#904/#969): every pipeline step kind and
+// every tool the record lists as a recorded marker, then each live tool in `tool_specs` bound to
+// `tools`, so its call reaches the runner and its result goes back to the model. `tools` is held
+// by reference and must outlive the sandbox. Exposed so a test can drive a turn through it
+// without loading a model.
+Sandbox chat_sandbox(const AgentRecord& agent, const AgentToolRunner& tools = {},
+                     const std::vector<AgentToolSpec>& tool_specs = {});
+
 // Talk to `agent`: load its model + tokenizer (device-agnostic; `agent.model` is a local
 // checkpoint dir), wire its tools into a sandbox, and run one tool-calling chat turn for
 // `message`. Non-throwing — a load failure is ok=false + a reason. BLOCKS for seconds while

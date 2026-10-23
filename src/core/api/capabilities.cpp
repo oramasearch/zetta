@@ -10340,6 +10340,19 @@ const nlohmann::json& chat_schema() {
              "scope the answer to this project (name or uuid): its trained model's "
              "measure and ranked drivers are given to the agent, so it answers from "
              "what the pipeline actually produced instead of from priors (#914)"}}},
+          {"dataset_path",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "when the turn proposes a run, the dataset it would train on (`database.table` "
+             "or a dataset directory); the built-in demo dataset when omitted (#969)"}}},
+          {"holdout_fraction",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 1},
+            {"description",
+             "when the turn proposes a run, the rows it holds out to measure the model on "
+             "data it did not train on (#953)"}}},
           {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
           {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}}}}};
     return schema;
@@ -10386,6 +10399,17 @@ const nlohmann::json& chat_output_schema() {
           {"pipeline",
            {{"type", "object"},
             {"description", "the proposed Pipeline, when the turn built one"}}},
+          {"proposal",
+           {{"type", "object"},
+            {"description",
+             "when the turn is an `action`, the run it proposes (propose_run's output): the "
+             "impact preview and the calls that approve or reject it. Nothing exists until "
+             "approve_run_proposal — no Project, no Pipeline, no run (#969)"}}},
+          {"proposal_warning",
+           {{"type", "string"},
+            {"description",
+             "why an `action` turn carries no proposal (the ask did not compile, or the "
+             "caller may not propose runs)"}}},
           {"tool_calls",
            {{"type", "array"},
             {"items",
@@ -10816,6 +10840,28 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
             // caller can tell a real Pipeline from an empty gesture without walking the graph.
             output["pipeline_steps"] =
                 static_cast<int>(chat.action->execution_graph.nodes().size());
+        }
+        // An `action` turn asks to build something, and a chat may not change the node
+        // (the read-only tool allowlist above). So the turn PROPOSES the run instead
+        // (#969): propose_run records an impact preview and creates nothing else, and a
+        // person approves it with approve_run_proposal. It goes through the registry with
+        // the caller's own context, so a caller who may not propose runs gets a reply
+        // without one — and the audit trail records the proposal under the caller.
+        if (chat.action->kind == zetta::agent::InteractionKind::Action) {
+            nlohmann::json propose = {{"message", message}, {"agent", agent_id}};
+            for (const char* key : {"dataset_path", "holdout_fraction"}) {
+                if (const auto found = input.find(key); found != input.end()) propose[key] = *found;
+            }
+            const ApiResult proposed =
+                context.registry == nullptr
+                    ? ApiResult::failure("engine_error", "no capability registry for this call")
+                    : context.registry->call("propose_run", propose, context);
+            if (proposed.ok) {
+                output["proposal"] = proposed.value;
+            } else {
+                output["proposal_warning"] =
+                    "this turn proposes a run, but none was recorded: " + proposed.error.message;
+            }
         }
     } else {
         // The generation did not parse as a response envelope. Say so explicitly: an unparsed
@@ -12262,8 +12308,10 @@ void register_core_capabilities(Registry& registry) {
         "Chat with an agent",
         "Send a message to an agent and get its reply, with tool-calling: the agent's model "
         "generates, any tool calls it emits run in its sandbox and feed back, until it "
-        "answers. Loads the agent's model (a local checkpoint dir). No persistent side "
-        "effects.",
+        "answers. Loads the agent's model (a local checkpoint dir). It changes nothing on "
+        "the node: a turn that asks to build something returns a run PROPOSAL (propose_run, "
+        "under the caller's own rights) with an impact preview, and nothing is created until "
+        "approve_run_proposal. Also accepts a JSON-body POST.",
         chat_schema(),
         chat_output_schema(),
         CapabilityKind::Read,
@@ -12271,22 +12319,17 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_chat};
-    // Model decode is CPU/GPU-bound and touches only the thread-safe replication
-    // store, so in principle it can run off the owner/tick thread. But the current
-    // runtime::offload path does not resume the REST request coroutine back on the
-    // connection's executor, so route.send() after it never completes and the HTTP
-    // response hangs (MCP, which runs on the owner loop, is unaffected). Until the
-    // offload/executor resumption is fixed, serve chat on the owner loop — correct,
-    // at the cost of briefly occupying the tick during a decode. See #731.
-    // NOT offloadable, and the reason changed in 2026-08 (#975). The flag is only
-    // safe for a handler touching no main-thread-only Node state — and grounding a
-    // reply on the active Project (#969) reads `node.runs()` and
-    // `node.project_names()`, which are exactly that. So offloading chat today would
-    // race the Node tree.
+    // NOT offloadable. The flag is only safe for a handler touching no main-thread-only Node
+    // state, and grounding a reply on the active Project (#969) reads `node.runs()` and
+    // `node.project_names()`, and an `action` turn records a proposal — exactly that state.
+    // Decode therefore occupies the owner loop for the length of a turn (#731).
     //
-    // That also means the REST hang in #975 cannot be fixed by flipping this flag:
-    // whoever fixes it has to either move the grounding read behind the owner gate
-    // or fix the offload/executor resumption the comment below describes.
+    // A read, so REST serves it as GET; it also takes a JSON-body POST (#975). A turn carries a
+    // message and a conversation history, which belong in a body rather than a query string, and
+    // POST /v1/chat is what a client writes first. Before the router answered unmatched requests
+    // (#1011), that POST matched no route and the connection sat with no reply at all, which read
+    // exactly like a hung chat while MCP and /assist answered.
+    chat_capability.post_alias = true;
     chat_capability.offloadable = false;
     registry.add(std::move(chat_capability));
     registry.add(Capability{
@@ -12787,6 +12830,9 @@ void register_core_capabilities(Registry& registry) {
 
     // Report, task, and bounded closed-loop action patterns (#1109).
     register_action_capabilities(registry);
+
+    // Propose a run, then approve or reject it (#969).
+    register_run_proposal_capabilities(registry);
 
     registry.add(Capability{
         "analyze_dataset",
