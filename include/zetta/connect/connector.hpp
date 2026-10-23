@@ -41,7 +41,7 @@ namespace zetta::connect {
 // OAuth token). It is **input-only** — `to_json()` never emits it, so a config
 // can be echoed back to a caller or logged without leaking the secret.
 struct ConnectorConfig {
-    std::string type;              // "snowflake" | "postgres" | "mysql" (see connector_types())
+    std::string type;              // "snowflake" | "postgres" | "mysql" | "lake_sqlite" | "lake_duckdb" | "lake_polars" (see connector_types())
     std::string account;           // Snowflake: "ab12345.us-east-1" (the host prefix)
     std::string token;             // the secret — never serialized (Snowflake bearer / Postgres or MySQL password)
     std::string auth = "pat";      // Snowflake: "pat" (default) | "oauth"
@@ -57,6 +57,12 @@ struct ConnectorConfig {
     std::string port;              // server port (Postgres 5432, MySQL 3306 by default)
     std::string user;              // role/user
     std::string sslmode;           // Postgres sslmode; MySQL: verify-full (default) / verify-ca / require / disable
+    // lake's SQL-over-HTTP services (type == "lake_sqlite" / "lake_duckdb" /
+    // "lake_polars", #1014): the service's base URL, e.g.
+    // `http://orders.ws-1.svc.cluster.local:8080`. Without a scheme it is
+    // `https://`; plaintext `http://` must be written out. The bearer token
+    // rides in `token`.
+    std::string endpoint;
 
     // The JSON form (token omitted — see above). This is the OUTWARD-facing
     // shape: what a capability returns, what a system view renders, what a log
@@ -70,6 +76,11 @@ struct ConnectorConfig {
     // string database/schema/warehouse/role, and no unknown keys.
     static std::optional<ConnectorConfig> from_json(const nlohmann::json& value);
 };
+
+// The host an `endpoint` URL names (`http://127.0.0.1:8080/x` → `127.0.0.1`,
+// `https://[::1]:8443` → `::1`), or empty when it does not parse. The consent
+// gate uses it to tell a loopback service from a remote one.
+std::string endpoint_host(const std::string& endpoint);
 
 // The rows a query returned: the column names in result order, and one JSON
 // object per row keyed by those names. Cells are coerced to real JSON types

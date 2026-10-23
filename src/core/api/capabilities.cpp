@@ -32,6 +32,7 @@
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/connect/connector.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
+#include "zetta/connect/source_catalog.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/featurize_plan.hpp"
 #include "zetta/data/database.hpp"
@@ -2592,7 +2593,7 @@ const nlohmann::json& dataset_summary_schema() {
            {{"type", "string"},
             {"description",
              "what the rows were loaded from: csv, jsonl, json, parquet, a connector "
-             "type (postgres, snowflake, mysql) or rows; empty for a table not loaded from a "
+             "type (postgres, snowflake, mysql, lake_sqlite, lake_duckdb, lake_polars) or rows; empty for a table not loaded from a "
              "source (SQL, engine results)"}}},
           {"replication",
            {{"type", "string"},
@@ -9012,6 +9013,13 @@ const nlohmann::json& create_dataset_from_query_output_schema() {
 // A private-range address may still be a different machine across a VPN, and
 // that is a network reach worth naming.
 bool is_local_source(const zetta::connect::ConnectorConfig& config) {
+    // A lake service is local only when its endpoint names a loopback host.
+    // (Keyed on the type: an `endpoint` on any other type is never read.)
+    if (config.type == "lake_sqlite" || config.type == "lake_duckdb" ||
+        config.type == "lake_polars") {
+        const std::string host = zetta::connect::endpoint_host(config.endpoint);
+        return host == "localhost" || host == "127.0.0.1" || host == "::1";
+    }
     // warehouses are remote by construction
     if (config.type != "postgres" && config.type != "mysql") return false;
     const std::string& host = config.host;
@@ -9140,24 +9148,6 @@ const nlohmann::json& list_source_tables_output_schema() {
     return schema;
 }
 
-// A single-quoted SQL literal. The inputs here are caller-supplied filters that
-// go into a catalog query, so they are escaped rather than concatenated raw —
-// the connector's read-only guard stops a second statement, but it is not an
-// argument for building the first one carelessly. MySQL also treats a
-// backslash inside a literal as an escape (unless NO_BACKSLASH_ESCAPES), so for
-// it a backslash is doubled too — otherwise a trailing `\` would escape the
-// closing quote.
-std::string sql_literal(const std::string& value, bool backslash_escapes = false) {
-    std::string out = "'";
-    for (const char character : value) {
-        if (character == '\'') out += '\'';
-        if (backslash_escapes && character == '\\') out += '\\';
-        out += character;
-    }
-    out += "'";
-    return out;
-}
-
 ApiResult handle_list_source_tables(const nlohmann::json& input,
                                     ApiContext& context) {
     std::string reason;
@@ -9165,114 +9155,23 @@ ApiResult handle_list_source_tables(const nlohmann::json& input,
         resolve_query_connector(input, context, reason);
     if (!config) return ApiResult::failure("invalid_input", reason);
 
-    const auto max_tables =
-        input.value("max_tables", static_cast<std::size_t>(200));
-    const bool include_columns = input.value("include_columns", true);
-    const std::string only_schema = input.value("schema", std::string{});
-    const std::string match = input.value("match", std::string{});
+    // The per-source catalog reads (information_schema, MySQL's aliased
+    // variant, SQLite's sqlite_master, Polars' dataset listing) live with the
+    // connectors in connect/source_catalog.hpp.
+    zetta::connect::SourceCatalogRequest request;
+    request.max_tables = input.value("max_tables", static_cast<std::size_t>(200));
+    request.include_columns = input.value("include_columns", true);
+    request.schema = input.value("schema", std::string{});
+    request.match = input.value("match", std::string{});
 
-    // information_schema is ISO SQL and every shipped connector exposes it, so
-    // one statement serves Postgres, Snowflake and MySQL alike. The row cap is
-    // applied here rather than with LIMIT, which they spell the same way but
-    // the read-only guard need not care about.
-    //
-    // MySQL differs in three places: 8.0 reports information_schema columns in
-    // upper case unless aliased (so every column is aliased to the lower-case
-    // name the reader below expects), its own catalog schemas are `mysql`,
-    // `performance_schema` and `sys`, and its literals take backslash escapes.
-    const bool is_mysql = config->type == "mysql";
-    const std::string excluded_schemas =
-        is_mysql ? "('information_schema', 'mysql', 'performance_schema', 'sys')"
-                 : "('pg_catalog', 'information_schema')";
-    const auto alias = [is_mysql](const char* column) {
-        return is_mysql ? std::string(column) + " AS " + (std::string(column).substr(2))
-                        : std::string(column);
-    };
-    std::string statement =
-        "SELECT " + alias("t.table_schema") + ", " + alias("t.table_name") + ", " +
-        alias("t.table_type") +
-        " FROM information_schema.tables t"
-        " WHERE t.table_schema NOT IN " + excluded_schemas;
-    if (!only_schema.empty()) {
-        statement += " AND t.table_schema = " + sql_literal(only_schema, is_mysql);
-    }
-    if (!match.empty()) {
-        statement += " AND LOWER(t.table_name) LIKE " +
-                     sql_literal("%" + [&] {
-                       std::string lowered = match;
-                       std::transform(lowered.begin(), lowered.end(),
-                                      lowered.begin(), [](unsigned char c) {
-                                          return static_cast<char>(std::tolower(c));
-                                      });
-                       return lowered;
-                     }() + "%", is_mysql);
-    }
-    statement += " ORDER BY t.table_schema, t.table_name";
-
-    const zetta::connect::ConnectorResult listed = zetta::connect::run_connector_query(
-        *config, statement, max_tables + 1);
-    if (!listed.ok()) return ApiResult::failure("engine_error", listed.error);
-
-    const bool truncated = listed.data.rows.size() > max_tables;
-    nlohmann::json tables = nlohmann::json::array();
-    std::vector<std::pair<std::string, std::string>> wanted;
-    for (const nlohmann::json& row : listed.data.rows) {
-        if (tables.size() >= max_tables) break;
-        const std::string schema_name = row.value("table_schema", std::string{});
-        const std::string table_name = row.value("table_name", std::string{});
-        wanted.emplace_back(schema_name, table_name);
-        tables.push_back({{"schema", schema_name},
-                          {"table", table_name},
-                          {"kind", row.value("table_type", std::string{})}});
-    }
-
-    if (include_columns && !wanted.empty()) {
-        // One catalog query for every column of every table listed, rather than
-        // one round trip per table — a schema with 200 tables would otherwise be
-        // 200 connections.
-        std::string columns_statement =
-            "SELECT " + alias("c.table_schema") + ", " + alias("c.table_name") + ", " +
-            alias("c.column_name") + ", " + alias("c.data_type") + "," + " " +
-            alias("c.is_nullable") + ", " + alias("c.ordinal_position") +
-            " FROM information_schema.columns c"
-            " WHERE c.table_schema NOT IN " + excluded_schemas;
-        if (!only_schema.empty()) {
-            columns_statement +=
-                " AND c.table_schema = " + sql_literal(only_schema, is_mysql);
-        }
-        columns_statement += " ORDER BY c.table_schema, c.table_name, c.ordinal_position";
-
-        const zetta::connect::ConnectorResult described =
-            zetta::connect::run_connector_query(*config, columns_statement,
-                                                /*max_rows=*/100000);
-        if (described.ok()) {
-            for (const nlohmann::json& row : described.data.rows) {
-                const std::string schema_name =
-                    row.value("table_schema", std::string{});
-                const std::string table_name =
-                    row.value("table_name", std::string{});
-                for (nlohmann::json& entry : tables) {
-                    if (entry.value("schema", std::string{}) != schema_name ||
-                        entry.value("table", std::string{}) != table_name) {
-                        continue;
-                    }
-                    entry["columns"].push_back(
-                        {{"column", row.value("column_name", std::string{})},
-                         {"type", row.value("data_type", std::string{})},
-                         {"nullable",
-                          row.value("is_nullable", std::string{"YES"}) == "YES"}});
-                    break;
-                }
-            }
-        }
-        // A source that refuses the column catalog still returns its table list;
-        // the tables are the answer to "what is in here", columns are detail.
-    }
+    zetta::connect::SourceCatalog catalog =
+        zetta::connect::list_source_catalog(*config, request);
+    if (!catalog.ok()) return ApiResult::failure("engine_error", catalog.error);
 
     nlohmann::json output;
-    output["table_count"] = tables.size();
-    output["truncated"] = truncated;
-    output["tables"] = std::move(tables);
+    output["table_count"] = catalog.tables.size();
+    output["truncated"] = catalog.truncated;
+    output["tables"] = std::move(catalog.tables);
     return ApiResult::success(std::move(output));
 }
 
@@ -9372,6 +9271,8 @@ std::optional<zetta::governance::ConsentAction> describe_create_dataset_from_que
         target += " " + (config->host.empty() ? std::string{"localhost"} : config->host);
         if (!config->port.empty()) target += ":" + config->port;
         if (!config->database.empty()) target += "/" + config->database;
+    } else if (config->type.starts_with("lake_")) {
+        target += " " + config->endpoint;  // "lake_sqlite http://orders…:8080"
     } else if (!config->account.empty()) {
         target += " " + config->account;
     }
@@ -13042,12 +12943,12 @@ void register_core_capabilities(Registry& registry) {
         "create_dataset_from_query",
         "Create a dataset from a connector query",
         "Run a read-only query against an external source (Snowflake, "
-        "Postgres or MySQL) and load its rows into a new partitioned table placed "
+        "Postgres, MySQL, or lake's SQLite, DuckDB or Polars service) and load its rows into a new partitioned table placed "
         "across the cluster \u2014 the in-product path from a warehouse to a "
         "featurizable dataset, with no manual export. Only a single "
         "SELECT/WITH may run (MySQL also admits SHOW). A remote source is reached "
         "over the network with your credentials, so it is consent-gated when the "
-        "node enforces governance; a loopback Postgres or MySQL touches no cloud "
+        "node enforces governance; a loopback Postgres, MySQL or lake service touches no cloud "
         "and runs directly "
         "(audited as dataset_added; visible in system.datasets).",
         create_dataset_from_query_schema(),

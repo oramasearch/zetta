@@ -27,6 +27,9 @@ src/core/connect/mysql_client.cpp            handshake, TLS negotiation, auth pl
 include/zetta/api/mysql_protocol.hpp         install_mysql_protocol — installs the MySQL TCP/TLS driver
 src/core/api/mysql_protocol.cpp              the coroutine TCP + TLS-upgrade driver (zetta-api target)
 src/core/api/system_trust_store.hpp/.cpp     the system CA roots, shared by the HTTPS client and the MySQL driver
+src/core/connect/lake_sql_protocol.hpp/.cpp  lake's SQLite/DuckDB/Polars services over HTTP: endpoint, guard, request, typed answer, Polars dataset list (internal, #1014)
+include/zetta/connect/source_catalog.hpp     list_source_catalog — each source's catalog read, behind list_source_tables
+src/core/connect/source_catalog.cpp          information_schema (Postgres/Snowflake/DuckDB), MySQL's aliased variant, sqlite_master, Polars' /v1/datasets
 include/zetta/api/native_http_transport.hpp  install/shutdown the native client
 src/core/api/native_http_transport.cpp       the native coroutine HTTPS client (zetta-api target)
 tests/connect/test_connector.cpp             the boundary, the guard, and Snowflake against a fake transport
@@ -35,6 +38,7 @@ tests/connect/test_distributed_fetch.cpp     the tiling's exactly-once property 
 tests/connect/test_distributed_ingest.cpp    the cross-node ingest over a real loopback cluster
 tests/connect/test_native_http_transport.cpp the native client against a real loopback server
 tests/connect/test_mysql_connector.cpp       MySQL: boundary + guard, packet-level protocol, the driver vs a fake server (plaintext + real TLS), a guarded live run
+tests/connect/test_lake_sql_connector.cpp    lake services: boundary, guard, request shape, typing, the 10,000-row cap, errors, the three catalogs, a guarded live run
 src/core/testkit/cases_connect.cpp           cluster.connections + cluster.distributed_import — the in-app, GUI-runnable cases
 ```
 
@@ -109,7 +113,7 @@ Two qualifications on that, both per-call rather than per-tool
 
 - **Consent enforcement is off unless the node was started with `--governance`**
   (#995). Off, the call executes and audits as `consent_bypassed`.
-- **A loopback Postgres or MySQL is not an external system.** The capability's
+- **A loopback Postgres, MySQL or lake service is not an external system.** The capability's
   `ConsentDescriber` reads the resolved connector: a host of `127.0.0.1` /
   `localhost` / `::1` or a unix socket never leaves the machine, so it is not
   gated even with `--governance` on (#994). A remote source's challenge names
@@ -365,7 +369,28 @@ rule above, plus the source's own dialect. **MySQL** also admits `SHOW`, treats
 `#` as a comment, and refuses `/*! … */` (an *executable* comment — the server
 runs its contents) and `INTO OUTFILE` / `INTO DUMPFILE` (server-side file
 writes). The wire-protocol connectors then enforce read-only again at the
-driver — a read-only transaction that is never committed.
+driver — a read-only transaction that is never committed. **lake's services**
+(`lake_sqlite`, `lake_duckdb`, `lake_polars`) have no read-only mode to ask for,
+so their guard also refuses every write or session word (`INSERT`, `DELETE`,
+`REPLACE INTO`, `ATTACH`, `PRAGMA`, `SET`, …) anywhere outside a string, a quoted
+identifier or a comment — SQLite and DuckDB accept `WITH … DELETE`.
+
+## lake's SQLite, DuckDB and Polars services (HTTP)
+
+lake's `sqlite`, `duckdb` and `polars` service kinds are small web services with
+one shared API, `POST /v1/query {"sql"}` → `{"columns", "rows", "truncated"}`
+behind a bearer token, so one connector serves three types (#1014).
+
+| Concern | How |
+| --- | --- |
+| Config | `type: "lake_sqlite" \| "lake_duckdb" \| "lake_polars"`, `endpoint` (the base URL), the bearer in `token` |
+| TLS | the endpoint's scheme: none means `https://` (verified against the system trust store); plaintext `http://` must be written out (lake's in-cluster services are `http://`) |
+| Read-only | the shared SELECT/WITH guard plus the write/session word refusal above |
+| Rows | at most 10,000 per answer (the services' cap); a truncated answer short of `max_rows` is an error, never a partial dataset |
+| Typing | the services answer JSON types; `{"$base64"}` → base64 text, nested values → JSON text, decimals stay exact text |
+| Catalog | SQLite: `sqlite_master` + `pragma_table_info()`; DuckDB: `information_schema`; Polars: `GET /v1/datasets` |
+
+The full connector skill is [connectors/lake-sql.md](connectors/lake-sql.md).
 
 ## MySQL (native protocol)
 
@@ -414,9 +439,10 @@ from the source, and a malformed response all come back as a
 
 ## Scope notes / later slices
 
-- Three connectors ship: Snowflake (HTTP), Postgres (libpqxx) and MySQL (native
-  protocol). Another is a new branch in `run_connector_query` plus an entry in
-  `connector_types()`.
+- Four connectors ship: Snowflake (HTTP), Postgres (libpqxx), MySQL (native
+  protocol) and lake's SQLite/DuckDB/Polars services (HTTP, three types). Another
+  is a new branch in `run_connector_query`, an entry in `connector_types()`, and
+  its catalog read in `source_catalog.cpp`.
 - The **cross-node co-launch** of the fetch is a later slice — see *What is not
   wired yet* above for the landing-path decision it waits on.
 - The native client does **no connection pooling**: one connection per exchange
