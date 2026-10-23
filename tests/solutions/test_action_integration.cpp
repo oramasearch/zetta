@@ -22,6 +22,7 @@
 #include "zetta/api/native_http_transport.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/connect/destination_policy.hpp"
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
@@ -972,6 +973,18 @@ TEST_F(ActionIntegrationFixture, DeliveryRefusesALoopbackEndpointTheNodeDoesNotA
 // stores and a later run sends its delivery token to.
 TEST_F(ActionIntegrationFixture, ReportDeliveryRefusesAPrivateOrMetadataEndpoint) {
     zetta::connect::set_allowed_destinations({});
+    // Open general egress as a Lake's Zettas run (`*`, #75): this test covers the
+    // destination policy (#1394), which must refuse these endpoints on its own,
+    // not the egress default-deny that would refuse them first.
+    {
+        std::string egress_error;
+        const auto open = zetta::connect::EgressPolicy::parse("*", &egress_error);
+        ASSERT_TRUE(open) << egress_error;
+        zetta::connect::set_egress_policy(*open);
+    }
+    struct RestoreEgress {
+        ~RestoreEgress() { zetta::connect::set_egress_policy({}); }
+    } restore_egress;
     IdleListener listener;
     ASSERT_NE(listener.port(), 0);
     const std::vector<std::pair<std::string, std::string>> endpoints = {
