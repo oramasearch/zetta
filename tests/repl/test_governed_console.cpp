@@ -94,8 +94,9 @@ TEST(GovernedConsole, SqlRunsReturnsGridAndAudits) {
     const Result setup = console.run(Frontend::Sql, kSqlSetup);
     EXPECT_TRUE(setup.ok()) << setup.error;
     ASSERT_EQ(count_action(node, AuditAction::DataAccess), 1u);
-    // …and each of its three statements is an audited action (#1229).
-    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 3u);
+    // …and each of its three statements is an audited action (#1229), plus the
+    // Node's own row for the database the setup created (#847).
+    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 4u);
 
     const Result select = console.run(Frontend::Sql, kSqlSelect);
     ASSERT_TRUE(select.ok()) << select.error;
@@ -116,7 +117,7 @@ TEST(GovernedConsole, SqlRunsReturnsGridAndAudits) {
     // The action is recorded in the audit trail (an unauthenticated local
     // session is allowed but still audited).
     ASSERT_EQ(count_action(node, AuditAction::DataAccess), 2u);
-    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 3u);
+    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 4u);  // 3 statements + the database (#847)
     auto event = last_event(node);
     ASSERT_TRUE(event);
     EXPECT_EQ(event->action(), AuditAction::DataAccess);
@@ -148,8 +149,11 @@ TEST(GovernedConsole, SimPythonLowersGatesExecutesAndAudits) {
     // It executed: a real Run was produced (so it shows in the Runs panel).
     EXPECT_EQ(node.run_count(), 1u);
 
-    // The action is recorded + allowed.
-    ASSERT_EQ(node.audit_event_count(), 1u);
+    // The action is recorded + allowed: the Node's row for the run (#847), then
+    // the console's row for the statement.
+    ASSERT_EQ(node.audit_event_count(), 2u);
+    EXPECT_EQ(node.audit_events().front()->action(), AuditAction::DataChanged);
+    EXPECT_EQ(node.audit_events().front()->actor(), "local");
     auto event = last_event(node);
     ASSERT_TRUE(event);
     EXPECT_EQ(event->action(), AuditAction::DataAccess);
@@ -209,9 +213,9 @@ TEST(GovernedConsole, GateFailureBlocksTheRunAndAudits) {
     node.stop();
 }
 
-// ----- the injectable graph runner (#580 "run over the cluster" seam) ---------
+// ----- the injectable graph runner (#580 "run over the cluster" injection point) -----
 
-// A gate-passed sim-Python graph runs through the injected graph runner (the seam a
+// A gate-passed sim-Python graph runs through the injected graph runner (the injection point a
 // host uses to route a churn-shaped graph through the real churn engine on the live
 // JobCoordinator) — after the capability check + gate, before the audit record.
 TEST(GovernedConsole, InjectedGraphRunnerExecutesGatePassedSimPython) {
@@ -230,9 +234,9 @@ TEST(GovernedConsole, InjectedGraphRunnerExecutesGatePassedSimPython) {
 
     const Result result = console.run(Frontend::SimPython, kPython);
     ASSERT_TRUE(result.ok()) << result.error;
-    EXPECT_EQ(runner_calls, 1);       // the seam ran the gate-passed graph
+    EXPECT_EQ(runner_calls, 1);       // the injected runner ran the gate-passed graph
     EXPECT_EQ(node.run_count(), 1u);  // a real Run was produced + audited
-    ASSERT_EQ(node.audit_event_count(), 1u);
+    ASSERT_EQ(node.audit_event_count(), 2u);  // the run's row (#847), the statement's
     EXPECT_TRUE(last_event(node)->allowed());
 
     node.stop();
@@ -333,9 +337,10 @@ TEST(GovernedConsole, CapabilityGrantAllowsTheRun) {
 
     // Both ran + are audited as allowed against the key: one data_access per
     // run, one per pipeline step the key was authorized for (#843: connect and
-    // model), and one data_changed per setup statement.
+    // model), one data_changed per setup statement, and the Node's own rows for
+    // the database created and the graph run (#847), all naming the key.
     ASSERT_EQ(count_action(node, AuditAction::DataAccess), 4u);
-    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 3u);
+    ASSERT_EQ(count_action(node, AuditAction::DataChanged), 5u);
     for (const auto& event : node.audit_events()) {
         EXPECT_TRUE(event->allowed());
         EXPECT_EQ(event->actor(), key->id());

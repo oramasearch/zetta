@@ -34,3 +34,11 @@ defect reproduces and fail once it does not, so the fix flips them. See
 every listed jailbreak step through `Registry::call`, and each attempt must be
 refused and recorded as refused. Open gaps are `KNOWN_DEFECT` probes. See
 [TC-5 coverage](../../docs/testing/tc-5-coverage.md).
+
+`test_audit_completeness.cpp` covers completeness and attribution (#847): the
+Node's own `data_changed` rows for project, database, model and run changes
+made directly (as the headed app does), deploys, jobs and graph changes naming
+the declared caller instead of a blank or the project's owner, the caller
+carried across `run_on_owner`, a capability's effects attributed to the calling
+user, an authorized call that then failed recorded as a failure, and a SQL
+statement's effects attributed to its session.

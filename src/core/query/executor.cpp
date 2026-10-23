@@ -2500,6 +2500,9 @@ std::optional<QueryResult> execute_grouped_ddf(const SelectStmt& s,
 
 QueryResult Executor::execute(const Statement& stmt,
                               const std::string& current_database) {
+    // A statement's effects (a database the Node creates or drops, a graph run)
+    // are attributed to the session that ran it, like the statement itself (#847).
+    const zetta::governance::AuditActorScope audit_actor{acting_key_};
     // Resolve a TableRef's database to a handle, or produce a clear error.
     const auto resolve_db =
         [&](const TableRef& ref) -> std::shared_ptr<zetta::data::Database> {

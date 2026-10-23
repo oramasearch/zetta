@@ -86,10 +86,13 @@ struct SqlWritePermissions : ::testing::Test {
         return r.rows.size();
     }
 
+    // The statements' own rows (target `sql:...`); the Node's rows for the
+    // effects (a database created or dropped, #847) are counted separately.
     std::size_t changed_events(bool allowed) {
         std::size_t count = 0;
         for (const auto& event : node.audit_events()) {
             if (event->action() == AuditAction::DataChanged &&
+                event->target().rfind("sql:", 0) == 0 &&
                 event->allowed() == allowed) {
                 ++count;
             }
@@ -162,6 +165,18 @@ TEST_F(SqlWritePermissions, WriterIsAllowedForEveryStatementKind) {
     EXPECT_TRUE(node.find_database("fresh"));
     EXPECT_EQ(changed_events(/*allowed=*/true) - allowed_before,
               change_statements().size());
+    // ...and the databases the statements created and dropped are on the trail
+    // as the Node's own rows, attributed to the writer (#847).
+    for (const char* target : {"database:fresh", "database:other"}) {
+        std::shared_ptr<zetta::governance::AuditEvent> latest;
+        for (const auto& event : node.audit_events()) {
+            if (event->action() == AuditAction::DataChanged && event->target() == target) {
+                latest = event;
+            }
+        }
+        ASSERT_TRUE(latest) << target;
+        EXPECT_EQ(latest->actor(), writer) << target;
+    }
 }
 
 // CREATE USER and CREATE TOKEN mint identities and credentials: a writer may

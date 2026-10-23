@@ -187,6 +187,7 @@ add_executable(zetta-tests
   testkit/test_testkit.cpp
   testkit/test_example_scripts.cpp
   governance/test_audit.cpp
+  governance/test_audit_completeness.cpp
   solutions/test_audit_ledger.cpp
   observability/test_activity.cpp
   pipeline/test_intent_compiler.cpp

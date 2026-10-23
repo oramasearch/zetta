@@ -368,7 +368,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     user_role.hpp           zetta::governance::UserRole — a user↔role assignment; user_role:<uuid>
     policy.hpp              zetta::governance::Policy/PolicyValue/policy_value_from_json/policy_schema — a row-level security policy (Postgres-style RLS): a USING read filter + WITH CHECK write filter per table, evaluated by the SQL WHERE engine (#748); policy:<uuid>
     token_secret.hpp        generate_token_secret/generate_token_salt/hash_token_secret/kdf_hash_token_secret/verify_token_secret/constant_time_equal — the token crypto (OpenSSL)
-    audit_event.hpp         zetta::governance::AuditEvent/AuditSink/AuditTrail — immutable values, per-origin segment ranges, high/low watermarks, bounded recent reads + JSON Schema (ENT-23, #1154, #1164)
+    audit_event.hpp         zetta::governance::AuditEvent/AuditSink/AuditTrail — immutable values, per-origin segment ranges, high/low watermarks, bounded recent reads + JSON Schema (ENT-23, #1154, #1164); AuditActorScope, the thread-local acting identity entry points declare (#847)
     consent.hpp             zetta::governance::ConsentAction/ConsentChallenge/ConsentLedger — remote consent for cloud-touching capabilities (#621): one-time challenges naming exactly what would be read/run, consumable exactly once by a distinctly-privileged approval; ephemeral + owner-thread-only, never replicated (docs/api/consent.md)
   solutions/                runtime evidence shared by deployed solutions (docs/solutions/)
     audit_ledger.hpp        zetta::solutions::ActionLedgerValue/OutcomeLedgerValue/LedgerEntry — immutable action and outcome records, enum codecs, JSON Schema boundary, and disk projection (#1107)
@@ -739,7 +739,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     user_role.cpp           zetta::governance::UserRole — persist user_role.json + schema
     policy.cpp              zetta::governance::Policy — persist policy.json + PolicyValue JSON boundary validation + policy schema (RLS, #748)
     token_secret.cpp        the token crypto (the 2nd OpenSSL-libcrypto user): RAND_bytes secret/salt + SHA-256(salt||secret) + PBKDF2-HMAC-SHA256 for the bootstrap owner (#769) + CRYPTO_memcmp constant-time compare (#744)
-    audit_event.cpp         zetta::governance::AuditEvent/AuditTrail — value/schema boundary, compressed segment frames, durable seek index/watermarks, legacy migration, range validation and retention
+    audit_event.cpp         zetta::governance::AuditEvent/AuditTrail — value/schema boundary, compressed segment frames, durable seek index/watermarks, legacy migration, range validation and retention; the AuditActorScope thread-local (#847)
     credential_redaction.cpp the one rule for which input fields are credentials (`is_credential_field`) + `redact_credentials`, used by the consent challenge JSON and the web form's masked inputs (#74)
     consent.cpp             zetta::governance::ConsentLedger — challenge lifecycle (pending → denied/approved → executed/failed, lazy TTL expiry, capacity that drops decided entries first), challenge JSON + embedded schema (#621)
   solutions/
@@ -862,6 +862,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   governance/audit_proof.cpp native process-isolated million-event replication and restart RSS worker, with opt-in allocation-profile pause (#1164)
   governance/test_audit.cpp  segment reads/retention, malformed ranges, legacy catalog compaction, incompatible-peer refusal and two-process convergence/RSS assertions (#1164)
   governance/test_sandbox_escape.cpp  TC-5 jailbreak attempts by a low-privilege analyst over Registry::call: each refused and audited, no existence oracle, open gaps as KNOWN_DEFECT probes (#252)
+  governance/test_audit_completeness.cpp  the Node's own data_changed rows, caller attribution across registry/SQL/console/run_on_owner, failed-call rows (#847)
   ml/test_forecast.cpp / ml/test_forecast_runner.cpp
                             temporal correctness, FVA, intervals, multiple series, horizon bounds, output lineage, and single-member == multi-member forecasting (#1043)
   ml/test_forecast_methodology.cpp
