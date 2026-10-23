@@ -23,6 +23,12 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
 version (`v9/`, `v10/`), each naming the exact corpus it learned from. Procedure: the **hf-ops**
 skill.
 
+**Served to lake's native agents as a model image** — `oramasearch/base-agent-0.6b:<version>`
+(private Docker Hub), built from one Hub version folder by
+the private repository [oramasearch/base-agent-0.6b](https://github.com/oramasearch/base-agent-0.6b) (pinned by zetta-bridge). Every Lake workspace Zetta copies
+it to `/data/models/base-agent`, the checkpoint a native agent created without a model runs on
+([lake#246](https://github.com/oramasearch/lake/issues/246)). The operator's default is `v16`.
+
 | version | corpus | canary grader | note |
 |---|---|---|---|
 | v3 | v3 (6,102) | **47%** | first to emit tool calls; one pipeline shape for every ask |
