@@ -32,6 +32,19 @@ allowed for every data-changing statement, object and column scope, row
 security on UPDATE/DELETE, and the `data_changed` audit (#1229).
 `connect/test_credential_seal.cpp` and `connect/test_connection_store.cpp` cover
 sealed storage, every read surface, legacy re-sealing and key rotation (#1230).
+`data/test_export_path.cpp` proves a caller-named export (`generate_dataset`'s `path`,
+`submit_feedback`'s `export_path`) is created new under `<data_dir>/exports` and never
+truncates a sentinel outside it, through an absolute path, `..`, or a link (#1397, #1399).
+
+`connect/test_destination_policy.cpp` classifies addresses and proves the native
+client refuses a public-only request to loopback, by literal, by name and on a
+redirect hop to the metadata address, before connecting (#1394).
+
+`connect/test_egress_policy.cpp` covers the egress allowlist (every entry kind,
+ports, loopback, ranges, malformed entries), and the egress cases in
+`connect/test_native_http_transport.cpp` prove the dialler refuses an outside
+address by default, an unlisted name before DNS, and a redirect to an outside
+destination (#75).
 
 `data/test_object_store.cpp` covers the object capability's contracts, a
 conditional-create race, fencing, torn tails after a kill, compaction and restart,
@@ -40,3 +53,11 @@ the quota, and rf = 2 on three real nodes with a node lost, repaired and replace
 liquid-shaped load (`ZETTA_OBJECT_SOAK_BYTES`); `api/test_object_routes.cpp`
 runs the raw byte routes over loopback HTTP, with the six latency budgets as
 failing benchmarks (#1005). See [the object capability](../docs/data/object-store.md).
+
+`connect/test_connector_destinations.cpp` covers exact connector authorities,
+resolved-address approval, and native HTTP, Postgres, MySQL, TiDB and the lake
+SQL types refusing an unapproved private target before a connection, reaching an
+exact approved `host:port`, never reaching metadata or link-local addresses, and
+re-validating a saved connection whose type changed (#1414). The MySQL driver
+tests approve their loopback fake server's exact `host:port`; `RegistryFixture.ConnectorDiscoveryRequiresApprovalForInlineDestinations`
+covers saved discovery and privileged inline discovery for both identity systems.

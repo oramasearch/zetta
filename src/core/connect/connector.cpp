@@ -1,15 +1,20 @@
 #include "zetta/connect/connector.hpp"
 
+#include "lake_sql_protocol.hpp"
 #include "snowflake_protocol.hpp"
+#include "write_words.hpp"
+#include "zetta/connect/mysql_client.hpp"
 #include "zetta/connect/postgres_runner.hpp"
 #include "zetta/connect/distributed_fetch.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include "zetta/connect/connector_destinations.hpp"
 
 namespace zetta::connect {
 namespace {
@@ -23,14 +28,15 @@ std::string to_lower(std::string text) {
 }
 
 // Strip leading whitespace and SQL comments (`--` to end of line, `/* … */`) so
-// the read-only guard sees the first real keyword.
-std::string_view skip_leading_noise(std::string_view sql) {
+// the read-only guard sees the first real keyword. `hash_comments` also strips
+// `#` to end of line — MySQL's third comment form.
+std::string_view skip_leading_noise(std::string_view sql, bool hash_comments = false) {
     for (;;) {
         while (!sql.empty() &&
                std::isspace(static_cast<unsigned char>(sql.front()))) {
             sql.remove_prefix(1);
         }
-        if (sql.starts_with("--")) {
+        if (sql.starts_with("--") || (hash_comments && sql.starts_with("#"))) {
             const std::size_t line_end = sql.find('\n');
             if (line_end == std::string_view::npos) return {};
             sql.remove_prefix(line_end + 1);
@@ -47,12 +53,76 @@ std::string_view skip_leading_noise(std::string_view sql) {
 }
 
 // A trailing `;` is fine; a `;` with anything after it is a second statement.
-bool has_trailing_statement(std::string_view sql) {
+bool has_trailing_statement(std::string_view sql, bool hash_comments = false) {
     const std::size_t semicolon = sql.find(';');
     if (semicolon == std::string_view::npos) return false;
     std::string_view rest = sql.substr(semicolon + 1);
-    rest = skip_leading_noise(rest);
+    rest = skip_leading_noise(rest, hash_comments);
     return !rest.empty();
+}
+
+// Does `sql` start with `keyword` as a whole word (case-insensitive)?
+bool starts_with_keyword(std::string_view sql, std::string_view keyword) {
+    if (sql.size() < keyword.size()) return false;
+    for (std::size_t index = 0; index < keyword.size(); ++index) {
+        if (std::tolower(static_cast<unsigned char>(sql[index])) != keyword[index]) {
+            return false;
+        }
+    }
+    return sql.size() == keyword.size() ||
+           std::isspace(static_cast<unsigned char>(sql[keyword.size()])) ||
+           sql[keyword.size()] == '(' || sql[keyword.size()] == '`';
+}
+
+// Does the word `word` (lowercase) appear anywhere in `sql` as a whole
+// identifier-like token? Deliberately blunt — it does not skip string literals,
+// so a literal containing the word is refused too. A false refusal costs a
+// rephrased query; a missed `INTO OUTFILE` writes a file on the server.
+bool contains_word(std::string_view sql, std::string_view word) {
+    const std::string lowered = to_lower(std::string(sql));
+    const auto is_word_char = [](char character) {
+        return std::isalnum(static_cast<unsigned char>(character)) || character == '_' ||
+               character == '$';
+    };
+    for (std::size_t found = lowered.find(word); found != std::string::npos;
+         found = lowered.find(word, found + 1)) {
+        const bool starts = found == 0 || !is_word_char(lowered[found - 1]);
+        const std::size_t end = found + word.size();
+        const bool ends = end == lowered.size() || !is_word_char(lowered[end]);
+        if (starts && ends) return true;
+    }
+    return false;
+}
+
+// The MySQL guard (#895). The driver enforces read-only too (a READ ONLY
+// session and transaction, no multi-statements, no LOCAL INFILE — see
+// mysql_client.hpp); this refuses at the boundary what can be recognised
+// before a connection is opened.
+std::string mysql_query_rejection(const std::string& sql) {
+    // `/*! … */` is not a comment to MySQL: the server executes its contents.
+    // The shared guard would skip it as leading noise and see the SELECT after
+    // it, so refuse it outright, wherever it appears.
+    if (sql.find("/*!") != std::string::npos) {
+        return "MySQL executable comments (/*! ... */) may not run through a "
+               "connector";
+    }
+    const std::string_view trimmed = skip_leading_noise(sql, /*hash_comments=*/true);
+    if (trimmed.empty()) return "the query is empty";
+    if (!starts_with_keyword(trimmed, "select") && !starts_with_keyword(trimmed, "with") &&
+        !starts_with_keyword(trimmed, "show")) {
+        return "only a read-only SELECT, WITH or SHOW statement may run through "
+               "the MySQL connector";
+    }
+    if (has_trailing_statement(trimmed, /*hash_comments=*/true)) {
+        return "only a single statement may run through a connector";
+    }
+    // SELECT … INTO OUTFILE / DUMPFILE writes a file on the database server —
+    // a read-only transaction does not stop it.
+    if (contains_word(trimmed, "outfile") || contains_word(trimmed, "dumpfile")) {
+        return "SELECT ... INTO OUTFILE / DUMPFILE writes a file on the server "
+               "and may not run through a connector";
+    }
+    return {};
 }
 
 // --- Snowflake (SQL API v2 over HTTPS) ---------------------------------------
@@ -132,6 +202,7 @@ nlohmann::json ConnectorConfig::to_json() const {
     if (!port.empty()) value["port"] = port;
     if (!user.empty()) value["user"] = user;
     if (!sslmode.empty()) value["sslmode"] = sslmode;
+    if (!endpoint.empty()) value["endpoint"] = endpoint;
     return value;
 }
 
@@ -141,7 +212,7 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
 
     static const std::vector<std::string> known = {
         "type", "account", "token", "auth", "database", "schema", "warehouse",
-        "role", "host", "port", "user", "sslmode"};
+        "role", "host", "port", "user", "sslmode", "endpoint"};
     for (auto field = value.begin(); field != value.end(); ++field) {
         if (std::find(known.begin(), known.end(), field.key()) == known.end()) {
             return std::nullopt;  // unknown key
@@ -172,14 +243,16 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
           std::pair{"schema", &config.schema}, std::pair{"warehouse", &config.warehouse},
           std::pair{"role", &config.role}, std::pair{"host", &config.host},
           std::pair{"port", &config.port}, std::pair{"user", &config.user},
-          std::pair{"sslmode", &config.sslmode}}) {
+          std::pair{"sslmode", &config.sslmode},
+          std::pair{"endpoint", &config.endpoint}}) {
         const std::optional<std::string> field = string_at(key);
         if (!field) return std::nullopt;
         *target = *field;
     }
 
-    // The secret (Snowflake bearer / Postgres password). Optional for Postgres
-    // trust/peer auth; required for Snowflake.
+    // The secret (Snowflake bearer / Postgres or MySQL password). Optional for
+    // Postgres trust/peer auth and a passwordless MySQL account; required for
+    // Snowflake.
     const std::optional<std::string> token = string_at("token");
     if (!token) return std::nullopt;
     config.token = *token;
@@ -199,15 +272,99 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
         if (config.host.empty() || config.user.empty() || config.database.empty()) {
             return std::nullopt;
         }
+    } else if (lake_sql::is_lake_sql_type(config.type)) {
+        // A lake service: its base URL and its bearer token, nothing else.
+        if (config.endpoint.empty() || config.token.empty()) return std::nullopt;
+        if (!lake_sql::parse_endpoint(config.endpoint, nullptr)) return std::nullopt;
+    } else if (config.type == "mysql" || config.type == "tidb") {
+        // database is optional: a query may name `schema.table` itself.
+        if (config.host.empty() || config.user.empty()) return std::nullopt;
+        // An unknown sslmode is refused rather than read as "no TLS" — and
+        // `prefer`, which silently falls back to plaintext, is not a mode here.
+        if (!parse_mysql_tls_mode(config.sslmode)) return std::nullopt;
+        if (!config.port.empty()) {
+            unsigned port = 0;
+            const char* const first = config.port.data();
+            const char* const last = first + config.port.size();
+            const auto [end, error] = std::from_chars(first, last, port);
+            if (error != std::errc() || end != last || port == 0 || port > 65535) {
+                return std::nullopt;
+            }
+        }
     }
 
+    if (!config.destination_rejection().empty()) return std::nullopt;
     return config;
+}
+
+std::string endpoint_host(const std::string& endpoint) {
+    const std::optional<lake_sql::Endpoint> parsed =
+        lake_sql::parse_endpoint(endpoint, nullptr);
+    return parsed ? parsed->host : std::string{};
+}
+
+std::string ConnectorConfig::destination_rejection() const {
+    // C APIs consume terminated strings: embedded NULs must never truncate a
+    // validated authority or connection parameter on the way to the protocol.
+    for (const auto* field : {&type, &account, &token, &auth, &database, &schema, &warehouse, &role,
+                              &host, &port, &user, &sslmode, &endpoint}) {
+        if (field->find('\0') != std::string::npos) return "connector: embedded NUL is not allowed";
+    }
+    if (type == "snowflake") {
+        if (account.empty() || account.ends_with('.') || account.find(':') != account.npos ||
+            !valid_connector_host(account + ".snowflakecomputing.com")) {
+            return "connector.account: expected a Snowflake account identifier";
+        }
+        if (auth != "pat" && auth != "oauth") return "connector.auth: expected pat or oauth";
+        return {};
+    }
+    if (type == "postgres") {
+        if (!valid_connector_host(host))
+            return "connector.host: expected one DNS host or IP literal";
+        if (!port.empty() && !connector_port(port))
+            return "connector.port: expected a TCP port from 1 to 65535";
+        if (!sslmode.empty() && sslmode != "disable" && sslmode != "allow" && sslmode != "prefer" &&
+            sslmode != "require" && sslmode != "verify-ca" && sslmode != "verify-full")
+            return "connector.sslmode: unsupported TLS mode";
+        return {};
+    }
+    if (type == "mysql" || type == "tidb") {
+        // The MySQL protocol driver dials one checked TCP authority; TLS keeps
+        // verifying the certificate against this host name.
+        if (!valid_connector_host(host))
+            return "connector.host: expected one DNS host or IP literal";
+        if (!port.empty() && !connector_port(port))
+            return "connector.port: expected a TCP port from 1 to 65535";
+        if (!parse_mysql_tls_mode(sslmode)) return "connector.sslmode: unsupported TLS mode";
+        return {};
+    }
+    if (lake_sql::is_lake_sql_type(type)) {
+        // lake's services are in-cluster HTTP or HTTPS. The protocol is written
+        // out (no implied default), so what the node dials is what was approved.
+        const std::string_view text = endpoint;
+        const std::size_t scheme_end = text.find("://");
+        std::string scheme(scheme_end == text.npos ? std::string_view{} : text.substr(0, scheme_end));
+        for (char& character : scheme) {
+            if (character >= 'A' && character <= 'Z') character += 'a' - 'A';
+        }
+        if (scheme != "http" && scheme != "https")
+            return "connector.endpoint: expected an explicit http:// or https:// URL";
+        const std::optional<lake_sql::Endpoint> parsed = lake_sql::parse_endpoint(endpoint, nullptr);
+        if (!parsed) return "connector.endpoint: expected http(s)://host[:port][/path]";
+        if (!valid_connector_host(parsed->host))
+            return "connector.endpoint: expected one DNS host or IP literal";
+        if (!parsed->port.empty() && !connector_port(parsed->port))
+            return "connector.endpoint: expected a TCP port from 1 to 65535";
+        return {};
+    }
+    return "connector.type: unknown connector type '" + type + "'";
 }
 
 // --- The registry + the guard -------------------------------------------------
 
 const std::vector<std::string>& connector_types() {
-    static const std::vector<std::string> types = {"snowflake", "postgres"};
+    static const std::vector<std::string> types = {
+        "snowflake", "postgres", "mysql", "tidb", "lake_sqlite", "lake_duckdb", "lake_polars"};
     return types;
 }
 
@@ -216,27 +373,28 @@ const nlohmann::json& connector_config_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/connector_config.schema.json",
   "title": "ConnectorConfig",
-  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
   "type": "object",
   "required": ["type"],
   "additionalProperties": false,
   "properties": {
-    "type": {"type": "string", "enum": ["snowflake", "postgres"], "description": "Which connector implementation to use."},
-    "account": {"type": "string", "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1)."},
-    "token": {"type": "string", "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out."},
+    "type": {"type": "string", "enum": ["snowflake", "postgres", "mysql", "tidb", "lake_sqlite", "lake_duckdb", "lake_polars"], "description": "Which connector implementation to use. tidb speaks the MySQL protocol (default port 4000). lake_sqlite, lake_duckdb and lake_polars read lake's SQLite, DuckDB and Polars services over their HTTP API."},
+    "account": {"type": "string", "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation."},
+    "token": {"type": "string", "description": "The secret: a Snowflake programmatic access / OAuth token, a Postgres, MySQL or TiDB password, or a lake service's bearer token. Never serialized back out."},
     "auth": {"type": "string", "enum": ["pat", "oauth"], "default": "pat", "description": "Snowflake: how to present the bearer token."},
-    "database": {"type": "string", "description": "Session database (both connectors)."},
-    "schema": {"type": "string", "description": "Session schema (both connectors)."},
+    "database": {"type": "string", "description": "Session database (Snowflake, Postgres; MySQL's optional default schema)."},
+    "schema": {"type": "string", "description": "Session schema (Snowflake, Postgres)."},
     "warehouse": {"type": "string", "description": "Snowflake compute warehouse (required for token auth)."},
     "role": {"type": "string", "description": "Optional session role."},
-    "host": {"type": "string", "description": "Postgres host, e.g. 127.0.0.1."},
-    "port": {"type": "string", "description": "Postgres port (default 5432)."},
-    "user": {"type": "string", "description": "Postgres role/user."},
-    "sslmode": {"type": "string", "description": "Postgres sslmode (disable / require / verify-full / …)."}
+    "host": {"type": "string", "description": "Postgres, MySQL or TiDB: one DNS hostname or bare IP literal. Private and loopback destinations require an exact operator host:port approval; socket paths and multiple hosts are refused."},
+    "port": {"type": "string", "description": "Postgres, MySQL or TiDB numeric TCP port, 1 through 65535 (default 5432 / 3306 / 4000)."},
+    "user": {"type": "string", "description": "Postgres role / MySQL or TiDB user."},
+    "sslmode": {"type": "string", "description": "Postgres sslmode (disable / require / verify-full / …). MySQL and TiDB: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named)."},
+    "endpoint": {"type": "string", "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL with its protocol written out, http:// or https://, e.g. http://orders.ws-1.svc.cluster.local:8080. Private and loopback destinations require an exact operator host:port approval. No credentials, query or fragment in it: the bearer token goes in `token`."}
   }
 })JSON",
-                                                              nullptr,
-                                                              /*allow_exceptions=*/false);
+                                                               nullptr,
+                                                               /*allow_exceptions=*/false);
     return schema;
 }
 
@@ -264,6 +422,26 @@ std::string read_only_query_rejection(const std::string& sql) {
     return {};
 }
 
+std::string connector_query_rejection(const ConnectorConfig& config,
+                                      const std::string& sql) {
+    if (config.type == "mysql") return mysql_query_rejection(sql);
+    if (config.type == "tidb") {
+        // TiDB parses READ ONLY but does not enforce it, so the words that
+        // write are refused here as well as by the session (mysql_client.cpp).
+        if (std::string rejection = mysql_query_rejection(sql); !rejection.empty()) {
+            return rejection;
+        }
+        return write_word_rejection(sql, WriteWordDialect::Mysql, "the TiDB connector");
+    }
+    if (lake_sql::is_lake_sql_type(config.type)) {
+        if (std::string rejection = read_only_query_rejection(sql); !rejection.empty()) {
+            return rejection;
+        }
+        return lake_sql::query_rejection(sql);
+    }
+    return read_only_query_rejection(sql);
+}
+
 ConnectorResult run_connector_query(const ConnectorConfig& config,
                                     const std::string& sql, std::size_t max_rows,
                                     const HttpTransport& transport) {
@@ -281,8 +459,12 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
                                     const HttpTransport& transport,
                                     const AsyncHttpTransport& async_transport) {
     ConnectorResult result;
+    if (const auto reason = config.destination_rejection(); !reason.empty()) {
+        result.error = reason;
+        return result;
+    }
 
-    const std::string rejection = read_only_query_rejection(sql);
+    const std::string rejection = connector_query_rejection(config, sql);
     if (!rejection.empty()) {
         result.error = rejection;
         return result;
@@ -304,6 +486,19 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
         }
         return postgres_query_runner()(config, sql, max_rows);
     }
+    // MySQL speaks its own wire protocol too, implemented natively
+    // (mysql_client.hpp); the TCP/TLS driver is installed by zetta-api.
+    // TiDB is the same protocol and the same driver; the session tells TiDB
+    // from MySQL by its greeting and fences it the way TiDB allows.
+    if (config.type == "mysql" || config.type == "tidb") {
+        if (!has_mysql_query_runner()) {
+            result.error =
+                "the MySQL connector is not installed in this binary (no zetta-api "
+                "layer called install_mysql_protocol)";
+            return result;
+        }
+        return mysql_query_runner()(config, sql, max_rows);
+    }
 
     const HttpTransport& exchange = transport ? transport : default_http_transport();
     if (!exchange) {
@@ -314,6 +509,9 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
             "no outbound HTTP transport is installed in this build — a connector "
             "query cannot reach an external source";
         return result;
+    }
+    if (lake_sql::is_lake_sql_type(config.type)) {
+        return lake_sql::run_query(config, sql, max_rows, exchange);
     }
     if (config.type == "snowflake") {
         return run_snowflake_query(config, sql, max_rows, exchange,

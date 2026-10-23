@@ -1994,6 +1994,7 @@ std::size_t advance_workspace_study(Node& node, Study& study) {
             publish_progress(node, study, "stopped");
             return admitted;
         }
+        run->add_reads(study.value().reads);  // zetta#1272
         run->set_status(pipeline::RunStatus::Running);
         run->add_log({util::now_iso8601(), "info",
                       "trial " + std::to_string(number) + " of the experiment " + spec.name +

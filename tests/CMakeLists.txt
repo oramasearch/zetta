@@ -24,12 +24,16 @@ endif()
 add_executable(zetta-tests
   memory/test_accounting.cpp
   transport/test_security.cpp
+  transport/test_framed_stream.cpp
   api/test_registry.cpp
+  api/test_dataset_list_summary.cpp
   api/test_agent_api.cpp
+  api/test_chat_loop.cpp
   api/test_workspace_methodology_api.cpp
   api/test_workspace_study_api.cpp
   api/test_mcp_prompts.cpp
   api/test_consent.cpp
+  api/test_safe_mode.cpp
   api/test_auth_gate.cpp
   api/test_mcp_server.cpp
   api/test_rest_server.cpp
@@ -44,17 +48,22 @@ add_executable(zetta-tests
   api/test_getting_started_churn.cpp
   api/test_standalone_models.cpp
   api/test_serving.cpp
+  api/test_pipeline_serving.cpp
   api/test_scoped_grants_api.cpp
   api/test_record_capabilities.cpp
   api/test_network_capabilities.cpp
   api/test_storage_capabilities.cpp
   api/test_object_routes.cpp
   api/test_row_security_api.cpp
+  api/test_analysis_access.cpp
   api/test_web_ui_forms.cpp
+  api/test_web_blob_authz.cpp
   api/test_web_ui_studio.cpp
   api/test_clerk_auth.cpp
   util/test_uuid.cpp
+  util/test_private_directory.cpp
   util/test_sha256.cpp
+  util/test_sha1.cpp
   util/test_fuzzy.cpp
   pipeline/test_validation.cpp
   pipeline/test_gate.cpp
@@ -72,6 +81,7 @@ add_executable(zetta-tests
   data/test_database.cpp
   data/test_replication_strategy.cpp
   data/test_record_store.cpp
+  data/test_entity_key_table.cpp
   network/test_network_records.cpp
   data/test_metric_store.cpp
   data/test_record_soak.cpp
@@ -87,6 +97,8 @@ add_executable(zetta-tests
   cloud/test_provisioner.cpp
   cloud/test_provisioner_detect.cpp
   cloud/test_node_bootstrap_env.cpp
+  cloud/test_node_bootstrap_script.cpp
+  cloud/test_secret_file.cpp
   cloud/test_add_nodes.cpp
   cloud/test_local_provisioner.cpp
   cloud/test_azure_provisioner.cpp
@@ -141,6 +153,7 @@ add_executable(zetta-tests
   index/test_distributed_fulltext.cpp
   query/test_distributed_select.cpp
   query/test_sql_write_permissions.cpp
+  query/test_parse_errors_never_crash.cpp
   index/test_node_search.cpp
   compute/test_compute_job.cpp
   compute/test_checkpoint.cpp
@@ -162,10 +175,16 @@ add_executable(zetta-tests
   pubsub/test_pubsub_capabilities.cpp
   governance/test_users_roles_tokens.cpp
   governance/test_roles.cpp
+  governance/test_authz_regressions.cpp
+  governance/test_identity_seal.cpp
   governance/test_scoped_grants.cpp
   governance/test_row_security.cpp
+  governance/test_system_catalog_access.cpp
+  governance/test_virtual_table_access.cpp
   governance/test_consent.cpp
+  governance/test_sandbox_escape.cpp
   pipeline/test_executor.cpp
+  pipeline/test_step_authority.cpp
   pipeline/test_run_progress.cpp
   usecases/churn/test_churn_step_executor.cpp
   usecases/churn/test_churn_solution.cpp
@@ -176,6 +195,7 @@ add_executable(zetta-tests
   testkit/test_testkit.cpp
   testkit/test_example_scripts.cpp
   governance/test_audit.cpp
+  governance/test_audit_completeness.cpp
   solutions/test_audit_ledger.cpp
   observability/test_activity.cpp
   pipeline/test_intent_compiler.cpp
@@ -203,6 +223,7 @@ add_executable(zetta-tests
   ddf/test_ddf_featurize_partitions.cpp
   ml/test_gbdt.cpp
   ml/test_model_import.cpp
+  ml/test_model_bounds.cpp
   ml/test_uplift.cpp
   ml/test_uplift_partitions.cpp
   ml/test_rank.cpp
@@ -241,15 +262,22 @@ add_executable(zetta-tests
   data/test_import.cpp
   data/test_add_dataset.cpp
   data/test_dataset_path.cpp
+  data/test_import_path.cpp
+  data/test_export_path.cpp
   data/test_dataset_catalog_typing.cpp
   data/test_featurize_plan.cpp
   connect/test_connector.cpp
   connect/test_postgres_connector.cpp
+  connect/test_mysql_connector.cpp
+  connect/test_lake_sql_connector.cpp
   connect/test_connection_store.cpp
   connect/test_credential_seal.cpp
   connect/test_distributed_fetch.cpp
   connect/test_distributed_ingest.cpp
   connect/test_native_http_transport.cpp
+  connect/test_destination_policy.cpp
+  connect/test_egress_policy.cpp
+  connect/test_connector_destinations.cpp
   connect/test_model_fetch.cpp
   usecases/churn/test_churn_dataset.cpp
   pipeline/test_n8n_import.cpp
@@ -271,8 +299,12 @@ add_executable(zetta-tests
   compute/test_node_job_coordinator.cpp
   cluster/test_cluster.cpp
   cluster/test_listen_port.cpp
+  cluster/test_cluster_setup.cpp
+  cluster/test_cluster_hello_bounds.cpp
   cluster/test_cluster_routing.cpp
   cluster/test_cluster_security.cpp
+  cluster/test_gossip_bandwidth.cpp
+  cluster/test_cluster_join_authority.cpp
   cluster/test_peer_gateway.cpp
   cluster/test_signal.cpp
   cluster/test_collectives.cpp
@@ -369,7 +401,10 @@ target_link_libraries(zetta-tests
   # test_clerk_auth.cpp signs a JWT against libcrypto directly. zetta-core
   # links OpenSSL::Crypto PRIVATE, so its include dirs never reach here and
   # <openssl/bn.h> is not found — link it on this target too (#992).
-  PRIVATE OpenSSL::Crypto)
+  PRIVATE OpenSSL::Crypto
+  # test_mysql_connector.cpp runs a fake MySQL server that accepts real TLS
+  # (SSL_accept), to exercise the connector's TLS upgrade end to end (#895).
+  PRIVATE OpenSSL::SSL)
 
 # gtest v1.15.2's gtest-printers.h converts char8_t -> char32_t in PrintTo,
 # which newer Clang flags under -Wcharacter-conversion. It is a header, so the
@@ -397,3 +432,36 @@ add_test(NAME zetta-refused-start-exit COMMAND zetta-refused-start-test)
 set_tests_properties(zetta-refused-start-exit PROPERTIES
   TIMEOUT 30
   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+
+# Process-level regression for #1393: no line a headless start writes carries
+# the cluster join token (flag, environment, or generated on first start).
+add_executable(zetta-startup-log-redaction-test
+  cluster/test_startup_log_redaction.cpp
+)
+target_compile_features(zetta-startup-log-redaction-test PRIVATE cxx_std_26)
+target_compile_definitions(zetta-startup-log-redaction-test PRIVATE
+  ZETTA_BINARY_PATH="$<TARGET_FILE:zetta>")
+add_dependencies(zetta-startup-log-redaction-test zetta)
+add_test(NAME zetta-startup-log-redaction COMMAND zetta-startup-log-redaction-test)
+set_tests_properties(zetta-startup-log-redaction PROPERTIES
+  TIMEOUT 400
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+# Chaos experiments (#842): an in-process mutual-TLS cluster tormented on a seeded
+# schedule, asserted to heal (cluster/chaos_harness.hpp). Its own executable so
+# every case carries the `chaos` label (`ctest -L chaos`). The default suite runs
+# the fast cases; the smoke skips unless ZETTA_CHAOS_SMOKE is set (until #835 is
+# fixed), and the long runs unless ZETTA_CHAOS_SCHEDULES / ZETTA_CHAOS_PROBE_ROUNDS is. See
+# docs/testing/chaos-experiments.md.
+add_executable(zetta-chaos-tests
+  cluster/test_chaos.cpp
+)
+target_compile_features(zetta-chaos-tests PRIVATE cxx_std_26)
+target_include_directories(zetta-chaos-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(zetta-chaos-tests PRIVATE zetta-core GTest::gtest_main)
+if(ZETTA_HAS_WNO_CHARACTER_CONVERSION)
+  target_compile_options(zetta-chaos-tests PRIVATE -Wno-character-conversion)
+endif()
+gtest_discover_tests(zetta-chaos-tests PROPERTIES LABELS chaos)
+# Built with zetta-tests, so the documented `--target zetta-tests && ctest` never
+# meets an unbuilt chaos executable.
+add_dependencies(zetta-tests zetta-chaos-tests)

@@ -46,7 +46,7 @@ is pluggable:
 
 | Engine | Where | Notes |
 |---|---|---|
-| `JsonlStore` | `storage/jsonl_store.hpp` | **Default.** JSON Lines on disk, chunked at 10k records/file; caches all records in memory for reads; loads existing chunks on construction. |
+| `JsonlStore` | `storage/jsonl_store.hpp` | **Default.** JSON Lines on disk, chunked at 10k records/file; caches all records in memory for reads; loads existing chunks on construction. Keeps `stored_bytes()`, its chunk files' size, as a counter every write updates (#1195), so a dataset list never lists the files. |
 | `JsonStore` | `storage/json_store.hpp` | In-memory only (no persistence). Kept for a future `:memory:` mode. |
 
 `at(i)` returns a [`ParquetLazyPtr`](lazy-rows.md), not a `const nlohmann::json&`

@@ -9,38 +9,75 @@
       "type": "string"
     },
     "entity_key_mapping": {
-      "additionalProperties": false,
-      "properties": {
-        "column": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "entries": {
-          "items": {
-            "additionalProperties": false,
-            "properties": {
-              "derived_id": {
-                "type": "integer"
-              },
-              "original_value": {
-                "minLength": 1,
-                "type": "string"
-              }
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "minLength": 1,
+              "type": "string"
             },
-            "required": [
-              "derived_id",
-              "original_value"
-            ],
-            "type": "object"
+            "entries": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "derived_id": {
+                    "type": "integer"
+                  },
+                  "original_value": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "derived_id",
+                  "original_value"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
           },
-          "type": "array"
+          "required": [
+            "column",
+            "entries"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "chunks": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "column": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "entry_count": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "owner": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "table": {
+              "const": "_entity_keys"
+            }
+          },
+          "required": [
+            "column",
+            "entry_count",
+            "table",
+            "owner",
+            "chunks"
+          ],
+          "type": "object"
         }
-      },
-      "required": [
-        "column",
-        "entries"
       ],
-      "type": "object"
+      "description": "A text entity column's derived-id map: inline, or (since #1255) a reference to its rows in the engine-internal _entity_keys table."
     },
     "features": {
       "additionalProperties": false,
@@ -539,6 +576,23 @@
     },
     "project_name": {
       "type": "string"
+    },
+    "published": {
+      "additionalProperties": false,
+      "properties": {
+        "caller": {
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "caller"
+      ],
+      "type": "object"
     },
     "reads": {
       "items": {

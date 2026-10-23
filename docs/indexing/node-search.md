@@ -49,6 +49,37 @@ zetta::index::SearchResult result = node.search(request, recorder, &trace);
    scatter-gather made visible, plus `wire_bytes_moved` and which `path`
    answered.
 
+## Caller authorization (#1403)
+
+The capability and served HTTP route set `SearchRequest::acting_id` and
+`acting_is_user` from their authenticated context. `Node::search` resolves the
+source table and applies its database/table `sql:read` grants before querying.
+Every indexed field must be readable, including for a named-field or IDs-only
+request: current backends may match across all fields. Use an index containing
+only readable columns for a caller with column grants. A tool grant or an
+index's exposure flag does not grant access to its source data. Indexed table
+search excludes the reserved connection store and the virtual `system`
+namespace; use their governed read interfaces instead.
+
+Consolidated search captures SQL's SELECT row-policy decision and caller
+user/roles on the owner thread, then checks each current source row before
+returning it or applying `top_k`. Missing or unreadable rows are omitted,
+including when only IDs and scores were requested.
+
+A distributed search subject to row security is refused. Partition indexes
+retain indexed row versions, whose owner columns can differ from current raw
+rows after an update or deletion; they cannot safely decide current row
+visibility. This follows SQL's refusal of partition-only reads under RLS.
+Trusted local and admin callers retain SQL's policy bypass. A future distributed
+hit check against current authoritative rows can re-enable restricted search.
+
+Distributed requests identify the authorized database. A peer refuses a query
+if its same-named table was built from another database. Empty caller identities
+remain reserved for trusted in-process callers, matching SQL. Legacy keys also
+require `data:read`; SQL's existing legacy row-policy bypass contract remains
+owned by #1361. Old peers reject the added `database` request field, so
+new-coordinator queries to old peers fail closed; upgrade peers together.
+
 ## Each hit carries its row's fields (#1243)
 
 A hit's `row_id` is the engine's internal row id, which no outside caller can
@@ -93,8 +124,9 @@ machinery:
   `search()` before it queries) keeps this node's per-partition sub-indexes
   current: for every Search-kind `Index` entity it (re)builds
   `build_local` over the placed partitions this node owns whenever that input
-  set changes — fingerprint-guarded, so the steady-state tick cost is a string
-  compare. Since `Index` entities and `DatasetPartition`s are replicated, a
+  set or source database name changes — fingerprint-guarded, so a rename also
+  refreshes the peer authorization binding; the steady-state tick cost is a
+  string compare. Since `Index` entities and `DatasetPartition`s are replicated, a
   peer that has never searched still builds and serves its shard.
 - **Sub-index backend:** `OramaCoreFulltextIndex` (BM25F) when the private
   submodule is compiled in; otherwise the exact-match `InMemoryIndexBackend`
@@ -125,11 +157,11 @@ machinery:
 
 ## Boundaries
 
-**No new JSON format.** The scatter-gather wire payloads are the existing
-schema-validated `fulltext_query` / `fulltext_hits` messages
-([distributed-fulltext.md](distributed-fulltext.md)); the capability's input
-rides the registry's schema-as-code validation; `SearchRequest`/`SearchResult`
-are in-process C++ types.
+The existing schema-validated `fulltext_query` message gains optional
+`database`, identifying the authorized source (#1403); `fulltext_hits` is
+unchanged ([distributed-fulltext.md](distributed-fulltext.md)). The capability's
+input rides the registry's schema-as-code validation; `SearchRequest` and
+`SearchResult` are in-process C++ types.
 
 ## Tests
 
@@ -147,15 +179,18 @@ registry (`list_indexes` → `search` → `get_trace` with its per-peer spans,
 #642) — in
 [`tests/api/test_search_journey.cpp`](../../tests/api/test_search_journey.cpp).
 
-Known platform issue: the **real-BM25F** ranking-oracle assertions
-([#611](https://github.com/oramasearch/zetta/issues/611)) fail deterministically
-on some checkouts — a per-shard IDF tie-break, unrelated to this entry point
+With the real BM25F backend the distributed query runs a statistics round first
+(`fulltext.stats`, recorded as one `search:statistics` span) so every shard scores
+with the merged corpus statistics and ranks exactly as one index would
+([#851](https://github.com/oramasearch/zetta/issues/851)); the per-shard IDF
+divergence behind the old **real-BM25F** ranking-oracle failures
+([#611](https://github.com/oramasearch/zetta/issues/611)) no longer applies. This
+is unrelated to this entry point
 (the entry-point suite uses the partition-independent reference scorer).
 
 ## Later slices
 
-Vector / semantic kinds behind the same `SearchRequest`; global-statistics
-scoring (`dfs_query_then_fetch`); dropping stale sub-indexes when an index
+Vector / semantic kinds behind the same `SearchRequest`; dropping stale sub-indexes when an index
 entity is dropped mid-flight (today they linger, unqueried, until restart);
 peer-side spans stitched into the coordinator's trace (cross-node propagation,
 [#640](https://github.com/oramasearch/zetta/issues/640)).

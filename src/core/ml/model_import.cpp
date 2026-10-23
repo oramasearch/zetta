@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -162,6 +163,11 @@ std::vector<std::string> default_feature_names(std::size_t count) {
 std::optional<std::vector<std::string>> resolve_feature_names(
     const ModelImportOptions& options, std::vector<std::string> from_file,
     std::size_t feature_count, std::string* error) {
+    if (feature_count > options.limits.max_features ||
+        from_file.size() > options.limits.max_features ||
+        options.feature_names.size() > options.limits.max_features) {
+        return refuse<std::vector<std::string>>(error, "model feature count exceeds the import limit");
+    }
     if (!options.feature_names.empty()) {
         if (options.feature_names.size() != feature_count) {
             return refuse<std::vector<std::string>>(
@@ -649,12 +655,20 @@ std::optional<ImportedModel> import_onnx(std::string_view bytes, const ModelImpo
     }
     std::size_t feature_count = 0;
     if (input->dims.size() == 2 && input->dims[1] > 0) {
+        if (static_cast<std::uint64_t>(input->dims[1]) > options.limits.max_features) {
+            return refuse<ImportedModel>(error, "ONNX model feature count exceeds the import limit");
+        }
         feature_count = static_cast<std::size_t>(input->dims[1]);
-    } else {
-        for (std::size_t index = 0; index < node_count; ++index) {
-            if (modes[index] != "LEAF") {
-                feature_count = std::max(feature_count, static_cast<std::size_t>(feature_ids[index] + 1));
-            }
+    }
+    for (std::size_t index = 0; index < node_count; ++index) {
+        if (modes[index] == "LEAF") continue;
+        // Check before adding one or narrowing to the engine's int feature index.
+        if (feature_ids[index] < 0 ||
+            static_cast<std::uint64_t>(feature_ids[index]) >= options.limits.max_features) {
+            return refuse<ImportedModel>(error, "ONNX split feature exceeds the import limit");
+        }
+        if (input->dims.size() != 2 || input->dims[1] <= 0) {
+            feature_count = std::max(feature_count, static_cast<std::size_t>(feature_ids[index]) + 1);
         }
     }
     const double divisor = aggregate == "AVERAGE" ? static_cast<double>(tree_order.size()) : 1.0;
@@ -728,6 +742,9 @@ std::optional<ImportedModel> import_onnx(std::string_view bytes, const ModelImpo
     if (const auto names = onnx->metadata.find("feature_names"); names != onnx->metadata.end()) {
         const nlohmann::json parsed = nlohmann::json::parse(names->second, nullptr, false);
         if (parsed.is_array()) {
+            if (parsed.size() > options.limits.max_features) {
+                return refuse<ImportedModel>(error, "ONNX feature names exceed the import limit");
+            }
             for (const nlohmann::json& name : parsed) {
                 if (name.is_string()) named.push_back(name.get<std::string>());
             }
@@ -800,11 +817,21 @@ std::optional<ImportedModel> import_xgboost(const nlohmann::json& document, Mode
             if (type == "c") return fail("it has categorical features; the engine reads numeric ones");
         }
     }
+    const auto declared_features =
+        xgboost_number(parameters.value("num_feature", nlohmann::json("0")));
+    if (!declared_features || !std::isfinite(*declared_features) || *declared_features < 0 ||
+        std::trunc(*declared_features) != *declared_features ||
+        *declared_features > static_cast<double>(options.limits.max_features)) {
+        return fail("num_feature must be a nonnegative integer within the import limit");
+    }
+    const auto feature_count = static_cast<std::size_t>(*declared_features);
     std::vector<std::string> names;
     if (const auto found = learner.find("feature_names"); found != learner.end() && found->is_array()) {
+        if (found->size() > options.limits.max_features) {
+            return fail("feature names exceed the import limit");
+        }
         for (const nlohmann::json& name : *found) names.push_back(name.get<std::string>());
     }
-    const auto feature_count = static_cast<std::size_t>(count_of("num_feature"));
 
     GbdtModel model;
     model.objective = engine_objective;
@@ -946,9 +973,13 @@ std::optional<ImportedModel> import_lightgbm(std::string_view text, const ModelI
         else trees.back()[key] = value;
         if (end == text.size()) break;
     }
-    const auto header_value = [&](std::string_view key) {
+    // A view of the value kept in `header`, which outlives every use below. It once
+    // returned a copy, and split_words() of that temporary left views into freed
+    // memory: the objective was read from it and refused, quoting the freed bytes
+    // (lake#780).
+    const auto header_value = [&](std::string_view key) -> std::string_view {
         const auto found = header.find(key);
-        return found == header.end() ? std::string{} : found->second;
+        return found == header.end() ? std::string_view{} : std::string_view(found->second);
     };
     if (header_value("num_class") != "1" || header_value("num_tree_per_iteration") != "1") {
         return fail("it predicts several classes; the engine reads one score");
@@ -986,9 +1017,15 @@ std::optional<ImportedModel> import_lightgbm(std::string_view text, const ModelI
     if (!max_feature || max_feature->size() != 1 || max_feature->front() < 0) {
         return fail("it has no max_feature_idx");
     }
-    const auto feature_count = static_cast<std::size_t>(max_feature->front() + 1);
+    if (static_cast<std::size_t>(max_feature->front()) >= options.limits.max_features) {
+        return fail("model feature count exceeds the import limit");
+    }
+    const auto feature_count = static_cast<std::size_t>(max_feature->front()) + 1;
     std::vector<std::string> names;
     for (const std::string_view word : split_words(header_value("feature_names"))) {
+        if (names.size() == options.limits.max_features) {
+            return fail("feature names exceed the import limit");
+        }
         names.emplace_back(word);
     }
 
@@ -998,9 +1035,10 @@ std::optional<ImportedModel> import_lightgbm(std::string_view text, const ModelI
     model.learning_rate = 1.0;
     const double scale = sigmoid / (average_output ? static_cast<double>(std::max<std::size_t>(trees.size(), 1)) : 1.0);
     for (const auto& tree_fields : trees) {
-        const auto field = [&](std::string_view key) {
+        const auto field = [&](std::string_view key) -> std::string_view {
             const auto found = tree_fields.find(key);
-            return found == tree_fields.end() ? std::string{} : found->second;
+            return found == tree_fields.end() ? std::string_view{}
+                                              : std::string_view(found->second);
         };
         const auto leaves = parse_numbers<int>(field("num_leaves"));
         if (!leaves || leaves->size() != 1 || leaves->front() < 1) return fail("a tree has no num_leaves");
@@ -1098,6 +1136,10 @@ std::optional<ImportedModel> import_lightgbm(std::string_view text, const ModelI
 
 std::optional<ImportedModel> import_zetta(const nlohmann::json& body, const ModelImportOptions& options,
                                           std::string* error) {
+    if (const auto names = body.find("feature_names");
+        names != body.end() && names->is_array() && names->size() > options.limits.max_features) {
+        return refuse<ImportedModel>(error, "model feature names exceed the import limit");
+    }
     std::string reason;
     std::optional<GbdtModel> model = GbdtModel::from_json(body, &reason);
     if (!model) {
@@ -1222,8 +1264,11 @@ double float_less_bound(float upper) {
     return below_is_even ? std::nextafter(middle, kInfinity) : middle;
 }
 
-std::optional<ImportedModel> import_model(std::string_view bytes, const ModelImportOptions& options,
-                                          std::string* error) {
+namespace {
+
+// Recognise the format and run its reader. import_model checks what comes back.
+std::optional<ImportedModel> read_model(std::string_view bytes, const ModelImportOptions& options,
+                                        std::string* error) {
     const std::string_view text = trim_start(bytes);
     if (text.empty()) return refuse<ImportedModel>(error, "the file is empty");
     std::optional<ModelFileFormat> format = options.format;
@@ -1282,6 +1327,58 @@ std::optional<ImportedModel> import_model(std::string_view bytes, const ModelImp
         }
     }
     return refuse<ImportedModel>(error, supported_model_formats());
+}
+
+}  // namespace
+
+std::optional<ImportedModel> import_model(std::string_view bytes, const ModelImportOptions& options,
+                                          std::string* error) {
+    if (options.limits.max_features == 0 ||
+        options.limits.max_features > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        options.limits.max_bytes == 0) {
+        return refuse<ImportedModel>(error, "invalid model import limits");
+    }
+    if (bytes.size() > options.limits.max_bytes) {
+        return refuse<ImportedModel>(error, "model bytes exceed the import limit");
+    }
+    if (options.feature_names.size() > options.limits.max_features) {
+        return refuse<ImportedModel>(error, "caller feature names exceed the import limit");
+    }
+    std::optional<ImportedModel> imported = read_model(bytes, options, error);
+    if (!imported) return std::nullopt;
+    // Every reader checks splits as it goes, but against the counts it saw at the
+    // time; the feature names can still change after that (the caller's list
+    // replaces the file's). Check the finished model once more against its own,
+    // final feature list (#1390): a split past the end of it would read past the
+    // row at scoring and write past the explanation in TreeSHAP.
+    std::string reason;
+    if (!imported->model.validate_structure(&reason)) {
+        return refuse<ImportedModel>(error, "the model does not hold together: " + reason);
+    }
+    return imported;
+}
+
+std::optional<ModelImportLimits> model_import_limits_from_environment(std::string* error) {
+    ModelImportLimits limits;
+    const auto read = [&](const char* name, std::size_t& limit, std::size_t maximum) {
+        const char* configured = std::getenv(name);
+        if (configured == nullptr) return true;
+        const std::string_view text(configured);
+        std::size_t value = 0;
+        const auto [end, status] = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (status != std::errc{} || end != text.data() + text.size() || value == 0 || value > maximum) {
+            if (error) *error = std::string(name) + ": expected a positive integer within the engine limit";
+            return false;
+        }
+        limit = value;
+        return true;
+    };
+    if (!read("ZETTA_MODEL_IMPORT_MAX_FEATURES", limits.max_features,
+              static_cast<std::size_t>(std::numeric_limits<int>::max())) ||
+        !read("ZETTA_MODEL_IMPORT_MAX_BYTES", limits.max_bytes, std::numeric_limits<std::size_t>::max())) {
+        return std::nullopt;
+    }
+    return limits;
 }
 
 std::optional<std::string> export_onnx(const GbdtModel& model, std::string* error) {

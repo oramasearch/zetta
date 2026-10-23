@@ -86,6 +86,57 @@ malformed / truncated / unsupported page, or an out-of-range dictionary index,
 fails the decode with a reason instead of reading out of bounds or producing
 wrong values — the binary analog of schema-at-the-boundary.
 
+### Physical types and decoded shape (LSR-167, #1400)
+
+The footer states a column's physical type twice: once on the schema leaf and
+once on every column chunk. A crafted file can make them disagree, or make one
+row group's chunk disagree with another's. The decoders trust neither copy on
+its own:
+
+- `decode_column_chunk` refuses a chunk whose `type` is not the schema leaf's
+  type (`column chunk physical type … does not match the schema's …`). Every
+  row group is checked against the same leaf, so `decode_column` can never
+  concatenate two physical types into one column; it also refuses a part whose
+  type differs from the merged column's, as a second check.
+- `validate_decoded_column(column)` is the shape every row transpose relies
+  on: a supported physical type, `validity` empty or exactly `num_rows` long,
+  exactly one value per present row in the vector `type` selects, and every
+  other value vector empty. It returns `""` when the column is consistent, else
+  the reason. Both decoders run it on their result before returning it, and the
+  three consumers that index the dense vectors by a running row counter
+  (`read_parquet_rows`, `ParquetPager::decode_page` in the
+  [Parquet store](parquet-store.md), and `to_json`) never index past the dense
+  values: the first two run the check and fail, and `to_json` emits null for a
+  present row with no value behind it.
+
+Before this check, a file whose leaf changed from `int64` to `boolean` in its
+second row group decoded "successfully": the merged column kept the first
+group's type, counted every group's rows, and the transpose read past the end
+of the `int64` vector.
+
+### Hybrid run bounds (LSR-176, #1409)
+
+Dictionary indices (`PLAIN_DICTIONARY` and `RLE_DICTIONARY`) and definition
+levels share the same RLE/bit-packed decoder. It accepts widths from 0 through
+64, checks the declared group count before multiplying it by eight values or
+by the bit width in bytes, and requires the entire run to fit its input span.
+Each bit-packed byte is then read through a cursor restricted to that run.
+For definition levels, this span ends before the PLAIN value bytes that follow
+it in the page. A partially used final group still needs all its encoded bytes;
+its unused values are discarded as before.
+
+The shared compact reader rejects varints whose tenth byte exceeds one, before
+shifting it into a 64-bit header. Zero-length runs, truncated RLE values, and
+RLE values exceeding the declared width also fail. Bit extraction handles
+64-bit values without shifting by 64 or overflowing an intermediate buffer.
+Valid zero-bit streams and padded groups remain supported. These checks change
+no API or JSON schema; malformed imports return a decode error.
+
+Regression tests construct exact uncompressed page bodies with wrapped byte
+counts, wrapped value counts, overflowing headers, and truncated dictionary and
+level streams. Positive cases cover zero-bit streams, padded groups, and widths
+through 64 bits.
+
 ## How a page is read
 
 1. **Page header** — each page begins with a Thrift compact `PageHeader`
@@ -152,7 +203,11 @@ ZETTA_WRITE_SCHEMAS=1 ctest --test-dir build -R Schemas   # if the schema change
 
 The negative tests cover the trust boundary: a codec without a decoder yet
 (zstd) fails with `codec` in the reason, a truncated file fails rather than
-reading out of bounds, and out-of-range row-group / column indices are rejected.
+reading out of bounds, out-of-range row-group / column indices are rejected, and
+a file whose chunk physical type disagrees with its schema leaf (in one row
+group or between row groups) is refused by the chunk decoder, the column
+decoder and `read_parquet_rows` alike. The test builds that file with the native
+writer and rewrites one chunk's type byte in the footer.
 A bonus test decodes `account_id` (snappy + dictionary int64) from the
 *independently-built* metadata fixture, cross-checking the decoder against a
 different codec/encoding mix.
@@ -170,5 +225,5 @@ decompress + decode them into typed values + a validity bitmap; the
 [reader → DDF wiring](parquet-reader.md) (#508) turns those into typed
 [DDF](../ddf/ddf.md) columns (with column projection) and removes the
 `ChurnDataFormat::Parquet` "not yet supported" error. zstd page decompression is
-the sibling codec to add behind the [Snappy](parquet-snappy.md) per-page seam
+the sibling codec to add behind the [Snappy](parquet-snappy.md) per-page decoder
 when a target file needs it.

@@ -3,16 +3,19 @@
 #include <algorithm>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/connect/connection_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_registry.hpp"
 #include "zetta/node.hpp"
+#include "zetta/query/executor.hpp"
 #include "zetta/storage/engine.hpp"
 
 namespace zetta::index {
@@ -72,12 +75,13 @@ bool has_placed_partitions(Node& node, const std::string& table_id) {
 
 // The consolidated path's row lookup (#1243): the index was built over the
 // table's own store (the index step executor), so its rows are on this node.
-// Fills each hit's requested fields from them; a row that is gone keeps an
-// empty object.
+// Removes missing or unauthorized rows before filling requested fields.
 void attach_consolidated_fields(Node& node, const std::string& table,
                                 const std::vector<std::string>& fields,
-                                std::vector<SearchHit>& hits) {
-    if (fields.empty() || hits.empty()) return;
+                                std::vector<SearchHit>& hits,
+                                const zetta::query::ReadFilter& filter) {
+    if (hits.empty()) return;
+    std::unordered_set<std::string> allowed;
     std::unordered_map<std::string, SearchHit*> wanted;
     for (SearchHit& hit : hits) wanted.emplace(hit.row_id, &hit);
     for (const std::string& name : node.database_names()) {
@@ -92,6 +96,11 @@ void attach_consolidated_fields(Node& node, const std::string& table,
             if (hit == wanted.end()) continue;
             if (const zetta::storage::ParquetLazyPtr row = store.at(i);
                 row && row->is_object()) {
+                if (!filter.allows(*row)) {
+                    wanted.erase(hit);
+                    continue;
+                }
+                allowed.insert(hit->second->row_id);
                 for (const std::string& field : fields) {
                     if (const auto value = row->find(field); value != row->end()) {
                         hit->second->fields[field] = *value;
@@ -100,8 +109,11 @@ void attach_consolidated_fields(Node& node, const std::string& table,
             }
             wanted.erase(hit);
         }
-        return;
+        break;
     }
+    std::erase_if(hits, [&](const SearchHit& hit) {
+        return !allowed.contains(hit.row_id);
+    });
 }
 
 }  // namespace
@@ -174,9 +186,61 @@ SearchResult search(Node& node, const SearchRequest& request,
         }
     }
 
+    if (!request.field.empty() &&
+        std::ranges::find(result.spec.fields, request.field) ==
+            result.spec.fields.end()) {
+        return fail(IndexStatus::invalid_argument(
+            "search: query field is not indexed"));
+    }
+
+    // Resolve once, exactly as hydration/build does. Authorization must apply
+    // to that database's table, never a different same-named table (#1403).
+    std::string database_name;
+    for (const std::string& name : node.database_names()) {
+        const auto database = node.find_database(name);
+        if (database && database->find_table(result.spec.table)) {
+            database_name = name;
+            break;
+        }
+    }
+    if (database_name.empty()) {
+        return fail(
+            IndexStatus::not_found("search: source table is unavailable"));
+    }
+    // SQL exposes system views instead of stored system tables, and never
+    // exposes the reserved connection store, even to an administrator.
+    if (database_name == "system" ||
+        database_name == zetta::connect::kConnectionDatabase) {
+        return fail(IndexStatus::invalid_argument(
+            "search: permission denied: source database is reserved by SQL"));
+    }
+    const zetta::governance::Operation read{
+        zetta::governance::CapabilityDomain::Data, "read"};
+    auto access = node.column_scope(request.acting_id, request.acting_is_user,
+                                    read, database_name, result.spec.table);
+    // Legacy keys must also hold the data right (column_scope's legacy contract
+    // is being tightened independently in #1361).
+    if (!request.acting_id.empty() && !request.acting_is_user &&
+        !node.authorize(request.acting_id, read))
+        access.table_allowed = false;
+    if (!access.table_allowed) {
+        return fail(IndexStatus::invalid_argument(
+            "search: permission denied: no sql:read grant"));
+    }
+    for (const std::string& field : result.spec.fields) {
+        if (!access.allows(field)) {
+            return fail(IndexStatus::invalid_argument(
+                "search: permission denied: query uses an unreadable column"));
+        }
+    }
+    const zetta::query::ReadFilter filter = zetta::query::read_filter(
+        node, request.acting_id, request.acting_is_user, database_name,
+        result.spec.table);
+
     IndexQuery query;
     query.field = request.field;
     query.term = request.query;
+    // Apply the caller's cap only after removing rows it cannot read.
     query.top_k = request.top_k;
 
     // (2) Route: placed partitions on a clustered node -> the distributed
@@ -190,13 +254,21 @@ SearchResult search(Node& node, const SearchRequest& request,
 
     if (placed && distributed) {
         result.path = SearchPath::Distributed;
+        // The indexed partition body can retain an old owner after a raw-row
+        // update. Until hits can be checked against current authoritative rows,
+        // refusing an RLS search prevents stale policy operands from widening it.
+        if (!filter.unrestricted) {
+            return fail(IndexStatus::invalid_argument(
+                "search: row-level security is enabled; distributed search is unavailable"));
+        }
         // Make this node's own sub-indexes current before answering (peers keep
         // theirs current the same way, from their tick).
         node.reconcile_search_indexes();
         const DistributedFulltextIndex::QueryResult distributed_result =
             distributed->query(result.spec, query, request.timeout, recorder,
                                &inner,
-                               return_fields.empty() ? nullptr : &return_fields);
+                               return_fields.empty() ? nullptr : &return_fields,
+                               &database_name);
         if (!distributed_result.ok()) return fail(distributed_result.status);
         result.hits.reserve(distributed_result.row_ids.size());
         for (std::size_t i = 0; i < distributed_result.row_ids.size(); ++i) {
@@ -222,7 +294,10 @@ SearchResult search(Node& node, const SearchRequest& request,
         zetta::observability::ScopedSpan local_span(recorder, inner,
                                                     "search:local");
         local_span.set_attribute("node_id", node.node_id());
-        const IndexQueryResult query_result = backend->query(result.spec, query);
+        IndexQuery uncapped = query;
+        if (!filter.unrestricted) uncapped.top_k = 0;
+        const IndexQueryResult query_result =
+            backend->query(result.spec, uncapped);
         if (!query_result.status.ok()) {
             local_span.finish(/*ok=*/false, query_result.status.message);
             return fail(query_result.status);
@@ -234,7 +309,7 @@ SearchResult search(Node& node, const SearchRequest& request,
             result.hits.push_back(SearchHit{query_result.row_ids[i], score});
         }
         attach_consolidated_fields(node, result.spec.table, return_fields,
-                                   result.hits);
+                                   result.hits, filter);
         NodeContribution self;
         self.node_id = node.node_id();
         self.local = true;
@@ -244,6 +319,10 @@ SearchResult search(Node& node, const SearchRequest& request,
         local_span.set_attribute("hits", self.hits);
         local_span.finish(/*ok=*/true);
         result.nodes.push_back(std::move(self));
+    }
+
+    if (request.top_k && result.hits.size() > request.top_k) {
+        result.hits.resize(request.top_k);
     }
 
     // (3) The engine's plan + result shape, on the root span (observability.md).

@@ -9,7 +9,7 @@
           "error": {
             "properties": {
               "code": {
-                "description": "invalid_input (400) · unauthorized / consent_required (403) · not_found / unknown_capability (404) · conflict / fenced / held (409) · range_not_satisfiable (416) · engine_error (422) · busy (503) · quota_exceeded (507)",
+                "description": "invalid_input (400) · unauthorized / consent_required (403) · not_found / unknown_capability (404) · conflict / fenced / held (409) · payload_too_large (413) · range_not_satisfiable (416) · engine_error (422) · rate_limited (429) · busy (503) · quota_exceeded (507)",
                 "type": "string"
               },
               "details": {
@@ -60,7 +60,7 @@
   "info": {
     "description": "The capability registry rendered as plain HTTP routes: reads are GET /v1/<name> (input in the query string), actions and jobs are POST /v1/<name> (input as the JSON body). The same registry is served as MCP tools on POST /mcp — one registry, two renderings, zero drift. Every response carries a trace_id; read the full trace back with get_trace.",
     "title": "Orama Zetta control surface",
-    "version": "0.4.0"
+    "version": "0.5.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -215,7 +215,7 @@
     },
     "/v1/add_dataset": {
       "post": {
-        "description": "Load a local parquet/jsonl/json/csv file into a new partitioned table placed across the cluster (audited as dataset_added; visible in system.datasets). Requires orchestration:add_dataset.",
+        "description": "Load a parquet/jsonl/json/csv file staged in the node's import directory (imports/ under its data directory) into a new partitioned table placed across the cluster (audited as dataset_added; visible in system.datasets). The path is relative to that directory (#1391). Requires orchestration:add_dataset.",
         "operationId": "add_dataset",
         "requestBody": {
           "content": {
@@ -247,7 +247,7 @@
                     "type": "boolean"
                   },
                   "path": {
-                    "description": "a parquet/jsonl/json/csv file on the node's filesystem",
+                    "description": "a parquet/jsonl/json/csv file staged in the node's import directory (imports/ under its data directory), named relative to it: no absolute path, no '..', no symbolic link (#1391)",
                     "minLength": 1,
                     "type": "string"
                   },
@@ -520,7 +520,7 @@
     },
     "/v1/agent_run": {
       "post": {
-        "description": "Give an agent a plain-language ask; it recognizes the use case, compiles a real execution graph from it, and runs that graph through the gate + the real engine (churn today) — end to end in one call. The base agent needs no tool-calling fine-tune for this. Returns the agent's reply, the built graph's steps, and the run id (poll get_run / system.runs). Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "description": "Give an agent a plain-language ask; it recognizes the use case and compiles a real execution graph from it, stored on the project as a proposed plan. Nothing runs: the call is refused (not_approved) and names the plan to approve. Once it is approved (approve_plan), agent_run with that project + graph_name runs it through the correctness gate + the real engine (churn today) and returns the reply, the graph's steps, and the run id (poll get_run / system.runs). agent_run never approves a plan itself (#913). Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
         "operationId": "agent_run",
         "requestBody": {
           "content": {
@@ -658,7 +658,7 @@
                     "type": "string"
                   },
                   "graph_name": {
-                    "description": "name for the stored graph (default derived)",
+                    "description": "name for the stored graph (default derived). With `project`, naming a graph already stored there runs that plan if it is approved, and is refused if it is only proposed",
                     "type": "string"
                   },
                   "intent": {
@@ -743,7 +743,7 @@
                           "type": "object"
                         },
                         "shape": {
-                          "description": "the compiled template: 'churn' | 'generic'",
+                          "description": "the compiled template: 'churn' | 'generic', or 'approved' when an approved plan already stored on the project ran",
                           "type": "string"
                         },
                         "steps": {
@@ -798,7 +798,7 @@
             "description": "the engine refused or the owning loop is saturated (busy)"
           }
         },
-        "summary": "Agent builds + runs a graph",
+        "summary": "Agent builds a plan; runs it once approved",
         "tags": [
           "job"
         ]
@@ -907,7 +907,7 @@
     },
     "/v1/analyze_dataset": {
       "get": {
-        "description": "Read a landed dataset's semantic types, evidence, distributions, grain, candidate keys, same-database joins, and leakage candidates. No side effects. Requires api:query.",
+        "description": "Read a landed dataset's semantic types, evidence, distributions, grain, candidate keys, same-database joins, and leakage candidates. Reads as the caller: only tables, columns and rows its own SQL could read; a column it may not read is omitted (#1396). No side effects. Requires api:query.",
         "operationId": "analyze_dataset",
         "parameters": [
           {
@@ -1755,6 +1755,203 @@
         ]
       }
     },
+    "/v1/approve_run_proposal": {
+      "post": {
+        "description": "Say yes to a proposed run: create exactly the Project and Pipeline its preview named, approve the plan under your name, and run it through the correctness gate and the real engine with your own rights. Returns the run handle (poll get_run). Refuses a proposal that does not exist or was already decided. Requires orchestration:approve_run_proposal. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "approve_run_proposal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "proposal_id": {
+                    "description": "the proposal's id",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "proposal_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved",
+                            "rejected"
+                          ],
+                          "type": "string"
+                        },
+                        "decide": {
+                          "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                          "type": "object"
+                        },
+                        "decided_at": {
+                          "type": "string"
+                        },
+                        "decided_by": {
+                          "type": "string"
+                        },
+                        "graph": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                          "properties": {
+                            "creates_project": {
+                              "type": "boolean"
+                            },
+                            "dataset": {
+                              "properties": {
+                                "description": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "methodology": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "shape": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "template": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "proposal_id": {
+                          "type": "string"
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        },
+                        "rejection_reason": {
+                          "type": "string"
+                        },
+                        "run": {
+                          "description": "the run `run` started (run_id + engine + status) — poll get_run",
+                          "type": "object"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "proposal_id",
+                        "approval",
+                        "message",
+                        "preview",
+                        "run"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Approve a run proposal",
+        "tags": [
+          "job"
+        ]
+      }
+    },
     "/v1/assign": {
       "post": {
         "description": "Assign an entity deterministically before any proposed action, suppress model-driven actions in protected tiers, and durably log explicit exemptions. Mutates assignment state. Requires orchestration:assign.",
@@ -2018,7 +2215,7 @@
             "required": false,
             "schema": {
               "description": "long-poll: wait up to this long when nothing is there yet",
-              "maximum": 30000,
+              "maximum": 60000,
               "minimum": 0,
               "type": "integer"
             }
@@ -2230,7 +2427,7 @@
                   },
                   "wait_ms": {
                     "description": "long-poll: wait up to this long when nothing is there yet",
-                    "maximum": 30000,
+                    "maximum": 60000,
                     "minimum": 0,
                     "type": "integer"
                   }
@@ -2534,7 +2731,7 @@
     },
     "/v1/chat": {
       "get": {
-        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads the agent's model (a local checkpoint dir). No persistent side effects. Requires api:query.",
+        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads only an operator-registered checkpoint. It changes nothing on the node: a turn that asks to build something returns a run PROPOSAL (propose_run, under the caller's own rights) with an impact preview, and nothing is created until approve_run_proposal. Also accepts a JSON-body POST. Requires api:query.",
         "operationId": "chat",
         "parameters": [
           {
@@ -2544,6 +2741,17 @@
             "required": true,
             "schema": {
               "description": "the agent's id",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "when the turn proposes a run, the dataset it would train on (`database.table` or a dataset directory); the built-in demo dataset when omitted (#969)",
+            "in": "query",
+            "name": "dataset_path",
+            "required": false,
+            "schema": {
+              "description": "when the turn proposes a run, the dataset it would train on (`database.table` or a dataset directory); the built-in demo dataset when omitted (#969)",
               "minLength": 1,
               "type": "string"
             }
@@ -2564,6 +2772,18 @@
             "in": "query",
             "name": "history",
             "required": false
+          },
+          {
+            "description": "when the turn proposes a run, the rows it holds out to measure the model on data it did not train on (#953)",
+            "in": "query",
+            "name": "holdout_fraction",
+            "required": false,
+            "schema": {
+              "description": "when the turn proposes a run, the rows it holds out to measure the model on data it did not train on (#953)",
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            }
           },
           {
             "in": "query",
@@ -2662,6 +2882,213 @@
                         "pipeline": {
                           "description": "the proposed Pipeline, when the turn built one",
                           "type": "object"
+                        },
+                        "proposal": {
+                          "description": "when the turn is an `action`, the run it proposes (propose_run's output): the impact preview and the calls that approve or reject it. Nothing exists until approve_run_proposal — no Project, no Pipeline, no run (#969)",
+                          "type": "object"
+                        },
+                        "proposal_warning": {
+                          "description": "why an `action` turn carries no proposal (the ask did not compile, or the caller may not propose runs)",
+                          "type": "string"
+                        },
+                        "raw": {
+                          "description": "the raw generation, present only when `kind` is `unparsed`. For developers and traces - never render it to a user",
+                          "type": "string"
+                        },
+                        "reply": {
+                          "type": "string"
+                        },
+                        "rounds": {
+                          "type": "integer"
+                        },
+                        "tool_calls": {
+                          "items": {
+                            "properties": {
+                              "detail": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string"
+                              },
+                              "tool": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "reply",
+                        "tool_calls",
+                        "rounds",
+                        "grounded",
+                        "kind"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Chat with an agent",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads only an operator-registered checkpoint. It changes nothing on the node: a turn that asks to build something returns a run PROPOSAL (propose_run, under the caller's own rights) with an impact preview, and nothing is created until approve_run_proposal. Also accepts a JSON-body POST. Requires api:query.",
+        "operationId": "chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "description": "the agent's id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dataset_path": {
+                    "description": "when the turn proposes a run, the dataset it would train on (`database.table` or a dataset directory); the built-in demo dataset when omitted (#969)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "history": {
+                    "description": "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what ran, not to the prose.",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "holdout_fraction": {
+                    "description": "when the turn proposes a run, the rows it holds out to measure the model on data it did not train on (#953)",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_new_tokens": {
+                    "maximum": 2048,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "max_rounds": {
+                    "maximum": 8,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "message": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "scope the answer to this project (name or uuid): its trained model's measure and ranked drivers are given to the agent, so it answers from what the pipeline actually produced instead of from priors (#914)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent",
+                  "message"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "grounded": {
+                          "description": "true only when a project was named AND it has a trained model whose real measure + ranked drivers were given to the agent. False means the reply rests on the model's priors — present it as such, never as a measured result (#914)",
+                          "type": "boolean"
+                        },
+                        "grounded_project": {
+                          "description": "the Project this reply was grounded in. Present whenever grounding happened — including when the engine chose it, because the caller named none and the most recent successful run's Project was used",
+                          "type": "string"
+                        },
+                        "grounding_warning": {
+                          "description": "why the reply is ungrounded, when it is",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "description": "the mode the agent declared for this turn: answer renders as prose, clarify is a question awaiting a reply, abstain is a refusal to present as such, action carries a proposed Pipeline. `unparsed` means the generation was not a valid envelope - `reply` then carries an honest failure sentence and the raw generation moves to `raw`, so it never reaches a chat window (#979)",
+                          "enum": [
+                            "action",
+                            "answer",
+                            "clarify",
+                            "abstain",
+                            "unparsed"
+                          ],
+                          "type": "string"
+                        },
+                        "pipeline": {
+                          "description": "the proposed Pipeline, when the turn built one",
+                          "type": "object"
+                        },
+                        "proposal": {
+                          "description": "when the turn is an `action`, the run it proposes (propose_run's output): the impact preview and the calls that approve or reject it. Nothing exists until approve_run_proposal — no Project, no Pipeline, no run (#969)",
+                          "type": "object"
+                        },
+                        "proposal_warning": {
+                          "description": "why an `action` turn carries no proposal (the ask did not compile, or the caller may not propose runs)",
+                          "type": "string"
                         },
                         "raw": {
                           "description": "the raw generation, present only when `kind` is `unparsed`. For developers and traces - never render it to a user",
@@ -3505,7 +3932,7 @@
     },
     "/v1/create_agent": {
       "post": {
-        "description": "Create a served, selectable agent — a model (checkpoint dir, model:<uuid>, or a HuggingFace repo id) plus an optional system prompt and the tools it may call. Returns the stored record with its generated id; replicates to every node. Requires orchestration:create_agent.",
+        "description": "Create a served, selectable agent — an operator-registered model selector plus an optional system prompt and the tools it may call. Returns the stored record with its generated id; replicates to every node. Requires orchestration:create_agent.",
         "operationId": "create_agent",
         "requestBody": {
           "content": {
@@ -3596,7 +4023,7 @@
                     "type": "string"
                   },
                   "model": {
-                    "description": "native agents (required there): checkpoint dir, model:<uuid>, or a HuggingFace repo id",
+                    "description": "native agents (required there): exact operator-registered checkpoint selector; registration is checked before serving",
                     "type": "string"
                   },
                   "model_name": {
@@ -4227,10 +4654,10 @@
                 "properties": {
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                     "properties": {
                       "account": {
-                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                        "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                         "type": "string"
                       },
                       "auth": {
@@ -4243,15 +4670,19 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database (both connectors).",
+                        "description": "Session database (Snowflake, Postgres; MySQL's optional default schema).",
+                        "type": "string"
+                      },
+                      "endpoint": {
+                        "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL with its protocol written out, http:// or https://, e.g. http://orders.ws-1.svc.cluster.local:8080. Private and loopback destinations require an exact operator host:port approval. No credentials, query or fragment in it: the bearer token goes in `token`.",
                         "type": "string"
                       },
                       "host": {
-                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "description": "Postgres, MySQL or TiDB: one DNS hostname or bare IP literal. Private and loopback destinations require an exact operator host:port approval; socket paths and multiple hosts are refused.",
                         "type": "string"
                       },
                       "port": {
-                        "description": "Postgres port (default 5432).",
+                        "description": "Postgres, MySQL or TiDB numeric TCP port, 1 through 65535 (default 5432 / 3306 / 4000).",
                         "type": "string"
                       },
                       "role": {
@@ -4259,27 +4690,32 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema (both connectors).",
+                        "description": "Session schema (Snowflake, Postgres).",
                         "type": "string"
                       },
                       "sslmode": {
-                        "description": "Postgres sslmode (disable / require / verify-full / …).",
+                        "description": "Postgres sslmode (disable / require / verify-full / …). MySQL and TiDB: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, a Postgres, MySQL or TiDB password, or a lake service's bearer token. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
-                        "description": "Which connector implementation to use.",
+                        "description": "Which connector implementation to use. tidb speaks the MySQL protocol (default port 4000). lake_sqlite, lake_duckdb and lake_polars read lake's SQLite, DuckDB and Polars services over their HTTP API.",
                         "enum": [
                           "snowflake",
-                          "postgres"
+                          "postgres",
+                          "mysql",
+                          "tidb",
+                          "lake_sqlite",
+                          "lake_duckdb",
+                          "lake_polars"
                         ],
                         "type": "string"
                       },
                       "user": {
-                        "description": "Postgres role/user.",
+                        "description": "Postgres role / MySQL or TiDB user.",
                         "type": "string"
                       },
                       "warehouse": {
@@ -4356,6 +4792,15 @@
                         },
                         "name": {
                           "type": "string"
+                        },
+                        "safe_mode": {
+                          "description": "the connection's safe mode level (set_safe_mode; default warn_writes): which statements answer safe_mode_warning before they run",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -4407,7 +4852,7 @@
     },
     "/v1/create_dataset_from_query": {
       "post": {
-        "description": "Run a read-only query against an external source (Snowflake or Postgres) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run. A remote source is reached over the network with your credentials, so it is consent-gated when the node enforces governance; a loopback Postgres touches no cloud and runs directly (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
+        "description": "Run a read-only query against an external source (Snowflake, Postgres, MySQL, TiDB, or lake's SQLite, DuckDB or Polars service) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run (MySQL and TiDB also admit SHOW). A remote source is reached over the network with your credentials, so it is consent-gated when the node enforces governance; a loopback Postgres, MySQL, TiDB or lake service touches no cloud and runs directly (audited as dataset_added; visible in system.datasets). A saved connection in safe mode warn_all answers safe_mode_warning naming the query first; repeat with safe_mode_confirmation to run it. Requires orchestration:create_dataset_from_query. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "create_dataset_from_query",
         "requestBody": {
           "content": {
@@ -4422,10 +4867,10 @@
                   },
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                     "properties": {
                       "account": {
-                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                        "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                         "type": "string"
                       },
                       "auth": {
@@ -4438,15 +4883,19 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database (both connectors).",
+                        "description": "Session database (Snowflake, Postgres; MySQL's optional default schema).",
+                        "type": "string"
+                      },
+                      "endpoint": {
+                        "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL with its protocol written out, http:// or https://, e.g. http://orders.ws-1.svc.cluster.local:8080. Private and loopback destinations require an exact operator host:port approval. No credentials, query or fragment in it: the bearer token goes in `token`.",
                         "type": "string"
                       },
                       "host": {
-                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "description": "Postgres, MySQL or TiDB: one DNS hostname or bare IP literal. Private and loopback destinations require an exact operator host:port approval; socket paths and multiple hosts are refused.",
                         "type": "string"
                       },
                       "port": {
-                        "description": "Postgres port (default 5432).",
+                        "description": "Postgres, MySQL or TiDB numeric TCP port, 1 through 65535 (default 5432 / 3306 / 4000).",
                         "type": "string"
                       },
                       "role": {
@@ -4454,27 +4903,32 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema (both connectors).",
+                        "description": "Session schema (Snowflake, Postgres).",
                         "type": "string"
                       },
                       "sslmode": {
-                        "description": "Postgres sslmode (disable / require / verify-full / …).",
+                        "description": "Postgres sslmode (disable / require / verify-full / …). MySQL and TiDB: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, a Postgres, MySQL or TiDB password, or a lake service's bearer token. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
-                        "description": "Which connector implementation to use.",
+                        "description": "Which connector implementation to use. tidb speaks the MySQL protocol (default port 4000). lake_sqlite, lake_duckdb and lake_polars read lake's SQLite, DuckDB and Polars services over their HTTP API.",
                         "enum": [
                           "snowflake",
-                          "postgres"
+                          "postgres",
+                          "mysql",
+                          "tidb",
+                          "lake_sqlite",
+                          "lake_duckdb",
+                          "lake_polars"
                         ],
                         "type": "string"
                       },
                       "user": {
-                        "description": "Postgres role/user.",
+                        "description": "Postgres role / MySQL or TiDB user.",
                         "type": "string"
                       },
                       "warehouse": {
@@ -4522,6 +4976,11 @@
                     "description": "owners per partition (default 1 — a connector result set is a cache, re-pullable from its source; promote_dataset raises it)",
                     "minimum": 1,
                     "type": "integer"
+                  },
+                  "safe_mode_confirmation": {
+                    "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
                   },
                   "table_name": {
                     "description": "name for the new table (default 'dataset')",
@@ -9959,6 +10418,9 @@
                         "acknowledgement": {
                           "type": "object"
                         },
+                        "actor": {
+                          "type": "string"
+                        },
                         "agent_version": {
                           "minLength": 1,
                           "type": "string"
@@ -10023,6 +10485,10 @@
                         },
                         "sla_due_at": {
                           "minLength": 1,
+                          "type": "string"
+                        },
+                        "spec_digest": {
+                          "pattern": "^([0-9a-f]{64})?$",
                           "type": "string"
                         },
                         "status": {
@@ -10873,6 +11339,9 @@
                         "acknowledgement": {
                           "type": "object"
                         },
+                        "actor": {
+                          "type": "string"
+                        },
                         "agent_version": {
                           "minLength": 1,
                           "type": "string"
@@ -10937,6 +11406,10 @@
                         },
                         "sla_due_at": {
                           "minLength": 1,
+                          "type": "string"
+                        },
+                        "spec_digest": {
+                          "pattern": "^([0-9a-f]{64})?$",
                           "type": "string"
                         },
                         "status": {
@@ -11158,6 +11631,9 @@
                         "acknowledgement": {
                           "type": "object"
                         },
+                        "actor": {
+                          "type": "string"
+                        },
                         "agent_version": {
                           "minLength": 1,
                           "type": "string"
@@ -11222,6 +11698,10 @@
                         },
                         "sla_due_at": {
                           "minLength": 1,
+                          "type": "string"
+                        },
+                        "spec_digest": {
+                          "pattern": "^([0-9a-f]{64})?$",
                           "type": "string"
                         },
                         "status": {
@@ -12009,6 +12489,179 @@
         ]
       }
     },
+    "/v1/expose_pipeline": {
+      "post": {
+        "description": "Publish an approved, gate-passing pipeline as a governed HTTP route (POST /v1/pipelines/{name}/run) on every node, pinned to the version it is now: later edits change nothing callers get until it is exposed again. Callers need data:run_pipeline and read access to the tables it reads; their input must match input_schema. Idempotent; undo with unexpose_pipeline. Requires orchestration:expose_pipeline.",
+        "operationId": "expose_pipeline",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "graph": {
+                    "description": "the pipeline's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "input_schema": {
+                    "description": "the draft-07 JSON Schema callers' input must match: an object schema over `run`'s inputs (dataset_path, top_k, model_name, ...). Default: an object with no properties, so callers can pass nothing",
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_input_bytes": {
+                    "description": "the largest input a call may send, in bytes (default 65536)",
+                    "maximum": 1048576,
+                    "minimum": 2,
+                    "type": "integer"
+                  },
+                  "project": {
+                    "description": "the owning project's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "rate_limit_per_minute": {
+                    "description": "calls one caller may make a minute, per node (default 60)",
+                    "maximum": 100000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "sync_timeout_ms": {
+                    "description": "how long the served route waits for a run to finish before it answers with the run id instead (default 30000; 0 = never wait)",
+                    "maximum": 600000,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "endpoint": {
+                          "description": "the served run route, by id",
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "exposed_at": {
+                          "type": "string"
+                        },
+                        "exposed_by": {
+                          "type": "string"
+                        },
+                        "input_schema": {
+                          "type": "object"
+                        },
+                        "max_input_bytes": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "rate_limit_per_minute": {
+                          "type": "integer"
+                        },
+                        "status_endpoint": {
+                          "description": "the served status route, with {run_id} to fill in",
+                          "type": "string"
+                        },
+                        "sync_timeout_ms": {
+                          "type": "integer"
+                        },
+                        "version": {
+                          "description": "the pinned version callers get (counts the exposures)",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "project",
+                        "name",
+                        "exposed",
+                        "version",
+                        "endpoint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Expose pipeline",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/gate": {
       "post": {
         "description": "Run the correctness gate over a stored project graph and return the validation report: the checks that applied (status + reason), the verdict, block_deploy, and the counts applied / not_applicable. Checks with nothing to check on this graph are counted, never reported as pass; include_not_applicable lists them too. Evaluates only — no state change. Requires orchestration:gate.",
@@ -12200,11 +12853,13 @@
                     "type": "string"
                   },
                   "path": {
-                    "description": "write the gated JSONL corpus to this file on the node (optional)",
+                    "description": "also write the gated JSONL corpus to a new file on the node, named relative to its export directory (exports/ under the data directory); no absolute path, no '..', no symbolic link, and never an existing file (optional)",
+                    "minLength": 1,
                     "type": "string"
                   },
                   "variants_per_subject": {
                     "description": "task variants per plan subject",
+                    "maximum": 16,
                     "minimum": 1,
                     "type": "integer"
                   }
@@ -12252,6 +12907,7 @@
                           "type": "string"
                         },
                         "path": {
+                          "description": "the written file, relative to the node's export directory",
                           "type": "string"
                         },
                         "subjects": {
@@ -12718,7 +13374,8 @@
                           "type": "array"
                         },
                         "replication": {
-                          "type": "integer"
+                          "description": "replicate_to_all, partitioned or partitioned_with_replicas",
+                          "type": "string"
                         },
                         "rows": {
                           "type": "integer"
@@ -12727,7 +13384,7 @@
                           "type": "integer"
                         },
                         "source_format": {
-                          "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                          "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake, mysql, tidb, lake_sqlite, lake_duckdb, lake_polars) or rows; empty for a table not loaded from a source (SQL, engine results)",
                           "type": "string"
                         },
                         "table_id": {
@@ -15431,6 +16088,164 @@
         ]
       }
     },
+    "/v1/get_published_pipeline_run": {
+      "get": {
+        "description": "Read the status and outputs of a run a published pipeline served to you, as GET /v1/pipelines/{name}/runs/{run_id} does. Another caller's run is not found. No side effects. Requires data:run_pipeline.",
+        "operationId": "get_published_pipeline_run",
+        "parameters": [
+          {
+            "description": "the published pipeline's id, or its name",
+            "in": "query",
+            "name": "pipeline",
+            "required": true,
+            "schema": {
+              "description": "the published pipeline's id, or its name",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run id run_published_pipeline answered",
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "description": "the run id run_published_pipeline answered",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a published pipeline's run",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_record": {
       "get": {
         "description": "Read one record's value and revision by (collection, key) from this node. No side effects. Requires data:records_read.",
@@ -16272,38 +17087,75 @@
                         "entity_key_mapping": {
                           "anyOf": [
                             {
-                              "additionalProperties": false,
-                              "properties": {
-                                "column": {
-                                  "minLength": 1,
-                                  "type": "string"
-                                },
-                                "entries": {
-                                  "items": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "derived_id": {
-                                        "type": "integer"
-                                      },
-                                      "original_value": {
-                                        "minLength": 1,
-                                        "type": "string"
-                                      }
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "column": {
+                                      "minLength": 1,
+                                      "type": "string"
                                     },
-                                    "required": [
-                                      "derived_id",
-                                      "original_value"
-                                    ],
-                                    "type": "object"
+                                    "entries": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "derived_id": {
+                                            "type": "integer"
+                                          },
+                                          "original_value": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "derived_id",
+                                          "original_value"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    }
                                   },
-                                  "type": "array"
+                                  "required": [
+                                    "column",
+                                    "entries"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "chunks": {
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "column": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "entry_count": {
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    "owner": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "table": {
+                                      "const": "_entity_keys"
+                                    }
+                                  },
+                                  "required": [
+                                    "column",
+                                    "entry_count",
+                                    "table",
+                                    "owner",
+                                    "chunks"
+                                  ],
+                                  "type": "object"
                                 }
-                              },
-                              "required": [
-                                "column",
-                                "entries"
                               ],
-                              "type": "object"
+                              "description": "A text entity column's derived-id map: inline, or (since #1255) a reference to its rows in the engine-internal _entity_keys table."
                             },
                             {
                               "additionalProperties": false,
@@ -16824,6 +17676,23 @@
                         },
                         "project_name": {
                           "type": "string"
+                        },
+                        "published": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "caller": {
+                              "type": "string"
+                            },
+                            "version": {
+                              "minimum": 1,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "caller"
+                          ],
+                          "type": "object"
                         },
                         "reads": {
                           "items": {
@@ -17384,6 +18253,189 @@
         ]
       }
     },
+    "/v1/get_run_proposal": {
+      "get": {
+        "description": "Read one run proposal: its impact preview, whether it is proposed, approved or rejected, and what approving it created. Read-only. Requires api:query.",
+        "operationId": "get_run_proposal",
+        "parameters": [
+          {
+            "description": "the proposal's id",
+            "in": "query",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "description": "the proposal's id",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved",
+                            "rejected"
+                          ],
+                          "type": "string"
+                        },
+                        "decide": {
+                          "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                          "type": "object"
+                        },
+                        "decided_at": {
+                          "type": "string"
+                        },
+                        "decided_by": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                          "properties": {
+                            "creates_project": {
+                              "type": "boolean"
+                            },
+                            "dataset": {
+                              "properties": {
+                                "description": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "methodology": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "shape": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "template": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "proposal_id": {
+                          "type": "string"
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        },
+                        "rejection_reason": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "proposal_id",
+                        "approval",
+                        "message",
+                        "preview"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Read a run proposal",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_run_report": {
       "get": {
         "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. M-4 returns forecast backtests, seasonal-naive comparison, read/excluded data and ordered forecasts. M-7 returns anomaly metrics, ranked anomalies, output tables, and what was read or excluded. Assembled at query time from the run's model and its result tables, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. For M-3 segmentation, returns K selection, separation and stability metrics, input/exclusion facts and assignment/profile tables instead of supervised risk metrics. No side effects. (#958, #1042, #1043, #1046) Requires api:query.",
@@ -17679,6 +18731,145 @@
           }
         },
         "summary": "Get a run's report facts",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_safe_mode": {
+      "get": {
+        "description": "Read the safe mode level of one Zetta database or saved source connection, and whether it is the default (warn_writes for a connection, off for a database). Reading a connection's level needs list_connections. No side effects. Requires api:query.",
+        "operationId": "get_safe_mode",
+        "parameters": [
+          {
+            "description": "a saved source connection by name (give this OR database)",
+            "in": "query",
+            "name": "connection",
+            "required": false,
+            "schema": {
+              "description": "a saved source connection by name (give this OR database)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "a Zetta database by name (give this OR connection)",
+            "in": "query",
+            "name": "database",
+            "required": false,
+            "schema": {
+              "description": "a Zetta database by name (give this OR connection)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection": {
+                          "description": "a saved source connection by name (give this OR database)",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "database": {
+                          "description": "a Zetta database by name (give this OR connection)",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "is_default": {
+                          "description": "true when no level was set and the kind's default applies (warn_writes for a connection, off for a database)",
+                          "type": "boolean"
+                        },
+                        "mode": {
+                          "description": "off: every statement runs; warn_writes: a statement that writes answers safe_mode_warning first; warn_all: every statement does",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
+                        },
+                        "previous": {
+                          "description": "set_safe_mode only: the level before this change",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "is_default"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a database's safe mode",
         "tags": [
           "read"
         ]
@@ -20055,7 +21246,7 @@
     },
     "/v1/get_trace": {
       "get": {
-        "description": "Read every recorded span of one trace by its 32-hex trace id. No side effects. Requires api:query.",
+        "description": "Read every recorded span of one trace by its 32-hex trace id. Requires cluster:admin. No side effects. Requires api:cluster_admin.",
         "operationId": "get_trace",
         "parameters": [
           {
@@ -21181,6 +22372,15 @@
                               },
                               "name": {
                                 "type": "string"
+                              },
+                              "safe_mode": {
+                                "description": "the connection's safe mode level (set_safe_mode; default warn_writes): which statements answer safe_mode_warning before they run",
+                                "enum": [
+                                  "off",
+                                  "warn_writes",
+                                  "warn_all"
+                                ],
+                                "type": "string"
                               }
                             },
                             "required": [
@@ -21517,9 +22717,24 @@
     },
     "/v1/list_datasets": {
       "get": {
-        "description": "Read the computed summary of every dataset — schema, row count, size, format, replication, partition placement. No side effects. Requires api:query.",
+        "description": "Read the computed summary of every dataset — schema, row count, size, format, replication, partition placement. With detail \"summary\", only the fields a dataset list shows, from counters, reading no row and no file. No side effects. Requires api:query.",
         "operationId": "list_datasets",
         "parameters": [
+          {
+            "description": "full (the default): every dataset's whole summary, as before — columns, partition placement, and size_bytes measured from the files. summary (#1195): only what a dataset list shows, from counters the engine keeps, reading no row and no file; columns, types and placement stay on get_dataset",
+            "in": "query",
+            "name": "detail",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "description": "full (the default): every dataset's whole summary, as before — columns, partition placement, and size_bytes measured from the files. summary (#1195): only what a dataset list shows, from counters the engine keeps, reading no row and no file; columns, types and placement stay on get_dataset",
+              "enum": [
+                "full",
+                "summary"
+              ],
+              "type": "string"
+            }
+          },
           {
             "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
             "in": "query",
@@ -21553,117 +22768,208 @@
                       "additionalProperties": false,
                       "properties": {
                         "datasets": {
+                          "description": "one entry per dataset: the full summary, or with detail \"summary\" the summary form",
                           "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "column_order": {
-                                "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
-                                "enum": [
-                                  "source",
-                                  "first_seen"
-                                ],
-                                "type": "string"
-                              },
-                              "columns": {
-                                "description": "the column names, in the source's order when column_order is \"source\" (#1021)",
-                                "items": {
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "database": {
-                                "type": "string"
-                              },
-                              "degraded": {
-                                "type": "boolean"
-                              },
-                              "degraded_reason": {
-                                "type": "string"
-                              },
-                              "expected_partitions": {
-                                "type": "integer"
-                              },
-                              "expected_rows": {
-                                "type": "integer"
-                              },
-                              "format": {
-                                "description": "how the rows are stored (jsonl); not the upload's format",
-                                "type": "string"
-                              },
-                              "name": {
-                                "type": "string"
-                              },
-                              "partitions": {
-                                "items": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "blob_ref": {
-                                      "type": "string"
-                                    },
-                                    "owner_nodes": {
-                                      "items": {
-                                        "type": "string"
-                                      },
-                                      "type": "array"
-                                    },
-                                    "partition_id": {
-                                      "type": "string"
-                                    },
-                                    "row_end": {
-                                      "type": "integer"
-                                    },
-                                    "row_start": {
-                                      "type": "integer"
-                                    }
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "column_order": {
+                                    "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
+                                    "enum": [
+                                      "source",
+                                      "first_seen"
+                                    ],
+                                    "type": "string"
                                   },
-                                  "required": [
-                                    "partition_id",
-                                    "blob_ref",
-                                    "row_start",
-                                    "row_end",
-                                    "owner_nodes"
-                                  ],
-                                  "type": "object"
+                                  "columns": {
+                                    "description": "the column names, in the source's order when column_order is \"source\" (#1021)",
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "database": {
+                                    "type": "string"
+                                  },
+                                  "degraded": {
+                                    "type": "boolean"
+                                  },
+                                  "degraded_reason": {
+                                    "type": "string"
+                                  },
+                                  "expected_partitions": {
+                                    "type": "integer"
+                                  },
+                                  "expected_rows": {
+                                    "type": "integer"
+                                  },
+                                  "format": {
+                                    "description": "how the rows are stored (jsonl); not the upload's format",
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "partitions": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "blob_ref": {
+                                          "type": "string"
+                                        },
+                                        "owner_nodes": {
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "partition_id": {
+                                          "type": "string"
+                                        },
+                                        "row_end": {
+                                          "type": "integer"
+                                        },
+                                        "row_start": {
+                                          "type": "integer"
+                                        }
+                                      },
+                                      "required": [
+                                        "partition_id",
+                                        "blob_ref",
+                                        "row_start",
+                                        "row_end",
+                                        "owner_nodes"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "replication": {
+                                    "description": "replicate_to_all, partitioned or partitioned_with_replicas",
+                                    "type": "string"
+                                  },
+                                  "rows": {
+                                    "type": "integer"
+                                  },
+                                  "size_bytes": {
+                                    "type": "integer"
+                                  },
+                                  "source_format": {
+                                    "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake, mysql, tidb, lake_sqlite, lake_duckdb, lake_polars) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                                    "type": "string"
+                                  },
+                                  "table_id": {
+                                    "type": "string"
+                                  }
                                 },
-                                "type": "array"
+                                "required": [
+                                  "name",
+                                  "database",
+                                  "table_id",
+                                  "format",
+                                  "source_format",
+                                  "replication",
+                                  "rows",
+                                  "size_bytes",
+                                  "columns",
+                                  "column_order",
+                                  "partitions",
+                                  "degraded",
+                                  "degraded_reason",
+                                  "expected_partitions",
+                                  "expected_rows"
+                                ],
+                                "type": "object"
                               },
-                              "replication": {
-                                "type": "integer"
-                              },
-                              "rows": {
-                                "type": "integer"
-                              },
-                              "size_bytes": {
-                                "type": "integer"
-                              },
-                              "source_format": {
-                                "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake) or rows; empty for a table not loaded from a source (SQL, engine results)",
-                                "type": "string"
-                              },
-                              "table_id": {
-                                "type": "string"
+                              {
+                                "additionalProperties": false,
+                                "description": "a dataset in list_datasets' summary form (#1195)",
+                                "properties": {
+                                  "column_order": {
+                                    "description": "source: columns follow the file's or query's own order (the CSV header, the Parquet schema, the first JSON row, the SELECT list); first_seen: no order was recorded (a dataset loaded before #1021), so the columns come in the order the stored rows present them, which is alphabetical",
+                                    "enum": [
+                                      "source",
+                                      "first_seen"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "database": {
+                                    "type": "string"
+                                  },
+                                  "degraded": {
+                                    "type": "boolean"
+                                  },
+                                  "degraded_reason": {
+                                    "type": "string"
+                                  },
+                                  "expected_partitions": {
+                                    "type": "integer"
+                                  },
+                                  "expected_rows": {
+                                    "type": "integer"
+                                  },
+                                  "format": {
+                                    "description": "how the rows are stored (jsonl); not the upload's format",
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "partition_count": {
+                                    "description": "the partition catalog entries this node sees (0 = not partitioned); the full form's partitions array has this many entries",
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "replication": {
+                                    "description": "replicate_to_all, partitioned or partitioned_with_replicas",
+                                    "type": "string"
+                                  },
+                                  "rows": {
+                                    "description": "the row count: the local store's, or for a partition-only dataset the sum of the partition catalog's row ranges (a fraction when degraded)",
+                                    "type": "integer"
+                                  },
+                                  "size_bytes": {
+                                    "description": "bytes of row data in the table's chunk files, from the engine's own counter: equal to the full form's measured value once pending writes are flushed",
+                                    "type": "integer"
+                                  },
+                                  "source_format": {
+                                    "description": "what the rows were loaded from: csv, jsonl, json, parquet, a connector type (postgres, snowflake, mysql, tidb, lake_sqlite, lake_duckdb, lake_polars) or rows; empty for a table not loaded from a source (SQL, engine results)",
+                                    "type": "string"
+                                  },
+                                  "table_id": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "column_order",
+                                  "database",
+                                  "degraded",
+                                  "degraded_reason",
+                                  "expected_partitions",
+                                  "expected_rows",
+                                  "format",
+                                  "name",
+                                  "partition_count",
+                                  "replication",
+                                  "rows",
+                                  "size_bytes",
+                                  "source_format",
+                                  "table_id"
+                                ],
+                                "type": "object"
                               }
-                            },
-                            "required": [
-                              "name",
-                              "database",
-                              "table_id",
-                              "format",
-                              "source_format",
-                              "replication",
-                              "rows",
-                              "size_bytes",
-                              "columns",
-                              "column_order",
-                              "partitions",
-                              "degraded",
-                              "degraded_reason",
-                              "expected_partitions",
-                              "expected_rows"
-                            ],
-                            "type": "object"
+                            ]
                           },
                           "type": "array"
+                        },
+                        "detail": {
+                          "description": "the form each entry of datasets takes",
+                          "enum": [
+                            "full",
+                            "summary"
+                          ],
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -24446,7 +25752,7 @@
     },
     "/v1/list_projects": {
       "get": {
-        "description": "Read the names of every AI project on this node. No side effects. Requires api:query.",
+        "description": "Read the names of every AI project on this node, with a summary of each (id, name, and each graph's id, name and approval) for a caller who may also call get_project. No side effects. Requires api:query.",
         "operationId": "list_projects",
         "parameters": [
           {
@@ -24482,8 +25788,58 @@
                       "additionalProperties": false,
                       "properties": {
                         "projects": {
+                          "description": "the project names",
                           "items": {
                             "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "summaries": {
+                          "description": "one entry per name in `projects`, in the same order (#1185): the project's id and name and each graph's id, name and approval, so a list page needs no get_project per project. Present only when the caller may also call get_project",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "graphs": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "approval": {
+                                      "description": "plan-approval state (#885), as get_project",
+                                      "enum": [
+                                        "proposed",
+                                        "approved"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "name",
+                                    "approval"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "graphs"
+                            ],
+                            "type": "object"
                           },
                           "type": "array"
                         }
@@ -24936,6 +26292,202 @@
           }
         },
         "summary": "List records",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/list_run_proposals": {
+      "get": {
+        "description": "List run proposals, newest first, optionally only those still proposed, approved or rejected. Read-only. Requires api:query.",
+        "operationId": "list_run_proposals",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "proposed",
+                "approved",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "proposals": {
+                          "items": {
+                            "properties": {
+                              "agent": {
+                                "type": "string"
+                              },
+                              "approval": {
+                                "enum": [
+                                  "proposed",
+                                  "approved",
+                                  "rejected"
+                                ],
+                                "type": "string"
+                              },
+                              "decide": {
+                                "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                                "type": "object"
+                              },
+                              "decided_at": {
+                                "type": "string"
+                              },
+                              "decided_by": {
+                                "type": "string"
+                              },
+                              "graph_id": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "string"
+                              },
+                              "preview": {
+                                "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                                "properties": {
+                                  "creates_project": {
+                                    "type": "boolean"
+                                  },
+                                  "dataset": {
+                                    "properties": {
+                                      "description": {
+                                        "type": "string"
+                                      },
+                                      "path": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "type": "object"
+                                  },
+                                  "graph": {
+                                    "type": "string"
+                                  },
+                                  "methodology": {
+                                    "type": "string"
+                                  },
+                                  "project": {
+                                    "type": "string"
+                                  },
+                                  "shape": {
+                                    "type": "string"
+                                  },
+                                  "steps": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "template": {
+                                    "type": "string"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "project_id": {
+                                "type": "string"
+                              },
+                              "proposal_id": {
+                                "type": "string"
+                              },
+                              "proposed_at": {
+                                "type": "string"
+                              },
+                              "proposed_by": {
+                                "type": "string"
+                              },
+                              "rejection_reason": {
+                                "type": "string"
+                              },
+                              "run_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "proposal_id",
+                              "approval",
+                              "message",
+                              "preview"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "proposals"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List run proposals",
         "tags": [
           "read"
         ]
@@ -25765,16 +27317,16 @@
     },
     "/v1/list_source_tables": {
       "get": {
-        "description": "Browse a connected source's catalog WITHOUT ingesting from it: the tables (optionally with their columns and types) behind a saved connection, filtered by schema and by a name substring. Opens one connection, runs one read-only catalog query, lands nothing — use this to FIND a table, then create_dataset_from_query to pull it. Filter with match='score' to locate scoring tables. Requires orchestration:list_source_tables. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
+        "description": "Browse a connected source's catalog WITHOUT ingesting from it: the tables (optionally with their columns and types) behind a saved connection, filtered by schema and by a name substring. Opens one connection, runs one read-only catalog query, lands nothing — use this to FIND a table, then create_dataset_from_query to pull it. Filter with match='score' to locate scoring tables. A saved connection in safe mode warn_all answers safe_mode_warning naming the catalog statements first; repeat with safe_mode_confirmation to run them. Inline connectors require create_connection permission; saved and inline sources share the operator connector destination policy. Requires orchestration:list_source_tables. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "list_source_tables",
         "parameters": [
           {
-            "description": "a saved connection by name (give this OR an inline connector)",
+            "description": "a saved connection by name (inline discovery requires create_connection permission)",
             "in": "query",
             "name": "connection",
             "required": false,
             "schema": {
-              "description": "a saved connection by name (give this OR an inline connector)",
+              "description": "a saved connection by name (inline discovery requires create_connection permission)",
               "minLength": 1,
               "type": "string"
             }
@@ -25784,10 +27336,10 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": false,
-                  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+                  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
                   "properties": {
                     "account": {
-                      "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                      "description": "Snowflake DNS account identifier (the host prefix, e.g. ab12345.us-east-1); no URL authority punctuation.",
                       "type": "string"
                     },
                     "auth": {
@@ -25800,15 +27352,19 @@
                       "type": "string"
                     },
                     "database": {
-                      "description": "Session database (both connectors).",
+                      "description": "Session database (Snowflake, Postgres; MySQL's optional default schema).",
+                      "type": "string"
+                    },
+                    "endpoint": {
+                      "description": "lake_sqlite / lake_duckdb / lake_polars: the service's base URL with its protocol written out, http:// or https://, e.g. http://orders.ws-1.svc.cluster.local:8080. Private and loopback destinations require an exact operator host:port approval. No credentials, query or fragment in it: the bearer token goes in `token`.",
                       "type": "string"
                     },
                     "host": {
-                      "description": "Postgres host, e.g. 127.0.0.1.",
+                      "description": "Postgres, MySQL or TiDB: one DNS hostname or bare IP literal. Private and loopback destinations require an exact operator host:port approval; socket paths and multiple hosts are refused.",
                       "type": "string"
                     },
                     "port": {
-                      "description": "Postgres port (default 5432).",
+                      "description": "Postgres, MySQL or TiDB numeric TCP port, 1 through 65535 (default 5432 / 3306 / 4000).",
                       "type": "string"
                     },
                     "role": {
@@ -25816,27 +27372,32 @@
                       "type": "string"
                     },
                     "schema": {
-                      "description": "Session schema (both connectors).",
+                      "description": "Session schema (Snowflake, Postgres).",
                       "type": "string"
                     },
                     "sslmode": {
-                      "description": "Postgres sslmode (disable / require / verify-full / …).",
+                      "description": "Postgres sslmode (disable / require / verify-full / …). MySQL and TiDB: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named).",
                       "type": "string"
                     },
                     "token": {
-                      "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
+                      "description": "The secret: a Snowflake programmatic access / OAuth token, a Postgres, MySQL or TiDB password, or a lake service's bearer token. Never serialized back out.",
                       "type": "string"
                     },
                     "type": {
-                      "description": "Which connector implementation to use.",
+                      "description": "Which connector implementation to use. tidb speaks the MySQL protocol (default port 4000). lake_sqlite, lake_duckdb and lake_polars read lake's SQLite, DuckDB and Polars services over their HTTP API.",
                       "enum": [
                         "snowflake",
-                        "postgres"
+                        "postgres",
+                        "mysql",
+                        "tidb",
+                        "lake_sqlite",
+                        "lake_duckdb",
+                        "lake_polars"
                       ],
                       "type": "string"
                     },
                     "user": {
-                      "description": "Postgres role/user.",
+                      "description": "Postgres role / MySQL or TiDB user.",
                       "type": "string"
                     },
                     "warehouse": {
@@ -25852,7 +27413,7 @@
                 }
               }
             },
-            "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+            "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres, MySQL or TiDB password / lake service bearer) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL and TiDB: host+user; lake_sqlite / lake_duckdb / lake_polars: endpoint+token).",
             "in": "query",
             "name": "connector",
             "required": false
@@ -25889,6 +27450,17 @@
               "maximum": 2000,
               "minimum": 1,
               "type": "integer"
+            }
+          },
+          {
+            "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+            "in": "query",
+            "name": "safe_mode_confirmation",
+            "required": false,
+            "schema": {
+              "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
             }
           },
           {
@@ -26950,7 +28522,7 @@
     },
     "/v1/list_traces": {
       "get": {
-        "description": "Read the most recent observability spans on this node (intent, timings, result shapes). No side effects. Requires api:query.",
+        "description": "Read the most recent node-wide observability spans (intent, timings, result shapes). Requires cluster:admin. No side effects. Requires api:cluster_admin.",
         "operationId": "list_traces",
         "parameters": [
           {
@@ -30555,9 +32127,402 @@
         ]
       }
     },
+    "/v1/pipelines/{name}/run": {
+      "post": {
+        "description": "Run a PUBLISHED pipeline's pinned version with the body as its declared input (expose_pipeline input_schema). The route exists only while the pipeline is exposed; access requires data:run_pipeline and read access to the tables it reads. Rate and size limited per caller (429, 413). Waits up to the pipeline's sync_timeout_ms for the run to finish (200 with its outputs) unless ?wait=false, else answers 202 with the run id and status_endpoint. Every request is a serve:run_pipeline trace span and is audited.",
+        "operationId": "serve_run_pipeline",
+        "parameters": [
+          {
+            "description": "the pipeline's uuid, or its name when one exposed pipeline has it",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "false: answer at once with the run id (202)",
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the request was served"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the run started and is still running"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the key lacks the serving capability, the entity does not exist or is not exposed, or the input is at fault"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Run a published pipeline (served pipeline endpoint)",
+        "tags": [
+          "serving"
+        ]
+      }
+    },
+    "/v1/pipelines/{name}/runs/{run_id}": {
+      "get": {
+        "description": "The status and outputs of a run a published pipeline served to the same caller; another caller's run is not found. Access requires data:run_pipeline.",
+        "operationId": "serve_pipeline_run",
+        "parameters": [
+          {
+            "description": "the pipeline's uuid, or its name",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run id the served run answered",
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the request was served"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the key lacks the serving capability, the entity does not exist or is not exposed, or the input is at fault"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "A published pipeline's run (served pipeline endpoint)",
+        "tags": [
+          "serving"
+        ]
+      }
+    },
     "/v1/plan_features": {
       "get": {
-        "description": "Read a methodology-specific feature and exclusion plan from dataset analysis, or an explicit transform_required proposal. No side effects and no transform is applied. Requires api:query.",
+        "description": "Read a methodology-specific feature and exclusion plan from dataset analysis, or an explicit transform_required proposal, built only from what the caller may read (#1396). No side effects and no transform is applied. Requires api:query.",
         "operationId": "plan_features",
         "parameters": [
           {
@@ -31345,6 +33310,347 @@
         ]
       }
     },
+    "/v1/propose_run": {
+      "post": {
+        "description": "Compile a plain-language ask into a Pipeline and record it as a proposal with an impact preview: the Project approving would create, the Pipeline's steps, and the dataset it would train on. Creates nothing else — no Project, no Pipeline, no run — until approve_run_proposal. This is how a chat agent asks to build and run something. Requires orchestration:propose_run.",
+        "operationId": "propose_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "description": "the agent whose chat turn is proposing this, when one is",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dataset": {
+                    "additionalProperties": false,
+                    "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                    "properties": {
+                      "as_of": {
+                        "description": "the cutoff as a finite epoch number or ISO-8601 timestamp; only rows with time_column <= as_of contribute",
+                        "oneOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "categorical_features": {
+                        "description": "resolved low-cardinality text columns and their fitted levels (at most 32 each), one-hot encoded by a trainer that reads categorical columns. Reported, and carried for distributed launches; a resolution refits it from the rows rather than trusting a caller's copy",
+                        "items": {
+                          "additionalProperties": false,
+                          "description": "a text column one-hot encoded for a numeric trainer: one 0/1 feature per level, named <column>=<level>, fitted on the training rows (#1203)",
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "encoding": {
+                              "enum": [
+                                "one_hot"
+                              ],
+                              "type": "string"
+                            },
+                            "features": {
+                              "description": "the encoded feature names, one per level",
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "levels": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "maxItems": 32,
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "unseen": {
+                              "description": "how a value outside the fitted levels is encoded",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "column",
+                            "levels"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "entity_column": {
+                        "description": "the integer or text business key of the thing being scored, one row per entity",
+                        "type": "string"
+                      },
+                      "entity_key_mapping": {
+                        "additionalProperties": false,
+                        "description": "resolved text business ids and their derived int64 keys",
+                        "properties": {
+                          "column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "entries": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "derived_id": {
+                                  "type": "integer"
+                                },
+                                "original_value": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "derived_id",
+                                "original_value"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "column",
+                          "entries"
+                        ],
+                        "type": "object"
+                      },
+                      "feature_columns": {
+                        "description": "the columns to train on; omit to use every numeric or boolean column that is not the entity, label, or time column, plus every text column with at most 32 levels as a one-hot encoded category. A named text column is one-hot encoded when it is a category",
+                        "items": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "label_column": {
+                        "description": "the {0,1} training target",
+                        "type": "string"
+                      },
+                      "time_column": {
+                        "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "dataset_path": {
+                    "description": "`database.table` or a dataset directory on the node; the built-in demo dataset when omitted",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "graph_name": {
+                    "description": "name for the stored Pipeline (default: from the ask's words)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "holdout_fraction": {
+                    "description": "rows held out to measure the model on data it did not train on",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "the plain-language ask, e.g. 'predict which customers will churn'",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "model_name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "land the Pipeline on this existing project (name or uuid); when omitted, approving creates the new project the preview names",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "top_k": {
+                    "description": "at-risk list cap (0 = all)",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved",
+                            "rejected"
+                          ],
+                          "type": "string"
+                        },
+                        "decide": {
+                          "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                          "type": "object"
+                        },
+                        "decided_at": {
+                          "type": "string"
+                        },
+                        "decided_by": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                          "properties": {
+                            "creates_project": {
+                              "type": "boolean"
+                            },
+                            "dataset": {
+                              "properties": {
+                                "description": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "methodology": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "shape": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "template": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "proposal_id": {
+                          "type": "string"
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        },
+                        "rejection_reason": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "proposal_id",
+                        "approval",
+                        "message",
+                        "preview"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Propose a run",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/publish_event": {
       "post": {
         "description": "Publish one event to an exposed topic. `from` is the caller; delivery options above the caller's governance bounds are clamped and reported. Requires data:pubsub_publish.",
@@ -31627,6 +33933,9 @@
                         "acknowledgement": {
                           "type": "object"
                         },
+                        "actor": {
+                          "type": "string"
+                        },
                         "agent_version": {
                           "minLength": 1,
                           "type": "string"
@@ -31691,6 +34000,10 @@
                           "minLength": 1,
                           "type": "string"
                         },
+                        "spec_digest": {
+                          "pattern": "^([0-9a-f]{64})?$",
+                          "type": "string"
+                        },
                         "status": {
                           "enum": [
                             "pending",
@@ -31699,6 +34012,11 @@
                             "dead_letter"
                           ],
                           "type": "string"
+                        },
+                        "timeout_seconds": {
+                          "maximum": 300,
+                          "minimum": 1,
+                          "type": "integer"
                         },
                         "title": {
                           "minLength": 1,
@@ -32751,7 +35069,7 @@
             "required": false,
             "schema": {
               "description": "long-poll: wait up to this long when nothing is there yet",
-              "maximum": 30000,
+              "maximum": 60000,
               "minimum": 0,
               "type": "integer"
             }
@@ -34800,7 +37118,7 @@
                     "type": "string"
                   },
                   "weights": {
-                    "description": "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's text model, or the engine's own JSON weights (objective, base_score, feature_names, trees). Give this or `weights_base64`",
+                    "description": "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's text model, or the engine's own JSON weights (objective, base_score, feature_names, trees). Give this or `weights_base64`. Import limits default to 1 GiB of decoded model bytes and 1,048,576 features; operators can configure them",
                     "minLength": 2,
                     "type": "string"
                   },
@@ -34912,6 +37230,196 @@
           }
         },
         "summary": "Register a brought model",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/reject_run_proposal": {
+      "post": {
+        "description": "Say no to a proposed run. Nothing is created. Idempotent; refuses a proposal that was already approved. Requires orchestration:reject_run_proposal.",
+        "operationId": "reject_run_proposal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "proposal_id": {
+                    "description": "the proposal's id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "why, in the caller's words",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "proposal_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved",
+                            "rejected"
+                          ],
+                          "type": "string"
+                        },
+                        "decide": {
+                          "description": "present while the proposal is open: the call that approves it and the call that rejects it",
+                          "type": "object"
+                        },
+                        "decided_at": {
+                          "type": "string"
+                        },
+                        "decided_by": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "what approving will do, and nothing more: the Project it creates (or uses), the Pipeline it stores and its steps, and the dataset the run trains on",
+                          "properties": {
+                            "creates_project": {
+                              "type": "boolean"
+                            },
+                            "dataset": {
+                              "properties": {
+                                "description": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "methodology": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "shape": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "template": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "proposal_id": {
+                          "type": "string"
+                        },
+                        "proposed_at": {
+                          "type": "string"
+                        },
+                        "proposed_by": {
+                          "type": "string"
+                        },
+                        "rejection_reason": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "proposal_id",
+                        "approval",
+                        "message",
+                        "preview"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Reject a run proposal",
         "tags": [
           "action"
         ]
@@ -35668,7 +38176,7 @@
                     "type": "object"
                   },
                   "dataset_path": {
-                    "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the table the pipeline's first connect step names (its `source` + `table` attributes), when this node holds it, with the model step's `target` as the label; otherwise the built-in demo dataset",
+                    "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory staged in the node's import directory (imports/ under its data directory), named relative to it with a separator, e.g. ./churn (#1433). Default: the table the pipeline's first connect step names (its `source` + `table` attributes), when this node holds it, with the model step's `target` as the label; otherwise the built-in demo dataset",
                     "type": "string"
                   },
                   "decision_column": {
@@ -36207,6 +38715,160 @@
           }
         },
         "summary": "Run a graph",
+        "tags": [
+          "job"
+        ]
+      }
+    },
+    "/v1/run_published_pipeline": {
+      "post": {
+        "description": "Run a published pipeline's pinned version with your input, as POST /v1/pipelines/{name}/run does: your own data:run_pipeline grant and read access to the tables it reads decide, the input is checked against the schema it declares, and calls are rate limited per caller. Starts a run and answers its id and status. Requires data:run_pipeline. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "run_published_pipeline",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "input": {
+                    "description": "the input the pipeline declares (expose_pipeline input_schema)",
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "pipeline": {
+                    "description": "the published pipeline's id, or its name when one exposed pipeline has it",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "pipeline"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "error": {
+                          "description": "why a failed run failed (its last error)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "outputs": {
+                          "items": {
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "ref": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "running",
+                            "succeeded",
+                            "failed"
+                          ],
+                          "type": "string"
+                        },
+                        "status_endpoint": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "version",
+                        "run_id",
+                        "status",
+                        "outputs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Run a published pipeline",
         "tags": [
           "job"
         ]
@@ -37217,6 +39879,151 @@
         ]
       }
     },
+    "/v1/set_safe_mode": {
+      "post": {
+        "description": "Set the safe mode level of one Zetta database or saved source connection: off (every statement runs), warn_writes (a statement that writes answers safe_mode_warning with the exact statement first) or warn_all (every statement does). The caller confirms a warning by repeating the call with its confirmation. Needs the right to manage what it names: sql:ddl on the database, or create_connection for a connection. The level replicates to every node and is audited as safe_mode_changed. Requires api:query.",
+        "operationId": "set_safe_mode",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connection": {
+                    "description": "a saved source connection by name (give this OR database)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "database": {
+                    "description": "a Zetta database by name (give this OR connection)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "description": "off: every statement runs; warn_writes: a statement that writes answers safe_mode_warning first; warn_all: every statement does",
+                    "enum": [
+                      "off",
+                      "warn_writes",
+                      "warn_all"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection": {
+                          "description": "a saved source connection by name (give this OR database)",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "database": {
+                          "description": "a Zetta database by name (give this OR connection)",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "is_default": {
+                          "description": "true when no level was set and the kind's default applies (warn_writes for a connection, off for a database)",
+                          "type": "boolean"
+                        },
+                        "mode": {
+                          "description": "off: every statement runs; warn_writes: a statement that writes answers safe_mode_warning first; warn_all: every statement does",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
+                        },
+                        "previous": {
+                          "description": "set_safe_mode only: the level before this change",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "is_default"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Set a database's safe mode",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/set_training_schedule": {
       "post": {
         "description": "Set an agent's training spec: the corpus, the base checkpoint, the step count, and the cadence (manual, on_change, daily, weekly, monthly). Manual is the default - an agent never retrains behind your back. Requires orchestration:set_training_schedule.",
@@ -37664,7 +40471,7 @@
     },
     "/v1/sql": {
       "get": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. Requires api:query.",
         "operationId": "sql",
         "parameters": [
           {
@@ -37674,6 +40481,17 @@
             "required": false,
             "schema": {
               "description": "default database for unqualified table names (optional)",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+            "in": "query",
+            "name": "safe_mode_confirmation",
+            "required": false,
+            "schema": {
+              "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+              "pattern": "^[0-9a-f]{64}$",
               "type": "string"
             }
           },
@@ -37788,7 +40606,7 @@
         ]
       },
       "post": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. Requires api:query.",
         "operationId": "sql_post",
         "requestBody": {
           "content": {
@@ -37802,6 +40620,11 @@
                   },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "safe_mode_confirmation": {
+                    "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+                    "pattern": "^[0-9a-f]{64}$",
                     "type": "string"
                   },
                   "statement": {
@@ -38576,7 +41399,7 @@
     },
     "/v1/submit_feedback": {
       "post": {
-        "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Requires api:query.",
+        "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Only callers with cluster:admin attach diagnostics; other callers submit their description and version information only. Requires api:query.",
         "operationId": "submit_feedback",
         "requestBody": {
           "content": {
@@ -38590,7 +41413,8 @@
                     "type": "string"
                   },
                   "export_path": {
-                    "description": "local file path to ALSO write the bundle to — the explicit user export; nothing leaves the cluster on its own (optional)",
+                    "description": "ALSO write the bundle to a new file on the node, named relative to its export directory (exports/ under the data directory); no absolute path, no '..', no symbolic link, and never an existing file. Nothing leaves the cluster on its own (optional)",
+                    "minLength": 1,
                     "type": "string"
                   },
                   "intent": {
@@ -38646,7 +41470,7 @@
                           "type": "integer"
                         },
                         "exported_to": {
-                          "description": "present only when export_path was given and the export succeeded",
+                          "description": "present only when export_path was given and the export succeeded: the written file, relative to the node's export directory",
                           "type": "string"
                         },
                         "feedback_id": {
@@ -38869,7 +41693,7 @@
                     "type": "string"
                   },
                   "custom_data_path": {
-                    "description": "a churn dataset directory for cases that accept one (default: the built-in synthetic dataset)",
+                    "description": "a churn dataset directory for cases that accept one, relative to the node's import directory (imports/ under its data directory; #1433) (default: the built-in synthetic dataset)",
                     "type": "string"
                   },
                   "intent": {
@@ -39351,6 +42175,157 @@
           }
         },
         "summary": "Un-expose model",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/unexpose_pipeline": {
+      "post": {
+        "description": "Withdraw a published pipeline's HTTP route everywhere in one action: the replicated exposure flips and every node refuses the route. Runs it already served keep going. Idempotent. Requires orchestration:unexpose_pipeline.",
+        "operationId": "unexpose_pipeline",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "graph": {
+                    "description": "the pipeline's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "the owning project's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "endpoint": {
+                          "description": "the served run route, by id",
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "exposed_at": {
+                          "type": "string"
+                        },
+                        "exposed_by": {
+                          "type": "string"
+                        },
+                        "input_schema": {
+                          "type": "object"
+                        },
+                        "max_input_bytes": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "rate_limit_per_minute": {
+                          "type": "integer"
+                        },
+                        "status_endpoint": {
+                          "description": "the served status route, with {run_id} to fill in",
+                          "type": "string"
+                        },
+                        "sync_timeout_ms": {
+                          "type": "integer"
+                        },
+                        "version": {
+                          "description": "the pinned version callers get (counts the exposures)",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "project",
+                        "name",
+                        "exposed",
+                        "version",
+                        "endpoint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Un-expose pipeline",
         "tags": [
           "action"
         ]
@@ -42303,7 +45278,7 @@
     },
     "/v1/upload_dataset": {
       "post": {
-        "description": "Load a csv or jsonl file's TEXT, sent in the request, into a new partitioned table placed across the cluster - for a caller that cannot put a file on the node (add_dataset reads the node's filesystem). Same parsing, table creation and placement as add_dataset; at most 16 MiB of content (a larger file goes to a bucket and loads with load_dataset_object). Audited as dataset_added; the table then appears in list_datasets / system.datasets and can be passed to run as dataset_path <database>.<table>. (#1008) Requires orchestration:add_dataset.",
+        "description": "Load a csv or jsonl file's TEXT, sent in the request, into a new partitioned table placed across the cluster - for a caller that cannot put a file on the node (add_dataset reads the node's import directory). Same parsing, table creation and placement as add_dataset; at most 16 MiB of content (a larger file goes to a bucket and loads with load_dataset_object). Audited as dataset_added; the table then appears in list_datasets / system.datasets and can be passed to run as dataset_path <database>.<table>. (#1008) Requires orchestration:add_dataset.",
         "operationId": "upload_dataset",
         "requestBody": {
           "content": {

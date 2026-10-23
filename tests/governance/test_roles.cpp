@@ -92,7 +92,12 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
                   {CapabilityDomain::Orchestration, "expose_model"},
                   {CapabilityDomain::Orchestration, "unexpose_model"},
                   {CapabilityDomain::Orchestration, "expose_index"},
-                  {CapabilityDomain::Orchestration, "unexpose_index"}}));
+                  {CapabilityDomain::Orchestration, "unexpose_index"},
+                  {CapabilityDomain::Orchestration, "expose_pipeline"},
+                  {CapabilityDomain::Orchestration, "unexpose_pipeline"}}));
+    // Running a published pipeline is its own data right (zetta#1289).
+    EXPECT_EQ(permission_operations("serving:run"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "run_pipeline"}}));
     EXPECT_EQ(permission_operations("cloud:manage"),
               (std::vector<Operation>{
                   {CapabilityDomain::Orchestration, "cloud_inspect"},
@@ -112,10 +117,13 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // move_model_to_project, lake#654).
     const std::vector<Operation> pipeline_operations =
         permission_operations("pipelines:manage");
-    EXPECT_EQ(pipeline_operations.size(), 65u);  // +4 workspace methodology actions (zetta#1261), +append_methodology_artifact (lake#690)
+    EXPECT_EQ(pipeline_operations.size(), 68u);  // +propose_run/approve_run_proposal/reject_run_proposal (#969), +4 workspace methodology actions (zetta#1261), +append_methodology_artifact (lake#690)
     EXPECT_TRUE(std::ranges::contains(
         pipeline_operations,
         Operation{CapabilityDomain::Orchestration, "create_solution"}));
+    EXPECT_TRUE(std::ranges::contains(
+        pipeline_operations,
+        Operation{CapabilityDomain::Orchestration, "approve_run_proposal"}));
     EXPECT_TRUE(std::ranges::contains(
         pipeline_operations,
         Operation{CapabilityDomain::Orchestration, "run_solution"}));
@@ -185,8 +193,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // The canonical list carries the #746 atoms, blob:read (#747), six
     // orchestration atoms, eight pub/sub atoms (#1029/#1136), study promotion
     // (#1138), study deletion (#1158), five record-store and time-series atoms
-    // (#1231), three object atoms (#1005), and two network-record atoms (#1281).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 34u);
+    // (#1231), three object atoms (#1005), two network-record atoms (#1281), and
+    // serving:run (#1289).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 35u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {
@@ -415,8 +424,10 @@ TEST(RoleSql, ManagingRolesRequiresRolesManage) {
     EXPECT_NE(denied.error.find("manage_roles"), std::string::npos);
     EXPECT_FALSE(node.find_role("sneaky"));  // nothing was created
 
-    // The reader can still read (SELECT is not gated on roles:manage).
-    EXPECT_TRUE(reader_svc.run("SELECT * FROM system.roles;", "").ok());
+    // The reader can still read (SELECT is not gated on roles:manage), but not
+    // the role registry, which is admin-only (#766).
+    EXPECT_TRUE(reader_svc.run("SELECT * FROM system.tables;", "").ok());
+    EXPECT_FALSE(reader_svc.run("SELECT * FROM system.roles;", "").ok());
 
     // Acting AS the admin user: allowed.
     QueryService admin_svc{node, nullptr, admin_user->id(), /*acting_is_user=*/true};
@@ -427,6 +438,165 @@ TEST(RoleSql, ManagingRolesRequiresRolesManage) {
     QueryService local_svc{node};
     EXPECT_TRUE(local_svc.run("CREATE ROLE localrole;", "").ok());
     node.stop();
+}
+
+// ===== bounded role management (#761) ========================================
+// roles:manage runs the role statements; it does not let a caller hand out a
+// right it lacks, touch a role above it, or change a built-in role.
+
+namespace {
+
+struct BoundedRoles : ::testing::Test {
+    TempDir dir;
+    Node node{config_for(dir)};
+    QueryService local{node};
+
+    void SetUp() override {
+        ASSERT_TRUE(node.start());
+        node.ensure_builtin_roles();
+        for (const char* sql :
+             {"CREATE DATABASE app;", "CREATE TABLE app.people (id int);",
+              "CREATE ROLE delegates;",
+              "GRANT roles:manage, sql:read, sql:write, serving:read, mcp:call "
+              "TO ROLE delegates;",
+              "GRANT sql:read ON app.people(id) TO ROLE delegates;"}) {
+            const auto r = local.run(sql, "");
+            ASSERT_TRUE(r.ok()) << r.error << "  (" << sql << ")";
+        }
+        dee = user_with("dee", {"delegates"});
+        owner = user_with("owner", {"admin"});
+    }
+    void TearDown() override { node.stop(); }
+
+    std::string user_with(const std::string& name,
+                          const std::vector<std::string>& roles) {
+        auto user = node.create_user(name);
+        EXPECT_TRUE(user) << name;
+        for (const std::string& role : roles) {
+            node.assign_role(user->id(), node.find_role(role)->id());
+        }
+        return user ? user->id() : std::string{};
+    }
+    QueryService as(const std::string& user_id) {
+        return QueryService{node, nullptr, user_id, /*acting_is_user=*/true};
+    }
+    static bool refused(const QueryService::Outcome& r) {
+        return !r.ok() && r.error.find("permission denied") != std::string::npos;
+    }
+
+    std::string dee;
+    std::string owner;
+};
+
+}  // namespace
+
+TEST_F(BoundedRoles, ADelegateGrantsOnlyWhatItHolds) {
+    QueryService as_dee = as(dee);
+    ASSERT_TRUE(as_dee.run("CREATE ROLE helpers;", "").ok());
+    // What it holds, it may hand out ...
+    EXPECT_TRUE(as_dee.run("GRANT sql:read, sql:write TO ROLE helpers;", "").ok());
+    // ... what it does not, it may not: not to a new role, not to its own.
+    for (const char* sql :
+         {"GRANT tokens:manage TO ROLE helpers;", "GRANT sql:ddl TO ROLE helpers;",
+          "GRANT cluster:admin TO ROLE delegates;",
+          "GRANT users:manage, sql:read TO ROLE delegates;"}) {
+        const auto r = as_dee.run(sql, "");
+        EXPECT_TRUE(refused(r)) << sql << ": " << r.error;
+    }
+    EXPECT_FALSE(
+        node.authorize_user(dee, Operation{CapabilityDomain::Api, "manage_tokens"})
+            .allowed);
+    EXPECT_FALSE(
+        node.authorize_user(dee, Operation{CapabilityDomain::Data, "ddl"}).allowed);
+}
+
+TEST_F(BoundedRoles, AScopedGrantIsBoundedByTheCallersOwnCoverage) {
+    // A delegate whose sql:read is only on app.people(id) cannot widen it to the
+    // whole table, another column, or the database.
+    ASSERT_TRUE(local.run("CREATE ROLE narrow;", "").ok());
+    ASSERT_TRUE(local.run("GRANT roles:manage TO ROLE narrow;", "").ok());
+    ASSERT_TRUE(local.run("GRANT sql:read ON app.people(id) TO ROLE narrow;", "").ok());
+    const std::string nina = user_with("nina", {"narrow"});
+    QueryService as_nina = as(nina);
+    ASSERT_TRUE(as_nina.run("CREATE ROLE sub;", "").ok());
+    EXPECT_TRUE(as_nina.run("GRANT sql:read ON app.people(id) TO ROLE sub;", "").ok());
+    for (const char* sql : {"GRANT sql:read ON app.people TO ROLE sub;",
+                            "GRANT sql:read ON app.people(id, salary) TO ROLE sub;",
+                            "GRANT sql:read ON app.* TO ROLE sub;",
+                            "GRANT sql:read TO ROLE sub;"}) {
+        const auto r = as_nina.run(sql, "");
+        EXPECT_TRUE(refused(r)) << sql << ": " << r.error;
+    }
+}
+
+TEST_F(BoundedRoles, ADelegateCannotAssignOrRemoveARoleAboveIt) {
+    QueryService as_dee = as(dee);
+    // Not admin to itself, not tokens:manage through an existing role ...
+    ASSERT_TRUE(local.run("CREATE ROLE minters;", "").ok());
+    ASSERT_TRUE(local.run("GRANT tokens:manage TO ROLE minters;", "").ok());
+    for (const char* sql : {"GRANT ROLE admin TO dee;", "GRANT ROLE minters TO dee;"}) {
+        const auto r = as_dee.run(sql, "");
+        EXPECT_TRUE(refused(r)) << sql << ": " << r.error;
+    }
+    EXPECT_FALSE(node.authorize_user(dee, Operation{CapabilityDomain::Api,
+                                                    "cluster_admin"})
+                     .allowed);
+    // ... and it cannot take admin away from the owner, change a role above it,
+    // or drop one.
+    for (const char* sql :
+         {"REVOKE ROLE admin FROM owner;", "REVOKE tokens:manage FROM ROLE minters;",
+          "GRANT sql:read TO ROLE minters;", "DROP ROLE minters;"}) {
+        const auto r = as_dee.run(sql, "");
+        EXPECT_TRUE(refused(r)) << sql << ": " << r.error;
+    }
+    EXPECT_TRUE(node.authorize_user(owner, Operation{CapabilityDomain::Api,
+                                                     "cluster_admin"})
+                    .allowed);
+    EXPECT_TRUE(node.find_role("minters"));
+
+    // A role whose every right it holds, it may assign and remove.
+    const std::string rita = user_with("rita", {});
+    EXPECT_TRUE(as_dee.run("GRANT ROLE reader TO rita;", "").ok());
+    EXPECT_TRUE(as_dee.run("REVOKE ROLE reader FROM rita;", "").ok());
+}
+
+TEST_F(BoundedRoles, AnAdminMayGrantAdmin) {
+    // admin holds every right, so it may make another admin; only it can.
+    const std::string ann = user_with("ann", {});
+    EXPECT_TRUE(as(owner).run("GRANT ROLE admin TO ann;", "").ok());
+    EXPECT_TRUE(
+        node.authorize_user(ann, Operation{CapabilityDomain::Api, "cluster_admin"})
+            .allowed);
+    EXPECT_TRUE(as(owner).run("GRANT tokens:manage TO ROLE delegates;", "").ok());
+}
+
+TEST_F(BoundedRoles, BuiltinRolesCannotBeChangedOrDropped) {
+    const std::string now = "2026-10-21T00:00:00.000Z";
+    // Not by an admin, and not by the trusted local session either.
+    QueryService as_owner = as(owner);
+    for (QueryService* svc : {&as_owner, &local}) {
+        for (const char* sql :
+             {"REVOKE sql:read FROM ROLE reader;", "GRANT sql:ddl TO ROLE reader;",
+              "GRANT sql:read ON app.people TO ROLE writer;",
+              "REVOKE cluster:admin FROM ROLE admin;", "DROP ROLE writer;",
+              "DROP ROLE admin;"}) {
+            const auto r = svc->run(sql, "");
+            EXPECT_TRUE(refused(r)) << sql << ": " << r.error;
+            EXPECT_NE(r.error.find("built-in"), std::string::npos) << r.error;
+        }
+    }
+    for (const std::string& name : zetta::governance::builtin_role_names()) {
+        auto role = node.find_role(name);
+        ASSERT_TRUE(role) << name;
+        EXPECT_EQ(role->permissions(),
+                  *zetta::governance::builtin_role_permissions(name))
+            << name;
+    }
+    EXPECT_TRUE(node.find_role("reader")->capabilities().permits(
+        {CapabilityDomain::Data, "read"}, now));
+    // Assigning a built-in is not editing it.
+    const std::string rita = user_with("rita", {});
+    EXPECT_TRUE(as(owner).run("GRANT ROLE reader TO rita;", "").ok());
 }
 
 // ===== read views: system.roles (permission set) + system.user_roles =========

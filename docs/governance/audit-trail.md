@@ -14,7 +14,7 @@ for successful, authorised, high-frequency pub/sub reads:
 |---|---|
 | Write or any state-changing call | One event per call. |
 | Denied call | One event per call, including every repeated denial. |
-| Handler failure | One event per call. |
+| Handler failure | The authorization row, then a second row whose detail starts `failed: <code>` for any call that is not a plain read (#847). `allowed` stays true unless the handler itself refused (`unauthorized`). Before #847 a per-call action that failed left only the authorization row, which read exactly like a success. |
 | Ordinary authorised read | One event per call. |
 | Successful `receive_events`, `browse_topic`, `get_topic`, or `list_topics` | One session-start event, then a five-minute summary per actor, capability, and topic scope only when the window returned data. |
 
@@ -58,7 +58,7 @@ with no mutator. Its common fields are:
 |---|---|
 | `id` | UUID; also the replicated catalog suffix. |
 | `action` | Closed `AuditAction` vocabulary. |
-| `actor` | Principal or access-key identity, when known. |
+| `actor` | Principal or access-key identity: the caller the entry point declared (see [attribution](#attribution)), `local` for the unauthenticated local session. |
 | `target` | Governed resource or `api:<capability>`. |
 | `allowed` | Access decision or action outcome. |
 | `detail` | Human-readable reason or summary. |
@@ -75,10 +75,56 @@ records `data_changed` from the executor, whatever surface ran it. Its target is
 `sql:<kind>:<object>` (for example `sql:table:app.docs`), `allowed` is false for
 a refusal, and the detail is the statement's status line (`UPDATE 3`) or its
 error — never a value it wrote, so `CREATE TOKEN`'s secret is not in it. The
-`sql` capability's own per-call `data_access` row is recorded as before. See
+`sql` capability's own per-call `data_access` row is recorded as before. A
+`SELECT` the executor refuses (no `sql:read` on the table, or a filter, grouping,
+aggregate or ordering over a masked column) records `data_access` with
+`allowed: false` and the target `sql:table:<db>.<table>` (#252). See
 [per-statement enforcement](access-control.md#per-statement-enforcement).
 A node that predates this action does not accept it in an audit range, which is
 one more reason the upgrade policy below upgrades all nodes together.
+
+Changes made through the Node's own API are recorded by the Node as
+`data_changed` (#847), because the headed app calls these methods directly and
+no capability or SQL statement sees them:
+
+| Call | Target | Detail |
+|---|---|---|
+| `create_project`, `rename_project`, `reveal_project`, `drop_project` | `project:<name>` (the new name on a rename) | `project created`, `internal project created`, `project renamed from '<old>'`, `internal project '<old>' revealed`, `project dropped` |
+| `create_database`, `rename_database`, `drop_database` | `database:<name>` | `database created`, `database renamed from '<old>'`, `database dropped` |
+| `create_model`, `drop_model` | `model:<id>` | `model '<kind>' registered [in project '<name>']`, `model dropped` |
+| `run_graph` | `run:<id>` | `graph run succeeded`, or `graph run failed [at step '<id>']: <error>` |
+
+A call that changes nothing (a name clash, nothing to drop) records nothing. A
+change made over a capability or SQL therefore has two rows: the
+authorization or statement row, and the Node's row for its effect. A peer's
+change arrives through reconcile and is not recorded a second time.
+
+## Attribution
+
+Every row names who acted (#847). An entry point that knows the caller opens a
+`zetta::governance::AuditActorScope` for the work it does:
+
+| Entry point | Actor |
+|---|---|
+| `Registry::call` | the calling user or access key; `local` when none |
+| `Registry::decide_consent` (approved execution) | the requester, as before |
+| `query::Executor::execute` (every SQL surface) | the session's acting key; `local` when none |
+| `repl::GovernedConsole::run` | the console's session key; `local` when none |
+| The headed app's frame (`App::render_frame`) | `local`, the person at the desktop |
+
+`Node::record_audit_event` stamps that actor on any event recorded without one,
+so a deploy (`graph_deployed`), a queued job (`job_created`) and the Node's own
+`data_changed` rows name the caller instead of being blank. A project's graph
+changes (`graph_created`, `graph_approved`, `graph_dropped`) name the caller
+rather than the project's owner, and fall back to the owner only when no caller
+was declared. The scope is thread-local; `Node::run_on_owner` carries the
+caller's actor to the owner thread with the work it hands over, so work queued
+from a background worker is attributed to whoever queued it, not to what the
+owner thread was doing.
+
+Work that runs later on a thread no entry point started (a background job
+finishing, a scheduled retrain) has no declared caller, and its rows keep an
+empty actor; that is tracked in [#1327](https://github.com/oramasearch/zetta/issues/1327).
 
 Pub/sub administrative changes use `pubsub_topic_updated`,
 `pubsub_event_updated`, and `pubsub_event_deleted`. Their details contain
@@ -95,12 +141,14 @@ second event for a peer's action. Important emitters include:
 | Capability registry | `data_access` and `data_access_summary` according to the policy above. |
 | `Node::authorize` | Per-decision `data_access`. |
 | Project graph CRUD and deployment | `graph_created`, `graph_dropped`, `graph_deployed`. |
+| Node catalogue changes | `data_changed` for projects, databases, models and graph runs (#847). |
 | Compute jobs | `job_created`, `job_finished`. |
 | Access-key and cloud governance | Key, provisioning, consent, inspection, and dataset actions. |
 | Decision policy store | Policy creation/update and decision approval. |
 | Pub/sub administration | Topic setting changes and event edits/deletions. |
 | Audit administration | `audit_purged`, recorded after an explicit purge. |
-| SQL executor | `data_changed` for every statement that changes data, schema or governance, allowed or refused (#1229). |
+| SQL executor | `data_changed` for every statement that changes data, schema or governance, allowed or refused (#1229); `data_access` with `allowed: false` for a refused `SELECT` (#252). |
+| Outbound HTTP client | `egress_denied` for every connection the egress policy refuses, with target `egress:<host>:<port>` and actor `node` ([egress-policy.md](egress-policy.md), #75). |
 
 `AuditSink::record_audit_event` decouples these emitters from the node-owned
 store. `Node` assigns the id and time and appends the event to its origin log

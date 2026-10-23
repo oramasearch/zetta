@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -1663,6 +1664,233 @@ TEST(QueryService, OrderByLimitAndOffsetShapeTheResult) {
     auto system = svc.run("SELECT * FROM system.tables ORDER BY name LIMIT 1;", "");
     ASSERT_TRUE(system.ok()) << system.error;
     EXPECT_LE(system.rows.size(), 1u);
+
+    node.stop();
+}
+
+// ---- #912: the demo path's SQL, and multi-predicate WHERE ---------------------
+
+// The four examples of #912, as written there. ORDER BY / LIMIT came with #1039
+// and bare COUNT(*) with #1218; AND in a WHERE is #912's own change.
+TEST(QueryService, TheDemoPathExamplesOfIssue912Run) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    ASSERT_TRUE(svc.run("CREATE DATABASE d; CREATE TABLE d.scores (name text, risk int);"
+                        " CREATE TABLE d.accounts (name text, churned bool, segment text);",
+                        "d")
+                    .ok());
+    ASSERT_TRUE(svc.run("INSERT INTO d.scores (name, risk) VALUES ('a', 30), ('b', 90),"
+                        " ('c', 60), ('d', 75), ('e', 10);",
+                        "d")
+                    .ok());
+    ASSERT_TRUE(svc.run("INSERT INTO d.accounts (name, churned, segment) VALUES"
+                        " ('a', true, 'MCS'), ('b', true, 'ENT'), ('c', false, 'MCS'),"
+                        " ('d', true, 'MCS');",
+                        "d")
+                    .ok());
+
+    // ORDER BY
+    const auto ranked = svc.run("SELECT name, risk FROM scores ORDER BY risk DESC", "d");
+    ASSERT_TRUE(ranked.ok()) << ranked.error;
+    ASSERT_EQ(ranked.rows.size(), 5u);
+    EXPECT_EQ(ranked.rows[0]["name"], "b");
+    EXPECT_EQ(ranked.rows[4]["name"], "e");
+
+    // LIMIT
+    const auto top = svc.run("SELECT name, risk FROM scores ORDER BY risk DESC LIMIT 2", "d");
+    ASSERT_TRUE(top.ok()) << top.error;
+    ASSERT_EQ(top.rows.size(), 2u);
+    EXPECT_EQ(top.rows[0]["name"], "b");
+    EXPECT_EQ(top.rows[1]["name"], "d");
+
+    // Bare COUNT(*)
+    const auto counted = svc.run("SELECT COUNT(*) FROM accounts", "d");
+    ASSERT_TRUE(counted.ok()) << counted.error;
+    ASSERT_EQ(counted.rows.size(), 1u);
+    EXPECT_EQ(counted.rows[0]["count"], 4);
+
+    // Multi-predicate WHERE
+    const auto both = svc.run(
+        "SELECT name FROM accounts WHERE churned = true AND segment = 'MCS' ORDER BY name",
+        "d");
+    ASSERT_TRUE(both.ok()) << both.error;
+    ASSERT_EQ(both.rows.size(), 2u);
+    EXPECT_EQ(both.rows[0]["name"], "a");
+    EXPECT_EQ(both.rows[1]["name"], "d");
+
+    node.stop();
+}
+
+TEST(PostgresParser, ParsesAndOrNotWithSqlPrecedence) {
+    using Kind = zetta::query::WhereClause::Kind;
+    PostgresDialect pg;
+    const auto where_of = [&](const std::string& sql) {
+        const auto parsed = pg.parse(sql);
+        EXPECT_TRUE(parsed.ok()) << parsed.error;
+        const auto* stmt = parsed.ok() ? std::get_if<SelectStmt>(&parsed.statements[0])
+                                       : nullptr;
+        EXPECT_NE(stmt, nullptr);
+        EXPECT_TRUE(stmt != nullptr && stmt->where.has_value());
+        return stmt != nullptr && stmt->where ? *stmt->where
+                                              : zetta::query::WhereClause{};
+    };
+
+    // A run of ANDs is one node holding every comparison.
+    const auto all = where_of("SELECT * FROM t WHERE a = 1 AND b > 2 and c <> 'x';");
+    ASSERT_EQ(all.kind, Kind::And);
+    ASSERT_EQ(all.operands.size(), 3u);
+    EXPECT_EQ(all.operands[0].column, "a");
+    EXPECT_EQ(all.operands[1].op, CompareOp::Greater);
+    EXPECT_EQ(all.operands[2].value, "x");
+
+    // AND binds tighter than OR.
+    const auto mixed = where_of("SELECT * FROM t WHERE a = 1 OR b = 2 AND c = 3;");
+    ASSERT_EQ(mixed.kind, Kind::Or);
+    ASSERT_EQ(mixed.operands.size(), 2u);
+    EXPECT_EQ(mixed.operands[0].kind, Kind::Compare);
+    ASSERT_EQ(mixed.operands[1].kind, Kind::And);
+    EXPECT_EQ(mixed.operands[1].operands.size(), 2u);
+
+    // Parentheses override it; NOT binds tightest.
+    const auto grouped = where_of("SELECT * FROM t WHERE (a = 1 OR b = 2) AND NOT c = 3;");
+    ASSERT_EQ(grouped.kind, Kind::And);
+    ASSERT_EQ(grouped.operands.size(), 2u);
+    EXPECT_EQ(grouped.operands[0].kind, Kind::Or);
+    ASSERT_EQ(grouped.operands[1].kind, Kind::Not);
+    ASSERT_EQ(grouped.operands[1].operands.size(), 1u);
+    EXPECT_EQ(grouped.operands[1].operands[0].column, "c");
+
+    // A single comparison is still a plain comparison, also when parenthesized.
+    const auto single = where_of("SELECT * FROM t WHERE (a = 1);");
+    EXPECT_EQ(single.kind, Kind::Compare);
+    EXPECT_EQ(single.column, "a");
+
+    // UPDATE and DELETE take the same grammar.
+    const auto update = pg.parse("UPDATE t SET x = 1 WHERE a = 1 AND b = 2;");
+    ASSERT_TRUE(update.ok()) << update.error;
+    const auto* update_stmt = std::get_if<zetta::query::UpdateStmt>(&update.statements[0]);
+    ASSERT_NE(update_stmt, nullptr);
+    ASSERT_TRUE(update_stmt->where);
+    EXPECT_EQ(update_stmt->where->kind, Kind::And);
+    const auto remove = pg.parse("DELETE FROM t WHERE a = 1 OR b = 2;");
+    ASSERT_TRUE(remove.ok()) << remove.error;
+    const auto* delete_stmt = std::get_if<zetta::query::DeleteStmt>(&remove.statements[0]);
+    ASSERT_NE(delete_stmt, nullptr);
+    ASSERT_TRUE(delete_stmt->where);
+    EXPECT_EQ(delete_stmt->where->kind, Kind::Or);
+}
+
+// A malformed compound WHERE is a parse error with a position, never a crash.
+TEST(PostgresParser, RejectsMalformedCompoundWhere) {
+    PostgresDialect pg;
+    for (const std::string sql :
+         {"SELECT * FROM t WHERE a = 1 AND;", "SELECT * FROM t WHERE a = 1 OR",
+          "SELECT * FROM t WHERE (a = 1 AND b = 2;", "SELECT * FROM t WHERE NOT;",
+          "SELECT * FROM t WHERE a = 1 AND (b = 2 OR c);",
+          "SELECT * FROM t WHERE a = 1 b = 2;"}) {
+        SCOPED_TRACE(sql);
+        const auto parsed = pg.parse(sql);
+        EXPECT_FALSE(parsed.ok());
+        EXPECT_NE(parsed.error.find("(at "), std::string::npos) << parsed.error;
+    }
+}
+
+TEST(QueryService, CompoundWhereFiltersEveryPath) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    ASSERT_TRUE(svc.run("CREATE DATABASE d; CREATE TABLE d.t (id int, plan text, amount int);",
+                        "")
+                    .ok());
+    ASSERT_TRUE(svc.run("INSERT INTO d.t (id, plan, amount) VALUES (1, 'pro', 5), "
+                        "(2, 'free', 1), (3, 'pro', 7), (4, 'team', 2), (5, 'free', 9);",
+                        "")
+                    .ok());
+    const auto ids = [&](const std::string& sql) {
+        const auto result = svc.run(sql, "");
+        EXPECT_TRUE(result.ok()) << sql << ": " << result.error;
+        std::vector<int> out;
+        for (const auto& row : result.rows) out.push_back(row["id"].get<int>());
+        std::ranges::sort(out);
+        return out;
+    };
+
+    EXPECT_EQ(ids("SELECT id FROM d.t WHERE plan = 'pro' AND amount > 5;"),
+              std::vector<int>({3}));
+    EXPECT_EQ(ids("SELECT id FROM d.t WHERE plan = 'team' OR amount >= 7;"),
+              std::vector<int>({3, 4, 5}));
+    EXPECT_EQ(ids("SELECT id FROM d.t WHERE NOT plan = 'free';"),
+              std::vector<int>({1, 3, 4}));
+    EXPECT_EQ(ids("SELECT id FROM d.t WHERE (plan = 'pro' OR plan = 'free') AND amount < 6;"),
+              std::vector<int>({1, 2}));
+    EXPECT_EQ(ids("SELECT id FROM d.t WHERE plan = 'pro' OR plan = 'free' AND amount < 6;"),
+              std::vector<int>({1, 2, 3}))
+        << "AND binds tighter than OR";
+
+    // Every column of a compound WHERE must exist.
+    const auto unknown = svc.run("SELECT id FROM d.t WHERE plan = 'pro' AND nope = 1;", "");
+    EXPECT_FALSE(unknown.ok());
+    EXPECT_NE(unknown.error.find("\"nope\""), std::string::npos) << unknown.error;
+
+    // Aggregates: the dense-numeric AND runs through the DDF engine, the OR and the
+    // string comparison fold through the rows; both answer the same way.
+    const auto numeric = svc.run(
+        "SELECT amount, COUNT(*) AS n FROM d.t WHERE amount > 1 AND amount < 9 "
+        "GROUP BY amount ORDER BY amount;",
+        "");
+    ASSERT_TRUE(numeric.ok()) << numeric.error;
+    ASSERT_EQ(numeric.rows.size(), 3u);
+    EXPECT_EQ(numeric.rows[0]["amount"], 2);
+    EXPECT_EQ(numeric.rows[2]["amount"], 7);
+    const auto either = svc.run(
+        "SELECT plan, SUM(amount) AS total FROM d.t WHERE plan = 'pro' OR amount = 9 "
+        "GROUP BY plan ORDER BY plan;",
+        "");
+    ASSERT_TRUE(either.ok()) << either.error;
+    ASSERT_EQ(either.rows.size(), 2u);
+    EXPECT_EQ(either.rows[0]["plan"], "free");
+    EXPECT_EQ(either.rows[0]["total"], 9);
+    EXPECT_EQ(either.rows[1]["total"], 12);
+    const auto whole = svc.run(
+        "SELECT COUNT(*) FROM d.t WHERE plan = 'free' AND amount > 1;", "");
+    ASSERT_TRUE(whole.ok()) << whole.error;
+    EXPECT_EQ(whole.rows[0]["count"], 1);
+
+    // UPDATE and DELETE pick their rows with the same predicate.
+    ASSERT_TRUE(svc.run("UPDATE d.t SET plan = 'gold' WHERE plan = 'pro' AND amount > 5;", "")
+                    .ok());
+    EXPECT_EQ(ids("SELECT id FROM d.t WHERE plan = 'gold';"), std::vector<int>({3}));
+    ASSERT_TRUE(svc.run("DELETE FROM d.t WHERE plan = 'free' OR plan = 'team';", "").ok());
+    EXPECT_EQ(ids("SELECT id FROM d.t;"), std::vector<int>({1, 3}));
+
+    node.stop();
+}
+
+// A comparison on a column a row lacks is UNKNOWN, as with NULL in SQL: NOT keeps
+// it UNKNOWN (the row stays out), OR with a TRUE side keeps the row, and AND with
+// a FALSE side drops it.
+TEST(QueryService, CompoundWhereUsesThreeValuedLogicForMissingColumns) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    ASSERT_TRUE(svc.run("CREATE DATABASE d; CREATE TABLE d.t (id int, tier text);", "").ok());
+    ASSERT_TRUE(svc.run("INSERT INTO d.t (id, tier) VALUES (1, 'gold');", "").ok());
+    ASSERT_TRUE(svc.run("INSERT INTO d.t (id) VALUES (2);", "").ok());
+
+    const auto count = [&](const std::string& sql) {
+        const auto result = svc.run(sql, "");
+        EXPECT_TRUE(result.ok()) << sql << ": " << result.error;
+        return result.rows.size();
+    };
+    EXPECT_EQ(count("SELECT id FROM d.t WHERE NOT tier = 'gold';"), 0u)
+        << "the row without a tier is not 'not gold'";
+    EXPECT_EQ(count("SELECT id FROM d.t WHERE tier = 'gold' OR id = 2;"), 2u);
+    EXPECT_EQ(count("SELECT id FROM d.t WHERE NOT (tier = 'gold' AND id = 2);"), 1u)
+        << "row 1: NOT (TRUE AND FALSE) is TRUE; row 2: NOT (UNKNOWN AND TRUE) is UNKNOWN";
 
     node.stop();
 }

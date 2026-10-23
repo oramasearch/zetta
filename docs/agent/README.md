@@ -28,6 +28,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 (nibble-dev); shipped so far:
 
 - **The reward primitive** — `EndState` + `EndStateGrader` (below).
+- **Checkpoint registration** — [checkpoints.md](checkpoints.md): operator-selected directories, serving checks and legacy selectors (#1411).
 - **The task/game** — `Task` (below).
 - **Tool calls + the sandbox** — `ToolCall` + `Sandbox` (below).
 - **The rollout** — `AgentPolicy` + `run_rollout` (below).
@@ -41,9 +42,10 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The training-data corpus** — `curriculum` + `corpus_io`: the gated churn seed,
   graph-derived facts, the reference tool-call trajectory, JSONL, and difficulty/held-out
   (below). Runbooks: generate the data → [`training-data-runbook.md`](training-data-runbook.md);
-  run the fine-tune → [`training-runbook.md`](training-runbook.md); run the trained agent →
+  run the fine-tune → [`training-runbook.md`](training-runbook.md) (including confined model pulls, #1412); run the trained agent →
   [`inference-runbook.md`](inference-runbook.md); **build + run a real graph from a plain-language
-  ask** (`agent_run`, the base agent working end to end — no #859 needed) →
+  ask** (`agent_run`, the base agent working end to end — no #859 needed; it stores the plan
+  proposed and runs it only once approved, #913) →
   [`build-and-run-runbook.md`](build-and-run-runbook.md).
 - **GPU boxes** (#920) — [`gpu-box-runbook.md`](gpu-box-runbook.md): which box for which job,
   the Lambda instance choice (Ampere + native BF16; **not** Volta), provisioning + the CUDA
@@ -74,8 +76,8 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 
 - **`AgentRecord`** (`agent_record.hpp`) — the first-class **agent** a user lists, selects,
   and **chats with** ([#849](https://github.com/oramasearch/zetta/issues/849)): an id + name +
-  description binding a **model** (a local checkpoint dir, a `model:<uuid>`, or a HuggingFace
-  repo id `zetta pull` fetches) to a system prompt and the **tools** it may call. Stored as a
+  description binding a **model** (an exact operator-registered checkpoint selector,
+  [checkpoint registration](checkpoints.md), #1411) to a system prompt and the **tools** it may call. Stored as a
   replicated `agent:<uuid>` entity (`catalog.hpp`); non-throwing `agent_from_json` +
   `agent_schema()` are the boundary.
 - **`AgentStore`** (`agent_store.hpp`) — CRUD over the `agent:` entities (put/get/list/remove
@@ -121,6 +123,8 @@ Verify: `AgentApiFixture.KindsRuntimesStudioShapeAndPipelineGrants`.
 
 Validation: a `native` agent needs `model`; a `python` agent a valid `definition`; a `service`
 agent an `endpoint`. `chat` and `agent_run` refuse non-native agents and say where they run.
+Native serving also refuses unregistered model selectors before loading any checkpoint files;
+records remain portable across nodes with different local registrations.
 `agent_training_status` reports a non-native agent as *not trained by Zetta* rather than
 untrained. Verify: `AgentApiFixture.KindsRuntimesStudioShapeAndPipelineGrants`.
 

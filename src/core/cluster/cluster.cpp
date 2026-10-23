@@ -21,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -86,6 +87,10 @@ struct Cluster::State {
         bool has_status = false;  // have we received a STATUS from it yet?
         std::size_t entries = 0;
         std::string version;
+        // The replication clock it last reported (#794): what its document holds,
+        // so our gossip ships it only the changes it lacks. Empty when the peer
+        // advertises none (an older node) — it then gets the whole document.
+        std::string clock;
         std::chrono::steady_clock::time_point last_sync{};
         unsigned audit_protocol_version = 0;
     };
@@ -116,6 +121,10 @@ struct Cluster::State {
     std::size_t audit_message_bytes = 0;
     std::string audit_status;
     std::chrono::steady_clock::duration idle_timeout{};
+    std::chrono::milliseconds setup_timeout{5000};
+    std::size_t maximum_pending_setups = 64;
+    std::size_t pending_setups = 0;  // network thread only, accepted links
+
     std::chrono::steady_clock::duration reconnect_interval{};
     // How long a peer stays in the membership view after its live link drops
     // (hysteresis, #739). Zero drops it immediately.
@@ -125,6 +134,9 @@ struct Cluster::State {
     // in our HELLO (an empty candidate set + the dial-out marker) — we are a pure
     // initiator. Set from ClusterConfig::dial_out_only in start().
     bool dial_out_only = false;
+    // Chaos fault injection on inbound frames (#842); null outside the chaos
+    // experiments. Set from ClusterConfig::frame_faults in the constructor.
+    std::shared_ptr<FrameFaultInjector> frame_faults;
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
     // At most one live connection per peer node_id (guarded by `mutex`). A reconnect
@@ -138,6 +150,12 @@ struct Cluster::State {
     // peer_count() in steady state; a higher value would mean links are leaking. An
     // atomic so connection_count() can read it without the peer mutex.
     std::atomic<int> live_connections{0};
+    // Replication gossip sent (#794), summed over links; read by gossip_stats().
+    std::atomic<std::uint64_t> gossip_rounds{0};
+    std::atomic<std::uint64_t> gossip_sync_frames{0};
+    std::atomic<std::uint64_t> gossip_full_syncs{0};
+    std::atomic<std::uint64_t> gossip_incremental_syncs{0};
+    std::atomic<std::uint64_t> gossip_sync_bytes{0};
 
     // --- Reconnect routing (dedup redials by node id, #739) -----------------
     //
@@ -357,10 +375,10 @@ struct Cluster::State {
         const std::lock_guard<std::mutex> lock(route_mutex);
         dialing.erase(seed);
     }
-    // Record a peer's reported replication status (entries + version) and stamp
-    // the sync time. No-op if the peer has since disconnected.
+    // Record a peer's reported replication status (entries + version + clock)
+    // and stamp the sync time. No-op if the peer has since disconnected.
     void update_peer_status(const std::string& node_id, std::size_t entries,
-                            std::string version,
+                            std::string version, std::string clock,
                             std::chrono::steady_clock::time_point when) {
         const std::lock_guard<std::mutex> lock(mutex);
         for (PeerRecord& peer : peers) {
@@ -368,9 +386,27 @@ struct Cluster::State {
             peer.has_status = true;
             peer.entries = entries;
             peer.version = std::move(version);
+            peer.clock = std::move(clock);
             peer.last_sync = when;
             return;
         }
+    }
+
+    // The clock a peer reported on the current link (#794): one stamped at or
+    // after `since`, the moment that link's writer started. A clock from an
+    // earlier link is never trusted — the peer may have restarted from an older
+    // document since — so a new link opens with the whole document. nullopt
+    // until the peer has sent a STATUS on this link; empty when its STATUS
+    // carries no clock (a node from before #794).
+    std::optional<std::string> peer_clock_since(
+        const std::string& node_id, std::chrono::steady_clock::time_point since) const {
+        const std::lock_guard<std::mutex> lock(mutex);
+        for (const PeerRecord& peer : peers) {
+            if (peer.node_id != node_id) continue;
+            if (!peer.has_status || peer.last_sync < since) return std::nullopt;
+            return peer.clock;
+        }
+        return std::nullopt;
     }
 
     // Every OTHER node we know about, keyed by node id, mapped to the endpoint(s)
@@ -390,6 +426,12 @@ struct Cluster::State {
         const auto add_endpoint = [&](const std::string& node_id,
                                       const std::string& endpoint) {
             if (node_id.empty() || node_id == my_node_id || endpoint.empty()) {
+                return;
+            }
+            // The replicated membership document is peer-written too: dial only a
+            // well-formed node id and HOST:PORT (#771). HELLO-derived entries
+            // were already checked by parse_hello.
+            if (!is_valid_node_id(node_id) || !is_valid_peer_endpoint(endpoint)) {
                 return;
             }
             std::vector<std::string>& list = members[node_id];
@@ -433,6 +475,15 @@ struct Cluster::State {
         return members;
     }
 };
+
+// Defined outside the anonymous namespace: declared in cluster.hpp for tests.
+bool hello_matches_peer_certificate(std::string_view stated_node_id,
+                                    std::span<const unsigned char> peer_certificate_der) {
+    if (stated_node_id.empty()) return false;
+    const std::optional<std::string> common_name =
+        zetta::transport::certificate_common_name(peer_certificate_der);
+    return common_name && *common_name == stated_node_id;
+}
 
 namespace {
 
@@ -499,6 +550,42 @@ std::vector<std::string> split_endpoints(const std::string& text) {
     return parts;
 }
 
+}  // namespace
+
+bool is_valid_node_id(std::string_view node_id) {
+    if (node_id.empty() || node_id.size() > kMaxNodeIdBytes) return false;
+    return std::ranges::all_of(node_id, [](char character) {
+        return (character >= 'a' && character <= 'z') ||
+               (character >= 'A' && character <= 'Z') ||
+               (character >= '0' && character <= '9') || character == '-' ||
+               character == '_' || character == '.';
+    });
+}
+
+bool is_valid_peer_endpoint(std::string_view endpoint) {
+    if (endpoint.size() > kMaxEndpointBytes) return false;
+    const auto colon = endpoint.rfind(':');
+    if (colon == std::string_view::npos || colon == 0) return false;
+    const std::string_view host = endpoint.substr(0, colon);
+    const std::string_view port_text = endpoint.substr(colon + 1);
+    if (port_text.empty() || port_text.size() > 5 ||
+        !std::ranges::all_of(port_text, [](char character) {
+            return character >= '0' && character <= '9';
+        })) {
+        return false;
+    }
+    unsigned port = 0;
+    std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+    if (port == 0 || port > 65535) return false;
+    return std::ranges::all_of(host, [](char character) {
+        return (character >= 'a' && character <= 'z') ||
+               (character >= 'A' && character <= 'Z') ||
+               (character >= '0' && character <= '9') || character == '-' ||
+               character == '_' || character == '.' || character == ':' ||
+               character == '[' || character == ']' || character == '%';
+    });
+}
+
 // Parse "ZETTA/1 HELLO <node_id> <ep1[,ep2,...]|-> [wan|dial-out]". The endpoints
 // are a single whitespace-delimited, comma-separated token — the peer's advertised
 // candidate SET (#739) — or "-" for the empty set of a dial-out-only node (#803).
@@ -507,20 +594,35 @@ std::vector<std::string> split_endpoints(const std::string& text) {
 // address and must never be dialed. A legacy single-address HELLO parses as a
 // one-element wan set (backward compatible). `address` defaults to the first
 // advertised endpoint; the observer overrides it with the endpoint it actually
-// reached the peer on. Returns an empty node_id on anything malformed.
-ClusterPeer parse_hello(const std::string& line) {
-    std::istringstream parser(line);
+// reached the peer on. Returns an empty node_id on anything malformed, including
+// a HELLO that breaks the #771 bounds (see cluster.hpp): the node id and every
+// endpoint are stored, shown in the node list and logs, and dialed, so a peer
+// cannot plant control characters there or hold an unbounded endpoint list.
+ClusterPeer parse_hello(std::string_view line) {
+    std::istringstream parser{std::string(line)};
     std::string protocol, verb, endpoints_token, reachability_token;
     ClusterPeer peer;
     parser >> protocol >> verb >> peer.node_id >> endpoints_token >>
         reachability_token;
     if (protocol != kProtocol || verb != "HELLO") return ClusterPeer{};
+    if (!is_valid_node_id(peer.node_id)) return ClusterPeer{};
     if (endpoints_token != "-") peer.endpoints = split_endpoints(endpoints_token);
+    if (peer.endpoints.size() > kMaxAdvertisedEndpoints) return ClusterPeer{};
+    if (!std::ranges::all_of(peer.endpoints, [](const std::string& endpoint) {
+            return is_valid_peer_endpoint(endpoint);
+        })) {
+        return ClusterPeer{};
+    }
     peer.dial_out_only = (reachability_token == "dial-out");
+    // A wan peer must name somewhere it can be reached; only a dial-out-only peer
+    // advertises the empty set.
+    if (!peer.dial_out_only && peer.endpoints.empty()) return ClusterPeer{};
     parser >> peer.audit_protocol_version;
     if (!peer.endpoints.empty()) peer.address = peer.endpoints.front();
     return peer;
 }
+
+namespace {
 
 std::string hello_line(const std::string& node_id,
                        const std::vector<std::string>& endpoints,
@@ -542,10 +644,15 @@ std::string hello_line(const std::string& node_id,
 // --- Replication gossip -----------------------------------------------------
 //
 // Once peers have shaken hands they exchange replicated state on a timer:
-//   ZETTA/1 SYNC <base64 of ReplicationManager::save()>   — merge into ours
-//   ZETTA/1 STATUS <entries> <version>                    — its status, for nodes()
-// SYNC carries the whole document (the ReplicateToAllNodes policy); the CRDT
-// merge is conflict-free, so order and duplication don't matter.
+//   ZETTA/1 SYNC <base64 document blob>          — merge into ours
+//   ZETTA/1 STATUS <entries> <version> <clock>   — its status, for nodes(), and
+//                                                  its base64 replication clock
+// SYNC carries only the changes the peer lacks, judged by the clock the peer
+// last reported on this link (ReplicationManager::save_since, #794), and is
+// skipped when it lacks none. It carries the whole document on a new link,
+// to a peer that reports no clock (an older node), or to one too far behind.
+// Either way it is a blob merge() accepts, so the receive path is unchanged;
+// the CRDT merge is conflict-free, so order and duplication don't matter.
 
 // base64 lives in the shared internal header so the signal plane (signal.cpp)
 // uses the same implementation — see src/core/base64.hpp.
@@ -554,16 +661,21 @@ using detail::base64_decode_to_string;
 using detail::base64_encode;
 using detail::base64_encode_bytes;
 
-std::string sync_line(const ReplicationManager& replication) {
-    return std::string(kProtocol) + " SYNC " +
-           base64_encode(replication.save());
+std::string sync_line(const std::vector<std::byte>& blob) {
+    return std::string(kProtocol) + " SYNC " + base64_encode(blob);
 }
 
+// The clock rides as a trailing token, which a node that predates #794 never
+// reads (it parses entries and version and stops), so mixed versions interoperate.
 std::string status_line(const ReplicationManager& replication) {
     return std::string(kProtocol) + " STATUS " +
            std::to_string(replication.entry_count()) + " " +
-           replication.version();
+           replication.version() + " " +
+           base64_encode_bytes(replication.clock());
 }
+
+// A clock is about 20 bytes per node; anything past this is not a clock.
+constexpr std::size_t kMaxClockToken = 64 * 1024;
 
 std::string loreq_line(const std::string& id) {
     return std::string(kProtocol) + " LOREQ " + id;
@@ -591,9 +703,9 @@ std::string signal_line(const Signal& signal) {
 // The line protocol runs over `stream` — the raw socket when the cluster is
 // plaintext, or the TLS layer when security is on (`tls` then owns the session
 // and wraps `socket` in reference mode). `socket` stays directly reachable so
-// the keepalive can force-close the connection under either transport; the
-// TLS session supports one in-flight read + one in-flight write, which is
-// exactly the read-pump + link-writer pattern.
+// the keepalive can force-close the connection under either transport. Both
+// transports are full duplex for one in-flight read + one in-flight write,
+// which is exactly the read-pump + link-writer pattern (#835).
 // Dispatch one received signal. `peer_node_id` is the sender. A Request is
 // answered by the registered handler and its Response queued back to the sender;
 // a Response wakes the waiting RPC; an Event/Task is delivered to the handler.
@@ -672,12 +784,19 @@ void apply_gossip(Cluster::State* self, const std::string& line,
     } else if (verb == "STATUS") {
         std::size_t entries = 0;
         std::string version;
-        parser >> entries >> version;
+        std::string clock_token;
+        parser >> entries >> version >> clock_token;
         log_event(self, "<- STATUS from " + short_id(peer_node_id) +
                             " entries=" + std::to_string(entries) + " ver=" +
                             version);
+        // An absent or oversized clock leaves it empty: that peer is sent the
+        // whole document, as before #794. ReplicationManager::save_since
+        // validates the decoded bytes and falls back the same way.
+        std::string clock = clock_token.size() <= kMaxClockToken
+                                ? base64_decode_to_string(clock_token)
+                                : std::string{};
         self->update_peer_status(peer_node_id, entries, std::move(version),
-                                 std::chrono::steady_clock::now());
+                                 std::move(clock), std::chrono::steady_clock::now());
     } else if (verb == "LOREQ") {
         std::string id;
         parser >> id;
@@ -787,13 +906,22 @@ void apply_gossip(Cluster::State* self, const std::string& line,
 // thread-safe, so a poll keeps producers off the network thread for now.)
 constexpr std::chrono::milliseconds kOutboxPollInterval{20};
 constexpr std::chrono::milliseconds kGossipInterval{500};
+// A link that has sent a SYNC waits for the peer's STATUS clock to show it took it
+// before sending again (#794). A SYNC cut against a clock that predates the last
+// one mostly re-ships what is still in flight, and a peer ingesting a large catch-up
+// keeps reporting its old clock for seconds — re-sending would ship the whole
+// document again. Frames on a link arrive in order or the link drops (a new link
+// starts over with the whole document), so the wait is only a backstop: after
+// kSyncResendAfter without the peer showing our SYNC, we resend from the clock it
+// reports.
+constexpr std::chrono::milliseconds kSyncResendAfter{10000};
 
-// Per-link output pump: flush this peer's queued signals every tick, push our
-// replicated document + status (or a PING keepalive) and request missing
+// Per-link output pump: flush this peer's queued signals every tick, push the
+// changes this peer lacks + our status (or a PING keepalive) and request missing
 // large-object bodies every ~0.5s, and drop the link if the peer goes silent —
-// until the connection dies. FramedStream preserves full-duplex plaintext and
-// serializes access to the TLS engine (#786). Always spawned (the signal plane
-// is always available), even with no replication/blobs.
+// until the connection dies. FramedStream is full duplex over plaintext and
+// TLS alike, so this writer never waits on the read pump (#786, #835). Always
+// spawned (the signal plane is always available), even with no replication/blobs.
 capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
                          std::string peer_node_id) {
     using namespace std::chrono_literals;
@@ -801,6 +929,12 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
     net::timer timer(self->io_context);
     std::map<std::string, Clock::time_point> requested;  // body request cooldown
     Clock::time_point last_gossip = Clock::now() - kGossipInterval;  // gossip now
+    // Only a clock the peer reports on THIS link sizes our SYNC (#794); our own
+    // clock as of the last SYNC tells when the peer has taken it.
+    const Clock::time_point link_started = Clock::now();
+    bool sent_any = false;
+    std::string sent_clock;
+    Clock::time_point last_sync_sent{};
     while (link->alive) {
         // Keepalive: a healthy peer gossips/PINGs us every ~0.5s, so prolonged
         // silence means the link died (e.g. a silent TCP drop). Close it —
@@ -809,6 +943,14 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
             log_event(self, "keepalive timeout — dropping idle peer connection");
             link->stream->close();
             break;
+        }
+        // Chaos fault injection (#842): apply inbound frames the injector held
+        // back (a delay or a reorder) that are due now.
+        if (self->frame_faults) {
+            for (const std::string& held : self->frame_faults->release_due(peer_node_id)) {
+                link->last_activity = Clock::now();
+                apply_gossip(self, held, peer_node_id);
+            }
         }
         // Flush queued signals (RPC requests/responses, events, tasks) and any
         // large-object bodies a peer asked us for — promptly, every tick.
@@ -823,12 +965,43 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
         // Periodic gossip + keepalive, every ~0.5s (not every poll tick).
         if (Clock::now() - last_gossip >= kGossipInterval) {
             last_gossip = Clock::now();
+            self->gossip_rounds.fetch_add(1, std::memory_order_relaxed);
             if (self->replication) {
+                // STATUS first: it is what the peer sizes its own SYNC by, so it
+                // must not queue behind a large SYNC of ours (#794).
                 if (!co_await link->stream->write_frame(
-                        sync_line(*self->replication)) ||
-                    !co_await link->stream->write_frame(
                         status_line(*self->replication))) {
                     break;
+                }
+                const std::optional<std::string> reported =
+                    self->peer_clock_since(peer_node_id, link_started);
+                const std::string peer_clock = reported.value_or(std::string{});
+                // A peer that reports no clock (a node from before #794) can never
+                // show it took a SYNC: it gets the whole document every round, as
+                // before.
+                const bool clockless_peer = reported && reported->empty();
+                const bool awaiting_ack =
+                    sent_any && !clockless_peer &&
+                    !ReplicationManager::clock_covers(peer_clock, sent_clock) &&
+                    Clock::now() - last_sync_sent < kSyncResendAfter;
+                // Our clock is read BEFORE the delta, so it never names a change
+                // the delta lacks: the peer's clock covering it means it took ours.
+                std::string clock_now =
+                    awaiting_ack ? std::string{} : self->replication->clock();
+                const ReplicationDelta delta =
+                    awaiting_ack ? ReplicationDelta{}
+                                 : self->replication->save_since(peer_clock);
+                if (!delta.blob.empty()) {
+                    sent_any = true;
+                    sent_clock = std::move(clock_now);
+                    last_sync_sent = Clock::now();
+                    std::string sync = sync_line(delta.blob);
+                    self->gossip_sync_frames.fetch_add(1, std::memory_order_relaxed);
+                    (delta.full ? self->gossip_full_syncs : self->gossip_incremental_syncs)
+                        .fetch_add(1, std::memory_order_relaxed);
+                    self->gossip_sync_bytes.fetch_add(sync.size(),
+                                                      std::memory_order_relaxed);
+                    if (!co_await link->stream->write_frame(std::move(sync))) break;
                 }
             } else if (!co_await link->stream->write_frame(ping_line())) {
                 // No gossip to send — a PING keeps the link alive.
@@ -876,68 +1049,112 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
     }
 }
 
-// Run the symmetric handshake over an established connection and stay joined
-// until the connection drops. `initiate` controls who speaks first (the dialer
-// sends HELLO first; the acceptor replies) — the recorded result is identical
-// either way. With security on, the mutual-TLS handshake runs FIRST: no
-// protocol byte crosses the wire before both sides have proven a certificate
-// chained to the token-derived cluster CA, so an unenrolled dialer (or a
-// plaintext one) is dropped here and never reaches HELLO.
-// `my_endpoints` is the candidate set we advertise in our HELLO. `dialed_endpoint`
-// is the address we connected to when we dialed (empty when we accepted) — the
-// endpoint we reached this peer on, recorded as its per-observer path. `seed_key`
-// is the original seed string this dial came from (empty for accepts / non-seed
-// dials), used to dedup redials by the node id it resolves to (#739).
+// A slot is reserved before spawning an accepted setup and released on every
+// failure or immediately after setup succeeds. Dials are bounded by our own
+// seeds and peers, so they take none: an inbound flood cannot block reconnects.
+// Only the network thread uses it.
+struct PendingSetup {
+    explicit PendingSetup(Cluster::State& cluster_state) : state(cluster_state) {
+        ++state.pending_setups;
+    }
+    ~PendingSetup() { --state.pending_setups; }
+    Cluster::State& state;
+};
+
+std::unique_ptr<PendingSetup> reserve_setup(Cluster::State& state) {
+    if (state.pending_setups >= state.maximum_pending_setups) return {};
+    return std::make_unique<PendingSetup>(state);
+}
+
+// One cancellable operation covers TLS plus both HELLO directions, including
+// writes. Progress never restarts the setup clock (#1401).
+capy::io_task<std::optional<std::string>> exchange_hello(
+    Cluster::State* self, std::shared_ptr<GossipLink> link,
+    std::string my_node_id, std::vector<std::string> my_endpoints) {
+    if (self->tls) {
+        const std::error_code handshake_error = co_await link->stream->handshake(
+            link->initiate ? zetta::transport::HandshakeRole::Client
+                           : zetta::transport::HandshakeRole::Server);
+        if (handshake_error) co_return {handshake_error, std::nullopt};
+    }
+    const std::string hello = hello_line(my_node_id, my_endpoints,
+                                        self->dial_out_only, self->audit_protocol_version);
+    if (link->initiate && !co_await link->stream->write_frame(hello)) {
+        co_return {{}, std::nullopt};
+    }
+    auto their_hello = co_await link->stream->read_frame();
+    if (their_hello && !link->initiate && !co_await link->stream->write_frame(hello)) {
+        co_return {{}, std::nullopt};
+    }
+    co_return {{}, std::move(their_hello)};
+}
+
+// Accepted and dialed links share the same bounded TLS/HELLO setup. An accepted
+// link's slot survives every suspension (dials pass none), then steady-state
+// links use the idle writer.
+// dialed_endpoint records the reached candidate; seed_key preserves the original
+// seed for reconnect deduplication even when its DNS address changes.
 capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
                                 std::string my_node_id,
                                 std::vector<std::string> my_endpoints,
                                 bool initiate, std::string dialed_endpoint,
-                                std::string seed_key) {
-    // The connection's framed transport is built before any protocol byte is
-    // exchanged and shared with the writer pump.
+                                std::string seed_key,
+                                std::unique_ptr<PendingSetup> pending_setup) {
     auto link = std::make_shared<GossipLink>();
     link->initiate = initiate;
     if (self->tls) {
         link->stream = std::make_shared<zetta::transport::FramedStream>(
             std::move(socket), *self->tls);
-        const std::error_code handshake_error = co_await link->stream->handshake(
-            initiate ? zetta::transport::HandshakeRole::Client
-                     : zetta::transport::HandshakeRole::Server);
-        if (handshake_error) {
-            log_event(self, std::string("TLS handshake failed (") +
-                                (initiate ? "dialed" : "accepted") +
-                                "): " + handshake_error.message());
-            link->stream->close();
-            co_return;
-        }
     } else {
         link->stream =
             std::make_shared<zetta::transport::FramedStream>(std::move(socket));
     }
-
-    // FramedStream owns the persistent receive buffer shared by the HELLO and
-    // steady-state read pump.
-    std::optional<std::string> their_hello;
-    if (initiate) {
-        co_await link->stream->write_frame(
-            hello_line(my_node_id, my_endpoints, self->dial_out_only,
-                       self->audit_protocol_version));
-        their_hello = co_await link->stream->read_frame();
-    } else {
-        their_hello = co_await link->stream->read_frame();
-        co_await link->stream->write_frame(
-            hello_line(my_node_id, my_endpoints, self->dial_out_only,
-                       self->audit_protocol_version));
+    link->stream->set_maximum_frame_bytes(kMaxHelloBytes);
+    auto [setup_error, their_hello] = co_await capy::timeout(
+        exchange_hello(self, link, my_node_id, my_endpoints), self->setup_timeout);
+    if (setup_error) {
+        log_event(self, "peer setup failed: " + setup_error.message());
+        link->stream->close();
+        co_return;
     }
     if (!their_hello) {
         link->stream->close();
         co_return;
     }
     const ClusterPeer peer = parse_hello(*their_hello);
-    if (peer.node_id.empty() || peer.node_id == my_node_id) {
-        link->stream->close();  // malformed, or we dialed ourselves
+    if (peer.node_id.empty()) {
+        // Malformed or outside the #771 bounds. The peer's text is not echoed:
+        // it is exactly what the bounds keep out of the logs.
+        log_event(self, std::string("refused a malformed HELLO (") +
+                            (initiate ? "dialed" : "accepted") + ")");
+        link->stream->close();
         co_return;
     }
+    if (peer.node_id == my_node_id) {
+        link->stream->close();  // we dialed ourselves
+        co_return;
+    }
+    // Pin the stated node id to the certificate mutual TLS just verified (#669):
+    // every node's certificate carries its node id as the common name, so a
+    // HELLO naming any other id is a peer claiming to be someone it is not.
+    // Refused before anything about the peer is recorded.
+    if (link->stream->secure() &&
+        !hello_matches_peer_certificate(peer.node_id,
+                                        link->stream->peer_certificate_der())) {
+        // Neither the stated id nor the certificate's name is echoed: both are
+        // the peer's text.
+        std::fprintf(stderr,
+            "zetta: refused a cluster peer (%s%s): its HELLO node id is not "
+            "the common name of its certificate\n",
+            initiate ? "dialed " : "accepted",
+            initiate ? dialed_endpoint.c_str() : "");
+        std::fflush(stderr);
+        link->stream->close();
+        co_return;
+    }
+    link->stream->set_maximum_frame_bytes(
+        zetta::transport::FramedStreamOptions{}.maximum_frame_bytes);
+    pending_setup.reset();  // setup succeeded; release admission before holding the link
     // Record which node id this seed resolved to BEFORE dedup, so the reconnect loop
     // can skip the seed while this node is linked — even if this very link then loses
     // the register_link tiebreak (the winning link still holds the node). Ends the
@@ -987,10 +1204,21 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // Read pump: merge gossiped state, record peer status, serve/receive
     // large-object bodies, dispatch signals, until disconnect (or the writer's
     // keepalive closes the socket, which surfaces here as a read error).
-    // FramedStream owns buffering and TLS read/write serialization.
+    // FramedStream owns buffering; reads never hold back the writer (#835).
     for (;;) {
         std::optional<std::string> line = co_await link->stream->read_frame();
         if (!line) break;  // peer disconnected / link timed out
+        if (self->frame_faults) {
+            // Chaos fault injection (#842): the injector decides what this frame
+            // becomes. Activity is credited only for frames actually applied, so a
+            // dropped stream looks silent and idles the link out like a partition.
+            for (const std::string& frame :
+                 self->frame_faults->on_inbound(peer.node_id, std::move(*line))) {
+                link->last_activity = std::chrono::steady_clock::now();
+                apply_gossip(self, frame, peer.node_id);
+            }
+            continue;
+        }
         link->last_activity = std::chrono::steady_clock::now();
         apply_gossip(self, *line, peer.node_id);
     }
@@ -1015,13 +1243,31 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
 
 capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
                          std::vector<std::string> my_endpoints) {
+    net::timer retry(self->io_context);
     for (;;) {
         net::tcp_socket peer(self->io_context);
-        if (auto [ec] = co_await self->acceptor->accept(peer); ec) co_return;
+        if (auto [accept_error] = co_await self->acceptor->accept(peer); accept_error) {
+            if (!self->acceptor->is_open() ||
+                accept_error == std::errc::operation_canceled ||
+                accept_error == std::errc::bad_file_descriptor ||
+                accept_error == std::errc::invalid_argument) co_return;
+            // Includes descriptor/memory pressure and transient network errors.
+            // Back off so resource exhaustion cannot turn into a busy loop.
+            log_event(self, "peer accept failed; retrying: " + accept_error.message());
+            retry.expires_after(std::chrono::milliseconds(100));
+            if (auto [wait_error] = co_await retry.wait(); wait_error) co_return;
+            continue;
+        }
+        auto pending_setup = reserve_setup(*self);
+        if (!pending_setup) {
+            log_event(self, "peer setup capacity reached; refusing connection");
+            peer.close();
+            continue;
+        }
         capy::run_async(self->io_context.get_executor())(handshake_and_hold(
             self, std::move(peer), my_node_id, my_endpoints,
             /*initiate=*/false, /*dialed_endpoint=*/std::string{},
-            /*seed_key=*/std::string{}));
+            /*seed_key=*/std::string{}, std::move(pending_setup)));
     }
 }
 
@@ -1038,10 +1284,11 @@ capy::task<bool> connect_and_hold(Cluster::State* self, net::endpoint endpoint,
                                   std::string seed_key) {
     net::tcp_socket socket(self->io_context);
     socket.open();
-    if (auto [ec] = co_await socket.connect(endpoint); ec) co_return false;
+    if (auto [connect_error] = co_await socket.connect(endpoint); connect_error) co_return false;
     co_await handshake_and_hold(self, std::move(socket), std::move(my_node_id),
                                 std::move(my_endpoints), /*initiate=*/true,
-                                std::move(dialed_label), std::move(seed_key));
+                                std::move(dialed_label), std::move(seed_key),
+                                /*pending_setup=*/nullptr);
     co_return true;
 }
 
@@ -1243,6 +1490,8 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
     state_->replication = replication;
     state_->blobs = blobs;
     state_->audit_protocol_version = config_.audit_protocol_version;
+    state_->setup_timeout = std::max(config_.peer_setup_timeout, std::chrono::milliseconds(1));
+    state_->maximum_pending_setups = std::max<std::size_t>(1, config_.maximum_pending_setups);
     state_->idle_timeout =
         std::chrono::seconds(config_.peer_idle_timeout_seconds);
     state_->reconnect_interval =
@@ -1251,6 +1500,7 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
         std::chrono::seconds(config_.membership_grace_seconds);
     state_->log_events = config_.log_events;
     state_->dial_out_only = config_.dial_out_only;
+    state_->frame_faults = config_.frame_faults;
 }
 
 Cluster::~Cluster() { stop(); }
@@ -1373,17 +1623,42 @@ std::vector<std::string> Cluster::listen_addresses() const {
     return addresses;
 }
 
-std::string Cluster::peer_command() const {
-    // Prefer the first reachable address — local_ipv4_addresses() already puts
-    // non-loopback (LAN) addresses ahead of 127.0.0.1. With security on, the
-    // join token rides along: it is exactly what the next node needs to derive
-    // the cluster CA and mint an identity this cluster will trust.
-    const std::vector<std::string> addresses = listen_addresses();
+namespace {
+
+// "zetta --peer <best address>", plus "--join-token <token>" when security is on
+// and "--identity-root <public key>" when the cluster has one.
+std::string build_peer_command(const std::vector<std::string>& addresses,
+                               const ClusterSecurity& security,
+                               std::string_view token_text,
+                               std::string_view identity_root) {
     std::string command = "zetta --peer " + addresses.front();
-    if (config_.security.enabled()) {
-        command += " --join-token " + config_.security.join_token;
+    if (security.enabled()) {
+        command += " --join-token ";
+        command += token_text;
+    }
+    // The identity root's public key: the joiner pins it and honors only the
+    // accounts this cluster's root sealed (#764).
+    if (!identity_root.empty()) {
+        command += " --identity-root ";
+        command += identity_root;
     }
     return command;
+}
+
+}  // namespace
+
+std::string Cluster::peer_command() const {
+    // Prefer the first reachable address — local_ipv4_addresses() already puts
+    // non-loopback (LAN) addresses ahead of 127.0.0.1. The join token is what the
+    // next node needs, but it is the cluster root secret, and this command is
+    // printed on every headless start (#1393): name where it goes, never the value.
+    return build_peer_command(listen_addresses(), config_.security,
+                              kJoinTokenPlaceholder, config_.identity_root);
+}
+
+std::string Cluster::peer_command_with_join_token() const {
+    return build_peer_command(listen_addresses(), config_.security,
+                              config_.security.join_token, config_.identity_root);
 }
 
 std::vector<std::string> Cluster::advertised_endpoints() const {
@@ -1401,7 +1676,34 @@ std::vector<std::string> Cluster::advertised_endpoints() const {
             endpoints.push_back(extra);
         }
     }
-    return endpoints;
+    // Peers refuse a HELLO with more than kMaxAdvertisedEndpoints (#771), so the
+    // set is capped here, in order. Every --advertise extra is kept (main.cpp
+    // refuses more than the cap); a wildcard bind on a host with many interfaces
+    // gives up its last listen addresses to make room for them.
+    if (endpoints.size() <= kMaxAdvertisedEndpoints) return endpoints;
+    const auto is_explicit = [&](const std::string& endpoint) {
+        return std::find(config_.advertise.begin(), config_.advertise.end(),
+                         endpoint) != config_.advertise.end();
+    };
+    const std::size_t explicit_count = static_cast<std::size_t>(
+        std::ranges::count_if(endpoints, is_explicit));
+    const std::size_t explicit_kept =
+        std::min(explicit_count, kMaxAdvertisedEndpoints);
+    const std::size_t listen_budget = kMaxAdvertisedEndpoints - explicit_kept;
+    std::vector<std::string> capped;
+    std::size_t listen_kept = 0;
+    std::size_t extras_kept = 0;
+    for (std::string& endpoint : endpoints) {
+        if (is_explicit(endpoint)) {
+            if (extras_kept == explicit_kept) continue;
+            ++extras_kept;
+        } else {
+            if (listen_kept == listen_budget) continue;
+            ++listen_kept;
+        }
+        capped.push_back(std::move(endpoint));
+    }
+    return capped;
 }
 
 bool Cluster::dial_out_only() const { return config_.dial_out_only; }
@@ -1491,6 +1793,17 @@ std::size_t Cluster::peer_count() const {
 std::size_t Cluster::connection_count() const {
     const int count = state_->live_connections.load(std::memory_order_relaxed);
     return count > 0 ? static_cast<std::size_t>(count) : 0;
+}
+
+GossipStats Cluster::gossip_stats() const {
+    constexpr auto order = std::memory_order_relaxed;
+    return GossipStats{
+        .rounds = state_->gossip_rounds.load(order),
+        .sync_frames = state_->gossip_sync_frames.load(order),
+        .full_syncs = state_->gossip_full_syncs.load(order),
+        .incremental_syncs = state_->gossip_incremental_syncs.load(order),
+        .sync_bytes = state_->gossip_sync_bytes.load(order),
+    };
 }
 
 std::vector<NodeStatus> Cluster::nodes() const {

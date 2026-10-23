@@ -13,10 +13,12 @@
 // the handshake — the join is token-gated at the transport, with no enrollment
 // RPC and no leader (matching the equal-peer cluster).
 //
-// Known limitation (documented, follow-up): Corosio exposes no peer-certificate
-// accessor, so a node that IS enrolled could still claim another member's node
-// id in its HELLO. CTL-2's boundary (TB-3, outsiders) is closed; member-vs-
-// member impersonation needs the CSR-enrollment upgrade.
+// The cluster refuses a peer whose HELLO node id is not its certificate's CN
+// (hello_matches_peer_certificate, #669). Known limitation (documented,
+// follow-up): the CA key is derivable from the token, so a member that holds
+// the token can still mint a certificate for another node's id. Closing that
+// needs CSR-based enrollment (#1319), which also makes per-node revocation
+// (#1320) meaningful.
 
 #include <cstddef>
 #include <nlohmann/json.hpp>
@@ -48,6 +50,12 @@ struct ClusterSecurity : zetta::transport::TlsCredentials {
 // How many earlier join tokens the secret file keeps (ClusterSecurity::
 // retired_join_tokens).
 inline constexpr std::size_t kMaxRetiredJoinTokens = 4;
+
+// What printed output shows in place of the join token (#1393). The token is the
+// cluster root secret, so a command or message meant for a log carries this
+// instead; the operator reads the value from <data_dir>/security/cluster-secret.json
+// or passes it as ZETTA_CLUSTER_TOKEN.
+inline constexpr std::string_view kJoinTokenPlaceholder = "<join-token>";
 
 // A fresh join token: 32 bytes from the OS CSPRNG, lowercase hex.
 std::string generate_join_token();

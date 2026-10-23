@@ -1,8 +1,11 @@
 #include "zetta/parquet/column_decoder.hpp"
 
+#include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -177,9 +180,7 @@ bool read_page_header(std::string_view bytes, PageHeader& page) {
 
 // The number of bits needed to represent the values [0, max_value].
 int bit_width(std::uint64_t max_value) {
-    int width = 0;
-    while ((max_value >> width) != 0) ++width;
-    return width;
+    return std::bit_width(max_value);
 }
 
 // Read a 4-byte little-endian unsigned int at `offset` in `bytes`.
@@ -202,7 +203,7 @@ bool read_u32_le(std::string_view bytes, std::size_t offset, std::uint32_t& out)
 bool decode_rle_hybrid(std::string_view data, int width, std::int64_t count,
                        std::vector<std::uint64_t>& out) {
     out.clear();
-    if (count < 0) return false;
+    if (count < 0 || width < 0 || width > 64) return false;
     out.reserve(static_cast<std::size_t>(count));
     if (count == 0) return true;
 
@@ -219,31 +220,44 @@ bool decode_rle_hybrid(std::string_view data, int width, std::int64_t count,
         if ((header & 1) == 1) {
             // bit-packed run: (header >> 1) groups of 8 values.
             const std::uint64_t group_count = header >> 1;
+            // Validate both products before narrowing or multiplying. Even a
+            // partially consumed final group must fit in the declared span.
+            if (group_count == 0 || group_count > std::numeric_limits<std::uint64_t>::max() / 8 ||
+                (width != 0 && group_count > std::numeric_limits<std::size_t>::max() /
+                                               static_cast<std::size_t>(width))) return false;
             const std::uint64_t value_count = group_count * 8;
             const std::size_t run_bytes = static_cast<std::size_t>(group_count) *
                                           static_cast<std::size_t>(width);
             const std::size_t start = reader.position();
             if (!reader.skip_bytes(run_bytes)) return false;
 
-            std::uint64_t bit_buffer = 0;
+            CompactReader run(data.substr(start, run_bytes));
+            std::uint8_t packed_byte = 0;
             int bits_available = 0;
-            std::size_t byte_index = start;
             for (std::uint64_t value_index = 0;
                  value_index < value_count && static_cast<std::int64_t>(out.size()) < count;
                  ++value_index) {
-                while (bits_available < width) {
-                    bit_buffer |= static_cast<std::uint64_t>(
-                                      static_cast<unsigned char>(data[byte_index++]))
-                                  << bits_available;
-                    bits_available += 8;
+                std::uint64_t value = 0;
+                // Consume at most one byte at a time, so widths up to 64 never
+                // overflow a bit buffer or shift by the integer's full width.
+                for (int bits_written = 0; bits_written < width;) {
+                    if (bits_available == 0) {
+                        if (!run.read_byte(packed_byte)) return false;
+                        bits_available = 8;
+                    }
+                    const int take = std::min(bits_available, width - bits_written);
+                    value |= static_cast<std::uint64_t>(packed_byte & ((1u << take) - 1))
+                             << bits_written;
+                    packed_byte >>= take;
+                    bits_available -= take;
+                    bits_written += take;
                 }
-                out.push_back(bit_buffer & mask);
-                bit_buffer >>= width;
-                bits_available -= width;
+                out.push_back(value);
             }
         } else {
             // RLE run: a single value repeated (header >> 1) times.
             const std::uint64_t run_length = header >> 1;
+            if (run_length == 0) return false;
             const std::size_t start = reader.position();
             if (!reader.skip_bytes(byte_width)) return false;
             std::uint64_t value = 0;
@@ -251,6 +265,7 @@ bool decode_rle_hybrid(std::string_view data, int width, std::int64_t count,
                 value |= static_cast<std::uint64_t>(static_cast<unsigned char>(data[start + byte_index]))
                          << (8 * byte_index);
             }
+            if (value > mask) return false;
             for (std::uint64_t repeat = 0;
                  repeat < run_length && static_cast<std::int64_t>(out.size()) < count; ++repeat) {
                 out.push_back(value);
@@ -490,6 +505,46 @@ public:
 
 }  // namespace
 
+std::string validate_decoded_column(const DecodedColumn& column) {
+    switch (column.type) {
+        case PhysicalType::Boolean:
+        case PhysicalType::Int32:
+        case PhysicalType::Int64:
+        case PhysicalType::Float:
+        case PhysicalType::Double:
+        case PhysicalType::ByteArray:
+        case PhysicalType::FixedLenByteArray:
+            break;
+        default:
+            return "parquet: column " + column.path + " has an unsupported physical type";
+    }
+    if (column.num_rows < 0) {
+        return "parquet: column " + column.path + " has a negative row count";
+    }
+    std::int64_t present = column.num_rows;
+    if (!column.validity.empty()) {
+        if (column.validity.size() != static_cast<std::size_t>(column.num_rows)) {
+            return "parquet: column " + column.path + " has " +
+                   std::to_string(column.validity.size()) + " validity entries for " +
+                   std::to_string(column.num_rows) + " rows";
+        }
+        present = std::ranges::count_if(column.validity,
+                                        [](std::uint8_t valid) { return valid != 0; });
+    }
+    // Exactly one vector is populated: the total across all six is the length of
+    // the one `type` selects.
+    const ColumnValues& values = column.values;
+    const std::size_t total = values.int32_values.size() + values.int64_values.size() +
+                              values.float_values.size() + values.double_values.size() +
+                              values.bool_values.size() + values.byte_array_values.size();
+    if (column.valid_count() != present || total != static_cast<std::size_t>(present)) {
+        return "parquet: column " + column.path + " holds " + std::to_string(total) +
+               " decoded values for " + std::to_string(present) + " present rows of type " +
+               std::string(to_string(column.type));
+    }
+    return {};
+}
+
 std::int64_t DecodedColumn::valid_count() const {
     switch (type) {
         case PhysicalType::Boolean: return static_cast<std::int64_t>(values.bool_values.size());
@@ -522,6 +577,14 @@ DecodedColumnResult decode_column_chunk(std::string_view file_bytes, const FileM
     const LeafColumn& leaf = leaves[column_index];
     if (leaf.max_repetition_level > 0) {
         return fail("parquet: nested / repeated columns are not supported (" + leaf.path + ")");
+    }
+    // The page decoders follow the chunk's type and every consumer follows the
+    // leaf's; a footer that states two different types for one column is refused
+    // here, so no row group can append to a different typed vector (LSR-167).
+    if (chunk.type != leaf.type) {
+        return fail("parquet: column chunk physical type " + std::string(to_string(chunk.type)) +
+                    " does not match the schema's " + std::string(to_string(leaf.type)) +
+                    " for " + leaf.path);
     }
     const int max_definition_level = leaf.max_definition_level;
     const int level_bit_width = bit_width(static_cast<std::uint64_t>(max_definition_level));
@@ -648,6 +711,9 @@ DecodedColumnResult decode_column_chunk(std::string_view file_bytes, const FileM
     // A REQUIRED column carries no definition levels, so validity stays empty
     // (every row present); only OPTIONAL columns accumulate a bitmap.
     column.num_rows = produced;
+    if (std::string shape = validate_decoded_column(column); !shape.empty()) {
+        return fail(std::move(shape));
+    }
 
     DecodedColumnResult result;
     result.column = std::move(column);
@@ -668,6 +734,11 @@ DecodedColumnResult decode_column(std::string_view file_bytes, const FileMetaDat
             merged.path = part.path;
             merged.type = part.type;
             initialized = true;
+        } else if (part.type != merged.type) {
+            return fail("parquet: row group " + std::to_string(group_index) +
+                        " changes the physical type of " + merged.path + " from " +
+                        std::string(to_string(merged.type)) + " to " +
+                        std::string(to_string(part.type)));
         }
         merged.num_rows += part.num_rows;
         // Concatenate validity. If any chunk carries a bitmap the column is
@@ -696,6 +767,9 @@ DecodedColumnResult decode_column(std::string_view file_bytes, const FileMetaDat
     if (!initialized) {
         return fail("parquet: no row groups to decode");
     }
+    if (std::string shape = validate_decoded_column(merged); !shape.empty()) {
+        return fail(std::move(shape));
+    }
     DecodedColumnResult result;
     result.column = std::move(merged);
     return result;
@@ -705,11 +779,13 @@ nlohmann::json to_json(const DecodedColumn& column) {
     nlohmann::json values = nlohmann::json::array();
 
     // Walk logical rows; a present row pops the next dense value, a null row
-    // emits JSON null.
+    // emits JSON null. A present row past the end of the dense values (a column
+    // that fails validate_decoded_column) is emitted as null, never read.
     std::size_t next = 0;
     const ColumnValues& source = column.values;
+    const auto dense_count = static_cast<std::size_t>(column.valid_count());
     for (std::int64_t row = 0; row < column.num_rows; ++row) {
-        if (!column.row_is_valid(row)) {
+        if (!column.row_is_valid(row) || next >= dense_count) {
             values.push_back(nullptr);
             continue;
         }

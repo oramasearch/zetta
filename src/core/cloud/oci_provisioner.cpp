@@ -23,6 +23,8 @@ nlohmann::json OciConfig::to_json() const {
     if (!shape.empty()) document["shape"] = shape;
     if (!image_id.empty()) document["image_id"] = image_id;
     if (!seed_peer.empty()) document["seed_peer"] = seed_peer;
+    if (!vault_id.empty()) document["vault_id"] = vault_id;
+    if (!key_id.empty()) document["key_id"] = key_id;
     return document;
 }
 
@@ -39,7 +41,9 @@ std::optional<OciConfig> OciConfig::from_json(const nlohmann::json& value) {
         !read_string(value, "pool_name", /*required=*/false, config.pool_name) ||
         !read_string(value, "shape", /*required=*/false, config.shape) ||
         !read_string(value, "image_id", /*required=*/false, config.image_id) ||
-        !read_string(value, "seed_peer", /*required=*/false, config.seed_peer)) {
+        !read_string(value, "seed_peer", /*required=*/false, config.seed_peer) ||
+        !read_string(value, "vault_id", /*required=*/false, config.vault_id) ||
+        !read_string(value, "key_id", /*required=*/false, config.key_id)) {
         return std::nullopt;
     }
     if (!read_uint32(value, "ocpus", config.ocpus) ||
@@ -111,6 +115,14 @@ const nlohmann::json& oci_config_schema() {
     },
     "seed_peer": {
       "description": "The cluster seed address (host:port) injected into each node's cloud-init (user_data) so it auto-joins the existing peer cluster at boot. Empty when the join address is supplied another way.",
+      "type": "string"
+    },
+    "vault_id": {
+      "description": "The OCI Vault OCID the cluster join token is stored in, as the secret '<pool_name>-cluster-token'. Each node's boot script reads it with the instance principal, so the token never rides user_data. Required on a secure cluster (#1316).",
+      "type": "string"
+    },
+    "key_id": {
+      "description": "The OCID of the vault's master encryption key that encrypts the join-token secret. Required on a secure cluster (#1316).",
       "type": "string"
     }
   }

@@ -10,8 +10,10 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -19,7 +21,9 @@
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/consent.hpp"
+#include "zetta/governance/rate_limiter.hpp"
 #include "zetta/governance/grant.hpp"
+#include "zetta/governance/identity_seal.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/cloud/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
@@ -62,13 +66,14 @@
 #include "zetta/pubsub/dispatcher.hpp"
 
 namespace zetta::cluster { class Cluster; }
-namespace zetta::pipeline { struct ExecutionResult; }
+namespace zetta::pipeline { struct ExecutionResult; struct RunPrincipal; }
 namespace zetta::ir { class ExecutionGraph; }
 namespace zetta::compute { class JobCoordinator; }
 namespace zetta::compute { class CoordinatedLaunchListener; }
 
 namespace zetta::cluster { class ReplicationManager; }
 namespace zetta::pubsub { class PubSub; }
+namespace zetta::data { struct EntityKeyMapping; }
 
 
 
@@ -120,6 +125,15 @@ struct NodeConfig {
     // Root secrets of earlier join tokens. Credentials sealed under them still
     // open, and start() re-seals them under the current secret.
     std::vector<std::string> retired_connection_root_secrets;
+    // The cluster's identity root (#763, #764, docs/governance/identity-seal.md).
+    // Set, every identity record this node replicates (user, role, token, role
+    // assignment, row-security policy, principal, access key) is sealed by it,
+    // and a replicated identity record is materialized only when its seal
+    // verifies; a node whose root is verify-only refuses identity writes. main
+    // always sets one (load_or_create_identity_root). Unset is the in-process
+    // test and embedding mode: identity replicates unsealed and is trusted as
+    // it was before the root existed.
+    std::optional<zetta::governance::IdentityAuthority> identity_authority;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -266,10 +280,25 @@ public:
     // logical dataset. Idempotent; safe to call after the key has arrived.
     // `source_format` is what the rows are loaded from (#1221) — the participant
     // writes the same value the initiator did, so the two copies agree.
+    //
+    // **Never resurrects a dropped table** (#844): when this node's document
+    // knows the `tbl:` or `db:` key only as a tombstone, the table was created
+    // and then dropped, and capturing the key again would re-create it causally
+    // after the removal. Ids are fresh UUIDs and never reused, so that case is
+    // always a late caller acting on an entity that is gone; it returns an empty
+    // handle and writes nothing.
     std::shared_ptr<zetta::data::Table> adopt_replicated_table(
         const std::string& database_id, const std::string& database_name,
         const std::string& table_id, const std::string& table_name,
         bool partition_only, const std::string& source_format = {});
+
+    // Whether this node's replicated document records the table (or its
+    // database) as **dropped**: the key is known, but only as a tombstone. False
+    // when the key was never seen (it may simply not have arrived yet) and on a
+    // standalone node. The terminal marker a late `run.launch` participant reads
+    // before adopting a table (#844).
+    bool replicated_table_dropped(const std::string& database_id,
+                                  const std::string& table_id) const;
 
     bool rename_database(const std::string& from, const std::string& to);
     std::vector<std::string> database_names() const;
@@ -394,6 +423,11 @@ public:
     std::vector<zetta::pipeline::TableRead> tables_read(
         const std::string& project, const std::string& graph,
         const std::string& dataset_path = {}) const;
+    // The tables `graph`'s connect steps read (zetta#1272): each one naming an
+    // existing `source`.`table`. For a graph that is not stored in a project —
+    // a deployed graph, one handed to GraphExecutor — so its run records them.
+    std::vector<zetta::pipeline::TableRead> tables_read(
+        const ir::ExecutionGraph& graph) const;
     bool drop_run(const std::string& id);
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
@@ -514,6 +548,18 @@ public:
     // replicated catalogue, so both are null on a standalone node. Thread-safe:
     // the registry calls them from its blocking pool.
     zetta::data::RecordStore* record_store() { return record_store_.get(); }
+
+    // Text entity-key mappings (#1255, docs/data/entity-key-table.md). A Run or
+    // Model record references its derived-id map instead of carrying it:
+    // `entity_key_reference` writes the entries as `owner`'s rows of the
+    // `_entity_keys` table (owner "run:<id>" or "model:<id>") and returns the
+    // reference to store. A reference to another owner's rows is copied, so each
+    // run or model owns what it references. Without a record store (a standalone
+    // node), or if a row cannot be written, the mapping is returned as it was.
+    // `resolve_entity_key_mapping` reads either form back. Thread-safe.
+    nlohmann::json entity_key_reference(std::string_view owner, nlohmann::json mapping);
+    std::shared_ptr<const zetta::data::EntityKeyMapping> resolve_entity_key_mapping(
+        const nlohmann::json& mapping, std::string* error = nullptr) const;
 
     // How the replicated catalogue's once-a-second save is behaving: how many
     // saves ran, the last one's duration and size, and whether one is running
@@ -685,6 +731,16 @@ public:
     // dataset.hpp / docs/data/system-datasets.md.
     std::vector<zetta::data::DatasetSummary> datasets() const;
 
+    // The same datasets, for a list (#1195): name, database, table id, format,
+    // source format, replication, rows, size_bytes, partition_count and the
+    // degraded fields, each equal to what datasets() reports. `columns`,
+    // `typed_columns` and `partitions` stay empty. It reads no row and no file:
+    // rows come from the store's size (or, for a partition-only table, the
+    // catalog's row ranges), size_bytes from the store's own counter
+    // (StorageEngine::stored_bytes), and the partition counts from one pass over
+    // the catalog, so its cost grows with datasets and partitions, never rows.
+    std::vector<zetta::data::DatasetSummary> dataset_list_summaries() const;
+
     // In-memory cache of consent-gated cloud inspect results (CloudInspector;
     // docs/cloud/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
     // — it is neither replicated nor persisted (a live inspect is session-local;
@@ -704,6 +760,9 @@ public:
     // CRDT backing** — consent is per-action and never remembered (the cloud
     // hard rule), so challenges neither persist nor replicate. Source for the
     // read-only `system.consent_requests` view and the headed approval surface.
+    // The per-caller admission window of published pipelines' served routes
+    // (zetta#1289): node-local and forgotten on restart, like the consent ledger.
+    zetta::governance::RateLimiter& serving_rate_limiter() { return serving_rate_limiter_; }
     zetta::governance::ConsentLedger& consent_ledger() { return consent_ledger_; }
     const zetta::governance::ConsentLedger& consent_ledger() const {
         return consent_ledger_;
@@ -890,12 +949,14 @@ public:
     // ----- Object-scoped authorization (fine-grained grants, #747) -----------
     // The object tier layered over roles (#746): the acting identity's grants
     // decide access to a SPECIFIC object (table / column / blob / MCP tool), not
-    // just to a resource kind. Deny-by-default. Three identities BYPASS object
-    // scoping: an empty acting id (the trusted unauthenticated-local session), a
-    // legacy AccessKey (`acting_is_user` false, non-empty — it carries only coarse
-    // scope/caps), and any user that holds the operation as a FLAT, unscoped right
-    // (admin holds every one). Only a user whose right is exclusively object-scoped
-    // is narrowed.
+    // just to a resource kind. Deny-by-default. Two identities BYPASS object
+    // scoping: an empty acting id (the trusted unauthenticated-local session, which
+    // no network surface can produce) and any user that holds the operation as a
+    // FLAT, unscoped right (admin holds every one). A user whose right is
+    // exclusively object-scoped is narrowed. A legacy AccessKey (`acting_is_user`
+    // false, non-empty) has no object-scoped grants, so it is allowed exactly when
+    // it holds the operation as a flat capability of its own, and denied otherwise
+    // (#762: it used to bypass every object control).
 
     // Whether the identity may perform `operation` on `object` — the general
     // single-object decision (blob / MCP tool / any Resource).
@@ -951,6 +1012,16 @@ public:
     bool set_user_status(const std::string& name, zetta::governance::UserStatus status);
     std::vector<std::shared_ptr<zetta::governance::User>> users() const { return users_; }
     std::size_t user_count() const { return users_.size(); }
+
+    // The identity root this node verifies identity against (null when
+    // unsealed — NodeConfig::identity_authority), and whether it may issue
+    // identity: true when unsealed, or when it holds the root's private key.
+    const zetta::governance::IdentityAuthority* identity_authority() const {
+        return config_.identity_authority ? &*config_.identity_authority : nullptr;
+    }
+    bool can_issue_identity() const {
+        return !config_.identity_authority || config_.identity_authority->can_seal();
+    }
 
     // Create a built-in role by name ("admin"/"writer"/"reader") — empty handle
     // on an unknown built-in name or a name clash.
@@ -1067,11 +1138,11 @@ public:
         const zetta::data::VirtualTable& definition) const;
 
     // Whether the acting identity BYPASSES row-level security (sees/writes every
-    // row regardless of policy). Three identities bypass, mirroring the object-
-    // scoping bypass (#747): an empty acting id (the trusted unauthenticated-local
-    // session), a legacy AccessKey (`acting_is_user` false, non-empty), and any
-    // user that is an admin (holds the cluster:admin permission — the built-in
-    // admin does). Every other user is subject to RLS. Deny-by-default: only these
+    // row regardless of policy). Three identities bypass: an empty acting id (the
+    // trusted unauthenticated-local session), any user that is an admin (holds the
+    // cluster:admin permission — the built-in admin does), and a legacy AccessKey
+    // that holds cluster:admin as a capability of its own (#762: every legacy key
+    // used to bypass). Every other identity is subject to RLS. Deny-by-default: only these
     // widen; a non-bypass user with no applicable policy on a protected table sees
     // no rows.
     bool bypasses_row_security(const std::string& acting_id,
@@ -1081,7 +1152,18 @@ public:
     // when no live token matches (deny-by-default). Hashes + constant-time
     // compares against every non-revoked, unexpired token, and requires the
     // owning user to exist and be active. This is the boundary issue #2's gate calls.
+    //
+    // Two passes (#769): every cheap match first (SHA-256 tokens, and KDF tokens
+    // already verified in this process), then, only when none matched, the KDF
+    // tokens not yet verified. That slow pass runs PBKDF2 on the owning loop, so
+    // it is budgeted: a burst of kColdKdfBurst checks, refilled at one per
+    // kColdKdfRefill. Past the budget an unverified KDF token answers no, which
+    // bounds both the CPU an unauthenticated caller can burn and the rate of
+    // online guesses against the owner's secret. bootstrap_owner verifies the
+    // operator's secret at start, so the owner normally never takes the slow pass.
     std::shared_ptr<zetta::governance::User> authenticate_token(std::string_view secret) const;
+    static constexpr int kColdKdfBurst = 4;
+    static constexpr std::chrono::milliseconds kColdKdfRefill{1000};
 
     // The outcome of bootstrap_owner: whether an owner was minted this call, and
     // the identifiers to log (never the secret).
@@ -1095,9 +1177,19 @@ public:
     // Bootstrap the owner (#733): if the user store is empty, mint an "owner"
     // user, ensure the built-in roles exist, assign it "admin", and issue an
     // access token whose secret is `admin_token_secret` (the operator's, via
-    // --admin-token / ZETTA_ADMIN_TOKEN). A no-op when a user already exists or
-    // the secret is empty. Never logs / returns the secret — the operator already
-    // holds it.
+    // --admin-token / ZETTA_ADMIN_TOKEN). Never logs / returns the secret — the
+    // operator already holds it.
+    //
+    // The token is stored in the PBKDF2 form (#769), since the secret may be
+    // chosen by a person. Seeding cannot leave the node locked out (#769): the
+    // hash is derived before anything is written; a failure after the owner user
+    // is created drops it again, so the store is empty and the next start
+    // retries; and a store left with only an "owner" user that has no token (a
+    // seed cut short by a crash) is resumed rather than skipped.
+    //
+    // A no-op when the secret is empty or another user exists. On a store that is
+    // already seeded it checks the secret once against the owner's token, so the
+    // owner's first request does not pay for the derivation.
     BootstrapResult bootstrap_owner(const std::string& admin_token_secret);
 
     // The control plane that reconciles local deployments desired → actual and
@@ -1119,6 +1211,13 @@ public:
     zetta::pipeline::ExecutionResult run_graph(const ir::ExecutionGraph& graph,
                               std::string project = {},
                               std::string graph_id = {});
+    // The same, with every step run as `principal` (#843): each step must be
+    // authorized for the principal before it executes, and each decision is
+    // audited (pipeline/step_authority.hpp). An empty principal is the trusted
+    // local session, identical to the overload above.
+    zetta::pipeline::ExecutionResult run_graph(const ir::ExecutionGraph& graph,
+                              std::string project, std::string graph_id,
+                              const zetta::pipeline::RunPrincipal& principal);
 
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
@@ -1255,6 +1354,42 @@ private:
     bool load_replication();           // read the persisted CRDT document
     void persist_replication();        // write the CRDT document to disk
     void migrate_to_replication();     // capture local-only data into the CRDT
+    // --- the identity root (#763, #764) ------------------------------------
+    // Whether an identity write may go ahead here: false on a replicated node
+    // whose root is verify-only, so nothing it could not seal is written.
+    bool identity_writable() const;
+    // Write an identity record into the CRDT, sealed when a root is set, at a
+    // version newer than any record of the key this node holds (#1341).
+    void replicate_identity(const std::string& key, nlohmann::json value);
+    // Remove an identity record: a sealed tombstone when a root is set (#1341),
+    // the CRDT's own tombstone when unsealed.
+    void remove_identity(const std::string& key);
+    // The identity entries this node trusts, seals and versions removed: every
+    // entry of `values` when unsealed. Under a root, for every identity key in
+    // `values` and in `keys` (a changed batch; null = a full reconcile, which
+    // also covers every key this node holds), the newest sealed record this
+    // node has accepted: the document's when it opens and is not older, else
+    // the one held, which is written back to the document. A removal is
+    // absent. The identity reconcilers read this, never the raw document.
+    nlohmann::json trusted_identity(const nlohmann::json& values,
+                                    const std::vector<std::string>* keys = nullptr);
+    // The newest sealed identity records this node has accepted, kept in
+    // <data_dir>/security/identity-held.json so a restart still refuses an
+    // older one (#1341). Load refuses the start on a malformed file.
+    bool load_identity_held();
+    void persist_identity_held();
+    // Remember `sealed` (already opened as `opened`) as the newest record of
+    // `key` when it supersedes the one held.
+    void hold_identity(const std::string& key, const nlohmann::json& sealed,
+                       const zetta::governance::OpenedIdentityRecord& opened);
+    // On the first start under a root: seal the identity records already in
+    // this node's own persisted document, which it trusted before the root
+    // existed. Recorded in <data_dir>/security/identity-sealed, so it runs once
+    // and never blesses a record that arrives later.
+    void seal_preexisting_identity();
+    // The id of a record every node of one root seeds identically (the owner,
+    // its token and assignment, the built-in roles); a fresh UUID when unsealed.
+    std::string seeded_identity_id(std::string_view purpose) const;
     // apply the CRDT document (the given snapshot) to the projection
     void reconcile_from_replication(const nlohmann::json& snapshot);
     void reconcile_replication_changes(
@@ -1343,7 +1478,7 @@ private:
     std::shared_ptr<zetta::pipeline::Deployment> materialize_deployment(
         std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,
         std::string node_id, std::size_t node_count, std::size_t edge_count,
-        std::string created);
+        std::string created, std::vector<zetta::pipeline::TableRead> reads = {});
     bool materialize_drop_deployment(const std::string& id);
     std::shared_ptr<zetta::pipeline::Run> materialize_run(std::string id, zetta::pipeline::RunValue value);
     bool materialize_drop_run(const std::string& id);
@@ -1404,6 +1539,14 @@ private:
     std::uint64_t last_replication_change_token_ = 0;
     Clock::time_point last_replication_persist_{};
     bool replication_persist_pending_ = false;
+    // The newest sealed record accepted per identity key (#1341): the sealed
+    // value as replicated, and it opened. Main-thread only.
+    struct HeldIdentity {
+        nlohmann::json sealed;
+        zetta::governance::OpenedIdentityRecord opened;
+    };
+    std::map<std::string, HeldIdentity> identity_held_;
+    bool identity_held_dirty_ = false;
     std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
     std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
     std::unique_ptr<zetta::data::ObjectStore> object_store_;  // null when standalone
@@ -1448,6 +1591,7 @@ private:
     std::vector<zetta::cloud::CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
     zetta::governance::ConsentLedger consent_ledger_;                     // ephemeral; not replicated (#621)
+    zetta::governance::RateLimiter serving_rate_limiter_;                 // ephemeral; node-local (zetta#1289)
     zetta::cluster::NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
     zetta::memory::MemoryAccounting memory_accounting_;
     Clock::time_point last_memory_check_{};
@@ -1498,6 +1642,10 @@ private:
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
     std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials
+    // The slow-pass budget of authenticate_token (#769): checks left in the burst
+    // and when it was last refilled.
+    mutable int cold_kdf_budget_ = kColdKdfBurst;
+    mutable std::chrono::steady_clock::time_point cold_kdf_refilled_{};
     std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles_; // user↔role assignments
     std::vector<std::shared_ptr<zetta::governance::Policy>> policies_;      // row-level security policies (#748)
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)

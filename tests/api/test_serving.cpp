@@ -404,10 +404,16 @@ TEST_F(ServingFixture, IndexExposeServeSearchDenyAndUnexpose) {
     EXPECT_EQ(view.value.at("rows")[0].at("exposed"), true);
     EXPECT_EQ(view.value.at("rows")[0].at("endpoint"), endpoint);
 
-    // Allow: a key holding exactly data:search serves, and the served hits
-    // equal the `search` capability's over the same target — one path.
-    const std::string serving_key = make_key(
-        "customer-search", {{CapabilityDomain::Data, "search"}});
+    const std::string search_only = make_key(
+        "search-without-source-read", {{CapabilityDomain::Data, "search"}});
+    EXPECT_FALSE(serve_search("articles", query, search_only).ok);
+
+    // Allow: a key holding data:search and SQL read rights serves, and the
+    // served hits equal the `search` capability's over the same target — one
+    // path.
+    const std::string serving_key =
+        make_key("customer-search", {{CapabilityDomain::Data, "search"},
+                                     {CapabilityDomain::Data, "read"}});
     auto served = serve_search("articles", query, serving_key);
     ASSERT_TRUE(served.ok) << served.error.message;
     EXPECT_EQ(served.value.at("index_id"), index->id());

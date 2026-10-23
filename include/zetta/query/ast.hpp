@@ -35,11 +35,22 @@ struct ColumnDef {
 // (or lexicographic over strings) — see the executor.
 enum class CompareOp { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual };
 
-// A single-column WHERE predicate: WHERE <column> <op> <value>.
+// A WHERE predicate: either one comparison `<column> <op> <value>`, or AND / OR /
+// NOT over other predicates (#912), e.g. `churned = true AND segment = 'MCS'`.
+//
+// A comparison (`kind == Compare`) uses `column` / `op` / `value`; a compound
+// (`And`, `Or`, `Not`) uses `operands` instead (two or more for AND and OR,
+// exactly one for NOT). The comparison fields come first, so the single
+// comparison is still written `WhereClause{"col", CompareOp::Equal, value}`.
+// Evaluation is SQL's three-valued logic (see row_matches in predicate.hpp).
 struct WhereClause {
+    enum class Kind { Compare, And, Or, Not };
+
     std::string column;
     CompareOp op = CompareOp::Equal;
     nlohmann::json value;
+    Kind kind = Kind::Compare;
+    std::vector<WhereClause> operands;
 };
 
 // An aggregate function in a GROUP BY query's select list. Maps 1:1 to the DDF
@@ -313,36 +324,5 @@ using Statement = std::variant<CreateDatabaseStmt, DropDatabaseStmt,
                                CreateTableStmt, DropTableStmt, InsertStmt,
                                CreateVirtualTableStmt,
                                UpdateStmt, DeleteStmt, TruncateStmt, SelectStmt>;
-
-// Wrap a statement's variant alternative into a Statement. Each is defined in its
-// OWN translation unit (statement_builders.cpp), never inline: constructing these
-// particular variant alternatives inside the SQL parser's TU
-// (src/core/query/postgres.cpp) miscompiles that TU's exception unwinding under
-// the pinned Clang + -fexperimental-library — a thrown ParseError then escapes
-// every catch and aborts. Building the variant here keeps the parser TU free of
-// that construction (the parser just moves the returned Statement). The primary
-// mitigation is now building that one TU at -O1 (see the CMakeLists note); this
-// pattern is kept for the branches that first exposed the bug. Remove both when
-// the toolchain is bumped.
-Statement make_create_token_statement(std::string user, std::string type);
-Statement make_create_role_statement(std::string name);
-Statement make_drop_role_statement(std::string name);
-Statement make_grant_permission_statement(std::string role,
-                                          std::vector<std::string> permissions,
-                                          GrantObject object = {});
-Statement make_revoke_permission_statement(std::string role,
-                                           std::vector<std::string> permissions,
-                                           GrantObject object = {});
-Statement make_grant_role_statement(std::string role, std::string user);
-Statement make_revoke_role_statement(std::string role, std::string user);
-Statement make_create_policy_statement(
-    std::string name, TableRef table, PolicyCommand command,
-    std::vector<std::string> roles,
-    std::optional<PolicyPredicate> using_predicate,
-    std::optional<PolicyPredicate> check_predicate);
-Statement make_drop_policy_statement(std::string name);
-Statement make_create_virtual_table_statement(
-    std::string name, std::string crdt_prefix,
-    std::vector<VirtualColumnDef> columns);
 
 }  // namespace zetta::query

@@ -1,5 +1,6 @@
 #include "zetta/dataset/base_agent_generator.hpp"
 
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -14,7 +15,6 @@ namespace zetta::dataset {
 
 GeneratedDataset BaseAgentDatasetGenerator::generate(const DatasetGenSpec& spec) const {
     GeneratedDataset dataset;
-    const int variants = spec.variants_per_subject < 1 ? 1 : spec.variants_per_subject;
 
     // Collect every plan subject first, so the canary can be a set of WHOLE subjects the
     // model never saw — a real memorization check, not resampled variants of a seen one.
@@ -28,6 +28,10 @@ GeneratedDataset BaseAgentDatasetGenerator::generate(const DatasetGenSpec& spec)
     for (const SolutionTemplate& solution_template : plan_solution_templates()) {
         subjects.emplace_back(solution_template.id, case_from_template(solution_template));
     }
+    // Bound the expansion before any variant is built (#1398).
+    const std::optional<int> variants =
+        bounded_variants(spec, subjects.size(), &dataset.error);
+    if (!variants) return dataset;
 
     // Each subject → an admission-gated case (reference passes, negative controls fail), with
     // its reference ACTION attached via the solution-graph bridge. Held-out subjects are
@@ -37,7 +41,7 @@ GeneratedDataset BaseAgentDatasetGenerator::generate(const DatasetGenSpec& spec)
     const auto emit = [&](std::size_t begin, std::size_t end) {
         std::size_t emitted = 0;
         for (std::size_t index = begin; index < end; ++index) {
-            for (int variant = 0; variant < variants; ++variant) {
+            for (int variant = 0; variant < *variants; ++variant) {
                 zetta::agent::AdmissionCase task = subjects[index].second;
                 zetta::agent::attach_reference_action(task);
                 dataset.cases.push_back(std::move(task));

@@ -50,6 +50,20 @@ reads (`server_info`, `list_runs`, `get_run`). No `zetta_` prefix — the server
 provides the namespace; MCP clients that aggregate servers already qualify by
 server name.
 
+## JSON embedded in HTML (#1405)
+
+The standalone server-rendered pages use `web_ui_script_json` whenever JSON
+enters a script body, including `type="application/json"` data blocks. It
+serializes JSON with ASCII escapes and encodes every `<` as `\u003c`, so stored
+strings cannot close a script element or change the HTML parser's state.
+Parsing the result restores the original values, including nested attributes
+and object keys. The graph editor, file panel and assistant rail share this
+encoder. HTML text and attributes continue to use `web_ui_escape`.
+
+This changes HTML output only; stored graph data and API JSON formats are
+unchanged. With an installed Studio bundle, `/` redirects to `/studio/` and
+serves the bundle unchanged; graph data comes through authenticated API reads.
+
 ## Threading — the main-thread bridge (the key decision)
 
 The `Node` tree is **main-thread-only** (the same invariant the network thread
@@ -78,11 +92,13 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   because the activity hook and the consent ledger run after the gate.
 - **Awaitable reads do not offload.** `receive_events` and `browse_topic` register a topic event
   inside their first owner-loop call, return an immediate read, and let the REST
-  or MCP coroutine suspend on that event under `runtime::timeout`. Publish, edit or close
-  wakes it; the route makes one final owner-loop call. A long poll therefore
-  holds no thread and makes at most two authorized registry calls. Those reads
-  share an audit session and contribute to its five-minute totals (#1076,
-  #1136, #1154).
+  or MCP coroutine suspend on that event, bounded by the request's own `wait_ms`
+  (at most 60 s, #1174). Publish, edit or close wakes it; the route makes one
+  final owner-loop call. A long poll therefore holds no thread and makes at most
+  two authorized registry calls. Those reads share an audit session and
+  contribute to its five-minute totals (#1076, #1136, #1154). The wait also
+  races the client closing its socket (`Impl::await_poll`); a client that left
+  gets no final call and no answer, and its session is freed (#1174).
 - **A retrying await** (#1005): an `AwaitableRead` with `retry_within` keeps
   waiting until `wait_for` passes — each wake, the event or `retry_within(result)`
   elapsing, makes one more whole governed call with a fresh event. Such an entry
@@ -157,6 +173,29 @@ reaps the child before joining clients so a regression cannot strand the suite.
 
 ## Auth, governance, audit — nothing new
 
+- **Browser origin binding (#1415, LSR-242).** Every browser POST route
+  (`/login`, `/session`, both logout routes, `/run`, `/assist`, `/shell`,
+  `/graph-save`, `/blob`, `/blob/delete`) requires exactly one `Origin` matching
+  the request's scheme and `Host`, including the port. Missing, opaque (`null`),
+  duplicate and sibling origins return 403 before dispatch or cookie changes.
+  The first router middleware discards cached `Set-Cookie` and `Location` fields
+  on every request, including public GETs and preflight responses. Only the
+  current handler may set a session or redirect. Origin refusals close the
+  connection with the body unread, preventing those bytes from reaching another
+  request on the worker.
+  Cookie-authenticated REST, MCP and object routes apply the same check on every
+  method. For GET/HEAD without `Origin`, `Sec-Fetch-Site: same-origin` or `none`
+  is accepted; older clients may send one absolute, same-origin `Referer` without
+  userinfo or a fragment. Cross-site and same-site Fetch Metadata are refused,
+  even with another matching header. Cookie GET SQL accepts only batches of
+  parsed SELECT statements, checked in full before execution; send writes by
+  POST. Explicit bearer API requests keep their existing contract.
+  TLS ingress must preserve the browser's `Host` and overwrite
+  `X-Forwarded-Proto` with `https` (`http` for plain HTTP); forwarded host headers
+  are not used. Direct HTTP uses `http://Host`. Headers stripped by a proxy or
+  privacy policy can cause a 403; browser callers must retain origin evidence.
+  No capability schema or new JSON format is added. Return URL normalization is
+  tracked separately under LSR-262.
 - **Bearer token = an `AccessKey` id.** Possession of the key id is the
   credential, exactly the strength of the existing model (V1); minting a
   dedicated API-secret rides the existing key entity later, not a parallel
@@ -207,8 +246,11 @@ Per [../architecture/observability.md](../architecture/observability.md):
 `Registry::call` opens a span (capability, kind, actor, the caller's reserved
 optional `intent` field, input digest) and closes it with status + duration +
 result shape; every `ApiResult` carries `trace_id`/`span_id`/`duration_ms` so
-the MCP response itself tells the agent what happened and where to read more
-(`get_trace`). Inbound `traceparent` is honored; without one the call starts a
+the MCP response itself tells the agent what happened. Reading more with
+`list_traces` / `get_trace` requires `cluster:admin`, because the ring contains
+other actors' request content (#1408). Feedback remains available to ordinary
+callers, with diagnostic attachments only for administrators. Inbound
+`traceparent` is honored; without one the call starts a
 fresh trace. `intent` is stripped before schema validation — every capability
 accepts it.
 

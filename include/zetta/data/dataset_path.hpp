@@ -109,8 +109,9 @@ EntityKeyMappingResult derive_entity_key_mapping(
 // the caller asks for them; the stored record is unchanged.
 nlohmann::json entity_key_mapping_summary(const nlohmann::json& mapping);
 
-// Replace every `entity_key_mapping` object with entries anywhere in
-// `document` by its summary. Returns how many it replaced.
+// Replace every `entity_key_mapping` object with entries, or referencing its
+// entity-key table (#1255), anywhere in `document` by its summary. Returns how
+// many it replaced.
 std::size_t summarize_entity_key_mappings(nlohmann::json& document);
 
 // The JSON Schema of entity_key_mapping_summary()'s answer.
@@ -141,8 +142,8 @@ struct DatasetPath {
 
 // Parse `path` under the one grammar:
 //
-//   * anything containing a `/` or `\`, ending in a path separator, starting with
-//     `.` or `~`, or naming an existing filesystem entry → **Directory**;
+//   * anything containing a `/` or `\`, ending in a path separator, or starting
+//     with `.` or `~` → **Directory**;
 //   * `database.table` → **Table**;
 //   * a bare `table` (no dot) → **Table** in `default_database`.
 //
@@ -151,8 +152,10 @@ struct DatasetPath {
 // name may not contain a slash. `~` is NOT expanded here — expansion belongs to the
 // caller that owns the filesystem, not to a grammar.
 //
-// Pure, non-throwing, and does not touch the filesystem except for the
-// existence test, which only ever moves a path INTO the Directory form.
+// Pure, non-throwing, and never touches the filesystem (#1433). A Directory is only
+// a parse: the caller that opens it resolves it under the node's import root with
+// `resolve_import_path` (`zetta/data/import_path.hpp`), which refuses an absolute
+// path, `..`, `~` and symbolic links.
 DatasetPath parse_dataset_path(std::string_view path,
                                const std::string& default_database = "datasets");
 
@@ -188,7 +191,8 @@ struct DatasetContract {
     std::vector<CategoricalEncoding> categorical_features;
 
     // Populated only for a text entity column. Serialized with the contract for
-    // distributed launches, and persisted with Runs and Models.
+    // distributed launches. Runs and Models persist it as a reference to their
+    // rows of the entity-key table (#1255).
     std::shared_ptr<const EntityKeyMapping> entity_keys;
 
     bool operator==(const DatasetContract& other) const;
@@ -341,6 +345,14 @@ using DatasetSampler = std::function<std::vector<nlohmann::json>(
 // methodologies that read every row for training still call it with a zero limit.
 DatasetSampler default_dataset_sampler(Node& node,
                                        const zetta::cluster::Cluster* cluster = nullptr);
+
+// The same read, executed AS a caller (#1396): the query service carries the
+// caller's identity, so the SELECT is authorized like the caller's own SQL — a table
+// it holds no `sql:read` on is refused, a column it may not read comes back null,
+// and row security keeps only the rows its policies admit. An empty `acting_key` is
+// the trusted local session, exactly default_dataset_sampler.
+DatasetSampler caller_dataset_sampler(Node& node, const zetta::cluster::Cluster* cluster,
+                                      std::string acting_key, bool acting_is_user);
 
 // Read `columns` of up to `limit` rows (zero: every row) of `database`.`table`
 // through the node's query service: `SELECT <columns> FROM <database>.<table>

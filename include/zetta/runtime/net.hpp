@@ -2,8 +2,8 @@
 
 // Networking slice of the runtime seam (Corosio).
 //
-// Included ONLY by the two networking adapters — never by a public header — so
-// Corosio stays out of the rest of zetta-core and the GUI:
+// Included ONLY by the three networking adapters — never by a public header —
+// so Corosio stays out of the rest of zetta-core and the GUI:
 //
 //   * `src/core/cluster/cluster.cpp` — INBOUND/peer traffic: the listener, the
 //     dialer, and the mTLS peer transport (#466).
@@ -11,6 +11,10 @@
 //     native coroutine HTTPS client behind `connect::HttpTransport` (#827).
 //     Compiled into `zetta-api`, not `zetta-core`, because it also needs
 //     Boost.HTTP for framing.
+//   * `src/core/api/mysql_protocol.cpp` — OUTBOUND MySQL wire traffic: the TCP
+//     and TLS-upgrade driver for the native MySQL connector (#895), whose
+//     protocol is a sans-I/O session in zetta-core (connect/mysql_client.hpp).
+//     Also in `zetta-api`.
 //
 // Like runtime.hpp, this is the one place that names the backend; swapping it
 // (or moving to Boost.Asio) is a change here.

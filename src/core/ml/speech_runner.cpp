@@ -182,6 +182,8 @@ SpeechRunResult run_speech_on_table(Node &node,
     result.error = "speech run: could not create run record";
     return result;
   }
+  // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+  run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
   result.run_id = run->id();
   run->set_status(pipeline::RunStatus::Running);
   run->add_log({util::now_iso8601(), "info", "speech run started"});

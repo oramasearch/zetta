@@ -5,17 +5,29 @@
 
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <openssl/bio.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/cluster/security.hpp"
+#include "zetta/transport/security.hpp"
 #include "zetta/util/uuid.hpp"
 
 #include "../temp_dir.hpp"
@@ -49,6 +61,22 @@ ClusterSecurity must_derive(const std::string& token,
         zetta::cluster::derive_cluster_security(token, node_id, &reason);
     EXPECT_TRUE(security) << reason;
     return security ? *security : ClusterSecurity{};
+}
+
+// The DER bytes of a PEM certificate: what a TLS stream's
+// peer_certificate_der() hands the cluster after a handshake.
+std::vector<unsigned char> pem_to_der(const std::string& pem) {
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), &BIO_free);
+    std::unique_ptr<X509, decltype(&X509_free)> certificate(
+        PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr), &X509_free);
+    if (!certificate) return {};
+    const int size = i2d_X509(certificate.get(), nullptr);
+    if (size <= 0) return {};
+    std::vector<unsigned char> der(static_cast<std::size_t>(size));
+    unsigned char* cursor = der.data();
+    i2d_X509(certificate.get(), &cursor);
+    return der;
 }
 
 }  // namespace
@@ -129,6 +157,85 @@ TEST(ClusterSecurity, LoadOrCreatePersistsTokenAndIdentity) {
     EXPECT_EQ(after->certificate_pem, rekeyed->certificate_pem);
 }
 
+TEST(ClusterSecurity, PrivateStorageAlsoUpgradesLegacyFilesAndReplacesOldInodes) {
+    zetta::test::TempDir temporary;
+    const auto directory = temporary.path() / "security";
+    const mode_t previous_umask = ::umask(0);
+    const auto first = zetta::cluster::load_or_create_cluster_security(
+        temporary.path().string(), "node");
+    ::umask(previous_umask);
+    ASSERT_TRUE(first);
+    struct stat status {};
+    ASSERT_EQ(::stat(directory.c_str(), &status), 0);
+    EXPECT_EQ(status.st_mode & 0777, 0700);
+    // Simulate a directory/file left by the older stream-based writer.
+    ASSERT_EQ(::chmod(directory.c_str(), 0777), 0);
+    for (const auto& name : {"cluster-secret.json", "node-cert.pem", "node-key.pem"}) {
+        const auto path = directory / name;
+        ASSERT_EQ(::chmod(path.c_str(), 0666), 0);
+    }
+    const auto secret_path = directory / "cluster-secret.json";
+    const int retained = ::open(secret_path.c_str(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(retained, 0);
+    struct stat before {};
+    const int inspected = ::fstat(retained, &before);
+    const auto rotated = zetta::cluster::load_or_create_cluster_security(
+        temporary.path().string(), "node", std::string(64, 'a'));
+    struct stat after {};
+    const int checked = ::fstat(retained, &after);
+    ::close(retained);
+    ASSERT_EQ(inspected, 0);
+    ASSERT_EQ(checked, 0);
+    ASSERT_TRUE(rotated);
+    // A descriptor opened before rotation still points at the old contents.
+    EXPECT_EQ(before.st_size, after.st_size);
+    ASSERT_EQ(::stat(secret_path.c_str(), &status), 0);
+    EXPECT_NE(before.st_ino, status.st_ino);
+    ASSERT_EQ(::stat(directory.c_str(), &status), 0);
+    EXPECT_EQ(status.st_mode & 0777, 0700);
+    for (const auto& name : {"cluster-secret.json", "node-cert.pem", "node-key.pem"}) {
+        ASSERT_EQ(::stat((directory / name).c_str(), &status), 0);
+        EXPECT_EQ(status.st_mode & 0777, 0600);
+    }
+}
+
+TEST(ClusterSecurity, RefusesLinkedDirectoriesAndLinkedOrSpecialFiles) {
+    for (const auto& name : {"cluster-secret.json", "node-cert.pem", "node-key.pem"}) {
+        for (const bool hard_link : {false, true}) {
+            zetta::test::TempDir temporary;
+            const auto directory = temporary.path() / "security";
+            std::filesystem::create_directory(directory);
+            const auto outside = temporary.path() / "outside";
+            const std::string contents = std::string_view(name) == "cluster-secret.json"
+                ? R"({"version":1,"join_token":")" + std::string(64, 'a') + R"("})"
+                : "dummy";
+            std::ofstream(outside) << contents;
+            if (hard_link) {
+                std::filesystem::create_hard_link(outside, directory / name);
+            } else {
+                std::filesystem::create_symlink(outside, directory / name);
+            }
+            std::string reason;
+            EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+                temporary.path().string(), "node", {}, &reason));
+            EXPECT_FALSE(reason.empty());
+            EXPECT_EQ(std::filesystem::file_size(outside), contents.size());
+        }
+    }
+    zetta::test::TempDir temporary;
+    const auto outside = temporary.path() / "outside";
+    std::filesystem::create_directory(outside);
+    std::filesystem::create_directory_symlink(outside, temporary.path() / "security");
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        temporary.path().string(), "node"));
+    EXPECT_TRUE(std::filesystem::is_empty(outside));
+    std::filesystem::remove(temporary.path() / "security");
+    std::filesystem::create_directory(temporary.path() / "security");
+    ASSERT_EQ(::mkfifo((temporary.path() / "security" / "node-key.pem").c_str(), 0600), 0);
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        temporary.path().string(), "node"));
+}
+
 // A re-keyed node keeps the tokens it ran under before (newest first, bounded),
 // so a secret derived from the old token — the connector-credential sealing
 // key (#1230) — can still open what was sealed under it and re-seal it.
@@ -188,7 +295,11 @@ TEST(ClusterSecurity, SecretFileIsSchemaValidated) {
         dir.path().string(), node_id, {}, &reason));
 }
 
-TEST(ClusterSecurity, PeerCommandCarriesTheJoinToken) {
+// The peer command is printed on every headless start, so it lands in pod logs
+// and log pipelines (#1393): it names where the join token goes and never
+// carries the token itself. Only the explicit accessor, behind the headed app's
+// Copy button, returns the token.
+TEST(ClusterSecurity, PeerCommandNeverCarriesTheJoinToken) {
     const std::string token = zetta::cluster::generate_join_token();
     ClusterConfig config;
     config.listen_host = "127.0.0.1";
@@ -198,7 +309,69 @@ TEST(ClusterSecurity, PeerCommandCarriesTheJoinToken) {
     Cluster node("node-a", config);
     node.start();
     EXPECT_EQ(node.peer_command(),
+              "zetta --peer 127.0.0.1:42400 --join-token " +
+                  std::string(zetta::cluster::kJoinTokenPlaceholder));
+    EXPECT_EQ(node.peer_command().find(token), std::string::npos);
+    EXPECT_EQ(node.peer_command_with_join_token(),
               "zetta --peer 127.0.0.1:42400 --join-token " + token);
+    node.stop();
+}
+
+// A secret file that fails validation is reported with a reason that names the
+// file and the field, never the value it holds (#1393): the reason is printed
+// to stderr on a refused start.
+TEST(ClusterSecurity, ASecretFileRefusalNeverEchoesTheToken) {
+    zetta::test::TempDir dir;
+    const std::string node_id = zetta::util::new_uuid();
+    std::filesystem::create_directories(dir.path() / "security");
+
+    // Upper-case hex: the right length, the wrong alphabet.
+    const std::string bad_token(64, 'A');
+    const std::string good_token = zetta::cluster::generate_join_token();
+    std::ofstream(dir.path() / "security" / "cluster-secret.json")
+        << R"({"version": 1, "join_token": ")" + bad_token + R"("})";
+    std::string reason;
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, {}, &reason));
+    EXPECT_FALSE(reason.empty());
+    EXPECT_EQ(reason.find(bad_token), std::string::npos) << reason;
+
+    // A well-formed current token beside a malformed retired one.
+    std::ofstream(dir.path() / "security" / "cluster-secret.json")
+        << R"({"version": 1, "join_token": ")" + good_token +
+               R"(", "retired_join_tokens": [")" + bad_token + R"("]})";
+    reason.clear();
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, {}, &reason));
+    EXPECT_EQ(reason.find(bad_token), std::string::npos) << reason;
+    EXPECT_EQ(reason.find(good_token), std::string::npos) << reason;
+
+    // A malformed --join-token override is refused without repeating it.
+    reason.clear();
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        dir.path().string(), node_id, bad_token, &reason));
+    EXPECT_EQ(reason.find(bad_token), std::string::npos) << reason;
+}
+
+// The identity root's public key rides in the join command, so the next node
+// pins this cluster's root and honors its accounts (#764).
+TEST(ClusterSecurity, PeerCommandCarriesTheIdentityRoot) {
+    const std::string token = zetta::cluster::generate_join_token();
+    const std::string root(64, 'a');
+    ClusterConfig config;
+    config.listen_host = "127.0.0.1";
+    config.listen_port = 42402;
+    config.security = must_derive(token, "node-a");
+    config.identity_root = root;
+
+    Cluster node("node-a", config);
+    node.start();
+    // The printed command names where the join token goes (#1393); the
+    // identity root is public, so it is printed as is.
+    EXPECT_EQ(node.peer_command(),
+              "zetta --peer 127.0.0.1:42402 --join-token <join-token> --identity-root " + root);
+    EXPECT_EQ(node.peer_command_with_join_token(),
+              "zetta --peer 127.0.0.1:42402 --join-token " + token + " --identity-root " + root);
     node.stop();
 }
 
@@ -425,6 +598,95 @@ TEST(ClusterSecurity, PlaintextNodeCannotJoinTlsCluster) {
     EXPECT_EQ(node_a.peer_count(), 0u);
     EXPECT_EQ(node_b.peer_count(), 0u);
 
+    node_b.stop();
+    node_a.stop();
+}
+
+// #669: a node's certificate names it. The common name read back from the DER
+// a TLS stream reports is the node id, and nothing else matches it.
+TEST(ClusterSecurity, CertificateCommonNameIsTheNodeId) {
+    const std::string token = zetta::cluster::generate_join_token();
+    const std::string node_id = zetta::util::new_uuid();
+    const ClusterSecurity security = must_derive(token, node_id);
+    const std::vector<unsigned char> der = pem_to_der(security.certificate_pem);
+    ASSERT_FALSE(der.empty());
+
+    EXPECT_EQ(zetta::transport::certificate_common_name(der), node_id);
+    EXPECT_TRUE(zetta::cluster::hello_matches_peer_certificate(node_id, der));
+    EXPECT_FALSE(zetta::cluster::hello_matches_peer_certificate(
+        zetta::util::new_uuid(), der));
+    EXPECT_FALSE(zetta::cluster::hello_matches_peer_certificate("", der));
+    // A prefix of the id is not the id.
+    EXPECT_FALSE(zetta::cluster::hello_matches_peer_certificate(
+        node_id.substr(0, 8), der));
+
+    // No certificate (a plaintext link, or a peer that sent none), garbage, and
+    // a certificate with bytes after it are all refused.
+    EXPECT_FALSE(zetta::transport::certificate_common_name({}));
+    EXPECT_FALSE(zetta::cluster::hello_matches_peer_certificate(node_id, {}));
+    const std::vector<unsigned char> garbage = {0x30, 0x03, 0x02, 0x01, 0x01};
+    EXPECT_FALSE(zetta::transport::certificate_common_name(garbage));
+    std::vector<unsigned char> trailing = der;
+    trailing.push_back(0x00);
+    EXPECT_FALSE(zetta::transport::certificate_common_name(trailing));
+
+    // The CA certificate names the CA, never a node.
+    EXPECT_EQ(zetta::transport::certificate_common_name(
+                  pem_to_der(security.ca_certificate_pem)),
+              "zetta-cluster-ca");
+}
+
+// #669: a member whose certificate names one node cannot join under another
+// node's id. Node B holds the token and a valid CA-signed certificate, but the
+// certificate names `victim` while B's HELLO says `id_b`, so A refuses the link
+// before recording anything. Node C, whose HELLO and certificate agree, joins
+// the same node in the same window (the positive control).
+TEST(ClusterSecurity, PeerWhoseHelloIsNotItsCertificateIsRefused) {
+    const std::string token = zetta::cluster::generate_join_token();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
+    const std::string id_c = zetta::util::new_uuid();
+    const std::string victim = zetta::util::new_uuid();
+
+    ClusterConfig config_a;
+    config_a.listen_host = "127.0.0.1";
+    config_a.listen_port = 42450;
+    config_a.security = must_derive(token, id_a);
+    Cluster node_a(id_a, config_a);
+    node_a.start();
+
+    ClusterConfig config_b;
+    config_b.listen_host = "127.0.0.1";
+    config_b.listen_port = 42451;
+    config_b.seeds = {"127.0.0.1:42450"};
+    config_b.security = must_derive(token, victim);  // certificate names `victim`
+    Cluster node_b(id_b, config_b);
+    node_b.start();
+
+    ClusterConfig config_c;
+    config_c.listen_host = "127.0.0.1";
+    config_c.listen_port = 42452;
+    config_c.seeds = {"127.0.0.1:42450"};
+    config_c.security = must_derive(token, id_c);
+    Cluster node_c(id_c, config_c);
+    node_c.start();
+
+    ASSERT_TRUE(wait_for_peers(node_a, 1));
+    ASSERT_TRUE(wait_for_peers(node_c, 1));
+    // Several reconnect cycles for B to keep trying.
+    sleep_ms(4000);
+
+    const auto has_peer = [](const Cluster& cluster, const std::string& id) {
+        const auto peers = cluster.peers();
+        return std::any_of(peers.begin(), peers.end(),
+                           [&](const auto& peer) { return peer.node_id == id; });
+    };
+    EXPECT_EQ(node_a.peer_count(), 1u);
+    EXPECT_TRUE(has_peer(node_a, id_c));
+    EXPECT_FALSE(has_peer(node_a, id_b));
+    EXPECT_FALSE(has_peer(node_a, victim));
+
+    node_c.stop();
     node_b.stop();
     node_a.stop();
 }

@@ -41,33 +41,48 @@ namespace zetta::connect {
 // OAuth token). It is **input-only** — `to_json()` never emits it, so a config
 // can be echoed back to a caller or logged without leaking the secret.
 struct ConnectorConfig {
-    std::string type;              // "snowflake" | "postgres" (see connector_types())
+    std::string type;              // "snowflake" | "postgres" | "mysql" | "tidb" | "lake_sqlite" | "lake_duckdb" | "lake_polars" (see connector_types())
     std::string account;           // Snowflake: "ab12345.us-east-1" (the host prefix)
-    std::string token;             // the secret — never serialized (Snowflake bearer / Postgres password)
+    std::string token;             // the secret — never serialized (Snowflake bearer / Postgres or MySQL password)
     std::string auth = "pat";      // Snowflake: "pat" (default) | "oauth"
     std::string database;          // session database (both)
     std::string schema;            // session schema (both)
     std::string warehouse;         // Snowflake: compute warehouse (required for token auth)
     std::string role;              // optional session role (both)
-    // Postgres fields (type == "postgres"). The password rides in `token` (so the
-    // one redaction rule covers it); host + user + database are required.
-    std::string host;              // Postgres host (e.g. 127.0.0.1)
-    std::string port;              // Postgres port (default 5432)
-    std::string user;              // Postgres role/user
-    std::string sslmode;           // Postgres sslmode (disable/require/verify-full/…)
+    // Wire-protocol fields (type == "postgres", "mysql" or "tidb"). The password
+    // rides in `token` (so the one redaction rule covers it). Postgres requires
+    // host + user + database; MySQL and TiDB require host + user (database is
+    // the optional default schema).
+    std::string host;              // server host (e.g. 127.0.0.1)
+    std::string port;              // server port (Postgres 5432, MySQL 3306, TiDB 4000 by default)
+    std::string user;              // role/user
+    std::string sslmode;           // Postgres sslmode; MySQL: verify-full (default) / verify-ca / require / disable
+    // lake's SQL-over-HTTP services (type == "lake_sqlite" / "lake_duckdb" /
+    // "lake_polars", #1014): the service's base URL, e.g.
+    // `http://orders.ws-1.svc.cluster.local:8080`. The scheme, `http://` or
+    // `https://`, must be written out (#1414). The bearer token rides in `token`.
+    std::string endpoint;
 
     // The JSON form (token omitted — see above). This is the OUTWARD-facing
     // shape: what a capability returns, what a system view renders, what a log
     // line may carry.
     nlohmann::json to_json() const;
 
+    // Validate authority and protocol fields for JSON and direct C++ callers (#1414).
+    // Returns an empty string on success; never includes credential values.
+    std::string destination_rejection() const;
 
-    // Parse + validate at the boundary. Returns std::nullopt (never throws)
-    // unless `value` is an object with a known non-empty `type`, a non-empty
-    // `account`, a non-empty `token`, an `auth` of "pat"/"oauth", optional
-    // string database/schema/warehouse/role, and no unknown keys.
+    // Parse + validate at the boundary. Unknown keys/types and malformed
+    // authority/protocol fields fail without throwing. Snowflake needs an
+    // account + token; Postgres needs host + user + database; MySQL and TiDB
+    // need host + user; lake's services need an explicit http(s) endpoint + token.
     static std::optional<ConnectorConfig> from_json(const nlohmann::json& value);
 };
+
+// The host an `endpoint` URL names (`http://127.0.0.1:8080/x` → `127.0.0.1`,
+// `https://[::1]:8443` → `::1`), or empty when it does not parse. The consent
+// gate uses it to tell a loopback service from a remote one.
+std::string endpoint_host(const std::string& endpoint);
 
 // The rows a query returned: the column names in result order, and one JSON
 // object per row keyed by those names. Cells are coerced to real JSON types
@@ -99,6 +114,14 @@ const nlohmann::json& connector_config_schema();
 // request; exposed so a caller can validate earlier. Returns a reason when it is
 // not accepted, else an empty string.
 std::string read_only_query_rejection(const std::string& sql);
+
+// The guard for a specific connector: `read_only_query_rejection`, plus the
+// source's own dialect rules. For MySQL that also admits `SHOW`, treats `#` as
+// a comment, and rejects executable comments (`/*! … */`, which the server runs
+// as SQL) and `INTO OUTFILE` / `INTO DUMPFILE` (which write files on the
+// server). `run_connector_query` and the distributed ingest apply this one.
+std::string connector_query_rejection(const ConnectorConfig& config,
+                                      const std::string& sql);
 
 // Run `sql` against the source described by `config`, returning up to `max_rows`
 // rows. Dispatches on `config.type`. `transport` performs the HTTP exchanges (an

@@ -23,6 +23,12 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
 version (`v9/`, `v10/`), each naming the exact corpus it learned from. Procedure: the **hf-ops**
 skill.
 
+**Served to lake's native agents as a model image** — `oramasearch/base-agent-0.6b:<version>`
+(private Docker Hub), built from one Hub version folder by
+the private repository [oramasearch/base-agent-0.6b](https://github.com/oramasearch/base-agent-0.6b) (pinned by zetta-bridge). Every Lake workspace Zetta copies
+it to `/data/models/base-agent`, the checkpoint a native agent created without a model runs on
+([lake#246](https://github.com/oramasearch/lake/issues/246)). The operator's default is `v16`.
+
 | version | corpus | canary grader | note |
 |---|---|---|---|
 | v3 | v3 (6,102) | **47%** | first to emit tool calls; one pipeline shape for every ask |
@@ -46,7 +52,7 @@ This card is the in-repo datasheet; the Hub card is the same content for a reade
 - **In scope.** A creator (70–80% technical-but-not-ML) describes a data/AI problem in Orama
   Studio; the agent recognizes the use case and emits a `{message, tool_calls, execution_graph}`
   **action** — the pipeline the engine builds + runs, verified by the correctness gate. It also
-  drives `agent_run` (build + run in one call, #872) and is forked + specialized per customer
+  drives `agent_run` (build a proposed plan, #872; run it once a person approves it, #913) and is forked + specialized per customer
   (#853).
 - **In scope, as of the interaction contract (#918).** Beyond intent → pipeline, the agent now
   covers the turns a user actually has with Studio: answering about a Project from **retrieved**

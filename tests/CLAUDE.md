@@ -17,6 +17,13 @@ exercise the headless core, never the GUI. Run:
   convergence loops **patient** — poll for seconds with a deadline, never a
   fixed small iteration count. Distributed ops assert
   **single-node == multi-node** equivalence.
+- **Chaos experiments** (#842) live in `cluster/test_chaos.cpp` over
+  `cluster/chaos_harness.hpp`, built as `zetta-chaos-tests` with the ctest
+  label `chaos`. Only the unit cases run by default: the smoke skips unless
+  `ZETTA_CHAOS_SMOKE=1` (until #835 is fixed), the long runs unless
+  `ZETTA_CHAOS_SCHEDULES` / `ZETTA_CHAOS_PROBE_ROUNDS` is set. A chaos step
+  must prove its fault landed before its result counts — see
+  [docs/testing/chaos-experiments.md](../docs/testing/chaos-experiments.md).
 - **No foreign runtime in build/CI** (ADR-17): goldens are committed fixtures,
   regenerated offline via env-gated write modes (`ZETTA_WRITE_GOLDEN=1`,
   `ZETTA_WRITE_SCHEMAS=1`; pyarrow fixtures via
@@ -30,3 +37,10 @@ exercise the headless core, never the GUI. Run:
   cases — each new case gets a runbook under
   [docs/testing/runbooks/test-cases/](../docs/testing/runbooks/test-cases/README.md).
   See [docs/testing/](../docs/testing/README.md).
+- **A chat turn is testable without a checkpoint.** A test that only skips
+  without `ZETTA_QWEN_DIR` proves nothing in a normal run (that is how a broken
+  `agent_run` hid behind a green suite, #969). Use the `ScriptedModel` in
+  `tests/api/test_chat_loop.cpp`: a byte-level tokenizer on disk plus an
+  installed inference runner that answers from a script and records every
+  prompt, so the prompt, envelope parse, tool sandbox, grounding and proposal
+  all run for real. Restore the previous runner when done.

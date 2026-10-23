@@ -367,7 +367,8 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   [PR #660](https://github.com/oramasearch/zetta/pull/660) — a
   statistics-engineered gtest fixture + the local-IDF query-then-fetch
   contract in the testkit case; the exact general fix (global-statistics
-  pass) is [#657](https://github.com/oramasearch/zetta/issues/657). Two
+  pass, designed in [#657](https://github.com/oramasearch/zetta/issues/657))
+  landed with [#851](https://github.com/oramasearch/zetta/issues/851). Two
   ml-domain failures remain pre-existing on clean `dev` locally
   ([#664](https://github.com/oramasearch/zetta/issues/664), GBDT near-data
   histogram-allreduce).
@@ -552,8 +553,8 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   dataset.
 - **#645 llms.txt endpoints built**: the MCP server also answers plain
   `GET /llms.txt` / `/llms/<topic>.txt` / `/llms-full.txt` — agent docs
-  generated live from the registry + node state, no second prose source
-  ([api/llms-endpoints.md](api/llms-endpoints.md)).
+  generated from the registry and build version, with no workspace inventory
+  (#1402; [api/llms-endpoints.md](api/llms-endpoints.md)).
 - **#646 spec index built** (and the #469 fold completed with it):
   `GET /v1/specs` + `/v1/specs/<name>` and the `list_specs`/`get_spec` tools
   serve the OpenAPI document + every capability schema + all 86 boundary

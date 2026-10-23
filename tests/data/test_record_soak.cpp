@@ -1,7 +1,9 @@
 // The record-store soak (#1231): steady puts, conditional updates and retention
 // purges on a running node, reporting what grows and what a read costs while the
 // replicated catalogue is being saved. ZETTA_RECORD_SOAK_PUTS sets the number of
-// puts (default 200,000; the review measurement used 1,000,000).
+// puts (default 200,000; the review measurement used 1,000,000). It asserts sizes
+// and same-run comparisons, never a wall-clock budget, so it holds on a loaded
+// host (#1248); the timings are printed for a reviewer to read.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -258,8 +260,22 @@ TEST(RecordStoreSoak, HistoryStaysBoundedAndReadsStayFastDuringSaves) {
     EXPECT_LT(store.storage_stats().records, 50'000u);
     EXPECT_LT(peak_rss, 1024ull * 1048576u);
     EXPECT_GT(saves.size(), 5u);
-    EXPECT_LT(percentile(saves, 0.99), 50.0);
-    EXPECT_LT(percentile(reads_during_save, 0.99), 10.0);
-    EXPECT_LT(percentile(reads_otherwise, 0.99), 10.0);
+    // A save stays cheap because records never enter the catalogue: it holds the
+    // collection definitions and a few node keys however many records were
+    // written. Asserted as a size, not as save milliseconds, which on a loaded
+    // host measure the scheduler rather than the store (#1248).
+    EXPECT_LT(replication.entry_count(), 32u);
+    EXPECT_LT(node.replication_persist_stats().last_bytes, 256u * 1024u);
+    // Reads overlapping a save cost what reads otherwise cost in the same run.
+    // Both sets see the same host load, so the comparison holds on a busy
+    // machine where a fixed millisecond budget does not (#1248). The median is
+    // used because a read that waited for a save shifts the whole set, while a
+    // preempted read moves only the tail. That reads never wait for a save at
+    // all is RecordStoreLatency.ReadsDoNotWaitForTheCatalogueDocument.
+    ASSERT_GE(reads_otherwise.size(), 1'000u);
+    if (reads_during_save.size() >= 10) {
+        EXPECT_LE(percentile(reads_during_save, 0.5), 3.0 * percentile(reads_otherwise, 0.5))
+            << reads_during_save.size() << " reads overlapped a save";
+    }
     node.stop();
 }

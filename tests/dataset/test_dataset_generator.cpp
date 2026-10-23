@@ -4,16 +4,28 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
+#include "temp_dir.hpp"
 #include "zetta/agent/admission_gate.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/api/registry.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/agent/response_facts.hpp"
 #include "zetta/agent/solution_graph.hpp"
 #include "zetta/dataset/base_agent_generator.hpp"
 #include "zetta/dataset/dataset_generator.hpp"
 #include "zetta/dataset/dataset_generator_factory.hpp"
+#include "zetta/node.hpp"
+#include "zetta/observability/trace.hpp"
+#include "zetta/util/uuid.hpp"
 
 namespace {
 
@@ -110,6 +122,93 @@ TEST(DatasetGenerator, AutoSuggestProducesAGatedCorpus) {
     EXPECT_FALSE(dataset.cases.empty());
     // Discrimination: suggest the present, withhold the absent — the corpus admits.
     EXPECT_TRUE(zetta::agent::admit_corpus(dataset.cases).admitted);
+}
+
+// #1398: the variant count is the one caller-controlled multiplier of a generator's work, so it is
+// bounded per subject and, times the subject count, per corpus — before anything is expanded.
+TEST(DatasetGenerator, BoundedVariantsChecksTheCeilingAndTheProductBeforeExpanding) {
+    std::string reason;
+    zetta::dataset::DatasetGenSpec spec;
+    spec.variants_per_subject = 0;
+    EXPECT_EQ(zetta::dataset::bounded_variants(spec, 40, &reason), 1) << "below 1 means 1";
+
+    spec.variants_per_subject = zetta::dataset::kMaxVariantsPerSubject;
+    EXPECT_EQ(zetta::dataset::bounded_variants(spec, 40, &reason),
+              zetta::dataset::kMaxVariantsPerSubject);
+
+    spec.variants_per_subject = zetta::dataset::kMaxVariantsPerSubject + 1;
+    EXPECT_FALSE(zetta::dataset::bounded_variants(spec, 1, &reason));
+    EXPECT_NE(reason.find("variants_per_subject"), std::string::npos) << reason;
+
+    spec.variants_per_subject = std::numeric_limits<int>::max();
+    EXPECT_FALSE(zetta::dataset::bounded_variants(spec, 1, &reason));
+
+    // Within the per-subject ceiling, the corpus product is still capped, without overflowing.
+    const std::size_t per_variant =
+        zetta::dataset::kMaxExpandedCases / zetta::dataset::kMaxVariantsPerSubject;
+    spec.variants_per_subject = zetta::dataset::kMaxVariantsPerSubject;
+    EXPECT_TRUE(zetta::dataset::bounded_variants(spec, per_variant, &reason));
+    EXPECT_FALSE(zetta::dataset::bounded_variants(spec, per_variant + 1, &reason));
+    EXPECT_FALSE(zetta::dataset::bounded_variants(
+        spec, std::numeric_limits<std::size_t>::max(), &reason));
+}
+
+TEST(DatasetGenerator, EveryBuiltinGeneratorRefusesAVariantCountOverTheCeiling) {
+    for (const std::string kind : {"base-agent", "auto-suggest"}) {
+        const auto generator = zetta::dataset::DatasetGeneratorFactory::builtin().create(kind);
+        ASSERT_NE(generator, nullptr) << kind;
+        for (const int variants :
+             {zetta::dataset::kMaxVariantsPerSubject + 1, std::numeric_limits<int>::max()}) {
+            zetta::dataset::DatasetGenSpec spec;
+            spec.variants_per_subject = variants;
+            const zetta::dataset::GeneratedDataset dataset = generator->generate(spec);
+            EXPECT_FALSE(dataset.error.empty()) << kind << " x " << variants;
+            EXPECT_TRUE(dataset.cases.empty()) << kind << " expanded a refused spec";
+        }
+    }
+}
+
+// The capability is how a workspace member reaches the generator: a variant count over the ceiling
+// is refused before any case is built, and generation at the ceiling stays inside the case budget.
+TEST(DatasetGenerator, GenerateDatasetRefusesAnUnboundedVariantCount) {
+    zetta::test::TempDir dir;
+    zetta::cluster::ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}, &replication};
+    ASSERT_TRUE(node.start());
+    node.ensure_builtin_roles();
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    auto trace = zetta::observability::make_root_trace();
+    const auto generate = [&](const std::string& kind, const nlohmann::json& variants) {
+        zetta::api::ApiContext context{node, nullptr, "", trace, &node.span_recorder()};
+        nlohmann::json input{{"kind", kind}};
+        if (!variants.is_null()) input["variants_per_subject"] = variants;
+        return registry.call("generate_dataset", input, context);
+    };
+
+    for (const std::string kind : {"base-agent", "auto-suggest"}) {
+        for (const nlohmann::json& variants :
+             {nlohmann::json(zetta::dataset::kMaxVariantsPerSubject + 1),
+              nlohmann::json(std::numeric_limits<int>::max()),
+              nlohmann::json(std::numeric_limits<std::int64_t>::max())}) {
+            const zetta::api::ApiResult refused = generate(kind, variants);
+            EXPECT_FALSE(refused.ok) << kind << " x " << variants.dump();
+            EXPECT_EQ(refused.error.code, "invalid_input") << kind << " x " << variants.dump();
+        }
+
+        const zetta::api::ApiResult ordinary = generate(kind, nullptr);
+        ASSERT_TRUE(ordinary.ok) << ordinary.error.message;
+        const zetta::api::ApiResult at_ceiling =
+            generate(kind, zetta::dataset::kMaxVariantsPerSubject);
+        ASSERT_TRUE(at_ceiling.ok) << at_ceiling.error.message;
+        EXPECT_TRUE(at_ceiling.value.at("admitted").get<bool>()) << kind;
+        // Only the per-subject variants multiply; the rest of the corpus is fixed by the engine.
+        EXPECT_LE(at_ceiling.value.at("cases").get<std::size_t>() -
+                      ordinary.value.at("cases").get<std::size_t>(),
+                  zetta::dataset::kMaxExpandedCases)
+            << kind;
+    }
+    node.stop();
 }
 
 }  // namespace

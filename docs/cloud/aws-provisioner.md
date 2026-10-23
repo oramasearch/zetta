@@ -142,7 +142,7 @@ parses the JSON the CLI returns.
 
 | `AwsControlPlane` call | `aws` command (shape) |
 |---|---|
-| `bring_up` | `aws autoscaling create-auto-scaling-group --auto-scaling-group-name <pool> --launch-template LaunchTemplateName=<lt> --min-size 0 --max-size N --desired-capacity N --vpc-zone-identifier <subnets> [--mixed-instances-policy …(Spot / instance-type)… --tags …seed…]`, falling back to `aws autoscaling set-desired-capacity --desired-capacity N` when the group already exists, then `list` |
+| `bring_up` | on a secure cluster first `aws ssm put-parameter --name /zetta/<pool>/cluster-token --type SecureString --value file://<private file> --overwrite` (the join token, fail-closed — #770); then `aws autoscaling create-auto-scaling-group --auto-scaling-group-name <pool> --launch-template LaunchTemplateName=<lt> --min-size 0 --max-size N --desired-capacity N --vpc-zone-identifier <subnets> [--mixed-instances-policy …(Spot / instance-type)… --tags …seed + ZETTA_CLUSTER_TOKEN_SSM_PARAMETER=<name>…]`, falling back to `aws autoscaling set-desired-capacity --desired-capacity N` when the group already exists, then `list` |
 | `destroy` | `aws autoscaling terminate-instance-in-auto-scaling-group --instance-id <node_id> --should-decrement-desired-capacity` |
 | `list` | `aws ec2 describe-instances --filters Name=tag:aws:autoscaling:groupName,Values=<pool> Name=instance-state-name,Values=running --query … --output json` |
 
@@ -156,6 +156,23 @@ existing group (a real failure — bad subnet, quota — surfaces in the result
 attached as a propagating tag the bootstrap reads (a production deployment bakes
 the join into the launch template's user-data). The command shapes are grounded in
 [research/aws-cli-compute.md](../research/aws-cli-compute.md) (the cited `aws` guide).
+
+### The join token on the node — the launch template's user-data (#1316)
+
+The token is an SSM SecureString and the instance carries only its name (#770,
+above). The launch template is the operator's, so the binding cannot put its boot
+script in it: the operator's user-data runs the
+[node bootstrap script](node-bootstrap-script.md) rendered for
+`ClusterTokenStore::aws_ssm_parameter` with the secret name
+`/zetta/<pool>/cluster-token` and the region. At boot it runs `aws ssm
+get-parameter --name … --with-decryption` with the instance profile, writes the
+token to `/etc/zetta/cluster-token` (0400) and starts the engine with
+`ZETTA_CLUSTER_TOKEN_FILE`. The instance profile needs `ssm:GetParameter` on
+`arn:aws:ssm:<region>:<account>:parameter/zetta/<pool>/cluster-token` and
+`kms:Decrypt` on its key (the AWS-managed `aws/ssm` key unless you chose one);
+the control plane needs `ssm:PutParameter` on it. Generating the launch template
+version with that user-data from the binding is
+#1338.
 
 ### The command runner — testable without `aws`
 

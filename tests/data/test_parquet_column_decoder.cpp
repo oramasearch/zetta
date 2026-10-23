@@ -1,15 +1,21 @@
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "zetta/parquet/column_decoder.hpp"
 #include "zetta/parquet/metadata.hpp"
+#include "zetta/parquet/reader.hpp"
+#include "zetta/parquet/writer.hpp"
+#include "../../src/core/parquet/thrift_compact.hpp"
 
 // Native Parquet column-chunk decoders (ADR-32 / #506). The acceptance: each
 // column type decodes to typed values matching a golden, including definition
@@ -46,6 +52,118 @@ nlohmann::json read_json(const fs::path& path) {
     std::ostringstream buffer;
     buffer << stream.rdbuf();
     return nlohmann::json::parse(buffer.str());
+}
+
+// A file whose one REQUIRED int64 column `x` is split into row groups of two
+// rows, with the physical type of the LAST row group's chunk rewritten to
+// boolean in the footer. The schema still says int64, so the file declares two
+// physical types for one leaf (LSR-167). The patch is the compact-protocol
+// field header for ColumnMetaData.type (0x15) followed by the zigzag code
+// (int64 = 0x04 becomes boolean = 0x00); the caller checks it landed by parsing
+// the footer back.
+std::string mixed_physical_type_file(std::int64_t rows) {
+    std::vector<nlohmann::json> data;
+    for (std::int64_t row = 0; row < rows; ++row) data.push_back({{"x", 1000 + row}});
+    zetta::parquet::WriterOptions options;
+    options.codec = zetta::parquet::CompressionCodec::Uncompressed;
+    options.max_rows_per_row_group = 2;
+    const auto written = zetta::parquet::write_parquet_rows(
+        data, {{"x", PhysicalType::Int64, /*optional=*/false}}, options);
+    if (!written.ok()) return {};
+    std::string bytes = written.data;
+
+    std::uint32_t footer_length = 0;
+    std::memcpy(&footer_length, bytes.data() + bytes.size() - 8, 4);
+    const std::size_t footer_start = bytes.size() - 8 - footer_length;
+    const std::size_t last_type = bytes.rfind(std::string("\x15\x04"), bytes.size() - 8);
+    if (last_type == std::string::npos || last_type < footer_start) return {};
+    bytes[last_type + 1] = '\x00';
+    return bytes;
+}
+
+std::string run_header(std::uint64_t header) {
+    std::string bytes;
+    zetta::parquet::detail::CompactWriter(bytes).write_uvarint(header);
+    return bytes;
+}
+
+void append_u32(std::string& bytes, std::uint32_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        bytes.push_back(static_cast<char>(value >> shift));
+    }
+}
+
+// Minimal uncompressed pages exercise the public decoders with an exact body
+// span, independently of the production writer's choice of RLE runs.
+struct HybridPages {
+    std::string bytes;
+    zetta::parquet::FileMetaData metadata;
+};
+
+HybridPages hybrid_pages(std::string_view stream, int width, std::int32_t count,
+                         bool definition_levels = false,
+                         zetta::parquet::Encoding encoding = zetta::parquet::Encoding::RleDictionary) {
+    using namespace zetta::parquet;
+    HybridPages pages;
+    pages.metadata.schema = {
+        {.name = "schema", .num_children = 1},
+        {.name = "x", .has_type = true, .type = PhysicalType::Int32,
+         .repetition = definition_levels ? RepetitionType::Optional : RepetitionType::Required},
+    };
+    ColumnChunkMeta chunk;
+    chunk.path_in_schema = {"x"};
+    chunk.type = PhysicalType::Int32;
+    chunk.codec = CompressionCodec::Uncompressed;
+    chunk.num_values = count;
+
+    auto append_page = [&](std::string_view body, bool dictionary) {
+        detail::CompactWriter writer(pages.bytes);
+        writer.write_i32_field(1, dictionary ? 2 : 0);
+        writer.write_i32_field(2, static_cast<std::int32_t>(body.size()));
+        writer.write_i32_field(3, static_cast<std::int32_t>(body.size()));
+        writer.begin_struct_field(dictionary ? 7 : 5);
+        writer.write_i32_field(1, dictionary ? 2 : count);
+        writer.write_i32_field(2, dictionary || definition_levels ? 0 :
+                                encoding == Encoding::PlainDictionary ? 2 : 8);
+        if (!dictionary) {
+            writer.write_i32_field(3, 3);
+            writer.write_i32_field(4, 3);
+        }
+        writer.end_struct();
+        writer.end_struct();
+        pages.bytes.append(body);
+    };
+    std::string body;
+    if (definition_levels) {
+        append_u32(body, static_cast<std::uint32_t>(stream.size()));
+        body.append(stream);
+        for (std::int32_t row = 0; row < count; ++row) append_u32(body, 10);
+    } else {
+        std::string dictionary;
+        append_u32(dictionary, 10);
+        append_u32(dictionary, 20);
+        append_page(dictionary, true);
+        chunk.has_dictionary_page = true;
+        chunk.data_page_offset = static_cast<std::int64_t>(pages.bytes.size());
+        body.push_back(static_cast<char>(width));
+        body.append(stream);
+    }
+    append_page(body, false);
+    chunk.total_compressed_size = static_cast<std::int64_t>(pages.bytes.size());
+    pages.metadata.num_rows = count;
+    pages.metadata.row_groups = {{.num_rows = count, .columns = {chunk}}};
+    return pages;
+}
+
+std::string packed_group(int width, const std::array<std::uint64_t, 8>& values) {
+    std::string bytes(static_cast<std::size_t>(width), '\0');
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        for (int bit = 0; bit < width; ++bit) {
+            const std::size_t position = index * width + bit;
+            bytes[position / 8] |= static_cast<char>(((values[index] >> bit) & 1) << (position % 8));
+        }
+    }
+    return bytes;
 }
 
 }  // namespace
@@ -237,4 +355,180 @@ TEST(ParquetColumnDecoder, RejectsOutOfRangeIndices) {
     EXPECT_FALSE(zetta::parquet::decode_column(bytes, meta.metadata, 99).ok());
     EXPECT_FALSE(zetta::parquet::decode_column_chunk(bytes, meta.metadata, 99, 0).ok());
     EXPECT_FALSE(zetta::parquet::decode_column_chunk(bytes, meta.metadata, 0, 99).ok());
+}
+
+// LSR-167: a chunk whose physical type disagrees with the schema leaf is refused.
+// Merging the row groups used to keep the first group's type, append each
+// group's values to a different typed vector, and count every row — so the row
+// transpose indexed past the end of the int64 vector.
+TEST(ParquetColumnDecoder, RejectsAChunkWhosePhysicalTypeDisagreesWithTheSchema) {
+    const std::string bytes = mixed_physical_type_file(4);
+    ASSERT_FALSE(bytes.empty());
+    const auto meta = zetta::parquet::parse_parquet_metadata(bytes);
+    ASSERT_TRUE(meta.ok()) << meta.error;
+    ASSERT_EQ(meta.metadata.row_groups.size(), 2u);
+    ASSERT_EQ(meta.metadata.leaf_columns().at(0).type, PhysicalType::Int64);
+    ASSERT_EQ(meta.metadata.row_groups[0].columns[0].type, PhysicalType::Int64);
+    ASSERT_EQ(meta.metadata.row_groups[1].columns[0].type, PhysicalType::Boolean);
+
+    const auto first = zetta::parquet::decode_column_chunk(bytes, meta.metadata, 0, 0);
+    EXPECT_TRUE(first.ok()) << first.error;
+
+    const auto mismatched = zetta::parquet::decode_column_chunk(bytes, meta.metadata, 1, 0);
+    EXPECT_FALSE(mismatched.ok());
+    EXPECT_NE(mismatched.error.find("physical type"), std::string::npos) << mismatched.error;
+
+    const auto whole = zetta::parquet::decode_column(bytes, meta.metadata, 0);
+    EXPECT_FALSE(whole.ok());
+    EXPECT_NE(whole.error.find("physical type"), std::string::npos) << whole.error;
+
+    const auto rows = zetta::parquet::read_parquet_rows(bytes);
+    EXPECT_FALSE(rows.ok());
+    EXPECT_TRUE(rows.rows.empty());
+    EXPECT_NE(rows.error.find("physical type"), std::string::npos) << rows.error;
+}
+
+// A file with a single row group whose chunk disagrees with the schema is refused
+// too: the row-group-at-a-time pager (ParquetStore) decodes chunks one by one.
+TEST(ParquetColumnDecoder, RejectsAMismatchedChunkInASingleRowGroup) {
+    const std::string bytes = mixed_physical_type_file(2);
+    ASSERT_FALSE(bytes.empty());
+    const auto meta = zetta::parquet::parse_parquet_metadata(bytes);
+    ASSERT_TRUE(meta.ok()) << meta.error;
+    ASSERT_EQ(meta.metadata.row_groups.size(), 1u);
+    ASSERT_EQ(meta.metadata.row_groups[0].columns[0].type, PhysicalType::Boolean);
+
+    EXPECT_FALSE(zetta::parquet::decode_column_chunk(bytes, meta.metadata, 0, 0).ok());
+    EXPECT_FALSE(zetta::parquet::read_parquet_rows(bytes).ok());
+}
+
+// The shape check every transpose relies on: one populated vector, of the
+// column's type, holding exactly one value per present row.
+TEST(ParquetColumnDecoder, ValidatesTheDecodedColumnShape) {
+    DecodedColumn column;
+    column.path = "x";
+    column.type = PhysicalType::Int64;
+    column.num_rows = 3;
+    column.values.int64_values = {1, 2, 3};
+    EXPECT_EQ(zetta::parquet::validate_decoded_column(column), "");
+
+    DecodedColumn short_values = column;
+    short_values.values.int64_values = {1};
+    EXPECT_NE(zetta::parquet::validate_decoded_column(short_values), "");
+
+    DecodedColumn second_vector = column;
+    second_vector.values.bool_values = {1};
+    EXPECT_NE(zetta::parquet::validate_decoded_column(second_vector), "");
+
+    DecodedColumn short_validity = column;
+    short_validity.validity = {1, 1};
+    short_validity.values.int64_values = {1, 2};
+    EXPECT_NE(zetta::parquet::validate_decoded_column(short_validity), "");
+
+    DecodedColumn nullable = column;
+    nullable.validity = {1, 0, 1};
+    nullable.values.int64_values = {1, 3};
+    EXPECT_EQ(zetta::parquet::validate_decoded_column(nullable), "");
+
+    DecodedColumn unknown = column;
+    unknown.type = PhysicalType::Unknown;
+    unknown.values.int64_values.clear();
+    unknown.num_rows = 0;
+    EXPECT_NE(zetta::parquet::validate_decoded_column(unknown), "");
+
+    // to_json never reads past the dense values of an inconsistent column.
+    const nlohmann::json json = zetta::parquet::to_json(short_values);
+    EXPECT_EQ(json["values"], nlohmann::json({1, nullptr, nullptr}));
+}
+
+TEST(ParquetColumnDecoder, RejectsBitPackedRunLengthOverflow) {
+    // Each wrapped byte count fits the supplied body, and the old decoder
+    // accepted its first value even though the declared run cannot fit.
+    for (const auto& [width, groups, wrapped_bytes] :
+         {std::tuple{0, (std::uint64_t{1} << 61) + 1, 0},
+          std::tuple{3, std::uint64_t{6148914691236517206}, 2},
+          std::tuple{8, (std::uint64_t{1} << 61) + 1, 8},
+          std::tuple{32, (std::uint64_t{1} << 59) + 1, 32},
+          std::tuple{64, (std::uint64_t{1} << 58) + 1, 64}}) {
+        SCOPED_TRACE(width);
+        for (auto encoding : {zetta::parquet::Encoding::PlainDictionary,
+                              zetta::parquet::Encoding::RleDictionary}) {
+            const auto pages = hybrid_pages(run_header((groups << 1) | 1) +
+                                            std::string(wrapped_bytes, '\0'), width, 1, false, encoding);
+            EXPECT_FALSE(zetta::parquet::decode_column_chunk(pages.bytes, pages.metadata, 0, 0).ok());
+            EXPECT_FALSE(zetta::parquet::decode_column(pages.bytes, pages.metadata, 0).ok());
+        }
+    }
+}
+
+TEST(ParquetColumnDecoder, RejectsTruncatedHybridRuns) {
+    for (bool levels : {false, true}) {
+        // The first requested value fits, but the full group does not. For
+        // levels, PLAIN bytes after the level span must not complete the run.
+        const auto packed = hybrid_pages(run_header(3) + std::string(levels ? 0 : 2, '\0'),
+                                          levels ? 1 : 3, 1, levels);
+        EXPECT_FALSE(zetta::parquet::decode_column_chunk(packed.bytes, packed.metadata, 0, 0).ok());
+        const auto repeated = hybrid_pages(run_header(2), levels ? 1 : 3, 1, levels);
+        EXPECT_FALSE(zetta::parquet::decode_column_chunk(repeated.bytes, repeated.metadata, 0, 0).ok());
+    }
+}
+
+TEST(ParquetColumnDecoder, RejectsOverflowingHybridHeaders) {
+    // A tenth byte of 2 used to disappear on the shift, aliasing header 3.
+    const std::string overflow = std::string(1, '\x83') + std::string(8, '\x80') + '\x02';
+    for (bool levels : {false, true}) {
+        const auto pages = hybrid_pages(overflow + '\x01', 1, 1, levels);
+        EXPECT_FALSE(zetta::parquet::decode_column_chunk(pages.bytes, pages.metadata, 0, 0).ok());
+        const auto extreme = hybrid_pages(run_header(~std::uint64_t{0}) + '\x01', 1, 1, levels);
+        EXPECT_FALSE(zetta::parquet::decode_column_chunk(extreme.bytes, extreme.metadata, 0, 0).ok());
+    }
+}
+
+TEST(ParquetColumnDecoder, DecodesHybridWidthsAndPaddedGroups) {
+    for (int width : {0, 1, 3, 8, 31, 32, 57, 63, 64}) {
+        SCOPED_TRACE(width);
+        const std::array<std::uint64_t, 8> indices = width == 0
+            ? std::array<std::uint64_t, 8>{} : std::array<std::uint64_t, 8>{1, 0, 1, 1, 0, 1, 0, 0};
+        const auto pages = hybrid_pages(run_header(3) + packed_group(width, indices), width, 6);
+        const auto decoded = zetta::parquet::decode_column_chunk(pages.bytes, pages.metadata, 0, 0);
+        ASSERT_TRUE(decoded.ok()) << decoded.error;
+        for (std::size_t index = 0; index < 6; ++index) {
+            EXPECT_EQ(decoded.column.values.int32_values[index], indices[index] ? 20 : 10);
+        }
+        // A zero-width RLE stream carries no value bytes.
+        const auto rle = hybrid_pages(run_header(12) + std::string((width + 7) / 8, '\0'), width, 6);
+        const auto repeated = zetta::parquet::decode_column_chunk(rle.bytes, rle.metadata, 0, 0);
+        ASSERT_TRUE(repeated.ok()) << repeated.error;
+        EXPECT_EQ(repeated.column.values.int32_values, (std::vector<std::int32_t>(6, 10)));
+    }
+    const auto levels = hybrid_pages(run_header(3) + '\x2d', 1, 6, true);
+    const auto decoded = zetta::parquet::decode_column_chunk(levels.bytes, levels.metadata, 0, 0);
+    ASSERT_TRUE(decoded.ok()) << decoded.error;
+    EXPECT_EQ(decoded.column.validity, (std::vector<std::uint8_t>{1, 0, 1, 1, 0, 1}));
+}
+
+TEST(ParquetColumnDecoder, RejectsInvalidHybridWidths) {
+    for (int width : {65, 255}) {
+        const auto pages = hybrid_pages(run_header(2) + std::string(32, '\0'), width, 1);
+        EXPECT_FALSE(zetta::parquet::decode_column_chunk(pages.bytes, pages.metadata, 0, 0).ok());
+    }
+}
+
+TEST(ParquetColumnDecoder, CompactVarintsRejectOverflowAndKeepUint64Range) {
+    using zetta::parquet::detail::CompactReader;
+    for (std::uint64_t value : {std::uint64_t{0}, std::uint64_t{127}, std::uint64_t{128},
+                                ~std::uint64_t{0}}) {
+        const std::string bytes = run_header(value);
+        CompactReader reader(bytes);
+        std::uint64_t decoded = 0;
+        ASSERT_TRUE(reader.read_uvarint(decoded));
+        EXPECT_EQ(decoded, value);
+    }
+    for (int last : {2, 3, 127, 128, 129, 255}) {
+        const std::string bytes = std::string(9, '\x80') + static_cast<char>(last);
+        CompactReader reader(bytes);
+        std::uint64_t decoded = 123;
+        EXPECT_FALSE(reader.read_uvarint(decoded));
+        EXPECT_EQ(decoded, 123u);
+    }
 }

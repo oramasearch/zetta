@@ -27,7 +27,9 @@ namespace zetta::governance {
 // The predicate expressions are stored as **opaque JSON** in `using_predicate` /
 // `check_predicate`: the query layer (zetta::query::PolicyPredicate) owns parsing
 // them from SQL, serializing them into this JSON, and evaluating them against a
-// row + the acting identity. Governance only replicates + persists them — it
+// row + the acting identity. A policy missing the predicate an access needs
+// admits no row for that access (#765), never every row. Governance only
+// replicates + persists them — it
 // validates the envelope (each predicate is an object or absent), not the
 // predicate grammar; a predicate that fails to evaluate denies the row
 // (fail-safe), so a corrupt predicate can never widen access.

@@ -86,10 +86,13 @@ struct SqlWritePermissions : ::testing::Test {
         return r.rows.size();
     }
 
+    // The statements' own rows (target `sql:...`); the Node's rows for the
+    // effects (a database created or dropped, #847) are counted separately.
     std::size_t changed_events(bool allowed) {
         std::size_t count = 0;
         for (const auto& event : node.audit_events()) {
             if (event->action() == AuditAction::DataChanged &&
+                event->target().rfind("sql:", 0) == 0 &&
                 event->allowed() == allowed) {
                 ++count;
             }
@@ -162,6 +165,18 @@ TEST_F(SqlWritePermissions, WriterIsAllowedForEveryStatementKind) {
     EXPECT_TRUE(node.find_database("fresh"));
     EXPECT_EQ(changed_events(/*allowed=*/true) - allowed_before,
               change_statements().size());
+    // ...and the databases the statements created and dropped are on the trail
+    // as the Node's own rows, attributed to the writer (#847).
+    for (const char* target : {"database:fresh", "database:other"}) {
+        std::shared_ptr<zetta::governance::AuditEvent> latest;
+        for (const auto& event : node.audit_events()) {
+            if (event->action() == AuditAction::DataChanged && event->target() == target) {
+                latest = event;
+            }
+        }
+        ASSERT_TRUE(latest) << target;
+        EXPECT_EQ(latest->actor(), writer) << target;
+    }
 }
 
 // CREATE USER and CREATE TOKEN mint identities and credentials: a writer may
@@ -227,6 +242,12 @@ TEST_F(SqlWritePermissions, ColumnScopedWritesApplyToUpdateAndDelete) {
         as_titler.run("UPDATE app.docs SET title = 'x' WHERE secret = 's1';", "");
     EXPECT_FALSE(hidden_where.ok());
     EXPECT_NE(hidden_where.error.find("WHERE"), std::string::npos) << hidden_where.error;
+    // #912: a hidden column behind an AND is refused too.
+    const auto hidden_compound = as_titler.run(
+        "UPDATE app.docs SET title = 'x' WHERE id = 1 AND secret = 's1';", "");
+    EXPECT_FALSE(hidden_compound.ok());
+    EXPECT_NE(hidden_compound.error.find("\"secret\" used in WHERE"), std::string::npos)
+        << hidden_compound.error;
     EXPECT_FALSE(as_titler.run("DELETE FROM app.docs WHERE id = 1;", "").ok());
     EXPECT_FALSE(as_titler.run("TRUNCATE app.docs;", "").ok());
     EXPECT_EQ(row_count("app.docs"), 3u);

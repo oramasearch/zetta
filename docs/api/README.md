@@ -1,5 +1,9 @@
 # API docs
 
+Source discovery uses saved connections for readers; inline `list_source_tables`
+requires `create_connection` permission. All connector dials enforce the
+[connector destination policy](../data/connector-query.md#connector-destination-approval-1414-lsr-241).
+
 The programmatic control surface: the capability registry rendered as **MCP
 tools** and **REST routes** — drive the cluster without the GUI, with
 the same governance as every other surface. Product framing:
@@ -11,7 +15,11 @@ MCP/HTTP work.
 - [registry-design.md](registry-design.md) — **read first**: the settled design
   — one registry/many renderings, the main-thread bridge, auth = AccessKey +
   per-capability audit policy, long work = Run/ComputeJob handles (no new job infra),
-  the error mapping (schema rejections carry `path`, #1217), the consent challenge, awaitable reads and independent connection admission (#1076).
+  the error mapping (schema rejections carry `path`, #1217), browser origin binding (#1415),
+  the consent challenge, awaitable reads, independent connection admission (#1076), and
+  script-safe JSON in fallback pages (#1405).
+- [../architecture/observability.md](../architecture/observability.md) — trace
+  tools require `cluster:admin`; feedback omits diagnostics for other callers (#1408).
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
 - [../pubsub/crud.md](../pubsub/crud.md) — topic and message CRUD examples,
@@ -24,22 +32,28 @@ MCP/HTTP work.
 - [consent.md](consent.md) — remote consent for cloud-touching tools (#621):
   the challenge protocol (never executes on first call), the
   distinctly-privileged approval rule (approver key / headed surface), the
-  consent ledger + `system.consent_requests`, audit + spans on both sides —
-  and why enforcement is **off by default** until a reachable approval surface
-  ships (#995).
+  consent ledger + `system.consent_requests`, audit + spans on both sides,
+  where a challenge is decided (web console and desktop app Governance →
+  Consent requests, #999) — and why enforcement stays **off by default**
+  (#995; remote reads are guarded by safe mode instead).
+- [safe-mode.md](safe-mode.md) — safe mode per database (#1373): `off`,
+  `warn_writes`, `warn_all` on each saved connection (default `warn_writes`)
+  and Zetta database (default `off`); the `safe_mode_warning` refusal naming
+  the exact statements, the `safe_mode_confirmation` retry,
+  `set_safe_mode` / `get_safe_mode`, rights, audit and where the level lives.
 - [rest-openapi.md](rest-openapi.md) — the REST rendering (#618): reads →
   GET /v1/<name>, actions → POST /v1/<name>, output schemas, and the
   drift-checked OpenAPI document generated from the registry.
 - [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
-  pages (#645): plain-GET agent docs generated live from the registry + node
-  state, no second prose source.
+  pages (#645, #1402): public agent docs from the registry, with no workspace
+  inventory.
 - [specs-index.md](specs-index.md) — the spec index (#646): `/v1/specs` +
   `list_specs`/`get_spec` serving the OpenAPI document + every capability and
   boundary schema from their C++ accessors, drift-checked through one shared
   table.
 - [native-http-transport.md](native-http-transport.md) — the **outbound** HTTP
   client (#827): the coroutine HTTPS client behind `connect::HttpTransport`, why
-  it lives in `zetta-api`, the sync/async shapes, and the no-leak contract.
+  it lives in `zetta-api`, the sync/async shapes, the no-leak contract, and confined model downloads (#1412).
 - [../pubsub/exposure.md](../pubsub/exposure.md) — pub/sub on the control surface
   (#1033, #1076): create_topic / drop_topic / list_topics / publish_event / receive_events,
   exposed topics and long polls that suspend without holding threads.
@@ -53,8 +67,10 @@ MCP/HTTP work.
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
-  data:predict / data:search key scoping, reversible text entity ids, every
-  request a span + audited; #957).
+  data:predict / data:search key scoping, source-data authorization for search (#1403), reversible text entity ids, every
+  request a span + audited; #957), and published pipelines (zetta#1289):
+  expose_pipeline pins a pipeline behind POST /v1/pipelines/{name}/run, run
+  with the caller's own grants, a declared input schema, size and rate limits.
 
 ## The endpoints (shipped with #615, REST with #618)
 
@@ -75,6 +91,13 @@ tool's `outputSchema`); inbound `traceparent` is honored. The handlers marshal
 onto the owning loop (headless tick / headed frame) via the bridge — the loops
 drain it beside `Node::tick()`.
 
+With `--clerk-issuer` configured, the same gate also verifies Clerk JWTs from
+bearers or the session cookie (#889, #1416). Key retrieval suspends the request;
+concurrent misses share one fetch, failed fetches are cached for five seconds,
+and each fetch/wait has a two-second deadline. Native tokens remain usable during
+an issuer outage. See [Clerk key caching](../governance/access-control.md#clerk-key-caching-1416)
+for rotation and stale-key limits. No issuer means no Clerk network requests.
+
 The same server serves the registry as **plain REST** (#618,
 [rest-openapi.md](rest-openapi.md)): reads are `GET /v1/<name>` (query-string
 input), actions/jobs are `POST /v1/<name>` (JSON body), same bearer → same
@@ -83,8 +106,8 @@ statuses (`forbidden` is 403 and `runner_required` 409, #1261); `GET /v1/openapi
 registered schemas (drift-checked into `schemas/openapi.json`).
 
 The same server also answers plain `GET /llms.txt` / `/llms/<topic>.txt` /
-`/llms-full.txt` — agent-readable pages generated live from the registry +
-node state, so a no-MCP agent orients with one GET
+`/llms-full.txt` — public agent-readable pages generated from the registry,
+with no workspace inventory, so a no-MCP agent orients with one GET
 ([llms-endpoints.md](llms-endpoints.md), #645) — and `GET /v1/specs` /
 `/v1/specs/<name>`, the spec index over every schema in the system
 ([specs-index.md](specs-index.md), #646).
@@ -93,7 +116,10 @@ The same server serves the **exposed-entity endpoints** ([serving.md](serving.md
 #648): `POST /v1/models/{name}/predict` and `GET /v1/indexes/{name}/search`
 answer only while the entity's replicated `exposed` flag is set
 (expose_model / expose_index below); access requires a key holding
-`data:predict` / `data:search`.
+`data:predict` / `data:search`. A published pipeline answers `POST
+/v1/pipelines/{name}/run` and `GET /v1/pipelines/{name}/runs/{run_id}` while it
+is exposed (expose_pipeline below); access requires `data:run_pipeline` and
+read access to the tables it reads (zetta#1289).
 
 ## Connect a client
 
@@ -152,7 +178,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `object_usage` | read | data:objects_read | a bucket's objects, bytes and quota; also `GET /v1/objects/<bucket>:usage` |
 | `storage_usage` | read | api:query | the bytes this node holds on its disk, by kind (datasets, files, models, indexes, runs, buckets and each bucket, streams, records, catalogue, system); walks the data directory on the blocking pool; `scope: "cluster"` sums every member's census from the telemetry exchange and names the members missing ([storage-census.md](../data/storage-census.md)) |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
-| `list_projects` | read | api:query | project names |
+| `list_projects` | read | api:query | project names (`projects`), plus `summaries` (#1185): each project's id and name and each pipeline's id, name and approval, in one call; present only when the caller may also call `get_project` ([projects.md](../pipeline/projects.md#listing-projects--list_projects)) |
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
 | `get_run` | read | api:query | one run's validated record (status / logs / outputs / lineage) by uuid |
 | `get_model` | read | api:query | one model's validated record (kind / lineage / feature schema / metrics / weights fingerprint) by uuid |
@@ -169,7 +195,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_models` | read | api:query | model-version rows with Project/Pipeline display names, producing Run, metrics, feature schema, serving state and creation time |
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
-| `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
+| `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays); `detail: "summary"` (#1195) answers only the list fields (rows, size_bytes, format, partition_count, degraded, …) from counters, reading no row and no file ([system-datasets.md](../data/system-datasets.md#the-lean-list-list_datasets-detail-summary-1195)) |
 | `list_methodologies` | read | api:query | all 21 catalogue methodologies, their data and result contracts, study support and published search spaces, primary solutions, model kinds, implementation status, and tracking issues, then the workspace's own; every entry says `source` (`orama` or `workspace`) and `editable` ([workspace methodologies](../ml/workspace-methodologies.md), #1261) |
 | `get_methodology` | read | api:query | one methodology by id: a catalogue entry (M-n, read-only) or a workspace methodology (W-<8 hex>) with its interface, code location, image and validation (#1261) |
 | `register_methodology` | action | orchestration:register_methodology | register a workspace methodology whose Python code Lake's runner runs (never the engine); returns its W- id, not validated (#1261) |
@@ -181,8 +207,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_ledger` | read | api:query | immutable action and outcome entries from the replicated [solutions audit ledger](../solutions/audit-ledger.md) |
 | `list_solutions` | read | api:query | all 20 runnable catalogue solutions, with composition, product contract, `levels` objects, missing components, and runnable status |
 | `get_solution` | read | api:query | one runnable catalogue solution by id; `solution.levels[].level` is the integer posted to `create_solution` |
-| `list_traces` | read | api:query | recent observability spans |
-| `get_trace` | read | api:query | every span of one trace id |
+| `list_traces` | read | api:cluster_admin | recent node-wide observability spans; requires `cluster:admin` (#1408) |
+| `get_trace` | read | api:cluster_admin | every span of one trace id; requires `cluster:admin` (#1408) |
 | `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
 | `get_study` | read | api:query | one study's objective, search space, sampler, pruner, budgets, usage, state, and Run trials |
 | `validate_study` | read | api:query | validate and normalize a create-study candidate without storing it, returning a field path and repair reason when invalid |
@@ -204,7 +230,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `object_barrier` | action | data:objects_write (`objects:write`) | fsync every write to the bucket acknowledged before the call, on every live node; also `POST /v1/objects/<bucket>:barrier` |
 | `delete_object` | action | data:objects_write | remove one object, fenced once the bucket has a lease holder; also `DELETE /v1/objects/<bucket>/<key>` |
 | `acquire_object_lease` / `renew_object_lease` / `release_object_lease` | action | data:objects_write | the bucket's owner lease: `acquire` waits up to `wait_ms` without holding a thread and returns the fence, the bucket's `incarnation` and `object_log_prefix_durability` (409 `held` otherwise); also `POST /v1/objects/<bucket>:acquire` / `:renew` / `:release` |
-| `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
+| `submit_feedback` | action | api:query | store feedback as a large object; only `cluster:admin` attaches traces, errors and crashes; export is explicit (#640, #1408) |
 | `record_action` | action | orchestration:record_action | append score, decision, action, actor, versions, experiment cell, cost, and timestamps to the solutions audit ledger |
 | `record_outcome` | action | orchestration:record_outcome | append a connector or manual outcome referencing an existing action entry |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
@@ -238,6 +264,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |
 | `expose_index` | action | orchestration:expose_index | publish an index's /v1/indexes/{name}/search endpoint (distributed scatter-gather underneath); endpoint access needs data:search |
 | `unexpose_index` | action | orchestration:unexpose_index | withdraw the index's search endpoint everywhere in one action |
+| `expose_pipeline` | action | orchestration:expose_pipeline | pin an approved, gate-passing pipeline that reads only landed tables and publish POST /v1/pipelines/{name}/run on every node, with its declared `input_schema`, `rate_limit_per_minute`, `max_input_bytes`, `sync_timeout_ms`; exposing again pins the next version (zetta#1289, [serving.md](serving.md#published-pipelines-zetta1289)) |
+| `unexpose_pipeline` | action | orchestration:unexpose_pipeline | withdraw the pipeline's route everywhere in one action; runs it served keep going |
+| `run_published_pipeline` | job | data:run_pipeline (or scoped ON PROJECT) | the served run without HTTP: the pinned version with your input, your grants, the declared schema and limits; answers the run id and status |
+| `get_published_pipeline_run` | read | data:run_pipeline (or scoped ON PROJECT) | the status and outputs of a run a published pipeline served to you |
 | `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
 | `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
 | `compile_intent` | action | orchestration:compile_intent | resolve an optional methodology or solution (otherwise registered keywords), refuse unavailable work with its issue, and store the runnable methodology's editable graph |
@@ -260,6 +290,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_consent_requests` | read | api:query | the node's consent ledger — pending challenges, decisions, and executed results |
 | `approve_consent` | action | orchestration:approve_consent | approve one challenge and execute exactly the named action once — must be a **different principal** than the requester |
 | `deny_consent` | action | orchestration:deny_consent | refuse (or withdraw) a pending challenge; the action never runs |
+| `set_safe_mode` | action | api:query + `sql:ddl` on the database, or `create_connection` | set a database's or saved connection's safe mode level (`off` / `warn_writes` / `warn_all`); audited as `safe_mode_changed` ([safe-mode.md](safe-mode.md)) |
+| `get_safe_mode` | read | api:query (+ `list_connections` for a connection) | a database's or connection's safe mode level and whether it is the default ([safe-mode.md](safe-mode.md)) |
 
 All accept the reserved optional `intent` field (recorded to the span,
 stripped before schema validation).

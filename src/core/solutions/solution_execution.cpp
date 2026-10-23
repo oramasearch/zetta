@@ -16,6 +16,7 @@
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/gate.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/util/timestamp.hpp"
 
@@ -65,6 +66,23 @@ resolve_graph(zetta::pipeline::Project& project,
         return graph;
     }
     return project.find_graph_by_id(name_or_id);
+}
+
+// The tables a solution's snapshot reads and writes, from its binding's
+// `snapshot` (database, source_table, target_table); missing ones are skipped.
+std::vector<zetta::pipeline::TableRead> solution_snapshot_reads(Node& node,
+                                                                const nlohmann::json& binding) {
+    std::vector<zetta::pipeline::TableRead> reads;
+    const auto snapshot = binding.find("snapshot");
+    if (snapshot == binding.end() || !snapshot->is_object()) return reads;
+    const std::string database = snapshot->value("database", std::string{});
+    if (database.empty()) return reads;
+    for (const char* key : {"source_table", "target_table"}) {
+        const std::string table = snapshot->value(key, std::string{});
+        if (table.empty()) continue;
+        zetta::pipeline::merge_table_reads(reads, node.tables_read({}, {}, database + "." + table));
+    }
+    return reads;
 }
 
 void update_master(const std::shared_ptr<SolutionState>& state,
@@ -162,6 +180,58 @@ void fail_master(const std::shared_ptr<SolutionState>& state, const std::string&
     });
 }
 
+// Deliver the run's report OFF the Node owner (lake#801). Each attempt's
+// network round-trip runs here, in the run's coroutine; only the bookkeeping
+// (persist the attempt, record it in the ledger) goes to the owner, so the
+// workspace keeps answering however long the endpoint takes. Every attempt is
+// bounded by the request's own timeout and there are at most `max_attempts`.
+// Returns the run's failure reason, or empty once the report is acknowledged.
+zetta::runtime::task<std::string> deliver_report(
+    std::shared_ptr<SolutionState> state, DeferredReportDelivery delivery) {
+    ReportPublication publication = std::move(delivery.prepared->publication);
+    const zetta::connect::HttpRequest request =
+        std::move(*delivery.prepared->request);
+    update_master(state, [&](zetta::pipeline::Run& run) {
+        run.add_log({zetta::util::now_iso8601(), "info",
+                     "delivering " + publication.title + " to " +
+                         publication.endpoint});
+    });
+    if (publication.attempts >= publication.max_attempts) {
+        co_return delivery.failure + ": no delivery attempts remain";
+    }
+    while (publication.status == ActionTaskStatus::Pending) {
+        const zetta::connect::HttpResponse response =
+            co_await send_report_request(request);
+        std::optional<ReportPublication> recorded;
+        std::string error;
+        state->node->run_on_owner([&] {
+            ActionRuntime runtime(*state->node);
+            recorded = runtime.record_report_attempt(publication, response, &error);
+        });
+        if (!recorded) {
+            co_return delivery.failure + ": " +
+                (error.empty() ? "the delivery attempt could not be recorded"
+                               : error);
+        }
+        publication = std::move(*recorded);
+        if (publication.status == ActionTaskStatus::Pending) {
+            update_master(state, [&](zetta::pipeline::Run& run) {
+                run.add_log({zetta::util::now_iso8601(), "warn",
+                             "report delivery attempt " +
+                                 std::to_string(publication.attempts) + " of " +
+                                 std::to_string(publication.max_attempts) +
+                                 " failed: " + publication.last_error});
+            });
+        }
+    }
+    if (publication.status != ActionTaskStatus::Delivered) {
+        co_return delivery.failure + " after " +
+            std::to_string(publication.attempts) + " attempt(s): " +
+            publication.last_error;
+    }
+    co_return std::string{};
+}
+
 zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
     std::vector<zetta::pipeline::RunOutput> outputs;
     std::vector<std::string> lineage_steps = {"snapshot"};
@@ -175,6 +245,11 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
         fail_master(state, prepared.error.message);
         co_return;
     }
+    // The snapshot table exists now; the stages read it (zetta#1272).
+    update_master(state, [&](zetta::pipeline::Run& run) {
+        run.add_reads(state->node->tables_read(
+            {}, {}, prepared.value.at("dataset_path").get<std::string>()));
+    });
     state->input["dataset_path"] = prepared.value.at("dataset_path");
     state->input["dataset"] = state->binding.at("dataset");
     if (state->input["dataset"].is_object()) {
@@ -314,14 +389,24 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
     scored_outputs.insert(scored_outputs.end(), supporting_outputs.begin(),
                           supporting_outputs.end());
     ApiResult finished;
+    DeferredReportDelivery delivery;
     state->node->run_on_owner([&] {
         finished = finish_solution_run(*state->node, state->binding,
                                       state->master_run_id, scored_outputs,
-                                      state->actor.empty() ? "local" : state->actor);
+                                      state->actor.empty() ? "local" : state->actor,
+                                      &delivery);
     });
     if (!finished.ok) {
         fail_master(state, finished.error.message);
         co_return;
+    }
+    if (delivery.prepared) {
+        const std::string delivery_failure =
+            co_await deliver_report(state, std::move(delivery));
+        if (!delivery_failure.empty()) {
+            fail_master(state, delivery_failure);
+            co_return;
+        }
     }
     outputs.push_back({"dataset", "solution decisions", finished.value.at("decisions")});
     for (const std::string step : {"policy", "holdout", "actions", "ledger", "monitor"}) {
@@ -428,6 +513,18 @@ api::ApiResult run_composed_solution(const nlohmann::json& input, ApiContext& co
         }
         stages.push_back({methodology, std::move(stage_graph)});
     }
+    // Step authority (#843): each stage's steps run as the caller, so the caller
+    // must hold every step's right before any stage starts. A denial runs nothing.
+    const zetta::pipeline::RunPrincipal principal{context.acting_key,
+                                                  context.acting_is_user};
+    for (const SolutionStage& stage : stages) {
+        zetta::pipeline::GraphAuthorization authorized;
+        context.node.run_on_owner([&] {
+            authorized = zetta::pipeline::authorize_graph_steps(context.node, principal,
+                                                                stage.graph);
+        });
+        if (!authorized) return ApiResult::failure("unauthorized", authorized.reason);
+    }
     for (const auto& existing : context.node.runs()) {
         if (existing->value().graph == graph->id() &&
             (existing->status() == zetta::pipeline::RunStatus::Pending ||
@@ -440,6 +537,10 @@ api::ApiResult run_composed_solution(const nlohmann::json& input, ApiContext& co
     if (!master) {
         return ApiResult::failure("engine_error", "could not create the solution Run");
     }
+    // What the solution reads, before it reads it (zetta#1272): the snapshot's
+    // source table, and its snapshot table when one is already there. The
+    // stages' own runs record what each of them reads.
+    master->add_reads(solution_snapshot_reads(context.node, manifest->attributes.at("foundation")));
     master->set_status(zetta::pipeline::RunStatus::Running);
     master->add_log({zetta::util::now_iso8601(), "info",
                      "running snapshot, methodologies and governed solution foundation"});

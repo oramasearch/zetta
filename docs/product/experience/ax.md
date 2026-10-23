@@ -10,21 +10,29 @@ and audit everything their agent did. Good AX is therefore also UX: every
 tool description, error, and read-back is written for an agent that must
 relay it to a person.
 
+- **Source discovery**: readers browse saved connections; inline
+  `list_source_tables` needs `create_connection` permission. Private/loopback
+  sources also need exact operator destination approval on each node
+  ([connector policy](../../data/connector-query.md#connector-destination-approval-1414-lsr-241), #1414).
 - **MCP with full parity**
   ([../api/registry-design.md](../../api/registry-design.md)): every capability a
   schema-validated tool whose description is one agent-actionable sentence
   stating side effects; **prompts as progressive disclosure** (orientation →
   use-case runs → journeys → investigation → feedback) so an agent never
-  needs the full tool table to start.
+  needs the full tool table to start. `search` inherits the caller's SQL table,
+  indexed-column and row permissions (#1403). Consolidated hits are checked
+  against current rows; distributed searches subject to row security are
+  refused ([search authorization](../../indexing/node-search.md#caller-authorization-1403)).
 - **`llms.txt` progressive-disclosure endpoints** — built
   ([#645](https://github.com/oramasearch/zetta/issues/645),
   [../../api/llms-endpoints.md](../../api/llms-endpoints.md)): the node serves
   its own agent-readable documentation over plain HTTP — `/llms.txt` (what
   this cluster is, the first three reads, where everything lives) →
   `/llms/<topic>.txt` → `/llms-full.txt` — generated at request time from the
-  live registry's own descriptions, embedding **live cluster facts** (node id,
-  indexes, catalog entries); never a second prose source. Custom beyond the
-  community convention wherever AX demands it.
+  registry's own descriptions and the build version. These public pages contain
+  no workspace inventory or counts (#1402); live facts come from authenticated
+  capabilities and their authorization checks. Custom beyond the community
+  convention wherever AX demands it.
 - **The spec index** — built
   ([#646](https://github.com/oramasearch/zetta/issues/646),
   [../../api/specs-index.md](../../api/specs-index.md)): `/v1/specs` +
@@ -32,11 +40,13 @@ relay it to a person.
   JSON Schema in the system (capability schemas + every registered schema-as-code
   boundary schemas, served from their C++ accessors) as one navigable index
   of objects — discovery without reading source, drift-checked through the
-  same table the build enforces.
+  same table the build enforces. Served per caller (#766): an agent discovers
+  the tools it may call, the same set `tools/list` gives it.
 - **Observability threaded back**: every result carries
-  trace/span/duration; `get_trace` shows intent · plan · performance · result
-  shape including per-node spans of distributed work — an agent can always
-  answer "what actually happened?"
+  trace/span/duration. Agents with `cluster:admin` can read intent, plan,
+  performance and result shape through `list_traces` / `get_trace`, including
+  per-node spans of distributed work. Ordinary agents can submit feedback
+  without trace, error or crash attachments (#1408).
   ([../architecture/observability.md](../../architecture/observability.md)).
 - **Solution health is queryable**: `get_monitor` reads current input and score
   drift, calibration, realized cohort performance, declared guardrails, active
@@ -54,6 +64,11 @@ relay it to a person.
   details carry the live revision, so the next attempt needs no extra read, and
   ownership moving between nodes is a `busy` that says to retry
   ([record-store.md](../../data/record-store.md), #1231).
+- **Action retries keep their authorization**: task and report keys require
+  the original actor and complete non-secret specification. A mismatch or a
+  legacy unbound row fails before using fresh credentials; direct task delivery
+  requires the enqueuing actor
+  ([action integration](../../solutions/action-integration.md#idempotency-and-credential-binding), #1410).
 - **App credentials are explicit and least-privilege**:
   `issue_app_credential` returns the plaintext once and publishes the exact
   read/write, schema/table, and topic-prefix scope in its schema. A duplicate
@@ -70,7 +85,10 @@ relay it to a person.
 - **Errors an agent can act on**: domain failures return the engine's
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
-  itself.
+  itself. A `safe_mode_warning` names the database, its level and the exact
+  statements about to run, with a `confirmation` the same caller repeats to run
+  them; a confirmation for any other statement is refused
+  ([safe-mode.md](../../api/safe-mode.md), #1373).
 - **Audit maintenance is explicit and governed**: `purge_audit` has identical
   REST and MCP schemas, requires the admin-only `audit:purge` permission,
   refuses future cutoffs, returns the removed-row count, and leaves its own
@@ -98,6 +116,12 @@ relay it to a person.
   and timestamps their pages display. The same values and schemas are available
   over REST and MCP, so agents do not issue per-row Project, Model, or Run reads
   to label a page (#1184).
+- **Propose, then approve** ([run-proposals.md](../../pipeline/run-proposals.md), #969):
+  a chat turn that asks to build something returns a run proposal with an impact preview
+  (the Project it would create, the Pipeline's steps, the dataset) and creates nothing.
+  `approve_run_proposal` creates exactly what the preview named and runs it under the
+  approver's rights; `reject_run_proposal` is the cancel path. Every open proposal names
+  both calls in its `decide` block, so an external MCP client can render the choice.
 - **Data evidence before methodology choice**: `analyze_dataset` reports semantic
   types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
   into explicit features and exclusions. When the prediction unit is wrong or a
@@ -202,3 +226,8 @@ relay it to a person.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.
+
+Native agents select [operator-registered checkpoints](../../agent/checkpoints.md) (#1411).
+CRUD preserves portable model selectors; serving refuses unregistered selectors before
+any tokenizer, configuration, weights or warm-cache access. `base-agent` and the legacy
+`/data/models/base-agent` selector are registered by default.

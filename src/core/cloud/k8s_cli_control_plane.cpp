@@ -1,5 +1,6 @@
 #include "zetta/cloud/k8s_cli_control_plane.hpp"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -8,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cloud/command_runner.hpp"
+#include "zetta/cloud/secret_file.hpp"
 
 namespace zetta::cloud {
 
@@ -56,6 +58,10 @@ std::vector<ProvisionedNode> parse_nodes(const std::string& json_text) {
 
 }  // namespace
 
+std::string cluster_token_secret_name(const K8sConfig& config) {
+    return config.deployment_name + "-cluster-token";
+}
+
 K8sCliControlPlane::K8sCliControlPlane(CommandRunner runner)
     : runner_(runner ? std::move(runner) : default_command_runner()) {}
 
@@ -74,21 +80,55 @@ ProvisionResult K8sCliControlPlane::bring_up(const K8sConfig& config,
 
     // 2) Apply the per-pod shape onto the Deployment's template. Each `kubectl set`
     //    / `patch` triggers a rollout, so the new pods carry it.
-    if (!config.seed_peer.empty() || !config.join_token.empty()) {
-        // Hand each pod the cluster seed address as an env var so it auto-joins —
-        // and, on a secure cluster, the join token (#670) — so the pod comes up
-        // with the equivalent of `zetta --peer <seed> --join-token <token>`. (The
-        // join token is a secret; a production deployment would source it from a
-        // Kubernetes Secret via `--from`, not a literal — it rides the same
-        // set-env seam here to illustrate the plumbing.)
-        std::vector<std::string> env{"kubectl", "set", "env",
-                                     deployment_ref(config)};
-        if (!config.seed_peer.empty()) {
-            env.push_back("ZETTA_SEED_PEER=" + config.seed_peer);
+    //    Hand each pod the cluster seed address as an env var so it auto-joins —
+    //    and, on a secure cluster, the join token (#670) — so the pod comes up
+    //    with the equivalent of `zetta --peer <seed> --join-token <token>`.
+    if (!config.seed_peer.empty()) {
+        std::vector<std::string> env{"kubectl", "set", "env", deployment_ref(config),
+                                     "ZETTA_SEED_PEER=" + config.seed_peer};
+        append_scope(env, config);
+        runner_(env);
+    }
+    if (!config.join_token.empty()) {
+        // The token lives in a Kubernetes Secret, never as a literal in the
+        // Deployment spec (readable by anyone who can get Deployments) and never
+        // on kubectl's argv (#770). The Secret manifest goes to `kubectl apply`
+        // through a private file — apply makes it idempotent and carries a
+        // re-keyed token — and the Deployment references it with `set env
+        // --from=secret/…`, which writes a secretKeyRef, not the value.
+        const std::string secret_name = cluster_token_secret_name(config);
+        const nlohmann::json manifest = {
+            {"apiVersion", "v1"},
+            {"kind", "Secret"},
+            {"metadata", {{"name", secret_name}}},
+            {"type", "Opaque"},
+            {"stringData", {{"ZETTA_CLUSTER_TOKEN", config.join_token}}}};
+        std::string reason;
+        const std::unique_ptr<SecretFile> manifest_file =
+            SecretFile::create(manifest.dump(), &reason);
+        if (!manifest_file) {
+            result.satisfied = false;
+            result.detail = "cannot stage the cluster join token Secret: " + reason;
+            return result;
         }
-        if (!config.join_token.empty()) {
-            env.push_back("ZETTA_CLUSTER_TOKEN=" + config.join_token);
+        // Server-side apply: client-side apply would copy the whole manifest,
+        // token included, into the last-applied-configuration annotation, which
+        // `kubectl describe` prints.
+        std::vector<std::string> apply{"kubectl", "apply", "--server-side"};
+        flag(apply, "--field-manager", "zetta");
+        flag(apply, "--filename", manifest_file->path().string());
+        append_scope(apply, config);
+        const CommandResult applied = runner_(apply);
+        if (applied.exit_code != 0) {
+            // Fail closed: pods without the token cannot join the cluster.
+            result.satisfied = false;
+            result.detail = "kubectl apply (cluster join token Secret) failed: " +
+                            (applied.stderr_text.empty() ? applied.stdout_text
+                                                         : applied.stderr_text);
+            return result;
         }
+        std::vector<std::string> env{"kubectl", "set", "env", deployment_ref(config),
+                                     "--from=secret/" + secret_name};
         append_scope(env, config);
         runner_(env);
     }

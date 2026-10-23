@@ -27,6 +27,26 @@ model's weights back out. The code is `include/zetta/ml/model_import.hpp` and
 **Sending the file.** `register_model` takes a text file as `weights` and any file as
 `weights_base64`. A binary file (ONNX or UBJSON) must use `weights_base64`.
 
+**Import budgets (#1419, LSR-246).** Every format defaults to at most 1,048,576 features
+and 1 GiB (1,073,741,824 bytes) of decoded file contents. `import_model` checks bytes before
+format detection or parsing. Each reader checks declared or inferred feature counts before
+generating default names; file names and caller-supplied names share the feature ceiling.
+ONNX split indices are checked before addition or narrowing, XGBoost counts must be finite,
+nonnegative integers, and LightGBM's maximum feature index is checked before adding one.
+Models within the budgets retain the same conversion and scoring behavior.
+
+Native callers configure `ModelImportOptions::limits` (`ModelImportLimits`). For
+`register_model`, operators set `ZETTA_MODEL_IMPORT_MAX_FEATURES` and
+`ZETTA_MODEL_IMPORT_MAX_BYTES` to positive decimal integers. Features cannot exceed
+2,147,483,647, the engine's index representation; bytes must fit `size_t`. An unset variable
+uses its default; an empty, zero, malformed, or out-of-range value refuses imports with
+`engine_error`. API callers cannot raise these budgets. Text is checked before copying;
+base64 must use the standard padded alphabet and its decoded size is checked before decoding.
+Over-budget models answer `not_supported` and leave no model or internal project behind.
+Lake's `load_drive_model` forwards to `register_model`, so drive imports use the same budgets.
+Transport body limits can impose a smaller ceiling. These limits bound the admitted file and
+feature count; they do not claim to bound parser nesting or total process memory.
+
 **Column names.** ONNX names no columns, so an ONNX model reads `f0`, `f1`, … unless
 `feature_names` names them in order. A model the engine wrote carries its names in the ONNX
 metadata (`feature_names`). For the other formats, `feature_names` renames the columns the file
@@ -57,7 +77,10 @@ allow 1e-5.
   model trained here behaves, so a trained model's body is unchanged.
 - **Link and base score.**
   - A logistic classifier stays `binary_logistic`: ONNX `LOGISTIC`, XGBoost `binary:logistic`,
-    LightGBM `binary` (its `sigmoid:` factor is folded into the leaves).
+    LightGBM `binary` (its `sigmoid:` factor is folded into the leaves). LightGBM writes the
+    objective's parameters on the same line (`objective=binary sigmoid:1`); the first word is the
+    objective, `sigmoid:` is read, and the other parameters are ignored. A refused objective is
+    quoted by its first word (lake#780).
   - Regressors whose prediction is the sum of their trees become `squared_error`.
   - XGBoost's `base_score` is a probability for a logistic model, so the engine keeps its logit.
   - ONNX `AVERAGE` divides each leaf by the number of trees; so does LightGBM's `average_output`.
@@ -78,6 +101,17 @@ be brought.
 | a multiclass or multi-target model | the engine scores one value |
 | a classifier without a logistic link (random forest, decision tree, `post_transform` `NONE`) | its probabilities are averaged, and the engine's classifier output is a sigmoid. Bringing these needs an output rule of its own, which is deferred |
 | categorical splits, LightGBM linear trees or `reg_sqrt`, XGBoost `dart` or `gblinear`, exponential objectives (`count:poisson`, `reg:gamma`, `tweedie`), `EQ`/`NEQ` splits | no exact form in the engine's trees |
+| a tree whose split reads a feature past the model's final feature list, or whose child is not a distinct node after its parent (a cycle, a self-loop, an index outside the tree) | scoring would read past the row and TreeSHAP would write past its output (#1390) |
+
+**Every model is checked as a whole after it is read (#1390).** Each reader checks splits as it
+goes, but against the counts it saw then, and the caller's `feature_names` can still replace the
+file's after that. So `import_model` runs `GbdtModel::validate_structure` on the finished model,
+against its own final feature list: every split reads a feature in `[0, feature_count)`, and every
+internal node's two children are distinct indices after it, so every walk from the root ends at a
+leaf. `GbdtModel::from_json`, which reads every stored weights body, runs the same check. Scoring
+and TreeSHAP also stay inside their buffers for a model built in memory without it: a feature the
+row lacks reads `0.0` (the padding TreeSHAP has always used), a walk that leaves the tree stops,
+and TreeSHAP never writes past its explanation.
 
 ## `export_model`
 
@@ -110,12 +144,26 @@ answers `{model_id, name, format, file_name, media_type, encoding, content, byte
   - every format scores as its library does, rows with missing values included;
   - `float_less_bound` is exact at and around every midpoint;
   - each refusal names its reason;
+  - a LightGBM objective line with parameters long enough to be held on the heap is read, its
+    `sigmoid:` value applied, and a refused one quoted as written (lake#780, a use-after-free
+    before);
+  - excessive declared and inferred features fail before default naming, unsafe count
+    conversions are refused, and every format honors inclusive byte and feature budgets (#1419);
   - an ONNX export reads back to the same scores;
   - a Platt calibration folds into the export;
   - `missing_left` round-trips and leaves a trained body unchanged.
+- **`tests/ml/test_model_bounds.cpp`** (#1390) crafts models that must be refused: a split past
+  the feature list in the weights format and as a brought file, a child pointing back up the tree,
+  and an XGBoost file whose caller-shortened `feature_names` leave its splits past the end. It also
+  scores and explains models built in memory without the check, so under AddressSanitizer nothing
+  is read or written out of bounds. `tests/api/test_standalone_models.cpp` checks `register_model`
+  refuses the same files and keeps nothing.
 - **Checking exports against onnxruntime.** Run the suite with `ZETTA_MODEL_EXPORT_DIR=<dir>` to
   write each export and the engine's scores. Then
   `scripts/gen-model-import-fixtures.py --check-exports <dir>` scores them with onnxruntime.
 - **`tests/api/test_standalone_models.cpp`** (`BringCommonFormatsAndDownloadWeights`) brings ONNX,
   LightGBM and XGBoost UBJSON files through `register_model`, scores one, refuses a pickle and a
   random forest, and downloads weights both ways.
+  `ImportLimitsBoundTextAndBase64BeforeImport` and
+  `ImportLimitsRejectInvalidConfigurationAndExcessiveNames` check operator budgets, padded
+  base64, invalid configuration, and that refused imports keep nothing (#1419).

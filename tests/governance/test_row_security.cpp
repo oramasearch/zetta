@@ -137,7 +137,8 @@ TEST_F(RowSecurityNode, BypassDecisionMirrorsObjectScoping) {
     EXPECT_TRUE(node.bypasses_row_security(admin_id, true));    // admin bypasses
     EXPECT_FALSE(node.bypasses_row_security(writer_id, true));  // a writer does NOT
     EXPECT_TRUE(node.bypasses_row_security("", false));         // trusted-local session
-    EXPECT_TRUE(node.bypasses_row_security("legacy-key", false));  // legacy AccessKey
+    // A legacy AccessKey bypasses only with cluster:admin of its own (#762).
+    EXPECT_FALSE(node.bypasses_row_security("legacy-key", false));
     EXPECT_FALSE(node.bypasses_row_security("no-such-user", true));  // unknown user
 }
 
@@ -230,6 +231,78 @@ TEST_F(RowSecuritySql, WithCheckRejectsForeignWrite) {
         as_ada.run("INSERT INTO app.docs (id, owner) VALUES (11, 'bo');", "");
     EXPECT_FALSE(denied.ok());
     EXPECT_NE(denied.error.find("WITH CHECK"), std::string::npos) << denied.error;
+}
+
+// #765: a policy missing the predicate its command enforces fails closed. CREATE
+// POLICY refuses one, so it enters the way a replicated record or an edited
+// policy.json does: through policy_value_from_json. It is kept (so the table stays
+// engaged) and admits nothing, exactly like a predicate that does not parse.
+TEST_F(RowSecuritySql, SelectPolicyWithNoUsingDeniesEveryRow) {
+    const nlohmann::json record = {{"name", "no_condition"},
+                                   {"database", "app"},
+                                   {"table", "docs"},
+                                   {"command", "select"}};
+    const auto value = zetta::governance::policy_value_from_json(record);
+    ASSERT_TRUE(value);
+    ASSERT_TRUE(node.create_policy(*value));
+
+    const std::string bo = user_with_roles("bo", {"writer"});
+    QueryService as_bo{node, nullptr, bo, true};
+    auto r = as_bo.run("SELECT * FROM app.docs;", "");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_TRUE(r.rows.empty()) << nlohmann::json(r.rows).dump();
+    // The same caller can remove no row it cannot see.
+    const auto del = as_bo.run("DELETE FROM app.docs;", "");
+    QueryService local{node, nullptr, "", false};
+    EXPECT_EQ(local.run("SELECT * FROM app.docs;", "").rows.size(), 3u) << del.error;
+
+    // Admin still bypasses.
+    const std::string boss = user_with_roles("boss", {"admin"});
+    QueryService as_boss{node, nullptr, boss, true};
+    auto all = as_boss.run("SELECT * FROM app.docs;", "");
+    ASSERT_TRUE(all.ok()) << all.error;
+    EXPECT_EQ(all.rows.size(), 3u);
+}
+
+TEST_F(RowSecuritySql, WritePolicyWithNoConditionRejectsEveryWrite) {
+    const nlohmann::json record = {{"name", "no_check"},
+                                   {"database", "app"},
+                                   {"table", "docs"},
+                                   {"command", "insert"}};
+    const auto value = zetta::governance::policy_value_from_json(record);
+    ASSERT_TRUE(value);
+    ASSERT_TRUE(node.create_policy(*value));
+
+    const std::string ada = user_with_roles("ada", {"writer"});
+    QueryService as_ada{node, nullptr, ada, true};
+    const auto denied =
+        as_ada.run("INSERT INTO app.docs (id, owner) VALUES (10, 'ada');", "");
+    EXPECT_FALSE(denied.ok());
+    QueryService local{node, nullptr, "", false};
+    EXPECT_EQ(local.run("SELECT * FROM app.docs;", "").rows.size(), 3u);
+}
+
+// A FOR ALL policy carrying only WITH CHECK still governs reads, and with no
+// USING it shows nothing; its writes are decided by the check alone.
+TEST_F(RowSecuritySql, AllPolicyWithOnlyCheckDeniesReads) {
+    const nlohmann::json record = {{"name", "check_only"},
+                                   {"database", "app"},
+                                   {"table", "docs"},
+                                   {"command", "all"},
+                                   {"check", owner_is_current_user()}};
+    const auto value = zetta::governance::policy_value_from_json(record);
+    ASSERT_TRUE(value);
+    ASSERT_TRUE(node.create_policy(*value));
+
+    const std::string ada = user_with_roles("ada", {"writer"});
+    QueryService as_ada{node, nullptr, ada, true};
+    auto r = as_ada.run("SELECT * FROM app.docs;", "");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_TRUE(r.rows.empty()) << nlohmann::json(r.rows).dump();
+    EXPECT_TRUE(
+        as_ada.run("INSERT INTO app.docs (id, owner) VALUES (10, 'ada');", "").ok());
+    EXPECT_FALSE(
+        as_ada.run("INSERT INTO app.docs (id, owner) VALUES (11, 'bo');", "").ok());
 }
 
 // A role-scoped policy applies only to the roles it names; a caller with read

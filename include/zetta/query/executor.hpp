@@ -34,6 +34,19 @@ struct QueryResult {
 // GUI never keeps its own copy (RULE-7). See docs/data/query.md.
 std::span<const std::string_view> system_table_names();
 
+// SQL SELECT row policies captured for a caller (#1403). Search uses the same
+// evaluator over current source rows. Default denies all rows.
+struct ReadFilter {
+    bool unrestricted = false;
+    std::string user;
+    std::vector<std::string> roles;
+    std::vector<PolicyPredicate> predicates;
+    bool allows(const nlohmann::json& row) const;
+};
+ReadFilter read_filter(const Node& node, const std::string& acting_id,
+                       bool acting_is_user, const std::string& database,
+                       const std::string& table);
+
 // Runs generic statements against a Node. `current_database` is the default for
 // unqualified table references (the UI's selected database). Dialect-neutral:
 // it only ever sees the generic AST.

@@ -24,6 +24,12 @@ namespace zetta::cloud {
 // deployment installs `kubectl` and authenticates a context; CI never runs it, so
 // the command construction + JSON parsing are what the unit tests cover via a fake
 // runner.
+// The Secret the cluster join token is stored in for a burst Deployment
+// (`<deployment>-cluster-token`, key `ZETTA_CLUSTER_TOKEN`). The Deployment's pods
+// read it through a secretKeyRef; the token is never a literal in the
+// Deployment spec (#770).
+std::string cluster_token_secret_name(const K8sConfig& config);
+
 class K8sCliControlPlane : public K8sControlPlane {
 public:
     // `runner` defaults to default_command_runner() (a real `kubectl` exec). A test

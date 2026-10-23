@@ -493,6 +493,12 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;}
 .pill.ok{color:var(--ok-fg);background:var(--ok-bg);} .pill.warn{color:var(--warn-fg);background:var(--warn-bg);}
 .pill.err{color:var(--err-fg);background:var(--err-bg);}
+/* A pending consent challenge on Governance -> Consent requests (#999). */
+.consentcard{border:1px solid var(--rule-card);border-left:3px solid var(--warn-fg);border-radius:10px;padding:12px 14px;margin-bottom:12px;background:var(--surface);}
+.consenthd{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+.consentcard ul{margin:4px 0 8px;padding-left:18px;font-size:12px;}
+.consentact{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px;}
+.consentact input[type=text]{font:12px var(--font-sans);padding:5px 8px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--ink-primary);margin-right:6px;}
 .status{display:inline-flex;align-items:center;gap:6px;color:var(--ink-secondary);}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--dot-inactive);}
 .status.ok .dot{background:var(--dot-active);}
@@ -798,6 +804,17 @@ std::string web_ui_escape(std::string_view text) {
     return out;
 }
 
+std::string web_ui_script_json(const nlohmann::json& value) {
+    const std::string serialized = value.dump(-1, ' ', /*ensure_ascii=*/true);
+    std::string encoded;
+    encoded.reserve(serialized.size());
+    for (const char character : serialized) {
+        if (character == '<') encoded += "\\u003c";
+        else encoded += character;
+    }
+    return encoded;
+}
+
 std::string web_ui_icon(std::string_view name) {
     // 24x24 line icons; currentColor stroke, sized by the CSS at the use site.
     auto svg = [](std::string_view body) {
@@ -1085,7 +1102,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
                "<button class=\"btn btn-primary\" id=\"railsend\" type=\"button\">" +
                web_ui_icon("play") + "</button></div></div>";
         out += "<script>(function(){var agent=" +
-               nlohmann::json(std::string(assist_agent)).dump() +
+               web_ui_script_json(std::string(assist_agent)) +
                R"JS(;var chat=document.getElementById('railchat'),q=document.getElementById('railq'),send=document.getElementById('railsend');
 function esc(s){return String(s==null?'':s);}
 function bubble(cls,text){var d=document.createElement('div');d.className='rmsg '+cls;d.textContent=esc(text);chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d;}

@@ -149,6 +149,11 @@ ExecutionResult GraphExecutor::execute(Node& node,
         });
     }
     if (!result.run) return result;  // node could not create the run
+    // The graph executed may not be the stored one (a deployed graph, one a
+    // caller rewrote): record what its connect steps read before any step runs,
+    // so delete_dataset refuses those tables while the run is in flight
+    // (zetta#1272).
+    node.run_on_owner([&] { result.run->add_reads(node.tables_read(graph)); });
     Run& run = *result.run;
 
     // One trace per run (#640): the id lives on the replicated run record, so
@@ -235,7 +240,25 @@ ExecutionResult GraphExecutor::execute(Node& node,
             &node.span_recorder(), step_parent,
             "step:" + std::string(to_string(step->kind)));
         step_span.set_attribute("label", step_label(*step));
-        StepOutcome outcome = step_executor_->run_step(*step);
+        // Step authority (#843): the run's principal must hold the right this
+        // step exercises before it executes. A denial fails the step like any
+        // other failure (fail-fast), so nothing past it runs.
+        zetta::governance::AccessDecision authority{true, {}};
+        if (!principal_.local()) {
+            node.run_on_owner(
+                [&] { authority = authorize_step(node, principal_, *step, run_id); });
+        }
+        StepOutcome outcome;
+        if (authority) {
+            outcome = step_executor_->run_step(*step);
+        } else {
+            outcome.ok = false;
+            outcome.error = "not authorized: " + principal_.acting_id + " lacks " +
+                            std::string(zetta::governance::to_string(
+                                step_operation(step->kind).domain)) +
+                            ":" + step_operation(step->kind).action + " (" +
+                            authority.reason + ")";
+        }
         step_span.set_attribute(
             "result_shape", nlohmann::json{{"outputs", outcome.outputs.size()}});
         step_span.finish(outcome.ok, outcome.error);

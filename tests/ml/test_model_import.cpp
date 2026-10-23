@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +19,7 @@
 
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/model_import.hpp"
+#include "../../src/core/ml/protobuf_wire.hpp"
 
 namespace {
 
@@ -187,12 +189,176 @@ TEST(ModelImport, WhatCannotBeConvertedExactlyIsRefusedByName) {
     EXPECT_NE(error.find("feature_names"), std::string::npos);
 }
 
+// lake#780: the objective line LightGBM writes carries the objective's parameters
+// (`objective=binary sigmoid:1`). The reader once split a temporary copy of that
+// line into views, which dangled once the copy was freed: a line too long for the
+// string's inline buffer was read from freed memory, refused, and the refusal quoted
+// the freed bytes. The lines below are long enough to live on the heap.
+TEST(ModelImport, ALightGbmObjectiveWithParametersIsRead) {
+    const std::string original = read_file(kFixtures / "lightgbm_binary.txt");
+    const json expected = expected_of("lightgbm_binary");
+    const auto names = expected.at("feature_names").get<std::vector<std::string>>();
+    const std::string written = "objective=binary sigmoid:1\n";
+    const auto with_objective = [&](const std::string& line) {
+        std::string text = original;
+        text.replace(text.find(written), written.size(), line + "\n");
+        return text;
+    };
+    const std::vector<double> row = row_of(expected.at("rows")[0]);
+    const double reference = expected.at("expected")[0].get<double>();
+
+    for (const std::string line : {"objective=binary sigmoid:1.000000000000000000000000000000",
+                                   "objective=cross_entropy sigmoid:1.0000000000000000000000",
+                                   "objective=binary sigmoid:1.00000000000000000000 extra:words"}) {
+        SCOPED_TRACE(line);
+        std::string error;
+        const std::optional<ImportedModel> imported =
+            zetta::ml::import_model(with_objective(line), {}, &error);
+        ASSERT_TRUE(imported) << error;
+        EXPECT_EQ(imported->kind, "classifier");
+        EXPECT_EQ(imported->model.feature_names, names);
+        EXPECT_NEAR(score(imported->model, row), reference, 1e-5);
+    }
+
+    // The sigmoid's value is read, not defaulted: sigmoid:2 doubles the margin.
+    std::string error;
+    const std::optional<ImportedModel> doubled = zetta::ml::import_model(
+        with_objective("objective=binary sigmoid:2.0000000000000000000000000"), {}, &error);
+    ASSERT_TRUE(doubled) << error;
+    const double margin = std::log(reference / (1.0 - reference));
+    EXPECT_NEAR(score(doubled->model, row), 1.0 / (1.0 + std::exp(-2.0 * margin)), 1e-5);
+
+    // A refused objective is quoted as written, never from freed memory.
+    EXPECT_FALSE(zetta::ml::import_model(
+        with_objective("objective=lambdarank lambdarank_truncation_level:30 label_gain:0,1,3"), {},
+        &error));
+    EXPECT_NE(error.find("the objective is 'lambdarank'"), std::string::npos) << error;
+}
+
 TEST(ModelImport, AnOnnxModelWithoutNamesReadsF0Onward) {
     std::string error;
     const auto imported =
         zetta::ml::import_model(read_file(kFixtures / "sklearn_gbr.onnx"), {}, &error);
     ASSERT_TRUE(imported) << error;
     EXPECT_EQ(imported->model.feature_names, (std::vector<std::string>{"f0", "f1", "f2", "f3"}));
+}
+
+// Small valid files whose declarations are independent of their byte size (#1419).
+std::string onnx_with_feature_count(std::int64_t count, std::int64_t split_feature = 0) {
+    using zetta::ml::protobuf::Writer;
+    Writer node;
+    node.bytes_field(1, "input").bytes_field(4, "TreeEnsembleRegressor").bytes_field(7, "ai.onnx.ml");
+    const auto integers = [&](std::string_view name, const std::vector<std::int64_t>& values) {
+        Writer attribute;
+        attribute.bytes_field(1, name);
+        for (const auto value : values) attribute.varint_field(8, static_cast<std::uint64_t>(value));
+        node.message_field(5, attribute);
+    };
+    integers("nodes_treeids", {0, 0, 0});
+    integers("nodes_nodeids", {0, 1, 2});
+    integers("nodes_featureids", {split_feature, 0, 0});
+    integers("nodes_truenodeids", {1, 0, 0});
+    integers("nodes_falsenodeids", {2, 0, 0});
+    Writer modes;
+    modes.bytes_field(1, "nodes_modes").bytes_field(9, "BRANCH_LT")
+        .bytes_field(9, "LEAF").bytes_field(9, "LEAF");
+    Writer values;
+    values.bytes_field(1, "nodes_values").float_field(7, 0.5F).float_field(7, 0).float_field(7, 0);
+    node.message_field(5, modes).message_field(5, values);
+    Writer dimension;
+    if (count > 0) dimension.varint_field(1, static_cast<std::uint64_t>(count));
+    Writer shape;
+    shape.message_field(1, Writer{}).message_field(1, dimension);
+    Writer tensor;
+    tensor.varint_field(1, 1).message_field(2, shape);
+    Writer type;
+    type.message_field(1, tensor);
+    Writer input;
+    input.bytes_field(1, "input").message_field(2, type);
+    Writer graph;
+    graph.message_field(1, node).message_field(11, input);
+    Writer model;
+    return model.message_field(7, graph).bytes();
+}
+
+std::string lightgbm_with_feature_count(std::size_t count) {
+    return "tree\nnum_class=1\nnum_tree_per_iteration=1\nobjective=regression\nmax_feature_idx=" +
+           std::to_string(count - 1) + "\nTree=0\nnum_leaves=1\nleaf_value=1\n";
+}
+
+TEST(ModelImport, ImportLimitsBoundDeclaredAndInferredFeaturesBeforeNaming) {
+    ModelImportOptions options;
+    options.limits.max_features = 4;
+    json xgboost = json::parse(read_file(kFixtures / "xgboost_binary.json"));
+    xgboost["learner"]["feature_names"] = json::array();
+    xgboost["learner"]["learner_model_param"]["num_feature"] = "5";
+    const auto ubjson = json::to_ubjson(xgboost);
+    const std::vector<std::string> files{
+        onnx_with_feature_count(5), onnx_with_feature_count(-1, 4),
+        xgboost.dump(), std::string(ubjson.begin(), ubjson.end()), lightgbm_with_feature_count(5)};
+    for (const auto& file : files) {
+        std::string error;
+        EXPECT_FALSE(zetta::ml::import_model(file, options, &error));
+        EXPECT_NE(error.find("import limit"), std::string::npos) << error;
+    }
+    // The inclusive boundary still imports and generates the four default names.
+    for (const auto& file : {onnx_with_feature_count(4), onnx_with_feature_count(-1, 3),
+                             lightgbm_with_feature_count(4)}) {
+        std::string error;
+        const auto imported = zetta::ml::import_model(file, options, &error);
+        ASSERT_TRUE(imported) << error;
+        EXPECT_EQ(imported->model.feature_names, (std::vector<std::string>{"f0", "f1", "f2", "f3"}));
+    }
+}
+
+TEST(ModelImport, ImportLimitsRejectUnsafeCountConversions) {
+    ModelImportOptions options;
+    options.limits.max_features = 4;
+    json xgboost = json::parse(read_file(kFixtures / "xgboost_binary.json"));
+    for (const json& value : {json(-1), json(4.5), json("nan"), json("inf"), json("1e300"),
+                              json("invalid"), json("18446744073709551615")}) {
+        xgboost["learner"]["learner_model_param"]["num_feature"] = value;
+        std::string error;
+        EXPECT_FALSE(zetta::ml::import_model(xgboost.dump(), options, &error)) << value;
+        EXPECT_NE(error.find("import limit"), std::string::npos) << error;
+    }
+    for (const auto& file : {onnx_with_feature_count(std::numeric_limits<std::int64_t>::max()),
+                             onnx_with_feature_count(-1, std::numeric_limits<std::int64_t>::max()),
+                             onnx_with_feature_count(4, std::int64_t{1} << 32),
+                             lightgbm_with_feature_count(std::size_t{1} << 31)}) {
+        std::string error;
+        EXPECT_FALSE(zetta::ml::import_model(file, options, &error));
+        EXPECT_NE(error.find("import limit"), std::string::npos) << error;
+    }
+}
+
+TEST(ModelImport, ImportLimitsCoverNamesAndEveryFormatByteBudget) {
+    ModelImportOptions options;
+    options.limits.max_features = 3;
+    for (const Case& each : cases()) {
+        std::string error;
+        const std::string file = read_file(kFixtures / each.file);
+        options.format = each.format;
+        EXPECT_FALSE(zetta::ml::import_model(file, options, &error));
+        EXPECT_NE(error.find("import limit"), std::string::npos) << each.name << ": " << error;
+        options.limits.max_features = 4;
+        options.limits.max_bytes = file.size() - 1;
+        EXPECT_FALSE(zetta::ml::import_model(file, options, &error));
+        EXPECT_NE(error.find("bytes exceed"), std::string::npos) << error;
+        options.limits.max_bytes = file.size();
+        EXPECT_TRUE(zetta::ml::import_model(file, options, &error)) << error;
+        options.limits = {.max_features = 3};
+    }
+    GbdtModel model;
+    model.feature_names = {"a", "b", "c", "d"};
+    options.format = ModelFileFormat::Zetta;
+    std::string error;
+    EXPECT_FALSE(zetta::ml::import_model(model.to_json().dump(), options, &error));
+    EXPECT_NE(error.find("import limit"), std::string::npos) << error;
+    options.format = ModelFileFormat::Onnx;
+    options.feature_names = {"a", "b", "c", "d"};
+    EXPECT_FALSE(zetta::ml::import_model(onnx_with_feature_count(3), options, &error));
+    EXPECT_NE(error.find("caller feature names"), std::string::npos) << error;
 }
 
 TEST(ModelImport, ExportedOnnxScoresAsTheEngineDoes) {

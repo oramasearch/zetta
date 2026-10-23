@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <map>
+#include <set>
+#include <string_view>
 #include <format>
 #include <mutex>
 #include <optional>
@@ -17,6 +20,7 @@
 #include "../../../modules/automerge-cpp/src/storage/change_chunk.hpp"
 #include "../../../modules/automerge-cpp/src/storage/chunk.hpp"
 #include "../../../modules/automerge-cpp/src/storage/deserializer.hpp"
+#include "../../../modules/automerge-cpp/src/encoding/leb128.hpp"
 
 #include "zetta/util/uuid.hpp"
 
@@ -43,7 +47,19 @@ struct ReplicationManager::State {
     std::uint64_t change_key_bytes = 0;
     ReplicationChangeToken current_token = 1;
     bool audit_retired = false;
+    // The document clock (#794), recomputed only when the heads move.
+    std::vector<am::ChangeHash> clock_heads;
+    std::map<am::ActorId, std::uint64_t> clock;
+    bool clock_valid = false;
+    // `mutex` guards the document and everything above. `snapshot_mutex` guards
+    // the `snapshot` pointer and the object it points at: a writer holds both
+    // (always `mutex` first) while it changes the snapshot, so either one is
+    // enough to read it. shared_snapshot() takes only `snapshot_mutex`, so a
+    // reader never waits for a long document operation such as save() or the
+    // Automerge half of merge() (#1248). Each writer holds `snapshot_mutex` only
+    // for its parsed-cache update.
     mutable std::mutex mutex;
+    mutable std::mutex snapshot_mutex;
 };
 
 ReplicationManager::ReplicationManager(std::string node_id,
@@ -234,6 +250,115 @@ std::optional<std::vector<std::byte>> strip_audit_history(
 
 }  // namespace
 
+namespace {
+
+// --- Gossip deltas (#794) ---------------------------------------------------
+//
+// A clock is, per actor, the highest change sequence a document holds. Encoded
+// as: uleb128 count, then per actor its 16 id bytes and a uleb128 sequence.
+
+using ActorClock = std::map<am::ActorId, std::uint64_t>;
+
+ActorClock clock_of(const std::vector<am::Change>& history) {
+    ActorClock clock;
+    for (const am::Change& change : history) {
+        auto& seq = clock[change.actor];
+        seq = std::max(seq, change.seq);
+    }
+    return clock;
+}
+
+std::string encode_clock(const ActorClock& clock) {
+    std::vector<std::byte> bytes;
+    am::encoding::encode_uleb128(clock.size(), bytes);
+    for (const auto& [actor, seq] : clock) {
+        bytes.insert(bytes.end(), actor.bytes.begin(), actor.bytes.end());
+        am::encoding::encode_uleb128(seq, bytes);
+    }
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+std::optional<ActorClock> decode_clock(std::string_view text) {
+    const std::span<const std::byte> bytes{
+        reinterpret_cast<const std::byte*>(text.data()), text.size()};
+    std::size_t position = 0;
+    const auto read_uleb = [&]() -> std::optional<std::uint64_t> {
+        const auto decoded = am::encoding::decode_uleb128(bytes.subspan(position));
+        if (!decoded) return std::nullopt;
+        position += decoded->bytes_read;
+        return decoded->value;
+    };
+    const auto count = read_uleb();
+    // Every entry is at least the 16 id bytes plus one sequence byte.
+    if (!count || *count > (bytes.size() - position) / (am::ActorId::size + 1)) {
+        return std::nullopt;
+    }
+    ActorClock clock;
+    for (std::uint64_t index = 0; index < *count; ++index) {
+        if (bytes.size() - position < am::ActorId::size) return std::nullopt;
+        am::ActorId actor;
+        std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(position),
+                    am::ActorId::size, actor.bytes.begin());
+        position += am::ActorId::size;
+        const auto seq = read_uleb();
+        if (!seq) return std::nullopt;
+        clock[actor] = *seq;
+    }
+    if (position != bytes.size()) return std::nullopt;
+    return clock;
+}
+
+// Every actor a change names: its author, and the actors in its operations' ids,
+// object ids, list anchors and predecessors. The change codec writes them as
+// indexes into the document's actor table, so the table must hold them all.
+void collect_actors(const am::Change& change, std::vector<am::ActorId>& table,
+                    std::set<am::ActorId>& seen) {
+    const auto add = [&](const am::ActorId& actor) {
+        if (seen.insert(actor).second) table.push_back(actor);
+    };
+    add(change.actor);
+    for (const am::Op& operation : change.operations) {
+        add(operation.id.actor);
+        if (!operation.obj.is_root()) add(std::get<am::OpId>(operation.obj.inner).actor);
+        if (operation.insert_after) add(operation.insert_after->actor);
+        for (const am::OpId& pred : operation.pred) add(pred.actor);
+    }
+}
+
+// A document chunk holding only `changes`, in the layout Document::save() writes
+// and Document::load() reads (the same layout strip_audit_history() rewrites).
+// Its heads and clock are left empty: merge() reads neither from a peer's blob;
+// it applies each change whose sequence is above its own clock and derives its
+// heads from the changes' dependencies.
+std::vector<std::byte> partial_document(const am::ActorId& local,
+                                        const std::vector<const am::Change*>& changes) {
+    std::vector<am::ActorId> actors{local};
+    std::set<am::ActorId> seen{local};
+    for (const am::Change* change : changes) collect_actors(*change, actors, seen);
+    std::vector<std::byte> body;
+    am::encoding::encode_uleb128(actors.size(), body);
+    for (const am::ActorId& actor : actors) {
+        am::encoding::encode_uleb128(am::ActorId::size, body);
+        body.insert(body.end(), actor.bytes.begin(), actor.bytes.end());
+    }
+    am::encoding::encode_uleb128(0, body);  // heads
+    am::encoding::encode_uleb128(changes.size(), body);
+    for (const am::Change* change : changes) {
+        const auto encoded = am::storage::serialize_change_body(*change, actors);
+        am::encoding::encode_uleb128(encoded.size(), body);
+        body.insert(body.end(), encoded.begin(), encoded.end());
+    }
+    am::encoding::encode_uleb128(0, body);  // local actor: index 0, `local`
+    am::encoding::encode_uleb128(0, body);  // next operation counter (unused)
+    am::encoding::encode_uleb128(0, body);  // local sequence (unused)
+    am::encoding::encode_uleb128(0, body);  // clock entries
+    std::vector<std::byte> result;
+    am::storage::write_chunk(am::storage::ChunkType::document, body, result);
+    return result;
+}
+
+}  // namespace
+
 void ReplicationManager::set(const std::string& key,
                              const nlohmann::json& value) {
     // Store each value as its JSON text — supports any value (incl. nested) and
@@ -246,6 +371,7 @@ void ReplicationManager::set(const std::string& key,
     state_->document.transact([&](am::Transaction& transaction) {
         transaction.put(am::root, key, encoded);
     });
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     cache_live_value(*state_, key, encoded);
     record_change(*state_, key);
@@ -283,6 +409,7 @@ void ReplicationManager::remove(const std::string& key) {
     state_->document.transact([&](am::Transaction& transaction) {
         transaction.put(am::root, key, encoded);
     });
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     account_encoded_value(*state_, key, &encoded);
     state_->encoded_values[key] = encoded;
@@ -322,6 +449,7 @@ bool ReplicationManager::update(const std::string& key,
             transaction.put(am::root, write->key, text);
         }
     });
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     for (const auto& [write, text] : encoded) {
         if (write->value) {
@@ -362,7 +490,8 @@ nlohmann::json ReplicationManager::snapshot() const {
 }
 
 std::shared_ptr<const nlohmann::json> ReplicationManager::shared_snapshot() const {
-    const std::lock_guard<std::mutex> lock(state_->mutex);
+    // Not `mutex`: a reader must not wait for save() or merge() (#1248).
+    const std::lock_guard<std::mutex> lock(state_->snapshot_mutex);
     return state_->snapshot;
 }
 
@@ -450,6 +579,67 @@ std::vector<std::byte> ReplicationManager::save() const {
     return state_->document.save();
 }
 
+namespace {
+
+template <typename StateType>
+const ActorClock& current_clock(StateType& state) {
+    auto heads = state.document.get_heads();
+    if (!state.clock_valid || heads != state.clock_heads) {
+        state.clock = clock_of(state.document.get_changes());
+        state.clock_heads = std::move(heads);
+        state.clock_valid = true;
+    }
+    return state.clock;
+}
+
+}  // namespace
+
+std::string ReplicationManager::clock() const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    return encode_clock(current_clock(*state_));
+}
+
+bool ReplicationManager::clock_covers(std::string_view clock, std::string_view other) {
+    const auto holder = decode_clock(clock);
+    const auto wanted = decode_clock(other);
+    if (!holder || !wanted) return false;
+    return std::ranges::all_of(*wanted, [&](const auto& entry) {
+        const auto found = holder->find(entry.first);
+        return found != holder->end() && found->second >= entry.second;
+    });
+}
+
+ReplicationDelta ReplicationManager::save_since(std::string_view peer_clock) const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    ReplicationDelta delta;
+    const auto peer = peer_clock.empty() ? std::nullopt : decode_clock(peer_clock);
+    if (peer) {
+        const auto holds = [&](const am::ActorId& actor, std::uint64_t seq) {
+            const auto found = peer->find(actor);
+            return found != peer->end() && found->second >= seq;
+        };
+        // The common steady-state answer, without copying the history.
+        if (std::ranges::all_of(current_clock(*state_), [&](const auto& entry) {
+                return holds(entry.first, entry.second);
+            })) {
+            return delta;
+        }
+        const std::vector<am::Change> history = state_->document.get_changes();
+        std::vector<const am::Change*> missing;
+        for (const am::Change& change : history) {
+            if (!holds(change.actor, change.seq)) missing.push_back(&change);
+        }
+        if (missing.size() * 2 < history.size()) {
+            delta.blob = partial_document(state_->document.actor_id(), missing);
+            delta.changes = missing.size();
+            return delta;
+        }
+    }
+    delta.blob = state_->document.save();
+    delta.full = true;
+    return delta;
+}
+
 void ReplicationManager::merge(std::span<const std::byte> blob) {
     const std::lock_guard<std::mutex> lock(state_->mutex);
     const auto filtered = state_->audit_retired
@@ -482,6 +672,7 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
     }
     if (changed_keys.empty()) return;
 
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     for (const std::string& key : changed_keys) {
         const std::optional<std::string> encoded =
@@ -513,6 +704,8 @@ bool ReplicationManager::restore(std::span<const std::byte> blob) {
     const std::lock_guard<std::mutex> lock(state_->mutex);
     state_->document = std::move(*document);
     state_->document.set_actor_id(am::ActorId{zetta::util::uuid_to_bytes(node_id_)});
+    state_->clock_valid = false;
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     state_->snapshot = std::make_shared<nlohmann::json>(nlohmann::json::object());
     state_->encoded_values.clear();
     state_->changes.clear();
@@ -554,6 +747,8 @@ bool ReplicationManager::retire_audit(
         return false;
     }
     state_->document = std::move(*document);
+    state_->clock_valid = false;
+    const std::lock_guard<std::mutex> publish(state_->snapshot_mutex);
     make_snapshot_mutable(*state_);
     std::erase_if(state_->encoded_values, [](const auto& entry) {
         return entry.first.starts_with("audit:");

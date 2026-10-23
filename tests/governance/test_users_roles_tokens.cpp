@@ -92,6 +92,86 @@ TEST(TokenSecret, GeneratedSecretsAreUnique) {
     EXPECT_NE(a, b);  // CSPRNG — collisions are astronomically unlikely
 }
 
+TEST(TokenSecret, KdfFormIsSelfDescribingSaltedAndVerified) {
+    using zetta::governance::is_kdf_token_hash;
+    using zetta::governance::kdf_hash_token_secret;
+    using zetta::governance::verify_token_secret;
+    const std::string salt = zetta::governance::generate_token_salt();
+    const std::string secret = "a-person-chose-this";
+    // A small work factor keeps the test fast; the stored form carries it.
+    const std::string stored = kdf_hash_token_secret(salt, secret, 1000);
+    ASSERT_TRUE(stored.starts_with("pbkdf2-sha256$1000$")) << stored;
+    EXPECT_EQ(stored.size(), std::string("pbkdf2-sha256$1000$").size() + 64);
+    EXPECT_TRUE(is_kdf_token_hash(stored));
+    EXPECT_EQ(stored, kdf_hash_token_secret(salt, secret, 1000));
+    EXPECT_NE(stored, kdf_hash_token_secret(salt, secret, 1001));
+    EXPECT_NE(stored, kdf_hash_token_secret(zetta::governance::generate_token_salt(),
+                                            secret, 1000));
+    // It is not the single SHA-256 a stolen store could be guessed against.
+    EXPECT_EQ(stored.find(zetta::governance::hash_token_secret(salt, secret)),
+              std::string::npos);
+
+    EXPECT_TRUE(verify_token_secret(stored, salt, secret));
+    EXPECT_FALSE(verify_token_secret(stored, salt, secret + "x"));
+    EXPECT_FALSE(verify_token_secret(stored, salt + "0", secret));
+
+    // A tampered or malformed stored form never matches.
+    std::string lowered = stored;
+    lowered.replace(std::string("pbkdf2-sha256$").size(), 4, "0999");
+    EXPECT_FALSE(verify_token_secret(lowered, salt, secret));
+    EXPECT_FALSE(verify_token_secret("pbkdf2-sha256$", salt, secret));
+    EXPECT_FALSE(verify_token_secret("pbkdf2-sha256$0$" + std::string(64, 'a'), salt, secret));
+    EXPECT_FALSE(verify_token_secret("pbkdf2-sha256$x$" + std::string(64, 'a'), salt, secret));
+    EXPECT_FALSE(verify_token_secret("pbkdf2-sha256$99999999$" + std::string(64, 'a'),
+                                     salt, secret));
+    EXPECT_FALSE(verify_token_secret(stored.substr(0, stored.size() - 1), salt, secret));
+
+    // The plain 64-hex form is still single SHA-256 (generated secrets, and owner
+    // tokens seeded before #769).
+    const std::string plain = zetta::governance::hash_token_secret(salt, secret);
+    EXPECT_FALSE(is_kdf_token_hash(plain));
+    EXPECT_TRUE(verify_token_secret(plain, salt, secret));
+    EXPECT_FALSE(verify_token_secret(plain, salt, secret + "x"));
+}
+
+TEST(TokenSecret, KdfTokenKeepsAMemoryOnlyVerifierAfterItsFirstCheck) {
+    using zetta::governance::Token;
+    using zetta::governance::TokenValue;
+    TempDir dir;
+    const std::string secret = "owner-secret";
+    TokenValue value;
+    value.user_id = "user";
+    value.type = TokenType::Access;
+    value.salt = zetta::governance::generate_token_salt();
+    value.hash = zetta::governance::kdf_hash_token_secret(value.salt, secret, 1000);
+    Token token{"id", value, dir.path() / "id"};
+    const std::string now = "2026-10-20T00:00:00.000Z";
+    ASSERT_TRUE(token.uses_kdf());
+    EXPECT_FALSE(token.kdf_verified());
+    // Without permission to derive, an unverified KDF token never matches.
+    EXPECT_FALSE(token.validates(secret, now, /*allow_kdf=*/false));
+    EXPECT_FALSE(token.validates("wrong", now));
+    EXPECT_FALSE(token.kdf_verified());
+    EXPECT_TRUE(token.validates(secret, now));
+    EXPECT_TRUE(token.kdf_verified());
+    // Verified: the cheap check answers both ways.
+    EXPECT_TRUE(token.validates(secret, now, /*allow_kdf=*/false));
+    EXPECT_FALSE(token.validates("wrong", now, /*allow_kdf=*/false));
+    // The verifier is never persisted.
+    token.persist_meta();
+    EXPECT_EQ(read_file(dir.path() / "id" / "token.json")
+                  .find(zetta::governance::hash_token_secret(value.salt, secret)),
+              std::string::npos);
+    // A new secret (a replicated change of hash) drops the old verifier.
+    TokenValue rotated = value;
+    rotated.salt = zetta::governance::generate_token_salt();
+    rotated.hash = zetta::governance::kdf_hash_token_secret(rotated.salt, "next", 1000);
+    token.set_value(rotated);
+    EXPECT_FALSE(token.kdf_verified());
+    EXPECT_FALSE(token.validates(secret, now));
+    EXPECT_TRUE(token.validates("next", now));
+}
+
 // ===== built-in roles ========================================================
 
 TEST(BuiltinRoles, AdminIsUnrestrictedWriterAndReaderNarrow) {
@@ -259,6 +339,133 @@ TEST(BootstrapOwner, SurvivesRestartViaDisk) {
     // And bootstrap is now a no-op (the store is seeded).
     EXPECT_FALSE(reloaded.bootstrap_owner(admin_secret).performed);
     reloaded.stop();
+}
+
+TEST(BootstrapOwner, StoresTheOwnerTokenThroughTheKdf) {
+    TempDir dir;
+    Node node{config_for(dir), nullptr};
+    node.start();
+    const std::string admin_secret = "hunter2";  // the kind of secret a person picks
+    const Node::BootstrapResult boot = node.bootstrap_owner(admin_secret);
+    ASSERT_TRUE(boot.performed);
+    ASSERT_EQ(node.token_count(), 1u);
+    const auto token = node.tokens().front();
+    const std::string& hash = token->value().hash;
+    EXPECT_TRUE(hash.starts_with(
+        "pbkdf2-sha256$" + std::to_string(zetta::governance::kTokenKdfIterations) + "$"))
+        << hash;
+    // Nothing on disk is the fast SHA-256 a stolen store could be brute-forced at.
+    const std::string fast =
+        zetta::governance::hash_token_secret(token->value().salt, admin_secret);
+    EXPECT_EQ(read_file(token->dir() / "token.json").find(fast), std::string::npos);
+    // Bootstrap verified the secret while it had it, so the owner's requests are cheap.
+    EXPECT_TRUE(token->kdf_verified());
+    EXPECT_TRUE(node.authenticate_token(admin_secret));
+    EXPECT_FALSE(node.authenticate_token("hunter3"));
+    node.stop();
+}
+
+TEST(BootstrapOwner, ResumesASeedCutShortInsteadOfLockingTheNodeOut) {
+    TempDir dir;
+    const std::string admin_secret = "resume-me";
+    {
+        // What a crash between creating the owner and writing its token leaves.
+        Node node{config_for(dir), nullptr};
+        node.start();
+        ASSERT_TRUE(node.create_user("owner"));
+        ASSERT_EQ(node.token_count(), 0u);
+        node.stop();
+    }
+    Node node{config_for(dir), nullptr};
+    node.start();
+    const Node::BootstrapResult boot = node.bootstrap_owner(admin_secret);
+    ASSERT_TRUE(boot.performed) << boot.reason;
+    EXPECT_EQ(node.user_count(), 1u);
+    auto owner = node.find_user("owner");
+    ASSERT_TRUE(owner);
+    EXPECT_EQ(boot.user_id, owner->id());
+    const auto roles = node.roles_for_user(owner->id());
+    ASSERT_EQ(roles.size(), 1u);
+    EXPECT_EQ(node.find_role_by_id(roles.front())->name(), "admin");
+    auto authed = node.authenticate_token(admin_secret);
+    ASSERT_TRUE(authed);
+    EXPECT_EQ(authed->id(), owner->id());
+    // Seeded now: a further call is a no-op and mints no second token.
+    EXPECT_FALSE(node.bootstrap_owner(admin_secret).performed);
+    EXPECT_EQ(node.token_count(), 1u);
+    node.stop();
+}
+
+TEST(BootstrapOwner, DoesNotResumeWhenTheStoreHoldsOtherUsersOrTheOwnerHasAToken) {
+    TempDir dir;
+    Node node{config_for(dir), nullptr};
+    node.start();
+    ASSERT_TRUE(node.create_user("owner"));
+    ASSERT_TRUE(node.create_user("someone"));
+    EXPECT_FALSE(node.bootstrap_owner("secret").performed);
+    EXPECT_EQ(node.token_count(), 0u);
+    node.stop();
+
+    TempDir other;
+    Node seeded{config_for(other), nullptr};
+    seeded.start();
+    auto owner = seeded.create_user("owner");
+    ASSERT_TRUE(owner);
+    ASSERT_TRUE(seeded.create_token(owner->id(), TokenType::Access).token);
+    EXPECT_FALSE(seeded.bootstrap_owner("secret").performed);
+    EXPECT_EQ(seeded.token_count(), 1u);
+    EXPECT_FALSE(seeded.authenticate_token("secret"));
+    seeded.stop();
+}
+
+TEST(AuthenticateToken, UnverifiedKdfChecksAreBudgetedAndCheapTokensAreNot) {
+    TempDir dir;
+    const std::string admin_secret = "budgeted-owner";
+    std::string api_secret;
+    {
+        Node node{config_for(dir), nullptr};
+        node.start();
+        ASSERT_TRUE(node.bootstrap_owner(admin_secret).performed);
+        auto user = node.create_user("api-user");
+        ASSERT_TRUE(user);
+        Node::TokenIssue issue = node.create_token(user->id(), TokenType::Api);
+        ASSERT_TRUE(issue.token);
+        api_secret = issue.secret;
+        node.stop();
+    }
+    // Restarted without the owner's secret: its token is not verified yet.
+    Node node{config_for(dir), nullptr};
+    node.start();
+    // Wrong bearers spend the burst of slow checks. A check that runs PBKDF2
+    // takes milliseconds; once the budget is spent a wrong bearer is refused at
+    // once, which is how the loop knows it is exhausted (a refill may land while
+    // the slow checks run, so the count is not fixed).
+    bool exhausted = false;
+    for (int attempt = 0; attempt < 4 * Node::kColdKdfBurst && !exhausted; ++attempt) {
+        const auto started = std::chrono::steady_clock::now();
+        EXPECT_FALSE(node.authenticate_token("wrong-" + std::to_string(attempt)));
+        exhausted = std::chrono::steady_clock::now() - started <
+                    std::chrono::microseconds(500);
+    }
+    ASSERT_TRUE(exhausted);
+    // ...after which even the right secret is refused until the budget refills,
+    EXPECT_FALSE(node.authenticate_token(admin_secret));
+    // while a generated (SHA-256) token is never held back by it.
+    auto api_user = node.authenticate_token(api_secret);
+    ASSERT_TRUE(api_user);
+    EXPECT_EQ(api_user->name(), "api-user");
+
+    std::this_thread::sleep_for(Node::kColdKdfRefill + std::chrono::milliseconds(100));
+    auto owner = node.authenticate_token(admin_secret);
+    ASSERT_TRUE(owner);
+    EXPECT_EQ(owner->name(), "owner");
+    // Verified now: wrong bearers no longer reach the slow pass, and the owner
+    // keeps authenticating however many there were.
+    for (int attempt = 0; attempt < 2 * Node::kColdKdfBurst; ++attempt) {
+        EXPECT_FALSE(node.authenticate_token("wrong-again-" + std::to_string(attempt)));
+    }
+    EXPECT_TRUE(node.authenticate_token(admin_secret));
+    node.stop();
 }
 
 // ===== system.* read views: no secret leakage ================================

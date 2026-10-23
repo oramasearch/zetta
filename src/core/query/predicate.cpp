@@ -1,6 +1,8 @@
 #include "zetta/query/predicate.hpp"
 
+#include <algorithm>
 #include <string>
+#include <vector>
 
 namespace zetta::query {
 
@@ -39,11 +41,69 @@ bool compare_cell(const nlohmann::json& cell, CompareOp op,
     return false;
 }
 
+namespace {
+
+// SQL's three-valued truth: TRUE, FALSE, or UNKNOWN (nullopt).
+using Truth = std::optional<bool>;
+
+Truth evaluate(const nlohmann::json& row, const WhereClause& where) {
+    switch (where.kind) {
+        case WhereClause::Kind::Compare: {
+            const auto cell = row.find(where.column);
+            if (cell == row.end()) return std::nullopt;  // like a NULL comparison
+            return compare_cell(*cell, where.op, where.value);
+        }
+        case WhereClause::Kind::And: {
+            Truth result = true;
+            for (const WhereClause& operand : where.operands) {
+                const Truth side = evaluate(row, operand);
+                if (side == false) return false;  // FALSE wins over UNKNOWN
+                if (!side) result = std::nullopt;
+            }
+            return result;
+        }
+        case WhereClause::Kind::Or: {
+            Truth result = false;
+            for (const WhereClause& operand : where.operands) {
+                const Truth side = evaluate(row, operand);
+                if (side == true) return true;  // TRUE wins over UNKNOWN
+                if (!side) result = std::nullopt;
+            }
+            return result;
+        }
+        case WhereClause::Kind::Not: {
+            if (where.operands.size() != 1) return false;  // malformed: no match
+            const Truth side = evaluate(row, where.operands.front());
+            if (!side) return std::nullopt;
+            return !*side;
+        }
+    }
+    return false;
+}
+
+void collect_columns(const WhereClause& where, std::vector<std::string>& out) {
+    if (where.kind == WhereClause::Kind::Compare) {
+        if (std::ranges::find(out, where.column) == out.end()) {
+            out.push_back(where.column);
+        }
+        return;
+    }
+    for (const WhereClause& operand : where.operands) collect_columns(operand, out);
+}
+
+}  // namespace
+
 bool row_matches(const nlohmann::json& row,
                  const std::optional<WhereClause>& where) {
     if (!where) return true;
-    if (!row.contains(where->column)) return false;
-    return compare_cell(row.at(where->column), where->op, where->value);
+    if (!row.is_object()) return false;
+    return evaluate(row, *where) == true;
+}
+
+std::vector<std::string> where_columns(const WhereClause& where) {
+    std::vector<std::string> columns;
+    collect_columns(where, columns);
+    return columns;
 }
 
 }  // namespace zetta::query

@@ -1257,6 +1257,8 @@ OptimizationRunResult run_optimization(Node &node,
     result.error = "optimization: could not create the Run record";
     return result;
   }
+  // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+  result.run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
   result.run->set_status(pipeline::RunStatus::Running);
   result.run->add_log({util::now_iso8601(), "info",
                        "optimization run started on dataset:" +

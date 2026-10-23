@@ -3171,7 +3171,8 @@ std::string validate_b8_runtime_policy(const Json& binding,
 ApiResult finish_solution_run(Node& node, const Json& binding,
                               const std::string& run_id,
                               const std::vector<pipeline::RunOutput>& scores,
-                              const std::string& actor) {
+                              const std::string& actor,
+                              DeferredReportDelivery* deferred) {
     if (!node.find_monitor(binding.at("monitor_id"))) {
         return ApiResult::failure("not_found", "the solution guardrail monitor no longer exists");
     }
@@ -4641,16 +4642,39 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         report.currency = binding.at("roi_model").at("currency");
         std::string error;
         ActionRuntime runtime(node);
-        const auto publication =
-            runtime.publish_report(std::move(report), actor, &error);
-        if (!publication ||
-            publication->status != ActionTaskStatus::Delivered) {
-            return ApiResult::failure(
-                "engine_error", error.empty()
-                                    ? "driver report delivery was not acknowledged"
-                                    : error);
+        if (deferred != nullptr) {
+            auto prepared =
+                runtime.prepare_report(std::move(report), actor, &error);
+            if (!prepared) {
+                return ApiResult::failure(
+                    "engine_error",
+                    error.empty() ? "driver report could not be prepared"
+                                  : error);
+            }
+            if (!prepared->request &&
+                prepared->publication.status != ActionTaskStatus::Delivered) {
+                return ApiResult::failure(
+                    "engine_error",
+                    "driver report delivery was not acknowledged: " +
+                        prepared->publication.last_error);
+            }
+            publication_id = prepared->publication.publication_id;
+            if (prepared->request) {
+                deferred->failure = "driver report delivery was not acknowledged";
+                deferred->prepared = std::move(*prepared);
+            }
+        } else {
+            const auto publication =
+                runtime.publish_report(std::move(report), actor, &error);
+            if (!publication ||
+                publication->status != ActionTaskStatus::Delivered) {
+                return ApiResult::failure(
+                    "engine_error", error.empty()
+                                        ? "driver report delivery was not acknowledged"
+                                        : error);
+            }
+            publication_id = publication->publication_id;
         }
-        publication_id = publication->publication_id;
     }
     if (binding.value("solution", std::string{}) == "S-5") {
         Json forecast_rows = Json::array();
@@ -4681,17 +4705,40 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         report.currency = binding.at("roi_model").at("currency");
         std::string error;
         ActionRuntime runtime(node);
-        const auto publication =
-            runtime.publish_report(std::move(report), actor, &error);
-        if (!publication ||
-            publication->status != ActionTaskStatus::Delivered) {
-            return ApiResult::failure(
-                "engine_error",
-                error.empty()
-                    ? "planner report delivery was not acknowledged"
-                    : error);
+        if (deferred != nullptr) {
+            auto prepared =
+                runtime.prepare_report(std::move(report), actor, &error);
+            if (!prepared) {
+                return ApiResult::failure(
+                    "engine_error",
+                    error.empty() ? "planner report could not be prepared"
+                                  : error);
+            }
+            if (!prepared->request &&
+                prepared->publication.status != ActionTaskStatus::Delivered) {
+                return ApiResult::failure(
+                    "engine_error",
+                    "planner report delivery was not acknowledged: " +
+                        prepared->publication.last_error);
+            }
+            publication_id = prepared->publication.publication_id;
+            if (prepared->request) {
+                deferred->failure = "planner report delivery was not acknowledged";
+                deferred->prepared = std::move(*prepared);
+            }
+        } else {
+            const auto publication =
+                runtime.publish_report(std::move(report), actor, &error);
+            if (!publication ||
+                publication->status != ActionTaskStatus::Delivered) {
+                return ApiResult::failure(
+                    "engine_error",
+                    error.empty()
+                        ? "planner report delivery was not acknowledged"
+                        : error);
+            }
+            publication_id = publication->publication_id;
         }
-        publication_id = publication->publication_id;
     }
     return ApiResult::success({{"decisions", "solution_results." + table_name},
                                {"rows", entities.size()},

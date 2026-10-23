@@ -43,9 +43,10 @@ W3C/OTel where it fits, extended where DX/UX demands more:
 - Read views: **`system.traces`** (one row per trace: root span, intent,
   actor, surface, duration, status) and **`system.spans`** (one row per span)
   — SQL-queryable, GUI-renderable, MCP-readable, one source.
-- API capabilities `list_traces` / `get_trace` read the same ring — an agent
-  that just ran a tool can immediately pull the full trace of what happened
-  (the "MCP agent understands the cluster" loop). A per-entity "what
+- API capabilities `list_traces` / `get_trace` read the same ring and require
+  `cluster:admin` (`api:cluster_admin`), like the `system.traces` /
+  `system.spans` SQL views (#1408). A diagnostic administrator can pull the
+  full trace of what happened. A per-entity "what
   happened" pane renders the same rows. The activity feed (#622,
   [../gui/activity-feed.md](../gui/activity-feed.md)) is the durable
   complement: `system.activity` merges the audit trail + runs
@@ -58,10 +59,44 @@ W3C/OTel where it fits, extended where DX/UX demands more:
 describes a bug/feature wish; the node snapshots a **feedback bundle** — the
 description, the relevant trace(s) with intents + spans, recent errors/crash
 reports, versions, platform — as a large object the user can export and send
-us. Observability isn't only for us debugging: it's the mechanism by which
-users hand us reproducible reality instead of anecdotes. (Bundles are
+us. Only callers holding `cluster:admin` attach traces, recent errors and
+crash reports (#1408). Other callers submit their description, actor and
+version/platform/node information with empty diagnostic arrays, even if they
+name trace ids explicitly. Users can hand us reproducible reality instead of
+anecdotes. (Bundles are
 explicit, user-initiated exports — nothing leaves the cluster on its own; the
 no-egress posture is untouched.)
+
+## Diagnostic access (#1408 / LSR-175)
+
+Trace ids correlate work; they do not prove ownership. An inbound
+`traceparent` can join an existing trace, and child spans do not carry trusted
+actor and resource scope. Until those scopes exist, `list_traces` and
+`get_trace` require a flat `cluster:admin` grant as well as the caller's tool
+invocation grant. A reader, writer, or a principal granted only these tools
+receives `unauthorized`, whether the trace exists or not. Native users and
+legacy AccessKeys follow the same rule. The trusted local library session
+retains its existing access.
+
+`submit_feedback` keeps its ordinary tool invocation right. Its handler checks
+the caller's current diagnostic grant before enabling attachments;
+`FeedbackBundleOptions::include_diagnostics` defaults to false and is never
+accepted from the wire. Without that opt-in the builder does not read the span
+ring or crash files. Grant revocation takes effect on the next call.
+
+These changes preserve the JSON formats. Ordinary agents lose trace reads
+and diagnostic attachments in feedback. Admin diagnostics retain raw intent,
+query and error text for debugging; callers must keep credentials out of
+freeform intent and query text. Authentication credentials and complete
+request bodies are not automatically copied into span attributes. Stored
+feedback objects retain their existing blob-read authorization; previously
+exported bundles and crash files are not rewritten.
+
+Tests: `TraceAccessFixture` in `tests/api/test_registry.cpp` covers forged
+trace context, tool-only grants, native roles, legacy keys, grant revocation,
+default and explicit feedback trace selection, and crash/error attachments.
+`RequireAuthFixture.TraceReadsRequireDiagnosticRightsOnRestAndMcp` proves the
+refusal over both protocols with native bearer tokens.
 
 ## The test suite is the flywheel
 
@@ -129,8 +164,10 @@ functionality lands with its testkit case, and both land observable.
    `observability::build_feedback_bundle`, validated against its own schema
    (`schemas/feedback_bundle.schema.json`), and stored as a large object in
    the `feedback` database (replicated metadata, peer-transferred body). The
-   optional `export_path` input writes the bundle to a caller-chosen local
-   path — the explicit export; nothing leaves the cluster on its own.
+   optional `export_path` input also writes the bundle to a new file under
+   the node's export directory (`<data_dir>/exports`, never an existing file,
+   never through a link; [../data/export-root.md](../data/export-root.md),
+   #1399) — the explicit export; nothing leaves the cluster on its own.
 
 Related: [../api/registry-design.md](../api/registry-design.md) (trace
 threading through every call), [../testing/mcp-journeys.md](../testing/mcp-journeys.md)

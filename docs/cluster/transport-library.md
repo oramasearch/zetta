@@ -49,8 +49,8 @@ Or include the focused headers:
 - `zetta/transport/credentials.hpp` provides the standard-library-only
   `TlsCredentials` value used by Zetta's public cluster configuration.
 - `zetta/transport/security.hpp` provides `TlsCredentialFiles`,
-  `load_tls_credentials`, and
-  `make_mutual_tls_context`.
+  `load_tls_credentials`,
+  `make_mutual_tls_context`, and `certificate_common_name`.
 - `zetta/transport/framed_stream.hpp` provides `FramedStream`,
   `FramedStreamOptions`, and `HandshakeRole`.
 
@@ -70,13 +70,39 @@ delimiter and preserve bytes after it for the next call. Applications encode a
 payload that can contain a newline before passing it to the stream. Zetta's
 wire protocol already base64-encodes binary fields.
 
-Exactly one read coroutine and one write coroutine may be active on a stream.
-Plain TCP remains full duplex. TLS reads and writes are coordinated because one
-OpenSSL `SSL` object cannot be driven concurrently. The first read drains any
-application record already buffered by the handshake; later reads wait for raw
-socket readability before taking the async lock, drain decrypted data, then
-release it so writes continue. The default maximum frame size is 64 MiB, which
-preserves the cluster's existing limit and can be lowered per stream.
+Exactly one read coroutine and one write coroutine may be active on a stream,
+on one executor. Both transports are full duplex: a read that is waiting for the
+peer never holds back a write, and a write that is waiting for socket space
+never holds back a read. For TLS this is Corosio's `openssl_stream` (our fork,
+[oramasearch/corosio](https://github.com/oramasearch/corosio)): the `SSL` calls
+never suspend, so a read and a write cannot drive the one `SSL` object at the
+same time, and the socket I/O between them takes a read lock or a write lock,
+never one lock for both. A read returns bytes already buffered in the TLS engine
+before it reads the socket again, so a received frame never waits for later
+traffic. The default maximum frame size is 64 MiB, which preserves the cluster's
+existing limit and can be lowered per stream, either at
+construction (`FramedStreamOptions`) or between reads
+(`FramedStream::set_maximum_frame_bytes`). The bound is checked inside the TLS
+drain loop too, so one read never buffers far past it.
+
+After a TLS handshake, `FramedStream::peer_certificate_der()` returns the DER
+certificate the peer presented (Corosio's `tls_stream::peer_certificate_der()`,
+corosio#14); it is empty on a plaintext stream. `certificate_common_name(der)`
+reads its subject common name, refusing bytes that are not exactly one
+certificate and subjects with no common name or more than one. It does not
+verify the certificate: the handshake already did, against the context's CA.
+
+Full duplex matters because both ends of a cluster link write their whole
+replicated document every gossip round. Until #835 the stream shared one lock
+between its reader and writer, and the reader could hold it while waiting for
+the peer. When both peers did that at once, each reader waited for a frame the
+other side's writer could not send, and the link froze: no error, no dropped
+connection, and no keepalive, because each writer was parked on the lock. The
+nodes kept reporting their peers while one of them stopped applying `SYNC`.
+`tests/transport/test_framed_stream.cpp` reproduces it on one loopback
+connection: both peers write a frame larger than the socket buffers at once,
+which the old stream never delivers in either direction. A second case streams
+gossip-sized frames both ways and checks every one arrives intact and in order.
 
 ## Zetta cluster integration
 
@@ -85,10 +111,14 @@ Zetta's join token and retired-token history. Token derivation, node certificate
 minting, and persistence remain cluster-specific in
 `src/core/cluster/security.cpp`. `Cluster::start()` passes those credentials to
 `make_mutual_tls_context`; each accepted or dialed socket is then wrapped in a
-`FramedStream` before any `ZETTA/1 HELLO` byte is exchanged.
+`FramedStream` before any `ZETTA/1 HELLO` byte is exchanged. Once the peer's
+HELLO is parsed, the cluster refuses the link unless the stated node id is the
+common name of the peer's certificate (`hello_matches_peer_certificate`, #669).
 
 The extraction changes no cluster wire format, handshake order, reconnect
-logic, frame bound, or plaintext behavior for embedded test clusters. Existing
+logic, or plaintext behavior for embedded test clusters. The cluster reads a
+peer's HELLO under a 16 KiB frame bound and restores the 64 MiB bound once the
+HELLO is accepted (#771; see [cluster](cluster.md)). Existing
 cluster tests exercise the library through the same public `Cluster` surface.
 
 ## Boundaries and later work

@@ -19,10 +19,13 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "temp_dir.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/api/clerk_auth.hpp"
+#include "zetta/connect/http_transport.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/token.hpp"
 #include "zetta/governance/user.hpp"
@@ -237,6 +240,45 @@ TEST_F(RequireAuthFixture, CapabilityCheckRunsAgainstResolvedUser) {
     EXPECT_NE(denied.body.find("unauthorized"), std::string::npos);
 }
 
+// #1408: the same diagnostic grant protects REST and MCP with real native tokens.
+TEST_F(RequireAuthFixture, TraceReadsRequireDiagnosticRightsOnRestAndMcp) {
+    const auto victim = drive(*server, "POST", "/v1/create_project",
+                              R"({"name":"victim","intent":"private request content"})",
+                              owner_secret);
+    ASSERT_EQ(victim.status, 200);
+    const auto trace_id = nlohmann::json::parse(victim.body).at("trace_id").get<std::string>();
+    const auto reader = node.create_user("trace-reader");
+    ASSERT_TRUE(reader);
+    ASSERT_TRUE(node.assign_role(reader->id(), node.find_role("reader")->id()));
+    const auto issued = node.create_token(reader->id(), zetta::governance::TokenType::Api);
+    ASSERT_TRUE(issued.token);
+
+    for (const char* name : {"list_traces", "get_trace"}) {
+        SCOPED_TRACE(name);
+        const std::string route = std::string("/v1/") + name +
+            (std::string_view(name) == "get_trace" ? "?trace_id=" + trace_id : "?limit=50");
+        const auto denied = drive(*server, "GET", route, {}, issued.secret);
+        EXPECT_EQ(denied.status, 403);
+        EXPECT_EQ(denied.body.find("private request content"), std::string::npos);
+        const auto admin_read = drive(*server, "GET", route, {}, owner_secret);
+        EXPECT_EQ(admin_read.status, 200);
+        EXPECT_EQ(admin_read.body.find(owner_secret), std::string::npos);
+        EXPECT_EQ(admin_read.body.find(issued.secret), std::string::npos);
+
+        const nlohmann::json arguments = std::string_view(name) == "get_trace"
+            ? nlohmann::json{{"trace_id", trace_id}} : nlohmann::json{{"limit", 50}};
+        const nlohmann::json request{{"jsonrpc", "2.0"}, {"id", 1},
+                                      {"method", "tools/call"},
+                                      {"params", {{"name", name}, {"arguments", arguments}}}};
+        const auto mcp = drive(*server, "POST", "/mcp", request.dump(), issued.secret);
+        ASSERT_EQ(mcp.status, 200);
+        const auto result = nlohmann::json::parse(mcp.body).at("result");
+        EXPECT_TRUE(result.at("isError").get<bool>());
+        EXPECT_EQ(result.at("structuredContent").at("error").at("code"), "unauthorized");
+        EXPECT_EQ(mcp.body.find("private request content"), std::string::npos);
+    }
+}
+
 // Auth is unconditional (#799): there is NO unauthenticated-local HTTP mode and no
 // toggle to reach one. Even on a loopback bind with an empty token store, a gated
 // route is 401 — the only way in is a bearer that resolves to a user.
@@ -257,6 +299,78 @@ TEST(AuthGateAlwaysOn, NoUnauthenticatedLocalHttpMode) {
 
     server.stop();
     node.stop();
+}
+
+// A cold Clerk fetch must suspend the gate so the same HTTP executor can serve
+// native tokens. Both transport shapes are installed to catch a sync regression.
+TEST(AuthGateClerk, AnIssuerOutageLeavesNativeAuthenticationResponsive) {
+    zetta::test::TempDir dir;
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    ASSERT_TRUE(node.start());
+    ASSERT_TRUE(node.bootstrap_owner("clerk-outage-owner").performed);
+    zetta::api::ServerOptions options;
+    options.port = 0;
+    options.clerk_issuer = "https://clerk.example.dev";
+    zetta::api::ApiServer server(node, nullptr, options);
+    ASSERT_TRUE(server.start()) << server.reason();
+    zetta::api::clear_clerk_jwks_cache();
+    std::atomic<bool> fetching{false};
+    zetta::runtime::async_event release;
+    zetta::connect::set_default_http_transport(
+        [&](const auto&) {
+            fetching = true;
+            [[maybe_unused]] const auto waited = zetta::runtime::block_on(release.wait());
+            return zetta::connect::HttpResponse{503, {}, {}};
+        },
+        [&](const auto&) -> zetta::runtime::io_task<zetta::connect::HttpResponse> {
+            fetching = true;
+            const auto [error] = co_await release.wait();
+            co_return {error, zetta::connect::HttpResponse{503, {}, {}}};
+        });
+    // Correct issuer/algorithm, arbitrary signature: no trusted identity is
+    // needed to reach the key fetch.
+    const std::string jwt =
+        "eyJhbGciOiJSUzI1NiIsImtpZCI6InVua25vd24ifQ."
+        "eyJpc3MiOiJodHRwczovL2NsZXJrLmV4YW1wbGUuZGV2Iiwic3ViIjoidXNlciJ9.AA";
+    HttpResponse clerk_response, native_response;
+    std::atomic<bool> clerk_done{false}, native_done{false};
+    std::thread clerk_client([&] {
+        clerk_response = http_request(server.port(), "GET", "/v1/server_info", {}, jwt);
+        clerk_done = true;
+    });
+    const auto fetch_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!fetching && std::chrono::steady_clock::now() < fetch_deadline) {
+        server.drain();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_TRUE(fetching);
+    std::thread native_client([&] {
+        native_response = http_request(server.port(), "GET", "/v1/server_info", {},
+                                       "clerk-outage-owner");
+        native_done = true;
+    });
+    const auto native_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!native_done && std::chrono::steady_clock::now() < native_deadline) {
+        server.drain();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_TRUE(native_done) << "native authentication waited for the Clerk fetch";
+    EXPECT_FALSE(clerk_done);
+    release.set();
+    const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while ((!clerk_done || !native_done) &&
+           std::chrono::steady_clock::now() < completion_deadline) {
+        server.drain();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    clerk_client.join();
+    native_client.join();
+    EXPECT_EQ(clerk_response.status, 401);
+    EXPECT_EQ(native_response.status, 200);
+    server.stop();
+    node.stop();
+    zetta::connect::set_default_http_transport({}, {});
+    zetta::api::clear_clerk_jwks_cache();
 }
 
 }  // namespace

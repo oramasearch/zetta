@@ -24,7 +24,15 @@ lens on a cluster that is primarily driven programmatically
   REPL with `/` commands · Notebooks · Agents · Chat · Data generators), **Documentation**
   (llms.txt · MCP · OpenAPI), and **Advanced** (Infrastructure — the cluster view, demoted per the
   design). User-facing copy follows the Studio vocabulary contract (Pipeline / Verification; raw
-  graph terms only in the explicitly labeled Technical view).
+  graph terms only in the explicitly labeled Technical view). Stored names and
+  Pipeline attributes remain text in the fallback page's embedded JSON (#1405);
+  [script-context encoding](../../api/registry-design.md#json-embedded-in-html-1405)
+  preserves their values without letting them become HTML. An installed Studio
+  bundle receives data through the authenticated API instead.
+  Login, logout and actions accept only this browser origin (#1415); a sibling
+  site cannot use the session to submit them. Cookie API reads also need origin
+  evidence, and SQL writes use POST. See the
+  [browser request contract](../../api/registry-design.md#auth-governance-audit--nothing-new).
 - **A coding agent (Claude Code first)** — for many users the primary way to
   operate zetta: they say what they want in their own words, the agent drives
   the MCP surface on their behalf, and the desktop/web lens shows them what
@@ -32,6 +40,12 @@ lens on a cluster that is primarily driven programmatically
   designed UX mode, not a workaround — the human's words ride the `intent`
   field, so what they *meant* is recorded alongside what was invoked, and the
   trace + activity feed let them audit their agent afterwards.
+
+With optional Clerk authentication configured, an issuer outage leaves native
+token sign-in responsive (#1416). Existing Clerk keys can verify sessions for
+up to 60 minutes after their last successful fetch; once that limit is reached,
+Clerk requests return 401 until keys can be refreshed. The [authentication contract](../../governance/access-control.md#clerk-key-caching-1416)
+describes the cache and rotation limits.
 
 ## Principles
 

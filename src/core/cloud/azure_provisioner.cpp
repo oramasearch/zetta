@@ -22,6 +22,7 @@ nlohmann::json AzureConfig::to_json() const {
     if (!seed_peer.empty()) document["seed_peer"] = seed_peer;
     if (!managed_identity.empty()) document["managed_identity"] = managed_identity;
     if (!tenant_id.empty()) document["tenant_id"] = tenant_id;
+    if (!key_vault.empty()) document["key_vault"] = key_vault;
     return document;
 }
 
@@ -40,7 +41,8 @@ std::optional<AzureConfig> AzureConfig::from_json(const nlohmann::json& value) {
         !read_string(value, "seed_peer", /*required=*/false, config.seed_peer) ||
         !read_string(value, "managed_identity", /*required=*/false,
                      config.managed_identity) ||
-        !read_string(value, "tenant_id", /*required=*/false, config.tenant_id)) {
+        !read_string(value, "tenant_id", /*required=*/false, config.tenant_id) ||
+        !read_string(value, "key_vault", /*required=*/false, config.key_vault)) {
         return std::nullopt;
     }
 
@@ -108,7 +110,11 @@ const nlohmann::json& azure_config_schema() {
       "type": "string"
     },
     "managed_identity": {
-      "description": "Optional user-assigned managed identity resource id granted to burst nodes (the cloud-native side of the per-node burst identity).",
+      "description": "User-assigned managed identity resource id granted to burst nodes (the cloud-native side of the per-node burst identity). On a secure cluster each node reads the cluster join token from key_vault with it, so it needs the Key Vault Secrets User role (or a 'get' secret access policy) there; required then (#1316).",
+      "type": "string"
+    },
+    "key_vault": {
+      "description": "Name of the Azure Key Vault the cluster join token is stored in, as the secret '<pool_name>-cluster-token'. Each node's boot script fetches it with managed_identity, so the token never rides cloud-init custom-data. Required on a secure cluster (#1316).",
       "type": "string"
     },
     "tenant_id": {

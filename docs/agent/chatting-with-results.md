@@ -35,6 +35,32 @@ to use — so enabling them is a data change on the agent record, not a code cha
 | `list_datasets` · `get_dataset` | *"What's in this data?"* — tables, row counts, columns |
 | `list_models` · `get_model` | *"How good is the model, and what drives churn?"* — measures and the ranked TreeSHAP drivers |
 | `score` | *"Which accounts are most at risk?"* and *"What would this account score?"* |
+| `get_run_report` | *"What did the run find?"* — the report a finished run emitted: quality (held-out first), drivers, the ranked accounts, `caveats` and `missing` |
+| `explain` | *"Why is that account at risk?"* — one account's signed per-feature contributions, residual ≈ 0 |
+
+**A live tool's result reaches the model** (#969). Each call runs through the registry and
+its value goes back to the model as `<tool_result>{…}</tool_result>` before it answers. That
+registration was dropped in `b5ca4290` (2026-07-26) while the sandbox was reworked to build
+Pipelines from tool calls, which left every live tool a marker: the agent "called"
+`get_run_report` and got back `{"status":"ok"}` with nothing in it. `agent::chat_sandbox`
+(`src/core/agent/chat.cpp`) now wires them again, and `ChatSandbox.LiveToolsReachTheRunnerAndStepsAreNeverUnknown`
+plus `ChatLoop.ChatProposesTheRunThenAFollowUpReadsItsReport` hold it. Every pipeline step kind
+is also a recorded step, so an agent whose record names only read tools no longer reports its
+own `connect` as an unknown tool while building it.
+
+## The loop in one thread (#969)
+
+1. **Ask.** A turn that asks to build something comes back `kind: action` with a `proposal`:
+   the Project approving would create, the Pipeline's steps, the dataset. **Nothing exists
+   yet** — no Project, no Pipeline, no run. Pass `dataset_path` (and `holdout_fraction`) on the
+   turn to name the data. See [run proposals](../pipeline/run-proposals.md).
+2. **Approve** with `approve_run_proposal` (or reject). It creates exactly what the preview
+   named and runs it under the approver's rights.
+3. **Follow up without naming the run.** With no `project` on the turn, `chat` grounds on the
+   Project whose run most recently succeeded, and says which in `grounded_project`. This is
+   grounding, not memory: one referent on the retrieval path the model was trained on.
+
+`chat` also takes a JSON-body `POST /v1/chat` (#975), alongside `GET`.
 
 ## The four questions
 
@@ -78,10 +104,13 @@ failure this whole path exists to prevent.
 
 ## Limits worth knowing before demonstrating it
 
-- **Drivers are population-level, not per-row.** *"Why is THIS account at risk?"* currently
-  answers with what drives churn across the model, not with that account's own TreeSHAP
-  contributions. The engine computes per-row explanations during a run; exposing them for
-  an arbitrary account afterwards is a further step.
+- **`score`'s drivers are population-level, not per-row.** For *"why is THIS account at
+  risk?"* enable `explain`, which returns that account's own contributions
+  ([explaining one row](../ml/explaining-one-row.md)).
+- **Whether the model calls these tools by itself is a training question.** The engine wires
+  them; the current checkpoint was not trained on `get_run_report` or `explain`, or on
+  proposing a run and waiting. What it drives today is measured in
+  [the #969 walk](../reports/chat-loop-walk-validation-2026-10-21.md).
 - **The entity key is an integer.** A ranked list comes back keyed by the integer entity
   column, so joining it to business account ids is the caller's step today.
 - **One open defect** ([#952](https://github.com/oramasearch/zetta/issues/952)): after a run

@@ -129,6 +129,9 @@ void tree_shap_recurse(const std::vector<TreeNode>& nodes, int index,
         for (std::size_t i = 1; i <= unique_depth; ++i) {
             const PathElement& element = path[i];
             if (element.feature_index < 0) continue;  // the root sentinel
+            // A validated model never splits past its feature list
+            // (GbdtModel::validate_structure, #1390); never write past phi either.
+            if (static_cast<std::size_t>(element.feature_index) >= phi.size()) continue;
             const double weight = unwound_path_sum(path, i);
             phi[static_cast<std::size_t>(element.feature_index)] +=
                 weight * (element.one_fraction - element.zero_fraction) * node.value;

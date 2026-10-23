@@ -68,25 +68,23 @@ comes up **with those env vars set and the binary launched auto-joins the secure
 translate env into flags; the launched process inherits and consumes the injected
 env itself. What remains of Gap A is purely **delivering + starting the binary**.
 
-`bring_up` passes the cluster seed to the VM as `--custom-data
-ZETTA_SEED_PEER=<addr>`, but there is still **no cloud-init that installs and
-starts the zetta binary**. The VM boots a bare Ubuntu image and sits there.
-(The join **token** injection itself — `ZETTA_CLUSTER_TOKEN` through the
-provisioner seam — is the sibling #670/#742 plumbing; the consuming side is now
-ready for it.)
-ZETTA_SEED_PEER=<addr>` (and the join token as
-`ZETTA_CLUSTER_TOKEN=<token>` — #670), but there is **no cloud-init that installs
-and starts the zetta binary**. The VM boots a bare Ubuntu image and sits there.
-When the systemd unit below is built it must read **both** env vars and start
-`zetta --peer $ZETTA_SEED_PEER --join-token $ZETTA_CLUSTER_TOKEN` (inter-node mTLS
-is always on, so the token is always present — #799).
+**Update (#1316): the boot script is built.** `bring_up` hands each Azure, GCP and
+OCI VM the [node bootstrap script](../cloud/node-bootstrap-script.md) as its
+user-data. It carries the seed and only the *name* of the secret holding the join
+token; at boot it fetches the token from Key Vault / Secret Manager / OCI Vault (or
+AWS SSM, from the operator's launch template, #1338) with the VM's identity, writes
+`/etc/zetta/cluster-token` (0400) and `/etc/zetta/bootstrap.env`
+(`ZETTA_SEED_PEER`, `ZETTA_CLUSTER_TOKEN_FILE`), and restarts `zetta.service` when
+the image has one. What remains of Gap A is **putting the binary and that unit on
+the VM**: the VM still boots a bare image with neither, so the script stages the
+files and logs that the unit is missing.
 
 *How we'd like to try it (options, roughly in order of preference):*
 
 - **A pre-baked image / shared-gallery image** that already contains the zetta
-  binary + a systemd unit that sets `ZETTA_SEED_PEER` / `ZETTA_CLUSTER_TOKEN` from
-  instance metadata in the launched process's environment (no flag translation
-  needed — the binary reads the env). Fastest boot, most reproducible; needs an
+  binary + a systemd unit that reads `/etc/zetta/bootstrap.env` (the unit in
+  [node-bootstrap-script.md](../cloud/node-bootstrap-script.md#the-engine-side);
+  no flag translation needed — the binary reads the env). Fastest boot, most reproducible; needs an
   image-build pipeline (a later sub-slice can bake it from CI).
 - **cloud-init that pulls the binary** (from a release URL / blob) and runs it —
   slower boot, no image pipeline, good for a first working join. This is the likely

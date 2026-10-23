@@ -17,6 +17,8 @@
 #include "zetta/api/registry.hpp"
 #include "zetta/cloud/cloud_provider.hpp"
 #include "zetta/cloud/provisioner.hpp"
+#include "zetta/api/mysql_protocol.hpp"
+#include "zetta/connect/mysql_client.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/consent.hpp"
@@ -443,6 +445,306 @@ TEST_F(ConsentFixture, ARemoteSourceChallengesAndTheSummaryNamesItsRealType) {
     // What would run is the caller's own query, named verbatim.
     EXPECT_EQ(result.error.details.at("action").at("runs").size(), 1u);
     EXPECT_EQ(result.error.details.at("action").at("runs")[0], "SELECT 1");
+}
+
+// --- An inline credential never rides a challenge out (#74, CTL-3) -----------
+
+// A remote source given inline (no saved connection) is consent-gated, and the
+// challenge freezes the input to execute it. That input carries the token, and
+// the challenge is returned in the refusal and listed to a DIFFERENT principal
+// by list_consent_requests — neither may carry the credential.
+TEST_F(ConsentFixture, AnInlineConnectorTokenNeverAppearsInTheChallenge) {
+    const std::string token = "pat-inline-s3cr3t-74";
+    auto result = call("create_dataset_from_query",
+                       {{"connector",
+                         {{"type", "snowflake"},
+                          {"account", "ab12345.us-east-1"},
+                          {"token", token},
+                          {"warehouse", "COMPUTE_WH"}}},
+                        {"query", "SELECT 1"}});
+    ASSERT_FALSE(result.ok);
+    ASSERT_EQ(result.error.code, "consent_required") << result.error.message;
+    EXPECT_EQ(result.error.details.dump().find(token), std::string::npos)
+        << result.error.details.dump();
+    EXPECT_EQ(result.error.message.find(token), std::string::npos);
+    EXPECT_EQ(result.error.details.at("input").at("connector").at("token"),
+              "[redacted]");
+    EXPECT_EQ(result.error.details.at("input").at("connector").at("account"),
+              "ab12345.us-east-1");
+
+    auto listed = call("list_consent_requests", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok);
+    ASSERT_EQ(listed.value.at("consent_requests").size(), 1u);
+    EXPECT_EQ(listed.value.dump().find(token), std::string::npos)
+        << listed.value.dump();
+
+    auto rows = call(
+        "sql", {{"statement", "SELECT * FROM system.consent_requests;"}});
+    ASSERT_TRUE(rows.ok) << rows.error.message;
+    EXPECT_EQ(rows.value.dump().find(token), std::string::npos);
+
+    // The ledger itself still holds the real token: approval executes exactly
+    // the frozen request, credential included.
+    const auto pending = node.consent_ledger().pending();
+    ASSERT_EQ(pending.size(), 1u);
+    EXPECT_EQ(pending[0]->input.at("connector").at("token"), token);
+}
+
+// --- MySQL (#895): the same per-call judgement, and a MySQL-shaped catalog ------
+
+TEST_F(ConsentFixture, ALoopbackMysqlSourceRunsUngatedAndARemoteOneIsNamed) {
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "local-mysql"},
+                      {"connector",
+                       {{"type", "mysql"},
+                        {"host", "127.0.0.1"},
+                        {"user", "reader"},
+                        {"token", "pw"},
+                        {"sslmode", "disable"}}}})
+                    .ok);
+    auto local = call("create_dataset_from_query",
+                      {{"connection", "local-mysql"}, {"query", "SELECT 1"}});
+    EXPECT_NE(local.error.code, "consent_required") << local.error.message;
+
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "shop"},
+                      {"connector",
+                       {{"type", "mysql"},
+                        {"host", "db.example.com"},
+                        {"port", "3306"},
+                        {"user", "reader"},
+                        {"token", "pw"},
+                        {"database", "shop"}}}})
+                    .ok);
+    auto remote = call("create_dataset_from_query",
+                       {{"connection", "shop"}, {"query", "SELECT 1"}});
+    ASSERT_EQ(remote.error.code, "consent_required");
+    const std::string summary = remote.error.details.at("action").value("summary", "");
+    EXPECT_NE(summary.find("mysql db.example.com:3306/shop"), std::string::npos) << summary;
+}
+
+// list_source_tables builds one information_schema query for every connector;
+// MySQL 8 answers it with UPPER-CASE column names unless aliased, keeps its own
+// catalog in mysql / performance_schema / sys, and treats a backslash in a
+// literal as an escape. A recording runner stands in for the server.
+TEST_F(ConsentFixture, ListSourceTablesSpeaksMysqlsCatalog) {
+    std::vector<std::string> statements;
+    zetta::connect::install_mysql_query_runner(
+        [&statements](const zetta::connect::ConnectorConfig&, const std::string& sql,
+                      std::size_t) {
+            statements.push_back(sql);
+            zetta::connect::ConnectorResult result;
+            if (sql.find("information_schema.columns") != std::string::npos) {
+                result.data.columns = {"table_schema", "table_name", "column_name",
+                                       "data_type", "is_nullable", "ordinal_position"};
+                result.data.rows.push_back({{"table_schema", "shop"},
+                                            {"table_name", "orders"},
+                                            {"column_name", "id"},
+                                            {"data_type", "int"},
+                                            {"is_nullable", "NO"},
+                                            {"ordinal_position", 1}});
+            } else {
+                result.data.columns = {"table_schema", "table_name", "table_type"};
+                result.data.rows.push_back({{"table_schema", "shop"},
+                                            {"table_name", "orders"},
+                                            {"table_type", "BASE TABLE"}});
+            }
+            return result;
+        });
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "local-shop"},
+                      {"connector",
+                       {{"type", "mysql"},
+                        {"host", "127.0.0.1"},
+                        {"user", "reader"},
+                        {"token", "pw"},
+                        {"sslmode", "disable"}}}})
+                    .ok);
+    auto listed = call("list_source_tables",
+                       {{"connection", "local-shop"}, {"schema", "sh\\op"}});
+    zetta::connect::install_mysql_protocol();  // restore the real driver
+
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(statements.size(), 2u);
+    EXPECT_NE(statements[0].find("t.table_schema AS table_schema"), std::string::npos)
+        << statements[0];
+    EXPECT_NE(statements[0].find("'performance_schema'"), std::string::npos);
+    EXPECT_NE(statements[0].find("'sh\\\\op'"), std::string::npos)
+        << "a backslash must be doubled for MySQL: " << statements[0];
+    EXPECT_NE(statements[1].find("c.data_type AS data_type"), std::string::npos)
+        << statements[1];
+    ASSERT_EQ(listed.value.at("tables").size(), 1u);
+    EXPECT_EQ(listed.value.at("tables")[0].at("table"), "orders");
+    EXPECT_EQ(listed.value.at("tables")[0].at("columns")[0].at("column"), "id");
+}
+
+// --- TiDB (#1014): the MySQL protocol, named as itself in the challenge -----------
+
+TEST_F(ConsentFixture, ARemoteTidbSourceIsNamedAsTidb) {
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "orders-tidb"},
+                      {"connector",
+                       {{"type", "tidb"},
+                        {"host", "orders-tidb.ws-1.svc.cluster.local"},
+                        {"port", "4000"},
+                        {"user", "root"},
+                        {"token", "pw"},
+                        {"database", "shop"},
+                        {"sslmode", "disable"}}}})
+                    .ok);
+    auto remote = call("create_dataset_from_query",
+                       {{"connection", "orders-tidb"}, {"query", "SELECT 1"}});
+    ASSERT_EQ(remote.error.code, "consent_required");
+    const std::string summary = remote.error.details.at("action").value("summary", "");
+    EXPECT_NE(summary.find("tidb orders-tidb.ws-1.svc.cluster.local:4000/shop"),
+              std::string::npos)
+        << summary;
+}
+
+// --- lake's SQL services (#1014): the endpoint decides local or remote ----------
+
+TEST_F(ConsentFixture, ALoopbackLakeServiceRunsUngatedAndARemoteOneIsNamed) {
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "local-sqlite"},
+                      {"connector",
+                       {{"type", "lake_sqlite"},
+                        {"endpoint", "http://127.0.0.1:8080"},
+                        {"token", "bearer"}}}})
+                    .ok);
+    auto local = call("create_dataset_from_query",
+                      {{"connection", "local-sqlite"}, {"query", "SELECT 1"}});
+    EXPECT_NE(local.error.code, "consent_required") << local.error.message;
+
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "orders-duck"},
+                      {"connector",
+                       {{"type", "lake_duckdb"},
+                        {"endpoint", "http://orders.ws-1.svc.cluster.local:8080"},
+                        {"token", "bearer"}}}})
+                    .ok);
+    auto remote = call("create_dataset_from_query",
+                       {{"connection", "orders-duck"}, {"query", "SELECT 1"}});
+    ASSERT_EQ(remote.error.code, "consent_required");
+    const std::string summary = remote.error.details.at("action").value("summary", "");
+    EXPECT_NE(summary.find("lake_duckdb http://orders.ws-1.svc.cluster.local:8080"),
+              std::string::npos)
+        << summary;
+
+    // An `endpoint` on a type that does not read it never makes a source local.
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "warehouse"},
+                      {"connector",
+                       {{"type", "snowflake"},
+                        {"account", "ab12345"},
+                        {"token", "pat"},
+                        {"endpoint", "http://127.0.0.1:1"}}}})
+                    .ok);
+    auto warehouse = call("create_dataset_from_query",
+                          {{"connection", "warehouse"}, {"query", "SELECT 1"}});
+    EXPECT_EQ(warehouse.error.code, "consent_required");
+}
+
+// --- A user's request, approved by a different user (#999) -----------------
+
+// A challenge requested by a token-resolved USER (the MCP / REST / web identity
+// under the default-deny gate) is decided by a different user holding
+// cloud:manage, and executes as the requester. Before #999 approval
+// re-authorized the requester as an access key, so every user's challenge
+// failed on approval with "unknown access key".
+TEST_F(ConsentFixture, AUserRequestIsApprovedByADifferentUserWithTheApproverRight) {
+    node.ensure_builtin_roles();
+    const auto user_with = [&](const std::string& name, const std::string& role) {
+        auto user = node.create_user(name);
+        auto found = node.find_role(role);
+        EXPECT_TRUE(user && found);
+        node.assign_role(user->id(), found->id());
+        return user->id();
+    };
+    const std::string requester = user_with("requester", "admin");
+    const std::string reader = user_with("viewer", "reader");
+    const std::string approver = user_with("approver", "admin");
+    const auto user_call = [&](const std::string& name, nlohmann::json input,
+                               const std::string& user) {
+        ApiContext context = context_for(user);
+        context.acting_is_user = true;
+        return registry.call(name, input, context);
+    };
+
+    auto refusal =
+        user_call("add_nodes", {{"target", "azure"}, {"count", 2}}, requester);
+    ASSERT_FALSE(refusal.ok);
+    ASSERT_EQ(refusal.error.code, "consent_required");
+    const std::string challenge_id = refusal.error.details.value("id", "");
+    // The refusal names a surface that can decide it.
+    EXPECT_NE(refusal.error.message.find("Governance"), std::string::npos)
+        << refusal.error.message;
+
+    // The requester can never approve its own request.
+    auto self = user_call("approve_consent", {{"challenge_id", challenge_id}},
+                          requester);
+    EXPECT_FALSE(self.ok);
+    EXPECT_EQ(self.error.code, "unauthorized");
+    // A user without the approver right (cloud:manage) cannot either.
+    auto unprivileged =
+        user_call("approve_consent", {{"challenge_id", challenge_id}}, reader);
+    EXPECT_FALSE(unprivileged.ok);
+    EXPECT_EQ(unprivileged.error.code, "unauthorized");
+    EXPECT_EQ(node.consent_ledger().find(challenge_id)->status,
+              ConsentStatus::Pending);
+    EXPECT_EQ(fake_azure.provisions, 0);
+
+    auto approval = user_call("approve_consent", {{"challenge_id", challenge_id}},
+                              approver);
+    ASSERT_TRUE(approval.ok) << approval.error.code << ": " << approval.error.message;
+    wait_for_background();
+    EXPECT_EQ(fake_azure.provisions, 1);
+    auto challenge = node.consent_ledger().find(challenge_id);
+    ASSERT_TRUE(challenge);
+    EXPECT_EQ(challenge->status, ConsentStatus::Executed) << challenge->detail;
+    EXPECT_EQ(challenge->decided_by, approver);
+
+    // The decision is audited under the approver.
+    bool decided_by_approver = false;
+    for (const auto& event : node.audit_events()) {
+        if (event->value().action == zetta::governance::AuditAction::ConsentDecided &&
+            event->value().actor == approver && event->value().allowed) {
+            decided_by_approver = true;
+        }
+    }
+    EXPECT_TRUE(decided_by_approver);
+}
+
+// The one-person headless path docs/api/consent.md documents: the SQL that
+// creates a second user holding the approver right, and that user deciding a
+// challenge the owner requested.
+TEST_F(ConsentFixture, TheDocumentedSecondApproverSqlProducesAWorkingApprover) {
+    node.ensure_builtin_roles();
+    auto owner = node.create_user("owner");
+    node.assign_role(owner->id(), node.find_role("admin")->id());
+    for (const char* statement :
+         {"CREATE USER approver", "CREATE ROLE consent_approver",
+          "GRANT mcp:call, cloud:manage TO ROLE consent_approver",
+          "GRANT ROLE consent_approver TO approver", "CREATE TOKEN FOR approver"}) {
+        auto result = call("sql", {{"statement", statement}});
+        ASSERT_TRUE(result.ok) << statement << ": " << result.error.message;
+    }
+    auto approver = node.find_user("approver");
+    ASSERT_TRUE(approver);
+
+    ApiContext requester = context_for(owner->id());
+    requester.acting_is_user = true;
+    auto refusal = registry.call("add_nodes", {{"target", "azure"}, {"count", 1}},
+                                 requester);
+    ASSERT_EQ(refusal.error.code, "consent_required");
+    const std::string challenge_id = refusal.error.details.value("id", "");
+
+    ApiContext deciding = context_for(approver->id());
+    deciding.acting_is_user = true;
+    auto approval = registry.call("approve_consent",
+                                  {{"challenge_id", challenge_id}}, deciding);
+    ASSERT_TRUE(approval.ok) << approval.error.code << ": " << approval.error.message;
+    wait_for_background();
+    EXPECT_EQ(fake_azure.provisions, 1);
 }
 
 // --- Consent enforcement is OFF by default (#995) -----------------------------

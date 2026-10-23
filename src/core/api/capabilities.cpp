@@ -32,12 +32,16 @@
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/connect/connector.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
+#include "zetta/connect/source_catalog.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/featurize_plan.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/data/entity_key_table.hpp"
+#include "zetta/data/export_path.hpp"
+#include "zetta/data/import_path.hpp"
 #include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/dataset/dataset_generator_factory.hpp"
@@ -60,6 +64,7 @@
 #include "zetta/ml/workspace_study.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/data/object_store.hpp"
+#include "zetta/governance/safe_mode.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/pipeline/deployment.hpp"
@@ -72,9 +77,11 @@
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/project_input.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/pipeline/validation.hpp"
+#include "zetta/query/postgres.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/solutions/experiment.hpp"
 #include "zetta/solutions/snapshot.hpp"
@@ -396,6 +403,62 @@ ApiResult handle_sql(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// Safe mode for Zetta SQL (#1373, docs/api/safe-mode.md): which database each
+// statement of the input runs against, and whether it writes — the parser's
+// statement kind decides (a SELECT reads; every other statement that names a
+// database or table writes). Each entry carries the input verbatim, because that
+// is exactly what will run. A statement naming no database (CREATE USER, GRANT,
+// CREATE VIRTUAL TABLE) is governed by its own rights, not by a database's
+// level; `system` and the reserved stores are never user databases. An input
+// that does not parse runs nothing, and the handler reports why.
+std::vector<zetta::governance::SafeModeStatements> describe_sql_safe_mode(
+    const nlohmann::json& input, ApiContext& context) {
+    (void)context;
+    const std::string statement = input.at("statement").get<std::string>();
+    const std::string current_database = input.value("database", "");
+    zetta::query::PostgresDialect dialect;
+    const zetta::query::ParseResult parsed = dialect.parse(statement);
+    if (!parsed.ok()) return {};
+
+    std::vector<zetta::governance::SafeModeStatements> described;
+    const auto note = [&](const std::string& database, bool writes) {
+        if (database.empty() || database == "system" ||
+            database == zetta::connect::kConnectionDatabase ||
+            database == zetta::governance::kSafeModeDatabase) {
+            return;
+        }
+        for (zetta::governance::SafeModeStatements& entry : described) {
+            if (entry.name == database) {
+                entry.writes = entry.writes || writes;
+                return;
+            }
+        }
+        described.push_back({zetta::governance::SafeModeTarget::Database, database,
+                             {statement}, writes});
+    };
+    const auto database_of = [&](const zetta::query::TableRef& ref) {
+        return ref.database.empty() ? current_database : ref.database;
+    };
+    for (const zetta::query::Statement& parsed_statement : parsed.statements) {
+        std::visit(
+            [&](const auto& node_statement) {
+                using Kind = std::decay_t<decltype(node_statement)>;
+                if constexpr (std::is_same_v<Kind, zetta::query::SelectStmt>) {
+                    note(database_of(node_statement.table), /*writes=*/false);
+                } else if constexpr (std::is_same_v<Kind, zetta::query::CreateDatabaseStmt> ||
+                                     std::is_same_v<Kind, zetta::query::DropDatabaseStmt>) {
+                    note(node_statement.name, /*writes=*/true);
+                } else if constexpr (requires { node_statement.table.database; }) {
+                    // CREATE / DROP TABLE, INSERT, UPDATE, DELETE, TRUNCATE,
+                    // CREATE POLICY.
+                    note(database_of(node_statement.table), /*writes=*/true);
+                }
+            },
+            parsed_statement);
+    }
+    return described;
+}
+
 // --- search --------------------------------------------------------------------
 
 const nlohmann::json& search_schema() {
@@ -440,6 +503,8 @@ const nlohmann::json& search_schema() {
 // path the GUI drives, so MCP/REST and the GUI can never diverge.
 ApiResult handle_search(const nlohmann::json& input, ApiContext& context) {
     zetta::index::SearchRequest request;
+    request.acting_id = context.acting_key;
+    request.acting_is_user = context.acting_is_user;
     request.target = input.at("target").get<std::string>();
     request.query = input.at("query").get<std::string>();
     request.field = input.value("field", std::string{});
@@ -469,13 +534,77 @@ const nlohmann::json& list_projects_output_schema() {
         {"required", {"projects"}},
         {"additionalProperties", false},
         {"properties",
-         {{"projects", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+         {{"projects",
+           {{"type", "array"},
+            {"description", "the project names"},
+            {"items", {{"type", "string"}}}}},
+          {"summaries",
+           {{"type", "array"},
+            {"description",
+             "one entry per name in `projects`, in the same order (#1185): the "
+             "project's id and name and each graph's id, name and approval, "
+             "so a list page needs no get_project per project. Present only "
+             "when the caller may also call get_project"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"id", "name", "graphs"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"name", {{"type", "string"}}},
+                {"graphs",
+                 {{"type", "array"},
+                  {"items",
+                   {{"type", "object"},
+                    {"required", {"id", "name", "approval"}},
+                    {"additionalProperties", false},
+                    {"properties",
+                     {{"id", {{"type", "string"}}},
+                      {"name", {{"type", "string"}}},
+                      {"approval",
+                       {{"type", "string"},
+                        {"enum", {"proposed", "approved"}},
+                        {"description",
+                         "plan-approval state (#885), as get_project"}}}}}}}}}}}}}}}}}};
     return schema;
 }
 
+// `projects` stays the list of names existing callers read; `summaries`
+// (#1185) carries what a list page shows, from the same in-memory projects
+// get_project reads. Internal projects (a standalone model's, lake#654) are left
+// out of both, as project_names() does.
+//
+// A summary is part of get_project's answer, so it is read with get_project's
+// right: a user whose mcp:call is scoped to list_projects alone (#747) gets the
+// names, as before, and no summaries. AccessKeys and the local session are
+// authorized on api:query for both tools, so for them nothing differs.
+bool may_read_project_detail(const ApiContext& context) {
+    return !context.acting_is_user ||
+           context.node.may_call_tool(context.acting_key, /*acting_is_user=*/true,
+                                      "get_project");
+}
+
 ApiResult handle_list_projects(const nlohmann::json&, ApiContext& context) {
+    const bool with_summaries = may_read_project_detail(context);
+    nlohmann::json names = nlohmann::json::array();
+    nlohmann::json summaries = nlohmann::json::array();
+    for (const auto& project : context.node.projects()) {
+        if (project->internal()) continue;
+        names.push_back(project->name());
+        if (!with_summaries) continue;
+        nlohmann::json graphs = nlohmann::json::array();
+        for (const auto& graph : project->graphs()) {
+            graphs.push_back({{"id", graph->id()},
+                              {"name", graph->name()},
+                              {"approval", graph->approval_status()}});
+        }
+        summaries.push_back({{"id", project->id()},
+                             {"name", project->name()},
+                             {"graphs", std::move(graphs)}});
+    }
     nlohmann::json output;
-    output["projects"] = context.node.project_names();
+    output["projects"] = std::move(names);
+    if (with_summaries) output["summaries"] = std::move(summaries);
     return ApiResult::success(std::move(output));
 }
 
@@ -601,6 +730,19 @@ nlohmann::json id_input_with_entity_keys_schema(std::string_view field,
     return schema;
 }
 
+// include_entity_keys: the stored record references its entity-key table
+// (#1255); the answer carries the entries inline, as it always has. The caller
+// was authorized to read this run or model, which is what reaching the rows
+// requires.
+bool expand_entity_keys(Node& node, nlohmann::json& output, std::string* reason) {
+    return zetta::data::expand_entity_key_mappings(
+        output,
+        [&node](const nlohmann::json& mapping, std::string* error) {
+            return node.resolve_entity_key_mapping(mapping, error);
+        },
+        reason);
+}
+
 const nlohmann::json& get_run_schema() {
     static const nlohmann::json schema = id_input_with_entity_keys_schema(
         "run_id", "the run's uuid (system.runs.run_id)");
@@ -630,6 +772,8 @@ ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
     output["id"] = run->id();
     if (!input.value("include_entity_keys", false)) {
         zetta::data::summarize_entity_key_mappings(output);
+    } else if (std::string reason; !expand_entity_keys(context.node, output, &reason)) {
+        return ApiResult::failure("engine_error", reason);
     }
     return ApiResult::success(std::move(output));
 }
@@ -2131,6 +2275,8 @@ ApiResult handle_get_model(const nlohmann::json& input, ApiContext& context) {
     // feature_schema.entity_key_mapping: a count unless asked for (#1202).
     if (!input.value("include_entity_keys", false)) {
         zetta::data::summarize_entity_key_mappings(output);
+    } else if (std::string reason; !expand_entity_keys(context.node, output, &reason)) {
+        return ApiResult::failure("engine_error", reason);
     }
     return ApiResult::success(std::move(output));
 }
@@ -2525,9 +2671,12 @@ const nlohmann::json& dataset_summary_schema() {
            {{"type", "string"},
             {"description",
              "what the rows were loaded from: csv, jsonl, json, parquet, a connector "
-             "type (postgres, snowflake) or rows; empty for a table not loaded from a "
+             "type (postgres, snowflake, mysql, tidb, lake_sqlite, lake_duckdb, lake_polars) or rows; empty for a table not loaded from a "
              "source (SQL, engine results)"}}},
-          {"replication", {{"type", "integer"}}},
+          {"replication",
+           {{"type", "string"},
+            {"description",
+             "replicate_to_all, partitioned or partitioned_with_replicas"}}},
           {"rows", {{"type", "integer"}}},
           {"size_bytes", {{"type", "integer"}}},
           {"columns",
@@ -2839,6 +2988,16 @@ std::optional<zetta::data::DatasetPath> capability_dataset_path(
         if (!requested_database.empty() && summary.database != requested_database) {
             continue;
         }
+        // #1396: a table the caller may not read is not a match — it neither
+        // resolves the name nor makes it ambiguous, as if it did not exist.
+        if (!context.acting_key.empty() &&
+            !context.node
+                 .column_scope(context.acting_key, context.acting_is_user,
+                               Operation{zetta::governance::CapabilityDomain::Data, "read"},
+                               summary.database, summary.name)
+                 .table_allowed) {
+            continue;
+        }
         matches.push_back(std::move(summary));
     }
     if (matches.empty()) {
@@ -2874,8 +3033,11 @@ ApiResult handle_analyze_dataset(const nlohmann::json& input, ApiContext& contex
     options.label_column = input.value("label", "");
     options.time_column = input.value("time_column", "");
     options.as_of = as_of_string(input);
-    const zetta::data::DatasetAnalysis analysis = zetta::data::analyze_dataset(
-        context.node, *path, options, {}, context.cluster);
+    // #1300, #1396: read as the caller — its table and column grants and its row
+    // security, as its own SQL would be — never as the trusted local session.
+    const zetta::data::DatasetAnalysis analysis = zetta::data::analyze_dataset_as(
+        context.node, *path, options, {context.acting_key, context.acting_is_user},
+        context.cluster);
     if (!analysis.ok()) {
         return ApiResult::failure("engine_error", analysis.error);
     }
@@ -2946,8 +3108,10 @@ ApiResult handle_plan_features(const nlohmann::json& input, ApiContext& context)
     options.group_column = input.value("group_column", "");
     options.as_of = as_of_string(input);
     options.sample_rows = input.value("sample_rows", options.sample_rows);
-    const zetta::data::FeaturePlan plan = zetta::data::plan_features(
-        context.node, *path, options, {}, context.cluster);
+    // #1396: planned from what the caller may read, like analyze_dataset.
+    const zetta::data::FeaturePlan plan = zetta::data::plan_features_as(
+        context.node, *path, options, {context.acting_key, context.acting_is_user},
+        context.cluster);
     if (!plan.ok()) {
         return ApiResult::failure("engine_error", plan.error);
     }
@@ -3202,7 +3366,76 @@ ApiResult handle_list_indexes(const nlohmann::json&, ApiContext& context) {
 }
 
 const nlohmann::json& list_datasets_schema() {
-    static const nlohmann::json schema = empty_object_schema();
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"properties",
+         {{"detail",
+           {{"type", "string"},
+            {"enum", {"full", "summary"}},
+            {"default", "full"},
+            {"description",
+             "full (the default): every dataset's whole summary, as before — "
+             "columns, partition placement, and size_bytes measured from the "
+             "files. summary (#1195): only what a dataset list shows, from "
+             "counters the engine keeps, reading no row and no file; columns, "
+             "types and placement stay on get_dataset"}}}}}};
+    return schema;
+}
+
+// A dataset as list_datasets' `detail: "summary"` answers it (#1195): the
+// display fields of the full form, unchanged in name and meaning, plus
+// partition_count in place of the placement array.
+nlohmann::json dataset_list_summary_json(const zetta::data::DatasetSummary& dataset) {
+    return nlohmann::json{{"name", dataset.name},
+                          {"database", dataset.database},
+                          {"table_id", dataset.table_id},
+                          {"format", dataset.format},
+                          {"source_format", dataset.source_format},
+                          {"replication", dataset.replication},
+                          {"rows", dataset.rows},
+                          {"size_bytes", dataset.size_bytes},
+                          {"column_order",
+                           dataset.column_order_recorded ? "source" : "first_seen"},
+                          {"partition_count", dataset.partition_count},
+                          {"degraded", dataset.degraded},
+                          {"degraded_reason", dataset.degraded_reason},
+                          {"expected_partitions", dataset.expected_partitions},
+                          {"expected_rows", dataset.expected_rows}};
+}
+
+const nlohmann::json& dataset_list_summary_schema() {
+    static const nlohmann::json schema = [] {
+        const nlohmann::json& full = dataset_summary_schema().at("properties");
+        nlohmann::json properties = nlohmann::json::object();
+        for (const char* name :
+             {"name", "database", "table_id", "format", "source_format", "replication",
+              "rows", "size_bytes", "column_order", "degraded", "degraded_reason",
+              "expected_partitions", "expected_rows"}) {
+            properties[name] = full.at(name);
+        }
+        properties["rows"]["description"] =
+            "the row count: the local store's, or for a partition-only dataset the "
+            "sum of the partition catalog's row ranges (a fraction when degraded)";
+        properties["size_bytes"]["description"] =
+            "bytes of row data in the table's chunk files, from the engine's own "
+            "counter: equal to the full form's measured value once pending writes "
+            "are flushed";
+        properties["partition_count"] = {
+            {"type", "integer"},
+            {"minimum", 0},
+            {"description",
+             "the partition catalog entries this node sees (0 = not partitioned); "
+             "the full form's partitions array has this many entries"}};
+        nlohmann::json required = nlohmann::json::array();
+        for (const auto& [name, _] : properties.items()) required.push_back(name);
+        return nlohmann::json{{"type", "object"},
+                              {"description",
+                               "a dataset in list_datasets' summary form (#1195)"},
+                              {"required", std::move(required)},
+                              {"additionalProperties", false},
+                              {"properties", std::move(properties)}};
+    }();
     return schema;
 }
 
@@ -3212,16 +3445,40 @@ const nlohmann::json& list_datasets_output_schema() {
         {"required", {"datasets"}},
         {"additionalProperties", false},
         {"properties",
-         {{"datasets", {{"type", "array"}, {"items", dataset_summary_schema()}}}}}};
+         {{"detail",
+           {{"type", "string"},
+            {"enum", {"full", "summary"}},
+            {"description", "the form each entry of datasets takes"}}},
+          {"datasets",
+           {{"type", "array"},
+            {"description",
+             "one entry per dataset: the full summary, or with detail \"summary\" "
+             "the summary form"},
+            {"items",
+             {{"anyOf", {dataset_summary_schema(), dataset_list_summary_schema()}}}}}}}}};
     return schema;
 }
 
-ApiResult handle_list_datasets(const nlohmann::json&, ApiContext& context) {
+// The full form computes every dataset from its rows and files (Node::datasets:
+// columns and types from every stored row, size from the chunk files). The
+// summary form reads only counters (Node::dataset_list_summaries), so a page
+// that lists datasets costs per dataset, not per row. Both forms are this one
+// tool, behind its one right, and list the same datasets.
+ApiResult handle_list_datasets(const nlohmann::json& input, ApiContext& context) {
+    const std::string detail = input.value("detail", std::string{"full"});
     nlohmann::json datasets = nlohmann::json::array();
-    for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
-        datasets.push_back(dataset_summary_json(dataset));
+    if (detail == "summary") {
+        for (const zetta::data::DatasetSummary& dataset :
+             context.node.dataset_list_summaries()) {
+            datasets.push_back(dataset_list_summary_json(dataset));
+        }
+    } else {
+        for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
+            datasets.push_back(dataset_summary_json(dataset));
+        }
     }
     nlohmann::json output;
+    output["detail"] = detail;
     output["datasets"] = std::move(datasets);
     return ApiResult::success(std::move(output));
 }
@@ -3866,6 +4123,12 @@ ApiResult handle_delete_dataset(const nlohmann::json& input, ApiContext& context
             "forbidden", "\"" + dataset.database +
                              "\" is the reserved connection store; remove a connection "
                              "with delete_connection");
+    }
+    if (dataset.database == zetta::governance::kSafeModeDatabase) {
+        return ApiResult::failure(
+            "forbidden", "\"" + dataset.database +
+                             "\" is the reserved safe mode store; change a level "
+                             "with set_safe_mode");
     }
     const std::shared_ptr<zetta::data::Database> owner =
         context.node.find_database(dataset.database);
@@ -4544,9 +4807,12 @@ const nlohmann::json& submit_feedback_schema() {
                             "recent traces on this node)"}}},
           {"export_path",
            {{"type", "string"},
+            {"minLength", 1},
             {"description",
-             "local file path to ALSO write the bundle to — the explicit "
-             "user export; nothing leaves the cluster on its own "
+             "ALSO write the bundle to a new file on the node, named "
+             "relative to its export directory (exports/ under the data "
+             "directory); no absolute path, no '..', no symbolic link, and "
+             "never an existing file. Nothing leaves the cluster on its own "
              "(optional)"}}}}}};
     return schema;
 }
@@ -4571,7 +4837,8 @@ const nlohmann::json& submit_feedback_output_schema() {
            {{"type", "string"},
             {"description",
              "present only when export_path was given and the export "
-             "succeeded"}}}}}};
+             "succeeded: the written file, relative to the node's export "
+             "directory"}}}}}};
     return schema;
 }
 
@@ -4589,6 +4856,15 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
     }
     options.actor =
         context.acting_key.empty() ? std::string("local") : context.acting_key;
+    // Trace ids are client-controlled and do not prove ownership of any span.
+    // Feedback remains available to everyone, but node-wide diagnostics need
+    // the same explicit right as list_traces/get_trace and the SQL views (#1408).
+    const zetta::governance::Operation diagnostics{
+        zetta::governance::CapabilityDomain::Api, "cluster_admin"};
+    options.include_diagnostics = context.acting_key.empty() ||
+        (context.acting_is_user
+             ? context.node.authorize_user(context.acting_key, diagnostics).allowed
+             : context.node.authorize(context.acting_key, diagnostics).allowed);
 
     std::string reason;
     const auto bundle =
@@ -4627,16 +4903,20 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
 
     // The explicit export (and the ONLY way bytes leave the store): the user
     // asked for a copy at a path of their choosing.
+    // It goes only under the node's export directory, never over an existing
+    // file and never through a link (#1399).
     if (const auto export_path = input.find("export_path");
         export_path != input.end()) {
-        const std::string destination = export_path->get<std::string>();
-        if (!database->large_objects().export_file(stored->id, destination)) {
+        const zetta::data::ExportResult written = zetta::data::write_export_file(
+            context.node, export_path->get<std::string>(), bundle->dump(2));
+        if (!written.ok()) {
             return ApiResult::failure(
-                "engine_error",
+                "invalid_input",
                 "submit_feedback: bundle stored as " + stored->id +
-                    " but the export to '" + destination + "' failed");
+                    " but not exported: " + written.error,
+                "/export_path");
         }
-        output["exported_to"] = destination;
+        output["exported_to"] = written.relative;
     }
     return ApiResult::success(std::move(output));
 }
@@ -5826,6 +6106,8 @@ ApiResult handle_record_methodology_run(const nlohmann::json& input, ApiContext&
             : context.node.create_run(project ? project->id() : std::string(),
                                       graph ? graph->id() : std::string());
     if (!run) return ApiResult::failure("engine_error", "the run record could not be created");
+    // The dataset Lake's runner read (zetta#1272).
+    if (!dataset_path.empty()) run->add_reads(context.node.tables_read({}, {}, dataset_path));
     run->set_status(zetta::pipeline::RunStatus::Running);
     run->add_log({zetta::util::now_iso8601(), "info",
                   "ran the workspace methodology " + id + " (" + name +
@@ -6380,7 +6662,9 @@ const nlohmann::json& run_schema() {
             {"description",
              "the data to train on, in either form: a `database.table` landed by "
              "a connection or a query (what add_dataset / create_dataset_from_query "
-             "produce), or a churn dataset directory on the node's filesystem. "
+             "produce), or a churn dataset directory staged in the node's import "
+             "directory (imports/ under its data directory), named relative to it with "
+             "a separator, e.g. ./churn (#1433). "
              "Default: the table the pipeline's first connect step names (its "
              "`source` + `table` attributes), when this node holds it, with the model "
              "step's `target` as the label; otherwise the built-in demo dataset"}}},
@@ -6709,6 +6993,10 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
                                                    "' on project '" +
                                                    project->name() + "'");
     }
+    // A published pipeline runs the version it was exposed at (zetta#1289).
+    if (context.served_graph && context.served_graph->id() == graph->id()) {
+        graph = context.served_graph;
+    }
 
     const zetta::pipeline::ValidationReport report =
         gate_with_workspace_methodologies(context, graph->graph());
@@ -6745,9 +7033,13 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
                 ") is marked runnable but has no run callback");
     }
 
+    // Step authority (#843): every step runs as the caller, not as the node.
+    const zetta::pipeline::RunPrincipal principal{context.acting_key,
+                                                  context.acting_is_user};
     if (methodology == nullptr) {
-        const zetta::pipeline::ExecutionResult executed =
-            context.node.run_graph(graph->graph(), project->id(), graph->id());
+        // The structural walk checks each step as it reaches it (GraphExecutor).
+        const zetta::pipeline::ExecutionResult executed = context.node.run_graph(
+            graph->graph(), project->id(), graph->id(), principal);
         if (!executed.run) {
             return ApiResult::failure("engine_error",
                                       "the run record could not be created");
@@ -6769,6 +7061,18 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
             output["error"] = executed.error;
         }
         return ApiResult::success(std::move(output));
+    }
+
+    // A methodology runs the pipeline through its own callback, not step by
+    // step through GraphExecutor, so every step is authorized for the caller
+    // before it starts. A denial runs nothing.
+    zetta::pipeline::GraphAuthorization authorized;
+    context.node.run_on_owner([&] {
+        authorized =
+            zetta::pipeline::authorize_graph_steps(context.node, principal, graph->graph());
+    });
+    if (!authorized) {
+        return ApiResult::failure("unauthorized", authorized.reason);
     }
 
     // No dataset given (#1040): M-1 trains on the table the pipeline's own
@@ -7241,7 +7545,8 @@ const nlohmann::json& register_model_schema() {
             {"description",
              "the model file's contents, for a text file: XGBoost's JSON model, LightGBM's "
              "text model, or the engine's own JSON weights (objective, base_score, "
-             "feature_names, trees). Give this or `weights_base64`"}}},
+             "feature_names, trees). Give this or `weights_base64`. Import limits default "
+             "to 1 GiB of decoded model bytes and 1,048,576 features; operators can configure them"}}},
           {"weights_base64",
            {{"type", "string"},
             {"minLength", 4},
@@ -7323,10 +7628,34 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
                                   "`weights_base64`, one of them");
     }
     const std::string field = text ? "/weights" : "/weights_base64";
-    const std::string bytes =
-        text ? input.at("weights").get<std::string>()
-             : zetta::detail::base64_decode_to_string(input.at("weights_base64").get<std::string>());
+    std::string reason;
+    const auto limits = zetta::ml::model_import_limits_from_environment(&reason);
+    if (!limits) return ApiResult::failure("engine_error", reason);
+    const auto& contents = input.at(text ? "weights" : "weights_base64").get_ref<const std::string&>();
+    if (text) {
+        if (contents.size() > limits->max_bytes) {
+            return ApiResult::failure("not_supported", field + ": model bytes exceed the import limit");
+        }
+    } else {
+        // Bound the decoder's allocation before inspecting or copying the body.
+        const std::size_t upper_bytes = contents.size() / 4 * 3;
+        if (upper_bytes > limits->max_bytes && upper_bytes - limits->max_bytes > 2) {
+            return ApiResult::failure("not_supported", field + ": model bytes exceed the import limit");
+        }
+        if (!strict_base64(contents)) {
+            return ApiResult::failure("invalid_input", field + ": expected padded base64");
+        }
+        const std::size_t padding = contents.ends_with("==") ? 2 : (contents.ends_with('=') ? 1 : 0);
+        if (upper_bytes - padding > limits->max_bytes) {
+            return ApiResult::failure("not_supported", field + ": model bytes exceed the import limit");
+        }
+    }
+    if (input.contains("feature_names") && input.at("feature_names").size() > limits->max_features) {
+        return ApiResult::failure("not_supported", "/feature_names: exceeds the import limit");
+    }
+    const std::string bytes = text ? contents : zetta::detail::base64_decode_to_string(contents);
     zetta::ml::ModelImportOptions options;
+    options.limits = *limits;
     if (input.contains("format")) {
         options.format =
             zetta::ml::model_file_format_from_string(input.at("format").get<std::string>());
@@ -7334,7 +7663,6 @@ ApiResult handle_register_model(const nlohmann::json& input, ApiContext& context
     if (input.contains("feature_names")) {
         options.feature_names = input.at("feature_names").get<std::vector<std::string>>();
     }
-    std::string reason;
     const std::optional<zetta::ml::ImportedModel> imported =
         zetta::ml::import_model(bytes, options, &reason);
     if (!imported) return ApiResult::failure("not_supported", field + ": " + reason);
@@ -7663,11 +7991,12 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
         if (const auto mapping = model->feature_schema().find("entity_key_mapping");
             mapping != model->feature_schema().end()) {
             std::string reason;
-            entity_keys = zetta::data::entity_key_mapping_from_json(*mapping, &reason);
+            // Inline, or a reference to the entity-key table (#1255).
+            entity_keys = context.node.resolve_entity_key_mapping(*mapping, &reason);
             if (!entity_keys) {
                 return ApiResult::failure(
                     "engine_error",
-                    "model has an invalid entity key mapping: " + reason);
+                    "model's entity key mapping cannot be read: " + reason);
             }
         }
         std::vector<std::int64_t> entities;
@@ -7694,7 +8023,7 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
             }
         }
         scored = zetta::ml::score_rows(*model, rows->get<std::vector<nlohmann::json>>(),
-                                       entities, top_k);
+                                       entities, top_k, entity_keys);
     } else {
         const zetta::data::DatasetPath path =
             zetta::data::parse_dataset_path(dataset_path->get<std::string>());
@@ -8000,7 +8329,7 @@ ApiResult handle_deployment_profile(const nlohmann::json& input, ApiContext& con
          "member; it is not shareable between members"}};
     profile["clustering"] = {
         {"model", "equal peers — no leader, no election"},
-        {"join", "--peer HOST:PORT (repeatable) plus --join-token"},
+        {"join", "--peer HOST:PORT (repeatable) plus --join-token, and --identity-root unless the node has the cluster's admin token"},
         {"members_now", context.cluster != nullptr
                             ? static_cast<long long>(context.cluster->peer_count() + 1)
                             : 1},
@@ -8020,6 +8349,10 @@ ApiResult handle_deployment_profile(const nlohmann::json& input, ApiContext& con
          "air-gapped node works"}};
     profile["identity"] = {
         {"seed", "--admin-token, or ZETTA_ADMIN_TOKEN"},
+        {"cluster",
+         "give every node of one cluster the same admin token: it derives the identity "
+         "root that seals every account, role and token, and a node with any other "
+         "token issues nothing the cluster honors"},
         {"why",
          "a fresh node otherwise generates its owner token and prints it once, which an "
          "automated deploy cannot capture. Seeding makes the deploy deterministic"},
@@ -8069,7 +8402,9 @@ const nlohmann::json& add_dataset_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description",
-             "a parquet/jsonl/json/csv file on the node's filesystem"}}},
+             "a parquet/jsonl/json/csv file staged in the node's import directory "
+             "(imports/ under its data directory), named relative to it: no absolute "
+             "path, no '..', no symbolic link (#1391)"}}},
           {"database",
            {{"type", "string"},
             {"minLength", 1},
@@ -8153,8 +8488,14 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
         input.value("replication_factor", options.replication_factor);
     options.members = context.node.cluster_members();  // live placement roster
 
-    const zetta::data::AddDatasetResult added = zetta::data::add_dataset_file(
-        context.node, input.at("path").get<std::string>(), options);
+    // #1391: the path is relative to the node's import directory, and nothing outside
+    // it (the security directory, the identity files, any other file the node can
+    // read) is reachable from here.
+    const zetta::data::ImportPathResult staged = zetta::data::resolve_import_path(
+        context.node, input.at("path").get<std::string>(), zetta::data::ImportEntry::File);
+    if (!staged.ok()) return ApiResult::failure("invalid_input", "/path: " + staged.error, "/path");
+    const zetta::data::AddDatasetResult added =
+        zetta::data::add_dataset_file(context.node, staged.path, options);
     if (!added.ok()) {
         return ApiResult::failure("engine_error", added.error);
     }
@@ -8557,8 +8898,26 @@ const nlohmann::json& saved_connection_schema() {
              "credential itself."}}},
           {"created",
            {{"type", "string"},
-            {"description", "when the connection was last saved (ISO-8601 UTC)"}}}}}};
+            {"description", "when the connection was last saved (ISO-8601 UTC)"}}},
+          {"safe_mode",
+           {{"type", "string"},
+            {"enum", {"off", "warn_writes", "warn_all"}},
+            {"description",
+             "the connection's safe mode level (set_safe_mode; default "
+             "warn_writes): which statements answer safe_mode_warning before "
+             "they run"}}}}}};
     return schema;
+}
+
+// A saved connection as every read surface returns it: redacted, with its safe
+// mode level (#1373).
+nlohmann::json connection_listing(const zetta::connect::SavedConnection& saved,
+                                  const Node& node) {
+    nlohmann::json value = saved.to_redacted_json();
+    value["safe_mode"] = std::string(zetta::governance::to_string(
+        zetta::governance::effective_safe_mode(
+            node, zetta::governance::SafeModeTarget::Connection, saved.name)));
+    return value;
 }
 
 const nlohmann::json& create_connection_schema() {
@@ -8644,7 +9003,7 @@ ApiResult handle_create_connection(const nlohmann::json& input,
                                   "connection '" + name + "' did not persist");
     }
     // Redacted on the way out — a create call never echoes the credential back.
-    return ApiResult::success(saved->to_redacted_json());
+    return ApiResult::success(connection_listing(*saved, context.node));
 }
 
 ApiResult handle_list_connections(const nlohmann::json& input,
@@ -8653,7 +9012,7 @@ ApiResult handle_list_connections(const nlohmann::json& input,
     nlohmann::json connections = nlohmann::json::array();
     for (const zetta::connect::SavedConnection& saved :
          zetta::connect::list_connections(context.node)) {
-        connections.push_back(saved.to_redacted_json());
+        connections.push_back(connection_listing(saved, context.node));
     }
     nlohmann::json output;
     output["connections"] = std::move(connections);
@@ -8666,6 +9025,12 @@ ApiResult handle_delete_connection(const nlohmann::json& input,
     nlohmann::json output;
     output["name"] = name;
     output["removed"] = zetta::connect::remove_connection(context.node, name);
+    // Its safe mode level goes with it, so a later connection saved under the
+    // same name starts at the default rather than inheriting a stale level.
+    if (output["removed"].get<bool>()) {
+        zetta::governance::clear_safe_mode(
+            context.node, zetta::governance::SafeModeTarget::Connection, name);
+    }
     return ApiResult::success(std::move(output));
 }
 
@@ -8759,18 +9124,24 @@ const nlohmann::json& create_dataset_from_query_output_schema() {
     return schema;
 }
 
-// Does this connector stay on the machine the node runs on? A loopback host or
-// a unix-socket path never crosses the network, so it is not "a cloud provider"
-// by any reading (#994). Kept deliberately narrow — loopback and sockets only.
-// A private-range address may still be a different machine across a VPN, and
-// that is a network reach worth naming.
+// Consent and destination approval are separate checks. A loopback source may
+// skip cloud consent, but still needs an exact operator connector allowance.
 bool is_local_source(const zetta::connect::ConnectorConfig& config) {
-    if (config.type != "postgres") return false;  // warehouses are remote by construction
-    const std::string& host = config.host;
-    if (host.empty()) return true;          // libpq default: the local socket
-    if (host.front() == '/') return true;   // an explicit unix-socket directory
-    return host == "localhost" || host == "127.0.0.1" || host == "::1" ||
-           host == "[::1]";
+    const auto loopback = [](const std::string& host) {
+        return host == "localhost" || host == "127.0.0.1" || host == "::1";
+    };
+    // A lake service is local only when its endpoint names a loopback host.
+    // (Keyed on the type: an `endpoint` on any other type is never read.)
+    if (config.type == "lake_sqlite" || config.type == "lake_duckdb" ||
+        config.type == "lake_polars") {
+        return loopback(zetta::connect::endpoint_host(config.endpoint));
+    }
+    // Warehouses are remote by construction. Socket paths and an empty host are
+    // refused by the connector authority check, so only a loopback name is local.
+    if (config.type != "postgres" && config.type != "mysql" && config.type != "tidb") {
+        return false;
+    }
+    return loopback(config.host);
 }
 
 // Resolve the connector this call should use: either a saved connection by name
@@ -8816,6 +9187,70 @@ std::optional<zetta::connect::ConnectorConfig> resolve_query_connector(
     return config;
 }
 
+// --- safe mode for sources (#1373, docs/api/safe-mode.md) --------------------
+//
+// A source's level is set on its SAVED connection, so only a call naming one is
+// described. An inline connector has no name to carry a level and runs at the
+// connection default (`warn_writes`), under which a read never warns. A saved
+// connection whose credential does not open runs nothing: the handler explains.
+std::optional<zetta::connect::SavedConnection> safe_mode_connection(
+    const nlohmann::json& input, ApiContext& context) {
+    if (!input.contains("connection") || input.contains("connector")) {
+        return std::nullopt;
+    }
+    std::optional<zetta::connect::SavedConnection> saved =
+        zetta::connect::find_connection(context.node,
+                                        input.at("connection").get<std::string>());
+    if (!saved || saved->credential == zetta::connect::CredentialState::Unreadable) {
+        return std::nullopt;
+    }
+    return saved;
+}
+
+// create_dataset_from_query runs the caller's query, verbatim. Sources are read
+// through read-only guards, so it never writes; a statement the guard refuses
+// never runs at all, and is refused by the handler rather than warned about.
+std::vector<zetta::governance::SafeModeStatements> describe_query_safe_mode(
+    const nlohmann::json& input, ApiContext& context) {
+    const std::optional<zetta::connect::SavedConnection> saved =
+        safe_mode_connection(input, context);
+    if (!saved) return {};
+    const std::string query = input.at("query").get<std::string>();
+    if (!zetta::connect::connector_query_rejection(saved->config, query).empty()) {
+        return {};
+    }
+    return {{zetta::governance::SafeModeTarget::Connection, saved->name,
+             {zetta::governance::redact_secret(query, saved->config.token)},
+             /*writes=*/false}};
+}
+
+// What list_source_tables asks the source for.
+zetta::connect::SourceCatalogRequest source_catalog_request(const nlohmann::json& input) {
+    zetta::connect::SourceCatalogRequest request;
+    request.max_tables = input.value("max_tables", static_cast<std::size_t>(200));
+    request.include_columns = input.value("include_columns", true);
+    request.schema = input.value("schema", std::string{});
+    request.match = input.value("match", std::string{});
+    return request;
+}
+
+// list_source_tables runs the catalog statements source_catalog_statements
+// names — reads, so only `warn_all` warns on them.
+std::vector<zetta::governance::SafeModeStatements> describe_catalog_safe_mode(
+    const nlohmann::json& input, ApiContext& context) {
+    const std::optional<zetta::connect::SavedConnection> saved =
+        safe_mode_connection(input, context);
+    if (!saved) return {};
+    zetta::governance::SafeModeStatements entry{
+        zetta::governance::SafeModeTarget::Connection, saved->name, {}, false};
+    for (std::string& statement : zetta::connect::source_catalog_statements(
+             saved->config, source_catalog_request(input))) {
+        entry.statements.push_back(
+            zetta::governance::redact_secret(std::move(statement), saved->config.token));
+    }
+    return {std::move(entry)};
+}
+
 // --- list_source_tables ------------------------------------------------------
 //
 // Browse a connected source's schema WITHOUT ingesting from it (#994). Until
@@ -8837,7 +9272,8 @@ const nlohmann::json& list_source_tables_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description",
-             "a saved connection by name (give this OR an inline connector)"}}},
+             "a saved connection by name (inline discovery requires create_connection "
+             "permission)"}}},
           {"connector", connector_property_schema()},
           {"schema",
            {{"type", "string"},
@@ -8892,120 +9328,47 @@ const nlohmann::json& list_source_tables_output_schema() {
     return schema;
 }
 
-// A single-quoted SQL literal. The inputs here are caller-supplied filters that
-// go into a catalog query, so they are escaped rather than concatenated raw —
-// the connector's read-only guard stops a second statement, but it is not an
-// argument for building the first one carelessly.
-std::string sql_literal(const std::string& value) {
-    std::string out = "'";
-    for (const char character : value) {
-        if (character == '\'') out += '\'';
-        out += character;
-    }
-    out += "'";
-    return out;
-}
-
 ApiResult handle_list_source_tables(const nlohmann::json& input,
                                     ApiContext& context) {
+    // A reader may browse an approved saved source, but cannot choose a new
+    // network destination through an inline connector (#1414).
+    if (input.contains("connector")) {
+        bool permitted = context.acting_key.empty() && !context.acting_is_user;
+        context.node.run_on_owner([&] {
+            const zetta::governance::Operation operation{
+                zetta::governance::CapabilityDomain::Orchestration, "create_connection"};
+            if (context.acting_is_user) {
+                permitted =
+                    context.node.may_call_tool(context.acting_key, true, "create_connection") &&
+                    static_cast<bool>(context.node.authorize_user(context.acting_key, operation));
+            } else if (!context.acting_key.empty()) {
+                permitted =
+                    static_cast<bool>(context.node.authorize(context.acting_key, operation));
+            }
+        });
+        if (!permitted)
+            return ApiResult::failure(
+                "unauthorized",
+                "inline discovery requires create_connection permission; use a saved connection");
+    }
     std::string reason;
     const std::optional<zetta::connect::ConnectorConfig> config =
         resolve_query_connector(input, context, reason);
     if (!config) return ApiResult::failure("invalid_input", reason);
 
-    const auto max_tables =
-        input.value("max_tables", static_cast<std::size_t>(200));
-    const bool include_columns = input.value("include_columns", true);
-    const std::string only_schema = input.value("schema", std::string{});
-    const std::string match = input.value("match", std::string{});
+    // The per-source catalog reads (information_schema, MySQL's aliased
+    // variant, SQLite's sqlite_master, Polars' dataset listing) live with the
+    // connectors in connect/source_catalog.hpp.
+    const zetta::connect::SourceCatalogRequest request = source_catalog_request(input);
 
-    // information_schema is ISO SQL and both shipped connectors expose it, so
-    // one statement serves Postgres and Snowflake alike. The row cap is applied
-    // here rather than with LIMIT, which Snowflake and Postgres spell the same
-    // way but the read-only guard need not care about.
-    std::string statement =
-        "SELECT t.table_schema, t.table_name, t.table_type"
-        " FROM information_schema.tables t"
-        " WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema')";
-    if (!only_schema.empty()) {
-        statement += " AND t.table_schema = " + sql_literal(only_schema);
-    }
-    if (!match.empty()) {
-        statement += " AND LOWER(t.table_name) LIKE " +
-                     sql_literal("%" + [&] {
-                       std::string lowered = match;
-                       std::transform(lowered.begin(), lowered.end(),
-                                      lowered.begin(), [](unsigned char c) {
-                                          return static_cast<char>(std::tolower(c));
-                                      });
-                       return lowered;
-                     }() + "%");
-    }
-    statement += " ORDER BY t.table_schema, t.table_name";
-
-    const zetta::connect::ConnectorResult listed = zetta::connect::run_connector_query(
-        *config, statement, max_tables + 1);
-    if (!listed.ok()) return ApiResult::failure("engine_error", listed.error);
-
-    const bool truncated = listed.data.rows.size() > max_tables;
-    nlohmann::json tables = nlohmann::json::array();
-    std::vector<std::pair<std::string, std::string>> wanted;
-    for (const nlohmann::json& row : listed.data.rows) {
-        if (tables.size() >= max_tables) break;
-        const std::string schema_name = row.value("table_schema", std::string{});
-        const std::string table_name = row.value("table_name", std::string{});
-        wanted.emplace_back(schema_name, table_name);
-        tables.push_back({{"schema", schema_name},
-                          {"table", table_name},
-                          {"kind", row.value("table_type", std::string{})}});
-    }
-
-    if (include_columns && !wanted.empty()) {
-        // One catalog query for every column of every table listed, rather than
-        // one round trip per table — a schema with 200 tables would otherwise be
-        // 200 connections.
-        std::string columns_statement =
-            "SELECT c.table_schema, c.table_name, c.column_name, c.data_type,"
-            " c.is_nullable, c.ordinal_position"
-            " FROM information_schema.columns c"
-            " WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')";
-        if (!only_schema.empty()) {
-            columns_statement +=
-                " AND c.table_schema = " + sql_literal(only_schema);
-        }
-        columns_statement += " ORDER BY c.table_schema, c.table_name, c.ordinal_position";
-
-        const zetta::connect::ConnectorResult described =
-            zetta::connect::run_connector_query(*config, columns_statement,
-                                                /*max_rows=*/100000);
-        if (described.ok()) {
-            for (const nlohmann::json& row : described.data.rows) {
-                const std::string schema_name =
-                    row.value("table_schema", std::string{});
-                const std::string table_name =
-                    row.value("table_name", std::string{});
-                for (nlohmann::json& entry : tables) {
-                    if (entry.value("schema", std::string{}) != schema_name ||
-                        entry.value("table", std::string{}) != table_name) {
-                        continue;
-                    }
-                    entry["columns"].push_back(
-                        {{"column", row.value("column_name", std::string{})},
-                         {"type", row.value("data_type", std::string{})},
-                         {"nullable",
-                          row.value("is_nullable", std::string{"YES"}) == "YES"}});
-                    break;
-                }
-            }
-        }
-        // A source that refuses the column catalog still returns its table list;
-        // the tables are the answer to "what is in here", columns are detail.
-    }
+    zetta::connect::SourceCatalog catalog =
+        zetta::connect::list_source_catalog(*config, request);
+    if (!catalog.ok()) return ApiResult::failure("engine_error", catalog.error);
 
     nlohmann::json output;
-    output["table_count"] = tables.size();
-    output["truncated"] = truncated;
-    output["tables"] = std::move(tables);
+    output["table_count"] = catalog.tables.size();
+    output["truncated"] = catalog.truncated;
+    output["tables"] = std::move(catalog.tables);
     return ApiResult::success(std::move(output));
 }
 
@@ -9101,10 +9464,12 @@ std::optional<zetta::governance::ConsentAction> describe_create_dataset_from_que
     // The source as a human reads it: "postgres 127.0.0.1:5433/motive",
     // "snowflake ab12345.us-east-1".
     std::string target = config->type;
-    if (config->type == "postgres") {
+    if (config->type == "postgres" || config->type == "mysql" || config->type == "tidb") {
         target += " " + (config->host.empty() ? std::string{"localhost"} : config->host);
         if (!config->port.empty()) target += ":" + config->port;
         if (!config->database.empty()) target += "/" + config->database;
+    } else if (config->type.starts_with("lake_")) {
+        target += " " + config->endpoint;  // "lake_sqlite http://orders…:8080"
     } else if (!config->account.empty()) {
         target += " " + config->account;
     }
@@ -9267,7 +9632,9 @@ const nlohmann::json& testsuite_run_schema() {
           {"custom_data_path",
            {{"type", "string"},
             {"description", "a churn dataset directory for cases that accept "
-                            "one (default: the built-in synthetic dataset)"}}}}}};
+                            "one, relative to the node's import directory (imports/ "
+                            "under its data directory; #1433) (default: the built-in "
+                            "synthetic dataset)"}}}}}};
     return schema;
 }
 
@@ -9387,9 +9754,21 @@ ApiResult handle_testsuite_run(const nlohmann::json& input, ApiContext& context)
             return *rejected;
         }
     }
+    // #1433: a custom dataset directory is named under the import directory, like
+    // every other path a caller gives.
+    std::string custom_data_path = input.value("custom_data_path", std::string());
+    if (!custom_data_path.empty()) {
+        const zetta::data::ImportPathResult staged = zetta::data::resolve_import_path(
+            context.node, custom_data_path, zetta::data::ImportEntry::Directory);
+        if (!staged.ok()) {
+            return ApiResult::failure("invalid_input", "/custom_data_path: " + staged.error,
+                                      "/custom_data_path");
+        }
+        custom_data_path = staged.path.string();
+    }
     auto handle = zetta::testkit::AsyncCaseRun::start(
         context.node, *test_case, std::move(options),
-        input.value("custom_data_path", ""), context.recorder, context.trace);
+        custom_data_path, context.recorder, context.trace);
     if (!handle) {
         return ApiResult::failure("engine_error",
                                   "the run record could not be created");
@@ -9740,8 +10119,8 @@ const nlohmann::json& create_agent_schema() {
           {"model",
            {{"type", "string"},
             {"description",
-             "native agents (required there): checkpoint dir, model:<uuid>, or a HuggingFace "
-             "repo id"}}},
+             "native agents (required there): exact operator-registered checkpoint selector; "
+             "registration is checked before serving"}}},
           // zetta#1015: the agent's family and runtime, the Studio agent shape, the Ask Orama
           // contract, granted Pipelines, a Python agent's definition and a service's endpoint.
           {"kind", {{"type", "string"}, {"enum", {"custom", "orama"}}}},
@@ -10340,6 +10719,19 @@ const nlohmann::json& chat_schema() {
              "scope the answer to this project (name or uuid): its trained model's "
              "measure and ranked drivers are given to the agent, so it answers from "
              "what the pipeline actually produced instead of from priors (#914)"}}},
+          {"dataset_path",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "when the turn proposes a run, the dataset it would train on (`database.table` "
+             "or a dataset directory); the built-in demo dataset when omitted (#969)"}}},
+          {"holdout_fraction",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 1},
+            {"description",
+             "when the turn proposes a run, the rows it holds out to measure the model on "
+             "data it did not train on (#953)"}}},
           {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
           {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}}}}};
     return schema;
@@ -10386,6 +10778,17 @@ const nlohmann::json& chat_output_schema() {
           {"pipeline",
            {{"type", "object"},
             {"description", "the proposed Pipeline, when the turn built one"}}},
+          {"proposal",
+           {{"type", "object"},
+            {"description",
+             "when the turn is an `action`, the run it proposes (propose_run's output): the "
+             "impact preview and the calls that approve or reject it. Nothing exists until "
+             "approve_run_proposal — no Project, no Pipeline, no run (#969)"}}},
+          {"proposal_warning",
+           {{"type", "string"},
+            {"description",
+             "why an `action` turn carries no proposal (the ask did not compile, or the "
+             "caller may not propose runs)"}}},
           {"tool_calls",
            {{"type", "array"},
             {"items",
@@ -10664,8 +11067,8 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     };
 
     // Run the agent (loads its model, runs the tool-calling loop) — the shared path the GUI
-    // chat panel also uses, so both behave identically. agent.model must be a local
-    // checkpoint dir; pull it first with `zetta pull` if it isn't present.
+    // chat panel also uses, so both behave identically. agent.model must select an
+    // operator-registered checkpoint; respond checks it before any filesystem loader.
     // Ground the answer in what this Project's pipeline actually produced (#914).
     // The two questions a churn buyer asks — "what's driving churn" and "which are
     // most at risk" — are answerable from the trained model's ranked drivers and its
@@ -10817,6 +11220,28 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
             output["pipeline_steps"] =
                 static_cast<int>(chat.action->execution_graph.nodes().size());
         }
+        // An `action` turn asks to build something, and a chat may not change the node
+        // (the read-only tool allowlist above). So the turn PROPOSES the run instead
+        // (#969): propose_run records an impact preview and creates nothing else, and a
+        // person approves it with approve_run_proposal. It goes through the registry with
+        // the caller's own context, so a caller who may not propose runs gets a reply
+        // without one — and the audit trail records the proposal under the caller.
+        if (chat.action->kind == zetta::agent::InteractionKind::Action) {
+            nlohmann::json propose = {{"message", message}, {"agent", agent_id}};
+            for (const char* key : {"dataset_path", "holdout_fraction"}) {
+                if (const auto found = input.find(key); found != input.end()) propose[key] = *found;
+            }
+            const ApiResult proposed =
+                context.registry == nullptr
+                    ? ApiResult::failure("engine_error", "no capability registry for this call")
+                    : context.registry->call("propose_run", propose, context);
+            if (proposed.ok) {
+                output["proposal"] = proposed.value;
+            } else {
+                output["proposal_warning"] =
+                    "this turn proposes a run, but none was recorded: " + proposed.error.message;
+            }
+        }
     } else {
         // The generation did not parse as a response envelope. Say so explicitly: an unparsed
         // turn is an error state, not an `action` that happened to carry no pipeline.
@@ -10841,17 +11266,20 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
-// --- agent_run: the base agent builds AND runs an execution graph ------------------
+// --- agent_run: the base agent builds a plan, and runs it once it is approved ----------
 //
 // The point of #872: the base (#555) agent is usable RIGHT AWAY — it does not need the
-// RLVR tool-calling fine-tune (#859) to drive real work. This capability closes the loop
-// end to end from plain language:
+// RLVR tool-calling fine-tune (#859) to drive real work. From plain language:
 //   1. the agent reads the message and recognizes the use case (chat/respond),
 //   2. the engine compiles that message into a real ExecutionGraph (pipeline::compile_intent
-//      — the same churn-shape heuristic behind compile_intent), stored on a project,
-//   3. the graph runs through the gate + the real churn engine (delegated to handle_run).
-// So "the agent builds and runs a churn graph for Charles" is one call. #859 later lets the
-// agent emit the graph step-by-step itself; today the engine builds it from the same intent.
+//      — the same churn-shape heuristic behind compile_intent), stored on a project
+//      **proposed**, and nothing runs (#913),
+//   3. once a principal holding orchestration:approve_plan approves it (approve_plan),
+//      agent_run with that project + graph_name runs it through the correctness gate +
+//      the real engine (delegated to handle_run).
+// agent_run never approves a plan itself. It used to record the caller's approval of
+// the plan it had just built, so a caller allowed only orchestration:run trained a model
+// and fired an `act` step on a Pipeline no human had reviewed (#913).
 const nlohmann::json& agent_run_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
@@ -10869,7 +11297,11 @@ const nlohmann::json& agent_run_schema() {
              "land the graph + run on this project (name or uuid); a new project is "
              "created when omitted"}}},
           {"graph_name",
-           {{"type", "string"}, {"description", "name for the stored graph (default derived)"}}},
+           {{"type", "string"},
+            {"description",
+             "name for the stored graph (default derived). With `project`, naming a graph "
+             "already stored there runs that plan if it is approved, and is refused if it "
+             "is only proposed"}}},
           {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
           {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}},
           {"top_k",
@@ -10891,7 +11323,10 @@ const nlohmann::json& agent_run_output_schema() {
         {"properties",
          {{"reply", {{"type", "string"}, {"description", "the agent's recognition of the ask"}}},
           {"shape",
-           {{"type", "string"}, {"description", "the compiled template: 'churn' | 'generic'"}}},
+           {{"type", "string"},
+            {"description",
+             "the compiled template: 'churn' | 'generic', or 'approved' when an approved "
+             "plan already stored on the project ran"}}},
           {"project", {{"type", "string"}}},
           {"graph", {{"type", "string"}}},
           {"graph_id", {{"type", "string"}}},
@@ -10918,6 +11353,56 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
                                       (agent->runtime == "python" ? std::string("agent-runtime")
                                                                   : std::string("its own service")) +
                                       ", outside Zetta; use it from lake");
+    }
+
+    // Run the stored plan the caller named, only if a principal approved it (#913).
+    // This is checked before the model loads: whether a plan may run does not depend
+    // on what the agent says about the ask.
+    const auto named_project = input.find("project");
+    const auto named_graph = input.find("graph_name");
+    if (named_project != input.end() && named_graph != input.end()) {
+        const std::shared_ptr<zetta::pipeline::Project> project =
+            resolve_project(context, named_project->get<std::string>());
+        if (!project) {
+            return ApiResult::failure("not_found", "no project '" +
+                                                       named_project->get<std::string>() +
+                                                       "' (or with that id)");
+        }
+        if (const std::shared_ptr<zetta::pipeline::ProjectGraph> existing =
+                resolve_graph(*project, named_graph->get<std::string>())) {
+            if (!existing->approved()) {
+                return ApiResult::failure(
+                    "not_approved",
+                    "the plan '" + existing->name() + "' on project '" + project->name() +
+                        "' is proposed and nobody has approved it, so agent_run will not "
+                        "run it. Approve it (approve_plan), then call agent_run again");
+            }
+            nlohmann::json run_input;
+            run_input["project"] = project->name();
+            run_input["graph"] = existing->name();
+            for (const char* passthrough :
+                 {"top_k", "dataset_path", "dataset", "model_name", "coordinate"}) {
+                if (const auto found = input.find(passthrough); found != input.end()) {
+                    run_input[passthrough] = *found;
+                }
+            }
+            const ApiResult run_result = handle_run(run_input, context);
+            if (!run_result.ok) return run_result;
+            nlohmann::json output;
+            output["reply"] = "Running the plan '" + existing->name() + "', approved by " +
+                              existing->approved_by() + " at " + existing->approved_at() + ".";
+            output["shape"] = "approved";
+            output["project"] = project->name();
+            output["graph"] = existing->name();
+            output["graph_id"] = existing->id();
+            nlohmann::json steps = nlohmann::json::array();
+            for (const std::shared_ptr<zetta::ir::Node>& node : existing->graph().nodes()) {
+                steps.push_back(node->name);
+            }
+            output["steps"] = std::move(steps);
+            output["run"] = run_result.value;
+            return ApiResult::success(std::move(output));
+        }
     }
 
     // 1. The agent reads the ask and recognizes the use case (the shared respond() path).
@@ -10968,44 +11453,16 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
                                 project->name() + "' (name clash or empty)");
     }
 
-    // `run` refuses a plan nobody approved (#969), and a freshly stored graph is
-    // `proposed`. Calling agent_run IS the approval: the caller asked, in one
-    // act, to build this and run it. So record that approval against the caller
-    // rather than bypass the gate — the audit trail then says who said yes,
-    // which is the whole point of the state existing.
-    //
-    // The conversational path is different and deliberately so: an agent that
-    // PROPOSES a run stops here, and a human approves separately. That is the
-    // `propose` half of #969 and it does not come through this handler.
-    if (!project->approve_graph(stored->name(), actor_of(context),
-                                zetta::util::now_iso8601())) {
-        return ApiResult::failure(
-            "engine_error",
-            "could not record approval for the plan agent_run just built");
-    }
-
-    // 3. Run it through the gate + the real engine — the exact path `run` uses (DRY).
-    nlohmann::json run_input;
-    run_input["project"] = project->name();
-    run_input["graph"] = graph_name;
-    for (const char* passthrough :
-         {"top_k", "dataset_path", "dataset", "model_name", "coordinate"}) {
-        if (const auto found = input.find(passthrough); found != input.end()) {
-            run_input[passthrough] = *found;
-        }
-    }
-    const ApiResult run_result = handle_run(run_input, context);
-    if (!run_result.ok) return run_result;  // reason already carries the failing step
-
-    nlohmann::json output;
-    output["reply"] = chat.result.reply;
-    output["shape"] = shape;
-    output["project"] = project->name();
-    output["graph"] = graph_name;
-    output["graph_id"] = stored->id();
-    output["steps"] = steps;
-    output["run"] = run_result.value;
-    return ApiResult::success(std::move(output));
+    // The plan is stored proposed and nothing runs (#913). Approval is a separate
+    // decision by a principal who holds orchestration:approve_plan, recorded by
+    // approve_plan; agent_run holds only orchestration:run and never approves.
+    return ApiResult::failure(
+        "not_approved",
+        "agent_run built the plan '" + stored->name() + "' on project '" + project->name() +
+            "' (" + std::to_string(steps.size()) + " steps, shape " + shape +
+            ") and stored it proposed; nothing ran. Approve it (approve_plan), then call "
+            "agent_run with project '" + project->name() + "' and graph_name '" +
+            stored->name() + "' to run it");
 }
 
 // --- dataset generation (#873): native, in-Zetta training-corpus synthesis ------------------
@@ -11053,12 +11510,19 @@ const nlohmann::json& generate_dataset_schema() {
             {"minLength", 1},
             {"description", "a generator kind from list_dataset_generators (e.g. 'base-agent')"}}},
           {"variants_per_subject",
-           {{"type", "integer"}, {"minimum", 1}, {"description", "task variants per plan subject"}}},
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", zetta::dataset::kMaxVariantsPerSubject},
+            {"description", "task variants per plan subject"}}},
           {"held_out_fraction",
            {{"type", "number"}, {"minimum", 0}, {"maximum", 1}, {"description", "canary fraction"}}},
           {"path",
            {{"type", "string"},
-            {"description", "write the gated JSONL corpus to this file on the node (optional)"}}}}}};
+            {"minLength", 1},
+            {"description",
+             "also write the gated JSONL corpus to a new file on the node, named relative to its "
+             "export directory (exports/ under the data directory); no absolute path, no '..', "
+             "no symbolic link, and never an existing file (optional)"}}}}}};
     return schema;
 }
 
@@ -11071,11 +11535,13 @@ const nlohmann::json& generate_dataset_output_schema() {
           {"subjects", {{"type", "array"}, {"items", {{"type", "string"}}}}},
           {"held_out", {{"type", "integer"}}},
           {"admitted", {{"type", "boolean"}}},
-          {"path", {{"type", "string"}}}}}};
+          {"path",
+           {{"type", "string"},
+            {"description", "the written file, relative to the node's export directory"}}}}}};
     return schema;
 }
 
-ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
+ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext& context) {
     const std::string kind = input.at("kind").get<std::string>();
     const std::shared_ptr<const zetta::dataset::DatasetGenerator> generator =
         zetta::dataset::DatasetGeneratorFactory::builtin().create(kind);
@@ -11083,9 +11549,18 @@ ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
         return ApiResult::failure("not_found", "no dataset generator '" + kind + "'");
     }
     zetta::dataset::DatasetGenSpec spec;
-    spec.variants_per_subject = input.value("variants_per_subject", 1);
+    // Read wide and clamp before narrowing, so a huge count cannot wrap into range on the way to
+    // int; anything over the ceiling stays over it and the generator refuses it (#1398).
+    const std::int64_t variants = input.value("variants_per_subject", std::int64_t{1});
+    spec.variants_per_subject = static_cast<int>(std::clamp<std::int64_t>(
+        variants, 0, std::int64_t{zetta::dataset::kMaxVariantsPerSubject} + 1));
     spec.held_out_fraction = input.value("held_out_fraction", 0.0);
     const zetta::dataset::GeneratedDataset dataset = generator->generate(spec);
+    // The generator refuses a spec over its work ceilings before expanding it (#1398).
+    if (!dataset.error.empty()) {
+        return ApiResult::failure("invalid_input", "/variants_per_subject: " + dataset.error,
+                                  "/variants_per_subject");
+    }
 
     // Gate it (blender-lr discipline) — the generator builds gated cases, but the corpus is only
     // trusted once admit_corpus confirms it (reference passes, controls fail).
@@ -11101,14 +11576,15 @@ ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
         output["gate_failure"] = std::string(zetta::agent::to_string(gate.failures.front().kind)) +
                                  " (task '" + gate.failures.front().task_id + "')";
     }
+    // The corpus file goes only under the node's export directory, never over an
+    // existing file and never through a link (#1397).
     if (const auto path = input.find("path"); path != input.end()) {
-        std::ofstream file(path->get<std::string>());
-        if (!file) {
-            return ApiResult::failure(
-                "engine_error", "could not open '" + path->get<std::string>() + "' for writing");
+        const zetta::data::ExportResult written = zetta::data::write_export_file(
+            context.node, path->get<std::string>(), zetta::agent::dump_corpus_jsonl(dataset.cases));
+        if (!written.ok()) {
+            return ApiResult::failure("invalid_input", "/path: " + written.error, "/path");
         }
-        file << zetta::agent::dump_corpus_jsonl(dataset.cases);
-        output["path"] = *path;
+        output["path"] = written.relative;
     }
     return ApiResult::success(std::move(output));
 }
@@ -11429,7 +11905,10 @@ void register_core_capabilities(Registry& registry) {
         "need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at "
         "table or database scope); CREATE USER needs users:manage, CREATE TOKEN "
         "tokens:manage, role and policy statements roles:manage. Every "
-        "data-changing statement is audited as a data_changed action.",
+        "data-changing statement is audited as a data_changed action. A "
+        "database in safe mode (warn_writes: writes; warn_all: everything) "
+        "answers safe_mode_warning naming the statement first; repeat with "
+        "safe_mode_confirmation to run it.",
         sql_schema(),
         sql_output_schema(),
         CapabilityKind::Read,
@@ -11437,6 +11916,9 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_sql};
+    // Safe mode per database (#1373): a statement against a database whose level
+    // warns on it is refused with safe_mode_warning until it is confirmed.
+    sql.describe_safe_mode = describe_sql_safe_mode;
     // A statement of any length travels as a JSON body (#1231): the GET form
     // carries it in the request line, which the parser caps near 4 KiB.
     sql.post_alias = true;
@@ -11459,7 +11941,9 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "list_projects",
         "List projects",
-        "Read the names of every AI project on this node. No side effects.",
+        "Read the names of every AI project on this node, with a summary of "
+        "each (id, name, and each graph's id, name and approval) for a caller "
+        "who may also call get_project. No side effects.",
         list_projects_schema(),
         list_projects_output_schema(),
         CapabilityKind::Read,
@@ -11471,12 +11955,12 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "list_traces",
         "List recent traces",
-        "Read the most recent observability spans on this node (intent, "
-        "timings, result shapes). No side effects.",
+        "Read the most recent node-wide observability spans (intent, "
+        "timings, result shapes). Requires cluster:admin. No side effects.",
         list_traces_schema(),
         list_traces_output_schema(),
         CapabilityKind::Read,
-        Operation{CapabilityDomain::Api, "query"},
+        Operation{CapabilityDomain::Api, "cluster_admin"},
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_list_traces});
@@ -11484,12 +11968,12 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "get_trace",
         "Get one trace",
-        "Read every recorded span of one trace by its 32-hex trace id. No "
-        "side effects.",
+        "Read every recorded span of one trace by its 32-hex trace id. "
+        "Requires cluster:admin. No side effects.",
         get_trace_schema(),
         get_trace_output_schema(),
         CapabilityKind::Read,
-        Operation{CapabilityDomain::Api, "query"},
+        Operation{CapabilityDomain::Api, "cluster_admin"},
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_trace});
@@ -11829,7 +12313,9 @@ void register_core_capabilities(Registry& registry) {
         "list_datasets",
         "List datasets",
         "Read the computed summary of every dataset — schema, row count, "
-        "size, format, replication, partition placement. No side effects.",
+        "size, format, replication, partition placement. With detail "
+        "\"summary\", only the fields a dataset list shows, from counters, "
+        "reading no row and no file. No side effects.",
         list_datasets_schema(),
         list_datasets_output_schema(),
         CapabilityKind::Read,
@@ -11937,7 +12423,8 @@ void register_core_capabilities(Registry& registry) {
         "Snapshot a feedback bundle — your description plus the relevant "
         "traces, recent errors, crash reports, and versions — stored as a "
         "large object you explicitly export; nothing leaves the cluster on "
-        "its own.",
+        "its own. Only callers with cluster:admin attach diagnostics; other "
+        "callers submit their description and version information only.",
         submit_feedback_schema(),
         submit_feedback_output_schema(),
         CapabilityKind::Action,
@@ -12125,8 +12612,8 @@ void register_core_capabilities(Registry& registry) {
     Capability create_agent_capability{
         "create_agent",
         "Create an agent",
-        "Create a served, selectable agent — a model (checkpoint dir, model:<uuid>, or a "
-        "HuggingFace repo id) plus an optional system prompt and the tools it may call. "
+        "Create a served, selectable agent — an operator-registered model selector "
+        "plus an optional system prompt and the tools it may call. "
         "Returns the stored record with its generated id; replicates to every node.",
         create_agent_schema(),
         agent_fields_schema(),
@@ -12262,8 +12749,10 @@ void register_core_capabilities(Registry& registry) {
         "Chat with an agent",
         "Send a message to an agent and get its reply, with tool-calling: the agent's model "
         "generates, any tool calls it emits run in its sandbox and feed back, until it "
-        "answers. Loads the agent's model (a local checkpoint dir). No persistent side "
-        "effects.",
+        "answers. Loads only an operator-registered checkpoint. It changes nothing on "
+        "the node: a turn that asks to build something returns a run PROPOSAL (propose_run, "
+        "under the caller's own rights) with an impact preview, and nothing is created until "
+        "approve_run_proposal. Also accepts a JSON-body POST.",
         chat_schema(),
         chat_output_schema(),
         CapabilityKind::Read,
@@ -12271,32 +12760,29 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_chat};
-    // Model decode is CPU/GPU-bound and touches only the thread-safe replication
-    // store, so in principle it can run off the owner/tick thread. But the current
-    // runtime::offload path does not resume the REST request coroutine back on the
-    // connection's executor, so route.send() after it never completes and the HTTP
-    // response hangs (MCP, which runs on the owner loop, is unaffected). Until the
-    // offload/executor resumption is fixed, serve chat on the owner loop — correct,
-    // at the cost of briefly occupying the tick during a decode. See #731.
-    // NOT offloadable, and the reason changed in 2026-08 (#975). The flag is only
-    // safe for a handler touching no main-thread-only Node state — and grounding a
-    // reply on the active Project (#969) reads `node.runs()` and
-    // `node.project_names()`, which are exactly that. So offloading chat today would
-    // race the Node tree.
+    // NOT offloadable. The flag is only safe for a handler touching no main-thread-only Node
+    // state, and grounding a reply on the active Project (#969) reads `node.runs()` and
+    // `node.project_names()`, and an `action` turn records a proposal — exactly that state.
+    // Decode therefore occupies the owner loop for the length of a turn (#731).
     //
-    // That also means the REST hang in #975 cannot be fixed by flipping this flag:
-    // whoever fixes it has to either move the grounding read behind the owner gate
-    // or fix the offload/executor resumption the comment below describes.
+    // A read, so REST serves it as GET; it also takes a JSON-body POST (#975). A turn carries a
+    // message and a conversation history, which belong in a body rather than a query string, and
+    // POST /v1/chat is what a client writes first. Before the router answered unmatched requests
+    // (#1011), that POST matched no route and the connection sat with no reply at all, which read
+    // exactly like a hung chat while MCP and /assist answered.
+    chat_capability.post_alias = true;
     chat_capability.offloadable = false;
     registry.add(std::move(chat_capability));
     registry.add(Capability{
         "agent_run",
-        "Agent builds + runs a graph",
-        "Give an agent a plain-language ask; it recognizes the use case, compiles a real "
-        "execution graph from it, and runs that graph through the gate + the real engine "
-        "(churn today) — end to end in one call. The base agent needs no tool-calling "
-        "fine-tune for this. Returns the agent's reply, the built graph's steps, and the "
-        "run id (poll get_run / system.runs).",
+        "Agent builds a plan; runs it once approved",
+        "Give an agent a plain-language ask; it recognizes the use case and compiles a real "
+        "execution graph from it, stored on the project as a proposed plan. Nothing runs: "
+        "the call is refused (not_approved) and names the plan to approve. Once it is "
+        "approved (approve_plan), agent_run with that project + graph_name runs it through "
+        "the correctness gate + the real engine (churn today) and returns the reply, the "
+        "graph's steps, and the run id (poll get_run / system.runs). agent_run never "
+        "approves a plan itself (#913).",
         agent_run_schema(),
         agent_run_output_schema(),
         CapabilityKind::Job,
@@ -12522,9 +13008,10 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "add_dataset",
         "Add a dataset",
-        "Load a local parquet/jsonl/json/csv file into a new partitioned "
+        "Load a parquet/jsonl/json/csv file staged in the node's import "
+        "directory (imports/ under its data directory) into a new partitioned "
         "table placed across the cluster (audited as dataset_added; visible "
-        "in system.datasets).",
+        "in system.datasets). The path is relative to that directory (#1391).",
         add_dataset_schema(),
         add_dataset_output_schema(),
         CapabilityKind::Action,
@@ -12552,7 +13039,7 @@ void register_core_capabilities(Registry& registry) {
         "Upload a dataset",
         "Load a csv or jsonl file's TEXT, sent in the request, into a new "
         "partitioned table placed across the cluster - for a caller that cannot "
-        "put a file on the node (add_dataset reads the node's filesystem). Same "
+        "put a file on the node (add_dataset reads the node's import directory). Same "
         "parsing, table creation and placement as add_dataset; at most 16 MiB of "
         "content (a larger file goes to a bucket and loads with load_dataset_object). "
         "Audited as dataset_added; the table then appears in "
@@ -12624,7 +13111,7 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_list_connections});
 
-    registry.add(Capability{
+    Capability list_source_tables{
         "list_source_tables",
         "List the tables in a connected source",
         "Browse a connected source's catalog WITHOUT ingesting from it: the "
@@ -12632,7 +13119,11 @@ void register_core_capabilities(Registry& registry) {
         "connection, filtered by schema and by a name substring. Opens one "
         "connection, runs one read-only catalog query, lands nothing \u2014 use "
         "this to FIND a table, then create_dataset_from_query to pull it. "
-        "Filter with match='score' to locate scoring tables.",
+        "Filter with match='score' to locate scoring tables. A saved "
+        "connection in safe mode warn_all answers safe_mode_warning naming the "
+        "catalog statements first; repeat with safe_mode_confirmation to run them. "
+        "Inline connectors require create_connection permission; saved and inline "
+        "sources share the operator connector destination policy.",
         list_source_tables_schema(),
         list_source_tables_output_schema(),
         CapabilityKind::Read,
@@ -12640,7 +13131,9 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/true,
         handle_list_source_tables,
-        describe_create_dataset_from_query});
+        describe_create_dataset_from_query};
+    list_source_tables.describe_safe_mode = describe_catalog_safe_mode;
+    registry.add(std::move(list_source_tables));
 
     registry.add(Capability{
         "delete_connection",
@@ -12655,17 +13148,20 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_delete_connection});
 
-    registry.add(Capability{
+    Capability create_dataset_from_query{
         "create_dataset_from_query",
         "Create a dataset from a connector query",
-        "Run a read-only query against an external source (Snowflake or "
-        "Postgres) and load its rows into a new partitioned table placed "
+        "Run a read-only query against an external source (Snowflake, "
+        "Postgres, MySQL, TiDB, or lake's SQLite, DuckDB or Polars service) and load its rows into a new partitioned table placed "
         "across the cluster \u2014 the in-product path from a warehouse to a "
         "featurizable dataset, with no manual export. Only a single "
-        "SELECT/WITH may run. A remote source is reached over the network with "
-        "your credentials, so it is consent-gated when the node enforces "
-        "governance; a loopback Postgres touches no cloud and runs directly "
-        "(audited as dataset_added; visible in system.datasets).",
+        "SELECT/WITH may run (MySQL and TiDB also admit SHOW). A remote source is reached "
+        "over the network with your credentials, so it is consent-gated when the "
+        "node enforces governance; a loopback Postgres, MySQL, TiDB or lake service touches no cloud "
+        "and runs directly "
+        "(audited as dataset_added; visible in system.datasets). A saved "
+        "connection in safe mode warn_all answers safe_mode_warning naming the "
+        "query first; repeat with safe_mode_confirmation to run it.",
         create_dataset_from_query_schema(),
         create_dataset_from_query_output_schema(),
         CapabilityKind::Action,
@@ -12673,7 +13169,9 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/true,
         handle_create_dataset_from_query,
-        describe_create_dataset_from_query});
+        describe_create_dataset_from_query};
+    create_dataset_from_query.describe_safe_mode = describe_query_safe_mode;
+    registry.add(std::move(create_dataset_from_query));
 
     registry.add(Capability{
         "promote_dataset",
@@ -12739,8 +13237,11 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        [&registry](const nlohmann::json&, ApiContext&) {
-            return ApiResult::success(spec_index(registry));
+        [&registry](const nlohmann::json&, ApiContext& context) {
+            // Only the capabilities the caller may call (#766).
+            return ApiResult::success(spec_index(
+                registry, callable_by(context.node, context.acting_key,
+                                      context.acting_is_user)));
         }});
 
     registry.add(Capability{
@@ -12755,9 +13256,12 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        [&registry](const nlohmann::json& input, ApiContext&) {
+        [&registry](const nlohmann::json& input, ApiContext& context) {
             const std::string name = input.at("name").get<std::string>();
-            auto spec = find_spec(registry, name);
+            // A capability the caller may not call is not_found (#766).
+            auto spec = find_spec(registry, name,
+                                  callable_by(context.node, context.acting_key,
+                                              context.acting_is_user));
             if (!spec) {
                 return ApiResult::failure(
                     "not_found",
@@ -12777,9 +13281,11 @@ void register_core_capabilities(Registry& registry) {
     register_run_metrics_capabilities(registry);
     register_record_capabilities(registry);
     register_network_capabilities(registry);
+    register_safe_mode_capabilities(registry);
     register_object_capabilities(registry);
     register_storage_capabilities(registry);
     register_study_capabilities(registry);
+    register_pipeline_serving_capabilities(registry);
     register_solution_capabilities(registry);
 
     // Versioned score-to-action policy (#1104).
@@ -12788,11 +13294,16 @@ void register_core_capabilities(Registry& registry) {
     // Report, task, and bounded closed-loop action patterns (#1109).
     register_action_capabilities(registry);
 
+    // Propose a run, then approve or reject it (#969).
+    register_run_proposal_capabilities(registry);
+
     registry.add(Capability{
         "analyze_dataset",
         "Analyze a dataset",
         "Read a landed dataset's semantic types, evidence, distributions, grain, candidate "
-        "keys, same-database joins, and leakage candidates. No side effects.",
+        "keys, same-database joins, and leakage candidates. Reads as the caller: only "
+        "tables, columns and rows its own SQL could read; a column it may not read is "
+        "omitted (#1396). No side effects.",
         analyze_dataset_schema(),
         analyze_dataset_output_schema(),
         CapabilityKind::Read,
@@ -12805,7 +13316,8 @@ void register_core_capabilities(Registry& registry) {
         "plan_features",
         "Plan dataset features",
         "Read a methodology-specific feature and exclusion plan from dataset analysis, or an "
-        "explicit transform_required proposal. No side effects and no transform is applied.",
+        "explicit transform_required proposal, built only from what the caller may read "
+        "(#1396). No side effects and no transform is applied.",
         plan_features_schema(),
         plan_features_output_schema(),
         CapabilityKind::Read,

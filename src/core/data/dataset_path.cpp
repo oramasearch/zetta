@@ -384,8 +384,15 @@ nlohmann::json entity_key_mapping_summary(const nlohmann::json& mapping) {
         summary["column"] = *column;
     }
     const auto entries = mapping.find("entries");
-    summary["entry_count"] =
-        entries != mapping.end() && entries->is_array() ? entries->size() : 0;
+    if (entries != mapping.end() && entries->is_array()) {
+        summary["entry_count"] = entries->size();
+    } else if (const auto count = mapping.find("entry_count");
+               count != mapping.end() && count->is_number_integer()) {
+        // A reference to the entity-key table (#1255) carries its count.
+        summary["entry_count"] = *count;
+    } else {
+        summary["entry_count"] = 0;
+    }
     return summary;
 }
 
@@ -394,7 +401,7 @@ std::size_t summarize_entity_key_mappings(nlohmann::json& document) {
     if (document.is_object()) {
         for (auto& [key, value] : document.items()) {
             if (key == "entity_key_mapping" && value.is_object() &&
-                value.contains("entries")) {
+                (value.contains("entries") || value.contains("table"))) {
                 value = entity_key_mapping_summary(value);
                 ++replaced;
             } else {
@@ -623,14 +630,10 @@ DatasetPath parse_dataset_path(std::string_view path, const std::string& default
         return parsed;
     }
 
-    // An existing filesystem entry wins over the table reading — this only ever
-    // moves a path INTO the Directory form, so it can never steal a live table.
-    std::error_code ignored;
-    if (!path.empty() && std::filesystem::exists(std::filesystem::path(path), ignored)) {
-        parsed.kind = DatasetPathKind::Directory;
-        parsed.directory = std::filesystem::path(path);
-        return parsed;
-    }
+    // A bare name is always a table. The grammar never asks the filesystem (#1433):
+    // an existence test here answered "is there a file called X in the node's
+    // working directory" to any caller, and a directory under the import root is
+    // named with a separator (`./churn`) anyway.
 
     parsed.kind = DatasetPathKind::Table;
     const std::size_t dot = path.rfind('.');
@@ -905,9 +908,15 @@ DatasetContractResult infer_dataset_contract(const std::vector<std::string>& col
 }
 
 DatasetSampler default_dataset_sampler(Node& node, const zetta::cluster::Cluster* cluster) {
-    return [&node, cluster](const std::string& database, const std::string& table,
-                            std::size_t limit, std::string& error) {
-        zetta::query::QueryService service(node, cluster);
+    return caller_dataset_sampler(node, cluster, {}, false);
+}
+
+DatasetSampler caller_dataset_sampler(Node& node, const zetta::cluster::Cluster* cluster,
+                                      std::string acting_key, bool acting_is_user) {
+    return [&node, cluster, acting_key = std::move(acting_key), acting_is_user](
+               const std::string& database, const std::string& table, std::size_t limit,
+               std::string& error) {
+        zetta::query::QueryService service(node, cluster, acting_key, acting_is_user);
         const zetta::query::QueryService::Outcome outcome =
             service.run("SELECT * FROM " + database + "." + table + limit_clause(limit),
                         database);

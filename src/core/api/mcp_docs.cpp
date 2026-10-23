@@ -86,15 +86,30 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--no-preflight` | skip the startup data integrity check |\n";
     out += "| `--log-cluster` | log cluster gossip to stderr (debugging) |\n";
     out += "| `--governance` | enforce consent gating on cloud-touching calls (off by default) |\n";
+    out +=
+        "| `--connector-allow-destinations LIST` | exact host:port entries allowed for "
+        "private/loopback source connectors; metadata and link-local are always denied |\n";
+    out += "| `--action-allow-destinations LIST` | address classes an action or report delivery endpoint may reach besides public ones: `loopback`, `private`, `link-local`, `metadata` (default none) |\n";
     out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration |\n";
     out += "| `--audit-summary-retention-days N` | keep audit summaries for N days (default 365); zero disables expiration |\n";
+    out += "| `--egress-allow LIST` | outside destinations this node may connect to (repeatable): host, `*.domain`, address or CIDR range, each optionally `:port`; `*` allows everything |\n";
     out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
+    out += "**Outbound network is denied by default.** Without `--egress-allow` the\n";
+    out += "node may connect only to loopback (and its Clerk issuer, when one is set);\n";
+    out += "every other connection is refused before DNS and recorded as an\n";
+    out += "`egress_denied` audit event. See\n";
+    out += "[`docs/governance/egress-policy.md`](docs/governance/egress-policy.md).\n\n";
     out += "**Consent gating is off by default.** A consent-gated capability\n";
     out += "(`create_dataset_from_query`, `cloud_inspect`, `detect_provisioners`,\n";
     out += "a cloud `add_nodes`) executes on the first call, and the ungated call\n";
     out += "is recorded as a `consent_bypassed` audit event naming what ran.\n";
     out += "`--governance` restores the challenge: the first call issues a\n";
     out += "one-time consent request that a **different** principal must approve.\n\n";
+    out += "**Action delivery reaches public addresses only.** An action or report\n";
+    out += "delivery endpoint is chosen by its author, so the node resolves it and\n";
+    out += "refuses loopback, private, link-local and metadata addresses unless\n";
+    out += "`--action-allow-destinations` names the class. See\n";
+    out += "[`docs/governance/destination-policy.md`](docs/governance/destination-policy.md).\n\n";
 
     out += "## Pub/sub dispatch\n\n| Flag | Meaning |\n|---|---|\n";
     out += "| `--pubsub-dispatch-mode MODE` | node-wide mode: `pool` (default), `auto`, `per_key` or `inline` |\n";
@@ -118,19 +133,29 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--no-mcp` | disable the embedded MCP server |\n";
     out += "| `--webapp-dir PATH` | serve the built Studio web app at `/app` |\n";
     out += "| `--admin-token T` | seed the owner token on first boot |\n";
+    out += "| `--identity-root KEY` | pin the cluster's identity root (printed by the first node) |\n";
     out += "| `--clerk-issuer URL` | verify Clerk JWTs; omit for bearer-only, on-prem |\n\n";
     out += "Without `--admin-token`, a fresh node generates the owner token and\n";
     out += "prints it **once**, so a node is never locked out. It is hashed at rest\n";
     out += "and never logged again.\n\n";
+    out += "Every node of one cluster gets the **same** admin token: it derives the\n";
+    out += "cluster's identity root, which seals every account, role and token.\n";
+    out += "A node started with another token, or a member that writes identity\n";
+    out += "into the replicated catalogue itself, issues nothing any node honors.\n\n";
 
     out += "## Provisioning by environment\n\n";
     out += "Applied as defaults and overridden by the flags above, so a provisioned\n";
     out += "node auto-joins with no manual flags.\n\n";
     out += "| Variable | Maps to |\n|---|---|\n";
     out += "| `ZETTA_SEED_PEER` | `--peer` (comma or space separated) |\n";
+    out += "| `ZETTA_CLUSTER_TOKEN_FILE` | `--join-token`, read from a file (preferred) |\n";
     out += "| `ZETTA_CLUSTER_TOKEN` | `--join-token` |\n";
     out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n";
+    out += "| `ZETTA_IDENTITY_ROOT` | `--identity-root` |\n";
     out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n";
+    out += "| `ZETTA_CONNECTOR_ALLOW_DESTINATIONS` | `--connector-allow-destinations` |\n";
+    out += "| `ZETTA_ACTION_ALLOW_DESTINATIONS` | `--action-allow-destinations` |\n";
+    out += "| `ZETTA_EGRESS_ALLOW` | `--egress-allow` (used when no flag is given) |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_MODE` | `--pubsub-dispatch-mode` |\n";
     out += "| `ZETTA_PUBSUB_TOPICS_PER_THREAD` | `--pubsub-topics-per-thread` |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_THREADS` | `--pubsub-dispatch-threads` |\n";

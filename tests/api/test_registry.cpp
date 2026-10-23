@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
@@ -33,11 +34,20 @@
 #include "zetta/ml/study.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/export_path.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/deployment.hpp"
+#include "zetta/pipeline/deployment_controller.hpp"
+#include "zetta/pipeline/deployment_target.hpp"
+#include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/observability/crash.hpp"
+#include "zetta/observability/feedback.hpp"
 #include "zetta/solutions/roi_readout.hpp"
 #include "zetta/version.hpp"
+#include "zetta/connect/connection_store.hpp"
+#include "zetta/connect/postgres_runner.hpp"
 
 namespace {
 
@@ -106,7 +116,7 @@ TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        168u); // +load_dataset_object (#1302), +2 app-credential capabilities (#1280), +2 network-record capabilities (#1281), +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        179u); // +set_safe_mode +get_safe_mode (#1373), +4 published pipelines (#1289), +5 run proposals (#969: propose_run, approve_run_proposal, reject_run_proposal, get_run_proposal, list_run_proposals), +load_dataset_object (#1302), +2 app-credential capabilities (#1280), +2 network-record capabilities (#1281), +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -115,6 +125,10 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     for (const char* name :
          {"create_collection", "put_record", "get_record", "delete_record", "list_records",
           "create_metric", "record_metric", "query_metric"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
+    for (const char* name : {"propose_run", "approve_run_proposal", "reject_run_proposal",
+                             "get_run_proposal", "list_run_proposals"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
     EXPECT_TRUE(registry.find("write_network_record"));
@@ -257,7 +271,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
          {"create_project", "delete_project", "capture_intent", "import_n8n",
           "compile_intent", "compile_n8n", "compile_python", "approve_plan", "gate", "deploy", "run",
           "add_dataset", "snapshot", "testsuite_run", "expose_model", "unexpose_model",
-          "expose_index", "unexpose_index", "create_workspace_profile",
+          "expose_index", "unexpose_index", "expose_pipeline", "unexpose_pipeline",
+          "create_workspace_profile",
           "update_workspace_profile", "create_plan", "update_plan",
           "record_action", "record_outcome", "create_policy", "update_policy",
           "decide", "approve_decision", "create_experiment", "assign",
@@ -818,6 +833,74 @@ TEST_F(RegistryFixture, JourneyCreateProjectThenReadBack) {
     EXPECT_EQ(activity_count.load(), 1);  // no hook on failure
 }
 
+// #1185: list_projects answers a list page in one call. `projects` stays the
+// names (existing callers), and `summaries` carries, in the same order, each
+// project's id and name and each graph's id, name and approval, matching
+// get_project's answer exactly. An internal project (lake#654) is in neither.
+TEST_F(RegistryFixture, ListProjectsReturnsGraphSummariesMatchingGetProject) {
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "churn"}}).ok);
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "empty"}}).ok);
+    ASSERT_TRUE(node.create_project("m (standalone model)", "", "", /*internal=*/true));
+    for (const char* text : {"predict which accounts churn",
+                             "predict which accounts renew"}) {
+        auto captured = call("capture_intent",
+                             nlohmann::json{{"project", "churn"}, {"text", text}});
+        ASSERT_TRUE(captured.ok) << captured.error.message;
+        auto compiled = call("compile_intent",
+                             nlohmann::json{{"project", "churn"},
+                                            {"input_id", captured.value.at("input_id")}});
+        ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    }
+    const auto churn = node.find_project("churn");
+    ASSERT_TRUE(churn);
+    ASSERT_GE(churn->graphs().size(), 2u);
+    const std::string approved_graph = churn->graphs().front()->id();
+    auto approved = call("approve_plan", nlohmann::json{{"project", "churn"},
+                                                        {"graph", approved_graph}});
+    ASSERT_TRUE(approved.ok) << approved.error.message;
+
+    auto listed = call("list_projects", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    const auto& projects = listed.value.at("projects");
+    const auto& summaries = listed.value.at("summaries");
+    EXPECT_EQ(projects, nlohmann::json(node.project_names()));  // unchanged shape
+    ASSERT_EQ(projects.size(), 2u);  // the internal project is left out
+    ASSERT_EQ(summaries.size(), projects.size());
+
+    // Each summary is exactly get_project's id, name and graphs' id/name/approval.
+    for (std::size_t i = 0; i < summaries.size(); ++i) {
+        const auto& summary = summaries[i];
+        EXPECT_EQ(summary.at("name"), projects[i]);
+        auto detail = call("get_project", nlohmann::json{{"name", projects[i]}});
+        ASSERT_TRUE(detail.ok) << detail.error.message;
+        EXPECT_EQ(summary.at("id"), detail.value.at("id"));
+        const auto& graphs = summary.at("graphs");
+        const auto& full = detail.value.at("graphs");
+        ASSERT_EQ(graphs.size(), full.size());
+        for (std::size_t g = 0; g < graphs.size(); ++g) {
+            EXPECT_EQ(graphs[g],
+                      (nlohmann::json{{"id", full[g].at("id")},
+                                      {"name", full[g].at("name")},
+                                      {"approval", full[g].at("approval")}}));
+        }
+    }
+
+    const std::size_t at_churn = projects[0] == "churn" ? 0 : 1;
+    const auto& churn_summary = summaries[at_churn];
+    EXPECT_EQ(churn_summary.at("id"), churn->id());
+    std::size_t approved_count = 0;
+    for (const auto& graph : churn_summary.at("graphs")) {
+        if (graph.at("approval") == "approved") {
+            ++approved_count;
+            EXPECT_EQ(graph.at("id"), approved_graph);
+        } else {
+            EXPECT_EQ(graph.at("approval"), "proposed");
+        }
+    }
+    EXPECT_EQ(approved_count, 1u);
+    EXPECT_TRUE(summaries[1 - at_churn].at("graphs").empty());
+}
+
 // #1009 journey: delete a project and read the deletion back. Its inputs and
 // graphs go with it; its runs and models are kept, stay listed, and the answer
 // says how many were left behind.
@@ -1061,6 +1144,87 @@ TEST_F(RegistryFixture, DeleteDatasetRefusesWhileARunOrAStudyReadsIt) {
     auto deleted = call("delete_dataset", {{"dataset", "data.orders"}});
     ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
     EXPECT_FALSE(database->find_table("orders"));
+}
+
+// zetta#1272: a deployment records the tables its placed graph reads, and the
+// run the deployment controller starts for it records them, so delete_dataset
+// refuses them while that run is pending or running. The deployment has no
+// stored project or pipeline to read them from.
+TEST_F(RegistryFixture, DeleteDatasetRefusesWhileADeploymentRunReadsIt) {
+    auto database = node.create_database("data");
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    zetta::ir::ExecutionGraph graph;
+    auto connect = graph.add_node(zetta::ir::StepKind::Connect, "load_orders");
+    auto clean = graph.add_node(zetta::ir::StepKind::Clean, "dedupe");
+    auto model = graph.add_node(zetta::ir::StepKind::Model, "churn_model");
+    connect->attributes = {{"source", "data"}, {"table", "orders"}};
+    graph.add_edge(connect->id, clean->id);
+    graph.add_edge(clean->id, model->id);
+
+    auto deployment = node.deploy_graph(graph, zetta::pipeline::DeploymentTarget::local(),
+                                        "churn");
+    ASSERT_TRUE(deployment);
+    ASSERT_EQ(deployment->reads().size(), 1u);
+    EXPECT_EQ(deployment->reads().front().table_id, table->id());
+    // Replicated and on disk with the deployment.
+    EXPECT_EQ(zetta::pipeline::table_reads_from_json(deployment->metadata().at("reads")),
+              deployment->reads());
+
+    node.deployment_controller().reconcile();
+    std::shared_ptr<zetta::pipeline::Run> run;
+    for (const auto& candidate : node.runs()) {
+        if (candidate->deployment() == deployment->id()) run = candidate;
+    }
+    ASSERT_TRUE(run);
+    ASSERT_EQ(run->status(), zetta::pipeline::RunStatus::Running);
+    EXPECT_EQ(run->reads(), deployment->reads());
+
+    auto refused = call("delete_dataset", {{"dataset", "data.orders"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_NE(refused.error.message.find(run->id()), std::string::npos)
+        << refused.error.message;
+    EXPECT_TRUE(database->find_table("orders"));
+
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    auto deleted = call("delete_dataset", {{"dataset", "data.orders"}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
+}
+
+// zetta#1272: GraphExecutor records what the graph it executes reads before
+// the first step runs, though the graph is not a stored pipeline, so a
+// delete_dataset that comes while a step runs is refused.
+TEST_F(RegistryFixture, DeleteDatasetRefusesWhileAGraphExecutorRunReadsIt) {
+    auto database = node.create_database("data");
+    auto table = database->create_table("orders");
+    ASSERT_TRUE(table);
+    zetta::ir::ExecutionGraph graph;
+    auto connect = graph.add_node(zetta::ir::StepKind::Connect, "load_orders");
+    connect->attributes = {{"source", "data"}, {"table", "orders"}};
+
+    // A step that tries the delete while it runs.
+    struct DeletingStep final : zetta::pipeline::StepExecutor {
+        RegistryFixture* fixture = nullptr;
+        mutable ApiResult attempted;
+        zetta::pipeline::StepOutcome run_step(const zetta::ir::Node&) const override {
+            attempted = fixture->call("delete_dataset", {{"dataset", "data.orders"}});
+            return {};
+        }
+    };
+    auto step = std::make_shared<DeletingStep>();
+    step->fixture = this;
+    const zetta::pipeline::ExecutionResult result =
+        zetta::pipeline::GraphExecutor(step).execute(node, graph, "", "");
+    ASSERT_TRUE(result.run);
+    EXPECT_TRUE(result.ok) << result.error;
+    ASSERT_EQ(result.run->reads().size(), 1u);
+    EXPECT_EQ(result.run->reads().front().table_id, table->id());
+    EXPECT_FALSE(step->attempted.ok);
+    EXPECT_EQ(step->attempted.error.code, "engine_error");
+    EXPECT_NE(step->attempted.error.message.find(result.run->id()), std::string::npos)
+        << step->attempted.error.message;
+    EXPECT_TRUE(database->find_table("orders"));
 }
 
 TEST_F(RegistryFixture, DeleteModelStopsServingItAndKeepsItsRun) {
@@ -1871,6 +2035,186 @@ TEST_F(RegistryFixture, FailedCallsRecordErrorSpans) {
     EXPECT_TRUE(found_error_span);
 }
 
+// #1408: client-supplied trace ids and tool grants are not diagnostic rights.
+struct TraceAccessFixture : RegistryFixture {
+    void SetUp() override {
+        RegistryFixture::SetUp();
+        node.ensure_builtin_roles();
+        zetta::observability::ScopedSpan victim(
+            &node.span_recorder(), trace, "api:search");
+        victim.set_attribute("actor", "another-user");
+        victim.set_attribute("intent", "confidential customer query");
+        victim.finish(false, "confidential failure detail");
+
+        zetta::observability::CrashReport crash;
+        crash.id = "prior-crash";
+        crash.signal_number = 11;
+        crash.signal_name = "SIGSEGV";
+        crash.crashed_at = "2026-10-22T00:00:00Z";
+        crash.version = zetta::kVersion;
+        crash.platform = zetta::observability::platform_string();
+        crash.stacktrace = {"confidential stack frame"};
+        crash.recent_spans = {zetta::observability::to_json(
+            node.span_recorder().snapshot().front())};
+        std::filesystem::create_directories(dir.path() / "crashes");
+        std::ofstream(dir.path() / "crashes" / "prior-crash.json")
+            << zetta::observability::to_json(crash).dump();
+        const auto reports = zetta::observability::load_crash_reports(
+            (dir.path() / "crashes").string());
+        ASSERT_EQ(reports.size(), 1u);
+        ASSERT_TRUE(reports.front().report);
+    }
+
+    std::string user_with_role(const std::string& role_name) {
+        const auto user = node.create_user("user-" + role_name);
+        EXPECT_TRUE(user);
+        const auto role = node.find_role(role_name);
+        EXPECT_TRUE(role);
+        if (!user || !role) return {};
+        EXPECT_TRUE(node.assign_role(user->id(), role->id()));
+        return user->id();
+    }
+
+    ApiResult call_as(const std::string& actor, bool is_user,
+                      const std::string& name, nlohmann::json input) {
+        // Deliberately join the victim's trace, as an inbound traceparent can.
+        ApiContext context{node, nullptr, actor, trace, &node.span_recorder()};
+        context.acting_is_user = is_user;
+        return registry.call(name, input, context);
+    }
+
+    nlohmann::json stored_bundle(const ApiResult& result) {
+        const auto database = node.find_database("feedback");
+        if (!database || !result.ok) return {};
+        const auto bytes = database->large_objects().read(
+            result.value.at("feedback_id").get<std::string>());
+        EXPECT_TRUE(bytes);
+        return bytes ? nlohmann::json::parse(*bytes) : nlohmann::json{};
+    }
+};
+
+TEST_F(TraceAccessFixture, NativeReadersWritersAndToolGranteesCannotReadTraces) {
+    ASSERT_TRUE(node.create_role("trace-tools"));
+    for (const char* name : {"list_traces", "get_trace"}) {
+        ASSERT_TRUE(node.grant_scoped_permissions(
+            "trace-tools", {"mcp:call"}, zetta::governance::Resource::tool(name)));
+    }
+    for (const char* role : {"reader", "writer", "trace-tools"}) {
+        SCOPED_TRACE(role);
+        const auto user = user_with_role(role);
+        for (const auto& [name, input] :
+             std::vector<std::pair<std::string, nlohmann::json>>{
+                 {"list_traces", {{"limit", 500}}},
+                 {"get_trace", {{"trace_id", trace.trace_id}}},
+                 {"get_trace", {{"trace_id", std::string(32, 'a')}}}}) {
+            const auto denied = call_as(user, true, name, input);
+            EXPECT_FALSE(denied.ok) << name;
+            EXPECT_EQ(denied.error.code, "unauthorized") << name;
+            EXPECT_TRUE(denied.value.is_null());
+        }
+    }
+}
+
+TEST_F(TraceAccessFixture, ExplicitDiagnosticGrantAllowsTracesAndRevocationDenies) {
+    ASSERT_TRUE(node.create_role("diagnostics"));
+    ASSERT_TRUE(node.grant_permissions("diagnostics", {"mcp:call", "cluster:admin"}));
+    const auto user = user_with_role("diagnostics");
+    for (const auto& [name, input] :
+         std::vector<std::pair<std::string, nlohmann::json>>{
+             {"list_traces", {{"limit", 1}}},
+             {"get_trace", {{"trace_id", trace.trace_id}}}}) {
+        const auto allowed = call_as(user, true, name, input);
+        ASSERT_TRUE(allowed.ok) << allowed.error.message;
+        ASSERT_FALSE(allowed.value.at("spans").empty());
+    }
+    const auto detail = call_as(user, true, "get_trace", {{"trace_id", trace.trace_id}});
+    ASSERT_TRUE(detail.ok);
+    EXPECT_NE(detail.value.dump().find("confidential customer query"), std::string::npos);
+    auto feedback = call_as(user, true, "submit_feedback", {{"description", "debug"}});
+    ASSERT_TRUE(feedback.ok) << feedback.error.message;
+    const auto bundle = stored_bundle(feedback);
+    EXPECT_FALSE(bundle.at("traces").empty());
+    EXPECT_FALSE(bundle.at("recent_errors").empty());
+    EXPECT_EQ(bundle.at("crashes").size(), 1u);
+
+    ASSERT_TRUE(node.revoke_permissions("diagnostics", {"cluster:admin"}));
+    EXPECT_FALSE(call_as(user, true, "list_traces", {{"limit", 1}}).ok);
+    EXPECT_FALSE(call_as(user, true, "get_trace", {{"trace_id", trace.trace_id}}).ok);
+    feedback = call_as(user, true, "submit_feedback", {{"description", "after revoke"}});
+    ASSERT_TRUE(feedback.ok) << feedback.error.message;
+    EXPECT_TRUE(stored_bundle(feedback).at("traces").empty());
+    EXPECT_TRUE(stored_bundle(feedback).at("recent_errors").empty());
+    EXPECT_TRUE(stored_bundle(feedback).at("crashes").empty());
+}
+
+TEST_F(TraceAccessFixture, LegacyKeysNeedAnExplicitDiagnosticGrantToo) {
+    for (const bool diagnostic : {false, true}) {
+        SCOPED_TRACE(diagnostic);
+        const auto principal = node.create_principal(diagnostic ? "operator" : "reader");
+        ASSERT_TRUE(principal);
+        zetta::governance::CapabilitySet capabilities;
+        capabilities.grant(zetta::governance::CapabilityDomain::Api, "query");
+        if (diagnostic) capabilities.grant(zetta::governance::CapabilityDomain::Api,
+                                           "cluster_admin");
+        const auto key = principal->create_key(zetta::governance::unrestricted_scope(),
+                                                capabilities);
+        ASSERT_TRUE(key);
+        EXPECT_EQ(call_as(key->id(), false, "list_traces", {{"limit", 1}}).ok, diagnostic);
+        EXPECT_EQ(call_as(key->id(), false, "get_trace", {{"trace_id", trace.trace_id}}).ok,
+                  diagnostic);
+        const auto submitted = call_as(key->id(), false, "submit_feedback",
+                                        {{"description", "legacy feedback"}});
+        ASSERT_TRUE(submitted.ok) << submitted.error.message;
+        const auto bundle = stored_bundle(submitted);
+        EXPECT_EQ(!bundle.at("traces").empty(), diagnostic);
+        EXPECT_EQ(!bundle.at("recent_errors").empty(), diagnostic);
+        EXPECT_EQ(!bundle.at("crashes").empty(), diagnostic);
+    }
+}
+
+TEST_F(TraceAccessFixture, OrdinaryFeedbackOmitsAllDiagnosticsEvenForNamedTraces) {
+    for (const char* role : {"reader", "writer"}) {
+        const auto user = user_with_role(role);
+        for (const bool explicit_trace : {false, true}) {
+            SCOPED_TRACE(role);
+            SCOPED_TRACE(explicit_trace);
+            nlohmann::json input{{"description", "please improve this"}};
+            if (explicit_trace) input["trace_ids"] = {trace.trace_id};
+            const auto submitted = call_as(user, true, "submit_feedback", input);
+            ASSERT_TRUE(submitted.ok) << submitted.error.message;
+            for (const char* count : {"traces_attached", "errors_attached", "crashes_attached"}) {
+                EXPECT_EQ(submitted.value.at(count), 0);
+            }
+            const auto bundle = stored_bundle(submitted);
+            EXPECT_EQ(bundle.at("description"), "please improve this");
+            EXPECT_EQ(bundle.at("actor"), user);
+            EXPECT_TRUE(bundle.at("traces").empty());
+            EXPECT_TRUE(bundle.at("recent_errors").empty());
+            EXPECT_TRUE(bundle.at("crashes").empty());
+            EXPECT_EQ(bundle.dump().find("confidential"), std::string::npos);
+        }
+    }
+}
+
+TEST_F(TraceAccessFixture, FeedbackBuilderOmitsDiagnosticsByDefault) {
+    zetta::observability::FeedbackBundleOptions options;
+    options.description = "ordinary feedback";
+    options.trace_ids = {trace.trace_id};
+    const auto bundle = zetta::observability::build_feedback_bundle(node, options);
+    ASSERT_TRUE(bundle);
+    EXPECT_TRUE(bundle->at("traces").empty());
+    EXPECT_TRUE(bundle->at("recent_errors").empty());
+    EXPECT_TRUE(bundle->at("crashes").empty());
+
+    // Diagnostic opt-in is trusted internal state, never accepted from the wire.
+    const auto reader = user_with_role("reader");
+    const auto rejected = call_as(reader, true, "submit_feedback",
+                                  {{"description", "feedback"},
+                                   {"include_diagnostics", true}});
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_EQ(rejected.error.code, "invalid_input");
+}
+
 // Coroutine-first bridge: a runtime coroutine awaits run_on_owner and resumes
 // after the owning loop drains — no caller-facing blocking primitives.
 // (A free coroutine, not a lambda coroutine: parameters are copied into the
@@ -2095,8 +2439,8 @@ TEST_F(RegistryFixture, SubmitFeedbackSnapshotsABundle) {
     auto failed = call("sql", nlohmann::json{{"statement", "SELCT nope;"}});
     EXPECT_FALSE(failed.ok);
 
-    const std::string export_path =
-        (dir.path() / "bundle-export.json").string();
+    // Named relative to the node's export directory (#1399).
+    const std::string export_path = "bundle-export.json";
     auto submitted = call(
         "submit_feedback",
         nlohmann::json{{"description", "the run did something odd"},
@@ -2111,7 +2455,7 @@ TEST_F(RegistryFixture, SubmitFeedbackSnapshotsABundle) {
 
     // The exported file IS the bundle: valid against its schema, carrying the
     // description verbatim, the attached trace, and the recent error span.
-    std::ifstream exported(export_path);
+    std::ifstream exported(zetta::data::export_root(node) / export_path);
     ASSERT_TRUE(exported.good());
     const nlohmann::json bundle =
         nlohmann::json::parse(exported, nullptr, /*allow_exceptions=*/false);
@@ -2142,4 +2486,69 @@ TEST_F(RegistryFixture, TheMonitorAndImproveVerbsAreReachableReads) {
             << name << " must be a read — reads are GET, actions are POST (#954)";
         EXPECT_FALSE(capability->mutates) << name << " reports; it does not act";
     }
+}
+
+// #1414: discovery reads use saved connections; choosing an inline destination
+// requires the same authority as creating one, for both identity systems.
+TEST_F(RegistryFixture, ConnectorDiscoveryRequiresApprovalForInlineDestinations) {
+    struct RunnerScope {
+        zetta::connect::PostgresQueryRunner previous = zetta::connect::postgres_query_runner();
+        ~RunnerScope() { zetta::connect::install_postgres_query_runner(std::move(previous)); }
+    } restore;
+    int calls = 0;
+    zetta::connect::install_postgres_query_runner([&](const auto&, const auto&, auto) {
+        ++calls;
+        return zetta::connect::ConnectorResult{};
+    });
+    const nlohmann::json connector{{"type", "postgres"},
+                                   {"host", "db.workspace.svc"},
+                                   {"port", "5432"},
+                                   {"user", "reader"},
+                                   {"token", "test"},
+                                   {"database", "app"}};
+    const auto config = zetta::connect::ConnectorConfig::from_json(connector);
+    ASSERT_TRUE(config);
+    const std::string save_error = zetta::connect::save_connection(node, "approved", *config);
+    ASSERT_TRUE(save_error.empty()) << save_error;
+    const auto role = node.create_role("discoverer");
+    ASSERT_TRUE(role);
+    auto permissions = role->permissions();
+    permissions.capabilities.grant(zetta::governance::CapabilityDomain::Api, "query");
+    permissions.capabilities.grant(zetta::governance::CapabilityDomain::Orchestration,
+                                   "list_source_tables");
+    role->set_metadata(role->name(), permissions, role->created());
+    const auto user = node.create_user("reader");
+    ASSERT_TRUE(user);
+    ASSERT_TRUE(node.assign_role(user->id(), node.find_role("discoverer")->id()));
+    ApiContext context{node, nullptr, user->id(), trace, &node.span_recorder()};
+    context.acting_is_user = true;
+    auto result = registry.call("list_source_tables", {{"connector", connector}}, context);
+    EXPECT_EQ(result.error.code, "unauthorized") << result.error.message;
+    EXPECT_EQ(calls, 0);
+    result = registry.call("list_source_tables", {{"connection", "approved"}}, context);
+    EXPECT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(calls, 1);
+    permissions.capabilities.grant(zetta::governance::CapabilityDomain::Orchestration,
+                                   "create_connection");
+    role->set_metadata(role->name(), permissions, role->created());
+    result = registry.call("list_source_tables", {{"connector", connector}}, context);
+    EXPECT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(calls, 2);
+
+    const auto principal =
+        node.create_principal("legacy-reader", zetta::governance::PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    zetta::governance::CapabilitySet grants;
+    grants.grant(zetta::governance::CapabilityDomain::Orchestration, "list_source_tables");
+    const auto key =
+        principal->create_key(zetta::governance::unrestricted_scope(), std::move(grants));
+    ASSERT_TRUE(key);
+    context.acting_key = key->id();
+    context.acting_is_user = false;
+    result = registry.call("list_source_tables", {{"connector", connector}}, context);
+    EXPECT_EQ(result.error.code, "unauthorized") << result.error.message;
+    EXPECT_EQ(calls, 2);
+    result = registry.call("list_source_tables", {{"connection", "approved"}}, context);
+    EXPECT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(calls, 3);
 }

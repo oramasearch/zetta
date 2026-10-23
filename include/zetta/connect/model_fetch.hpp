@@ -14,8 +14,8 @@
 // the CDN and streaming each multi-GB shard straight to disk. A unit test drives
 // it against a fake transport with no network.
 //
-// This is the engine's "pull a model" primitive — the `zetta pull` CLI verb and
-// the model-management API build on it. The downloaded directory is exactly what
+// This is the engine's "pull a model" primitive used by the `zetta pull` CLI.
+// The downloaded directory is exactly what
 // `ZETTA_QWEN_DIR` / the guarded Qwen tests / the base-agent training consume.
 namespace zetta::connect {
 
@@ -42,7 +42,11 @@ using FetchProgress =
 // named by `model.safetensors.index.json` when the model is sharded). `token`, if
 // non-empty, is sent as an `Authorization: Bearer` (a secret header, dropped on a
 // cross-host redirect) for gated/private repos. The transport MUST follow
-// redirects and stream to disk — the native one does. Non-throwing.
+// redirects and honor HttpRequest::download_sink — the native one does. Shards
+// must be ASCII basenames ([A-Za-z0-9._-], at most 255 bytes) ending in
+// .safetensors. Downloads use fresh files in a pinned, non-symlink directory
+// and atomically replace entries after success; existing links are never
+// followed (#1412, docs/api/native-http-transport.md). Non-throwing.
 ModelFetchResult fetch_hf_model(const HttpTransport& transport,
                                 const std::string& repo,
                                 const std::string& revision,

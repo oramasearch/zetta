@@ -8,19 +8,24 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/api/native_http_transport.hpp"
+#include "zetta/api/mysql_protocol.hpp"
 #include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/compute/mlx_serving.hpp"
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
+#include "zetta/connect/connector_destinations.hpp"
 #include "zetta/connect/model_fetch.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/cloud/node_bootstrap_env.hpp"
+#include "zetta/governance/identity_seal.hpp"
 #include "zetta/node.hpp"
 #include "zetta/cloud/provisioner.hpp"
 #include "zetta/cloud/provisioner_detect.hpp"
 #include "zetta/cloud/provisioner_fleet.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/observability/crash.hpp"
@@ -41,7 +46,9 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -64,6 +71,78 @@ public:
         delete;
 };
 
+// Records every connection the egress policy refuses (CTL-4, #75) on the node's
+// audit trail, and stops before the Node goes away.
+class EgressDenialAudit {
+public:
+    explicit EgressDenialAudit(zetta::Node& node) {
+        zetta::connect::set_egress_denial_observer(
+            [&node](const zetta::connect::EgressDenial& denial) {
+                zetta::governance::AuditEventValue event;
+                event.action = zetta::governance::AuditAction::EgressDenied;
+                event.actor = "node";
+                event.target = "egress:" + denial.host + ":" +
+                               std::to_string(denial.port);
+                event.allowed = false;
+                event.detail = denial.reason;
+                node.record_audit_event(std::move(event));
+            });
+    }
+
+    ~EgressDenialAudit() { zetta::connect::set_egress_denial_observer({}); }
+
+    EgressDenialAudit(const EgressDenialAudit&) = delete;
+    EgressDenialAudit& operator=(const EgressDenialAudit&) = delete;
+};
+
+// The `host[:port]` of an http(s) URL as an egress allowlist entry, or empty.
+std::string url_authority(std::string_view url) {
+    std::string_view rest;
+    std::string_view port;
+    if (url.starts_with("https://")) {
+        rest = url.substr(8);
+        port = "443";
+    } else if (url.starts_with("http://")) {
+        rest = url.substr(7);
+        port = "80";
+    } else {
+        return {};
+    }
+    const auto end = rest.find_first_of("/?#");
+    std::string authority(rest.substr(0, end));
+    if (authority.empty() || authority.find('@') != std::string::npos) return {};
+    const bool has_port = authority.starts_with("[")
+                              ? authority.find("]:") != std::string::npos
+                              : authority.find(':') != std::string::npos;
+    if (!has_port) authority += ":" + std::string(port);
+    return authority;
+}
+
+// The node's egress allowlist: --egress-allow, else ZETTA_EGRESS_ALLOW, plus the
+// Clerk issuer when one is configured (the auth gate fetches its JWKS). Empty
+// means deny: only loopback is reachable. Returns nullopt on a malformed entry.
+std::optional<zetta::connect::EgressPolicy> configured_egress_policy(
+    const std::vector<std::string>& from_cli, const std::string& clerk_issuer) {
+    std::string list;
+    for (const std::string& entry : from_cli) list += entry + ",";
+    if (from_cli.empty()) {
+        if (const char* env = std::getenv("ZETTA_EGRESS_ALLOW")) list = env;
+    }
+    std::string error;
+    auto policy = zetta::connect::EgressPolicy::parse(list, &error);
+    if (!policy) {
+        std::fprintf(stderr, "zetta: %s\n", error.c_str());
+        return std::nullopt;
+    }
+    if (const std::string issuer = url_authority(clerk_issuer); !issuer.empty()) {
+        if (!policy->add(issuer, &error)) {
+            std::fprintf(stderr, "zetta: the Clerk issuer: %s\n", error.c_str());
+            return std::nullopt;
+        }
+    }
+    return policy;
+}
+
 struct Options {
     Mode mode = Mode::Headed;  // headed by default
     zetta::NodeConfig node;
@@ -72,8 +151,12 @@ struct Options {
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
     std::string webapp_dir;                     // --webapp-dir PATH (the Studio SPA bundle)
     std::string clerk_issuer;                   // --clerk-issuer URL (Clerk JWT verify; else bearer-only)
+    std::optional<std::string> connector_allow_destinations;  // exact host:port entries (#1414)
+    std::optional<std::string> action_allow_destinations;  // --action-allow-destinations LIST (#1394)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
+    std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
+    std::string identity_root;      // --identity-root (the cluster's identity root, #764)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool pubsub_dispatch_mode_from_cli = false;
     bool pubsub_topics_per_thread_from_cli = false;
@@ -151,6 +234,12 @@ void print_usage(const char* argv0) {
         "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
         "                      persisted in data-dir on first use. Inter-node\n"
         "                      mTLS is always on — there is no plaintext mode\n"
+        "  --identity-root KEY The cluster's identity root public key (printed\n"
+        "                      by the first node; or ZETTA_IDENTITY_ROOT). Pinned\n"
+        "                      in data-dir on first start: the node honors only\n"
+        "                      accounts, roles and tokens sealed by this root.\n"
+        "                      Not needed when the node gets the cluster's\n"
+        "                      --admin-token, which derives the same root (#764)\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
         "  --pubsub-dispatch-mode MODE\n"
@@ -172,12 +261,26 @@ void print_usage(const char* argv0) {
         "                      executes on the first call and the bypass is\n"
         "                      audited as consent_bypassed. Turn this on to\n"
         "                      require a distinctly-privileged approval again\n"
+        "  --connector-allow-destinations LIST\n"
+        "                exact host:port entries allowed for private/loopback connectors\n"
+        "  --action-allow-destinations LIST\n"
+        "                      Address classes an action or report delivery\n"
+        "                      endpoint may reach besides public addresses:\n"
+        "                      loopback, private, link-local, metadata\n"
+        "                      (comma separated; default none) (#1394)\n"
+        "  --egress-allow LIST Outside destinations this node may connect to\n"
+        "                      (repeatable; comma separated): host, *.domain,\n"
+        "                      address or CIDR range, each optionally :port;\n"
+        "                      * allows everything. Outbound is DENIED by\n"
+        "                      default; loopback is always allowed (CTL-4,\n"
+        "                      docs/governance/egress-policy.md)\n"
         "  -h, --help          Show this help\n"
         "\n"
         "Environment (provisioning; applied as defaults, overridden by the\n"
         "flags above — a provisioned node auto-joins with no manual flags):\n"
         "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
+        "  ZETTA_CLUSTER_TOKEN_FILE File holding the join token (preferred)\n"
         "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
         "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n"
         "  ZETTA_PUBSUB_DISPATCH_MODE -> --pubsub-dispatch-mode\n"
@@ -185,6 +288,9 @@ void print_usage(const char* argv0) {
         "  ZETTA_PUBSUB_DISPATCH_THREADS -> --pubsub-dispatch-threads\n"
         "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
+        "  ZETTA_CONNECTOR_ALLOW_DESTINATIONS -> --connector-allow-destinations\n"
+        "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
+        "  ZETTA_EGRESS_ALLOW  Egress allowlist -> --egress-allow\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
         "                      Ordinary audit retention in days\n"
         "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
@@ -285,6 +391,10 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--join-token");
             if (!v) break;
             o.join_token = v;
+        } else if (arg == "--identity-root") {
+            const char* v = take_value(argc, argv, i, o, "--identity-root");
+            if (!v) break;
+            o.identity_root = v;
         } else if (arg == "--log-cluster") {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
@@ -363,6 +473,16 @@ Options parse_args(int argc, char** argv) {
             o.audit_summary_retention_from_cli = true;
         } else if (arg == "--governance") {
             o.node.enforce_consent = true;
+        } else if (arg == "--connector-allow-destinations") {
+            const char* value = take_value(argc, argv, i, o, "--connector-allow-destinations");
+            if (value) o.connector_allow_destinations = value;
+        } else if (arg == "--action-allow-destinations") {
+            const char* v = take_value(argc, argv, i, o, "--action-allow-destinations");
+            if (v) o.action_allow_destinations = v;
+        } else if (arg == "--egress-allow") {
+            const char* value = take_value(argc, argv, i, o, "--egress-allow");
+            if (!value) break;
+            o.egress_allow.emplace_back(value);
         } else if (arg == "-h" || arg == "--help") {
             o.show_help = true;
         } else {
@@ -370,6 +490,22 @@ Options parse_args(int argc, char** argv) {
             o.bad_usage = true;
             break;
         }
+    }
+    // Peers refuse a HELLO whose endpoints break the #771 bounds, so a bad
+    // --advertise is refused here, where the operator sees it, instead of
+    // silently cutting this node off from the cluster.
+    for (const std::string& endpoint : o.cluster.advertise) {
+        if (!zetta::cluster::is_valid_peer_endpoint(endpoint)) {
+            std::fprintf(stderr,
+                         "zetta: --advertise wants HOST:PORT endpoints; '%s' is not one\n",
+                         endpoint.c_str());
+            o.bad_usage = true;
+        }
+    }
+    if (o.cluster.advertise.size() > zetta::cluster::kMaxAdvertisedEndpoints) {
+        std::fprintf(stderr, "zetta: --advertise takes at most %zu endpoints\n",
+                     zetta::cluster::kMaxAdvertisedEndpoints);
+        o.bad_usage = true;
     }
     return o;
 }
@@ -488,6 +624,18 @@ int run_pull(int argc, char** argv) {
     const char* token_env = std::getenv("HF_TOKEN");  // never logged; a secret header
     const std::string token = token_env != nullptr ? token_env : "";
 
+    // `zetta pull` is a command a person runs to download named weights, not
+    // graph execution: its process may reach Hugging Face (and its CDN, which
+    // the resolve URL redirects to) on 443, plus whatever ZETTA_EGRESS_ALLOW
+    // adds. Everything else stays denied (CTL-4, #75).
+    {
+        std::optional<zetta::connect::EgressPolicy> policy =
+            configured_egress_policy({}, {});
+        if (!policy) return 2;
+        policy->merge(*zetta::connect::EgressPolicy::parse(
+            "huggingface.co:443,*.huggingface.co:443,*.hf.co:443"));
+        zetta::connect::set_egress_policy(std::move(*policy));
+    }
     zetta::api::install_native_http_transport();
     std::fprintf(stderr, "pulling %s (%s) -> %s\n", repo.c_str(), revision.c_str(),
                  dir.c_str());
@@ -530,6 +678,11 @@ int main(int argc, char** argv) {
     // fails cleanly ("the Postgres connector is not built into this binary").
     zetta::connect::install_postgres_protocol();
 #endif
+    // The native MySQL connector (#895) — the protocol is implemented in
+    // zetta-core (connect/mysql_client.hpp); this installs its TCP/TLS driver so a
+    // "mysql" source connection can run its read-only query. No vendor library,
+    // so every build has it.
+    zetta::connect::install_mysql_protocol();
 #ifdef ZETTA_WITH_MLX
     // The fast Metal-GPU Qwen decode (#555) — register MlxQwenInference as the agent's
     // serving-inference runner, so chat()/respond() decode on the Apple-Silicon GPU
@@ -556,6 +709,16 @@ int main(int argc, char** argv) {
 
         const zetta::cloud::BootstrapEnvApplied applied =
             zetta::cloud::apply_bootstrap_env(bootstrap);
+        // The token is in `bootstrap` now; no child process inherits it (#770).
+        zetta::cloud::scrub_bootstrap_secrets();
+        for (const std::string& warning : applied.warnings) {
+            std::fprintf(stderr, "zetta: warning: %s\n", warning.c_str());
+        }
+        if (!applied.error.empty()) {
+            std::fprintf(stderr, "zetta: provisioning env rejected: %s\n",
+                         applied.error.c_str());
+            return 1;
+        }
 
         opts.cluster.seeds = std::move(bootstrap.seeds);
         opts.join_token = std::move(bootstrap.join_token);
@@ -575,7 +738,10 @@ int main(int argc, char** argv) {
                 summary += " (--peer)";
             }
             if (applied.join_token) {
-                summary += " ZETTA_CLUSTER_TOKEN=**** (--join-token)";
+                // Name the source: a token left in an inherited environment makes
+                // this node join that token's cluster instead of founding its own.
+                summary += " " + applied.join_token_source +
+                           "=**** (--join-token; joins the cluster this token identifies)";
             }
             if (!applied.data_dir.empty()) {
                 summary += " ZETTA_DATA_DIR=" + applied.data_dir + " (--data-dir)";
@@ -603,6 +769,43 @@ int main(int argc, char** argv) {
         }
     }
     if (!apply_pubsub_environment(opts)) {
+        return 2;
+    }
+    {
+        auto list = opts.connector_allow_destinations;
+        if (!list) {
+            if (const char* environment = std::getenv("ZETTA_CONNECTOR_ALLOW_DESTINATIONS"))
+                list = environment;
+        }
+        std::string error;
+        const auto allowed =
+            zetta::connect::ConnectorDestinations::parse(list.value_or(""), &error);
+        if (!allowed) {
+            std::fprintf(stderr, "zetta: --connector-allow-destinations: %s\n", error.c_str());
+            return 2;
+        }
+        zetta::connect::set_connector_destinations(*allowed);
+    }
+    // Where an author-chosen action or report delivery endpoint may reach (#1394):
+    // public addresses only, plus the classes named here. An explicit flag wins
+    // over the environment; an unknown class stops the node.
+    {
+        std::optional<std::string> list = opts.action_allow_destinations;
+        if (!list) {
+            if (const char* env = std::getenv("ZETTA_ACTION_ALLOW_DESTINATIONS")) list = env;
+        }
+        std::string error;
+        const auto allowed = zetta::connect::AllowedDestinations::parse(list.value_or(""), &error);
+        if (!allowed) {
+            std::fprintf(stderr, "zetta: --action-allow-destinations: %s\n", error.c_str());
+            return 2;
+        }
+        zetta::connect::set_allowed_destinations(*allowed);
+        std::printf("zetta: action delivery destinations: %s\n", allowed->describe().c_str());
+    }
+    std::optional<zetta::connect::EgressPolicy> egress_policy =
+        configured_egress_policy(opts.egress_allow, opts.clerk_issuer);
+    if (!egress_policy) {
         return 2;
     }
     if (!opts.audit_retention_from_cli) {
@@ -675,9 +878,65 @@ int main(int argc, char** argv) {
         opts.cluster.security = std::move(*security);
     }
 
+    // The owner's admin token (#733 / #744): --admin-token, else ZETTA_ADMIN_TOKEN.
+    // We log WHERE the token lives, never its value.
+    std::string admin_secret = opts.admin_token;
+    if (admin_secret.empty()) {
+        if (const char* env = std::getenv("ZETTA_ADMIN_TOKEN")) admin_secret = env;
+    }
+    if (opts.identity_root.empty()) {
+        if (const char* env = std::getenv("ZETTA_IDENTITY_ROOT")) opts.identity_root = env;
+    }
+
+    // The identity root (#763 / #764, docs/governance/identity-seal.md): who may
+    // write accounts, roles, tokens and policies. Membership (the join token) is
+    // not authority: every identity record is sealed by the root and verified by
+    // every node before it is honored. The root derives from the owner's admin
+    // token, so every node given the cluster's token can issue identity and a
+    // node started with any other token cannot. Pinned in data-dir on first start.
+    {
+        std::string reason;
+        zetta::governance::IdentityRootSetup root =
+            zetta::governance::load_or_create_identity_root(
+                opts.node.data_dir, admin_secret, opts.identity_root, &reason);
+        if (!root.authority) {
+            std::fprintf(stderr, "zetta: identity root setup failed: %s\n",
+                         reason.c_str());
+            return 1;
+        }
+        if (!root.warning.empty()) {
+            std::fprintf(stderr, "zetta: WARNING: %s\n", root.warning.c_str());
+        }
+        if (root.pinned_now && root.authority->can_seal() && admin_secret.empty() &&
+            !opts.cluster.seeds.empty()) {
+            std::fprintf(stderr,
+                         "zetta: WARNING: joining with neither --admin-token nor "
+                         "--identity-root: this node made its own identity root and "
+                         "will not honor the cluster's accounts. Restart it on a "
+                         "fresh data dir with the --identity-root the first node "
+                         "prints.\n");
+        }
+        std::printf("zetta: identity root %s (%s)\n",
+                    root.authority->public_key_hex().c_str(),
+                    root.authority->can_seal() ? "this node issues identity"
+                                               : "verify-only");
+        // The join command carries the root's public key (not a secret), so the
+        // next node pins this cluster's root (Cluster::peer_command).
+        opts.cluster.identity_root = root.authority->public_key_hex();
+        opts.node.identity_authority = std::move(root.authority);
+    }
+
     zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
+
+    // Outbound egress is denied by default (CTL-4, #75): the node may connect
+    // only to loopback and the destinations its operator allowed. Refusals land
+    // on the audit trail as egress_denied.
+    zetta::connect::set_egress_policy(std::move(*egress_policy));
+    std::printf("zetta: egress %s\n",
+                zetta::connect::egress_policy().describe().c_str());
+    EgressDenialAudit egress_denial_audit(node);
 
     // Keep the native coroutine HTTPS client alive only while the Node is
     // alive. This guard joins the worker before Node destruction on every
@@ -709,62 +968,6 @@ int main(int argc, char** argv) {
     if (!node.start()) {
         std::fprintf(stderr, "zetta: failed to start node\n");
         return 1;
-    }
-
-    // Bootstrap the owner (#733 / #744): on an empty user store, mint an "owner"
-    // user + admin role + an access token seeded from --admin-token (or the
-    // ZETTA_ADMIN_TOKEN env). Closes the seeding gap so a node is never locked
-    // out. We log WHERE the token lives, never its value — the operator already
-    // holds the secret they supplied.
-    {
-        std::string admin_secret = opts.admin_token;
-        if (admin_secret.empty()) {
-            if (const char* env = std::getenv("ZETTA_ADMIN_TOKEN")) {
-                admin_secret = env;
-            }
-        }
-        // The default-deny gate is always on (#799), so a fresh node with the MCP
-        // server enabled needs an owner token or every request 401s. If no secret
-        // was supplied, generate one and print it ONCE so the node is never locked
-        // out (#733) — in the operator path a secret is always injected, so this
-        // fires only for a bare local run.
-        bool generated = false;
-        if (admin_secret.empty() && opts.mcp_enabled && node.user_count() == 0) {
-            admin_secret = zetta::governance::generate_token_secret();
-            generated = true;
-        }
-        // Reconcile the built-in admin/writer/reader roles on EVERY startup — not
-        // only fresh-store bootstrap (bootstrap_owner early-returns once the user
-        // store is seeded). The roles live in the replicated store, seeded once at
-        // cluster creation; without this a binary upgrade leaves them frozen at
-        // whatever permission vocabulary first seeded them, so an upgraded cluster
-        // whose 'admin' role predates a newly-added capability keeps denying it
-        // (e.g. orchestration:testsuite_run). Idempotent — writes only on drift.
-        node.ensure_builtin_roles();
-        if (!admin_secret.empty()) {
-            const zetta::Node::BootstrapResult boot =
-                node.bootstrap_owner(admin_secret);
-            if (boot.performed && generated) {
-                std::printf(
-                    "zetta: no --admin-token supplied — generated the owner '%s' "
-                    "access token (id %s). SAVE THIS — it is shown only once:\n"
-                    "    %s\n"
-                    "    authenticate MCP/REST with: Authorization: Bearer <token>\n",
-                    boot.user_name.c_str(), boot.token_id.c_str(),
-                    admin_secret.c_str());
-            } else if (boot.performed) {
-                std::printf(
-                    "zetta: bootstrapped owner user '%s' + admin role + access "
-                    "token %s (stored hashed under %s) — authenticate with the "
-                    "admin token you supplied\n",
-                    boot.user_name.c_str(), boot.token_id.c_str(),
-                    (std::filesystem::path(opts.node.data_dir) / boot.token_id)
-                        .c_str());
-            } else {
-                std::printf("zetta: owner bootstrap skipped (%s)\n",
-                            boot.reason.c_str());
-            }
-        }
     }
 
     // Large-object bodies transfer peer-to-peer (their metadata is in the CRDT).
@@ -816,6 +1019,102 @@ int main(int argc, char** argv) {
     // Cluster exists; node.stop() tears it down before the cluster shuts down.
     node.attach_cluster(cluster);
 
+    // Bootstrap the owner (#733 / #744 / #763) AFTER joining. A node that is
+    // joining an existing cluster has an empty store until the first state
+    // exchange, so deciding "is there an owner yet?" from its own disk before it
+    // connects mints a second owner. With seeds configured, wait (bounded) until a
+    // peer's document matches ours, reconcile it, and only then look. Seeding is
+    // also idempotent under a root: the owner, its token and assignment, and the
+    // built-in roles have ids fixed by the root, so nodes that seed at once — or a
+    // founder whose peers were not up within the wait — converge to one owner.
+    {
+        if (!opts.cluster.seeds.empty()) {
+            constexpr auto kJoinSyncWait = std::chrono::seconds(10);
+            const auto deadline = std::chrono::steady_clock::now() + kJoinSyncWait;
+            bool synced = false;
+            while (!synced && std::chrono::steady_clock::now() < deadline) {
+                for (const zetta::cluster::NodeStatus& status : cluster.nodes()) {
+                    if (!status.is_self && status.replication.in_sync) synced = true;
+                }
+                if (!synced) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            std::printf("zetta: %s\n",
+                        synced ? "joined: in sync with a peer before seeding identity"
+                               : "no peer in sync within 10s: seeding identity as a "
+                                 "founder (idempotent under the identity root)");
+        }
+        node.tick();  // reconcile what the join brought in
+        // A joiner whose root is not the cluster's honors none of the cluster's
+        // accounts (and they none of its). Say so plainly, once, instead of
+        // leaving every request to 401 with no reason.
+        {
+            std::size_t foreign = 0;
+            const zetta::governance::IdentityAuthority* root = node.identity_authority();
+            for (const auto& [key, value] : replication.snapshot().items()) {
+                if (!zetta::governance::is_identity_key(key) || !value.is_object() ||
+                    !value.contains(std::string(zetta::governance::kIdentitySealField))) {
+                    continue;
+                }
+                if (!root->open(key, value)) ++foreign;
+            }
+            if (foreign > 0) {
+                std::fprintf(stderr,
+                             "zetta: WARNING: %zu identity record(s) in the cluster are "
+                             "sealed by another identity root, so this node does not "
+                             "honor them. Every node of one cluster needs the same "
+                             "--admin-token, or the --identity-root the first node "
+                             "prints (docs/governance/identity-seal.md).\n",
+                             foreign);
+            }
+        }
+
+        // The default-deny gate is always on (#799), so a fresh node with the MCP
+        // server enabled needs an owner token or every request 401s. If no secret
+        // was supplied, generate one and print it ONCE so the node is never locked
+        // out (#733) — in the operator path a secret is always injected, so this
+        // fires only for a bare local run. Decided after the join, so a joining
+        // node that received the cluster's owner never mints its own.
+        bool generated = false;
+        if (admin_secret.empty() && opts.mcp_enabled && node.user_count() == 0 &&
+            node.can_issue_identity()) {
+            admin_secret = zetta::governance::generate_token_secret();
+            generated = true;
+        }
+        // Reconcile the built-in admin/writer/reader roles on EVERY startup — not
+        // only fresh-store bootstrap (bootstrap_owner early-returns once the user
+        // store is seeded). The roles live in the replicated store, seeded once at
+        // cluster creation; without this a binary upgrade leaves them frozen at
+        // whatever permission vocabulary first seeded them, so an upgraded cluster
+        // whose 'admin' role predates a newly-added capability keeps denying it
+        // (e.g. orchestration:testsuite_run). Idempotent — writes only on drift; a
+        // verify-only node writes nothing.
+        node.ensure_builtin_roles();
+        if (!admin_secret.empty()) {
+            const zetta::Node::BootstrapResult boot =
+                node.bootstrap_owner(admin_secret);
+            if (boot.performed && generated) {
+                std::printf(
+                    "zetta: no --admin-token supplied — generated the owner '%s' "
+                    "access token (id %s). SAVE THIS — it is shown only once:\n"
+                    "    %s\n"
+                    "    authenticate MCP/REST with: Authorization: Bearer <token>\n",
+                    boot.user_name.c_str(), boot.token_id.c_str(),
+                    admin_secret.c_str());
+            } else if (boot.performed) {
+                std::printf(
+                    "zetta: bootstrapped owner user '%s' + admin role + access "
+                    "token %s (stored hashed under %s) — authenticate with the "
+                    "admin token you supplied\n",
+                    boot.user_name.c_str(), boot.token_id.c_str(),
+                    (std::filesystem::path(opts.node.data_dir) / boot.token_id)
+                        .c_str());
+            } else {
+                std::printf("zetta: owner bootstrap skipped (%s)\n",
+                            boot.reason.c_str());
+            }
+        }
+    }
+
     // Tell the operator where this node is reachable so they can connect more
     // nodes. A wildcard bind expands to every interface IPv4.
     std::printf("zetta: cluster node %s\n", cluster.node_id().c_str());
@@ -828,8 +1127,15 @@ int main(int argc, char** argv) {
                      "cluster-secret.json")
                         .c_str());
     }
+    // The join token is the cluster root secret (it derives the CA key and seals
+    // saved connector credentials), and this line lands in pod logs and log
+    // pipelines: peer_command() names where the token goes, never its value
+    // (#1393). The line above says where to read it.
     std::printf("zetta: add another node with: %s\n",
                 cluster.peer_command().c_str());
+    // Flush the startup lines now: under a container runtime stdout is a pipe, so
+    // they would otherwise sit in the buffer until it fills.
+    std::fflush(stdout);
 
     // Detect which cloud-burst targets this node can drive from the operator's own
     // local CLIs (`az` logged in, …) and record each on the node so it surfaces as

@@ -1,0 +1,713 @@
+// The authorization regression harness (#780): one group of tests per finding of
+// the auth review, #759 through #769, run in-process against the headless core so
+// the full ctest proves them on every build. The black-box half is §3.13 of
+// tests/e2e/zetta-e2e.sh, run against a deployed node.
+//
+// Two kinds of test live here:
+//   - a finding that is fixed on `dev` gets a plain assertion: if it comes back,
+//     the test fails;
+//   - a finding that is still open gets a KNOWN_DEFECT probe. The probe runs the
+//     reproduction; while the defect reproduces the test SKIPs with the issue
+//     number, and the moment it no longer reproduces the test FAILS, telling
+//     whoever fixed it to replace the probe with the plain assertion written next
+//     to it. So a fix cannot land silently, and once flipped, a regression fails.
+//
+// The finding each test covers is in its name and its comment. The coverage map,
+// with what is fixed and what is open, is docs/testing/authz-regressions.md.
+#include <gtest/gtest.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "temp_dir.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/api/registry.hpp"
+#include "zetta/api/server.hpp"
+#include "zetta/cluster/cluster.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/governance/identity_seal.hpp"
+#include "zetta/governance/permission.hpp"
+#include "zetta/governance/policy.hpp"
+#include "zetta/governance/principal.hpp"
+#include "zetta/governance/role.hpp"
+#include "zetta/governance/scope.hpp"
+#include "zetta/governance/token.hpp"
+#include "zetta/governance/user.hpp"
+#include "zetta/governance/user_role.hpp"
+#include "zetta/node.hpp"
+#include "zetta/query/service.hpp"
+#include "zetta/util/uuid.hpp"
+
+using zetta::Node;
+using zetta::NodeConfig;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::cluster::ReplicationManager;
+using zetta::governance::AuditAction;
+using zetta::governance::CapabilityDomain;
+using zetta::governance::IdentityAuthority;
+using zetta::governance::Operation;
+using zetta::governance::PolicyValue;
+using zetta::governance::Resource;
+using zetta::governance::TokenType;
+using zetta::query::QueryService;
+using zetta::test::TempDir;
+
+// A still-open finding. `still_present` is the reproduction's verdict. While it
+// holds, SKIP and name the issue; once it stops holding, FAIL so the probe is
+// replaced by the plain assertion beside it (strict expected-failure).
+#define KNOWN_DEFECT(issue, still_present, what)                                  \
+    do {                                                                          \
+        if (still_present) {                                                      \
+            GTEST_SKIP() << "open defect zetta#" #issue ": " << (what);           \
+        }                                                                         \
+        FAIL() << "zetta#" #issue " no longer reproduces (" << (what)             \
+               << "). It looks fixed: replace this KNOWN_DEFECT probe with the "  \
+                  "plain assertion next to it, and update "                       \
+                  "docs/testing/authz-regressions.md.";                           \
+    } while (false)
+
+namespace {
+
+constexpr const char* kOwnerSecret = "authz-regression-owner-secret";
+
+NodeConfig config_for(const TempDir& tmp) {
+    NodeConfig cfg;
+    cfg.data_dir = tmp.path().string();
+    cfg.preflight = false;
+    return cfg;
+}
+
+std::string user_with_roles(Node& node, const std::string& name,
+                            const std::vector<std::string>& role_names) {
+    auto user = node.create_user(name);
+    EXPECT_TRUE(user) << name;
+    for (const std::string& role_name : role_names) {
+        auto role = node.find_role(role_name);
+        EXPECT_TRUE(role) << role_name;
+        if (user && role) node.assign_role(user->id(), role->id());
+    }
+    return user ? user->id() : std::string{};
+}
+
+// Refused for want of a right: the statement fails with a permission error
+// (the executor's "permission denied", or the role check's "no role grants"),
+// never a parse error that would pass for a refusal.
+bool refused(const QueryService::Outcome& result) {
+    return !result.ok() &&
+           (result.error.find("permission denied") != std::string::npos ||
+            result.error.find("no role grants") != std::string::npos);
+}
+
+// One node, its owner seeded the way --admin-token seeds it, the built-in roles,
+// and a small table: app.people (id, owner, salary).
+struct AuthzNode : ::testing::Test {
+    TempDir dir;
+    Node node{config_for(dir)};
+    QueryService local{node};  // the trusted local session builds the fixture
+
+    void SetUp() override {
+        ASSERT_TRUE(node.start());
+        const auto boot = node.bootstrap_owner(kOwnerSecret);
+        ASSERT_TRUE(boot.performed) << boot.reason;
+        node.ensure_builtin_roles();
+        for (const char* sql :
+             {"CREATE DATABASE app;", "CREATE TABLE app.people (id int);",
+              "INSERT INTO app.people (id, owner, salary) VALUES "
+              "(1, 'ada', 91000), (2, 'bo', 87000), (3, 'ada', 123000);"}) {
+            const auto r = local.run(sql, "");
+            ASSERT_TRUE(r.ok()) << r.error << "  (" << sql << ")";
+        }
+    }
+    void TearDown() override { node.stop(); }
+
+    QueryService as(const std::string& user_id) {
+        return QueryService{node, nullptr, user_id, /*acting_is_user=*/true};
+    }
+    void run_local(const std::string& sql) {
+        const auto r = local.run(sql, "");
+        ASSERT_TRUE(r.ok()) << r.error << "  (" << sql << ")";
+    }
+    std::size_t tokens_for(const std::string& user_name) {
+        auto user = node.find_user(user_name);
+        if (!user) return 0;
+        std::size_t count = 0;
+        for (const auto& token : node.tokens()) {
+            if (token->user_id() == user->id()) ++count;
+        }
+        return count;
+    }
+};
+
+}  // namespace
+
+// ===== #759: privileged SQL skipped its permission check ======================
+// Fixed on dev by #1229: CREATE TOKEN / CREATE USER need tokens:manage /
+// users:manage, and the schema statements need sql:ddl.
+
+TEST_F(AuthzNode, Finding759_ReaderCannotMintTheOwnerTokenOrRunDdl) {
+    const std::string reader = user_with_roles(node, "rita", {"reader"});
+    QueryService as_reader = as(reader);
+    const std::size_t owner_tokens = tokens_for("owner");
+
+    for (const char* sql :
+         {"CREATE TOKEN FOR owner TYPE api;", "CREATE TOKEN FOR owner;",
+          "CREATE USER mallory;", "CREATE DATABASE fresh;", "DROP DATABASE app;",
+          "CREATE TABLE app.extra (id int);", "DROP TABLE app.people;"}) {
+        const auto r = as_reader.run(sql, "");
+        EXPECT_TRUE(refused(r)) << sql << ": " << r.error;
+    }
+    EXPECT_EQ(tokens_for("owner"), owner_tokens);  // no owner token was minted
+    EXPECT_FALSE(node.find_user("mallory"));
+    EXPECT_FALSE(node.find_database("fresh"));
+    EXPECT_TRUE(node.find_database("app"));
+    EXPECT_EQ(local.run("SELECT * FROM app.people;", "").rows.size(), 3u);
+    EXPECT_TRUE(as_reader.run("SELECT * FROM app.people;", "").ok());
+}
+
+// ===== #760: column masking bypassed through an aggregate =====================
+// Fixed on dev: the read guard checks an aggregate's column, not only the
+// grouping key (src/core/query/executor.cpp, the column-grant guard).
+
+TEST_F(AuthzNode, Finding760_AggregateOverAMaskedColumnIsRefused) {
+    run_local("CREATE ROLE idonly;");
+    run_local("GRANT sql:read ON app.people(id, owner) TO ROLE idonly;");
+    const std::string clerk = user_with_roles(node, "clerk", {"idonly"});
+    QueryService as_clerk = as(clerk);
+
+    // The plain read masks salary ...
+    const auto plain = as_clerk.run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(plain.ok()) << plain.error;
+    for (const auto& row : plain.rows) EXPECT_TRUE(row["salary"].is_null());
+
+    // ... and no aggregate recovers it.
+    for (const char* sql :
+         {"SELECT id, MAX(salary) FROM app.people GROUP BY id;",
+          "SELECT id, MIN(salary) FROM app.people GROUP BY id;",
+          "SELECT owner, SUM(salary) FROM app.people GROUP BY owner;",
+          "SELECT owner, AVG(salary) FROM app.people GROUP BY owner;"}) {
+        const auto r = as_clerk.run(sql, "");
+        EXPECT_TRUE(refused(r)) << sql << " returned " << nlohmann::json(r.rows).dump();
+    }
+}
+
+// ===== #761: roles:manage is unbounded ========================================
+// Fixed by bounded role management (src/core/query/executor.cpp): a caller may
+// grant only rights it holds, may assign, unassign, change or drop only a role
+// whose every right it holds, and nobody changes or drops a built-in role.
+
+TEST_F(AuthzNode, Finding761_RoleManagerCannotGrantWhatItDoesNotHold) {
+    run_local("CREATE ROLE delegates;");
+    run_local("GRANT roles:manage, sql:read TO ROLE delegates;");
+    const std::string dee = user_with_roles(node, "dee", {"delegates"});
+    QueryService as_dee = as(dee);
+
+    const auto self_admin = as_dee.run("GRANT ROLE admin TO dee;", "");
+    const auto widen = as_dee.run("GRANT tokens:manage TO ROLE delegates;", "");
+    EXPECT_TRUE(refused(self_admin)) << self_admin.error;
+    EXPECT_TRUE(refused(widen)) << widen.error;
+    EXPECT_FALSE(
+        node.authorize_user(dee, Operation{CapabilityDomain::Data, "write"}).allowed);
+    EXPECT_FALSE(
+        node.authorize_user(dee, Operation{CapabilityDomain::Api, "manage_tokens"})
+            .allowed);
+}
+
+TEST_F(AuthzNode, Finding761_BuiltinRolesCannotBeEditedOrDropped) {
+    const std::string boss = user_with_roles(node, "boss", {"admin"});
+    QueryService as_boss = as(boss);
+    const auto revoke = as_boss.run("REVOKE sql:read FROM ROLE reader;", "");
+    const auto drop = as_boss.run("DROP ROLE writer;", "");
+    EXPECT_TRUE(refused(revoke)) << revoke.error;
+    EXPECT_TRUE(refused(drop)) << drop.error;
+
+    const std::string now = "2026-10-20T00:00:00.000Z";
+    auto reader = node.find_role("reader");
+    ASSERT_TRUE(reader);
+    EXPECT_TRUE(reader->capabilities().permits({CapabilityDomain::Data, "read"}, now));
+    EXPECT_TRUE(node.find_role("writer"));
+}
+
+// ===== #762: authorization off by default; object controls skipped for =======
+// ===== non-user identities ===================================================
+// Part 1 is fixed (#799, auth always on): see Finding762 over HTTP below. Part 2:
+// a token always resolves to a USER, so row security and masking bind every
+// remote caller, and an AccessKey id presented as a bearer is refused. In
+// process, a legacy AccessKey (the headed console's key session, a library
+// caller) used to bypass row security, masking and object grants; it is now held
+// to them (fixed, #762): a table only with a flat sql:read of its own, row
+// security unless it holds cluster:admin. Only the trusted local session (an
+// empty acting id, which no network surface produces) still reads everything.
+
+TEST_F(AuthzNode, Finding762_RowSecurityBindsATokenResolvedUser) {
+    run_local(
+        "CREATE POLICY own_people ON app.people FOR SELECT "
+        "USING (owner = current_user());");
+    const std::string ada = user_with_roles(node, "ada", {"writer"});
+    const auto r = as(ada).run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(r.ok()) << r.error;
+    ASSERT_EQ(r.rows.size(), 2u);
+    for (const auto& row : r.rows) EXPECT_EQ(row["owner"], "ada");
+}
+
+TEST_F(AuthzNode, Finding762_ALegacyAccessKeyIsHeldToRowSecurityAndGrants) {
+    run_local(
+        "CREATE POLICY own_people ON app.people FOR SELECT "
+        "USING (owner = current_user());");
+    auto service = node.create_principal("svc");
+    ASSERT_TRUE(service);
+    const auto key_with = [&](std::vector<std::string> actions) {
+        zetta::governance::CapabilitySet capabilities;
+        for (const auto& action : actions) {
+            capabilities.grant(action == "cluster_admin" ? CapabilityDomain::Api
+                                                         : CapabilityDomain::Data,
+                               action);
+        }
+        auto key = service->create_key(zetta::governance::unrestricted_scope(),
+                                       capabilities);
+        EXPECT_TRUE(key);
+        return key ? key->id() : std::string{};
+    };
+    const auto as_key = [&](const std::string& key_id) {
+        return QueryService{node, nullptr, key_id, /*acting_is_user=*/false};
+    };
+
+    // No sql:read of its own: refused, where it used to read every row.
+    const auto bare = as_key(key_with({})).run("SELECT * FROM app.people;", "");
+    EXPECT_TRUE(refused(bare)) << bare.error;
+    EXPECT_TRUE(bare.rows.empty());
+
+    // sql:read: the table, but row security binds it. A key has no user name, so
+    // owner = current_user() admits no row.
+    const auto reader = as_key(key_with({"read"})).run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(reader.ok()) << reader.error;
+    EXPECT_TRUE(reader.rows.empty());
+    EXPECT_FALSE(node.bypasses_row_security(key_with({"read"}), false));
+
+    // cluster:admin on the key itself is the one way past row security.
+    const std::string admin_key = key_with({"read", "cluster_admin"});
+    EXPECT_TRUE(node.bypasses_row_security(admin_key, false));
+    const auto admin = as_key(admin_key).run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(admin.ok()) << admin.error;
+    EXPECT_EQ(admin.rows.size(), 3u);
+
+    // Object grants: a key reaches a tool or a blob only by its own flat right.
+    EXPECT_FALSE(node.may_call_tool(key_with({}), false, "server_info"));
+    EXPECT_FALSE(node.authorize_blob(key_with({}), false, "any-blob"));
+    EXPECT_TRUE(node.authorize_blob(key_with({"blob_read"}), false, "any-blob"));
+    // The trusted local session still reads every row.
+    const auto local_rows = local.run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(local_rows.ok()) << local_rows.error;
+    EXPECT_EQ(local_rows.rows.size(), 3u);
+}
+
+// ===== #765: a row policy with no condition admitted every row ================
+// Fixed: build_rls_filter (src/core/query/executor.cpp) treats a missing
+// predicate like one that does not parse. The policy still engages row security
+// for its table and admits no row.
+
+TEST_F(AuthzNode, Finding765_APolicyWithNoConditionDeniesInsteadOfAllowingAll) {
+    // Not reachable through CREATE POLICY (it requires USING); it arrives as a
+    // replicated record or an edited policy.json, so it enters at the value
+    // boundary the load and reconcile paths share.
+    const nlohmann::json record = {{"name", "no_condition"},
+                                   {"database", "app"},
+                                   {"table", "people"},
+                                   {"command", "select"}};
+    const auto value = zetta::governance::policy_value_from_json(record);
+    ASSERT_TRUE(value);
+    ASSERT_TRUE(node.create_policy(*value));
+    const std::string bo = user_with_roles(node, "bo", {"writer"});
+    const auto r = as(bo).run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_TRUE(r.rows.empty()) << "a SELECT policy with no USING admitted "
+                                << r.rows.size() << " of 3 rows to a non-admin";
+}
+
+// ===== #766: the policy / user / role / token catalog was readable by anyone ==
+// Fixed: each system table has a reader class (docs/governance/
+// system-catalog-access.md); the governance registry is admin-only.
+
+TEST_F(AuthzNode, Finding766_AReaderCannotReadTheGovernanceCatalog) {
+    run_local(
+        "CREATE POLICY eu_only ON app.people FOR SELECT "
+        "USING (owner = 'restricted-eu');");
+    const std::string reader = user_with_roles(node, "rita", {"reader"});
+    QueryService as_reader = as(reader);
+    for (const char* view : {"system.policies", "system.users", "system.roles",
+                             "system.user_roles", "system.tokens"}) {
+        const auto r = as_reader.run(std::string("SELECT * FROM ") + view + ";", "");
+        EXPECT_TRUE(refused(r)) << view << " was readable: " << r.error;
+        EXPECT_TRUE(r.rows.empty()) << view;
+    }
+}
+
+// ===== #767: blob grants matched by text prefix, not path =====================
+// Fixed by PR #1312: a blob grant covers the id and its `/`-segment children.
+
+TEST_F(AuthzNode, Finding767_ABlobGrantStopsAtAPathBoundary) {
+    node.create_role("reports");
+    ASSERT_TRUE(node.grant_scoped_permissions("reports", {"blob:read"},
+                                              Resource::blob("report")));
+    const std::string bella = user_with_roles(node, "bella", {"reports"});
+    EXPECT_TRUE(node.authorize_blob(bella, true, "report"));
+    EXPECT_TRUE(node.authorize_blob(bella, true, "report/q1.pdf"));
+    EXPECT_FALSE(node.authorize_blob(bella, true, "report-secret-2026"))
+        << "a blob:read grant on \"report\" admitted \"report-secret-2026\"";
+}
+
+// ===== #768: orchestration could not be granted once auth was enforced ========
+// Fixed by 7b1ac08: the orchestration atoms exist and admin is the whole
+// vocabulary.
+
+TEST_F(AuthzNode, Finding768_EveryRegisteredOperationIsGrantable) {
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    const std::string boss = user_with_roles(node, "boss", {"admin"});
+
+    std::vector<Operation> grantable;
+    for (const std::string& atom : zetta::governance::permission_vocabulary()) {
+        for (const Operation& op : zetta::governance::permission_operations(atom)) {
+            grantable.push_back(op);
+        }
+    }
+    for (const auto& capability : registry.list()) {
+        const Operation& op = capability->required_operation;
+        EXPECT_TRUE(node.authorize_user(boss, op).allowed)
+            << "admin cannot run " << capability->name;
+        EXPECT_TRUE(std::ranges::contains(grantable, op))
+            << capability->name << " needs an operation no permission grants";
+    }
+}
+
+// ===== #769: hardening (owner token KDF, atomic seed, shared secret, audit) ===
+
+TEST_F(AuthzNode, Finding769_TheOwnerTokenIsStoredThroughAKdf) {
+    auto owner = node.find_user("owner");
+    ASSERT_TRUE(owner);
+    std::string hash;
+    for (const auto& token : node.tokens()) {
+        if (token->user_id() == owner->id()) hash = token->value().hash;
+    }
+    ASSERT_FALSE(hash.empty());
+    // A KDF hash names itself (`pbkdf2-sha256$<iterations>$<hex>`, fixed by PR
+    // #1311); a bare 64-hex value is a single salted SHA-256.
+    EXPECT_NE(hash.find('$'), std::string::npos)
+        << "the --admin-token owner secret is stored as one salted SHA-256";
+}
+
+TEST(AuthzSeed, Finding769_AnInterruptedOwnerSeedIsResumed) {
+    TempDir dir;
+    Node node{config_for(dir)};
+    ASSERT_TRUE(node.start());
+    // What a crash between creating the owner and issuing its token leaves.
+    ASSERT_TRUE(node.create_user("owner"));
+    const auto boot = node.bootstrap_owner(kOwnerSecret);
+    const bool locked_out = node.authenticate_token(kOwnerSecret) == nullptr;
+    node.stop();
+    // Fixed by PR #1311: an owner left without a token is resumed.
+    EXPECT_TRUE(boot.performed) << boot.reason;
+    EXPECT_FALSE(locked_out) << "an owner left without a token is never re-seeded";
+}
+
+TEST_F(AuthzNode, Finding769_RefusedPrivilegedSqlIsAudited) {
+    const std::string reader = user_with_roles(node, "rita", {"reader"});
+    const auto before = node.audit_events().size();
+    EXPECT_TRUE(refused(as(reader).run("CREATE TOKEN FOR owner;", "")));
+    EXPECT_TRUE(refused(as(reader).run("DROP TABLE app.people;", "")));
+    std::size_t refusals = 0;
+    const auto events = node.audit_events();
+    for (std::size_t i = before; i < events.size(); ++i) {
+        if (events[i]->action() == AuditAction::DataChanged && !events[i]->allowed()) {
+            ++refusals;
+        }
+    }
+    EXPECT_EQ(refusals, 2u);
+}
+
+// ===== the HTTP surface: #762, #766 and #769 through the one auth gate ========
+
+namespace {
+
+struct HttpResponse {
+    int status = 0;
+    std::string body;
+};
+
+HttpResponse http_request(unsigned short port, const std::string& method,
+                          const std::string& target, const std::string& bearer) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return {};
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    ::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        ::close(fd);
+        return {};
+    }
+    std::string request = method + " " + target + " HTTP/1.1\r\n";
+    request += "Host: 127.0.0.1\r\n";
+    if (!bearer.empty()) request += "Authorization: Bearer " + bearer + "\r\n";
+    request += "Content-Length: 0\r\nConnection: close\r\n\r\n";
+    ::send(fd, request.data(), request.size(), 0);
+
+    std::string response;
+    char buffer[4096];
+    ssize_t received = 0;
+    while ((received = ::recv(fd, buffer, sizeof(buffer), 0)) > 0) {
+        response.append(buffer, static_cast<std::size_t>(received));
+    }
+    ::close(fd);
+
+    HttpResponse parsed;
+    if (response.size() > 12) parsed.status = std::atoi(response.substr(9, 3).c_str());
+    const auto separator = response.find("\r\n\r\n");
+    if (separator != std::string::npos) parsed.body = response.substr(separator + 4);
+    return parsed;
+}
+
+// The request runs on a helper thread while this thread, the owning loop,
+// drains the server (the gate and the handler both marshal onto it).
+HttpResponse drive(zetta::api::ApiServer& server, const std::string& method,
+                   const std::string& target, const std::string& bearer = {}) {
+    HttpResponse response;
+    std::atomic<bool> finished{false};
+    std::thread client([&] {
+        response = http_request(server.port(), method, target, bearer);
+        finished = true;
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!finished && std::chrono::steady_clock::now() < deadline) {
+        server.drain();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    client.join();
+    return response;
+}
+
+struct AuthzHttp : AuthzNode {
+    std::unique_ptr<zetta::api::ApiServer> server;
+
+    void SetUp() override {
+        AuthzNode::SetUp();
+        if (HasFatalFailure()) return;
+        zetta::api::ServerOptions options;
+        options.port = 0;
+        server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
+        ASSERT_TRUE(server->start()) << server->reason();
+    }
+    void TearDown() override {
+        if (server) server->stop();
+        AuthzNode::TearDown();
+    }
+};
+
+}  // namespace
+
+// #762 part 1 (fixed, #799): no credential, a wrong one, and a legacy AccessKey
+// id are all refused; only a token that resolves to a user gets in. #769 item 2
+// (fixed, #799/#806): there is no shared secret left to compare, constant-time or
+// not — every bearer goes through the token store.
+TEST_F(AuthzHttp, Finding762_OnlyATokenThatResolvesToAUserGetsIn) {
+    auto service = node.create_principal("svc");
+    ASSERT_TRUE(service);
+    auto key = service->create_key(zetta::governance::unrestricted_scope());
+    ASSERT_TRUE(key);
+
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info").status, 401);
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info", "not-a-token").status, 401);
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info", key->id()).status, 401);
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info", kOwnerSecret).status, 200);
+}
+
+// #766 (fixed): a user whose only right is one tool reads only that tool's spec.
+// (The OpenAPI document and llms.txt were made public on purpose, before the
+// gate, so they are not probed; /v1/specs is behind the gate.)
+TEST_F(AuthzHttp, Finding766_SpecsAreFilteredByTheCallersTools) {
+    node.create_role("one_tool");
+    ASSERT_TRUE(node.grant_scoped_permissions("one_tool", {"mcp:call"},
+                                              Resource::tool("server_info")));
+    const std::string tina = user_with_roles(node, "tina", {"one_tool"});
+    const auto issued = node.create_token(tina, TokenType::Api);
+    ASSERT_TRUE(issued.token);
+
+    const HttpResponse specs = drive(*server, "GET", "/v1/specs", issued.secret);
+    ASSERT_EQ(specs.status, 200) << specs.body;
+    EXPECT_EQ(specs.body.find("\"list_projects\""), std::string::npos)
+        << "a user granted only server_info reads list_projects' spec at /v1/specs";
+    EXPECT_NE(specs.body.find("\"server_info\""), std::string::npos);
+}
+
+// ===== #763 / #764: identity across the cluster ===============================
+
+namespace {
+
+template <class Predicate>
+bool converge(Node& a, Node& b, Predicate done) {
+    for (int attempt = 0; attempt < 400; ++attempt) {
+        a.tick();
+        b.tick();
+        if (done()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return false;
+}
+
+NodeConfig config_with_root(const TempDir& tmp,
+                            std::optional<IdentityAuthority> root) {
+    NodeConfig cfg = config_for(tmp);
+    cfg.identity_authority = std::move(root);
+    return cfg;
+}
+
+// Node A is the existing cluster with its owner; node B is a fresh node about
+// to join it. The clusters are started by the test, so it can act on B first.
+// Each node has the identity root main.cpp would give it (#763, #764).
+struct TwoNodes {
+    TempDir dir_a;
+    TempDir dir_b;
+    std::string id_a = zetta::util::new_uuid();
+    std::string id_b = zetta::util::new_uuid();
+    ReplicationManager repl_a{id_a};
+    ReplicationManager repl_b{id_b};
+    Node a;
+    Node b;
+    std::unique_ptr<Cluster> cluster_a;
+    std::unique_ptr<Cluster> cluster_b;
+    unsigned short port_a;
+    unsigned short port_b;
+
+    TwoNodes(unsigned short first_port, unsigned short second_port,
+             std::optional<IdentityAuthority> root_a,
+             std::optional<IdentityAuthority> root_b)
+        : a(config_with_root(dir_a, std::move(root_a)), &repl_a),
+          b(config_with_root(dir_b, std::move(root_b)), &repl_b),
+          port_a(first_port),
+          port_b(second_port) {
+        a.start();
+        b.start();
+    }
+    ~TwoNodes() {
+        if (cluster_b) cluster_b->stop();
+        if (cluster_a) cluster_a->stop();
+        a.stop();
+        b.stop();
+    }
+    void join() {
+        ClusterConfig cfg_a;
+        cfg_a.listen_host = "127.0.0.1";
+        cfg_a.listen_port = port_a;
+        cfg_a.port_range = 1;
+        cluster_a = std::make_unique<Cluster>(id_a, cfg_a, &repl_a);
+        cluster_a->start();
+        ClusterConfig cfg_b;
+        cfg_b.listen_host = "127.0.0.1";
+        cfg_b.listen_port = port_b;
+        cfg_b.port_range = 1;
+        cfg_b.seeds = {"127.0.0.1:" + std::to_string(port_a)};
+        cluster_b = std::make_unique<Cluster>(id_b, cfg_b, &repl_b);
+        cluster_b->start();
+    }
+};
+
+// The internal CRDT key scheme (src/core/catalog.hpp) is not on the tests'
+// include path; mirror the keys this file writes, as the replication tests do.
+std::string role_key(const std::string& id) { return "role:" + id; }
+std::string user_key(const std::string& id) { return "user:" + id; }
+std::string user_role_key(const std::string& id) { return "user_role:" + id; }
+std::string token_key(const std::string& id) { return "token:" + id; }
+
+std::size_t owners(const Node& node) {
+    std::size_t count = 0;
+    for (const auto& user : node.users()) {
+        if (user->name() == "owner") ++count;
+    }
+    return count;
+}
+
+}  // namespace
+
+// #763: a joining node checked its own, still-empty store before it had synced,
+// and seeded a second owner that spread to the cluster. Fixed: main.cpp seeds
+// after the join, and a node seeds only under the root it holds. A joiner given
+// its own --admin-token holds a root of its own, so the owner it seeds is sealed
+// by that root and the existing node never honors it.
+TEST(AuthzCluster, Finding763_AJoiningNodeDoesNotMintASecondOwner) {
+    TwoNodes nodes{43780, 43781,
+                   IdentityAuthority::from_owner_secret("cluster-owner-secret"),
+                   IdentityAuthority::from_owner_secret("joiner-secret")};
+    ASSERT_TRUE(nodes.a.bootstrap_owner("cluster-owner-secret").performed);
+    nodes.join();
+    ASSERT_TRUE(converge(nodes.a, nodes.b, [&] {
+        return nodes.cluster_b->peer_count() == 1 &&
+               nodes.repl_a.version() == nodes.repl_b.version();
+    }));
+    // main.cpp's order: join, sync, reconcile, then seed.
+    nodes.b.ensure_builtin_roles();
+    nodes.b.bootstrap_owner("joiner-secret");
+    ASSERT_TRUE(converge(nodes.a, nodes.b, [&] {
+        return nodes.repl_a.version() == nodes.repl_b.version();
+    }));
+    EXPECT_EQ(owners(nodes.a), 1u);
+    EXPECT_EQ(nodes.a.authenticate_token("joiner-secret"), nullptr);
+    EXPECT_NE(nodes.a.authenticate_token("cluster-owner-secret"), nullptr);
+}
+
+// #764: identity records carried no proof of origin. A peer wrote a user, an
+// admin role, the assignment and a token straight into the replicated catalog
+// (no SQL, no Node call, no issuer) and the existing node honored the token.
+// Fixed: every identity record is sealed by the cluster's identity root, and a
+// record without a valid seal is absent. B is a member that pinned the root
+// but does not hold it — membership, not authority.
+TEST(AuthzCluster, Finding764_AnUnsignedReplicatedCredentialIsNotHonored) {
+    auto root = IdentityAuthority::from_owner_secret("cluster-owner-secret");
+    ASSERT_TRUE(root);
+    TwoNodes nodes{43790, 43791, root,
+                   IdentityAuthority::verify_only(root->public_key_hex())};
+    ASSERT_TRUE(nodes.a.bootstrap_owner("cluster-owner-secret").performed);
+
+    // Forge the records on a detached node, then write them raw on B.
+    TempDir forge_dir;
+    Node forge{config_for(forge_dir)};
+    ASSERT_TRUE(forge.start());
+    auto role = forge.create_builtin_role("admin");
+    auto user = forge.create_user("mallory");
+    ASSERT_TRUE(role && user);
+    ASSERT_TRUE(forge.assign_role(user->id(), role->id()));
+    const auto issued = forge.create_token(user->id(), TokenType::Access);
+    ASSERT_TRUE(issued.token);
+    const std::string token_id = issued.token->id();
+    nodes.repl_b.set(role_key(role->id()), role->metadata());
+    nodes.repl_b.set(user_key(user->id()), user->metadata());
+    for (const auto& assignment : forge.user_roles()) {
+        nodes.repl_b.set(user_role_key(assignment->id()),
+                         assignment->metadata());
+    }
+    nodes.repl_b.set(token_key(token_id), issued.token->metadata());
+    forge.stop();
+
+    nodes.join();
+    ASSERT_TRUE(converge(nodes.a, nodes.b, [&] {
+        return nodes.b.authenticate_token("cluster-owner-secret") != nullptr &&
+               nodes.repl_a.version() == nodes.repl_b.version();
+    }));
+    EXPECT_EQ(nodes.a.authenticate_token(issued.secret), nullptr);
+    EXPECT_EQ(nodes.b.authenticate_token(issued.secret), nullptr);
+    EXPECT_FALSE(nodes.a.find_user("mallory"));
+}

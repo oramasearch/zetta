@@ -109,7 +109,7 @@ sensible default.
 | `image` | `string` | | image family the nodes boot from (e.g. `debian-12`); empty → the control plane's default |
 | `network` | `string` | | VPC network; empty → the project default |
 | `subnetwork` | `string` | | subnetwork within the region; empty → the auto subnet |
-| `service_account` | `string` | | the service account granted to burst nodes (the cloud-native side of the per-node identity) |
+| `service_account` | `string` | | the service account granted to burst nodes (the cloud-native side of the per-node identity); on a secure cluster it reads the join token from Secret Manager (#1316). Empty → the project's default compute service account |
 | `spot` | `bool` | | burst Spot / preemptible (cheaper, evictable) capacity (default `false`) |
 | `seed_peer` | `string` | | cluster seed `host:port` injected into each node's startup-script so it auto-joins |
 
@@ -140,7 +140,7 @@ injected **`CommandRunner`**, and parses the JSON the CLI returns.
 
 | `GcpControlPlane` call | `gcloud` command (shape) |
 |---|---|
-| `bring_up` | `gcloud compute instance-templates create <template> [--machine-type … --image-family … --network … --subnet … --service-account … --provisioning-model SPOT --instance-termination-action STOP --metadata startup-script="ZETTA_SEED_PEER=… ZETTA_CLUSTER_TOKEN=…"]`, then `gcloud compute instance-groups managed create <pool> --template <template> --size N`, then `… managed resize <pool> --size N`, then `list` (the join token rides the startup-script only on a secure cluster — #670) |
+| `bring_up` | on a secure cluster first `gcloud secrets create <pool>-cluster-token --project … --replication-policy automatic --data-file <private file>`, or `gcloud secrets versions add <pool>-cluster-token --project … --data-file <private file>` when it exists (fail-closed — #1316); then `gcloud compute instance-templates create <template> [--machine-type … --image-family … --network … --subnet … --service-account … --provisioning-model SPOT --instance-termination-action STOP --scopes cloud-platform --metadata-from-file startup-script=<file>]`, then `gcloud compute instance-groups managed create <pool> --template <template> --size N`, then `… managed resize <pool> --size N`, then `list`. The startup-script is the [node bootstrap script](node-bootstrap-script.md): the seed and the secret's name, never the token |
 | `destroy` | `gcloud compute instance-groups managed delete-instances <pool> --instances <node_id> --quiet` |
 | `list` | `gcloud compute instance-groups managed list-instances <pool> --format json` |
 
@@ -150,10 +150,11 @@ reused across bursts), then *both* creates and resizes the MIG to N. A fresh MIG
 created (create succeeds); an existing one is scaled (create fails "already exists",
 resize succeeds) — the pool is ready iff **either** succeeded, which is what makes a
 re-burst idempotent on the stable `pool_name`. It then **lists** what is up and
-reports best-effort against the requested count. The seed peer is handed to each
-node via a startup-script metadata entry so it auto-joins at boot (a production
-deployment supplies a full startup script; the reference carries the seed address
-illustratively). The command shapes are grounded in
+reports best-effort against the requested count. Each node gets the
+[node bootstrap script](node-bootstrap-script.md) as its `startup-script`
+metadata: the guest agent runs it at boot, it fetches the join token from Secret
+Manager, and starts the engine with the seed peer and `ZETTA_CLUSTER_TOKEN_FILE`.
+The command shapes are grounded in
 [research/gcp-cli-compute.md](../research/gcp-cli-compute.md) (the cited `gcloud`
 guide — MIG create / resize / list-instances / delete-instances, and
 `--provisioning-model=SPOT`; §2.7–2.8).
@@ -201,6 +202,55 @@ directly.
   backend in a live burst is the remaining slice. `GcpProvisioner` drops in
   wherever one holds a `Provisioner&`.
 
+### The join token — Secret Manager and the node service account (#1316)
+
+Instance metadata is not a secret store: any principal that can describe the
+template or the instance can read it, and so can every process on the VM through
+the metadata server. Templates are immutable, so whatever goes in one stays there.
+So the token never rides it. On a secure cluster `bring_up`:
+
+1. stores the token in Secret Manager as the secret `<pool_name>-cluster-token` in
+   `project_id`: `gcloud secrets create … --data-file <private file>` on the first
+   burst, `gcloud secrets versions add … --data-file` on later ones (so a rotated
+   token reaches new nodes). If both fail, the burst stops before the template or
+   the MIG is touched;
+2. creates the template with `--scopes cloud-platform` (Secret Manager needs that
+   OAuth scope on the node's access token; IAM then decides what it may read) and
+   the boot script as `startup-script`, which names the project and the secret;
+3. at boot, the script takes an access token for the instance's service account
+   from the metadata server, calls Secret Manager's
+   `projects/<project>/secrets/<pool>-cluster-token/versions/latest:access`,
+   base64-decodes the payload, and writes it to `/etc/zetta/cluster-token` (0400).
+
+**What the operator grants.**
+
+| Principal | Needs | Role |
+|---|---|---|
+| The control plane (the account `gcloud` runs as on the zetta node) | create the secret and add versions | `roles/secretmanager.admin` on the project; or create `<pool>-cluster-token` once yourself and grant **`roles/secretmanager.secretVersionAdder`** on that secret only (the create then fails and `bring_up` adds a version) |
+| The burst nodes' service account (`service_account`, or the default compute service account) | read the latest version | **`roles/secretmanager.secretAccessor`** on the secret `<pool>-cluster-token` |
+
+```sh
+gcloud secrets create zetta-burst-cluster-token --project orama-churn \
+  --replication-policy automatic   # once, no version yet
+gcloud secrets add-iam-policy-binding zetta-burst-cluster-token --project orama-churn \
+  --member serviceAccount:burst@orama-churn.iam.gserviceaccount.com \
+  --role roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding zetta-burst-cluster-token --project orama-churn \
+  --member serviceAccount:<control-plane account> \
+  --role roles/secretmanager.secretVersionAdder
+```
+
+The Secret Manager API must be enabled on the project
+(`gcloud services enable secretmanager.googleapis.com`). The VM image needs
+`curl`, `base64` and a POSIX `sh` (the Debian and Ubuntu images have them).
+
+**A template from before #1316 still holds the token.** The binding reuses an
+existing template of the same name (templates are immutable), so one created by an
+earlier build keeps the token in its `startup-script` metadata and keeps handing it
+out. Delete it (`gcloud compute instance-templates delete <template>`) so the next
+burst creates a clean one, and rotate the cluster token, since it was readable by
+anyone who could describe that template.
+
 ## Tests
 
 `tests/cloud/test_gcp_provisioner.cpp` mirrors the Azure test — the config boundary, the
@@ -220,7 +270,11 @@ lifecycle, and the reference binding:
 - **`GcpCliControlPlane` (fake command runner)** — `bring_up` ensures the instance
   template (machine type / image / service account flags), creates + resizes the
   MIG, then lists; a Spot config adds `--provisioning-model SPOT` /
-  `--instance-termination-action` / the `--metadata` seed to the template;
+  `--instance-termination-action` to the template; on a secure cluster the token
+  goes to Secret Manager first through a private `--data-file` (create, or
+  `versions add` on a re-burst), the template gets `--scopes cloud-platform` and a
+  startup-script that names the secret and never holds the token, and a Secret
+  Manager refusal stops the burst before the template (#1316);
   create-or-resize succeeds when only the resize does (re-burst); best-effort when
   fewer instances come up; a create+resize failure surfaces in the `detail`;
   `destroy` builds `delete-instances --quiet` and maps a non-zero exit to `false`;

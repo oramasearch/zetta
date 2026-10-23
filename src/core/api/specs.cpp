@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "zetta/api/rest.hpp"
+#include "zetta/node.hpp"
 #include "zetta/schemas/registry.hpp"
 
 namespace zetta::api {
@@ -32,13 +33,28 @@ nlohmann::json openapi_index_entry() {
          "served at /v1/openapi.json)"}};
 }
 
+bool every_capability(const Capability&) { return true; }
+
 }  // namespace
 
+CapabilityVisible callable_by(const Node& node, std::string acting_key,
+                              bool acting_is_user) {
+    if (!acting_is_user) return every_capability;
+    return [&node, acting_key = std::move(acting_key)](const Capability& capability) {
+        return node.may_call_tool(acting_key, /*acting_is_user=*/true, capability.name);
+    };
+}
+
 nlohmann::json spec_index(const Registry& registry) {
+    return spec_index(registry, every_capability);
+}
+
+nlohmann::json spec_index(const Registry& registry, const CapabilityVisible& visible) {
     nlohmann::json specs = nlohmann::json::array();
     specs.push_back(openapi_index_entry());
 
     for (const auto& capability : registry.list()) {
+        if (!visible(*capability)) continue;
         specs.push_back({{"name", capability->name + ".input"},
                          {"kind", "capability_input"},
                          {"capability", capability->name},
@@ -65,10 +81,16 @@ nlohmann::json spec_index(const Registry& registry) {
 
 std::optional<nlohmann::json> find_spec(const Registry& registry,
                                         const std::string& name) {
+    return find_spec(registry, name, every_capability);
+}
+
+std::optional<nlohmann::json> find_spec(const Registry& registry,
+                                        const std::string& name,
+                                        const CapabilityVisible& visible) {
     if (name == kOpenApiSpecName) {
         nlohmann::json spec = openapi_index_entry();
         spec.erase("href");
-        spec["schema"] = openapi_document(registry);
+        spec["schema"] = openapi_document(registry, visible);
         return spec;
     }
 
@@ -78,7 +100,7 @@ std::optional<nlohmann::json> find_spec(const Registry& registry,
         const std::string capability_name =
             name.substr(0, name.size() - suffix.size());
         const auto capability = registry.find(capability_name);
-        if (!capability) break;
+        if (!capability || !visible(*capability)) break;
         const bool wants_input = suffix == ".input";
         const nlohmann::json& schema =
             wants_input ? capability->input_schema : capability->output_schema;

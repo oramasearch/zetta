@@ -53,6 +53,38 @@ node.rename_project("churn", "retention");                // keeps the id
 node.drop_project("retention");
 ```
 
+## Listing projects — `list_projects`
+
+`list_projects` (REST `GET /v1/list_projects`, the MCP tool of the same name) takes
+no input and answers the projects people see (internal projects are left out, see
+[../ml/standalone-models.md](../ml/standalone-models.md)) in one call:
+
+```json
+{
+  "projects": ["churn", "renewals"],
+  "summaries": [
+    { "id": "<uuid>", "name": "churn",
+      "graphs": [ { "id": "<uuid>", "name": "Weekly Churn", "approval": "approved" } ] },
+    { "id": "<uuid>", "name": "renewals", "graphs": [] }
+  ]
+}
+```
+
+- **`projects`** is the list of names, unchanged, for the callers that read it.
+- **`summaries`** (#1185) has one entry per name, in the same order: the project's
+  `id` and `name`, and each pipeline's `id`, `name` and `approval` (`proposed` or
+  `approved`, #885), the same values `get_project` returns. It lets a list page (a
+  project list, the pipelines an agent may be granted) render without one
+  `get_project` per project. It is built from the projects already held in memory,
+  so it costs no reads of disk or of other nodes.
+- **Access.** `list_projects` and `get_project` both need `api:query`. A summary is
+  part of `get_project`'s answer, so it is read with that tool's right: a user whose
+  `mcp:call` is scoped to `list_projects` alone (#747) gets `projects` and no
+  `summaries` field. AccessKeys and the local session are authorized on `api:query`
+  for both tools, so for them the two always agree.
+- Anything else about a pipeline (methodology, runnable, who approved it and when,
+  the inputs) stays on `get_project`.
+
 ## Deleting a project — `delete_project` (#1009)
 
 The control-surface entry is the **`delete_project`** action (REST
@@ -143,6 +175,7 @@ reverse path used by reconciliation.
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
 | `compile_intent_to_graph(input_id, name = {}, options = {}, error = nullptr, template_name = nullptr)` | `shared_ptr<ProjectGraph>` | Resolve a runnable [methodology](../ml/methodologies.md), compile the stored **intent** with that methodology's shape callback, and store it through `create_graph` (without a name, named from the intent's words and numbered on a collision, #1238). `options` may select a methodology or primary solution and carry hints. Empty handle on an invalid input, unsupported methodology, missing body, or an explicit name's collision; `error` explains compilation refusal and `template_name` receives the template the steps started from. |
 | `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection, refreshes denormalized names on matching Runs, Models, and Studies, and re-captures `graph:<uuid>`. **Re-proposes the plan** (resets approval → proposed, #885). Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
+| `set_graph_exposure(id, exposure)` | `shared_ptr<ProjectGraph>` | Publish or withdraw the graph as a served route (zetta#1289): stores the `PipelineExposure` (exposed, version, the pinned IR, the declared input schema, the limits), rewrites the projection and re-captures `graph:<uuid>`. Reached over `expose_pipeline` / `unexpose_pipeline` ([../api/serving.md](../api/serving.md#published-pipelines-zetta1289)). An edit keeps the exposure: callers get the pinned version until it is exposed again. |
 | `approve_graph(name, approver, at)` | `shared_ptr<ProjectGraph>` | Mark a proposed plan **approved** (#885, review-before-build): stamps the approver + ISO instant, re-captures `graph:<uuid>`, and audits `graph_approved`. Idempotent. Empty handle if no graph by `name`. Reached over the governed `approve_plan` capability. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
 | `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |
@@ -154,7 +187,8 @@ else:
 
 - **Replicated state.** One flat key per graph,
   `graph:<uuid> → { project: <proj_uuid>, name, approval, approved_by,
-  approved_at, graph: { nodes, edges } }` (`src/core/catalog.hpp`). The whole
+  approved_at, graph: { nodes, edges }, exposure? }` (`src/core/catalog.hpp`;
+  `exposure` only once the pipeline has been published, zetta#1289). The whole
   graph rides as a single value (a graph is authored and stored as a unit) — the
   serialized form is
   [`ir::to_json`](execution-graph.md#json-serialization). On each `tick()` the
@@ -191,6 +225,11 @@ both the disk and CRDT paths.
   gate-blocked journey approves the leaky plan, then the gate catches the leak).
   The normal Studio flow is **approve → gate → deploy → run**; `run` inherits
   approval by sequence (it follows a deploy that required it).
+- **agent_run requires approval too** ([#913](https://github.com/oramasearch/zetta/issues/913)).
+  `agent_run` stores the plan it compiles `proposed` and answers `not_approved`
+  without running it; it never approves a plan itself. Given `project` +
+  `graph_name` naming a stored plan, it runs the plan only if it is approved,
+  and refuses a proposed one with `not_approved` before the agent's model loads.
 - **Surfaced for the UI.** `get_project` (per graph), `get_graph`, and the
   compile/save outputs carry `approval`; the two read capabilities also carry
   `methodology` and `runnable`. Studio statuses (Draft / Needs approval / Ready /
@@ -269,3 +308,7 @@ Graph (de)serialization and the in-place `remove_node` / `remove_edge` edits are
 covered in `tests/pipeline/test_execution_graph.cpp`. The `delete_project` capability's journey
 (delete → read back, runs/models kept, missing → `not_found`, refused while a run is in
 flight) is in `tests/api/test_registry.cpp`.
+`list_projects`' summaries (#1185) are checked against `get_project` field by field
+(`RegistryFixture.ListProjectsReturnsGraphSummariesMatchingGetProject`), and their
+access rule in `tests/api/test_scoped_grants_api.cpp`
+(`ScopedApiFixture.ListProjectsSummariesNeedGetProjectsRight`).

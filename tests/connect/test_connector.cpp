@@ -1,12 +1,19 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cctype>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "zetta/connect/connector.hpp"
 #include "zetta/connect/http_transport.hpp"
+#include "zetta/connect/postgres_runner.hpp"
+#include "zetta/connect/source_catalog.hpp"
+#include "zetta/connect/distributed_fetch.hpp"
 
 // #827 — source connectors: run a read-only query against an external system and
 // return rows, which data::add_dataset_rows then shards across the cluster. The
@@ -86,6 +93,10 @@ TEST(ConnectorConfig, ParsesAValidSnowflakeConfig) {
     EXPECT_EQ(config->auth, "pat");  // default
     EXPECT_EQ(config->warehouse, "WH");
     EXPECT_EQ(config->role, "R");
+    // An underscore is part of an identifier, never an authority delimiter.
+    auto underscored = value;
+    underscored["account"] = "org-account_name";
+    EXPECT_TRUE(ConnectorConfig::from_json(underscored));
 }
 
 TEST(ConnectorConfig, NeverSerializesTheToken) {
@@ -163,6 +174,7 @@ TEST(SnowflakeConnector, BuildsTheSqlApiRequestAndTypesTheRows) {
     // The request went to the SQL API v2 statements endpoint…
     ASSERT_EQ(seen.size(), 1u);
     EXPECT_EQ(seen[0].method, "POST");
+    EXPECT_EQ(seen[0].destinations, zetta::connect::DestinationPolicy::Connector);
     EXPECT_EQ(seen[0].url,
               "https://ab12345.us-east-1.snowflakecomputing.com/api/v2/statements");
 
@@ -337,4 +349,254 @@ TEST(SnowflakeConnector, AsyncWithoutAHandleFails) {
     EXPECT_NE(result.error.find("statementHandle"), std::string::npos);
 }
 
+// Decode a single-quoted constant under the source's backslash rules. Checking
+// the SQL after its closing delimiter catches early closes and value drift.
+void expect_sql_literal(std::string_view sql, const std::string& expected,
+                        std::string_view suffix, bool backslash_escapes = true) {
+    ASSERT_TRUE(sql.starts_with('\''));
+    sql.remove_prefix(1);
+    std::string decoded;
+    while (!sql.empty()) {
+        const char character = sql.front();
+        sql.remove_prefix(1);
+        if (backslash_escapes && character == '\\') {
+            ASSERT_FALSE(sql.empty());
+            // The encoder must protect literal backslashes, including escape
+            // spellings such as \n, \x27 and \u0027 supplied as text.
+            EXPECT_EQ(sql.front(), '\\');
+            decoded += sql.front();
+            sql.remove_prefix(1);
+        } else if (character == '\'') {
+            if (sql.starts_with('\'')) {
+                decoded += '\'';
+                sql.remove_prefix(1);
+            } else {
+                EXPECT_EQ(decoded, expected);
+                EXPECT_EQ(sql, suffix);
+                return;
+            }
+        } else {
+            decoded += character;
+        }
+    }
+    FAIL() << "unterminated SQL literal";
+}
+
+const std::vector<std::string> catalog_filters = {
+    "plain", "O'Reilly", "\\", "\\\\", "\\' OR 1=1 --", "\\\\'",
+    "' UNION SELECT 'private', 'data', 'VIEW' --", "$$", "雪\\'",
+    R"(\n\r\t\x27\u0027\101)", "line\nquote'\\tail"};
+
+// A table response ensures include_columns also reaches the second query.
+std::vector<HttpRequest> snowflake_catalog_requests(
+    const zetta::connect::SourceCatalogRequest& request) {
+    std::vector<HttpRequest> seen;
+    const auto catalog = zetta::connect::list_source_catalog(
+        snowflake_config(), request,
+        canned(200, R"({"resultSetMetaData":{"rowType":[
+            {"name":"table_schema","type":"text"},
+            {"name":"table_name","type":"text"},
+            {"name":"table_type","type":"text"}]},
+            "data":[["PUBLIC","accounts","BASE TABLE"]]})", &seen));
+    EXPECT_TRUE(catalog.ok()) << catalog.error;
+    EXPECT_EQ(catalog.tables.size(), 1u);
+    return seen;
+}
+
+TEST(SnowflakeCatalog, SchemaFiltersRemainOneLiteralInBothQueries) {
+    for (const auto& filter : catalog_filters) {
+        SCOPED_TRACE(filter);
+        zetta::connect::SourceCatalogRequest request;
+        request.schema = filter;
+        const auto seen = snowflake_catalog_requests(request);
+        ASSERT_EQ(seen.size(), 2u);
+        for (std::size_t index = 0; index < seen.size(); ++index) {
+            const auto body = nlohmann::json::parse(seen[index].body);
+            const std::string sql = body.at("statement").get<std::string>();
+            const std::string prefix = index == 0
+                ? "SELECT t.table_schema, t.table_name, t.table_type"
+                  " FROM information_schema.tables t"
+                  " WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema')"
+                  " AND t.table_schema = "
+                : "SELECT c.table_schema, c.table_name, c.column_name, c.data_type,"
+                  " c.is_nullable, c.ordinal_position FROM information_schema.columns c"
+                  " WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')"
+                  " AND c.table_schema = ";
+            ASSERT_TRUE(sql.starts_with(prefix)) << sql;
+            expect_sql_literal(std::string_view(sql).substr(prefix.size()), filter,
+                index == 0 ? " ORDER BY t.table_schema, t.table_name"
+                           : " ORDER BY c.table_schema, c.table_name, c.ordinal_position");
+        }
+    }
+}
+
+TEST(SnowflakeCatalog, TableMatchesRemainOneLiteral) {
+    for (const auto& filter : catalog_filters) {
+        SCOPED_TRACE(filter);
+        zetta::connect::SourceCatalogRequest request;
+        request.match = filter;
+        request.include_columns = false;
+        const auto seen = snowflake_catalog_requests(request);
+        ASSERT_EQ(seen.size(), 1u);
+        const auto body = nlohmann::json::parse(seen.front().body);
+        const std::string sql = body.at("statement").get<std::string>();
+        const std::string prefix =
+            "SELECT t.table_schema, t.table_name, t.table_type"
+            " FROM information_schema.tables t"
+            " WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema')"
+            " AND LOWER(t.table_name) LIKE ";
+        ASSERT_TRUE(sql.starts_with(prefix)) << sql;
+        std::string expected = "%" + filter + "%";
+        std::ranges::transform(expected, expected.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        expect_sql_literal(std::string_view(sql).substr(prefix.size()), expected,
+                                  " ORDER BY t.table_schema, t.table_name");
+    }
+}
+
+// The fake runner observes the same SQL with standard_conforming_strings on
+// and off. An E prefix enables escapes in either setting; ordinary literals
+// take backslash escapes only when the setting is off.
+class PostgresCatalog : public testing::TestWithParam<bool> {
+protected:
+    void SetUp() override {
+        previous_runner = zetta::connect::postgres_query_runner();
+        zetta::connect::install_postgres_query_runner(
+            [this](const ConnectorConfig&, const std::string& sql, std::size_t) {
+                statements.push_back(sql);
+                ConnectorResult result;
+                result.data.rows.push_back({{"table_schema", "PUBLIC"},
+                                            {"table_name", "accounts"},
+                                            {"table_type", "BASE TABLE"}});
+                return result;
+            });
+    }
+
+    void TearDown() override {
+        zetta::connect::install_postgres_query_runner(std::move(previous_runner));
+    }
+
+    void list(const zetta::connect::SourceCatalogRequest& request) {
+        statements.clear();
+        ConnectorConfig config;
+        config.type = "postgres";
+        config.host = "db.example.com";  // a valid authority (#1414); the fake runner dials nothing
+        config.user = "reader";
+        config.database = "app";
+        const auto catalog = zetta::connect::list_source_catalog(config, request);
+        EXPECT_TRUE(catalog.ok()) << catalog.error;
+        EXPECT_EQ(catalog.tables.size(), 1u);
+    }
+
+    void expect_literal(std::string_view sql, const std::string& expected,
+                         std::string_view suffix) {
+        bool backslash_escapes = !GetParam();
+        if (sql.starts_with("E'")) {
+            sql.remove_prefix(1);
+            backslash_escapes = true;
+        }
+        expect_sql_literal(sql, expected, suffix, backslash_escapes);
+    }
+
+    std::vector<std::string> statements;
+
+private:
+    zetta::connect::PostgresQueryRunner previous_runner;
+};
+
+TEST_P(PostgresCatalog, SchemaFiltersRemainOneLiteralInBothQueries) {
+    for (const auto& filter : catalog_filters) {
+        SCOPED_TRACE(filter);
+        zetta::connect::SourceCatalogRequest request;
+        request.schema = filter;
+        list(request);
+        ASSERT_EQ(statements.size(), 2u);
+        for (std::size_t index = 0; index < statements.size(); ++index) {
+            const std::string marker = index == 0 ? " AND t.table_schema = "
+                                                   : " AND c.table_schema = ";
+            const auto found = statements[index].find(marker);
+            ASSERT_NE(found, std::string::npos);
+            expect_literal(std::string_view(statements[index]).substr(found + marker.size()),
+                filter, index == 0 ? " ORDER BY t.table_schema, t.table_name"
+                                   : " ORDER BY c.table_schema, c.table_name, c.ordinal_position");
+        }
+    }
+}
+
+TEST_P(PostgresCatalog, TableMatchesRemainOneLiteral) {
+    for (const auto& filter : catalog_filters) {
+        SCOPED_TRACE(filter);
+        zetta::connect::SourceCatalogRequest request;
+        request.match = filter;
+        request.include_columns = false;
+        list(request);
+        ASSERT_EQ(statements.size(), 1u);
+        const std::string marker = " AND LOWER(t.table_name) LIKE ";
+        const auto found = statements.front().find(marker);
+        ASSERT_NE(found, std::string::npos);
+        std::string expected = "%" + filter + "%";
+        std::ranges::transform(expected, expected.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        expect_literal(std::string_view(statements.front()).substr(found + marker.size()),
+                         expected, " ORDER BY t.table_schema, t.table_name");
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(StringSettings, PostgresCatalog, testing::Bool());
+
 }  // namespace
+
+TEST(ConnectorConfig, RejectsAuthorityAndProtocolInjectionBeforeAnyTransport) {
+    for (const std::string account :
+         {"localhost:80/", "user@evil", "evil/path", "evil?query", "evil#fragment", "evil%2fpath",
+          "evil\\path", "evil..name", "evil."}) {
+        auto config = snowflake_config();
+        config.account = account;
+        auto value = config.to_json();
+        value["token"] = "test";
+        EXPECT_FALSE(ConnectorConfig::from_json(value)) << account;
+        std::vector<HttpRequest> seen;
+        const auto result =
+            run_connector_query(config, "SELECT 1", 1, canned(200, result_body({}), &seen));
+        EXPECT_FALSE(result.ok()) << account;
+        EXPECT_TRUE(seen.empty()) << account;
+        const auto submitted = zetta::connect::submit_connector_statement(
+            config, "SELECT 1", 1, canned(200, result_body({}), &seen));
+        EXPECT_FALSE(submitted.ok()) << account;
+        zetta::connect::StatementPlan plan;
+        plan.handle = "handle";
+        EXPECT_FALSE(zetta::connect::fetch_result_partitions_serially(
+                         config, plan, {1}, 1, canned(200, result_body({}), &seen))
+                         .ok());
+        const zetta::connect::AsyncHttpTransport async = [&](const HttpRequest& request)
+            -> zetta::runtime::io_task<HttpResponse> {
+            seen.push_back(request);
+            co_return {{}, HttpResponse{}};
+        };
+        EXPECT_FALSE(zetta::connect::fetch_result_partitions(config, plan, {1}, 1, 1, async).ok());
+        EXPECT_TRUE(seen.empty()) << account;
+    }
+    for (const std::string host :
+         {"/var/run/postgresql", "@socket", "a,b", "user@host", "https://host", "host:5432",
+          "host/path", "fe80::1%lo0", "[::1]", "::1/128", "::1 ", "host\nother"}) {
+        EXPECT_FALSE(ConnectorConfig::from_json(
+            {{"type", "postgres"}, {"host", host}, {"user", "u"}, {"database", "d"}}))
+            << host;
+    }
+    for (const char* port : {"0", "65536", "5432,80", "postgres", "-1", " 5432"}) {
+        EXPECT_FALSE(ConnectorConfig::from_json({{"type", "postgres"},
+                                                 {"host", "db"},
+                                                 {"port", port},
+                                                 {"user", "u"},
+                                                 {"database", "d"}}))
+            << port;
+    }
+    auto config = snowflake_config();
+    config.account = std::string("valid\0.evil", 11);
+    auto value = config.to_json();
+    value["token"] = "test";
+    EXPECT_FALSE(ConnectorConfig::from_json(value));
+    EXPECT_FALSE(run_connector_query(config, "SELECT 1", 1, canned(200, result_body({}))).ok());
+}

@@ -60,6 +60,7 @@ mirroring [`Project`](projects.md):
 | `node_count` | `std::size_t` | Graph summary captured at deploy time. |
 | `edge_count` | `std::size_t` | Graph summary captured at deploy time. |
 | `created` | `std::string` | ISO-8601 UTC stamp (`zetta::util::now_iso8601()`). |
+| `reads` | `vector<TableRead>` | The tables the placed graph's connect steps read, each `{ database, table, table_id }`, recorded at deploy time (zetta#1272). Each run the [deployment controller](deployment-controller.md) starts records them, so [`delete_dataset`](../api/deletes.md#refusals) refuses them while that run is in flight. Absent when the graph reads no existing table, so older records keep their shape. |
 
 The graph is recorded as a **summary** (its name + node/edge counts), **not** the
 full graph: the ExecutionGraph IR has no serialized form yet (a later slice, see
@@ -102,7 +103,7 @@ truth, and the in-memory list + on-disk folder are a **projection** of it.
 
   ```
   deployment:<uuid> → { graph_name, target: {kind, binding, credentials_ref},
-                        node, node_count, edge_count, created }
+                        node, node_count, edge_count, created, reads? }
   ```
 
   `deploy_graph` captures the key into the document; on each `tick()` the node

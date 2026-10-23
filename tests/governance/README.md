@@ -3,6 +3,9 @@
 Role tests keep the permission vocabulary and built-in mappings synchronized.
 They also keep `studies:delete` distinct from Pipeline management and study
 promotion (#1158).
+`BoundedRoles` in `test_roles.cpp` covers bounded role management (#761): a
+`roles:manage` holder grants only what it holds (on the whole object, for a
+scoped grant), touches no role above it, and nobody changes or drops a built-in.
 Pub/sub capability tests additionally exercise the topic/event/subscription scope
 matrix. See [governance](../../docs/governance/README.md) and
 [CRUD](../../docs/pubsub/crud.md).
@@ -20,3 +23,40 @@ The catalog-compaction regression compares the replication probe with a fresh
 measurement and rejects wrapped byte or item totals (#1167). The worker checks
 the memory registry's audit item count after both phases.
 See [the proof runbook](../../docs/testing/audit-replication.md).
+
+`test_identity_seal.cpp` covers the identity root (#763, #764): seal and open,
+the pin in `<data_dir>/security/identity-root.json`, sealed writes, refused
+writes on a verify-only node, unsealed records not materialized, and the
+one-time sealing on upgrade. For #1341: versions and sealed tombstones, the
+order between two records, an older sealed record refused on a node, and the
+held records surviving a restart (`identity-held.json`). See
+[identity-seal.md](../../docs/governance/identity-seal.md).
+
+`test_authz_regressions.cpp` is the authorization regression harness (#780): one
+test per auth review finding, #759 to #769. Fixed findings are plain assertions;
+open ones are `KNOWN_DEFECT` probes that skip with the issue number while the
+defect reproduces and fail once it does not, so the fix flips them. See
+[authz-regressions.md](../../docs/testing/authz-regressions.md).
+
+`test_sandbox_escape.cpp` is TC-5 (#252): an analyst with one column grant tries
+every listed jailbreak step through `Registry::call`, and each attempt must be
+refused and recorded as refused. Open gaps are `KNOWN_DEFECT` probes. See
+[TC-5 coverage](../../docs/testing/tc-5-coverage.md).
+
+`test_audit_completeness.cpp` covers completeness and attribution (#847): the
+Node's own `data_changed` rows for project, database, model and run changes
+made directly (as the headed app does), deploys, jobs and graph changes naming
+the declared caller instead of a blank or the project's owner, the caller
+carried across `run_on_owner`, a capability's effects attributed to the calling
+user, an authorized call that then failed recorded as a failure, and a SQL
+statement's effects attributed to its session.
+`test_system_catalog_access.cpp` covers who may read each `system.*` table
+(#766): admin-only governance and node tables, public metadata, datasets and
+partitions narrowed to the caller's tables, each person's own audit rows, and
+tables that follow a read tool's scope. See
+[system-catalog-access](../../docs/governance/system-catalog-access.md).
+
+`test_virtual_table_access.cpp` covers virtual tables (#1392): declaring one
+needs `cluster:admin` as well as `sql:ddl`, reading one needs `cluster:admin`,
+and no one declares or reads one over a reserved key family such as `row:`. See
+[virtual-tables](../../docs/data/virtual-tables.md).

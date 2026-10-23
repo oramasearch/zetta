@@ -1,9 +1,22 @@
 # API tests
 
+Fallback-page tests save HTML-sensitive graph names, step ids and nested
+attributes, then parse the embedded data back to the stored values (#1405).
+Pure-renderer tests cover script end tags, HTML comment tokens, Unicode and
+the assistant rail; HTTP fixtures also check the file panel and installed
+Studio bundle mode.
+
 Real loopback HTTP tests cover REST and MCP. Pub/sub CRUD parity compares registry,
 OpenAPI and tools/list schemas and calls every operation through each transport.
 Long-poll tests exercise both transports while owner work continues and assert
 that their reads share an audit session instead of creating one row per return.
+`test_web_ui_forms.cpp` covers origin binding for login, logout, every browser
+POST, cookie REST/MCP and object writes, read metadata, cookie GET SQL batches,
+and bearer compatibility (#1415, LSR-242). Forged requests leave no project,
+database or session cookie behind. GET after login/logout cannot replay cached
+cookies or redirects; origin refusals close connections with unread bodies.
+Blob authorization fixtures send a trusted
+Origin so their permission checks still run.
 The SQL parity path also compares pub/sub dispatch metrics from `system.pubsub_topics`
 and `system.node_metrics` over REST and MCP.
 Segment-backed `system.audit` rows, the audit protocol metric, admin-only
@@ -16,6 +29,10 @@ compares their subsystem ordering and exact replication byte/item values
 (#1167). Both parity suites remain
 required, alongside the MCP malformed-request and receive/browse long-poll
 regressions.
+`test_dataset_list_summary.cpp` covers `list_datasets`' `detail: "summary"` form
+(#1195): equal to the full form on every shared field, no row read (a counting
+engine wraps every table) and no file read (the chunk files are deleted) at 19 and
+50 datasets, and counters that follow mutations and a degraded dataset.
 Page-list parity creates linked Project, Pipeline, Run, Model, and Study records,
 then compares `list_runs`, `list_models`, and `list_studies` values across REST
 and MCP (#1184).
@@ -87,3 +104,8 @@ statuses, the bucket aliases, the fence and the waiting acquire over REST and MC
 `ON BUCKET` grants and their audit rows, `507`, OpenAPI, and the latency budgets
 (#1005). Registry coverage accepts a retrying awaitable action and the OpenAPI
 check counts the object paths.
+
+`test_agent_api.cpp` proves `agent_run` refuses a stored plan nobody approved
+(`not_approved`, no Run started, the plan still proposed) and runs one after
+`approve_plan`, without a model checkpoint; the checkpoint-guarded test proves the
+plan it builds is stored proposed, refused, and runs once approved (#913).

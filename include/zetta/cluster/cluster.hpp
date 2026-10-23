@@ -4,10 +4,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <map>
 
+#include "zetta/cluster/frame_faults.hpp"
 #include "zetta/cluster/security.hpp"
 #include "zetta/cluster/signal.hpp"
 #include "zetta/governance/audit_event.hpp"
@@ -49,6 +52,43 @@ struct ClusterPeer {
     unsigned audit_protocol_version = 0;
 };
 
+// --- HELLO bounds (#771) -------------------------------------------------------
+//
+// A peer's HELLO is untrusted input: its node id and advertised endpoints are
+// stored in the peer table, shown in the node list and logs, and dialed by the
+// reconnect loop. These bounds keep one connection from holding more than a few
+// kilobytes of peer-chosen text, and keep that text to the shapes a node emits.
+
+// The most endpoints a HELLO may advertise. A HELLO listing more is refused, and a
+// node never advertises more than this (Cluster::advertised_endpoints trims).
+inline constexpr std::size_t kMaxAdvertisedEndpoints = 16;
+// The longest node id accepted (node ids are UUIDs, 36 characters).
+inline constexpr std::size_t kMaxNodeIdBytes = 128;
+// The longest advertised endpoint: a 253-byte DNS name, a colon, a 5-digit port,
+// plus room for IPv6 brackets.
+inline constexpr std::size_t kMaxEndpointBytes = 261;
+// The largest HELLO frame read off a new connection, before the steady-state
+// frame limit applies. Comfortably above the longest valid HELLO
+// (16 endpoints of 261 bytes, a 128-byte id and the fixed tokens: under 4.5 KiB).
+inline constexpr std::size_t kMaxHelloBytes = 16 * 1024;
+
+// True when `node_id` is 1..kMaxNodeIdBytes of [A-Za-z0-9._-]: no spaces, control
+// characters or terminal escapes can reach the node list or stderr through it.
+bool is_valid_node_id(std::string_view node_id);
+
+// True when `endpoint` is HOST:PORT, at most kMaxEndpointBytes long, with a port
+// of 1..65535 (digits only) and a non-empty host of [A-Za-z0-9._-] plus the IPv6
+// literal characters `:`, `[`, `]` and `%`: an IPv4 address, a DNS name or an IPv6
+// literal. Anything else (spaces, control characters, quotes, escapes) fails.
+bool is_valid_peer_endpoint(std::string_view endpoint);
+
+// Parse "ZETTA/1 HELLO <node_id> <ep1[,ep2,...]|-> [wan|dial-out] [audit-version]".
+// Returns a peer with an EMPTY node_id when the line is malformed: the wrong
+// protocol or verb, an invalid node id, more than kMaxAdvertisedEndpoints
+// endpoints, any endpoint failing is_valid_peer_endpoint, or a wan HELLO with no
+// endpoint. The caller drops such a connection before recording anything.
+ClusterPeer parse_hello(std::string_view line);
+
 // A node's replication state, as last learned over the gossip exchange. For the
 // local node it's read straight from its ReplicationManager; for a peer it's
 // what that peer last reported.
@@ -87,6 +127,14 @@ struct ClusterMember {
     bool is_self = false;
     bool directly_connected = false;  // a live link is held to it right now
 };
+
+// Does the node id a peer states in its HELLO match the certificate it
+// presented in the mutual-TLS handshake (#669)? True only when the certificate
+// parses, carries exactly one subject common name, and that name equals
+// `stated_node_id`. The handshake has already verified the certificate against
+// the cluster CA; this binds the protocol identity to it.
+bool hello_matches_peer_certificate(std::string_view stated_node_id,
+                                    std::span<const unsigned char> peer_certificate_der);
 
 struct ClusterConfig {
     // Zero models a legacy peer in protocol tests. The binary always uses 1.
@@ -162,6 +210,34 @@ struct ClusterConfig {
     // "plaintext" default is reached only by embedding a bare Cluster in a
     // test/host. See docs/cluster/security.md.
     ClusterSecurity security;
+    // One deadline across TLS and both HELLO directions, accepted or dialed
+    // (#1401). Progress does not extend it; nonpositive values clamp to 1 ms.
+    std::chrono::milliseconds peer_setup_timeout{5000};
+    // Concurrent TLS/HELLO setups on accepted connections. Excess accepts are
+    // closed before TLS allocation; dials are not counted; zero clamps to one.
+    std::size_t maximum_pending_setups = 64;
+    // Chaos experiments only (#842): when set, every inbound frame after the
+    // handshake passes through this injector, which may drop, delay, duplicate or
+    // reorder it (see frame_faults.hpp). Never set by the zetta binary. Must
+    // outlive the Cluster's network thread — the shared_ptr keeps it alive.
+    std::shared_ptr<FrameFaultInjector> frame_faults;
+    // The public key of the cluster's identity root (#764,
+    // docs/governance/identity-seal.md), 64 hex. Not a secret: peer_command()
+    // carries it as --identity-root so the next node pins this cluster's root.
+    // Empty (a test/host Cluster) leaves it out.
+    std::string identity_root;
+};
+
+// Replication gossip this node has sent since start() (#794), summed over every
+// link. `sync_bytes` is the SYNC lines as written to the link (base64 payload plus
+// the verb), before any TLS framing. A round is one gossip tick on one link, so a
+// node with two peers counts two rounds per tick.
+struct GossipStats {
+    std::uint64_t rounds = 0;             // gossip ticks, per link
+    std::uint64_t sync_frames = 0;        // SYNC lines sent
+    std::uint64_t full_syncs = 0;         // ... carrying the whole document
+    std::uint64_t incremental_syncs = 0;  // ... carrying only the changes a peer lacked
+    std::uint64_t sync_bytes = 0;         // bytes of those SYNC lines
 };
 
 // Bounded cross-thread handoff. The network adapter queues wire messages; the
@@ -226,8 +302,17 @@ public:
     std::vector<std::string> listen_addresses() const;
 
     // Command to run on another machine to add it to this cluster (uses the
-    // best reachable address — a non-loopback one when available).
+    // best reachable address — a non-loopback one when available). Safe to log:
+    // with security on, the join token is replaced by kJoinTokenPlaceholder, never
+    // printed (#1393). The token is the cluster root secret: it derives the CA key
+    // and seals saved connector credentials, so it must not reach stdout, pod logs
+    // or a log pipeline.
     std::string peer_command() const;
+
+    // The same command with the clear join token, for the one place an operator
+    // explicitly asks for it (the headed app's "Copy command" button). Never log
+    // or print this value.
+    std::string peer_command_with_join_token() const;
 
     // Snapshot of peers with a live link right now (thread-safe). A node kept in
     // the membership view purely by hysteresis (its link has dropped but is within
@@ -261,6 +346,10 @@ public:
     // seed whose address never matches the peer's advertised one, or a mutual dial).
     // Kept at parity by the per-node-id link registry — see #739.
     std::size_t connection_count() const;
+
+    // Replication gossip sent so far (#794) — the bytes a round costs, and how
+    // many rounds shipped the whole document versus only a peer's missing changes.
+    GossipStats gossip_stats() const;
 
     void publish_audit_watermarks(
         const std::map<std::string, zetta::governance::AuditWatermark>& watermarks);

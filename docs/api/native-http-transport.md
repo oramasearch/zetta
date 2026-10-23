@@ -1,12 +1,12 @@
 # The native outbound HTTP client
 
 zetta's **outbound** HTTP is a coroutine, not a subprocess. The client that fills
-the [`connect::HttpTransport`](../data/connector-query.md) seam dials Corosio
+the [`connect::HttpTransport`](../data/connector-query.md) interface dials Corosio
 sockets, wraps them in OpenSSL, and frames HTTP/1.1 with Boost.HTTP's sans-I/O
 serializer and parser ([#827](https://github.com/oramasearch/zetta/issues/827)).
 
 ```
-include/zetta/connect/http_transport.hpp     the seam: HttpRequest/HttpResponse, both transport shapes, install/read
+include/zetta/connect/http_transport.hpp     the interface: HttpRequest/HttpResponse, both transport shapes, install/read
 src/core/connect/http_transport.cpp          the registry (zetta-core; holds no HTTP code at all)
 include/zetta/api/native_http_transport.hpp  install_native_http_transport / shutdown_native_http_transport
 src/core/api/native_http_transport.cpp       the client (zetta-api target)
@@ -17,7 +17,7 @@ tests/connect/test_native_http_transport.cpp real loopback exchanges + a when_al
 
 `zetta-core` deliberately links **neither Boost.HTTP nor Beast2** — the
 `zetta-api` target exists to hold the HTTP adapters so no HTTP type reaches the
-core's public surface (the same isolation SDL and CUDA get). So the seam is
+core's public surface (the same isolation SDL and CUDA get). So the interface is
 *declared* in core and *implemented* in `zetta-api`:
 
 ```
@@ -33,13 +33,22 @@ node stops. A build that never installs one (a unit test, a tool with no egress)
 has **no** default transport, and `run_connector_query` fails with a
 path-qualified reason rather than reaching the network by accident.
 
+**Every connection is checked against the egress policy first** (CTL-4, #75,
+[../governance/egress-policy.md](../governance/egress-policy.md)). `perform_url`
+asks `connect::egress_policy()` before resolving the host and, for a name
+admitted only by an address range, before connecting to each resolved address.
+It runs for every redirect hop, so an allowed host cannot redirect the request
+somewhere else. A refusal is a transport error starting `egress denied:` and is
+reported to the denial observer, which `src/main.cpp` records as an
+`egress_denied` audit event. Loopback is always allowed.
+
 This makes `src/core/api/native_http_transport.cpp` the **second** translation
 unit allowed to name Corosio, alongside `src/core/cluster/cluster.cpp`. The split
 is by direction: the cluster adapter owns inbound/peer traffic, this one owns
 outbound client traffic. Both go through `zetta::runtime::net`; neither names
 `boost::corosio` outside it.
 
-## The two shapes of the seam
+## The two shapes of the interface
 
 ```cpp
 using HttpTransport      = std::function<HttpResponse(const HttpRequest&)>;
@@ -54,7 +63,7 @@ is what the distributed connector fetch fans out with, N partition reads in
 flight at once under `runtime::when_all`.
 
 `when_all` and `timeout` were added to `include/zetta/runtime.hpp` for exactly
-this — the rule is *extend the seam, don't work around it*, so no consumer names
+this — the rule is *extend the interface, don't work around it*, so no consumer names
 `boost::capy::when_all`.
 
 ## How one exchange runs
@@ -63,7 +72,7 @@ One `io_context` on one dedicated thread multiplexes **every** outbound exchange
 in the process, so installing the client costs one thread regardless of how many
 requests are in flight. A caller's `submit()` posts the exchange coroutine onto
 that context and suspends on a `runtime::async_event`; the io_context thread sets
-the event when the response is in hand. That is the runtime seam's documented
+the event when the response is in hand. That is the runtime interface's documented
 cross-thread completion primitive — the caller never has to be running on the
 io_context.
 
@@ -86,9 +95,13 @@ resolve (async DNS)  →  connect  →  TLS handshake  →  serialize request
   never required to fit in the parser's buffer. The per-message body limit is
   raised to 512 MiB (the client default of 1 MiB would truncate a warehouse
   result partition).
-- **Deadline**: every exchange runs under `runtime::timeout`
-  (`HttpRequest::timeout_seconds`), so a hung peer cannot pin a coroutine — and
-  therefore a fan-out slot — forever.
+- **Deadline**: `HttpRequest::timeout_seconds` bounds each hop as a whole —
+  resolving, connecting, the TLS handshake, the exchange and the closing
+  `close_notify` all run under `runtime::timeout` against one deadline — so a
+  hung peer cannot pin a coroutine — and therefore a fan-out slot — forever. An
+  endpoint whose packets are dropped (a default-deny egress policy) used to hold
+  the connect for the kernel's SYN retries, about 130 s on Linux, whatever the
+  timeout ([lake#801](https://github.com/oramasearch/lake/issues/801)).
 - **Connections**: one per exchange, `Connection: close`, no pooling. Requests
   fan out concurrently rather than pipelining, so a pool would buy little and
   cost a lifetime problem; the price is one handshake per request, which is why
@@ -104,7 +117,14 @@ client sends them and then forgets them:
 - there is no subprocess, so nothing is visible in the process table;
 - a caller-supplied `Host` header is dropped, so it cannot disagree with the
   authority actually dialed;
-- a URL carrying userinfo (`https://user:pass@host/`) is rejected outright.
+- a URL carrying userinfo (`https://user:pass@host/`) is rejected outright;
+- a request marked `destinations = DestinationPolicy::PublicOnly` (an action or
+  report delivery endpoint, which an author chose) dials only resolved addresses
+  that are public or in a class the node allows. Each address is classified after
+  the lookup and only a checked one is connected to, on every redirect hop, so a
+  loopback, private, link-local or metadata target is refused with
+  `destination refused: ...` before any connection
+  ([destination-policy.md](../governance/destination-policy.md), #1394).
 
 `tests/connect/test_native_http_transport.cpp` asserts the no-leak property
 directly: an unreachable host with a bearer set must produce a reason that does
@@ -125,18 +145,48 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
   natively ([`connect/model_fetch.hpp`](../../include/zetta/connect/model_fetch.hpp)):
   `max_redirects` follows up to N `Location` hops (dropping the secret headers on a
   cross-host hop, so a bearer never reaches a different origin — a HuggingFace LFS
-  URL 302-redirects to a CDN); `download_to_path` streams the 2xx body straight to a
-  file so a multi-GB shard never sits on the heap (`HttpResponse::body` stays empty);
+  URL 302-redirects to a CDN); `download_sink` streams the 2xx body to a
+  caller-owned destination, taking precedence over `download_to_path` (the
+  legacy path-based option). A sink returning false fails the exchange.
+  Neither option buffers a multi-GB shard on the heap (`HttpResponse::body` stays empty);
   `max_response_bytes` raises the 512 MiB connector body cap. All default to off, so a
   connector is unchanged.
+- **Confined model downloads (#1412, LSR-239)** — the complete `weight_map` is
+  validated before any shard request. Each value must be an ASCII basename
+  using only letters, digits, `.`, `_`, or `-`, at most 255 bytes, ending in
+  `.safetensors`. Empty names, non-string values, separators, traversal,
+  percent escapes, query syntax and control characters fail the pull.
+  The fetch opens the chosen directory once with `O_DIRECTORY | O_NOFOLLOW`.
+  Every metadata, index, single-weight and shard download first creates a
+  private temporary file with `openat(O_CREAT | O_EXCL | O_NOFOLLOW)` in that
+  directory, then streams through its held descriptor using `download_sink`.
+  A successful response is flushed and published with `renameat`, retaining
+  the new file's owner-only permissions (`0600`, subject to umask); existing
+  files are replaced without opening symlinks or truncating hard-linked
+  targets. A failed response removes its temporary entry and preserves the
+  previous file. Index parsing uses the held file, so pathname replacement
+  cannot substitute another index. A chosen directory that is itself a
+  symlink is rejected before contacting the upstream. No new JSON format or
+  capability is introduced; valid flat safetensors repositories still work.
 - **No connection pooling** and **no HTTP/2** — both are changes behind the same
-  seam, invisible to connectors.
-- **TLS is not directly tested**: verifying it needs a certificate authority and
-  a real peer. The loopback suite exercises the identical coroutine over a plain
+  interface, invisible to connectors.
+- **TLS is not directly tested** beyond the handshake deadline (a loopback
+  listener that never answers the ClientHello): verifying a full exchange needs
+  a certificate authority and a real peer. The loopback suite exercises the identical coroutine over a plain
   socket, and the Corosio TLS surface itself is covered by the cluster's mTLS
   peer transport.
 - **No proxy support** (`HTTP_PROXY` / `HTTPS_PROXY` are ignored).
 
 See also [../data/connector-query.md](../data/connector-query.md) (what the
 transport is for) and [../cluster/README.md](../cluster/README.md) (the inbound
-half of the networking seam).
+half of the networking boundary).
+
+Source connector requests carry `DestinationPolicy::Connector` (#1414). They
+apply the separate exact host:port connector allowance to private and loopback
+addresses on every resolved candidate and redirect hop; metadata, link-local
+and reserved addresses are always refused. They require HTTPS unless the
+request sets `connector_plaintext`, which only a lake SQL connector configured
+with an explicit `http://` endpoint does, so an HTTPS source is never followed
+to plaintext. The egress allowlist (#75) still applies first to the same
+addresses. See the
+[connector destination policy](../data/connector-query.md#connector-destination-approval-1414-lsr-241).

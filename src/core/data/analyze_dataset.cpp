@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -17,6 +18,8 @@
 #include <vector>
 
 #include "zetta/data/dataset.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/governance/grant.hpp"
 #include "zetta/node.hpp"
 #include "zetta/util/timestamp.hpp"
 
@@ -831,11 +834,73 @@ DatasetAnalysis analyze_sampled_dataset(const SampledDataset& sampled,
     return analysis;
 }
 
-DatasetAnalysis analyze_dataset(Node& node, const DatasetPath& path, const AnalysisOptions& options,
-                                const DatasetSampler& sampler,
-                                const zetta::cluster::Cluster* cluster) {
-    const SampledDataset sampled =
-        sample_dataset(node, path, sampler, options.sample_rows, cluster);
+namespace {
+
+// What a reader may read of one table: nullopt reads everything (the trusted local
+// session); otherwise the column access `Node::column_scope` folds for it (#1396).
+using TableAccess = std::function<std::optional<zetta::governance::ColumnAccess>(
+    const std::string& database, const std::string& table)>;
+
+// Drop every column `access` does not allow: from the column list AND from every
+// sampled row, so no rule below (grain, keys, joins, leakage) can see its values.
+void keep_readable_columns(SampledDataset& sampled, const zetta::governance::ColumnAccess& access) {
+    if (access.all_columns) return;
+    std::erase_if(sampled.columns,
+                  [&access](const std::string& column) { return !access.allows(column); });
+    for (nlohmann::json& row : sampled.sample) {
+        if (!row.is_object()) continue;
+        for (auto field = row.begin(); field != row.end();) {
+            if (access.allows(field.key())) {
+                ++field;
+            } else {
+                field = row.erase(field);
+            }
+        }
+    }
+}
+
+DatasetAnalysis analyze_with(Node& node, const DatasetPath& path, const AnalysisOptions& options,
+                             const DatasetSampler& sampler, const TableAccess& access,
+                             const zetta::cluster::Cluster* cluster) {
+    DatasetPath target = path;
+    std::optional<zetta::governance::ColumnAccess> target_access;
+    if (access && path.kind == DatasetPathKind::Table) {
+        // A table the reader may not read answers exactly as one that does not
+        // exist, and the near misses offered are only tables it may read (#1396).
+        const std::vector<DatasetSummary> datasets = node.datasets();
+        const DatasetSummary* found = nullptr;
+        std::vector<std::string> near_misses;
+        for (const DatasetSummary& summary : datasets) {
+            const bool same_name = lowered(summary.name) == lowered(path.table);
+            if (!same_name) continue;
+            const std::optional<zetta::governance::ColumnAccess> readable =
+                access(summary.database, summary.name);
+            if (readable && !readable->table_allowed) continue;
+            if (lowered(summary.database) == lowered(path.database)) {
+                found = &summary;
+                target_access = readable;
+                break;
+            }
+            near_misses.push_back(summary.database + "." + summary.name);
+        }
+        if (found == nullptr) {
+            DatasetAnalysis refused;
+            refused.error = "dataset: no table '" + path.database + "." + path.table + "'";
+            if (!near_misses.empty()) {
+                std::string listed;
+                for (const std::string& miss : near_misses) {
+                    listed += (listed.empty() ? "" : " or ") + miss;
+                }
+                refused.error += " — did you mean " + listed + "?";
+            }
+            return refused;
+        }
+        target.database = found->database;
+        target.table = found->name;
+    }
+
+    SampledDataset sampled = sample_dataset(node, target, sampler, options.sample_rows, cluster);
+    if (sampled.ok() && target_access) keep_readable_columns(sampled, *target_access);
     DatasetAnalysis analysis = analyze_sampled_dataset(sampled, options);
     if (!analysis.ok()) {
         return analysis;
@@ -846,12 +911,19 @@ DatasetAnalysis analyze_dataset(Node& node, const DatasetPath& path, const Analy
             summary.table_id == analysis.table_id || summary.degraded || summary.rows == 0) {
             continue;
         }
+        std::optional<zetta::governance::ColumnAccess> other_access;
+        if (access) {
+            other_access = access(summary.database, summary.name);
+            // A neighbour the reader may not read is never sampled (#1396).
+            if (other_access && !other_access->table_allowed) continue;
+        }
         const DatasetPath other_path{DatasetPathKind::Table, {}, summary.database, summary.name};
-        const SampledDataset other_sampled =
+        SampledDataset other_sampled =
             sample_dataset(node, other_path, sampler, options.sample_rows, cluster);
         if (!other_sampled.ok()) {
             continue;
         }
+        if (other_access) keep_readable_columns(other_sampled, *other_access);
         const DatasetAnalysis other = analyze_sampled_dataset(other_sampled, options);
         for (const ColumnAnalysis& source_column : analysis.columns) {
             if (source_column.semantic_type != SemanticType::Identifier &&
@@ -885,6 +957,34 @@ DatasetAnalysis analyze_dataset(Node& node, const DatasetPath& path, const Analy
         }
     }
     return analysis;
+}
+
+}  // namespace
+
+DatasetAnalysis analyze_dataset(Node& node, const DatasetPath& path, const AnalysisOptions& options,
+                                const DatasetSampler& sampler,
+                                const zetta::cluster::Cluster* cluster) {
+    return analyze_with(node, path, options, sampler, {}, cluster);
+}
+
+DatasetAnalysis analyze_dataset_as(Node& node, const DatasetPath& path,
+                                   const AnalysisOptions& options, const AnalysisReader& reader,
+                                   const zetta::cluster::Cluster* cluster) {
+    if (reader.acting_key.empty()) {
+        return analyze_with(node, path, options, {}, {}, cluster);  // the trusted local session
+    }
+    const TableAccess access = [&node, &reader](const std::string& database,
+                                                const std::string& table)
+        -> std::optional<zetta::governance::ColumnAccess> {
+        return node.column_scope(reader.acting_key, reader.acting_is_user,
+                                 zetta::governance::Operation{
+                                     zetta::governance::CapabilityDomain::Data, "read"},
+                                 database, table);
+    };
+    return analyze_with(node, path, options,
+                        caller_dataset_sampler(node, cluster, reader.acting_key,
+                                               reader.acting_is_user),
+                        access, cluster);
 }
 
 nlohmann::json to_json(const ColumnAnalysis& column) {

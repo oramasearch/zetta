@@ -7,6 +7,7 @@
 #include <boost/corosio/tls_context.hpp>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 
 #include "zetta/transport/credentials.hpp"
@@ -31,5 +32,11 @@ std::optional<TlsCredentials> load_tls_credentials(const TlsCredentialFiles& fil
 // trust anchors are added. Invalid, expired, or mismatched material is refused.
 std::optional<boost::corosio::tls_context> make_mutual_tls_context(
     const TlsCredentials& credentials, std::string* reason = nullptr);
+
+// The subject common name of a DER-encoded X.509 certificate (the bytes
+// FramedStream::peer_certificate_der returns). Empty optional when the bytes do
+// not parse as one certificate, the subject has no common name, or it has more
+// than one. Does not verify the certificate: the TLS handshake already did.
+std::optional<std::string> certificate_common_name(std::span<const unsigned char> der);
 
 }  // namespace zetta::transport

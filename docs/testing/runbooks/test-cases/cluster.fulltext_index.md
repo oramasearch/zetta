@@ -66,14 +66,13 @@ ctest --test-dir build -R 'Testkit.DistributedCasesRunOnARealCluster' --output-o
 - The consolidated oracle matched at least one row.
 - **Every coordinator produced the identical global ranking** (row ids and scores);
   scores align with row ids and rank descending; every node heard from all N nodes.
-- **Backend-specific oracle comparison** (#611): with the partition-independent
-  reference scorer the ranking is **exactly equal** to the consolidated oracle for
-  any knob combination. With real BM25F, per-shard local IDF makes rank order the
-  standard local-IDF query-then-fetch approximation under knob-driven placement, so
-  the case asserts the **exact hit set**: a full query returns exactly the oracle's
-  matches; a `top_k` query returns the right count, every hit a genuine match. (The
-  gtest half of #529 pins exact rank equality on a statistics-engineered fixture —
-  see [distributed-fulltext.md](../../../indexing/distributed-fulltext.md).)
+- **Exact oracle comparison, either backend** ([#851](https://github.com/oramasearch/zetta/issues/851)):
+  every coordinator's ranking is **exactly equal** to the consolidated oracle's at
+  the chosen `top_k`, for any knob combination. The partition-independent reference
+  scorer gets there by construction; real BM25F gets there because the distributed
+  query first gathers every sub-index's corpus statistics and scores every shard
+  with the merge (see [distributed-fulltext.md](../../../indexing/distributed-fulltext.md)).
+  Before #851 the BM25F path could assert only the hit set (#611).
 - A multi-node query genuinely **moved hits over the wire** (scatter + gather); a
   single-node cluster answers locally and moves nothing.
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "zetta/data/entity_key_table.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/local_partitions.hpp"
 #include "zetta/node.hpp"
@@ -219,7 +220,8 @@ TableScoreResult score_table(Node& node, const Model& model, const std::string& 
 
 TableScoreResult score_rows(const Model& model, const std::vector<nlohmann::json>& rows,
                             const std::vector<std::int64_t>& entities,
-                            std::size_t top_k) {
+                            std::size_t top_k,
+                            std::shared_ptr<const data::EntityKeyMapping> entity_keys) {
     if (rows.empty()) return failure("score: no rows given");
     if (!entities.empty() && entities.size() != rows.size()) {
         return failure("score: " + std::to_string(entities.size()) + " entity keys for " +
@@ -297,9 +299,15 @@ TableScoreResult score_rows(const Model& model, const std::vector<nlohmann::json
     }
 
     TableScoreResult result;
-    if (const auto mapping = model.feature_schema().find("entity_key_mapping");
-        mapping != model.feature_schema().end()) {
-        result.entity_keys = data::entity_key_mapping_from_json(*mapping);
+    result.entity_keys = std::move(entity_keys);
+    if (!result.entity_keys) {
+        // Only an inline mapping (a record from before #1255) can be read here; a
+        // reference to the entity-key table is resolved by the caller, which
+        // holds the node.
+        if (const auto mapping = model.feature_schema().find("entity_key_mapping");
+            mapping != model.feature_schema().end()) {
+            result.entity_keys = data::load_entity_key_mapping(nullptr, *mapping);
+        }
     }
     result.feature_columns = features;
     result.drivers = ranked_drivers(model.value().feature_schema);

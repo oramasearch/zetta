@@ -16,8 +16,23 @@ reserved `legacy` records never ship (#1164).
 `data_changed` records every SQL statement that changes data, schema or
 governance — its actor, object and outcome, refused or not (#1229). See
 [access control](../../../docs/governance/access-control.md#per-statement-enforcement).
+`egress_denied` records each outbound connection the egress policy refused
+(#75, [egress policy](../../../docs/governance/egress-policy.md)).
 
 `ResourceKind::Bucket` (`Resource::bucket`) names an object bucket by name prefix,
 so `objects:read`, `objects:write` and `objects:manage` are object-scopable
 `ON BUCKET <prefix>` (#1005). See
 [the object capability](../../../docs/data/object-store.md#rights).
+
+`credential_redaction.hpp` is the one rule for which input fields hold a
+credential (`is_credential_field`: `token`, `secret`, `password`, `api_key`,
+`*_token`, `*_secret`, `*_password`) and `redact_credentials`, which the consent
+challenge JSON and the web form use so an inline credential is never rendered
+back out (#74). See
+[secret references](../../../docs/governance/secret-references.md).
+`identity_seal.hpp` is the identity root (#763, #764): `IdentityAuthority` seals
+and opens replicated identity records, each at a version, and seals removals as
+tombstones (#1341); `identity_record_supersedes` and `next_identity_version`
+order them; `load_or_create_identity_root` pins the root in
+`<data_dir>/security/identity-root.json`. See
+[identity seal](../../../docs/governance/identity-seal.md).

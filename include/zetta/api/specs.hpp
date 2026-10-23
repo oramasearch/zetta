@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/api/registry.hpp"
+#include "zetta/api/rest.hpp"
 
 // The spec index (#646, docs/api/specs-index.md; the AX contract is
 // docs/product/experience/ax.md): one navigable object index over EVERY
@@ -29,6 +30,18 @@ namespace zetta::api {
 // carrying `capability`) · "boundary" (named after the entity, carrying the
 // generated `file`). `href` is the raw-document route "/v1/specs/<name>".
 nlohmann::json spec_index(const Registry& registry);
+// The capabilities `acting_key` may call (#766): for a token-resolved user, the
+// per-tool mcp:call scope (Node::may_call_tool), the rule tools/list and
+// Registry::call apply; the trusted local session and a legacy AccessKey see
+// every capability, as they do in tools/list. Reads Node state: call the
+// predicate on the owning thread.
+CapabilityVisible callable_by(const Node& node, std::string acting_key,
+                              bool acting_is_user);
+
+// The index with only the capabilities `visible` admits (#766): their
+// input/output entries, and an "openapi" entry whose document holds only them.
+// Boundary schemas are entity shapes, not tools, and are always listed.
+nlohmann::json spec_index(const Registry& registry, const CapabilityVisible& visible);
 
 // One spec: { name, kind, schema, … } with the same per-kind extras as the
 // index entry; `schema` is the JSON Schema document itself (the OpenAPI 3.1
@@ -36,5 +49,11 @@ nlohmann::json spec_index(const Registry& registry);
 // answers not_found and points at the index.
 std::optional<nlohmann::json> find_spec(const Registry& registry,
                                         const std::string& name);
+// The same lookup under `visible` (#766): a capability the caller may not call
+// is not_found, exactly like a name that does not exist, and "openapi" renders
+// only the visible capabilities.
+std::optional<nlohmann::json> find_spec(const Registry& registry,
+                                        const std::string& name,
+                                        const CapabilityVisible& visible);
 
 }  // namespace zetta::api

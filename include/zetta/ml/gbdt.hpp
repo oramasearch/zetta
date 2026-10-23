@@ -148,7 +148,10 @@ struct RegressionTree {
     std::vector<TreeNode> nodes;
 
     // The leaf raw-score output for a feature row (values indexed by feature
-    // index, in the model's feature ordering). An empty tree contributes 0.
+    // index, in the model's feature ordering). An empty tree contributes 0. A
+    // split on a feature the row does not carry reads 0.0, the padding TreeSHAP
+    // uses (#1390), and a walk that leaves the tree stops: no index is read
+    // unchecked, whatever the row or the tree.
     double predict(const std::vector<double>& features) const;
 };
 
@@ -180,10 +183,19 @@ struct GbdtModel {
     // `calibration` is attached, else sigmoid(predict_raw).
     double predict_proba(const std::vector<double>& features) const;
 
+    // The structural rules the JSON Schema cannot express (#1390): in every
+    // tree, every split reads a feature in [0, feature_count()), and every
+    // internal node's two children are distinct indices in the tree that come
+    // after it, so a walk from the root always ends at a leaf. false with a
+    // reason in `error` on the first violation. from_json and every model
+    // importer (model_import.hpp) refuse a model that fails it, so prediction
+    // and TreeSHAP only ever see a model that passes.
+    bool validate_structure(std::string* error = nullptr) const;
+
     // Serialize / parse the weights body. from_json validates against the GBDT
-    // model JSON Schema (and the structural rule that every child index is in
-    // range) before returning, so a malformed body fails at the boundary with a
-    // path-qualified reason in `error` instead of corrupting state.
+    // model JSON Schema and validate_structure before returning, so a malformed
+    // body fails at the boundary with a path-qualified reason in `error` instead
+    // of corrupting state.
     nlohmann::json to_json() const;
     static std::optional<GbdtModel> from_json(const nlohmann::json& value,
                                               std::string* error = nullptr);

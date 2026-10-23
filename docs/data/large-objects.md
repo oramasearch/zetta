@@ -73,7 +73,7 @@ travels in the CRDT, the *body* does not.
 So a freshly-replicated object shows up immediately (metadata) and its body
 fills in shortly after; until then `LargeObject::body_present` is false and the
 UI marks it "syncing body". `read`/`export` return nothing until the body lands.
-The `BlobStore` seam (`include/zetta/data/blob_store.hpp`) is what the cluster uses to
+The `BlobStore` interface (`include/zetta/data/blob_store.hpp`) is what the cluster uses to
 fetch/serve/verify bodies; `ReplicatedBlobStore` implements it purely from the
 CRDT metadata + on-disk paths (so it's safe to call from the network thread).
 
@@ -94,13 +94,17 @@ CRDT metadata + on-disk paths (so it's safe to call from the network thread).
   `size_bytes`, `sha256`, `body_present`. Filterable, e.g.
   `SELECT * FROM system.large_objects WHERE database = 'shop'`.
 - **Web dashboard routes** (`src/core/api/http_server.cpp`, cookie-authed like the rest of
-  the web UI; the Data explorer's **Files** panel drives them):
+  the web UI; the Data explorer's **Files** panel drives them). The session user must hold
+  the right for each, and every decision is audited (#1389; see
+  [access-control.md](../governance/access-control.md)):
   - `POST /blob?db=<database>&name=<filename>` — the raw request body IS the file bytes
     (no multipart); stores it via `LargeObjectStore::import_bytes`. Returns `{ok,id,name,size}`.
+    Needs `sql:write` on the database.
   - `GET /blob/download?db=<database>&id=<object_id>` — streams the body back as an
     `attachment` (`Content-Disposition`), reading via `LargeObjectStore::read` (404 until the
-    body has synced to this node).
-  - `POST /blob/delete?db=<database>&id=<object_id>` — `LargeObjectStore::unlink`.
+    body has synced to this node). Needs `blob:read` covering the id (403 otherwise).
+  - `POST /blob/delete?db=<database>&id=<object_id>` — `LargeObjectStore::unlink`. Needs
+    `sql:write` on the database.
 
 ## Limits / future
 

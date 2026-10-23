@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -79,6 +80,16 @@ bool reads_table(const std::vector<TableRead>& reads, std::string_view database,
 nlohmann::json to_json(const std::vector<TableRead>& reads);
 std::vector<TableRead> table_reads_from_json(const nlohmann::json& value);
 
+// How a run reached the engine through a published pipeline (zetta#1289): the
+// exposure version it ran and the caller it was served to (a user or access-key
+// id; "local" for the unauthenticated local session). The served status route
+// answers a run only to the caller it was served to.
+struct RunPublication {
+    std::uint64_t version = 0;
+    std::string caller;
+    friend bool operator==(const RunPublication&, const RunPublication&) = default;
+};
+
 // The mutable, replicated/on-disk value of a run — everything the CRDT key
 // `run:<uuid>` carries (the id is the key / folder name, so it isn't repeated).
 // This is exactly the shape validated by the Run JSON Schema at every boundary.
@@ -104,8 +115,12 @@ struct RunValue {
     // says where finished results came from; this says what an unfinished run
     // is reading, which delete_dataset checks.
     std::vector<TableRead> reads;
-    // Empty for integer entities. Text-backed runs persist the deterministic
-    // derived-id map so their intermediate numeric keys remain auditable.
+    // Set when a published pipeline's served route started the run (zetta#1289).
+    std::optional<RunPublication> published;
+    // Empty for integer entities. Text-backed runs keep the deterministic
+    // derived-id map so their intermediate numeric keys remain auditable: a
+    // reference to its rows in the `_entity_keys` table (#1255), or inline
+    // `{column, entries}` in records written before it (and on a standalone node).
     nlohmann::json entity_key_mapping = nlohmann::json::object();
     // Frozen input choices, not a fresh analysis at report time (#1062).
     nlohmann::json features = {{"used", nlohmann::json::array()},
@@ -174,6 +189,7 @@ public:
     const std::vector<RunOutput>& outputs() const { return value_.outputs; }
     const RunLineage& lineage() const { return value_.lineage; }
     const std::vector<TableRead>& reads() const { return value_.reads; }
+    const std::optional<RunPublication>& published() const { return value_.published; }
     const nlohmann::json& entity_key_mapping() const {
         return value_.entity_key_mapping;
     }
@@ -189,9 +205,19 @@ public:
     void set_lineage(RunLineage lineage);
     // Record more tables the run reads (zetta#1258); captures only on change.
     void add_reads(const std::vector<TableRead>& reads);
+    // Record that a published pipeline's route served this run (zetta#1289).
+    void set_published(RunPublication published);
     void set_trace_id(std::string trace_id);  // the run's trace (#640)
+    // A text entity-key mapping, inline `{column, entries}` or a reference to
+    // its table (#1255). With an entity-key store (Node sets one), the inline
+    // form is written to the table first and the run keeps the reference.
     bool set_entity_key_mapping(nlohmann::json mapping,
                                 std::string* error = nullptr);
+    // Turns a mapping into what the run stores: given the owner ("run:<id>")
+    // and the mapping, it returns the reference (or the mapping unchanged).
+    using EntityKeyStore =
+        std::function<nlohmann::json(std::string_view owner, nlohmann::json mapping)>;
+    void set_entity_key_store(EntityKeyStore store) { entity_key_store_ = std::move(store); }
     bool set_features(nlohmann::json features, std::string* error = nullptr);
     void suppress_metrics_for_privacy();
 
@@ -263,6 +289,7 @@ private:
     std::chrono::steady_clock::time_point last_capture_{};
     std::filesystem::path dir_;
     zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
+    EntityKeyStore entity_key_store_;                    // empty: mappings stay inline
 };
 
 }  // namespace zetta::pipeline

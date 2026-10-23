@@ -88,6 +88,13 @@ void register_record_capabilities(Registry& registry);
 //   list_network_records  read    decoded, indexed, retained record pages
 void register_network_capabilities(Registry& registry);
 
+// Safe mode per database (#1373, docs/api/safe-mode.md):
+//
+//   set_safe_mode  action  set a database's or connection's level (off |
+//                          warn_writes | warn_all); needs the right to manage it
+//   get_safe_mode  read    its level, and whether that is the default
+void register_safe_mode_capabilities(Registry& registry);
+
 // The object capability (#1005, docs/data/object-store.md):
 //
 //   create_bucket         action  declare a bucket, its quota and replication factor
@@ -115,6 +122,10 @@ void register_run_metrics_capabilities(Registry& registry);
 // validation, published search spaces, analysis, stopping and
 // permission-separated model promotion.
 void register_study_capabilities(Registry& registry);
+
+// Published pipelines (zetta#1289, docs/api/serving.md): expose_pipeline,
+// unexpose_pipeline, run_published_pipeline, get_published_pipeline_run.
+void register_pipeline_serving_capabilities(Registry& registry);
 nlohmann::json study_search_space_for_methodology(
     std::string_view methodology);
 
@@ -129,6 +140,11 @@ void register_solution_capabilities(Registry& registry);
 // Action delivery, report publication, and bounded execution (#1109,
 // docs/solutions/action-integration.md).
 void register_action_capabilities(Registry& registry);
+
+// Propose a run, then approve or reject it (#969; docs/pipeline/run-proposals.md):
+// propose_run, approve_run_proposal, reject_run_proposal, get_run_proposal,
+// list_run_proposals. Called by register_core_capabilities.
+void register_run_proposal_capabilities(Registry& registry);
 
 // A Pipeline granted to an agent, run as that agent's tool (lake#238): the tool is
 // `pipeline_<graph>` (lowercase, non-alphanumerics as `_`). The graph must still be approved at the

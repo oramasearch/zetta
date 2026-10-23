@@ -54,6 +54,18 @@ bool Registry::add(Capability capability) {
         (capability.kind != CapabilityKind::Action || !capability.mutates)) {
         return false;
     }
+    // A safe-mode-guarded capability accepts the confirmation its warning hands
+    // out (#1373). Added here, once, so every such entry's schema says the same
+    // thing and the REST/MCP/OpenAPI renderings carry it.
+    if (capability.describe_safe_mode && capability.input_schema.is_object()) {
+        capability.input_schema["properties"][kSafeModeConfirmationField] = {
+            {"type", "string"},
+            {"pattern", "^[0-9a-f]{64}$"},
+            {"description",
+             "the `confirmation` from a safe_mode_warning: repeat the same call "
+             "with it to run the statements the warning named (it confirms "
+             "those statements against that database, nothing else)"}};
+    }
     entries_.push_back(std::make_shared<const Capability>(std::move(capability)));
     return true;
 }
@@ -247,6 +259,10 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     span.set_attribute("capability", name);
     span.set_attribute("actor",
                        context.acting_key.empty() ? "local" : context.acting_key);
+    // Everything this call records on the audit trail — including events the
+    // Node records deep inside the handler (a deploy, a created project, a
+    // queued job) — is attributed to the caller (#847).
+    const zetta::governance::AuditActorScope audit_actor{context.acting_key};
 
     auto finish = [&](ApiResult result) {
         result.trace_id = context.trace.trace_id;
@@ -357,6 +373,91 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     }(); });
     if (refused) return finish(std::move(*refused));
 
+    // Safe mode per database (#1373, docs/api/safe-mode.md). Checked after
+    // authorization (a caller that may not run the statement learns nothing
+    // about it) and before consent (a consent challenge freezes the input, so
+    // the person running it confirms first). Levels live in a node table, so
+    // the check runs on the owner thread.
+    std::string safe_mode_confirmation;
+    if (effective_input.is_object()) {
+        if (const auto field = effective_input.find(kSafeModeConfirmationField);
+            field != effective_input.end()) {
+            if (field->is_string()) safe_mode_confirmation = field->get<std::string>();
+            effective_input.erase(field);
+        }
+    }
+    if (capability->describe_safe_mode) {
+        std::optional<ApiResult> warned;
+        context.node.run_on_owner([&] {
+            std::vector<zetta::governance::SafeModeStatements> warning;
+            zetta::governance::SafeMode first_mode = zetta::governance::SafeMode::Off;
+            for (zetta::governance::SafeModeStatements& entry :
+                 capability->describe_safe_mode(effective_input, context)) {
+                const zetta::governance::SafeMode mode =
+                    zetta::governance::effective_safe_mode(context.node, entry.target,
+                                                           entry.name);
+                if (!zetta::governance::safe_mode_warns(mode, entry)) continue;
+                if (warning.empty()) first_mode = mode;
+                warning.push_back(std::move(entry));
+            }
+            if (warning.empty()) return;
+            const std::string expected =
+                zetta::governance::safe_mode_confirmation(warning);
+            const zetta::governance::SafeModeStatements& first = warning.front();
+            const std::string selector = std::string(to_string(first.target));
+            if (safe_mode_confirmation == expected) {
+                zetta::governance::AuditEventValue event;
+                event.action = zetta::governance::AuditAction::SafeModeConfirmed;
+                event.actor = context.acting_key.empty() ? "local" : context.acting_key;
+                event.target = selector + ":" + first.name;
+                event.allowed = true;
+                // The statement hash, never the statement: a statement can carry
+                // a value the trail must not keep.
+                event.detail = "api:" + name + " confirmed under " +
+                               std::string(to_string(first_mode)) +
+                               "; statement sha256 " + expected;
+                context.node.record_audit_event(std::move(event));
+                span.set_attribute("safe_mode", "confirmed");
+                return;
+            }
+            nlohmann::json details;
+            details[selector] = first.name;
+            details["mode"] = std::string(to_string(first_mode));
+            details["statements"] = first.statements;
+            details["confirmation"] = expected;
+            if (warning.size() > 1) {
+                // A multi-statement input touching several databases: the one
+                // confirmation covers every database that warned.
+                nlohmann::json also = nlohmann::json::array();
+                for (std::size_t index = 1; index < warning.size(); ++index) {
+                    also.push_back({{std::string(to_string(warning[index].target)),
+                                     warning[index].name},
+                                    {"statements", warning[index].statements}});
+                }
+                details["also"] = std::move(also);
+            }
+            const std::string why =
+                first_mode == zetta::governance::SafeMode::WarnAll
+                    ? "every statement"
+                    : "a statement that writes";
+            std::string message =
+                "'" + name + "' did NOT run: " + selector + " '" + first.name +
+                "' is in safe mode " + std::string(to_string(first_mode)) +
+                ", which warns before " + why + ". Read the statements in "
+                "details.statements; to run them, repeat the same call with "
+                "\"safe_mode_confirmation\": \"" + expected + "\".";
+            if (!safe_mode_confirmation.empty()) {
+                message += " The confirmation given was for a different statement "
+                           "or database.";
+            }
+            ApiResult refusal = ApiResult::failure("safe_mode_warning", std::move(message));
+            refusal.error.details = std::move(details);
+            span.set_attribute("safe_mode", "warned");
+            warned = std::move(refusal);
+        });
+        if (warned) return finish(std::move(*warned));
+    }
+
     // Consent-gated capabilities never execute on a plain call (#621, the
     // cloud hard rule over the wire): when the input touches a cloud, issue a
     // one-time challenge naming exactly what would be read/run and return it
@@ -371,9 +472,9 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
             action = zetta::governance::ConsentAction{capability->description,
                                                       {}, {}};
         }
-        // Consent enforcement is OFF by default (#995, NodeConfig::enforce_consent):
-        // the surfaces the refusal points at cannot decide a challenge on a
-        // one-person node, so the gate blocks the action instead of gating it.
+        // Consent enforcement is OFF by default (#995, NodeConfig::enforce_consent);
+        // `--governance` (or ZETTA_GOVERNANCE=1) turns it on. Remote reads are
+        // guarded per database by safe mode instead (docs/api/safe-mode.md).
         // Ungated is not unrecorded — the bypass is its own audit row
         // (`consent_bypassed`) carrying the action summary the approver would
         // have read, and a span attribute, so a node running without the gate
@@ -390,7 +491,7 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         if (action) {
             auto challenge = context.node.consent_ledger().create(
                 name, effective_input, std::move(*action), context.acting_key,
-                principal_of(context.node, context.acting_key));
+                principal_of(context.node, context.acting_key), context.acting_is_user);
             span.set_attribute("consent_challenge", challenge->id);
             audit_consent(context.node,
                           zetta::governance::AuditAction::ConsentRequested,
@@ -399,22 +500,23 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                               challenge->action.summary);
             // Say where to go, not just what happened. A refusal that names a challenge id and
             // leaves the reader to find the surface that decides it is a dead end — the id is
-            // useless without the page. It named the web console's /governance page, which has
-            // no consent list (#995); the surfaces that can actually decide it are the headed
-            // app's Admin & audit panel and an approver key over the wire. And when there is no
-            // second principal at all, the honest answer is that the gate is optional.
+            // useless without the page. Every surface named here can decide it (#999): the web
+            // console's and the desktop app's Governance page both list pending challenges with
+            // Approve / Deny, and approve_consent decides one over the wire.
             ApiResult refusal = ApiResult::failure(
                 "consent_required",
                 "'" + name + "' touches a cloud provider and did NOT execute; consent challenge " +
                     challenge->id +
-                    " was issued and is waiting for a decision. It must be approved by a "
-                    "DIFFERENT principal than the one that requested it \u2014 an approver key "
-                    "calling approve_consent, or a human in the headed (desktop) app under "
-                    "Admin & audit \u2192 Consent requests, which is exempt from that rule. "
-                    "Approving from the session that made the request is refused by design, and "
-                    "approvals are per-action and never remembered. Read the pending challenges "
-                    "with list_consent_requests. This node was started with --governance; "
-                    "without it consent gating is off and this call would have executed.");
+                    " was issued and is waiting for a decision. Decide it under Governance "
+                    "\u2192 Consent requests: in the web console (/?view=governance&tab=consent) "
+                    "a DIFFERENT user than the requester holding cloud:manage approves or denies "
+                    "it; in the headed (desktop) app the person at the machine can approve it "
+                    "even on a one-person node. Over the wire, approve_consent from a key of a "
+                    "different principal decides it. Approving from the session that made the "
+                    "request is refused by design, and approvals are per-action and never "
+                    "remembered. Read the pending challenges with list_consent_requests. "
+                    "This node was started with --governance; without it consent gating "
+                    "is off and this call would have executed.");
             refusal.error.details = zetta::governance::to_json(*challenge);
             return finish(std::move(refusal));
         }
@@ -453,6 +555,19 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                            result.error.code != "unauthorized",
                            result.error.code + ": " + result.error.message);
             }
+        });
+    }
+
+    // A per-call capability is audited at authorization, before it runs, so a
+    // call that then FAILED would read on the trail exactly like one that
+    // succeeded. Record the failure of anything that is not a plain read (#847):
+    // the trail must say an action was attempted and did not happen.
+    if (capability->audit_policy == AuditPolicy::PerCall && !result.ok &&
+        (capability->kind != CapabilityKind::Read || capability->mutates)) {
+        context.node.run_on_owner([&] {
+            audit_call(context.node, *capability, context.acting_key,
+                       result.error.code != "unauthorized",
+                       "failed: " + result.error.code + ": " + result.error.message);
         });
     }
 
@@ -586,10 +701,26 @@ ApiResult Registry::decide_consent(const std::string& challenge_id,
                   "named action once");
 
     // Re-authorize the requester at execution time (its key may have been
-    // dropped or its capability expired since the challenge was issued).
+    // dropped or its capability expired since the challenge was issued). A
+    // token-resolved user is checked the way Registry::call checks it — the
+    // per-tool invoke right, then the capability's own right — since a user id
+    // is not an access key and the key path would refuse every user (#999).
     if (!challenge->requested_by.empty()) {
-        auto decision = context.node.authorize(challenge->requested_by,
-                                               entry->required_operation);
+        zetta::governance::AccessDecision decision{true, {}};
+        if (challenge->requested_is_user) {
+            const zetta::governance::Operation kInvokeRight{
+                zetta::governance::CapabilityDomain::Api, "query"};
+            if (!context.node.may_call_tool(challenge->requested_by,
+                                            /*acting_is_user=*/true, entry->name)) {
+                decision = {false, "no mcp:call grant for tool '" + entry->name + "'"};
+            } else if (!(entry->required_operation == kInvokeRight)) {
+                decision = context.node.authorize_user(challenge->requested_by,
+                                                       entry->required_operation);
+            }
+        } else {
+            decision = context.node.authorize(challenge->requested_by,
+                                              entry->required_operation);
+        }
         if (!decision) {
             ledger.record_outcome(challenge_id, /*ok=*/false, {},
                                   "requester no longer authorized: " +
@@ -607,6 +738,7 @@ ApiResult Registry::decide_consent(const std::string& challenge_id,
     // audit lands under the requester (both sides are now on the trail).
     ApiContext execution = context;
     execution.acting_key = challenge->requested_by;
+    execution.acting_is_user = challenge->requested_is_user;
     execution.consent_challenge_id = challenge->id;
     execution.consent_outcome_deferred = false;
     zetta::observability::ScopedSpan action_span(
@@ -620,6 +752,7 @@ ApiResult Registry::decide_consent(const std::string& challenge_id,
     audit_call(context.node, *entry, challenge->requested_by, /*allowed=*/true,
                "consent-approved execution of challenge " + challenge_id);
 
+    const zetta::governance::AuditActorScope audit_actor{challenge->requested_by};
     ApiResult result = entry->handler(challenge->input, execution);
     action_span.finish(result.ok, result.ok ? std::string{}
                                             : result.error.code + ": " +

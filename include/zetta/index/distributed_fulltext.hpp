@@ -26,33 +26,39 @@
 // zetta::ddf::load_local_partitions), and a query is answered by **scatter-gather +
 // merge/rank** across those sub-indexes — never one big index.
 //
-// This is the standard sharded-search shape (per-shard local scoring, then a
-// coordinator merges the ranked hits by score) — the local-IDF *query-then-fetch*
-// production search engines default to. Its contract (#611): the hit SET is exact
-// (matching is per-row), and every coordinator produces one identical global
-// ranking; the rank ORDER equals a single consolidated index's only when every
-// shard's corpus statistics for the query terms (df/N, average field lengths)
-// agree with the consolidated ones — per-shard IDF variation can otherwise
-// reorder hits regardless of how separated their term frequencies are. The exact
-// general fix is a global-statistics pass (the dfs_query_then_fetch analogue), a
-// later slice behind this same API. See docs/indexing/distributed-fulltext.md.
+// This is the standard sharded-search shape (per-shard scoring, then a
+// coordinator merges the ranked hits by score), with a **global-statistics pass**
+// first (#851, the dfs_query_then_fetch analogue) when the backend scores with
+// corpus statistics (BM25F's IDF and average field lengths): the coordinator
+// gathers every sub-index's statistics for the query (`fulltext.stats`), merges
+// them, and sends the merge with the query, so every sub-index scores exactly as
+// one consolidated index over the whole table would. Without it a sub-index
+// ranked against its own statistics, and a per-shard top_k cutoff could silently
+// drop a row that belonged in the global top k. The contract: the result —
+// membership, order and scores — equals one consolidated index's at any top_k,
+// under any distribution of rows, and every coordinator returns the same list.
+// See docs/indexing/distributed-fulltext.md.
 //
 //   build_local(node, spec)  — enumerate this node's owned partitions of the table,
 //                              read each body from local disk (no LOREQ, no
 //                              full-dataset pull), and build ONE sub-index per
 //                              partition into an owned IndexBackend.
-//   query(spec, query)       — query THIS node's local sub-indexes, scatter the
-//                              query to every connected peer over the `fulltext.query`
-//                              signal-plane RPC, gather their ranked hits, and merge
-//                              everything into one global ranked list (identical on
-//                              every node).
+//   query(spec, query)       — gather every node's corpus statistics for the query
+//                              over the `fulltext.stats` RPC and merge them (when the
+//                              backend uses them), then query THIS node's local
+//                              sub-indexes and scatter the query, merged statistics
+//                              attached, to every connected peer over the
+//                              `fulltext.query` signal-plane RPC, gather their ranked
+//                              hits, and merge everything into one global ranked list
+//                              (identical on every node).
 //
 // **Wiring.** A DistributedFulltextIndex is the cluster's SignalHandler while it
 // lives, chained over an optional delegate (the DistributedSorter pattern):
-// `fulltext.query` is served here, everything else routes to the delegate. It rides
-// the existing transport — no new wire verb — and the request/response payloads are
-// **schema-validated at the boundary** (schemas/fulltext_query.schema.json /
-// schemas/fulltext_hits.schema.json, the same pboettch validator as the collective
+// `fulltext.query` and `fulltext.stats` are served here, everything else routes to
+// the delegate. They ride the existing transport — no new wire verb — and the
+// request/response payloads are **schema-validated at the boundary**
+// (schemas/fulltext_query.schema.json / schemas/fulltext_hits.schema.json /
+// schemas/fulltext_stats.schema.json, the same pboettch validator as the collective
 // message), so a malformed message fails fast with a path-qualified reason.
 //
 // Non-throwing throughout (zetta-core's no-exceptions convention): every entry point
@@ -116,16 +122,27 @@ struct FulltextQueryRequest {
     std::vector<std::string> fields;  // the indexed fields (>= 1)
     std::string field;                // optional named field (one field to match)
     nlohmann::json term;              // the free-text query value (scalar)
-    std::size_t top_k = 0;            // per-shard cap (0 = no cap)
+    // Per-shard cap (0 = no cap). Safe to apply per shard because every shard
+    // scores with the same merged `statistics` (#851): a row in the global top k
+    // is in its own shard's top k.
+    std::size_t top_k = 0;
     // The row fields each hit should carry back (#1243): the owning node
     // attaches them, so a row is never fetched from another node. nullopt = ids
     // and scores only.
     std::optional<std::vector<std::string>> return_fields;
+    // The merged corpus statistics every shard scores with (#851). Set on the
+    // `fulltext.query` scatter after the `fulltext.stats` round; absent on the
+    // `fulltext.stats` request itself and for a backend that does not use them.
+    std::optional<CorpusStatistics> statistics;
+
+    // The database authorized by the coordinator. A peer must have built its
+    // index from this same database (#1403).
+    std::optional<std::string> database;
 
     // The IndexSpec this request names (table/kind/backend/fields) — what a peer
     // looks its sub-indexes up by.
     IndexSpec spec() const;
-    // The IndexQuery this request names (field/term/top_k).
+    // The IndexQuery this request names (field/term/top_k/statistics).
     IndexQuery query() const;
 };
 
@@ -166,12 +183,38 @@ std::optional<FulltextQueryResponse> decode_fulltext_hits(
 // generated from it and drift-checked by tests/test_schemas.cpp (#646).
 const nlohmann::json& fulltext_hits_schema();
 
+// The `fulltext.stats` response: this node's corpus statistics for the request's
+// query, summed across its own sub-indexes (#851). The request is a
+// FulltextQueryRequest (the same schema; top_k / return_fields are ignored).
+struct FulltextStatsResponse {
+    std::string from;               // the responding node id
+    CorpusStatistics statistics;    // summed across this node's sub-indexes
+    std::size_t sub_indexes = 0;    // per-partition sub-indexes the node consulted
+};
+
+// Serialize a statistics response to its compact JSON form.
+std::string encode_fulltext_stats(const FulltextStatsResponse& response);
+
+// Parse + validate a statistics response at the boundary
+// (schemas/fulltext_stats.schema.json). Non-throwing — nullopt with a
+// path-qualified reason in `error` (when non-null) on any failure.
+std::optional<FulltextStatsResponse> decode_fulltext_stats(
+    std::string_view payload, std::string* error = nullptr);
+
+// The FulltextStatsResponse JSON Schema (draft-07) — the code-owned source of
+// truth decode_fulltext_stats enforces; schemas/fulltext_stats.schema.json is
+// generated from it and drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& fulltext_stats_schema();
+
 // --- the per-node distributed full-text index --------------------------------
 
 class DistributedFulltextIndex : public zetta::cluster::SignalHandler {
 public:
     // The RPC method a coordinator scatters a query to peers with.
     static constexpr std::string_view kQueryMethod = "fulltext.query";
+    // The RPC method a coordinator gathers every peer's corpus statistics with
+    // before scattering the query (#851).
+    static constexpr std::string_view kStatsMethod = "fulltext.stats";
 
     // A generous default for the scatter RPC: a query waits this long for a peer to
     // answer before failing the round (so a missing partition can't silently skew
@@ -232,18 +275,25 @@ public:
     // fails the whole build cleanly. Call from the application thread.
     BuildResult build_local(Node& node, const IndexSpec& spec);
 
-    // Query the distributed index: query THIS node's local sub-indexes, scatter the
-    // query to every connected peer (the fulltext.query RPC), gather their ranked
-    // hits, and merge everything into one global ranked list capped to `query.top_k`.
-    // Returns the same global ranking on every node. An unreachable / failing peer
-    // fails the query (a missing partition would skew the ranking). Call from the
-    // application thread (never the network thread). A single-node cluster returns
-    // its local ranking.
+    // Query the distributed index. When the backend scores with corpus statistics
+    // (and `query.statistics` is not already set), first gather this node's and
+    // every connected peer's statistics for the query (the fulltext.stats RPC) and
+    // merge them (#851). Then query THIS node's local sub-indexes, scatter the
+    // query with the merged statistics to every peer (the fulltext.query RPC),
+    // gather their ranked hits, and merge everything into one global ranked list
+    // capped to `query.top_k` — equal, membership, order and scores, to one
+    // consolidated index over the whole table. Returns the same global ranking on
+    // every node. An unreachable / failing peer fails the query (a missing
+    // partition would skew the ranking). Both rounds go to the same peers. Call
+    // from the application thread (never the network thread). A single-node
+    // cluster returns its local ranking (its own sub-indexes still share one
+    // merged set of statistics).
     //
     // When `recorder` AND `parent` are given, the scatter-gather is traced: one
     // child span per contribution ("search:local" for this node's own sub-indexes,
     // "search:peer" per scattered peer) under `parent`, carrying node id, hit count,
-    // and wire bytes — so a surface can show where the query's time went (#641).
+    // and wire bytes — so a surface can show where the query's time went (#641) —
+    // plus one "search:statistics" span over the statistics round when it runs.
     // Both null (the default) = no spans, unchanged behavior.
     //
     // `return_fields`, when non-null, asks every node to attach those fields'
@@ -254,7 +304,8 @@ public:
                       std::chrono::milliseconds timeout = kDefaultTimeout,
                       zetta::observability::SpanRecorder* recorder = nullptr,
                       const zetta::observability::TraceContext* parent = nullptr,
-                      const std::vector<std::string>* return_fields = nullptr) const;
+                      const std::vector<std::string>* return_fields = nullptr,
+                      const std::string* database = nullptr) const;
 
     // Query only this node's local sub-indexes (no scatter) → its merged, ranked
     // hits, capped to `query.top_k`. Used by query() for the local contribution and
@@ -266,7 +317,17 @@ public:
                                          const IndexQuery& query,
                                          IndexStatus* status = nullptr,
                                          std::size_t* sub_indexes = nullptr,
-                                         const std::vector<std::string>* return_fields = nullptr) const;
+                                         const std::vector<std::string>* return_fields = nullptr,
+                                         const std::string* database = nullptr) const;
+
+    // Sum this node's local sub-indexes' corpus statistics for `query` (no
+    // scatter) — this node's part of the statistics round, used by query() and by
+    // on_request to answer a peer's fulltext.stats. `status` / `sub_indexes` as
+    // for query_local.
+    CorpusStatistics collect_local_statistics(const IndexSpec& spec,
+                                              const IndexQuery& query,
+                                              IndexStatus* status = nullptr,
+                                              std::size_t* sub_indexes = nullptr) const;
 
     // The participants of a scatter: this node + every connected peer, sorted by
     // node id (so the set is the same on every node).
@@ -289,6 +350,7 @@ private:
     mutable std::mutex mutex_;
     // base IndexSpec::key() -> the per-partition sub-index specs built into backend_.
     std::map<std::string, std::vector<IndexSpec>> sub_specs_;
+    std::map<std::string, std::string> source_databases_;
     // base IndexSpec::key() -> row id -> the row's values for the index's own
     // fields, kept from the build (#1243). A hit's fields come from here, on the
     // node that owns the row: the network thread answering a peer cannot read

@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/governance/access_key.hpp"
+#include "zetta/governance/identity_seal.hpp"
 #include "zetta/governance/scope.hpp"
 
 namespace zetta::cluster { class ReplicationManager; }
@@ -57,7 +58,8 @@ class Principal {
 public:
     Principal(std::string id, PrincipalKind kind, std::string name,
               std::string created, std::filesystem::path dir,
-              zetta::cluster::ReplicationManager* replication = nullptr);
+              zetta::cluster::ReplicationManager* replication = nullptr,
+              const IdentityAuthority* identity_root = nullptr);
 
     const std::string& id() const { return id_; }
     PrincipalKind kind() const { return kind_; }
@@ -112,6 +114,10 @@ private:
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<AccessKey>> keys_;
     zetta::cluster::ReplicationManager* replication_;  // null = not replicated
+    // The node's identity root (#764): set, a replicated key is sealed by it,
+    // and a node whose root is verify-only creates and drops no keys. Null =
+    // unsealed (NodeConfig::identity_authority unset).
+    const IdentityAuthority* identity_root_;
 };
 
 }  // namespace zetta::governance

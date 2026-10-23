@@ -58,7 +58,9 @@ const nlohmann::json& schema_document() {
                               "consent_bypassed", "decision_policy_created",
                               "decision_policy_updated", "decision_approved",
                               "pubsub_topic_updated", "pubsub_event_updated", "pubsub_event_deleted",
-                              "audit_purged", "data_changed"] },
+                              "audit_purged", "data_changed",
+                              "egress_denied", "safe_mode_changed",
+                              "safe_mode_confirmed"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -144,6 +146,9 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::PubSubEventDeleted: return "pubsub_event_deleted";
         case AuditAction::AuditPurged: return "audit_purged";
         case AuditAction::DataChanged: return "data_changed";
+        case AuditAction::EgressDenied: return "egress_denied";
+        case AuditAction::SafeModeChanged: return "safe_mode_changed";
+        case AuditAction::SafeModeConfirmed: return "safe_mode_confirmed";
     }
     return "data_access";
 }
@@ -173,6 +178,9 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "pubsub_event_deleted") return AuditAction::PubSubEventDeleted;
     if (name == "audit_purged") return AuditAction::AuditPurged;
     if (name == "data_changed") return AuditAction::DataChanged;
+    if (name == "egress_denied") return AuditAction::EgressDenied;
+    if (name == "safe_mode_changed") return AuditAction::SafeModeChanged;
+    if (name == "safe_mode_confirmed") return AuditAction::SafeModeConfirmed;
     return std::nullopt;
 }
 
@@ -1567,5 +1575,26 @@ bool AuditTrail::flush() {
     const std::lock_guard lock(mutex_);
     return impl_->sync_writer();
 }
+
+// ---- the acting identity (#847) ---------------------------------------------
+
+namespace {
+thread_local std::optional<std::string> t_audit_actor;
+}  // namespace
+
+AuditActorScope::AuditActorScope(std::string actor)
+    : previous_(std::move(t_audit_actor)) {
+    t_audit_actor = actor.empty() ? std::string("local") : std::move(actor);
+}
+
+AuditActorScope::AuditActorScope(std::optional<std::string> actor)
+    : previous_(std::move(t_audit_actor)) {
+    if (actor && actor->empty()) actor = std::string("local");
+    t_audit_actor = std::move(actor);
+}
+
+AuditActorScope::~AuditActorScope() { t_audit_actor = std::move(previous_); }
+
+std::optional<std::string> current_audit_actor() { return t_audit_actor; }
 
 }  // namespace zetta::governance

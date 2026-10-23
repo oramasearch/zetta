@@ -29,16 +29,18 @@ length) — summed into a pseudo-tf before the saturation term. Tokenization is 
 self-contained normalize → split → stop-word → minimal-stemmer pipeline (no foreign
 NLP runtime), applied identically to documents and queries.
 
-## How the seam maps onto BM25F
+## How the interface maps onto BM25F
 
 | `IndexBackend` concept | oramacore-cpp |
 |---|---|
 | `IndexSpec.fields` | one BM25F field per indexed field (default weight 1.0, b 0.75) |
 | `IndexPartition` → `IndexDocument{id, doc}` | each row's `spec.fields` values → a `MemoryIndex::Document` (field → text), `add`ed in partition/row order |
-| row id (`_zid`, a string) ↔ engine `DocId` (a `uint32`) | a `rowid_by_docid` vector — the engine speaks dense ids, the seam speaks row ids |
+| row id (`_zid`, a string) ↔ engine `DocId` (a `uint32`) | a `rowid_by_docid` vector — the engine speaks dense ids, the interface speaks row ids |
 | `IndexQuery.term` (a JSON value) | the free-text query string; numbers/booleans stringify to their token form |
-| `IndexQuery.top_k` | the engine's `top_k` cap (0 = no cap) |
-| `IndexQueryResult.row_ids` | the hits' row ids, **ranked** (score desc, stable tiebreak) |
+| `IndexQuery.top_k` | the cap (0 = no cap), taken in (score desc, row id asc) order |
+| `IndexQuery.statistics` | `MemoryIndex::search(query, top_k, global)` — score with merged corpus statistics |
+| `collect_statistics` | `MemoryIndex::stats(query)` — this index's `CorpusStats` for the query |
+| `IndexQueryResult.row_ids` | the hits' row ids, **ranked** (score desc, then row id asc) |
 
 ### build
 
@@ -59,11 +61,33 @@ NLP runtime), applied identically to documents and queries.
 
 - `query.term` is the **free-text query**, scored by BM25F across **all** of the
   index's fields (BM25F weights them per-field). The row ids come back **ranked by
-  relevance** (score desc, then the engine's stable DocId tiebreak — deterministic
-  and reproducible because the build order is deterministic), capped to
-  `query.top_k`.
+  relevance** (score desc, then row id asc — the order the distributed merge uses),
+  capped to `query.top_k`. The engine itself breaks a tie by `DocId` (insertion
+  order), so when its page is full and the last hit still ties with the `top_k`-th,
+  the backend fetches a larger page until the tie is wholly inside it, then sorts and
+  caps: a row tied at the cutoff is kept or cut by row id, the same on every shard.
+  (The engine's bounded top-k heap once kept the best hit on top and evicted it, so a
+  capped query over hits met in ascending score order lost its best rows; fixed with
+  [#851](https://github.com/oramasearch/zetta/issues/851) and pinned by
+  `OramaCoreFulltextIndexOrder.CapKeepsTheBestHitsInAnyInsertionOrder`.)
+- When `query.statistics` is set, BM25F scores with those corpus statistics instead
+  of the index's own ([#851](https://github.com/oramasearch/zetta/issues/851)): the
+  merged view a sharded query gathers with `collect_statistics()` (which reports the
+  index's document count, each analyzed query term's document frequency and every
+  field's length totals). Scores are then bit-identical to one index over all the
+  shards. `uses_corpus_statistics()` is true when the engine is compiled in.
 - When set, `query.field` must be one of the index's fields (else
-  `InvalidArgument`), for parity with the seam — scoring still spans all fields.
+  `InvalidArgument`), and **only that field is searched**
+  ([lake#782](https://github.com/oramasearch/lake/issues/782)): a row whose match
+  is in another field is not a hit, and the score is BM25 over that field alone.
+  The engine's `search` always scores across every field, so a build over more
+  than one field also keeps one single-field `MemoryIndex` per field, fed every
+  row in the same order (a row without the field as an empty document) so its
+  DocIds map through the same row-id vector. That costs a second copy of the
+  postings; an index over one field keeps none, since the combined index is it.
+  A sharded query naming a field gathers and scores with that field's own
+  statistics too (`collect_statistics` reads the same per-field index), so the
+  merged view is the field's, not the whole document's (#851).
 - A term that is not a text/scalar value (an array/object/null) → `InvalidArgument`;
   a stop-word-only or no-match query → an **empty but successful** result;
   querying before a build → `NotFound`.

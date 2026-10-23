@@ -56,8 +56,13 @@ zetta: cluster node 229431f5-275e-4754-acb9-2eea4bac007b
 zetta: listening on 192.168.123.140:7777
 zetta: listening on 127.0.0.1:7777
 zetta: inter-node mTLS on (join token in <data_dir>/security/cluster-secret.json)
-zetta: add another node with: zetta --peer 192.168.123.140:7777 --join-token <64-hex>
+zetta: add another node with: zetta --peer 192.168.123.140:7777 --join-token <join-token> --identity-root <64-hex>
 ```
+
+The printed command never carries the join token itself (#1393): the literal
+`<join-token>` stands where it goes, and the line before it names the file that
+holds it. The token is the cluster root secret, and this banner lands in pod logs
+and log pipelines.
 
 When bound to a specific host that's the one address. When bound to a **wildcard**
 (`0.0.0.0` / `::`), the wildcard itself isn't connectable, so `listen_addresses()`
@@ -66,7 +71,8 @@ falling back to `127.0.0.1` — and the join command uses the first (most
 reachable) one. Other nodes copy that `--peer` line to join.
 
 Headed mode's **Cluster** panel shows this node's id, every reachable listen
-address, the **command to add another node** (with a Copy button), an
+address, the **command to add another node** (shown with the token masked; the
+Copy button copies it with the token), an
 **[Add nodes control](../gui/add-nodes-control.md)** (below), and a **spatial node-box
 canvas** (below). Headless logs the per-node table whenever it changes.
 
@@ -163,6 +169,15 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   an embedded bare `Cluster` with empty `ClusterSecurity` (tests/hosts). See
   [security.md](security.md). The shared `FramedStream` preserves the existing
   newline wire bytes and 64 MiB frame bound (#1283).
+- **Chaos fault injection (#842).** `ClusterConfig::frame_faults` takes a
+  `zetta::cluster::FrameFaultInjector` (`include/zetta/cluster/frame_faults.hpp`).
+  When set, every inbound frame after the `HELLO` passes through it on the read
+  pump, and the link writer asks it every tick for held frames now due, so a test
+  can drop, delay, duplicate and reorder the protocol on a real mTLS link. A
+  peer's activity clock moves only for frames actually applied, so discarding a
+  peer's frames idles the link out exactly like a partition. The zetta binary
+  never sets it; unset costs one null check per frame. The chaos harness that
+  drives it is [../testing/chaos-experiments.md](../testing/chaos-experiments.md).
 - `Cluster` binds the first free port in `[listen_port, listen_port + port_range)`
   synchronously at `start()`, then runs an `io_context` on a background thread:
   an accept loop plus one dial coroutine per `--peer`. `port_range` defaults to
@@ -172,6 +187,22 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   false and the zetta binary **exits non-zero** rather than run without its
   advertised address — never a silent drift
   ([#738](https://github.com/oramasearch/zetta/issues/738)).
+- **Peer setup is bounded** (#1401). Accepted and dialed sockets share one
+  `ClusterConfig::peer_setup_timeout` deadline (default **5 seconds**) across
+  mutual TLS and both HELLO directions, including writes. Partial TLS or HELLO
+  traffic never extends it. Expiry cancels the pending I/O and closes the socket
+  before membership is recorded. Embedded plaintext clusters use the same rule.
+  At most `maximum_pending_setups` (**64** by default) accepted links may be in
+  setup at once; excess accepts close before allocating TLS state. Dials are not
+  counted, so an inbound flood cannot block this node's own reconnects.
+  A slot is released on every failure and as soon as HELLO validation succeeds,
+  so established links do not consume setup capacity. Nonpositive deadlines clamp
+  to 1 ms and a zero capacity clamps to one; neither disables the protection.
+  Transient accept failures, including descriptor or memory exhaustion, retry
+  after **100 ms**; cancellation, a closed listener, or an invalid listener ends
+  the loop. Setup failures, capacity refusals and retries appear with
+  `--log-cluster`. No wire or on-disk format changes; peers must finish setup
+  within the configured deadline.
 - **Symmetric handshake** (line protocol): each side sends
   `ZETTA/1 HELLO <node-id> <endpoint[,endpoint,…]|-> [wan|dial-out] [audit-protocol]` and records
   the other; the dialer speaks first, the acceptor replies. The trailing
@@ -195,6 +226,26 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   just the unreachable bound pod IP — the root cause of the membership flap). A
   legacy single-address HELLO parses as a one-element set (backward compatible).
   `Cluster::advertised_endpoints()` is the set a node sends.
+- **A HELLO is bounded and shape-checked before anything is recorded** (#771). The
+  node id and endpoints a peer sends are stored, shown in the node list and logs,
+  and dialed by the reconnect loop, so `zetta::cluster::parse_hello` refuses (and the
+  connection is dropped, logged without echoing the peer's text) a HELLO whose:
+  - node id is not 1–128 characters of `[A-Za-z0-9._-]` (`is_valid_node_id`);
+  - endpoint list has more than **16** entries (`kMaxAdvertisedEndpoints`);
+  - endpoints include one that is not `HOST:PORT` (port 1–65535, digits only; host of
+    `[A-Za-z0-9._-]` plus the IPv6 characters `: [ ] %`; at most 261 bytes —
+    `is_valid_peer_endpoint`), so control characters and terminal escapes never
+    reach the node list or stderr;
+  - reachability is `wan` with no endpoint at all.
+
+  The HELLO frame itself is read under a **16 KiB** bound (`kMaxHelloBytes`); the
+  64 MiB steady-state frame bound applies only once the HELLO is accepted, so an
+  unidentified peer cannot make a node buffer megabytes per short connection. A
+  node never sends more than 16 endpoints: `advertised_endpoints()` keeps every
+  `--advertise` extra and drops trailing listen addresses to fit, and `zetta`
+  refuses to start with a malformed `--advertise` entry or more than 16 of them.
+  Addresses learned from the replicated `node:<id>` entries are checked the same
+  way before the reconnect loop dials them.
 - **The reached endpoint is per-observer.** Each side records the endpoint it
   actually reached the peer on (the address it dialed; for the acceptor, the peer's
   advertised front) — the reachable path differs by vantage point (a home node

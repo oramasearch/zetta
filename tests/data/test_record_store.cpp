@@ -496,6 +496,66 @@ TEST(ReplicationUpdate, IsAtomicAgainstConcurrentWriters) {
     EXPECT_EQ(replication.shared_snapshot()->at("counter").at("n"), kThreads * kIncrements);
 }
 
+// A record read looks its collection up in the replicated catalogue. It must not
+// wait while the catalogue's document is busy (#1248): the node saves the whole
+// document once a second, peers merge into it, and on a node with a large
+// catalogue (runs, models, grants) either takes far longer than a record read.
+// save(), merge() and update() all hold the document mutex, so the test holds it
+// on purpose, inside an update() whose decision waits, and counts the record
+// reads that complete meanwhile. It counts rather than times, so a loaded host
+// cannot fail it: if reads waited for the mutex, none would complete until the
+// five-second deadline let the holder go.
+TEST(RecordStoreLatency, ReadsDoNotWaitForTheCatalogueDocument) {
+    TempDir dir;
+    ReplicationManager replication{zetta::util::new_uuid()};
+    RecordStore store{replication, replication.node_id(), dir.path() / "records"};
+    ASSERT_TRUE(store.open());
+    ASSERT_TRUE(store.create_collection(collection("sessions", {"user"})).ok());
+    for (int index = 0; index < 64; ++index) {
+        ASSERT_TRUE(store.write(put("sessions", "s-" + std::to_string(index), "value",
+                                    {{"user", "u-" + std::to_string(index % 4)}}))
+                        .ok());
+    }
+
+    constexpr std::size_t kReadsWanted = 200;
+    std::atomic<bool> holding{false};
+    std::atomic<bool> released{false};
+    std::atomic<std::size_t> reads_while_holding{0};
+    std::thread holder([&] {
+        replication.update(
+            "soak_holder",
+            [&](const nlohmann::json*) -> std::optional<std::vector<zetta::cluster::ReplicationWrite>> {
+                holding = true;
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                while (reads_while_holding.load() < kReadsWanted &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::yield();
+                }
+                released = true;
+                return std::nullopt;
+            });
+    });
+    while (!holding.load()) std::this_thread::yield();
+
+    std::size_t failed = 0;
+    int next = 0;
+    while (!released.load() && reads_while_holding.load() < kReadsWanted) {
+        const RecordOutcome read = store.get("sessions", "s-" + std::to_string(next++ % 64));
+        RecordListRequest request;
+        request.collection = "sessions";
+        request.index = "user";
+        request.value = "u-1";
+        const auto page = store.list(request);
+        if (!read.ok() || page.records.size() != 16) ++failed;
+        if (!released.load()) ++reads_while_holding;
+    }
+    holder.join();
+    std::printf("[record store] %zu record reads completed while the catalogue document was held\n",
+                reads_while_holding.load());
+    EXPECT_EQ(failed, 0u);
+    EXPECT_GE(reads_while_holding.load(), kReadsWanted);
+}
+
 namespace {
 
 // One node of a real two-node loopback cluster with a replicated catalogue.

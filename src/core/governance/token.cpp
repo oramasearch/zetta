@@ -64,14 +64,29 @@ bool Token::expired(std::string_view now) const {
     return now >= value_.expires_at;
 }
 
-bool Token::validates(std::string_view secret, std::string_view now) const {
+bool Token::validates(std::string_view secret, std::string_view now,
+                      bool allow_kdf) const {
     if (value_.revoked || expired(now)) return false;
-    const std::string candidate = hash_token_secret(value_.salt, secret);
-    if (candidate.empty()) return false;  // hashing failed — deny
-    return constant_time_equal(candidate, value_.hash);
+    if (!uses_kdf()) return verify_token_secret(value_.hash, value_.salt, secret);
+    if (!kdf_verifier_.empty()) {
+        // Verified once already: compare against the memory-only verifier, so a
+        // wrong secret never pays for a derivation once the owner has signed in.
+        const std::string candidate = hash_token_secret(value_.salt, secret);
+        if (candidate.empty()) return false;
+        return constant_time_equal(candidate, kdf_verifier_);
+    }
+    if (!allow_kdf) return false;
+    if (!verify_token_secret(value_.hash, value_.salt, secret)) return false;
+    kdf_verifier_ = hash_token_secret(value_.salt, secret);
+    return true;
 }
 
+bool Token::uses_kdf() const { return is_kdf_token_hash(value_.hash); }
+
 void Token::set_value(TokenValue value) {
+    if (value.hash != value_.hash || value.salt != value_.salt) {
+        kdf_verifier_.clear();  // a new secret: the old verifier no longer applies
+    }
     value_ = std::move(value);
     persist_meta();
 }
@@ -100,7 +115,7 @@ const nlohmann::json& token_schema() {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oramasearch.github.io/zetta/schemas/token.schema.json",
   "title": "Token",
-  "description": "A bearer credential (FEAT-9 / #744) that authenticates as a user, stored HASHED at rest — the plaintext secret is shown once at creation and never persisted. The on-disk token.json projection of the replicated `token:<uuid>` CRDT value. Mirrored by zetta::governance::Token in include/zetta/governance/token.hpp and enforced by token_value_from_json() + Node::load_tokens()/reconcile_tokens() — keep them in sync. `hash` = hex SHA-256(salt || secret); the secret itself never appears here or in system.tokens.",
+  "description": "A bearer credential (FEAT-9 / #744) that authenticates as a user, stored HASHED at rest — the plaintext secret is shown once at creation and never persisted. The on-disk token.json projection of the replicated `token:<uuid>` CRDT value. Mirrored by zetta::governance::Token in include/zetta/governance/token.hpp and enforced by token_value_from_json() + Node::load_tokens()/reconcile_tokens() — keep them in sync. `hash` = hex SHA-256(salt || secret), or for the bootstrap owner's operator-chosen secret the PBKDF2 form `pbkdf2-sha256$<iterations>$<hex>` (#769); the secret itself never appears here or in system.tokens.",
   "type": "object",
   "required": ["user", "type", "hash", "salt"],
   "additionalProperties": false,
@@ -119,7 +134,7 @@ const nlohmann::json& token_schema() {
       "enum": ["api", "access"]
     },
     "hash": {
-      "description": "Hex SHA-256(salt || secret) — the at-rest hash of the secret. The plaintext is never stored.",
+      "description": "The at-rest hash of the secret: hex SHA-256(salt || secret) for a generated secret, or `pbkdf2-sha256$<iterations>$<hex>` (PBKDF2-HMAC-SHA256 over the salt) for the bootstrap owner's operator-chosen secret (#769). The plaintext is never stored.",
       "type": "string"
     },
     "salt": {

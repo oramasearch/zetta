@@ -30,7 +30,9 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   through the tombstone — `migrate_to_replication`, which would otherwise
   re-capture a dropped entity from a stale disk projection — asks `knows_key()`.
   `row:` keeps its own `{tbl, deleted:true}` shape, because reconcile has to see
-  that entry to route the delete to a table.
+  that entry to route the delete to a table. Identity keys under an identity
+  root are removed with a **sealed** tombstone instead (`Node::remove_identity`,
+  #1341): the CRDT's tombstone carries no seal, so any member could write one.
 - **Read the replicated catalogue in place, never by copying it** (#1227).
   `ReplicationManager::snapshot()` deep-copies every key under the replication
   mutex; a read path takes `shared_snapshot()` and does a direct `find(<key>)`
@@ -76,17 +78,20 @@ New capability = a new implementation of an existing interface: `StorageEngine`,
 (`FleetSource`, `IdentityHooks`, `NarratorCompletion`, `DatasetResolver`) keeps
 zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
 
-- Exactly two TUs name Corosio (via `zetta::runtime::net`):
-  `src/core/cluster/cluster.cpp` for listener/dialer traffic and
+- Exactly three TUs name Corosio (via `zetta::runtime::net`):
+  `src/core/cluster/cluster.cpp` for listener/dialer traffic,
   `src/core/api/native_http_transport.cpp` for outbound
   client traffic (the native coroutine HTTPS client behind
   `connect::HttpTransport`, #827; it lives in the `zetta-api` target because it
-  also needs Boost.HTTP, which zetta-core must never link). The shared TLS 1.3
+  also needs Boost.HTTP, which zetta-core must never link), and
+  `src/core/api/mysql_protocol.cpp` (also `zetta-api`) for the MySQL connector's
+  TCP/TLS driver (#895) — the MySQL protocol itself is the sans-I/O
+  `connect::MysqlClientSession` in zetta-core and names no socket. The shared TLS 1.3
   context and framed stream live outside zetta-core in `src/transport/` and the
   independent `zetta_transport` target (#1283).
   Within `src/core`, OpenSSL libcrypto is named by exactly two
   TUs — `src/core/cluster/security.cpp` (join-token/CA/cert minting) and
-  `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/constant-time
+  `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/PBKDF2/constant-time
   compare, #744); only `src/core/cluster/replication.cpp` names automerge-cpp.
   Everything else goes through `zetta::runtime` / the public interfaces — never
   `boost::capy`/`boost::corosio`/`openssl/*`.

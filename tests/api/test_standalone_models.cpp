@@ -7,10 +7,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <thread>
@@ -289,6 +291,71 @@ std::string model_fixture(const std::string& name) {
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
+class ScopedImportSetting {
+public:
+    ScopedImportSetting(const char* name, const std::string& value) : name_(name) {
+        if (const char* previous = std::getenv(name)) previous_ = previous;
+        setenv(name, value.c_str(), 1);
+    }
+    ~ScopedImportSetting() {
+        if (previous_) setenv(name_.c_str(), previous_->c_str(), 1);
+        else unsetenv(name_.c_str());
+    }
+private:
+    std::string name_;
+    std::optional<std::string> previous_;
+};
+
+TEST_F(StandaloneModels, ImportLimitsBoundTextAndBase64BeforeImport) {
+    const std::string weights = model_fixture("xgboost_binary.json");
+    const std::string encoded = zetta::detail::base64_encode_bytes(weights);
+    ScopedImportSetting features("ZETTA_MODEL_IMPORT_MAX_FEATURES", "4");
+    for (const std::string field : {"weights", "weights_base64"}) {
+        const std::string& contents = field == "weights" ? weights : encoded;
+        const std::string refused_name = "oversized_" + field;
+        {
+            ScopedImportSetting bytes("ZETTA_MODEL_IMPORT_MAX_BYTES", std::to_string(weights.size() - 1));
+            const auto result = call("register_model", {{"name", refused_name}, {field, contents}});
+            EXPECT_EQ(result.error.code, "not_supported") << result.error.message;
+            EXPECT_NE(result.error.message.find("bytes exceed"), std::string::npos) << result.error.message;
+            EXPECT_TRUE(models_named(refused_name).empty());
+            EXPECT_FALSE(node.find_project(refused_name + " (standalone model)"));
+        }
+        ScopedImportSetting bytes("ZETTA_MODEL_IMPORT_MAX_BYTES", std::to_string(weights.size()));
+        EXPECT_TRUE(call("register_model", {{"name", field}, {field, contents}}).ok);
+    }
+    ScopedImportSetting bytes("ZETTA_MODEL_IMPORT_MAX_BYTES", "1");
+    for (const std::string invalid : {"e30=", "e30", "e30=\n", "e=30", "===="}) {
+        const auto result = call("register_model", {{"name", "invalid"}, {"weights_base64", invalid}});
+        EXPECT_FALSE(result.ok);
+    }
+    const auto oversized = call("register_model", {{"name", "oversized"}, {"weights_base64", "AAAA"}});
+    EXPECT_EQ(oversized.error.code, "not_supported");
+    EXPECT_NE(oversized.error.message.find("bytes exceed"), std::string::npos);
+}
+
+TEST_F(StandaloneModels, ImportLimitsRejectInvalidConfigurationAndExcessiveNames) {
+    const std::string weights = model_fixture("xgboost_binary.json");
+    for (const char* setting : {"ZETTA_MODEL_IMPORT_MAX_FEATURES", "ZETTA_MODEL_IMPORT_MAX_BYTES"}) {
+        for (const std::string invalid : {"", "0", "-1", "+4", "4junk", "18446744073709551616"}) {
+            ScopedImportSetting configured(setting, invalid);
+            const auto result = call("register_model", {{"name", "invalid"}, {"weights", weights}});
+            EXPECT_EQ(result.error.code, "engine_error") << result.error.message;
+            EXPECT_NE(result.error.message.find(setting), std::string::npos);
+        }
+    }
+    ScopedImportSetting bytes("ZETTA_MODEL_IMPORT_MAX_BYTES", std::to_string(weights.size() * 2));
+    ScopedImportSetting features("ZETTA_MODEL_IMPORT_MAX_FEATURES", "3");
+    const auto result = call("register_model", {{"name", "excessive"}, {"weights", weights}});
+    EXPECT_EQ(result.error.code, "not_supported") << result.error.message;
+    const auto renamed = call("register_model", {{"name", "excessive"}, {"weights", weights},
+                                                   {"feature_names", {"a", "b", "c", "d"}}});
+    EXPECT_EQ(renamed.error.code, "not_supported") << renamed.error.message;
+    EXPECT_NE(renamed.error.message.find("/feature_names"), std::string::npos);
+    EXPECT_TRUE(models_named("excessive").empty());
+    EXPECT_FALSE(node.find_project("excessive (standalone model)"));
+}
+
 // lake#681: ONNX, XGBoost and LightGBM files are brought like the engine's own, and any
 // model's weights are downloaded, as kept or as ONNX.
 TEST_F(StandaloneModels, BringCommonFormatsAndDownloadWeights) {
@@ -370,6 +437,41 @@ TEST_F(StandaloneModels, BringCommonFormatsAndDownloadWeights) {
         EXPECT_DOUBLE_EQ(reread->model.predict_proba(row), original->predict_proba(row));
     }
     EXPECT_EQ(call("export_model", {{"model_id", "no-such-model"}}).error.code, "not_found");
+}
+
+// zetta#1390 (LSR-070): a brought file whose splits read past its own final
+// feature list is refused before anything can score or explain it, and leaves
+// nothing behind.
+TEST_F(StandaloneModels, AModelWhoseSplitsReadPastItsFeaturesIsRefused) {
+    // The engine's own weights format: two features, a split on feature 9.
+    const Json crafted = {
+        {"objective", "binary_logistic"},
+        {"base_score", 0.0},
+        {"learning_rate", 0.3},
+        {"feature_names", {"support_tickets", "tenure_months"}},
+        {"trees",
+         {{{"nodes",
+            {{{"feature", 9}, {"threshold", 0.5}, {"left", 1}, {"right", 2}, {"value", 0.0},
+              {"cover", 2.0}},
+             {{"feature", -1}, {"threshold", 0.0}, {"left", -1}, {"right", -1}, {"value", -1.0},
+              {"cover", 1.0}},
+             {{"feature", -1}, {"threshold", 0.0}, {"left", -1}, {"right", -1}, {"value", 1.0},
+              {"cover", 1.0}}}}}}}};
+    const ApiResult zetta_file =
+        call("register_model", {{"name", "crafted"}, {"weights", crafted.dump()}});
+    EXPECT_EQ(zetta_file.error.code, "not_supported") << zetta_file.error.message;
+
+    // XGBoost: the file names four features and splits on all four, declares one,
+    // and the caller names one.
+    Json xgboost = Json::parse(model_fixture("xgboost_binary.json"));
+    xgboost["learner"]["learner_model_param"]["num_feature"] = "1";
+    const ApiResult shortened = call("register_model", {{"name", "crafted"},
+                                                        {"weights", xgboost.dump()},
+                                                        {"feature_names", {"tenure_months"}}});
+    EXPECT_EQ(shortened.error.code, "not_supported") << shortened.error.message;
+
+    EXPECT_TRUE(models_named("crafted").empty());
+    EXPECT_FALSE(node.find_project("crafted (standalone model)"));
 }
 
 TEST_F(StandaloneModels, MoveIntoAProjectShowsItWithItsVersions) {

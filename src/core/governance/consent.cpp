@@ -5,6 +5,7 @@
 
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/governance/credential_redaction.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
 
@@ -36,7 +37,11 @@ nlohmann::json to_json(const ConsentChallenge& challenge) {
     nlohmann::json value;
     value["id"] = challenge.id;
     value["capability"] = challenge.capability;
-    value["input"] = challenge.input;
+    // The approver sees the exact payload — except a credential given inline
+    // (a connector's `token`), which the challenge holds in memory to execute
+    // but never renders: the listing reaches a different principal, and the
+    // refusal is returned and logged like any error (#74).
+    value["input"] = redact_credentials(challenge.input);
     value["action"] = {{"summary", challenge.action.summary},
                        {"reads", challenge.action.reads},
                        {"runs", challenge.action.runs}};
@@ -51,7 +56,9 @@ nlohmann::json to_json(const ConsentChallenge& challenge) {
         std::string(to_string(challenge.status_at(zetta::util::now_iso8601())));
     if (!challenge.decided_by.empty()) value["decided_by"] = challenge.decided_by;
     if (!challenge.decided_at.empty()) value["decided_at"] = challenge.decided_at;
-    if (!challenge.result.is_null()) value["result"] = challenge.result;
+    if (!challenge.result.is_null()) {
+        value["result"] = redact_credentials(challenge.result);
+    }
     if (!challenge.detail.empty()) value["detail"] = challenge.detail;
     return value;
 }
@@ -151,7 +158,8 @@ ConsentLedger::ConsentLedger(long long time_to_live_seconds,
 
 std::shared_ptr<const ConsentChallenge> ConsentLedger::create(
     std::string capability, nlohmann::json input, ConsentAction action,
-    std::string requested_by, std::string requested_principal) {
+    std::string requested_by, std::string requested_principal,
+    bool requested_is_user) {
     auto challenge = std::make_shared<ConsentChallenge>();
     challenge->id = zetta::util::new_uuid();
     challenge->capability = std::move(capability);
@@ -159,6 +167,7 @@ std::shared_ptr<const ConsentChallenge> ConsentLedger::create(
     challenge->action = std::move(action);
     challenge->requested_by = std::move(requested_by);
     challenge->requested_principal = std::move(requested_principal);
+    challenge->requested_is_user = requested_is_user;
     challenge->created_at = zetta::util::now_iso8601();
     // iso8601_seconds_ago with a negative offset lands the stamp TTL seconds
     // in the future — the expiry cutoff, compared lexicographically.

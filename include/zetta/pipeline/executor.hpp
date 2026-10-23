@@ -8,6 +8,7 @@
 
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 
 // The ExecutionGraph runner (an atomic slice of FEAT-5). Orchestrate execution of
 // an ExecutionGraph step-by-step on a node, producing a Run with status, logs,
@@ -23,8 +24,9 @@
 // Altitude: this slice is **orchestration**, not heavy compute. A step does not
 // (yet) train a real model or build a real index; the DefaultStepExecutor derives
 // a faithful, schema-valid Run from the graph's structure. Real per-step compute
-// plugs in behind the StepExecutor seam without touching the orchestrator — the
-// same shape as the gate's Check seam and the storage engine's StorageEngine.
+// plugs in behind the StepExecutor interface without touching the orchestrator —
+// the same shape as the gate's Check interface and the storage engine's
+// StorageEngine.
 namespace zetta { class Node; }
 
 namespace zetta::pipeline {
@@ -43,7 +45,7 @@ struct StepOutcome {
 };
 
 // The pluggable unit that executes one graph step (mirrors the gate's Check
-// seam). A StepExecutor is a pure function of the step it is handed; the default
+// interface). A StepExecutor is a pure function of the step it is handed; the default
 // (DefaultStepExecutor) interprets the connect->clean->model->index->serve->act
 // taxonomy. Concrete compute (real training, real indexing) implements this
 // interface and is injected into a GraphExecutor without changing the walk.
@@ -131,8 +133,21 @@ public:
     // The step executor this orchestrator runs each step with.
     const StepExecutor& step_executor() const { return *step_executor_; }
 
+    // Run every step as `principal` (#843, step_authority.hpp). Before each step
+    // executes, the principal must hold the right the step exercises; a denied
+    // step is not run, the run ends Failed (fail-fast) with the denial logged, and
+    // the decision (granted or denied) is a `data_access` audit event. Without a
+    // principal, or with the local one, steps run unchecked as before: the
+    // trusted local session.
+    GraphExecutor& run_as(RunPrincipal principal) {
+        principal_ = std::move(principal);
+        return *this;
+    }
+    const RunPrincipal& principal() const { return principal_; }
+
 private:
     std::shared_ptr<StepExecutor> step_executor_;
+    RunPrincipal principal_;  // empty = the trusted local session
 };
 
 // Compute a dependency (topological) order over a graph's steps: every step

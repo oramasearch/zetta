@@ -12,18 +12,26 @@
 #include <fstream>
 #include <sstream>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <map>
+#include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
+
+#include <sys/socket.h>
 
 #include <boost/beast2/http_worker.hpp>
 #include <boost/capy/error.hpp>
 #include <boost/capy/io/push_to.hpp>
+#include <boost/capy/when_any.hpp>
 #include <boost/capy/write.hpp>
 #include <boost/corosio/io_context.hpp>
 #include <boost/corosio/tcp_acceptor.hpp>
 #include <boost/corosio/socket_option.hpp>
+#include <boost/corosio/tcp_socket.hpp>
+#include <boost/corosio/wait_type.hpp>
 #include <boost/http/field.hpp>
 #include <boost/http/json/json_sink.hpp>
 #include <boost/http/request_parser.hpp>
@@ -31,6 +39,7 @@
 #include <boost/http/server/cors.hpp>
 #include <boost/http/server/router.hpp>
 #include <boost/json.hpp>
+#include <boost/url/parse.hpp>
 
 #include "zetta_web_font_mono_400.hpp"
 #include "zetta_web_font_sans_400.hpp"
@@ -47,7 +56,10 @@
 #include "zetta/dataset/dataset_generator_factory.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/connect/connection_store.hpp"
+#include "zetta/governance/credential_redaction.hpp"
 #include "zetta/api/serving.hpp"
+#include "zetta/pipeline/project_graph.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
 #include "zetta/agent/agent_store.hpp"
@@ -56,6 +68,8 @@
 #include "zetta/data/object_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/scope.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
@@ -547,6 +561,43 @@ bool request_is_https(const boost::http::route_params& route) {
            std::string_view(route.req.at("x-forwarded-proto")) == "https";
 }
 
+// Bind browser credentials to this request's exact scheme and authority. The
+// ingress must preserve Host and overwrite X-Forwarded-Proto when terminating TLS.
+bool trusted_browser_origin(const boost::http::route_params& route, bool allow_read_metadata = false) {
+    namespace http = boost::http;
+    if (route.req.count(http::field::host) != 1) return false;
+    if (route.req.count("x-forwarded-proto") > 1) return false;
+    if (route.req.count("x-forwarded-proto") == 1) {
+        const std::string_view proto = route.req.at("x-forwarded-proto");
+        if (proto != "http" && proto != "https") return false;
+    }
+    const std::string expected = std::string(request_is_https(route) ? "https://" : "http://") +
+                                 std::string(route.req.at(http::field::host));
+    const auto target = boost::urls::parse_uri(expected);
+    if (!target || !target->has_authority() || target->encoded_host().empty() ||
+        target->has_userinfo() || !target->encoded_path().empty() || target->has_query() ||
+        target->has_fragment()) return false;
+
+    // A sibling origin is same-site, but it must never exercise our cookies.
+    if (route.req.count("sec-fetch-site") > 1) return false;
+    const std::string_view site = route.req.count("sec-fetch-site") == 1
+                                      ? std::string_view(route.req.at("sec-fetch-site")) : std::string_view{};
+    if (route.req.count("sec-fetch-site") == 1 && site != "same-origin" && site != "none") return false;
+    if (route.req.count(http::field::origin) != 0) {
+        return route.req.count(http::field::origin) == 1 &&
+               std::string_view(route.req.at(http::field::origin)) == expected;
+    }
+    const bool read = route.req.method() == http::method::get ||
+                      route.req.method() == http::method::head;
+    if (!allow_read_metadata || !read) return false;
+    if (site == "same-origin" || site == "none") return true;
+    if (route.req.count(http::field::referer) != 1) return false;
+    const auto referer = boost::urls::parse_uri(route.req.at(http::field::referer));
+    return referer && referer->has_authority() && !referer->has_userinfo() &&
+           !referer->has_fragment() &&
+           std::string(referer->scheme()) + "://" + std::string(referer->encoded_authority()) == expected;
+}
+
 // A capy WriteSink that collects a request body into a std::string — the form-urlencoded bodies the
 // server-rendered login + Console POSTs send (json_sink parses JSON, which form bodies are not).
 struct StringBodySink {
@@ -602,6 +653,22 @@ std::string transport_error_body(std::string_view code,
          {{"code", code}, {"message", message}, {"path", ""}}}}.dump();
 }
 
+boost::http::route_task refuse_browser_origin(boost::http::route_params& route) {
+    namespace http = boost::http;
+    route.status(http::status::forbidden);
+    // The body was deliberately left unread. End the connection instead of
+    // letting its remaining bytes reach another request on the worker.
+    route.res.set_keep_alive(false);
+    route.res.set(http::field::content_type, "application/json");
+    route.res.set(http::field::cache_control, "no-store");
+    const std::string body = transport_error_body(
+        "forbidden", "same-origin browser request required");
+    stamp_response_headers(route, body);
+    auto [send_error] = co_await route.send(body);
+    if (send_error) co_return http::route_error(send_error);
+    co_return http::route_done;
+}
+
 // rest_status's integer mapped onto the wire enum.
 boost::http::status http_status_of(int status_code) {
     switch (status_code) {
@@ -610,12 +677,41 @@ boost::http::status http_status_of(int status_code) {
         case 403: return boost::http::status::forbidden;
         case 404: return boost::http::status::not_found;
         case 409: return boost::http::status::conflict;
+        case 413: return boost::http::status::payload_too_large;
         case 416: return boost::http::status::range_not_satisfiable;
         case 422: return boost::http::status::unprocessable_entity;
+        case 429: return boost::http::status::too_many_requests;
         case 503: return boost::http::status::service_unavailable;
         case 507: return boost::http::status::insufficient_storage;
         default: return boost::http::status::internal_server_error;
     }
+}
+
+// Completes without error once the client has closed or reset its end of the
+// connection, and consumes no byte: a long poll races it so a client that left
+// stops costing a session and a final governed read (#1174). Bytes the client
+// sent ahead (a pipelined request) are not a close: the watch then ends with
+// an error, which never wins a when_any race, so the poll waits on as before.
+runtime::io_task<> client_left(boost::corosio::tcp_socket& socket) {
+    for (;;) {
+        auto [error] = co_await socket.wait(boost::corosio::wait_type::read);
+        if (error) co_return runtime::io_result<>{error};
+        char byte = 0;
+        const auto peeked =
+            ::recv(socket.native_handle(), &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (peeked == 0) co_return runtime::io_result<>{};
+        if (peeked > 0) {
+            co_return runtime::io_result<>{
+                std::make_error_code(std::errc::operation_in_progress)};
+        }
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+        co_return runtime::io_result<>{};  // reset or failed: the client is gone
+    }
+}
+
+// A long poll's own deadline as a when_any participant.
+runtime::io_task<> poll_deadline(std::chrono::milliseconds wait) {
+    co_return co_await runtime::delay(wait);
 }
 
 }  // namespace
@@ -654,6 +750,9 @@ struct ApiServer::Impl {
     // no cap but the bucket's quota). Touched only on the IO thread, and at
     // teardown after it has stopped.
     std::map<const boost::http::route_params*, boost::http::request_parser*> parsers;
+    // Each connection's socket, by the same key, so a long poll can notice its
+    // client leave (#1174). Touched only on the IO thread, like `parsers`.
+    std::map<const boost::http::route_params*, boost::corosio::tcp_socket*> sockets;
 
     struct Connection : boost::beast2::http_worker {
         Impl& owner;
@@ -671,8 +770,12 @@ struct ApiServer::Impl {
             rp.res_body = boost::capy::any_buffer_sink(serializer.sink_for(socket));
             stream = boost::capy::any_read_stream(&socket);
             owner.parsers[&rp] = &parser;
+            owner.sockets[&rp] = &socket;
         }
-        ~Connection() { owner.parsers.erase(&rp); }
+        ~Connection() {
+            owner.parsers.erase(&rp);
+            owner.sockets.erase(&rp);
+        }
     };
 
     boost::corosio::io_context io_context;
@@ -966,17 +1069,13 @@ struct ApiServer::Impl {
         return jsonrpc_error(id, -32601, "unknown method '" + method + "'");
     }
 
-    // Serve one llms.txt page (#645): `page` is "index" (/llms.txt), "full"
-    // (/llms-full.txt), or a topic name (/llms/<topic>.txt). Auth is enforced
-    // at the router authorization filter (#745); rendering touches the Node, so it is
-    // marshaled onto the owning loop via the bridge, wrapped in a span (every
-    // operation is observable). Shared by the three GET routes in start().
+    // Public discovery docs (#645, #1402): index, full, or one topic. Renderers
+    // accept only the registry, so every route is independent of workspace
+    // inventory. Marshal for registry access and the owner-thread span recorder.
     boost::http::route_task serve_llms(boost::http::route_params& route,
                                        std::string page) {
         namespace http = boost::http;
 
-        // Auth is enforced once, up front, by the router authorization filter (#745) —
-        // this route only runs for an already-authorized request.
         std::string traceparent;
         if (route.req.count("traceparent") != 0) {
             traceparent = std::string(route.req.at("traceparent"));
@@ -992,12 +1091,12 @@ struct ApiServer::Impl {
                 &node.span_recorder(), trace, "llms:" + page);
             span.set_attribute("page", page);
             if (page == "index") {
-                body = render_llms_index(node, capability_registry);
+                body = render_llms_index(capability_registry);
             } else if (page == "full") {
-                body = render_llms_full(node, capability_registry);
+                body = render_llms_full(capability_registry);
             } else {
                 auto rendered =
-                    render_llms_topic(node, capability_registry, page);
+                    render_llms_topic(capability_registry, page);
                 found = rendered.has_value();
                 if (found) body = std::move(*rendered);
             }
@@ -1053,6 +1152,29 @@ struct ApiServer::Impl {
                     query.emplace_back(parameter.key, parameter.value);
                 }
                 input = rest_input_from_query(*capability, query);
+                if (capability->name == "sql" && bearer_of(route).empty()) {
+                    // Classify the entire parsed batch before executing any of
+                    // it. A SELECT followed by DDL must not partially execute.
+                    bool read_only = false;
+                    try {
+                        const auto statement = input.find("statement");
+                        if (statement != input.end() && statement->is_string()) {
+                            const auto parsed = zetta::query::PostgresDialect{}.parse(
+                                statement->get_ref<const std::string&>());
+                            read_only = parsed.ok() && !parsed.statements.empty() &&
+                                std::ranges::all_of(parsed.statements, [](const auto& sql) {
+                                    return std::holds_alternative<zetta::query::SelectStmt>(sql);
+                                });
+                        }
+                    } catch (...) {
+                        // Parser failures cannot grant permission to execute.
+                    }
+                    if (!read_only) {
+                        status = http::status::forbidden;
+                        response_body = transport_error_body(
+                            "forbidden", "cookie-authenticated GET SQL requires SELECT; use POST for writes");
+                    }
+                }
             } else {
                 http::json_sink body_sink;
                 auto [read_error, bytes_read] =
@@ -1139,6 +1261,24 @@ struct ApiServer::Impl {
         poll_waiter_count.store(poll_events.size(), std::memory_order_relaxed);
     }
 
+    // Suspend a long poll until it is woken: by its event (a publish, a topic
+    // close, or stop()), by its own deadline, or by its client closing the
+    // connection. Answers false only when the client has left, so the caller
+    // makes no further governed read and sends nothing (#1174). Holds no thread.
+    runtime::task<bool> await_poll(std::shared_ptr<runtime::async_event> event,
+                                   std::chrono::milliseconds wait,
+                                   const boost::http::route_params& route) {
+        if (wait.count() <= 0) co_return true;
+        std::vector<runtime::io_task<>> wakes;
+        wakes.push_back(event->wait());
+        wakes.push_back(poll_deadline(wait));
+        if (const auto found = sockets.find(&route); found != sockets.end()) {
+            wakes.push_back(client_left(*found->second));
+        }
+        const auto woken = co_await boost::capy::when_any(std::move(wakes));
+        co_return !(woken.index() == 1 && std::get<1>(woken) == 2);
+    }
+
     // Make one capability call from an already-parsed input and answer it — the
     // REST rendering's second half, shared by /v1/<name> and the object
     // capability's bucket-route aliases (#1005).
@@ -1164,8 +1304,10 @@ struct ApiServer::Impl {
                 // One wait, then one final call (#1076).
                 if (awaitable.should_wait(call_result) && wait_for.count() > 0 &&
                     is_running.load()) {
-                    [[maybe_unused]] auto wait_result =
-                        co_await zetta::runtime::timeout(wait_event->wait(), wait_for);
+                    if (!co_await await_poll(wait_event, wait_for, route)) {
+                        forget_poll_event(wait_event);
+                        co_return http::route_close;  // the client left (#1174)
+                    }
                     call_result = co_await call_capability(capability, input, identity, trace, {});
                 }
             } else {
@@ -1176,8 +1318,10 @@ struct ApiServer::Impl {
                         deadline - std::chrono::steady_clock::now());
                     if (remaining.count() <= 0) break;
                     const auto wait = std::min(remaining, awaitable.retry_within(call_result));
-                    [[maybe_unused]] auto wait_result =
-                        co_await zetta::runtime::timeout(wait_event->wait(), wait);
+                    if (!co_await await_poll(wait_event, wait, route)) {
+                        forget_poll_event(wait_event);
+                        co_return http::route_close;  // the client left (#1174)
+                    }
                     forget_poll_event(wait_event);
                     wait_event = new_poll_event();
                     call_result =
@@ -1763,15 +1907,20 @@ struct ApiServer::Impl {
 
         std::string body;
         bool found = true;
+        const RequestIdentity identity = identity_of(route);
         co_await bridge.run_on_owner([&] {
             zetta::observability::ScopedSpan span(
                 &node.span_recorder(), trace,
                 name.empty() ? "specs:index" : "specs:" + name);
             span.set_attribute("spec", name.empty() ? "index" : name);
+            // Only the capabilities the caller may call (#766), the rule
+            // tools/list applies.
+            const CapabilityVisible visible =
+                callable_by(node, identity.acting_key, identity.is_user);
             if (name.empty()) {
-                body = spec_index(capability_registry).dump(2);
+                body = spec_index(capability_registry, visible).dump(2);
             } else {
-                const auto spec = find_spec(capability_registry, name);
+                const auto spec = find_spec(capability_registry, name, visible);
                 found = spec.has_value();
                 // The raw document itself — GET-able by codegen as-is; the
                 // wrapped { name, kind, schema } shape is get_spec's.
@@ -1868,6 +2017,120 @@ struct ApiServer::Impl {
             });
             status = http_status_of(rest_status(serve_result));
             response_body = rest_envelope(serve_result).dump();
+        }
+
+        route.status(status);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, response_body);
+        auto [send_error] = co_await route.send(response_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // Serve a published pipeline (zetta#1289, docs/api/serving.md): POST
+    // /v1/pipelines/{name}/run runs its pinned version with the JSON body as the
+    // declared input; GET /v1/pipelines/{name}/runs/{run_id} answers a run it
+    // served to the same caller. Governance, limits, audit and the run itself are
+    // the HTTP-free serving layer on the owning loop. The synchronous mode is
+    // this route's: after the run starts it waits, on a timer that holds no
+    // thread, for the run to finish within the pipeline's sync_timeout_ms
+    // (`?wait=false` skips it), then answers its outputs (200), or its id and
+    // status endpoint while it still runs (202).
+    boost::http::route_task serve_pipeline_endpoint(boost::http::route_params& route,
+                                                    bool status_read) {
+        namespace http = boost::http;
+        const RequestIdentity identity = identity_of(route);
+        std::string target;
+        std::string run_id;
+        for (const auto& [parameter, value] : route.params) {
+            if (parameter == "name") target = value;
+            if (parameter == "run_id") run_id = value;
+        }
+        bool wait = true;
+        for (const auto& parameter : route.url.params()) {
+            if (parameter.key == "wait" && parameter.value == "false") wait = false;
+        }
+
+        std::string response_body;
+        http::status status = http::status::ok;
+        nlohmann::json input = nlohmann::json::object();
+        if (status_read) {
+            input = {{"run_id", run_id}};
+        } else {
+            http::json_sink body_sink;
+            auto [read_error, bytes_read] =
+                co_await boost::capy::push_to(route.req_body, body_sink);
+            if (read_error) {
+                status = http::status::bad_request;
+                response_body = transport_error_body(
+                    "invalid_input", "could not read the request body as JSON");
+            } else if (bytes_read > 0) {
+                input = to_nlohmann(body_sink.release());
+                if (input.is_discarded()) {
+                    status = http::status::bad_request;
+                    response_body = transport_error_body(
+                        "invalid_input", "the request body is not valid JSON");
+                }
+            }
+        }
+
+        if (response_body.empty()) {
+            std::string traceparent;
+            if (route.req.count("traceparent") != 0) {
+                traceparent = std::string(route.req.at("traceparent"));
+            }
+            const auto trace = zetta::observability::parse_traceparent(traceparent)
+                                   .value_or(zetta::observability::make_root_trace());
+            ServeRequest request{target, input, identity.acting_key, trace,
+                                 &node.span_recorder()};
+            request.acting_is_user = identity.is_user;
+            request.registry = &capability_registry;
+            request.background = &background;
+            request.cluster = cluster;
+            ApiResult result;
+            std::uint32_t sync_timeout_ms = 0;
+            co_await bridge.run_on_owner([&] {
+                result = status_read ? serve_pipeline_run_status(node, request)
+                                     : serve_pipeline_run(node, request);
+                PublishedPipeline published;
+                if (!status_read && result.ok &&
+                    resolve_published_pipeline(node, target, published).ok) {
+                    sync_timeout_ms = published.graph->exposure().sync_timeout_ms;
+                }
+            });
+            if (!status_read && result.ok && wait && !pipeline_run_finished(result)) {
+                const std::string started = result.value.value("run_id", std::string{});
+                const auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(sync_timeout_ms);
+                bool finished = false;
+                while (!finished && std::chrono::steady_clock::now() < deadline) {
+                    [[maybe_unused]] auto waited =
+                        co_await runtime::delay(std::chrono::milliseconds(50));
+                    co_await bridge.run_on_owner([&] {
+                        const auto run = node.find_run(started);
+                        finished = !run ||
+                                   run->status() == zetta::pipeline::RunStatus::Succeeded ||
+                                   run->status() == zetta::pipeline::RunStatus::Failed;
+                    });
+                }
+                if (finished) {
+                    co_await bridge.run_on_owner([&] {
+                        ServeRequest read = request;
+                        read.input = {{"run_id", started}};
+                        ApiResult answered = serve_pipeline_run_status(node, read);
+                        if (answered.ok) {
+                            answered.value["status_endpoint"] =
+                                result.value.value("status_endpoint", std::string{});
+                            answered.value["project"] = result.value.value("project", std::string{});
+                            answered.value["name"] = result.value.value("name", std::string{});
+                            result = std::move(answered);
+                        }
+                    });
+                }
+            }
+            status = http_status_of(rest_status(result));
+            if (result.ok && !pipeline_run_finished(result)) status = http::status::accepted;
+            response_body = rest_envelope(result).dump();
         }
 
         route.status(status);
@@ -1977,11 +2240,10 @@ struct ApiServer::Impl {
 
     // Whether a schema property holds a credential — rendered as a masked input
     // and never echoed back into the form. Matched on the property name because
-    // that is what the schema gives us; the connector's `token` is the case
-    // that matters today.
+    // that is what the schema gives us — by the one rule every surface shares
+    // (governance/credential_redaction.hpp, #74).
     static bool is_secret_property(const std::string& key) {
-        return key == "token" || key == "secret" || key == "password" ||
-               key == "api_key";
+        return zetta::governance::is_credential_field(key);
     }
 
     // One scalar control. `name` is the form field name (which for a nested
@@ -2197,6 +2459,110 @@ struct ApiServer::Impl {
         return "<div class=\"toolbar\">" + buttons + "</div>" + dialogs;
     }
 
+    // The web console's consent approval surface (#999): every PENDING challenge
+    // as a card naming exactly what would be read and run, with Approve / Deny
+    // forms that POST /run as `approve_consent` / `deny_consent`. Nothing here
+    // decides anything itself: the form goes through Registry::call like MCP and
+    // REST, so the engine authorizes the signed-in user (the
+    // `orchestration:approve_consent` right, from `cloud:manage`), refuses an
+    // approval from the requester (decide_consent's different-principal rule)
+    // and audits the decision as `consent_decided`. The list is read through
+    // `list_consent_requests` under the same identity, so a viewer who may not
+    // read the ledger sees the engine's refusal, never the rows.
+    std::string render_consent_requests(ApiContext& context) {
+        std::string out;
+        if (!context.node.config().enforce_consent) {
+            out += "<div class=\"bannerrow warnb\"><span class=\"bico\">" +
+                   web_ui_icon("governance") +
+                   "</span><span class=\"bbody\"><b>Consent gating is off on this "
+                   "node</b><span>Cloud-touching calls run without approval and park "
+                   "nothing here; each one is still audited as consent_bypassed. "
+                   "Start the node with --governance (or ZETTA_GOVERNANCE=1) "
+                   "to require an approval.</span></span></div>";
+        }
+        const ApiResult listed = capability_registry.call(
+            "list_consent_requests", nlohmann::json::object(), context);
+        if (!listed.ok) {
+            return out + web_ui_panel("Pending approvals", "",
+                                      "<div class=\"err-box\">" +
+                                          web_ui_escape(listed.error.code) + ": " +
+                                          web_ui_escape(listed.error.message) + "</div>");
+        }
+        const auto text = [](const nlohmann::json& object, const char* key) {
+            const auto found = object.find(key);
+            return found != object.end() && found->is_string() ? found->get<std::string>()
+                                                                : std::string{};
+        };
+        const std::string return_to = "/?view=governance&amp;tab=consent";
+        std::string cards;
+        std::size_t pending = 0;
+        for (const auto& challenge :
+             listed.value.value("consent_requests", nlohmann::json::array())) {
+            if (!challenge.is_object() || text(challenge, "status") != "pending") continue;
+            ++pending;
+            const std::string id = text(challenge, "id");
+            const std::string requested_by = text(challenge, "requested_by");
+            const nlohmann::json action = challenge.value("action", nlohmann::json::object());
+            std::string card = "<div class=\"consentcard\" data-challenge=\"" +
+                               web_ui_escape(id) + "\"><div class=\"consenthd\">"
+                               "<span class=\"pill warn\">Approval required</span>"
+                               "<span class=\"mono\">" +
+                               web_ui_escape(text(challenge, "capability")) +
+                               "</span></div><p>" + web_ui_escape(text(action, "summary")) +
+                               "</p><div class=\"kvs\"><div class=\"kv\"><span>Requested by"
+                               "</span><b class=\"mono\">" + web_ui_escape(requested_by) +
+                               "</b></div><div class=\"kv\"><span>Expires</span><b "
+                               "class=\"mono\">" + web_ui_escape(text(challenge, "expires_at")) +
+                               "</b></div><div class=\"kv\"><span>Challenge</span><b "
+                               "class=\"mono\">" + web_ui_escape(id) + "</b></div></div>";
+            const auto list = [&](const char* key, const char* label) {
+                const auto found = action.find(key);
+                if (found == action.end() || !found->is_array() || found->empty()) return;
+                card += "<div class=\"eyebrow\">" + std::string(label) + "</div><ul class=\"mono\">";
+                for (const auto& item : *found)
+                    if (item.is_string())
+                        card += "<li>" + web_ui_escape(item.get<std::string>()) + "</li>";
+                card += "</ul>";
+            };
+            list("reads", "May read");
+            list("runs", "Would run");
+            const std::string hidden =
+                "<input type=\"hidden\" name=\"challenge_id\" value=\"" + web_ui_escape(id) +
+                "\"><input type=\"hidden\" name=\"_return\" value=\"" + return_to + "\">";
+            card += "<div class=\"consentact\">";
+            // The requester can never approve its own action, so it is not
+            // offered one; the engine refuses it anyway if posted by hand.
+            if (requested_by == context.acting_key) {
+                card += "<span class=\"q\">You requested this; a different approver must "
+                        "approve it. You can withdraw it.</span>";
+            } else {
+                card += "<form method=\"post\" action=\"/run\" class=\"inline\">"
+                        "<input type=\"hidden\" name=\"cap\" value=\"approve_consent\">" +
+                        hidden +
+                        "<button class=\"btn btn-primary small\">Approve and run once"
+                        "</button></form>";
+            }
+            card += "<form method=\"post\" action=\"/run\" class=\"inline\">"
+                    "<input type=\"hidden\" name=\"cap\" value=\"deny_consent\">" +
+                    hidden +
+                    "<input type=\"text\" name=\"reason\" placeholder=\"Reason (optional)\" "
+                    "aria-label=\"Reason\"><button class=\"btn small\">" +
+                    std::string(requested_by == context.acting_key ? "Withdraw" : "Deny") +
+                    "</button></form></div></div>";
+            cards += card;
+        }
+        if (pending == 0) {
+            cards = "<div class=\"empty\">No pending consent requests. A cloud-touching call "
+                    "parks a challenge here for a different approver to decide; approvals "
+                    "are per-action and never remembered.</div>";
+        }
+        return out + web_ui_panel("Pending approvals",
+                                  std::to_string(pending) +
+                                      " waiting \xC2\xB7 approval needs cloud:manage and a "
+                                      "different user than the requester",
+                                  cards);
+    }
+
     // A read table with server-side pagination — run the query, slice a 50-row page, add prev/next
     // links. Each table on a view uses a distinct query key so several can page independently.
     std::string render_paged_table(ApiContext& context, const std::string& statement,
@@ -2231,8 +2597,7 @@ struct ApiServer::Impl {
     }
 
     // A plain SQL identifier (letters/digits/underscore). Gates db/table names before they
-    // are interpolated into SQL — no injection, and it keeps hostile syntax away from the
-    // crash-prone parser (#819).
+    // are interpolated into SQL — no injection.
     static bool safe_ident(const std::string& s) {
         if (s.empty() || s.size() > 128) return false;
         for (char c : s)
@@ -2378,7 +2743,7 @@ struct ApiServer::Impl {
             "<div class=\"filebar\"><input type=\"file\" id=\"blobfile\">"
             "<button class=\"btn btn-primary\" id=\"blobup\">Upload</button>"
             "<span id=\"blobmsg\" class=\"actionsub\"></span></div><div class=\"filelist\">" +
-            list + "</div><script>(function(){var db=" + nlohmann::json(db).dump() +
+            list + "</div><script>(function(){var db=" + web_ui_script_json(db) +
             ",f=document.getElementById('blobfile'),up=document.getElementById('blobup'),"
             "msg=document.getElementById('blobmsg');"
             "up.onclick=async function(){var file=f.files[0];if(!file){msg.textContent='choose a "
@@ -2797,7 +3162,7 @@ struct ApiServer::Impl {
             "from a step's right dot onto another to connect \xC2\xB7 click a link to remove it "
             "\xC2\xB7 \xC3\x97 deletes a step</div>"
             "<div id=\"ge-toast\" class=\"getoast\"></div>"
-            "<script id=\"ge-data\" type=\"application/json\">" + data.dump() + "</script>"
+            "<script id=\"ge-data\" type=\"application/json\">" + web_ui_script_json(data) + "</script>"
             "<script>" + std::string(kGraphEditorJs) + "</script>";
         return web_ui_panel("Pipeline editor",
                             "Technical view \xC2\xB7 the Pipeline as its raw execution graph \xC2\xB7 "
@@ -3246,17 +3611,18 @@ struct ApiServer::Impl {
                 {"create_agent", "update_agent", "delete_agent"}, table);
         } else if (view == "chat") {
             out += web_ui_page_hero("Developer", "Chat",
-                "Talk to a served agent, or have it build and run a real Pipeline from your ask.", "");
-            // Talk to a selected agent (#849), or have it build + run a real graph (#872). One
+                "Talk to a served agent, or have it build a real Pipeline from your ask.", "");
+            // Talk to a selected agent (#849), or have it build a real graph (#872). One
             // form, two submit buttons: the clicked button's name=cap picks the capability —
-            // "Send" -> chat (reply only), "Build & run" -> agent_run (the agent recognizes the
-            // ask, the engine compiles a graph from it, and runs it). POSTed to /run WITHOUT a
-            // _return, so serve_web_run renders the result inline. The turn blocks for seconds
-            // (model load + generation, then the run) — fine for a request/response page.
+            // "Send" -> chat (reply only), "Build plan" -> agent_run (the agent recognizes the
+            // ask, the engine compiles a graph from it and stores it proposed; nothing runs
+            // until it is approved, #913). POSTed to /run WITHOUT a _return, so serve_web_run
+            // renders the result inline. The turn blocks for seconds (model load +
+            // generation) — fine for a request/response page.
             out += "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" +
                    web_ui_icon("models") +
                    "</span><h2>Chat</h2><span class=\"psub\">talk to an agent \xC2\xB7 or have it "
-                   "build + run a real pipeline from your ask</span></div>"
+                   "build a real pipeline from your ask</span></div>"
                    "<form method=\"post\" action=\"/run\">"
                    "<div class=\"fgrid\"><div><label>agent</label><select name=\"agent\">" +
                    agent_options(context) +
@@ -3264,8 +3630,8 @@ struct ApiServer::Impl {
                    "<textarea name=\"message\" rows=\"3\" placeholder=\"e.g. predict which "
                    "customers are about to churn, with calibrated scores + explanations\"></textarea></div></div>"
                    "<div class=\"dlgact\"><button class=\"btn\" name=\"cap\" value=\"chat\">Send</button>"
-                   "<button class=\"btn btn-primary\" name=\"cap\" value=\"agent_run\">Build &amp; "
-                   "run</button></div>"
+                   "<button class=\"btn btn-primary\" name=\"cap\" value=\"agent_run\">Build "
+                   "plan</button></div>"
                    "</form></section>";
         } else if (view == "datagen") {
             out += web_ui_page_hero("Developer", "Data generators",
@@ -3372,7 +3738,9 @@ struct ApiServer::Impl {
             out += "<div class=\"segtabs\">" + gtab("users", "Users and roles") +
                    gtab("tokens", "Tokens") + gtab("consent", "Consent requests") +
                    gtab("audit", "Audit") + "</div>";
-            out += render_action_bar(context, view, {"approve_consent", "deny_consent", "submit_feedback"});
+            // Approve / Deny live on each pending challenge (the Consent tab), not
+            // as free-standing dialogs that ask for a challenge id (#999).
+            out += render_action_bar(context, view, {"submit_feedback"});
             if (tab == "users") {
                 out += web_ui_panel(
                     "Users",
@@ -3396,8 +3764,9 @@ struct ApiServer::Impl {
                     "as hashes; this view carries no secret material",
                     ptable("SELECT * FROM system.tokens", "tok"));
             } else if (tab == "consent") {
-                out += web_ui_panel("Consent requests",
-                                    "pending cloud-action approvals (deny-by-default)",
+                out += render_consent_requests(context);
+                out += web_ui_panel("Consent ledger",
+                                    "every challenge on this node: pending, decided, executed",
                                     ptable("SELECT * FROM system.consent_requests", "cons"));
             } else {
                 out += web_ui_panel(
@@ -3887,9 +4256,59 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // ----- the cookie blob routes: who may touch which large object (#1389) -----
+    // These three routes are registered before the main gate (the web UI posts the
+    // raw file body with its session cookie), so a resolved session is only who is
+    // asking. Each route then checks what that user may do, the way the governed
+    // serving path does (serve_blob), and audits the decision either way:
+    //  - upload and delete change a database's large objects: sql:write on that
+    //    database (a flat right, or a grant ON DATABASE <db>);
+    //  - download reads one object: blob:read covering its id (a flat right, or a
+    //    blob id/prefix grant), exactly what serve_blob requires.
+    // An app credential is an ordinary token for a user with its own roles, so it
+    // is held to the same rules.
+    static zetta::governance::Resource blob_database(const std::string& db) {
+        zetta::governance::Resource database;
+        database.kind = zetta::governance::ResourceKind::Database;
+        database.name = db;
+        return database;
+    }
+
+    // Owner-thread only. Empty when `user_id` may write large objects in `db`,
+    // else the refusal.
+    std::string blob_write_refusal(const std::string& user_id, const std::string& db) const {
+        const zetta::governance::Operation write{zetta::governance::CapabilityDomain::Data,
+                                                 "write"};
+        if (node.authorize_object(user_id, /*acting_is_user=*/true, write, blob_database(db))) {
+            return {};
+        }
+        return "permission denied: no sql:write grant on database '" + db + "'";
+    }
+
+    // Owner-thread only. Empty when `user_id` may read the large object `id`, else
+    // the refusal.
+    std::string blob_read_refusal(const std::string& user_id, const std::string& id) const {
+        if (node.authorize_blob(user_id, /*acting_is_user=*/true, id)) return {};
+        return "permission denied: no blob:read grant for blob '" + id + "'";
+    }
+
+    // Owner-thread only. One audit event per blob route decision.
+    void audit_blob_route(zetta::governance::AuditAction action, const std::string& user_id,
+                          const std::string& verb, const std::string& target, bool allowed,
+                          const std::string& detail) {
+        zetta::governance::AuditEventValue event;
+        event.action = action;
+        event.actor = user_id;
+        event.target = "web:blob_" + verb + ":" + target;
+        event.allowed = allowed;
+        event.detail = detail;
+        node.record_audit_event(std::move(event));
+    }
+
     // POST /blob?db=<database>&name=<filename> — store the raw request body as a large object
     // (file/blob) in the database's LargeObjectStore. Cookie-authed like the rest of the web UI;
     // the body IS the file bytes (the client reads the File and posts it raw — no multipart parser).
+    // Needs sql:write on the database (#1389).
     boost::http::route_task serve_blob_upload(boost::http::route_params& route) {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
@@ -3916,6 +4335,13 @@ struct ApiServer::Impl {
             json_body = R"({"error":"empty file"})";
         } else {
             co_await bridge.run_on_owner([&] {
+                const std::string refusal = blob_write_refusal(user_id, db);
+                if (!refusal.empty()) {
+                    audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id,
+                                     "upload", db + "/" + name, /*allowed=*/false, refusal);
+                    json_body = nlohmann::json{{"error", refusal}}.dump();
+                    return;
+                }
                 const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
                 if (!database) {
                     json_body = nlohmann::json{{"error", "no such database '" + db + "'"}}.dump();
@@ -3923,6 +4349,9 @@ struct ApiServer::Impl {
                 }
                 const std::optional<zetta::data::LargeObject> stored =
                     database->large_objects().import_bytes(name, sink.data);
+                audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id, "upload",
+                                 db + "/" + (stored ? stored->id : name), stored.has_value(),
+                                 stored ? "stored a large object" : "could not store the file");
                 json_body = stored ? nlohmann::json{{"ok", true},
                                                     {"id", stored->id},
                                                     {"name", stored->name},
@@ -3939,7 +4368,8 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
-    // POST /blob/delete?db=<database>&id=<object_id> — unlink a large object.
+    // POST /blob/delete?db=<database>&id=<object_id> — unlink a large object. Needs
+    // sql:write on the database (#1389).
     boost::http::route_task serve_blob_delete(boost::http::route_params& route) {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
@@ -3962,12 +4392,22 @@ struct ApiServer::Impl {
             json_body = R"({"error":"unauthorized"})";
         } else {
             co_await bridge.run_on_owner([&] {
+                const std::string refusal = blob_write_refusal(user_id, db);
+                if (!refusal.empty()) {
+                    audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id,
+                                     "delete", db + "/" + id, /*allowed=*/false, refusal);
+                    json_body = nlohmann::json{{"error", refusal}}.dump();
+                    return;
+                }
                 const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
                 if (!database) {
                     json_body = R"({"error":"no such database"})";
                     return;
                 }
                 const bool ok = database->large_objects().unlink(id);
+                audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id, "delete",
+                                 db + "/" + id, ok,
+                                 ok ? "unlinked a large object" : "no such large object");
                 json_body = nlohmann::json{{"ok", ok}}.dump();
             });
         }
@@ -3980,6 +4420,7 @@ struct ApiServer::Impl {
     }
 
     // GET /blob/download?db=<database>&id=<object_id> — stream a stored blob back as an attachment.
+    // Needs blob:read covering the id, as serve_blob does (#1389).
     boost::http::route_task serve_blob_download(boost::http::route_params& route) {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
@@ -3989,9 +4430,15 @@ struct ApiServer::Impl {
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         const std::string db = query_param(route, "db", "");
         const std::string id = query_param(route, "id", "");
-        std::string bytes, filename, error;
+        std::string bytes, filename, error, refusal;
         if (!user_id.empty())
             co_await bridge.run_on_owner([&] {
+                refusal = blob_read_refusal(user_id, id);
+                if (!refusal.empty()) {
+                    audit_blob_route(zetta::governance::AuditAction::DataAccess, user_id,
+                                     "download", db + "/" + id, /*allowed=*/false, refusal);
+                    return;
+                }
                 const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
                 if (!database) {
                     error = "no such database";
@@ -4009,10 +4456,21 @@ struct ApiServer::Impl {
                         filename = object.name;
                         break;
                     }
+                audit_blob_route(zetta::governance::AuditAction::DataAccess, user_id, "download",
+                                 db + "/" + id, /*allowed=*/true, "served a large object");
             });
         if (user_id.empty()) {
             const std::string body = R"({"error":"unauthorized"})";
             route.status(http::status::unauthorized);
+            route.res.set(http::field::content_type, "application/json");
+            stamp_response_headers(route, body);
+            auto [send_error] = co_await route.send(body);
+            if (send_error) co_return http::route_error(send_error);
+            co_return http::route_done;
+        }
+        if (!refusal.empty()) {
+            const std::string body = nlohmann::json{{"error", refusal}}.dump();
+            route.status(http::status::forbidden);
             route.res.set(http::field::content_type, "application/json");
             stamp_response_headers(route, body);
             auto [send_error] = co_await route.send(body);
@@ -4152,7 +4610,25 @@ bool ApiServer::start() {
     if (impl.is_running.load()) return true;
 
     http::router router;
+    router.use([](http::route_params& route) -> http::route_task {
+        // Workers retain response fields across requests and cached connections.
+        // Only the current handler may establish a session or choose a redirect,
+        // including on public GETs and CORS preflight responses.
+        route.res.erase(http::field::set_cookie);
+        route.res.erase(http::field::location);
+        co_return http::route_next;
+    });
     router.use(http::cors());
+    // Browser POST routes always require origin binding, including login (which
+    // has no existing session) and logout, before reading a body or changing state.
+    auto browser_post = [&router, &impl](const char* path, auto handler) {
+        router.add(http::method::post, path,
+                   [&impl, handler](http::route_params& route) -> http::route_task {
+                       if (!trusted_browser_origin(route))
+                           co_return co_await refuse_browser_origin(route);
+                       co_return co_await (impl.*handler)(route);
+                   });
+    };
     // GET / — the server-rendered web dashboard (#647, web_ui.cpp). PUBLIC route: it self-authenticates
     // from the HttpOnly `zetta_session` cookie and serves the login page when it is absent/invalid.
     // POST /login, /logout, /run are its companions — all registered BEFORE the auth gate (they do
@@ -4160,37 +4636,16 @@ bool ApiServer::start() {
     router.add(http::method::get, "/", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_root(route);
     });
-    router.add(http::method::post, "/login", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_web_login(route);
-    });
-    router.add(http::method::post, "/session", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_session_login(route);
-    });
-    router.add(http::method::post, "/session/logout", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_session_logout(route);
-    });
-    router.add(http::method::post, "/logout", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_web_logout(route);
-    });
-    router.add(http::method::post, "/run", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_web_run(route);
-    });
-    router.add(http::method::post, "/assist", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_assist(route);
-    });
-    router.add(http::method::post, "/shell", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_web_shell(route);
-    });
-    router.add(http::method::post, "/graph-save", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_graph_save(route);
-    });
-    router.add(http::method::post, "/blob", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_blob_upload(route);
-    });
-    router.add(http::method::post, "/blob/delete",
-               [&impl](http::route_params& route) -> http::route_task {
-                   return impl.serve_blob_delete(route);
-               });
+    browser_post("/login", &Impl::serve_web_login);
+    browser_post("/session", &Impl::serve_session_login);
+    browser_post("/session/logout", &Impl::serve_session_logout);
+    browser_post("/logout", &Impl::serve_web_logout);
+    browser_post("/run", &Impl::serve_web_run);
+    browser_post("/assist", &Impl::serve_assist);
+    browser_post("/shell", &Impl::serve_web_shell);
+    browser_post("/graph-save", &Impl::serve_graph_save);
+    browser_post("/blob", &Impl::serve_blob_upload);
+    browser_post("/blob/delete", &Impl::serve_blob_delete);
     router.add(http::method::get, "/blob/download",
                [&impl](http::route_params& route) -> http::route_task {
                    return impl.serve_blob_download(route);
@@ -4251,7 +4706,8 @@ bool ApiServer::start() {
 
     // Discovery docs are PUBLIC (registered before the gate, like /mcp.md): llms.txt is meant to be
     // fetched credential-free (an agent reads it to learn how to authenticate), and the OpenAPI
-    // document is the API's own spec. The capability routes + /v1/specs stay bearer-gated below.
+    // document is the API's own spec. LLM renderers take no Node state (#1402).
+    // The capability routes + /v1/specs stay bearer-gated below.
     impl.openapi_body = openapi_document(impl.capability_registry).dump(2);
     router.add(http::method::get, "/llms.txt", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_llms(route, "index");
@@ -4354,7 +4810,14 @@ bool ApiServer::start() {
         // web app authenticates its /v1 calls with the session cookie set by
         // POST /session, the token never touching the page's JavaScript.
         std::string bearer = bearer_of(route);
-        if (bearer.empty()) bearer = cookie_value(route, "zetta_session");
+        if (bearer.empty()) {
+            bearer = cookie_value(route, "zetta_session");
+            // Check every cookie-authenticated API method: a GET capability can
+            // have effects too (SQL and consuming reads). Explicit bearers retain
+            // the programmatic contract and never fall back after auth failure.
+            if (!bearer.empty() && !trusted_browser_origin(route, true))
+                co_return co_await refuse_browser_origin(route);
+        }
         RequestIdentity identity;
         bool authorized = false;
 
@@ -4373,7 +4836,7 @@ bool ApiServer::start() {
         // on first sight). No issuer configured → this never runs (bearer-only).
         if (resolved_user_id.empty() && !impl.options.clerk_issuer.empty() &&
             looks_like_jwt(bearer)) {
-            if (auto claims = verify_clerk_jwt(impl.options.clerk_issuer, bearer)) {
+            if (auto claims = co_await verify_clerk_jwt_async(impl.options.clerk_issuer, bearer)) {
                 const std::string principal_name = "clerk:" + claims->subject;
                 co_await impl.bridge.run_on_owner([&] {
                     auto user = impl.node.find_user(principal_name);
@@ -4442,9 +4905,10 @@ bool ApiServer::start() {
             if (request.is_discarded()) {
                 response_body = jsonrpc_error({}, -32700, "parse error");
             } else {
-                auto wait_event =
-                    std::make_shared<zetta::runtime::async_event>();
+                // Registered like a REST poll's, so stop() wakes it too.
+                auto wait_event = impl.new_poll_event();
                 ApiResult observed;
+                bool client_gone = false;
                 bool blocks = false;
                 if (request.is_object() &&
                     request.value("method", std::string{}) == "tools/call" &&
@@ -4496,9 +4960,15 @@ bool ApiServer::start() {
                             std::chrono::duration_cast<std::chrono::milliseconds>(
                                 deadline - std::chrono::steady_clock::now());
                         if (remaining.count() <= 0) break;
-                        [[maybe_unused]] auto wait_result = co_await zetta::runtime::timeout(
-                            event->wait(), std::min(remaining, awaitable.retry_within(observed)));
-                        event = std::make_shared<zetta::runtime::async_event>();
+                        if (!co_await impl.await_poll(
+                                event, std::min(remaining, awaitable.retry_within(observed)),
+                                route)) {
+                            client_gone = true;
+                            break;
+                        }
+                        impl.forget_poll_event(event);
+                        event = impl.new_poll_event();
+                        wait_event = event;
                         auto again = [&] {
                             return impl.dispatch(request, identity.acting_key, identity.is_user,
                                                  traceparent, event, &observed);
@@ -4520,10 +4990,10 @@ bool ApiServer::start() {
                         const auto wait_for =
                             capability->awaitable_read->wait_for(params.value(
                                 "arguments", nlohmann::json::object()));
-                        if (wait_for.count() > 0) {
-                            [[maybe_unused]] auto wait_result =
-                                co_await zetta::runtime::timeout(
-                                    wait_event->wait(), wait_for);
+                        if (wait_for.count() > 0 && impl.is_running.load() &&
+                            !co_await impl.await_poll(wait_event, wait_for, route)) {
+                            client_gone = true;
+                        } else if (wait_for.count() > 0) {
                             co_await impl.bridge.run_on_owner([&] {
                                 response_body = impl.dispatch(
                                     request, identity.acting_key,
@@ -4532,6 +5002,8 @@ bool ApiServer::start() {
                         }
                     }
                 }
+                impl.forget_poll_event(wait_event);
+                if (client_gone) co_return http::route_close;  // nothing to answer (#1174)
             }
         }
 
@@ -4610,6 +5082,16 @@ bool ApiServer::start() {
     router.add(http::method::get, "/v1/indexes/:name/search",
                [&impl](http::route_params& route) -> http::route_task {
                    return impl.serve_entity_endpoint(route, /*predict=*/false);
+               });
+    // Published pipelines (zetta#1289): answered per request from the
+    // replicated exposure, like the model and index routes.
+    router.add(http::method::post, "/v1/pipelines/:name/run",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_pipeline_endpoint(route, /*status_read=*/false);
+               });
+    router.add(http::method::get, "/v1/pipelines/:name/runs/:run_id",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_pipeline_endpoint(route, /*status_read=*/true);
                });
 
     // LAST: answer whatever no route above matched (#1007) — an unknown path, or

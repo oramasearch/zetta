@@ -118,10 +118,12 @@ values add nothing.
 
 Two engines answer, and they agree on the result. A `GROUP BY` whose key, every
 aggregated column and the `WHERE` are **dense numeric** (present and numeric in
-every row) runs columnar through the **[DDF engine](../ddf/ddf.md)** (ARC-12 /
+every row; the `WHERE` one comparison or an `AND` of them, each against a
+number) runs columnar through the **[DDF engine](../ddf/ddf.md)** (ARC-12 /
 API-2): the table is loaded into a typed `DataFrame`, filtered with the DDF
 `filter` op, and grouped with `group_by`. Every other aggregating `SELECT` — a
-text key, a whole-table aggregate, a sparse column, a string `WHERE`, a `system`
+text key, a whole-table aggregate, a sparse column, a string `WHERE`, a `WHERE`
+with `OR` or `NOT`, a `system`
 or virtual table — folds the rows through `zetta::query::GroupAccumulator`, the
 same accumulator and merge a [partition-only table's owners](scatter-gather-select.md)
 use, so one query answers the same way on every path.
@@ -149,10 +151,25 @@ use, so one query answers the same way on every path.
   fewer rows (or none). The row objects themselves are JSON, whose keys read back
   sorted; `columns` is the order to show them in. `SELECT a, b` projects to those keys;
   `columns` is always the result's column list, on every path.
-- `WHERE` supports a single `column <op> value` predicate, where `<op>` is one of
-  `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`. Equality/inequality work over any value;
-  the ordering comparisons apply numerically (numbers) or lexicographically
-  (strings). A row lacking the column never matches.
+- `WHERE` takes comparisons `column <op> value`, where `<op>` is one of
+  `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`, combined with **`AND`, `OR`, `NOT` and
+  parentheses** (#912), with SQL's precedence: `NOT` binds tightest, then `AND`,
+  then `OR`, so `a = 1 OR b = 2 AND c = 3` is `a = 1 OR (b = 2 AND c = 3)`.
+  `SELECT`, `UPDATE` and `DELETE` take the same grammar. Equality/inequality work
+  over any value; the ordering comparisons apply numerically (numbers) or
+  lexicographically (strings). A comparison on a column the row lacks is
+  **unknown**, as a comparison with `NULL` is in Postgres, and the logic is
+  three-valued: `AND` is false when any side is false, `OR` is true when any side
+  is true, `NOT` of unknown stays unknown, and only a true predicate keeps the
+  row. So a row lacking the column matches neither `col = v` nor `NOT col = v`.
+  Every column of the predicate must exist and, for a column-scoped reader, be
+  readable (`permission denied: … column "ssn" used in WHERE`).
+
+  ```sql
+  SELECT name FROM churn.accounts WHERE churned = true AND segment = 'MCS';
+  SELECT id FROM shop.items WHERE (plan = 'pro' OR plan = 'team') AND NOT qty < 3;
+  DELETE FROM shop.items WHERE qty = 0 OR sku = 'retired';
+  ```
 - **`GROUP BY`** takes **exactly one key column** of any type (see
   [Aggregation](#aggregation-aggregates-group-by)). Integer columns return whole
   numbers as JSON integers; means and float columns return doubles. It works over
@@ -168,6 +185,13 @@ use, so one query answers the same way on every path.
   character position the parser stopped at and the token there — `expected ';'
   after statement, got 'WEHRE' (at position 17, near 'WEHRE')` — or
   `(at end of input)` when the statement ran out.
+- **No statement can stop the node** (#793, #819): the parser reports every
+  error as a value and never throws, so malformed input (`SELECT * FROM
+  system.*`, `REVOKE TOKEN abc`, a statement cut off anywhere) is answered as an
+  error (`engine_error` from the `sql` capability) and the node keeps serving.
+  `QueryService::run` also catches anything the executor throws.
+  `tests/query/test_parse_errors_never_crash.cpp` feeds over ten thousand
+  malformed statements through the parser and the `sql` capability to hold it.
 - A `SELECT` over a **[partition-only table](partition-only-tables.md)** is not
   answered from the local store at all: it is
   **[scattered to the partition owners and merged](scatter-gather-select.md)**,

@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <chrono>
@@ -42,6 +43,9 @@
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/data/import_path.hpp"
+#include "zetta/usecases/churn/churn_dataset.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -59,6 +63,7 @@
 #include "zetta/observability/trace.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
+#include "zetta/pipeline/run.hpp"
 
 namespace {
 
@@ -140,6 +145,16 @@ struct ActionJourneys : ::testing::Test {
                            &node.span_recorder(), &background};
         context.acting_is_user = true;
         return registry.call(name, input, context);
+    }
+
+    // A file staged in the node's import directory (#1391), where add_dataset
+    // reads it from; the caller names it relative to that directory. With
+    // `contents`, the file is written; otherwise the caller writes it.
+    fs::path staged_import(const std::string& name, const std::string& contents = {}) {
+        const fs::path path = zetta::data::import_root(node) / name;
+        fs::create_directories(path.parent_path());
+        if (!contents.empty()) std::ofstream(path) << contents;
+        return path;
     }
 
     // The layer-1 transport: the same registry the MCP endpoint renders,
@@ -755,6 +770,19 @@ TEST_F(SolutionJourney,
          {"graph", created.value.at("graph")},
          {"delivery_token", "fixture-only-token"}});
     ASSERT_TRUE(started.ok) << started.error.message;
+    // zetta#1272: the solution's Run records the table its snapshot reads
+    // before it reads anything, so delete_dataset refuses it while it runs.
+    const std::string master_id = started.value.at("run_id");
+    const auto master = node.find_run(master_id);
+    ASSERT_TRUE(master);
+    EXPECT_TRUE(zetta::pipeline::reads_table(master->reads(), "demand", "history", ""))
+        << master->metadata().dump(2);
+    const ApiResult refused =
+        call("delete_dataset", {{"dataset", "demand.history"}, {"dry_run", true}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_NE(refused.error.message.find(master_id), std::string::npos)
+        << refused.error.message;
     ApiResult status;
     for (int attempt = 0; attempt < 8000; ++attempt) {
         node.tick();
@@ -773,6 +801,24 @@ TEST_F(SolutionJourney,
     }
     ASSERT_EQ(status.value.at("status"), "succeeded")
         << status.value.dump(2);
+    // The snapshot the stages read is recorded on the solution's Run, and each
+    // stage's own Run (M-2, the coordinated M-4 forecast, M-3) records what it
+    // read: the snapshot it was handed, or its pipeline's table (zetta#1272).
+    EXPECT_TRUE(zetta::pipeline::reads_table(master->reads(), "demand",
+                                             "planning_snapshot", ""))
+        << master->metadata().dump(2);
+    std::size_t stage_runs = 0;
+    std::size_t snapshot_readers = 0;
+    for (const auto& run : node.runs()) {
+        if (run->id() == master_id || run->project() != project->id()) continue;
+        ++stage_runs;
+        EXPECT_FALSE(run->reads().empty()) << run->metadata().dump(2);
+        if (zetta::pipeline::reads_table(run->reads(), "demand", "planning_snapshot", "")) {
+            ++snapshot_readers;
+        }
+    }
+    EXPECT_EQ(stage_runs, 3u);
+    EXPECT_GE(snapshot_readers, 2u);  // M-2 and M-3 are handed the snapshot
 
     zetta::solutions::DecisionPolicyStore policies(
         *node.replication(), &node, &node.experiment_manager());
@@ -7315,6 +7361,127 @@ TEST_F(SolutionJourney,
     EXPECT_GT(persuaded, 0u);
 }
 
+// lake#801: the run's report delivery must never hold the Node owner. The
+// transport answers action-task deliveries at once but holds every driver
+// report attempt (up to 3 s, until released) and then fails it the way an
+// endpoint behind a default-deny egress policy does. While the first attempt
+// is in flight the owner (this test thread) must still answer reads; once the
+// attempts are spent the run must fail with the delivery's reason.
+struct HeldReportDelivery {
+    zetta::connect::HttpTransport previous = zetta::connect::default_http_transport();
+    zetta::connect::AsyncHttpTransport previous_async =
+        zetta::connect::default_async_http_transport();
+    std::thread::id owner = std::this_thread::get_id();
+    std::atomic<int> report_attempts{0};
+    std::atomic<bool> report_on_owner{false};
+    std::atomic<bool> release{false};
+
+    HeldReportDelivery() {
+        zetta::connect::set_default_http_transport([this](const auto& request) {
+            const auto body = nlohmann::json::parse(request.body);
+            if (body.at("action") != "publish_driver_report") {
+                return zetta::connect::HttpResponse{200, "{}", {}};
+            }
+            if (std::this_thread::get_id() == owner) {
+                report_on_owner = true;
+            }
+            ++report_attempts;
+            const auto until =
+                std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (!release && std::chrono::steady_clock::now() < until) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return zetta::connect::HttpResponse{
+                0, "",
+                "could not connect to crm.example.test:443: Operation timed out"};
+        }, {});
+    }
+
+    ~HeldReportDelivery() {
+        zetta::connect::set_default_http_transport(previous, previous_async);
+    }
+};
+
+TEST_F(SolutionJourney,
+       ReportDeliveryRunsOffTheOwnerAndAnUnreachableEndpointFailsTheRun) {
+    HeldReportDelivery delivery;
+    land_retention_data(node);
+    ASSERT_TRUE(call("create_project", {{"name", "retention"}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "retention"},
+         {"solution", "S-1"},
+         {"level", 1},
+         {"sources",
+          {{"source", "datasets"},
+           {"table", "customers"},
+           {"M-3",
+            {{"entity_column", "entity_id"},
+             {"label_column", "label"},
+             {"feature_columns", {"feature"}}}}}},
+         {"foundation", retention_configuration()}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "retention"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    const nlohmann::json run = {{"run_id", started.value.at("run_id")}};
+
+    bool answered_during_delivery = false;
+    ApiResult status;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (std::chrono::steady_clock::now() < deadline) {
+        node.tick();
+        background.prune();
+        status = call("get_run", run);
+        ASSERT_TRUE(status.ok) << status.error.message;
+        if (!answered_during_delivery && delivery.report_attempts > 0) {
+            // The first attempt is held right now: the owner still answers.
+            EXPECT_EQ(status.value.at("status"), "running")
+                << status.value.dump(2);
+            EXPECT_TRUE(call("list_projects", nlohmann::json::object()).ok);
+            answered_during_delivery = status.value.at("status") == "running";
+            delivery.release = true;
+        }
+        if (status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    delivery.release = true;
+
+    EXPECT_FALSE(delivery.report_on_owner)
+        << "the driver report was sent from the Node owner thread";
+    EXPECT_TRUE(answered_during_delivery)
+        << "the workspace did not answer while the report was in flight";
+    ASSERT_EQ(status.value.at("status"), "failed") << status.value.dump(2);
+    EXPECT_EQ(delivery.report_attempts.load(), 3);
+    bool reported = false;
+    for (const auto& log : status.value.at("logs")) {
+        const std::string message = log.at("message");
+        if (log.at("level") == "error" &&
+            message.find("driver report delivery was not acknowledged after 3 attempt(s)") !=
+                std::string::npos &&
+            message.find("could not connect to crm.example.test:443") !=
+                std::string::npos) {
+            reported = true;
+        }
+    }
+    EXPECT_TRUE(reported) << status.value.at("logs").dump(2);
+
+    // The publication is settled as a dead letter, not left pending.
+    const auto publications =
+        node.find_database("action_delivery")->find_table("report_publications");
+    ASSERT_TRUE(publications);
+    ASSERT_EQ(publications->store().size(), 1u);
+    EXPECT_EQ(publications->store().at(0)->at("status"), "dead_letter");
+    EXPECT_EQ(publications->store().at(0)->at("attempts"), 3);
+}
+
 void land_collections_data(Node& node) {
     const auto database = node.create_database("collections_data");
     ASSERT_TRUE(database);
@@ -7869,6 +8036,56 @@ TEST_F(Uc1Journey, FeaturePlanRefusesEventGrainBeforeStartingM1) {
     EXPECT_TRUE(node.runs().empty());
 }
 
+// LSR-260 (#1433): a run's dataset directory resolves under the node's import
+// directory only. A valid churn dataset anywhere else on the node, or reached through
+// a symbolic link from inside the import directory, is refused before any of its
+// files is opened, and no Run is created.
+TEST_F(Uc1Journey, M1RefusesADatasetDirectoryOutsideTheImportRoot) {
+    const fs::path elsewhere = dir.path() / "elsewhere" / "churn";
+    ASSERT_EQ(zetta::usecases::churn::write_churn_dataset(
+                  zetta::usecases::churn::demo_churn_dataset(), elsewhere),
+              "");
+    const fs::path imports = zetta::data::import_root(node);
+    fs::create_directories(imports);
+    fs::create_directory_symlink(elsewhere, imports / "linked");
+
+    const auto project = node.create_project("directory refusal");
+    const auto* methodology = zetta::ml::find_methodology("M-1");
+    ASSERT_TRUE(project->create_graph("churn", methodology->build_shape({})));
+    for (const std::string& path : {elsewhere.string(), std::string("../elsewhere/churn"),
+                                    std::string("./linked"), std::string("~/churn")}) {
+        const ApiResult started = call(
+            "run", {{"project", "directory refusal"}, {"graph", "churn"}, {"dataset_path", path}});
+        EXPECT_FALSE(started.ok) << path;
+        EXPECT_EQ(started.error.code, "invalid_input") << path;
+        EXPECT_EQ(started.error.path, "/dataset_path") << path;
+    }
+    EXPECT_TRUE(node.runs().empty());
+}
+
+TEST_F(Uc1Journey, M1TrainsOnADatasetDirectoryStagedUnderTheImportRoot) {
+    ASSERT_EQ(zetta::usecases::churn::write_churn_dataset(
+                  zetta::usecases::churn::demo_churn_dataset(),
+                  zetta::data::import_root(node) / "churn"),
+              "");
+    const auto project = node.create_project("directory staged");
+    const auto* methodology = zetta::ml::find_methodology("M-1");
+    ASSERT_TRUE(project->create_graph("churn", methodology->build_shape({})));
+    const ApiResult started = call(
+        "run", {{"project", "directory staged"}, {"graph", "churn"}, {"dataset_path", "./churn"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 8000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    EXPECT_EQ(status.value.at("status"), "succeeded") << status.value.dump(2);
+}
+
 TEST_F(Uc1Journey, FeaturePlanReportsMissingLabelBeforeContractFailure) {
     const auto database = node.create_database("feature_missing");
     const auto table = database->create_table("entities");
@@ -7928,15 +8145,27 @@ TEST_F(Uc1Journey, FeaturePlanKeepsSafeInputsAndHonorsExplicitSafetyAnnotations)
 // =====================================================================
 TEST_F(Uc1Journey, JourneyUc1EndToEndWithActingKey) {
     // The acting key: orchestration rights for exactly the loop's actions,
-    // plus api:query for the read-backs. Deny-by-default everywhere else.
+    // api:query for read-backs, and explicit diagnostic access for get_trace
+    // (#1408). Deny-by-default everywhere else.
     auto principal = node.create_principal(
         "uc1 agent", zetta::governance::PrincipalKind::Service);
     ASSERT_TRUE(principal);
     zetta::governance::CapabilitySet grants;
     grants.grant(zetta::governance::CapabilityDomain::Api, "query");
+    grants.grant(zetta::governance::CapabilityDomain::Api, "cluster_admin");
     for (const char* action :
          {"create_project", "capture_intent", "compile_intent", "approve_plan",
           "gate", "deploy", "run"}) {
+        grants.grant(zetta::governance::CapabilityDomain::Orchestration, action);
+    }
+    // The run's steps execute as the key (#843), so it also holds each step
+    // kind's right: connect reads, clean derives a dataset, model trains, index
+    // builds, serve exposes, act delivers.
+    grants.grant(zetta::governance::CapabilityDomain::Data, "read");
+    grants.grant(zetta::governance::CapabilityDomain::Data, "predict");
+    for (const char* action :
+         {"create_dataset_from_query", "train_model", "create_index",
+          "deliver_action_task"}) {
         grants.grant(zetta::governance::CapabilityDomain::Orchestration, action);
     }
     auto key = principal->create_key(zetta::governance::unrestricted_scope(),
@@ -8586,7 +8815,7 @@ TEST_F(Uc1Journey,
 }
 
 TEST_F(Uc1Journey, JourneyForecastReadsItsPipelinesTableAndReportsOutputs) {
-    const fs::path file = dir.path() / "weekly_demand.jsonl";
+    const fs::path file = staged_import("weekly_demand.jsonl");
     {
         std::ofstream output(file);
         for (int series = 1; series <= 2; ++series) {
@@ -8615,7 +8844,7 @@ TEST_F(Uc1Journey, JourneyForecastReadsItsPipelinesTableAndReportsOutputs) {
     forecast.steps = {
         {"land the observation table",
          "add_dataset",
-         {{"path", file.string()},
+         {{"path", file.filename().string()},
           {"database", "demand"},
           {"table_name", "history"},
           {"partition_count", 2}},
@@ -8803,7 +9032,7 @@ TEST_F(Uc1Journey, SurvivalMethodologyRunsItsPipelinesTable) {
 }
 
 TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
-    const fs::path file = fs::path(dir.path()) / "uplift.jsonl";
+    const fs::path file = staged_import("uplift.jsonl");
     {
         std::ofstream out(file);
         for (std::int64_t index = 0; index < 360; ++index) {
@@ -8829,7 +9058,7 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
         }
     }
     const ApiResult landed =
-        call("add_dataset", {{"path", file.string()},
+        call("add_dataset", {{"path", file.filename().string()},
                              {"database", "experiments"},
                              {"table_name", "causal_population"},
                              {"partition_count", 4}});
@@ -8908,7 +9137,7 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
 // =====================================================================
 TEST_F(Uc1Journey,
        JourneyNextBestActionReadsItsPipelineTableAndReportsRecommendations) {
-    const fs::path file = dir.path() / "recommendation_candidates.jsonl";
+    const fs::path file = staged_import("recommendation_candidates.jsonl");
     {
         std::ofstream output(file);
         for (int entity = 0; entity < 48; ++entity) {
@@ -8972,7 +9201,7 @@ TEST_F(Uc1Journey,
     recommendation.steps = {
         {"land candidate actions",
          "add_dataset",
-         {{"path", file.string()},
+         {{"path", file.filename().string()},
           {"database", "offers"},
           {"table_name", "candidates"},
           {"partition_count", 2}},
@@ -9379,7 +9608,7 @@ TEST_F(Uc1Journey, JourneyLanguageMethodologyCompilesRunsAndReports) {
 
     ASSERT_TRUE(node.create_role("language-reader"));
     ASSERT_TRUE(node.grant_permissions(
-        "language-reader", {"mcp:call", "pipelines:manage"}));
+        "language-reader", {"mcp:call", "pipelines:manage", "serving:read"}));
     ASSERT_TRUE(node.grant_scoped_permissions(
         "language-reader", {"sql:read"},
         zetta::governance::Resource::column(
@@ -9410,7 +9639,7 @@ TEST_F(Uc1Journey, JourneySpeechMethodologyCompilesRunsAndReports) {
       database->large_objects().import_bytes("tone.wav", speech_test_wav());
   ASSERT_TRUE(audio);
 
-  const fs::path source = fs::path(dir.path()) / "recordings.jsonl";
+  const fs::path source = staged_import("recordings.jsonl");
   {
     std::ofstream output(source);
     output << nlohmann::json{{"recording", "call-1"},
@@ -9420,7 +9649,7 @@ TEST_F(Uc1Journey, JourneySpeechMethodologyCompilesRunsAndReports) {
                   .dump()
            << '\n';
   }
-  const ApiResult landed = call("add_dataset", {{"path", source.string()},
+  const ApiResult landed = call("add_dataset", {{"path", source.filename().string()},
                                                 {"database", "media"},
                                                 {"table_name", "recordings"},
                                                 {"partition_count", 1},
@@ -9891,7 +10120,7 @@ TEST_F(Uc1Journey, JourneyEnsembleCompilesRunsAndReportsItsOutputs) {
 }
 
 TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
-    const fs::path file = fs::path(dir.path()) / "label_examples.jsonl";
+    const fs::path file = staged_import("label_examples.jsonl");
     {
         std::ofstream out(file);
         for (int row = 0; row < 240; ++row) {
@@ -9929,7 +10158,7 @@ TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
         {
             {"land the examples table",
              "add_dataset",
-             {{"path", file.string()},
+             {{"path", file.filename().string()},
               {"database", "datasets"},
               {"table_name", "label_examples"},
               {"partition_count", 2}},
@@ -10006,7 +10235,7 @@ TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
 }
 
 TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
-    const fs::path file = fs::path(dir.path()) / "private_training.jsonl";
+    const fs::path file = staged_import("private_training.jsonl");
     {
         std::ofstream output(file);
         for (int index = 0; index < 160; ++index) {
@@ -10023,7 +10252,7 @@ TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
     }
 
     const ApiResult landed =
-        call("add_dataset", {{"path", file.string()},
+        call("add_dataset", {{"path", file.filename().string()},
                              {"database", "privacy_source"},
                              {"table_name", "records"},
                              {"partition_count", 4}});
@@ -10188,7 +10417,7 @@ TEST_F(ActionJourneys, JourneyStreamingMethodologyCompilesRunsAndReports) {
 // system.dataset_partitions view; audited as dataset_added.
 // =====================================================================
 TEST_F(ActionJourneys, JourneyAddDatasetPlacementReadBack) {
-    const fs::path file = fs::path(dir.path()) / "accounts.jsonl";
+    const fs::path file = staged_import("accounts.jsonl");
     {
         std::ofstream out(file);
         for (int i = 0; i < 24; ++i) {
@@ -10198,7 +10427,7 @@ TEST_F(ActionJourneys, JourneyAddDatasetPlacementReadBack) {
 
     const journey::JourneyReport report = journey::run_journey(
         journey::canonical::dataset_ingest(
-            file.string(), (fs::path(dir.path()) / "nope.xlsx").string()),
+            file.filename().string(), staged_import("nope.xlsx", "x").filename().string()),
         caller());
     EXPECT_TRUE(report.ok) << report.summary();
 }

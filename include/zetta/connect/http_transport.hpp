@@ -3,12 +3,14 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "zetta/connect/destination_policy.hpp"
 #include "zetta/runtime.hpp"
 
-// The **outbound HTTP transport seam** for source connectors
+// The **outbound HTTP transport interface** for source connectors
 // ([#827](https://github.com/oramasearch/zetta/issues/827)).
 //
 // zetta-core embeds no HTTP client library and no warehouse driver (ADR-17): a
@@ -20,14 +22,14 @@
 // **The real transport lives in `zetta-api`, not here.** zetta-core deliberately
 // does not link Beast2/Boost.HTTP — that isolation is the whole point of the
 // `zetta-api` target — so the native coroutine HTTPS client is implemented in
-// `src/core/api/native_http_transport.cpp` and **installed** into this seam at
+// `src/core/api/native_http_transport.cpp` and **installed** as this injected dependency at
 // startup (`api::install_native_http_transport`, called from `src/main.cpp`).
 // zetta-core therefore never sees an HTTP type: only `HttpRequest` /
 // `HttpResponse` cross the boundary. A build that never installs one (a unit
 // test, a headless tool) simply has no default transport, and a connector call
 // that needs one fails cleanly rather than reaching the network by accident.
 //
-// **Two shapes, one seam.** `HttpTransport` is the synchronous shape a
+// **Two shapes, one interface.** `HttpTransport` is the synchronous shape a
 // single-request caller wants; `AsyncHttpTransport` is the coroutine shape the
 // distributed fetch fans out with (`runtime::when_all` over N in-flight
 // exchanges). The installed pair is backed by the same client.
@@ -70,6 +72,28 @@ struct HttpRequest {
     // Raise the transport's default response-body cap (bytes); 0 keeps the
     // default. A model shard exceeds the connector default, so the fetch lifts it.
     std::size_t max_response_bytes = 0;
+
+    // Which resolved addresses may be dialled (#1394, #1414).
+    // `Connector` checks the separate exact connector authority allowance on
+    // every resolved address and every redirect hop; metadata, link-local and
+    // reserved addresses never pass that policy. It requires HTTPS unless
+    // `connector_plaintext` says the connector's configured protocol is http.
+    // `PublicOnly` is for a URL a caller chose (an action connector's endpoint): the
+    // transport resolves the host once, refuses loopback, private, link-local,
+    // metadata and reserved addresses unless the node allows their class, connects
+    // only to an address it checked, and checks again on every redirect hop.
+    DestinationPolicy destinations = DestinationPolicy::Any;
+
+    // With `DestinationPolicy::Connector` only: the connector was configured with
+    // an explicit `http://` URL (a lake service inside the cluster, #1414), so a
+    // plaintext hop is allowed. False (the default) keeps a Connector request on
+    // HTTPS on every hop, so an HTTPS source cannot be redirected to plaintext.
+    bool connector_plaintext = false;
+
+    // Stream a 2xx body to a caller-owned destination instead of opening a path
+    // (#1412). Takes precedence over download_to_path; false reports a write
+    // failure. The callback and its destination must survive the exchange.
+    std::function<bool(std::string_view)> download_sink;
 };
 
 // The result of one exchange. `error` is a **transport-level** failure (DNS,
@@ -85,11 +109,11 @@ struct HttpResponse {
     bool ok() const { return error.empty() && status >= 200 && status < 300; }
 };
 
-// The injected transport seam, synchronous shape. An empty HttpTransport means
+// The injected transport, synchronous shape. An empty HttpTransport means
 // "use the installed default".
 using HttpTransport = std::function<HttpResponse(const HttpRequest&)>;
 
-// The injected transport seam, coroutine shape — the one the distributed fetch
+// The injected transport, coroutine shape — the one the distributed fetch
 // fans out with. Returns an `io_task` so it composes under `runtime::when_all` /
 // `runtime::timeout`; the error_code half is always clear (a transport failure
 // is reported in `HttpResponse::error`, keeping the non-throwing contract in one

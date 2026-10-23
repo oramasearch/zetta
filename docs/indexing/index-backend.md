@@ -256,12 +256,27 @@ backend (`OramaCoreFulltextIndex`'s BM25F) fills it; an *exact-match* backend
 (`InMemoryIndexBackend`) leaves it empty (the invariant: empty, or `row_ids.size()`
 long). See [distributed-fulltext.md](distributed-fulltext.md).
 
+A ranked backend whose scores depend on the corpus (BM25F's IDF and average field
+lengths) also takes part in the **global-statistics pass**
+([#851](https://github.com/oramasearch/zetta/issues/851)), so a sharded query ranks
+exactly as one consolidated index would:
+
+- `uses_corpus_statistics()` — true when the backend scores with corpus statistics
+  (`OramaCoreFulltextIndex` with the engine compiled in); false by default.
+- `collect_statistics(spec, query, out)` — adds the built index's
+  `CorpusStatistics` for the query into `out`: `doc_count`, `term_doc_freq` (keyed by
+  the analyzed query term, 0 when unseen) and `fields` (`{total_len, doc_count}` per
+  field). The default adds nothing.
+- `IndexQuery::statistics` — when set, the backend scores with these statistics
+  instead of its own. `CorpusStatistics::merge` sums shards' statistics.
+
 ## Pointers
 
 - [`include/zetta/index/index_kind.hpp`](../../include/zetta/index/index_kind.hpp) —
   the `IndexKind` taxonomy.
 - [`include/zetta/index/index_backend.hpp`](../../include/zetta/index/index_backend.hpp) —
-  the `IndexBackend` seam + `IndexSpec` / `IndexStatus` / partition / query types.
+  the `IndexBackend` interface + `IndexSpec` / `IndexStatus` / partition / query /
+  `CorpusStatistics` types.
 - [`include/zetta/index/index_registry.hpp`](../../include/zetta/index/index_registry.hpp) —
   the `IndexRegistry` + `index_spec_from_node`.
 - [`include/zetta/index/in_memory_index_backend.hpp`](../../include/zetta/index/in_memory_index_backend.hpp) —

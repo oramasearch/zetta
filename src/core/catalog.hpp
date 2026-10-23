@@ -32,11 +32,11 @@
 //                          the document, it lives on disk like a large object;
 //                          see project_input.hpp)
 //   graph:<graph_uuid> -> { project: <proj_uuid>, name,       (an ExecutionGraph
-//                          graph: { nodes, edges } }            IR under a project
+//                          graph: { nodes, edges }, exposure? } IR under a project
 //                          — the whole serialized graph as one value; see
 //                          project_graph.hpp / docs/pipeline/execution-graph.md)
 //   deployment:<dep_uuid> -> { graph_name, target: {…}, node, node_count,
-//                          edge_count, created }  (a graph placed onto a target;
+//                          edge_count, created, reads? }  (a graph placed onto a target;
 //                          a top-level entity with no parent — see deployment.hpp)
 //   run:<run_uuid>     -> { project, graph, status, created, updated, logs,
 //                          outputs, lineage }  (one execution of a deployed
@@ -188,6 +188,7 @@ inline constexpr std::string_view kExperimentPrefix = "experiment:";
 inline constexpr std::string_view kExperimentAssignmentPrefix =
     "experiment_assignment:";
 inline constexpr std::string_view kAgentPrefix = "agent:";
+inline constexpr std::string_view kRunProposalPrefix = "run_proposal:";
 inline constexpr std::string_view kWorkspaceMethodologyPrefix = "methodology:";
 inline constexpr std::string_view kJobPrefix = "job:";
 inline constexpr std::string_view kIndexPrefix = "index:";
@@ -268,6 +269,9 @@ inline std::string experiment_assignment_key(
 }
 inline std::string agent_key(const std::string& agent_id) {
     return std::string(kAgentPrefix) + agent_id;
+}
+inline std::string run_proposal_key(const std::string& proposal_id) {
+    return std::string(kRunProposalPrefix) + proposal_id;
 }
 inline std::string workspace_methodology_key(const std::string& methodology_id) {
     return std::string(kWorkspaceMethodologyPrefix) + methodology_id;

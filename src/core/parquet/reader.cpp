@@ -41,6 +41,13 @@ ParquetRowsResult read_parquet_rows(std::string_view file_bytes) {
                            std::to_string(num_rows);
             return result;
         }
+        // The transpose below indexes the dense values by a running counter, so
+        // it needs one value per present row in the vector `type` selects.
+        if (std::string shape = validate_decoded_column(column); !shape.empty()) {
+            result.rows.clear();
+            result.error = std::move(shape);
+            return result;
+        }
 
         // Walk logical rows, popping the next dense value for a present row and
         // emitting JSON null for a null row — the per-row transpose of

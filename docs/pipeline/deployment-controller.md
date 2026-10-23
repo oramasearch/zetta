@@ -22,7 +22,7 @@ deployment.id()`) and decides:
 | Actual state of the deployment's runs | Verdict | Action |
 |---|---|---|
 | At least one run is **pending / running / succeeded** | satisfied | nothing — read-only scan |
-| **No** runs, or **all** runs **failed** | desired > actual | start a fresh `running` run, recorded against the deployment |
+| **No** runs, or **all** runs **failed** | desired > actual | start a fresh `running` run, recorded against the deployment, with the deployment's `reads` (the tables its graph reads, zetta#1272) |
 
 A run **satisfies** its deployment unless it has terminated in **failure**:
 

@@ -188,21 +188,38 @@ const nlohmann::json& schema_document() {
         "updated": { "type": "string" },
         "trace_id": { "type": "string" },
         "entity_key_mapping": {
-          "type": "object",
-          "required": ["column", "entries"],
-          "additionalProperties": false,
-          "properties": {
-            "column": {"type": "string", "minLength": 1},
-            "entries": {"type": "array", "items": {
+          "description": "A text entity column's derived-id map: inline, or (since #1255) a reference to its rows in the engine-internal _entity_keys table.",
+          "anyOf": [
+            {
               "type": "object",
-              "required": ["derived_id", "original_value"],
+              "required": ["column", "entries"],
               "additionalProperties": false,
               "properties": {
-                "derived_id": {"type": "integer"},
-                "original_value": {"type": "string", "minLength": 1}
+                "column": {"type": "string", "minLength": 1},
+                "entries": {"type": "array", "items": {
+                  "type": "object",
+                  "required": ["derived_id", "original_value"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "derived_id": {"type": "integer"},
+                    "original_value": {"type": "string", "minLength": 1}
+                  }
+                }}
               }
-            }}
-          }
+            },
+            {
+              "type": "object",
+              "required": ["column", "entry_count", "table", "owner", "chunks"],
+              "additionalProperties": false,
+              "properties": {
+                "column": {"type": "string", "minLength": 1},
+                "entry_count": {"type": "integer", "minimum": 1},
+                "table": {"const": "_entity_keys"},
+                "owner": {"type": "string", "minLength": 1},
+                "chunks": {"type": "integer", "minimum": 1}
+              }
+            }
+          ]
         },
         "metrics_suppressed": { "type": "string",
                                 "enum": ["differential_privacy"] },
@@ -385,6 +402,15 @@ const nlohmann::json& schema_document() {
             "additionalProperties": false
           }
         },
+        "published": {
+          "type": "object",
+          "properties": {
+            "version": { "type": "integer", "minimum": 1 },
+            "caller":  { "type": "string" }
+          },
+          "required": ["version", "caller"],
+          "additionalProperties": false
+        },
         "reads": {
           "type": "array",
           "items": {
@@ -501,6 +527,10 @@ nlohmann::json to_json(const RunValue& value) {
     // Only when there is one, so a run that reads nothing keeps the shape an
     // older peer accepts.
     if (!value.reads.empty()) output["reads"] = to_json(value.reads);
+    if (value.published) {
+        output["published"] = {{"version", value.published->version},
+                               {"caller", value.published->caller}};
+    }
     return output;
 }
 
@@ -607,6 +637,11 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
     if (const auto reads = value.find("reads"); reads != value.end()) {
         parsed.reads = table_reads_from_json(*reads);
     }
+    if (const auto published = value.find("published");
+        published != value.end() && published->is_object()) {
+        parsed.published = RunPublication{published->value("version", std::uint64_t{0}),
+                                          published->value("caller", std::string{})};
+    }
     if (const auto lineage = value.find("lineage"); lineage != value.end()) {
         parsed.lineage.sources =
             lineage->value("sources", std::vector<std::string>{});
@@ -655,6 +690,11 @@ void Run::add_reads(const std::vector<TableRead>& reads) {
     if (merge_table_reads(value_.reads, reads)) capture_and_persist();
 }
 
+void Run::set_published(RunPublication published) {
+    value_.published = std::move(published);
+    capture_and_persist();
+}
+
 void Run::set_trace_id(std::string trace_id) {
     value_.trace_id = std::move(trace_id);
     capture_and_persist();
@@ -662,6 +702,7 @@ void Run::set_trace_id(std::string trace_id) {
 
 bool Run::set_entity_key_mapping(nlohmann::json mapping,
                                  std::string* error) {
+    if (entity_key_store_) mapping = entity_key_store_("run:" + id_, std::move(mapping));
     nlohmann::json candidate = metadata();
     candidate["entity_key_mapping"] = mapping;
     if (!validate_run_value(candidate, error)) {

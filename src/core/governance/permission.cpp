@@ -24,6 +24,10 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"blob:read", {{CapabilityDomain::Data, "blob_read"}}},
         {"serving:read",
          {{CapabilityDomain::Data, "predict"}, {CapabilityDomain::Data, "search"}}},
+        // Running a published pipeline (zetta#1289): its own right, not in
+        // serving:read, because a served run spends the workspace's compute.
+        // Object-scopable ON PROJECT <name>.
+        {"serving:run", {{CapabilityDomain::Data, "run_pipeline"}}},
         {"users:manage", {{CapabilityDomain::Api, "manage_users"}}},
         {"roles:manage", {{CapabilityDomain::Api, "manage_roles"}}},
         {"tokens:manage", {{CapabilityDomain::Api, "manage_tokens"}}},
@@ -95,6 +99,9 @@ const std::vector<PermissionEntry>& vocabulary() {
           {CapabilityDomain::Orchestration, "create_solution"},
           {CapabilityDomain::Orchestration, "run_solution"},
           {CapabilityDomain::Orchestration, "approve_plan"},
+          {CapabilityDomain::Orchestration, "propose_run"},
+          {CapabilityDomain::Orchestration, "approve_run_proposal"},
+          {CapabilityDomain::Orchestration, "reject_run_proposal"},
           {CapabilityDomain::Orchestration, "gate"},
           {CapabilityDomain::Orchestration, "deploy"},
           {CapabilityDomain::Orchestration, "run"},
@@ -140,7 +147,9 @@ const std::vector<PermissionEntry>& vocabulary() {
          {{CapabilityDomain::Orchestration, "expose_model"},
           {CapabilityDomain::Orchestration, "unexpose_model"},
           {CapabilityDomain::Orchestration, "expose_index"},
-          {CapabilityDomain::Orchestration, "unexpose_index"}}},
+          {CapabilityDomain::Orchestration, "unexpose_index"},
+          {CapabilityDomain::Orchestration, "expose_pipeline"},
+          {CapabilityDomain::Orchestration, "unexpose_pipeline"}}},
         {"cloud:manage",
          {{CapabilityDomain::Orchestration, "cloud_inspect"},
           {CapabilityDomain::Orchestration, "detect_provisioners"},

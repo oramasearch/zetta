@@ -8,6 +8,7 @@
 #include <openssl/x509_vfy.h>
 
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string_view>
@@ -222,6 +223,36 @@ std::optional<boost::corosio::tls_context> make_mutual_tls_context(
         return std::nullopt;
     }
     return context;
+}
+
+std::optional<std::string> certificate_common_name(std::span<const unsigned char> der) {
+    if (der.empty() || der.size() > static_cast<std::size_t>(std::numeric_limits<long>::max())) {
+        return std::nullopt;
+    }
+    const unsigned char* cursor = der.data();
+    X509Ptr certificate(d2i_X509(nullptr, &cursor, static_cast<long>(der.size())), &X509_free);
+    // One certificate and nothing after it.
+    if (!certificate || cursor != der.data() + der.size()) {
+        return std::nullopt;
+    }
+    X509_NAME* subject = X509_get_subject_name(certificate.get());
+    const int position = X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
+    if (position < 0 || X509_NAME_get_index_by_NID(subject, NID_commonName, position) >= 0) {
+        return std::nullopt;  // no common name, or an ambiguous second one
+    }
+    const ASN1_STRING* value = X509_NAME_ENTRY_get_data(X509_NAME_get_entry(subject, position));
+    unsigned char* utf8 = nullptr;
+    const int length = ASN1_STRING_to_UTF8(&utf8, value);
+    if (length < 0 || utf8 == nullptr) {
+        return std::nullopt;
+    }
+    std::string common_name(reinterpret_cast<const char*>(utf8), static_cast<std::size_t>(length));
+    OPENSSL_free(utf8);
+    // An embedded NUL would let "a\0b" pass as "a" in a C-string compare.
+    if (common_name.find('\0') != std::string::npos) {
+        return std::nullopt;
+    }
+    return common_name;
 }
 
 }  // namespace zetta::transport

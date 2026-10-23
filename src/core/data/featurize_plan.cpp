@@ -637,6 +637,19 @@ FeaturePlan plan_features(Node& node, const DatasetPath& path, const FeaturePlan
     return plan_features(analysis, options);
 }
 
+FeaturePlan plan_features_as(Node& node, const DatasetPath& path,
+                             const FeaturePlanOptions& options, const AnalysisReader& reader,
+                             const zetta::cluster::Cluster* cluster) {
+    AnalysisOptions analysis_options;
+    analysis_options.sample_rows = options.sample_rows;
+    analysis_options.label_column = options.label_column;
+    analysis_options.time_column = options.time_column;
+    analysis_options.as_of = options.as_of;
+    const DatasetAnalysis analysis =
+        analyze_dataset_as(node, path, analysis_options, reader, cluster);
+    return plan_features(analysis, options);
+}
+
 nlohmann::json to_json(const FeaturePlanEntry& entry) {
     return nlohmann::json{{"source_columns", entry.source_columns},
                           {"features", entry.features},

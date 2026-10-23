@@ -9,6 +9,16 @@ offloaded for its segment rewrite and has REST/MCP/OpenAPI parity. See
 [CRUD](../../../docs/pubsub/crud.md) and
 [REST/OpenAPI](../../../docs/api/rest-openapi.md).
 
+Browser POST registration checks an exact `Origin` before invoking a handler.
+Origin refusals close the connection with its body unread. The first middleware
+clears cached session/redirect headers on every request, including public GETs.
+The auth gate also binds every cookie-authenticated API request to this origin;
+GET/HEAD may use same-origin Fetch Metadata or a strictly parsed Referer.
+Cookie GET SQL permits only parsed SELECT batches; writes use POST. Explicit
+bearer API clients retain their contract. Proxy requirements and failure behavior
+are in [registry design](../../../docs/api/registry-design.md#auth-governance-audit--nothing-new)
+(#1415, LSR-242).
+
 `node_memory` renders the node's memory-accounting registry through the same
 REST/MCP declaration. HTTP sessions, cached parsers, active requests, and
 long-poll waiters add their counters to the node's registry while the server
@@ -36,6 +46,9 @@ way past it. See
 `create_agent` and `update_agent` take a closed `definition` schema, and an
 unknown property is reported at the property itself, so `{path, content}` is
 refused at `/definition/files/0/content` in lake's words (#1220).
+`agent_run` stores the plan it compiles proposed and answers `not_approved` without
+running it; it never approves. Given `project` + `graph_name` naming a stored plan, it
+runs it only if approved, checked before the agent's model loads (#913).
 `upload_dataset` refuses unsafe table and database names, ragged CSV, and a taken
 name (`conflict`) unless `if_exists: "rename"`, with lake's rules and wording;
 `get_dataset` accepts `database.table`, and dataset summaries carry
@@ -57,6 +70,12 @@ REST, MCP and OpenAPI output in lockstep (#1184).
 Dataset-backed scoring and explanation accept text business identifiers and
 return them unchanged; their schemas are generated from the registry alongside
 the dataset contract (#957).
+
+`native_http_transport.cpp` checks the egress policy before DNS and before every
+connection and redirect hop: outbound is denied by default and each refusal is
+reported for the `egress_denied` audit event (#75,
+[egress policy](../../../docs/governance/egress-policy.md)). `/cli.md` documents
+`--egress-allow` and `ZETTA_EGRESS_ALLOW`.
 
 `mcp_docs.cpp` also renders `/cli.md`. Its pub/sub and audit sections document
 the dispatch-pool and class-specific retention flags with their environment

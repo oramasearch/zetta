@@ -303,8 +303,12 @@ void App::draw_consent_requests() {
 }
 
 void App::draw_admin() {
-    page_header("Admin & audit",
-                "Principals, access keys, and the immutable audit trail");
+    // The page a refused caller is sent to is the page that has the approval
+    // surface (#999): the nav item, this header and the refusal text all say
+    // Governance.
+    page_header("Governance",
+                "Consent requests, principals, access keys, and the immutable "
+                "audit trail");
 
     // --- Consent requests (#621, the headed approval surface) ---------------
     draw_consent_requests();

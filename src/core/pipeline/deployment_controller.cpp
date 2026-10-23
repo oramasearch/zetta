@@ -63,6 +63,9 @@ ReconcileReport DeploymentController::reconcile() {
         auto run = node_.create_run(/*project=*/{}, /*graph=*/{},
                                     /*deployment=*/deployment->id());
         if (!run) continue;  // create failed (e.g. the data dir is gone)
+        // What the placed graph reads (zetta#1272), so delete_dataset refuses
+        // it while this run is pending or running.
+        run->add_reads(deployment->reads());
         const std::string note =
             failed_runs == 0
                 ? "deployment-controller: started run for deployment " +

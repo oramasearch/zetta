@@ -20,7 +20,7 @@ orders it within an index value, and a revision.
 | Replicated | Before a write is acknowledged, every live peer has installed it. A node that was down or partitioned catches up by anti-entropy within a few seconds of rejoining. |
 | Linearizable per key | Every write of a key is ordered by one node, the key's **owner**, with an atomic read-check-write. `if_absent` and `if_revision` are decided there. |
 | Read after write | A read on any live node after the acknowledgement returns the write or a newer one. |
-| Reads | `get_record` is one key-directory lookup and one `pread`; `list_records` walks one in-memory index range. Neither touches the replicated catalogue. |
+| Reads | `get_record` is one key-directory lookup and one `pread`; `list_records` walks one in-memory index range. Each reads its collection's definition from the catalogue's shared view, which never waits for a catalogue save (#1248). |
 | Retention | A collection may declare `retention_ms`: a record expires that long after its last write. An expired record is invisible at once, and every node removes its copy within a second. |
 | Bounded | Disk and memory follow the live set, not the write history: the soak below holds 1,000,000 writes at a flat footprint. |
 
@@ -103,6 +103,13 @@ gossip of record bodies.
 every node, so each node removes its own copies from an expiry queue every second; a revision
 check makes a removal lose to a write that landed since the key was queued.
 
+**Engine-internal collections.** A collection whose name starts with `_` belongs to the engine;
+the API refuses such names, so no caller can read or write one. The time series folds its buckets
+into `_metric.<name>` with `fold` (this node only, replicated by anti-entropy). The text entity-key
+table writes `_entity_keys` rows with `put_internal` and `remove_internal`: fsynced on the writing
+node and sent to every live peer at once, with anti-entropy for a peer that missed them. Each row
+has one writer, so no owner orders them ([entity-key-table.md](entity-key-table.md), #1255).
+
 ## API
 
 Every operation is one registry capability: REST route, MCP tool and OpenAPI operation. Writes
@@ -166,8 +173,11 @@ to each live peer (the outbox flushes every 20 ms).
 runs a node with four writers and a reader: puts of 1 KiB values across three collections
 (`agent_task_status`, `ask_messages`, `webhook_events`) with a three-second retention, 20% of them
 `if_revision` updates of recent keys, while the owner loop ticks, saves, sweeps and compacts. It
-fails if the record log passes 160 MiB, the live set 50,000 records, the RSS 1 GiB, or a save or a
-read p99 10 ms (50 ms for a save). `ZETTA_RECORD_SOAK_PUTS` sets its length; the suite runs
+fails if the record log passes 160 MiB, the live set 50,000 records, the RSS 1 GiB, the catalogue
+32 keys or a 256 KiB save, or if the median read overlapping a save costs more than three times
+the median read in the same run. It asserts no wall-clock budget: on a loaded host (load average
+13 to 60) a fixed one failed while measuring the scheduler, not the store (#1248). It prints the
+save and read timings for a reviewer. `ZETTA_RECORD_SOAK_PUTS` sets its length; the suite runs
 200,000. One million, on an Apple M3 Max:
 
 | | Records in the replicated document (first version, stopped at 200,000 puts) | Node-local record log (1,000,000 puts) |
@@ -197,6 +207,7 @@ read p99 10 ms (50 ms for a save). `ZETTA_RECORD_SOAK_PUTS` sets its length; the
 | `RecordStoreCluster.ConditionalWritesAreLinearizableAcrossTwoNodes` | two real nodes, three threads each, increments of one key: none lost, and every acknowledged write is read on the other node at once |
 | `RecordStoreCluster.ANodeThatJoinsLaterCatchesUpByAntiEntropy` | a node joining after 600 writes, a deletion and a metric point pulls all of them, then nothing |
 | `RecordStoreSoak.*` | the soak above |
+| `RecordStoreLatency.ReadsDoNotWaitForTheCatalogueDocument` | 200 record reads complete while another thread holds the catalogue document's mutex (as `save()` and `merge()` do), inside an `update()` that waits. It counts reads instead of timing them, so a loaded host cannot fail it; before #1248 none completed until the holder's five-second deadline |
 | `RecordCapabilities.*`, `ReplicatedRestServerFixture.RecordCapabilitiesWorkOverRestAndMcp` | the registry journey, 409 details, the `ON COLLECTION` grant, REST and MCP |
 
 ## Later

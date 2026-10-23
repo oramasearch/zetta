@@ -6,6 +6,7 @@
 // governs both.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/api/serving.hpp"
+#include "zetta/api/specs.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/large_object.hpp"
 #include "zetta/governance/scope.hpp"
@@ -77,6 +79,50 @@ TEST_F(ScopedApiFixture, PerToolScopeGatesToolsCall) {
     EXPECT_FALSE(node.audit_events().back()->value().allowed);
 }
 
+// #766: list_specs and get_spec answer per caller, like tools/list. A user scoped
+// to server_info discovers server_info's schemas only; another tool's spec is
+// not_found, and the openapi document holds only the tools it may call. A flat
+// mcp:call (the built-in reader) still sees every capability.
+TEST_F(ScopedApiFixture, SpecDiscoveryShowsOnlyCallableTools) {
+    const std::string uid = user_scoped_to_tool("server_info");
+    node.create_role("specs");
+    ASSERT_TRUE(node.grant_scoped_permissions(
+        "specs", {"mcp:call"}, Resource::tool("list_specs")));
+    ASSERT_TRUE(node.grant_scoped_permissions(
+        "specs", {"mcp:call"}, Resource::tool("get_spec")));
+    node.assign_role(uid, node.find_role("specs")->id());
+
+    const auto index = call_as_user(uid, "list_specs", nlohmann::json::object());
+    ASSERT_TRUE(index.ok) << index.error.message;
+    std::vector<std::string> capabilities;
+    for (const auto& entry : index.value.at("specs")) {
+        if (entry.contains("capability")) {
+            capabilities.push_back(entry.at("capability").get<std::string>());
+        }
+    }
+    std::ranges::sort(capabilities);
+    const auto last = std::ranges::unique(capabilities);
+    capabilities.erase(last.begin(), last.end());
+    EXPECT_EQ(capabilities,
+              (std::vector<std::string>{"get_spec", "list_specs", "server_info"}));
+
+    EXPECT_TRUE(call_as_user(uid, "get_spec", {{"name", "server_info.input"}}).ok);
+    const auto hidden = call_as_user(uid, "get_spec", {{"name", "sql.input"}});
+    EXPECT_FALSE(hidden.ok);
+    EXPECT_EQ(hidden.error.code, "not_found");
+    const auto openapi = call_as_user(uid, "get_spec", {{"name", "openapi"}});
+    ASSERT_TRUE(openapi.ok) << openapi.error.message;
+    const auto& paths = openapi.value.at("schema").at("paths");
+    EXPECT_TRUE(paths.contains("/v1/server_info"));
+    EXPECT_FALSE(paths.contains("/v1/sql"));
+
+    auto reader = node.create_user("rita");
+    node.assign_role(reader->id(), node.find_role("reader")->id());
+    const auto all = call_as_user(reader->id(), "list_specs", nlohmann::json::object());
+    ASSERT_TRUE(all.ok) << all.error.message;
+    EXPECT_EQ(all.value, zetta::api::spec_index(registry));
+}
+
 // A flat mcp:call (the built-in reader) can call every tool — object scoping
 // only narrows a role that scopes mcp:call to a subset.
 TEST_F(ScopedApiFixture, FlatMcpCallCallsEveryTool) {
@@ -88,6 +134,34 @@ TEST_F(ScopedApiFixture, FlatMcpCallCallsEveryTool) {
     EXPECT_TRUE(call_as_user(reader->id(), "list_projects",
                              nlohmann::json::object())
                     .ok);
+}
+
+// #1185: list_projects' graph summaries are part of get_project's answer, so they
+// are read with get_project's right. A user scoped to list_projects alone gets
+// the names, as before, and no summaries; one who may also call get_project, or
+// holds a flat mcp:call, gets them.
+TEST_F(ScopedApiFixture, ListProjectsSummariesNeedGetProjectsRight) {
+    ASSERT_TRUE(node.create_project("churn"));
+    const std::string uid = user_scoped_to_tool("list_projects");
+
+    auto names_only = call_as_user(uid, "list_projects", nlohmann::json::object());
+    ASSERT_TRUE(names_only.ok) << names_only.error.message;
+    EXPECT_EQ(names_only.value.at("projects"), nlohmann::json::array({"churn"}));
+    EXPECT_FALSE(names_only.value.contains("summaries"));
+    EXPECT_FALSE(call_as_user(uid, "get_project", {{"name", "churn"}}).ok);
+
+    ASSERT_TRUE(node.grant_scoped_permissions("toolrole", {"mcp:call"},
+                                              Resource::tool("get_project")));
+    auto with_detail = call_as_user(uid, "list_projects", nlohmann::json::object());
+    ASSERT_TRUE(with_detail.ok) << with_detail.error.message;
+    ASSERT_EQ(with_detail.value.at("summaries").size(), 1u);
+    EXPECT_EQ(with_detail.value.at("summaries")[0].at("name"), "churn");
+
+    auto reader = node.create_user("rhea");
+    node.assign_role(reader->id(), node.find_role("reader")->id());
+    auto flat = call_as_user(reader->id(), "list_projects", nlohmann::json::object());
+    ASSERT_TRUE(flat.ok) << flat.error.message;
+    EXPECT_EQ(flat.value.at("summaries").size(), 1u);
 }
 
 // The tools/list filter (http_server dispatch) shows only the tools the caller
@@ -140,6 +214,17 @@ TEST_F(ScopedApiFixture, ServeBlobEnforcesPrefixGrant) {
     auto refused = zetta::api::serve_blob(node, bad_request);
     EXPECT_FALSE(refused.ok);
     EXPECT_EQ(refused.error.code, "unauthorized");
+
+    // A grant on this exact id is not a text prefix of longer ids (#767): an id
+    // that merely starts with the granted one is refused before any lookup.
+    ServeRequest sibling_request;
+    sibling_request.target = blob_id + "-secret-2026";
+    sibling_request.acting_key = user->id();
+    sibling_request.acting_is_user = true;
+    sibling_request.trace = trace;
+    auto sibling = zetta::api::serve_blob(node, sibling_request);
+    EXPECT_FALSE(sibling.ok);
+    EXPECT_EQ(sibling.error.code, "unauthorized");
 }
 
 }  // namespace

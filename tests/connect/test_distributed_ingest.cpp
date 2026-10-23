@@ -47,6 +47,7 @@
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/large_object.hpp"
@@ -763,6 +764,153 @@ TEST(DistributedIngest, AParticipantThatStopsMidFetchFailsTheWholeIngest) {
             EXPECT_NE(dataset.name, "cached") << "a partial dataset survived";
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// #844: a participant that was PAUSED, not dead, comes back after the ingest
+// failed and was cleaned up. It still holds the `run.launch` it queued while
+// paused, and draining it must not re-adopt the table every other node has
+// dropped, fetch from the source for a run that has ended, or hold its owner
+// thread waiting on an agreement nobody will join.
+//
+// "Died" and "came back" are different faults. The test above is the first;
+// this is the second. The terminal marker the resuming node observes is the
+// table's own tombstone: the cleanup removed `tbl:<id>`, and a removal
+// replicates as a tombstone (#838), so the paused node's document already
+// records that the table existed and was dropped.
+// ---------------------------------------------------------------------------
+TEST(DistributedIngest, APausedParticipantThatResumesDeclinesTheEndedLaunch) {
+    FakeWarehouse source;
+    InstalledTransport installed(source);
+
+    const auto members = bring_up(24890, 3);
+    ASSERT_TRUE(wait_until([&] {
+        for (const auto& member : members) {
+            if (member->cluster.peer_count() != members.size() - 1) return false;
+        }
+        return true;
+    })) << "3-node loopback cluster did not converge";
+
+    ASSERT_TRUE(zetta::connect::save_connection(members[0]->node, "warehouse",
+                                                warehouse_config())
+                    .empty());
+    ASSERT_TRUE(wait_until([&] {
+        for (const auto& member : members) {
+            member->node.tick();
+            if (!zetta::connect::find_connection(member->node, "warehouse")) {
+                return false;
+            }
+        }
+        return true;
+    })) << "the saved connection did not reach every node";
+
+    Member& paused = *members[2];
+    TickLoop peer_one(members[1]->node);
+
+    // The initiator mints the target table's id inside the ingest and reports
+    // no table on failure, so read the id off the replicated document while the
+    // ingest is waiting on its agreement.
+    std::mutex table_mutex;
+    std::string table_key;
+    std::atomic<bool> ingest_done{false};
+    std::thread watcher([&] {
+        while (!ingest_done.load()) {
+            const Json snapshot = members[0]->replication.snapshot();
+            for (const auto& [key, value] : snapshot.items()) {
+                if (key.starts_with("tbl:") && value.is_object() &&
+                    value.value("name", std::string{}) == "cached") {
+                    const std::lock_guard<std::mutex> lock(table_mutex);
+                    table_key = key;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    });
+
+    DistributedIngestOptions options = ingest_options();
+    options.coordination_timeout = std::chrono::seconds(4);
+    const DistributedIngestResult result =
+        run_distributed_connector_ingest(members[0]->node, warehouse_config(),
+                                         options);
+    ingest_done.store(true);
+    watcher.join();
+    peer_one.stop();
+
+    ASSERT_FALSE(result.ok()) << "the paused participant never reported in, so "
+                                 "the ingest must fail";
+    std::string key;
+    {
+        const std::lock_guard<std::mutex> lock(table_mutex);
+        key = table_key;
+    }
+    ASSERT_FALSE(key.empty()) << "never saw the ingest's target table";
+
+    // The paused node is holding the launch it was sent: it has not ticked.
+    ASSERT_EQ(paused.node.coordinated_launch()->pending(), 1u)
+        << "the paused participant should still hold its queued launch";
+
+    // Wait until the paused node's document has merged the cleanup — the table
+    // is known to it, and known as removed. Only the running nodes tick: the
+    // paused node merges gossip on its network thread, as a paused process's
+    // socket still does, but executes nothing.
+    ASSERT_TRUE(wait_until([&] {
+        members[0]->node.tick();
+        members[1]->node.tick();
+        return paused.replication.knows_key(key) &&
+               !paused.replication.snapshot().contains(key);
+    })) << "the paused node never observed the failed ingest's cleanup";
+
+    const auto total_reads = [&] {
+        const std::lock_guard<std::mutex> lock(source.mutex);
+        int reads = 0;
+        for (const auto& [chunk, count] : source.reads) reads += count;
+        return reads;
+    };
+    const int reads_before = total_reads();
+    // Jobs replicate, so the resumed node's first tick also materializes the
+    // running nodes' ingest jobs. Any job id outside theirs is one it started.
+    std::set<std::string> running_jobs;
+    for (std::size_t index = 0; index < 2; ++index) {
+        for (const auto& job : members[index]->node.jobs()) {
+            if (job) running_jobs.insert(job->id());
+        }
+    }
+
+    // RESUME: one tick drains the queued launch on this, its owner thread.
+    const auto resumed_at = std::chrono::steady_clock::now();
+    paused.node.tick();
+    const auto drain_took = std::chrono::steady_clock::now() - resumed_at;
+
+    EXPECT_EQ(paused.node.coordinated_launch()->pending(), 0u)
+        << "the resumed node did not drain its queued launch";
+    EXPECT_EQ(total_reads(), reads_before)
+        << "the resumed participant fetched from the source for an ingest that "
+           "had already failed and been cleaned up";
+    for (const auto& job : paused.node.jobs()) {
+        EXPECT_TRUE(job && running_jobs.contains(job->id()))
+            << "the resumed participant started an ingest job for an ended run";
+    }
+    EXPECT_LT(drain_took, options.coordination_timeout)
+        << "the resumed participant waited on an agreement nobody will join";
+    EXPECT_FALSE(paused.replication.snapshot().contains(key))
+        << "the resumed participant re-adopted the dropped table";
+
+    // And it stays gone everywhere, through every surface a caller reads.
+    EXPECT_TRUE(wait_until(
+        [&] {
+            for (const auto& member : members) {
+                member->node.tick();
+                if (member->replication.snapshot().contains(key)) return false;
+                const auto database = member->node.find_database("datasets");
+                if (database && database->find_table("cached")) return false;
+                for (const auto& dataset : member->node.datasets()) {
+                    if (dataset.name == "cached") return false;
+                }
+            }
+            return true;
+        },
+        std::chrono::seconds(10)))
+        << "the failed ingest's table came back on some node";
 }
 
 // An inline connector config (rather than a saved connection) cannot be

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <set>
 #include <unordered_map>
@@ -53,6 +55,9 @@ public:
         return ParquetLazyPtr(records_[i], ids_[i]);
     }
     std::string id_at(std::size_t i) const override { return ids_.at(i); }
+    // The JSONL chunk files' bytes, from per-row line sizes kept on every write
+    // (#1195): a dataset list reads this instead of listing the chunk files.
+    std::optional<std::uint64_t> stored_bytes() const override { return stored_bytes_; }
     void flush() override;
 
 private:
@@ -68,6 +73,10 @@ private:
     std::vector<std::string> ids_;             // parallel to records_
     std::vector<std::size_t> resident_sizes_;  // parallel resident estimates
     std::size_t resident_bytes_ = 0;
+    // Each row's line in its chunk file, newline included, and their sum: the
+    // chunk files' size once every dirty chunk is flushed (#1195).
+    std::vector<std::uint64_t> stored_sizes_;  // parallel to records_
+    std::uint64_t stored_bytes_ = 0;
     // id -> row index. A SET plus a linear scan was O(n) on every update, and
     // `update` is the hot path when a multi-thousand-row table reconciles: the
     // lookup alone made reconcile quadratic before a single byte was written.

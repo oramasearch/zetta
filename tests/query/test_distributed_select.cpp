@@ -29,6 +29,7 @@
 #include "zetta/query/distributed_select.hpp"
 #include "zetta/query/executor.hpp"
 #include "zetta/query/postgres.hpp"
+#include "zetta/query/predicate.hpp"
 #include "zetta/query/service.hpp"
 
 // #833 section 5 — **scatter-gather SELECT**. A partition-only table's rows live
@@ -347,6 +348,61 @@ TEST(ScatterGatherWire, RequestAndResponseRoundTripThroughTheirSchemas) {
               (std::vector<std::string>{"segment", "amount"}));
 }
 
+// #912: a compound WHERE travels to the owner whole: AND / OR / NOT nest, and the
+// owner's decoded predicate matches exactly the rows the coordinator's would.
+TEST(ScatterGatherWire, ACompoundWhereRoundTripsToTheOwner) {
+    using zetta::query::CompareOp;
+    using zetta::query::WhereClause;
+    WhereClause pro{"plan", CompareOp::Equal, nlohmann::json("pro")};
+    WhereClause big{"amount", CompareOp::Greater, nlohmann::json(5)};
+    WhereClause free_plan{"plan", CompareOp::Equal, nlohmann::json("free")};
+    WhereClause both;
+    both.kind = WhereClause::Kind::And;
+    both.operands = {pro, big};
+    WhereClause not_free;
+    not_free.kind = WhereClause::Kind::Not;
+    not_free.operands = {free_plan};
+    WhereClause either;
+    either.kind = WhereClause::Kind::Or;
+    either.operands = {both, not_free};
+
+    PartitionScanRequest request;
+    request.table = "tbl-1";
+    request.partitions = {"part-a"};
+    request.where = either;
+    std::string error;
+    const std::optional<PartitionScanRequest> decoded =
+        zetta::query::decode_partition_scan_request(
+            zetta::query::encode_partition_scan_request(request), &error);
+    ASSERT_TRUE(decoded) << error;
+    ASSERT_TRUE(decoded->where);
+    ASSERT_EQ(decoded->where->kind, WhereClause::Kind::Or);
+    ASSERT_EQ(decoded->where->operands.size(), 2u);
+    EXPECT_EQ(decoded->where->operands[0].kind, WhereClause::Kind::And);
+    EXPECT_EQ(decoded->where->operands[0].operands[1].column, "amount");
+    EXPECT_EQ(decoded->where->operands[1].kind, WhereClause::Kind::Not);
+    EXPECT_EQ(decoded->where->operands[1].operands[0].value, nlohmann::json("free"));
+
+    for (const nlohmann::json& row :
+         {nlohmann::json{{"plan", "pro"}, {"amount", 9}},
+          nlohmann::json{{"plan", "pro"}, {"amount", 1}},
+          nlohmann::json{{"plan", "free"}, {"amount", 9}},
+          nlohmann::json{{"plan", "team"}, {"amount", 0}},
+          nlohmann::json{{"amount", 0}}}) {
+        SCOPED_TRACE(row.dump());
+        EXPECT_EQ(zetta::query::row_matches(row, decoded->where),
+                  zetta::query::row_matches(row, request.where));
+    }
+
+    // A compound with too few operands is refused at the boundary.
+    EXPECT_FALSE(zetta::query::decode_partition_scan_request(
+        R"({"table":"t","partitions":[],"where":{"and":[{"column":"a","op":"eq","value":1}]}})",
+        &error));
+    EXPECT_FALSE(zetta::query::decode_partition_scan_request(
+        R"({"table":"t","partitions":[],"where":{"not":{"column":"a","op":"like","value":1}}})",
+        &error));
+}
+
 TEST(ScatterGatherWire, MalformedMessagesAreRejectedAtTheBoundary) {
     std::string error;
     EXPECT_FALSE(zetta::query::decode_partition_scan_request("{", &error));
@@ -401,6 +457,22 @@ TEST(ScatterGatherSelect, SingleNodeAnswersAPartitionOnlyTableFromItsPartitions)
     EXPECT_EQ(filtered.rows.size(), 20u);
     EXPECT_TRUE(filtered.rows[0].contains("label"));
     EXPECT_FALSE(filtered.rows[0].contains("segment"));
+
+    // #912: a compound WHERE is pushed to the owners too, and answers like the
+    // rows filtered by hand.
+    const auto compound = service.run(
+        "SELECT label FROM datasets.cached WHERE segment = 1 AND amount > 100 "
+        "OR NOT segment <> 2 AND amount < 10;",
+        "");
+    ASSERT_TRUE(compound.ok()) << compound.error;
+    std::size_t expected = 0;
+    for (const nlohmann::json& row : sample_rows()) {
+        const int segment = row.at("segment").get<int>();
+        const int amount = row.at("amount").get<int>();
+        if ((segment == 1 && amount > 100) || (segment == 2 && amount < 10)) ++expected;
+    }
+    ASSERT_GT(expected, 0u);
+    EXPECT_EQ(compound.rows.size(), expected);
 
     node.stop();
 }

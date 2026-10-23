@@ -11,8 +11,8 @@
 #include "zetta/agent/training_policy.hpp"
 
 // A served, named AGENT: the first-class entity a user lists, selects, and chats with.
-// It binds a MODEL (a local checkpoint dir, a `model:<uuid>`, or a HuggingFace repo id
-// `zetta pull` can fetch) to an optional SYSTEM PROMPT and the TOOLS it may call, so the
+// It binds a MODEL (an operator-registered checkpoint selector; see checkpoint.hpp, #1411)
+// to an optional SYSTEM PROMPT and the TOOLS it may call, so the
 // same engine can host many specialized agents (the base agent, a customer's churn fork,
 // ...). Stored as a replicated `agent:<uuid>` entity (catalog.hpp); the CRUD surface, the
 // MCP/REST endpoints, and the GUI/web chat panels all read this record.
@@ -62,7 +62,7 @@ struct AgentRecord {
     std::string id;             // uuid; the `agent:<id>` CRDT key
     std::string name;           // display name (required, non-empty)
     std::string description;    // optional, human-readable
-    std::string model;          // required: checkpoint dir, `model:<uuid>`, or HF repo id
+    std::string model;          // native: exact operator-registered checkpoint selector
     std::string system_prompt;  // optional, prepended to the conversation
     std::vector<std::string> tools;  // tool names the agent may call (the sandbox subset)
     // What this agent is trained to be good at, and how much each matters (goal.hpp).

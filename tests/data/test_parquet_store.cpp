@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -383,4 +384,34 @@ TEST(ParquetStore, AnUnreadablePageIsAFailedHandleWithAReason) {
     EXPECT_FALSE(row.error().empty()) << "a data-loss read reports a reason, not null";
     // Absence and data loss stay distinguishable: the id is still known.
     EXPECT_EQ(store.id_at(199), "row-199");
+}
+
+// LSR-167: a body whose last row group stores the int64 column `n` under a
+// different physical type (boolean) than its schema leaf. The page that holds it
+// is a failed handle with a reason; the pages before it still read.
+TEST(ParquetStore, AChunkWhosePhysicalTypeDisagreesWithTheSchemaIsAFailedHandle) {
+    WriterOptions options;
+    options.codec = zetta::parquet::CompressionCodec::Uncompressed;
+    options.max_rows_per_row_group = 2;
+    const auto written = write_parquet_rows(sample_rows(4), options);
+    ASSERT_TRUE(written.ok()) << written.error;
+    std::string bytes = written.data;
+
+    // Rewrite the last ColumnMetaData.type in the footer (field header 0x15,
+    // zigzag int64 = 0x04) to boolean (0x00): row group 1's `n` chunk.
+    std::uint32_t footer_length = 0;
+    std::memcpy(&footer_length, bytes.data() + bytes.size() - 8, 4);
+    const std::size_t last_type = bytes.rfind(std::string("\x15\x04"), bytes.size() - 8);
+    ASSERT_NE(last_type, std::string::npos);
+    ASSERT_GE(last_type, bytes.size() - 8 - footer_length);
+    bytes[last_type + 1] = '\x00';
+
+    const ParquetStoreResult opened = ParquetStore::open_bytes(bytes, "mixed", indexed());
+    ASSERT_TRUE(opened.ok()) << opened.error;
+    ParquetStore& store = *opened.store;
+    ASSERT_TRUE(store.at(0).ok());
+
+    const ParquetLazyPtr row = store.at(3);
+    EXPECT_FALSE(row.ok());
+    EXPECT_NE(row.error().find("physical type"), std::string::npos) << row.error();
 }

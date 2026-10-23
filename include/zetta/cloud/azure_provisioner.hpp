@@ -32,7 +32,8 @@ struct AzureConfig {
     double max_price = -1.0;      // Spot max $/node-hour; -1 = up to on-demand (never price-evicted)
     std::string seed_peer;        // cluster seed host:port injected into node bootstrap to auto-join
     std::string join_token;       // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst node joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
-    std::string managed_identity; // optional user-assigned managed identity granted to burst nodes
+    std::string managed_identity; // user-assigned managed identity (resource id) granted to burst nodes; on a secure cluster it reads the join token from key_vault (#1316)
+    std::string key_vault;        // Key Vault name the join token is stored in (secret `<pool>-cluster-token`); required on a secure cluster (#1316)
     std::string tenant_id;        // optional Azure AD tenant id
 
     bool operator==(const AzureConfig&) const = default;

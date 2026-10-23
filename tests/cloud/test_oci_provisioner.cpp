@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "../../src/core/base64.hpp"
+#include "secret_argv.hpp"
 #include "temp_dir.hpp"
 #include "zetta/cloud/burst_identity.hpp"
 #include "zetta/governance/capability.hpp"
@@ -164,6 +166,8 @@ TEST(OciConfig, RoundTripsFullConfig) {
     config.image_id = "ocid1.image.oc1..cccc";
     config.spot = true;
     config.seed_peer = "10.0.0.1:7777";
+    config.vault_id = "ocid1.vault.oc1..vault";
+    config.key_id = "ocid1.key.oc1..key";
 
     const auto parsed = OciConfig::from_json(config.to_json());
     ASSERT_TRUE(parsed.has_value());
@@ -485,40 +489,165 @@ TEST(OciCliControlPlane, BringUpResizePathUpdatesAnExistingPool) {
     EXPECT_EQ(call_with(calls, {"instance-pool", "create"}), nullptr);
 }
 
-TEST(OciCliControlPlane, SpotConfigAddsPreemptibleAndSeedToInstanceDetails) {
-    std::vector<std::vector<std::string>> calls;
-    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
-        calls.push_back(argv);
-        CommandResult result;
-        if (is_resolve(argv)) {
-            result.stdout_text = "";
-        } else if (has_token(argv, "instance-pool") && has_token(argv, "create")) {
-            result.stdout_text = "ocid1.instancepool.oc1..pool\n";
-        } else if (has_token(argv, "list-instances")) {
-            result.stdout_text = two_node_listing();
-        }
-        return result;
-    };
+namespace {
 
-    OciCliControlPlane control_plane{runner};
+constexpr const char* kJoinToken =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+OciConfig secure_config() {
     OciConfig config = sample_config();
-    config.spot = true;
+    config.region = "us-ashburn-1";
     config.seed_peer = "10.0.0.1:7777";
-    // On a secure cluster the join token rides alongside the seed peer (#670),
-    // both in the one cloud-init user_data value.
-    config.join_token =
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    config.join_token = kJoinToken;
+    config.vault_id = "ocid1.vault.oc1..vault";
+    config.key_id = "ocid1.key.oc1..key";
+    return config;
+}
+
+// A runner that answers the create path; `secret_id` is what the vault secret
+// lookup prints (empty: no such secret yet). Every `--from-json file://`
+// document is read during the call and kept.
+struct VaultFake {
+    std::vector<std::vector<std::string>> calls;
+    std::string secret_id;
+    int store_exit = 0;
+    nlohmann::json parameters;
+    bool parameters_private = false;
+
+    CommandRunner runner() {
+        return [this](const std::vector<std::string>& argv) -> CommandResult {
+            calls.push_back(argv);
+            CommandResult result;
+            const std::string from_json = flag_value(argv, "--from-json");
+            if (from_json.starts_with("file://")) {
+                const std::string path = from_json.substr(7);
+                parameters = nlohmann::json::parse(zetta::test::read_whole_file(path),
+                                                   nullptr, false);
+                parameters_private = zetta::test::owner_only(path);
+            }
+            if (has_token(argv, "vault") && has_token(argv, "list")) {
+                result.stdout_text = secret_id.empty() ? "null\n" : secret_id + "\n";
+            } else if (has_token(argv, "create-base64") || has_token(argv, "update-base64")) {
+                result.exit_code = store_exit;
+                if (store_exit != 0) result.stderr_text = "NotAuthorizedOrNotFound";
+            } else if (is_resolve(argv)) {
+                result.stdout_text = "";
+            } else if (has_token(argv, "instance-configuration") && has_token(argv, "create")) {
+                result.stdout_text = "ocid1.instanceconfiguration.oc1..cfg\n";
+            } else if (has_token(argv, "instance-pool") && has_token(argv, "create")) {
+                result.stdout_text = "ocid1.instancepool.oc1..pool\n";
+            } else if (has_token(argv, "list-instances")) {
+                result.stdout_text = two_node_listing();
+            }
+            return result;
+        };
+    }
+};
+
+}  // namespace
+
+TEST(OciCliControlPlane, SpotConfigAddsPreemptibleAndSeedToInstanceDetails) {
+    VaultFake fake;
+    OciCliControlPlane control_plane{fake.runner()};
+    OciConfig config = secure_config();
+    config.spot = true;
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
-    const std::vector<std::string>* cfg = call_with(calls, {"instance-configuration", "create"});
+    const std::vector<std::string>* cfg = call_with(fake.calls, {"instance-configuration", "create"});
     ASSERT_NE(cfg, nullptr);
-    const std::string details = flag_value(*cfg, "--instance-details");
-    EXPECT_NE(details.find("preemptibleInstanceConfig"), std::string::npos);
-    EXPECT_NE(details.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
-    EXPECT_NE(details.find("ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef"
-                           "0123456789abcdef0123456789abcdef"),
-              std::string::npos);
+    const nlohmann::json details =
+        nlohmann::json::parse(flag_value(*cfg, "--instance-details"), nullptr, false);
+    ASSERT_TRUE(details.is_object());
+    const nlohmann::json& launch = details["launchDetails"];
+    EXPECT_TRUE(launch.contains("preemptibleInstanceConfig"));
+    // #1316: user_data is the base64 node bootstrap script. It names the seed
+    // and the OCI Vault secret, never the token.
+    const std::string script = zetta::detail::base64_decode_to_string(
+        launch["metadata"]["user_data"].get<std::string>());
+    EXPECT_TRUE(script.starts_with("#!/bin/sh\n"));
+    EXPECT_NE(script.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
+    EXPECT_NE(script.find("TOKEN_STORE=oci-vault"), std::string::npos);
+    EXPECT_NE(script.find("TOKEN_SECRET=zetta-burst-cluster-token"), std::string::npos);
+    EXPECT_NE(script.find("TOKEN_CONTAINER=ocid1.vault.oc1..vault"), std::string::npos);
+    EXPECT_NE(script.find("TOKEN_REGION=us-ashburn-1"), std::string::npos);
+    EXPECT_EQ(script.find(kJoinToken), std::string::npos);
+    EXPECT_FALSE(zetta::test::any_argv_contains(fake.calls, kJoinToken));
+}
+
+// #1316: the token is created as an OCI Vault secret before any capacity is
+// requested, its parameters in a private --from-json document, never argv.
+TEST(OciCliControlPlane, CreatesTheJoinTokenSecretInOciVault) {
+    VaultFake fake;
+    OciCliControlPlane control_plane{fake.runner()};
+    EXPECT_TRUE(control_plane.bring_up(secure_config(), ProvisionRequest{2, gpu_spec()}).satisfied);
+
+    const std::vector<std::string>* lookup = call_with(fake.calls, {"vault", "secret", "list"});
+    ASSERT_NE(lookup, nullptr);
+    EXPECT_TRUE(has_flag(*lookup, "--vault-id", "ocid1.vault.oc1..vault"));
+    EXPECT_TRUE(has_flag(*lookup, "--name", "zetta-burst-cluster-token"));
+    const std::vector<std::string>* create = call_with(fake.calls, {"vault", "secret", "create-base64"});
+    ASSERT_NE(create, nullptr);
+    EXPECT_TRUE(has_flag(*create, "--region", "us-ashburn-1"));
+    EXPECT_TRUE(fake.parameters_private);
+    EXPECT_EQ(fake.parameters["compartmentId"], "ocid1.compartment.oc1..aaaa");
+    EXPECT_EQ(fake.parameters["vaultId"], "ocid1.vault.oc1..vault");
+    EXPECT_EQ(fake.parameters["keyId"], "ocid1.key.oc1..key");
+    EXPECT_EQ(fake.parameters["secretName"], "zetta-burst-cluster-token");
+    EXPECT_EQ(zetta::detail::base64_decode_to_string(
+                  fake.parameters["secretContentContent"].get<std::string>()),
+              kJoinToken);
+    EXPECT_FALSE(zetta::test::any_argv_contains(fake.calls, kJoinToken));
+    // Stored before the instance configuration and pool exist.
+    const auto position = [&](const std::vector<std::string>* call) {
+        return call - fake.calls.data();
+    };
+    EXPECT_LT(position(create),
+              position(call_with(fake.calls, {"instance-configuration", "create"})));
+}
+
+// A re-burst (or a rotated token) updates the existing secret: a new version.
+TEST(OciCliControlPlane, UpdatesAnExistingJoinTokenSecret) {
+    VaultFake fake;
+    fake.secret_id = "ocid1.vaultsecret.oc1..secret";
+    OciCliControlPlane control_plane{fake.runner()};
+    EXPECT_TRUE(control_plane.bring_up(secure_config(), ProvisionRequest{2, gpu_spec()}).satisfied);
+
+    EXPECT_EQ(call_with(fake.calls, {"vault", "secret", "create-base64"}), nullptr);
+    ASSERT_NE(call_with(fake.calls, {"vault", "secret", "update-base64"}), nullptr);
+    EXPECT_EQ(fake.parameters["secretId"], "ocid1.vaultsecret.oc1..secret");
+    EXPECT_EQ(zetta::detail::base64_decode_to_string(
+                  fake.parameters["secretContentContent"].get<std::string>()),
+              kJoinToken);
+}
+
+// Fail closed: no vault / key, or a vault that refuses the token, requests no
+// capacity, and the token never falls back to user_data.
+TEST(OciCliControlPlane, FailsClosedWithoutAVaultOrWhenItRefuses) {
+    for (const bool drop_vault : {true, false}) {
+        VaultFake fake;
+        OciCliControlPlane control_plane{fake.runner()};
+        OciConfig config = secure_config();
+        if (drop_vault) {
+            config.vault_id.clear();
+        } else {
+            config.key_id.clear();
+        }
+        const ProvisionResult result = control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
+        EXPECT_FALSE(result.satisfied);
+        EXPECT_NE(result.detail.find("vault_id and key_id"), std::string::npos);
+        EXPECT_TRUE(fake.calls.empty());
+    }
+
+    VaultFake fake;
+    fake.store_exit = 1;
+    OciCliControlPlane control_plane{fake.runner()};
+    const ProvisionResult result =
+        control_plane.bring_up(secure_config(), ProvisionRequest{2, gpu_spec()});
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_NE(result.detail.find("NotAuthorizedOrNotFound"), std::string::npos);
+    EXPECT_EQ(call_with(fake.calls, {"instance-configuration", "create"}), nullptr);
+    EXPECT_EQ(call_with(fake.calls, {"instance-pool", "create"}), nullptr);
 }
 
 TEST(OciCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {

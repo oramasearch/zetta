@@ -143,8 +143,12 @@ TEST(AuditTrail, GraphChangesEmitEvents) {
     ASSERT_TRUE(project->create_graph("pipeline", sample_graph()));
     ASSERT_TRUE(project->drop_graph("pipeline"));
 
-    ASSERT_EQ(node.audit_event_count(), 2u);
+    // The project's creation is the first row (#847), then the graph changes.
+    ASSERT_EQ(node.audit_event_count(), 3u);
     auto events = node.audit_events();
+    EXPECT_EQ(events[0]->action(), AuditAction::DataChanged);
+    EXPECT_EQ(events[0]->target(), "project:churn");
+    events.erase(events.begin());
     EXPECT_EQ(events[0]->action(), AuditAction::GraphCreated);
     EXPECT_EQ(events[0]->target(), "pipeline");
     EXPECT_EQ(events[0]->actor(), "owner-key");  // the project's owner key
@@ -155,7 +159,7 @@ TEST(AuditTrail, GraphChangesEmitEvents) {
 
     // A no-op drop (graph already gone) records nothing.
     EXPECT_FALSE(project->drop_graph("pipeline"));
-    EXPECT_EQ(node.audit_event_count(), 2u);
+    EXPECT_EQ(node.audit_event_count(), 3u);
 
     node.stop();
 }
@@ -496,6 +500,8 @@ TEST(AuditTrail, BackgroundActionSpellingsRoundTrip) {
     EXPECT_EQ(audit_action_from("dataset_added"), AuditAction::DatasetAdded);
     EXPECT_EQ(to_string(AuditAction::AuditPurged), "audit_purged");
     EXPECT_EQ(audit_action_from("audit_purged"), AuditAction::AuditPurged);
+    EXPECT_EQ(to_string(AuditAction::EgressDenied), "egress_denied");
+    EXPECT_EQ(audit_action_from("egress_denied"), AuditAction::EgressDenied);
 
     zetta::governance::AuditEventValue value;
     value.action = AuditAction::DatasetAdded;

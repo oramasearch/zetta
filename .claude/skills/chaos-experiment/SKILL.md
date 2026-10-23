@@ -124,7 +124,7 @@ can express the fault, and say in the runbook why the others were not used.
 
 | Venue | What it gives | What it cannot do |
 |---|---|---|
-| **In-process `testkit::LoopbackCluster`** (`include/zetta/testkit/harness.hpp`, or a plain L1 test under `tests/cluster/`) | fast, repeatable-ish, real TCP + real collectives, full read access to every node's document | limited fault vocabulary — no packet loss, no process kill, no real clock skew |
+| **In-process `testkit::LoopbackCluster`** (`include/zetta/testkit/harness.hpp`), or the **L1 chaos harness** (`tests/cluster/chaos_harness.hpp`, [`docs/testing/chaos-experiments.md`](../../../docs/testing/chaos-experiments.md)) | fast, seeded, real TCP + mTLS, full read access to every node's document; the harness adds frame drop / delay / duplicate / reorder, partitions, abrupt stop + restart, and a lag-based timing skew | no process kill (`kill -9` is modelled as an abrupt networking stop), no real wall-clock skew, no slow disk |
 | **The in-app `zetta::testkit` catalog** ([`docs/testing/test-suite.md`](../../../docs/testing/test-suite.md)) | runs *inside a deployed binary*, reachable over `testsuite_run` / the Operations → Test suite panel, so the fault is exercised against the shipped build | a panel run must **never** leave a node wedged — scoped, self-healing faults only |
 | **A live k8s cluster via the operator e2e** ([`docs/testing/e2e-integration.md`](../../../docs/testing/e2e-integration.md), driven by the operator's `ZettaClusterE2ETest` CRD) | real network, real mTLS, real pod lifecycle — **the only place #841 has reproduced** | slow, sandbox-only, and destructive faults need explicit approval |
 
@@ -232,7 +232,9 @@ never a silent pass.
 ```
 src/core/testkit/cases_*.cpp                     in-app chaos cases (catalog in zetta-core)
 include/zetta/testkit/harness.hpp                LoopbackCluster / LoopbackOptions / ScratchDir
-tests/cluster/                                   L1 chaos tests (real TCP, in-process)
+tests/cluster/chaos_harness.hpp                  the L1 chaos harness: seeded schedule, ChaosCluster, run_step (#842)
+tests/cluster/test_chaos.cpp                     L1 chaos tests, ctest label `chaos` (real mTLS, in-process)
+include/zetta/cluster/frame_faults.hpp           FrameFaultInjector — drop/delay/duplicate/reorder inbound frames
 tests/e2e/zetta-e2e.sh                           live-cluster level-3 checks
 docs/testing/runbooks/test-cases/<id>.md         YOUR runbook, one per case
 docs/testing/test-suite.md                       the catalog table

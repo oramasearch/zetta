@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace zetta::transport {
 
@@ -26,10 +27,12 @@ struct FramedStreamOptions {
 // is returned without its trailing newline. Payloads containing newlines must
 // be encoded by the application (Zetta uses base64 for binary protocol fields).
 //
-// Exactly one read coroutine and one write coroutine may be active at once.
-// Plain TCP remains full duplex. For TLS, the class serializes OpenSSL reads
-// and writes while waiting for socket readability outside the lock, preserving
-// full-duplex progress without concurrently driving one SSL object.
+// Exactly one read coroutine and one write coroutine may be active at once,
+// on one executor. Both transports are full duplex: a read waiting for the peer
+// never holds back a write, and a write waiting for socket space never holds
+// back a read. For TLS, Corosio's openssl_stream gives socket reads and socket
+// writes separate locks and never suspends inside an SSL call, so the two never
+// drive the one SSL object at the same time (#786, #835).
 class FramedStream {
    public:
     explicit FramedStream(boost::corosio::tcp_socket socket, FramedStreamOptions options = {});
@@ -51,7 +54,14 @@ class FramedStream {
     boost::capy::task<std::optional<std::string>> read_frame();
     boost::capy::task<bool> write_frame(std::string frame);
 
+    // Change the frame bound for later reads. Cluster handshakes read the peer's
+    // HELLO under a small bound (#771), then restore the steady-state one.
+    void set_maximum_frame_bytes(std::size_t maximum_frame_bytes);
+
     bool secure() const;
+    // The DER certificate the peer presented in the TLS handshake. Empty on a
+    // plaintext stream, before the handshake, or when the peer sent none.
+    std::vector<unsigned char> peer_certificate_der() const;
     void close();
 
    private:

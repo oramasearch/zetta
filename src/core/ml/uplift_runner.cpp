@@ -105,6 +105,8 @@ UpliftRunResult run_uplift_on_table(Node &node,
     output.error = "could not create the uplift run";
     return output;
   }
+  // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+  output.run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
   output.run->set_status(pipeline::RunStatus::Running);
   output.run->add_log(
       {util::now_iso8601(), "info", "training native T- and X-learners"});

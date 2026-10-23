@@ -11,6 +11,7 @@
 #include "zetta/node.hpp"
 #include "zetta/solutions/audit_ledger.hpp"
 #include "zetta/solutions/decision_policy.hpp"
+#include "zetta/util/sha256.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
 
@@ -172,9 +173,33 @@ bool copy_to_dead_letter(
     return true;
 }
 
-bool validate_task_spec(const ActionTaskSpec& spec, std::string* error) {
+// Canonical JSON binds every immutable field, including the actor and connector
+// timeout. Credentials remain request-local; mutable delivery state is excluded.
+std::string specification_digest(Json value) {
+    for (const auto* field : {"task_id", "publication_id", "spec_digest", "attempts",
+                              "status", "ledger_action_id", "last_error",
+                              "acknowledgement", "created_at", "updated_at"}) {
+        value.erase(field);
+    }
+    try {
+        return zetta::util::sha256_hex(value.dump());
+    } catch (const Json::exception&) {
+        // Native callers can supply strings that are not valid UTF-8. Do not
+        // replace bytes: that could merge distinct specifications into one key.
+        return {};
+    }
+}
+
+template <typename Record>
+bool binding_matches(const Record& record, const std::string& actor) {
+    return !actor.empty() && record.actor == actor && !record.spec_digest.empty() &&
+           record.spec_digest == specification_digest(to_json(record));
+}
+
+ActionTask task_from_spec(const ActionTaskSpec& spec, std::string actor) {
     ActionTask task;
     task.task_id = "validation";
+    task.actor = std::move(actor);
     task.decision_id = spec.decision_id;
     task.owner = spec.owner;
     task.sla_due_at = spec.sla_due_at;
@@ -190,20 +215,21 @@ bool validate_task_spec(const ActionTaskSpec& spec, std::string* error) {
     task.currency = spec.currency;
     task.created_at = "validation";
     task.updated_at = "validation";
-    return spec.max_attempts <= 100 &&
-           validate(task_validator(), to_json(task), error);
+    task.spec_digest = specification_digest(to_json(task));
+    return task;
 }
 
-bool validate_publication_spec(
-    const ReportPublicationSpec& spec,
-    std::string* error) {
+ReportPublication publication_from_spec(const ReportPublicationSpec& spec,
+                                        std::string actor) {
     ReportPublication publication;
     publication.publication_id = "validation";
+    publication.actor = std::move(actor);
     publication.run_id = spec.run_id;
     publication.title = spec.title;
     publication.driver_report = spec.driver_report;
     publication.decision_log = spec.decision_log;
     publication.endpoint = spec.connector.endpoint;
+    publication.timeout_seconds = spec.connector.timeout_seconds;
     publication.idempotency_key = spec.idempotency_key;
     publication.max_attempts = spec.max_attempts;
     publication.model_version = spec.model_version;
@@ -213,8 +239,8 @@ bool validate_publication_spec(
     publication.currency = spec.currency;
     publication.created_at = "validation";
     publication.updated_at = "validation";
-    return spec.max_attempts <= 100 &&
-           validate(publication_validator(), to_json(publication), error);
+    publication.spec_digest = specification_digest(to_json(publication));
+    return publication;
 }
 
 void add_common_headers(
@@ -223,6 +249,10 @@ void add_common_headers(
     const ActionConnectorConfig& config) {
     request.method = "POST";
     request.url = config.endpoint;
+    // The endpoint is whatever the action or solution author stored, so it may
+    // reach only public addresses (plus the classes the node allows), checked on
+    // the resolved address at delivery (#1394, connect/destination_policy.hpp).
+    request.destinations = zetta::connect::DestinationPolicy::PublicOnly;
     request.timeout_seconds = config.timeout_seconds;
     request.headers.push_back({"Content-Type", "application/json"});
     request.headers.push_back({"Idempotency-Key", message.idempotency_key});
@@ -478,6 +508,8 @@ std::optional<ActionTaskStatus> action_task_status_from(
 
 Json to_json(const ActionTask& task) {
     return {{"task_id", task.task_id},
+            {"actor", task.actor},
+            {"spec_digest", task.spec_digest},
             {"decision_id", task.decision_id},
             {"owner", task.owner},
             {"sla_due_at", task.sla_due_at},
@@ -502,11 +534,14 @@ Json to_json(const ActionTask& task) {
 
 Json to_json(const ReportPublication& publication) {
     return {{"publication_id", publication.publication_id},
+            {"actor", publication.actor},
+            {"spec_digest", publication.spec_digest},
             {"run_id", publication.run_id},
             {"title", publication.title},
             {"driver_report", publication.driver_report},
             {"decision_log", publication.decision_log},
             {"endpoint", publication.endpoint},
+            {"timeout_seconds", publication.timeout_seconds},
             {"idempotency_key", publication.idempotency_key},
             {"max_attempts", publication.max_attempts},
             {"attempts", publication.attempts},
@@ -536,6 +571,8 @@ const Json& action_task_schema() {
         "cell", "currency", "created_at", "updated_at"],
       "properties": {
         "task_id": {"type": "string", "minLength": 1},
+        "actor": {"type": "string"},
+        "spec_digest": {"type": "string", "pattern": "^([0-9a-f]{64})?$"},
         "decision_id": {"type": "string", "minLength": 1},
         "owner": {"type": "string", "minLength": 1},
         "sla_due_at": {"type": "string", "minLength": 1},
@@ -574,11 +611,14 @@ const Json& report_publication_schema() {
         "agent_version", "cell", "currency", "created_at", "updated_at"],
       "properties": {
         "publication_id": {"type": "string", "minLength": 1},
+        "actor": {"type": "string"},
+        "spec_digest": {"type": "string", "pattern": "^([0-9a-f]{64})?$"},
         "run_id": {"type": "string", "minLength": 1},
         "title": {"type": "string", "minLength": 1},
         "driver_report": {"type": "object"},
         "decision_log": {"type": "array", "items": {"type": "object"}},
         "endpoint": {"type": "string", "minLength": 1},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
         "idempotency_key": {"type": "string", "minLength": 1},
         "max_attempts": {"type": "integer", "minimum": 1, "maximum": 100},
         "attempts": {"type": "integer", "minimum": 0},
@@ -606,6 +646,8 @@ std::optional<ActionTask> parse_action_task(
     }
     ActionTask task;
     task.task_id = value.at("task_id").get<std::string>();
+    task.actor = value.value("actor", std::string{});
+    task.spec_digest = value.value("spec_digest", std::string{});
     task.decision_id = value.at("decision_id").get<std::string>();
     task.owner = value.at("owner").get<std::string>();
     task.sla_due_at = value.at("sla_due_at").get<std::string>();
@@ -639,11 +681,14 @@ std::optional<ReportPublication> parse_report_publication(
     }
     ReportPublication publication;
     publication.publication_id = value.at("publication_id").get<std::string>();
+    publication.actor = value.value("actor", std::string{});
+    publication.spec_digest = value.value("spec_digest", std::string{});
     publication.run_id = value.at("run_id").get<std::string>();
     publication.title = value.at("title").get<std::string>();
     publication.driver_report = value.at("driver_report");
     publication.decision_log = value.at("decision_log");
     publication.endpoint = value.at("endpoint").get<std::string>();
+    publication.timeout_seconds = value.value("timeout_seconds", 30);
     publication.idempotency_key =
         value.at("idempotency_key").get<std::string>();
     publication.max_attempts = value.at("max_attempts").get<std::size_t>();
@@ -685,12 +730,28 @@ ActionRuntime::ActionRuntime(
 
 std::optional<ActionTask> ActionRuntime::enqueue_task(
     ActionTaskSpec spec,
-    std::string,
+    std::string actor,
     std::string* error) {
-    if (!validate_task_spec(spec, error)) {
-        if (error != nullptr && error->empty()) {
+    if (actor.empty()) {
+        if (error != nullptr) {
+            *error = "action task requires a nonempty actor";
+        }
+        return std::nullopt;
+    }
+    if (spec.max_attempts > 100) {
+        if (error != nullptr) {
             *error = "max_attempts must not exceed 100";
         }
+        return std::nullopt;
+    }
+    auto task = task_from_spec(spec, actor);
+    if (task.spec_digest.empty()) {
+        if (error != nullptr) {
+            *error = "action task specification cannot be encoded as JSON";
+        }
+        return std::nullopt;
+    }
+    if (!validate(task_validator(), to_json(task), error)) {
         return std::nullopt;
     }
     auto store = policy_store_for(node_, error);
@@ -715,28 +776,24 @@ std::optional<ActionTask> ActionRuntime::enqueue_task(
     if (!table) {
         return std::nullopt;
     }
-    if (const auto existing = find_record(
-            table,
-            "idempotency_key",
-            spec.idempotency_key)) {
-        return parse_action_task(existing->value, error);
+    if (const auto existing =
+            find_record(table, "idempotency_key", spec.idempotency_key)) {
+        const auto stored = parse_action_task(existing->value, error);
+        if (!stored) {
+            return std::nullopt;
+        }
+        if (!binding_matches(*stored, actor) ||
+            stored->spec_digest != task.spec_digest) {
+            if (error != nullptr) {
+                *error =
+                    "idempotency key is bound to another actor or task specification";
+            }
+            return std::nullopt;
+        }
+        return stored;
     }
 
-    ActionTask task;
     task.task_id = zetta::util::new_uuid();
-    task.decision_id = std::move(spec.decision_id);
-    task.owner = std::move(spec.owner);
-    task.sla_due_at = std::move(spec.sla_due_at);
-    task.connector = spec.connector.kind;
-    task.endpoint = std::move(spec.connector.endpoint);
-    task.timeout_seconds = spec.connector.timeout_seconds;
-    task.payload = std::move(spec.payload);
-    task.idempotency_key = std::move(spec.idempotency_key);
-    task.max_attempts = spec.max_attempts;
-    task.model_version = std::move(spec.model_version);
-    task.agent_version = std::move(spec.agent_version);
-    task.cell = std::move(spec.cell);
-    task.currency = std::move(spec.currency);
     task.created_at = zetta::util::now_iso8601();
     task.updated_at = task.created_at;
     if (!persist_task(node_, task, error)) {
@@ -769,6 +826,12 @@ std::optional<ActionTask> ActionRuntime::deliver_task(
     std::string* error) {
     auto task = find_task(task_id, error);
     if (!task) {
+        return std::nullopt;
+    }
+    if (!binding_matches(*task, actor)) {
+        if (error != nullptr) {
+            *error = "action task binding does not match actor or stored specification";
+        }
         return std::nullopt;
     }
     if (task->status == ActionTaskStatus::Delivered ||
@@ -898,7 +961,7 @@ std::optional<ActionTask> ActionRuntime::execute_closed_loop(
     return deliver_task(task->task_id, token, std::move(actor), error);
 }
 
-std::optional<ReportPublication> ActionRuntime::publish_report(
+std::optional<PreparedReportPublication> ActionRuntime::prepare_report(
     ReportPublicationSpec spec,
     std::string actor,
     std::string* error) {
@@ -908,17 +971,34 @@ std::optional<ReportPublication> ActionRuntime::publish_report(
         }
         return std::nullopt;
     }
-    if (!validate_publication_spec(spec, error)) {
-        if (error != nullptr && error->empty()) {
+    if (actor.empty()) {
+        if (error != nullptr) {
+            *error = "report publication requires a nonempty actor";
+        }
+        return std::nullopt;
+    }
+    if (spec.max_attempts > 100) {
+        if (error != nullptr) {
             *error = "max_attempts must not exceed 100";
         }
+        return std::nullopt;
+    }
+    auto candidate = publication_from_spec(spec, actor);
+    if (candidate.spec_digest.empty()) {
+        if (error != nullptr) {
+            *error = "report specification cannot be encoded as JSON";
+        }
+        return std::nullopt;
+    }
+    if (!validate(publication_validator(), to_json(candidate), error)) {
         return std::nullopt;
     }
     auto table = ensure_table(node_, kPublicationTableName, error);
     if (!table) {
         return std::nullopt;
     }
-    ReportPublication publication;
+    PreparedReportPublication prepared;
+    ReportPublication& publication = prepared.publication;
     const auto existing = find_record(
         table,
         "idempotency_key",
@@ -928,35 +1008,24 @@ std::optional<ReportPublication> ActionRuntime::publish_report(
         if (!parsed) {
             return std::nullopt;
         }
+        if (!binding_matches(*parsed, actor) ||
+            parsed->spec_digest != candidate.spec_digest) {
+            if (error != nullptr) {
+                *error =
+                    "idempotency key is bound to another actor or report specification";
+            }
+            return std::nullopt;
+        }
         publication = *parsed;
         if (publication.status == ActionTaskStatus::Delivered ||
             publication.status == ActionTaskStatus::DeadLetter) {
-            return publication;
+            return prepared;
         }
-    }
-    const zetta::connect::HttpTransport transport =
-        resolve_transport(transport_);
-    if (!transport) {
-        if (error != nullptr) {
-            *error = "no outbound HTTP transport is installed";
-        }
-        return std::nullopt;
     }
 
     if (!existing) {
+        publication = std::move(candidate);
         publication.publication_id = zetta::util::new_uuid();
-        publication.run_id = std::move(spec.run_id);
-        publication.title = std::move(spec.title);
-        publication.driver_report = std::move(spec.driver_report);
-        publication.decision_log = std::move(spec.decision_log);
-        publication.endpoint = spec.connector.endpoint;
-        publication.idempotency_key = std::move(spec.idempotency_key);
-        publication.max_attempts = spec.max_attempts;
-        publication.model_version = std::move(spec.model_version);
-        publication.policy_version = std::move(spec.policy_version);
-        publication.agent_version = std::move(spec.agent_version);
-        publication.cell = std::move(spec.cell);
-        publication.currency = std::move(spec.currency);
         publication.created_at = zetta::util::now_iso8601();
         publication.updated_at = publication.created_at;
         if (!persist_publication(node_, publication, error)) {
@@ -986,49 +1055,143 @@ std::optional<ReportPublication> ActionRuntime::publish_report(
                        {"decision_log", publication.decision_log}};
     ActionConnectorConfig connector_config = spec.connector;
     connector_config.endpoint = publication.endpoint;
-    while (publication.attempts < publication.max_attempts) {
-        const auto response = transport(
-            connector->request(message, connector_config));
-        ++publication.attempts;
-        publication.updated_at = zetta::util::now_iso8601();
-        if (response.ok()) {
-            publication.status = ActionTaskStatus::Delivered;
-            publication.acknowledgement = acknowledgement_from(response);
-            publication.last_error.clear();
-            record_delivery_outcome(
-                node_,
-                publication.ledger_action_id,
-                "acknowledged",
-                response.status,
-                publication.currency);
-            if (!persist_publication(node_, publication, error)) {
-                return std::nullopt;
-            }
-            return publication;
-        }
-        publication.last_error = response_error(response);
+    connector_config.timeout_seconds = publication.timeout_seconds;
+    prepared.request = connector->request(message, connector_config);
+    return prepared;
+}
+
+std::optional<ReportPublication> ActionRuntime::record_report_attempt(
+    ReportPublication publication,
+    const zetta::connect::HttpResponse& response,
+    std::string* error) {
+    ++publication.attempts;
+    publication.updated_at = zetta::util::now_iso8601();
+    if (response.ok()) {
+        publication.status = ActionTaskStatus::Delivered;
+        publication.acknowledgement = acknowledgement_from(response);
+        publication.last_error.clear();
         record_delivery_outcome(
             node_,
             publication.ledger_action_id,
-            "delivery_failed",
+            "acknowledged",
             response.status,
             publication.currency);
         if (!persist_publication(node_, publication, error)) {
             return std::nullopt;
         }
+        return publication;
     }
-    publication.status = ActionTaskStatus::DeadLetter;
-    publication.updated_at = zetta::util::now_iso8601();
+    publication.last_error = response_error(response);
     record_delivery_outcome(
         node_,
         publication.ledger_action_id,
-        "dead_letter",
-        0,
+        "delivery_failed",
+        response.status,
         publication.currency);
+    if (publication.attempts >= publication.max_attempts) {
+        publication.status = ActionTaskStatus::DeadLetter;
+        record_delivery_outcome(
+            node_,
+            publication.ledger_action_id,
+            "dead_letter",
+            0,
+            publication.currency);
+    }
     if (!persist_publication(node_, publication, error)) {
         return std::nullopt;
     }
     return publication;
+}
+
+std::optional<ReportPublication> ActionRuntime::publish_report(
+    ReportPublicationSpec spec,
+    std::string actor,
+    std::string* error) {
+    if (!resolve_transport(transport_) &&
+        spec.connector.kind == ActionConnectorKind::Webhook) {
+        // Refuse before anything is persisted, as before the prepare/record
+        // split, unless the publication is already settled (prepare_report
+        // returns a settled one without a request).
+        auto table = ensure_table(node_, kPublicationTableName, error);
+        if (!table) {
+            return std::nullopt;
+        }
+        const auto existing = find_record(
+            table, "idempotency_key", spec.idempotency_key);
+        if (!existing) {
+            if (error != nullptr) {
+                *error = "no outbound HTTP transport is installed";
+            }
+            return std::nullopt;
+        }
+    }
+    auto prepared = prepare_report(std::move(spec), std::move(actor), error);
+    if (!prepared) {
+        return std::nullopt;
+    }
+    if (!prepared->request) {
+        return std::move(prepared->publication);
+    }
+    const zetta::connect::HttpTransport transport =
+        resolve_transport(transport_);
+    if (!transport) {
+        if (error != nullptr) {
+            *error = "no outbound HTTP transport is installed";
+        }
+        return std::nullopt;
+    }
+    ReportPublication publication = std::move(prepared->publication);
+    if (publication.attempts >= publication.max_attempts) {
+        // A record left pending with no attempts remaining settles now.
+        publication.status = ActionTaskStatus::DeadLetter;
+        publication.updated_at = zetta::util::now_iso8601();
+        record_delivery_outcome(
+            node_,
+            publication.ledger_action_id,
+            "dead_letter",
+            0,
+            publication.currency);
+        if (!persist_publication(node_, publication, error)) {
+            return std::nullopt;
+        }
+        return publication;
+    }
+    while (publication.status == ActionTaskStatus::Pending) {
+        auto recorded = record_report_attempt(
+            std::move(publication), transport(*prepared->request), error);
+        if (!recorded) {
+            return std::nullopt;
+        }
+        publication = std::move(*recorded);
+    }
+    return publication;
+}
+
+zetta::runtime::task<zetta::connect::HttpResponse> send_report_request(
+    zetta::connect::HttpRequest request) {
+    // Copies, so a transport swapped while this request is in flight cannot
+    // change the function under it.
+    const zetta::connect::AsyncHttpTransport asynchronous =
+        zetta::connect::default_async_http_transport();
+    if (asynchronous) {
+        // The error_code half is always clear: a transport failure arrives in
+        // HttpResponse::error (http_transport.hpp).
+        auto [transport_error, response] = co_await asynchronous(request);
+        (void)transport_error;
+        co_return std::move(response);
+    }
+    zetta::connect::HttpTransport synchronous =
+        zetta::connect::default_http_transport();
+    if (synchronous) {
+        // The synchronous transport blocks the thread it runs on, so it runs on
+        // a runtime pool worker — never on the Node owner (lake#801).
+        co_return co_await zetta::runtime::offload(
+            [synchronous = std::move(synchronous),
+             request = std::move(request)] { return synchronous(request); });
+    }
+    zetta::connect::HttpResponse response;
+    response.error = "no outbound HTTP transport is installed";
+    co_return response;
 }
 
 }  // namespace zetta::solutions

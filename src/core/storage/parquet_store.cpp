@@ -470,6 +470,12 @@ RowPageResult ParquetPager::decode_page(std::uint32_t page) const {
                         std::to_string(span.rows);
             return out;
         }
+        if (std::string shape = zetta::parquet::validate_decoded_column(column);
+            !shape.empty()) {
+            out.error = "parquet store '" + display_name_ + "': row group " +
+                        std::to_string(page) + ": " + shape;
+            return out;
+        }
 
         // Transpose the typed column back into one JSON value per row — the same
         // mapping read_parquet_rows applies, a row group at a time.

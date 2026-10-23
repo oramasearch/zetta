@@ -233,7 +233,7 @@ thereby audited, not just the boundary itself; **approval gates** for risky acti
 are their own slice, as is **granting a capability** as a first-class
 command/event (ENT-22 → `GrantCapability` / `CapabilityGranted`). The finer
 access **tiers** (team / partner / per-dataset) extend `ResourceKind` (which already
-has `Topic` for pub/sub, a name-prefix grant like `Blob`, #1029, `Collection`
+has `Topic` for pub/sub, a name-prefix grant, #1029 (`Blob` is a `/`-path prefix, #767), `Collection`
 for keyed record collections, also a name prefix, #1231, and `Bucket` for object
 buckets, a name prefix too, #1005) and
 `Scope`, and new rights extend `CapabilityDomain` / the open action taxonomy,
@@ -267,7 +267,8 @@ UserRole (user_role:<uuid>)  a user↔role assignment. A user's effective
 Token  (token:<uuid>)        a bearer credential that authenticates as a user,
   user, type (api|access),     stored HASHED at rest. The plaintext secret is
   hash, salt, created,         shown ONCE at creation and never persisted; only
-  expires_at?, revoked         hash = SHA-256(salt || secret) + salt is stored.
+  expires_at?, revoked         hash = SHA-256(salt || secret) + salt is stored
+                               (the bootstrap owner's: the PBKDF2 form, below).
 ```
 
 ### Hashed tokens
@@ -283,6 +284,36 @@ tokens, and resolves to the owning **User**. The crypto lives in one OpenSSL TU,
 self-contained `zetta::util::sha256_hex` is deliberately **not** used for secrets
 (it is not constant-time — "content fingerprints, never secrets").
 
+**The bootstrap owner's token is stored through a key-derivation function (#769).**
+A generated secret carries 256 bits of entropy, so one SHA-256 is enough at rest.
+The owner's secret is the operator's `--admin-token` / `ZETTA_ADMIN_TOKEN`, which a
+person may have chosen, so it is stored as PBKDF2-HMAC-SHA256 over the salt with
+600,000 iterations (OWASP's figure; OpenSSL `PKCS5_PBKDF2_HMAC`). The stored
+`hash` names its form, `pbkdf2-sha256$<iterations>$<64 hex>`, so the field and
+the schema are unchanged and a plain 64-hex hash keeps meaning single SHA-256.
+Owner tokens seeded before #769 stay in the SHA-256 form and keep working.
+
+Checking a PBKDF2 token costs a full derivation, and validation runs on the node's
+owning loop, so `Node::authenticate_token` takes two passes:
+
+1. Every cheap match first: SHA-256 tokens, and PBKDF2 tokens already verified in
+   this process. After a PBKDF2 token's first successful check it keeps a
+   **memory-only** SHA-256(salt || secret) verifier (never persisted), so later
+   checks, right or wrong, cost one SHA-256.
+2. Only if nothing matched, the PBKDF2 tokens not yet verified, under a budget: a
+   burst of 4 derivations, refilled at one per second. Past it, an unverified
+   PBKDF2 token answers no. This bounds the CPU an unauthenticated caller can burn
+   and the rate of online guesses at the owner's secret.
+
+`Node::bootstrap_owner` verifies the operator's secret at every start (the
+operator injects it on each start), so the owner normally never reaches pass 2.
+A node started without the secret, or a peer that received the owner token by
+replication, verifies it on the owner's first request instead.
+
+A peer on a release before #769 reads the PBKDF2 form as an ordinary hash and
+never matches it: during a rolling upgrade the owner token authenticates only on
+upgraded nodes.
+
 ### Built-in roles
 
 `builtin_role_permissions(name)` seeds three roles, all unrestricted in scope
@@ -291,7 +322,7 @@ terms of the **permission vocabulary** (below), not raw capabilities:
 
 | role   | permissions |
 |--------|-------------|
-| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `studies:promote`, `studies:delete`, `serving:manage`, `cloud:manage` (#799, #1138, #1158), **and the pub/sub atoms** `pubsub:*` (#1029) |
+| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `studies:promote`, `studies:delete`, `serving:manage` (which includes `expose_pipeline` / `unexpose_pipeline`, zetta#1289), `serving:run`, `cloud:manage` (#799, #1138, #1158), **and the pub/sub atoms** `pubsub:*` (#1029) |
 | writer | `sql:read`, `sql:write`, `sql:ddl`, `mcp:call`, `serving:read` |
 | reader | `sql:read`, `serving:read`, `mcp:call` |
 
@@ -307,6 +338,13 @@ otherwise an upgraded cluster's `admin` (seeded once into the replicated store)
 keeps denying the new right. Every role carrying a built-in name is repaired in
 place (CRDT multi-leader seeding can leave duplicates; all converge to canonical).
 
+Between starts the built-ins are **fixed** (#761): `GRANT`/`REVOKE` of a
+permission on `admin`, `writer` or `reader`, and `DROP ROLE` of one, are refused
+for every caller, an admin and the trusted local session included. Assigning and
+unassigning a built-in (`GRANT ROLE reader TO dana`) is not editing it and stays
+allowed, under the bound in [bounded role management](#bounded-role-management-761).
+A different permission set is a custom role.
+
 ### Bootstrap owner (closes #733)
 
 On node start, bootstrap runs when the **user store is empty**. It mints an
@@ -317,20 +355,40 @@ enabled **always** ends up with an owner token, by one of two paths:
 
 - **Secret supplied** (`--admin-token` / `ZETTA_ADMIN_TOKEN`; the operator always
   injects `ZETTA_ADMIN_TOKEN`). `Node::bootstrap_owner(secret)` seeds the owner
-  from that secret — hashed at rest, **never** logged (the operator already holds
-  it); the node logs only **where** the token record lives.
+  from that secret — stored in the PBKDF2 form (above), **never** logged (the
+  operator already holds it); the node logs only **where** the token record lives.
 - **No secret supplied — never-locked-out auto-seed (#799).** On a fresh node with
   the MCP server enabled and an empty user store, the node **generates** an owner
   access token and prints it **once** ("SAVE THIS — shown only once"), so a node
   that would otherwise be unreachable under the always-on gate is never locked
   out. The generated secret is shown that one time and only its hash is stored.
 
+**Seeding cannot lock the node out (#769).** The token hash is derived before
+anything is written. If assigning `admin` or writing the token fails after the
+`owner` user was created, that user is dropped again (with its assignment), so the
+store is empty and the next start retries the whole seed. And a store whose only
+user is `owner` with no token, which is what a seed cut short by a crash leaves,
+is **resumed**: the next start reuses that user, assigns `admin` (idempotent) and
+writes the token, instead of skipping because the store is not empty.
+**After the join, under the identity root (#763).** `main.cpp` seeds the owner
+only after the cluster starts and, with seeds configured, after a peer's
+document matches its own (bounded wait), so a node joining an existing cluster
+sees the cluster's owner before it decides the store is empty. Only a node that
+holds the cluster's identity root seeds (`Node::bootstrap_owner` refuses on a
+verify-only node), and the owner, its token, its assignment and the built-in
+roles have ids fixed by the root, so nodes that seed at once converge to one
+owner. Every identity record is sealed and verified on arrival; see
+[identity-seal.md](identity-seal.md).
+
 ### Read views + issuance
 
 `system.users`, `system.roles`, and `system.tokens` are read views
 (`src/core/query/executor.cpp`) mirroring `system.principals`/`system.keys`. The
 **tokens view exposes no secret material** — id, user, type, created, expiry, and
-revoked only, never the hash or salt. A minimal SQL issuance surface exists:
+revoked only, never the hash or salt. These views, `system.policies` and the
+other governance tables are readable by an admin (`cluster:admin`) and the
+trusted local session only; who may read each system table is
+[system-catalog-access.md](system-catalog-access.md) (#766). A minimal SQL issuance surface exists:
 `CREATE USER <name>` and `CREATE TOKEN FOR <user> [TYPE access|api]` (the latter
 returns the plaintext secret once, in a single result row). Tokens can also be
 issued programmatically via `Node::create_token`.
@@ -341,7 +399,12 @@ issued programmatically via `Node::create_token`.
 > `Node::tick()` reconciles the on-disk projection (materialize-only), and each
 > entity persists to a UUID-named folder under the data dir
 > (`user.json` / `role.json` / `token.json` / `user_role.json`). A token's hash
-> replicates in full; the plaintext never enters the document.
+> replicates in full; the plaintext never enters the document. Every one of these
+> records is **sealed** by the cluster's identity root when written, and a node
+> materializes a replicated record only when its seal verifies
+> ([identity-seal.md](identity-seal.md), #764). The seal covers a per-key version
+> and a removal is a sealed tombstone, so a revoked token or a removed
+> assignment cannot be replayed back, and only the root removes a record (#1341).
 
 ### Connection-owned app credentials (#1280)
 
@@ -397,8 +460,8 @@ their own. The gate is **always on** (#799) — there is no mode switch:
   error, exit 2.)
 - **No shared-secret path anywhere.** The legacy `--mcp-token` CLI flag is gone,
   and the embedded `ApiServer` no longer carries a `bearer_token` (or
-  `require_auth`) option — its gate is **unconditional**. A bearer that resolves to
-  a user via the token store is the *only* way in; there is no shared secret to
+  `require_auth`) option — its gate is **unconditional**. A native bearer or
+  configured Clerk JWT must resolve to a user; there is no shared secret to
   configure. (The OpenAPI document still *names* its security scheme `bearer_token`
   — that is just the scheme identifier saying a bearer is required.)
 - **The in-process headed-GUI local session is unaffected.** The governed console
@@ -409,6 +472,38 @@ their own. The gate is **always on** (#799) — there is no mode switch:
 
 The CORS preflight (`OPTIONS`) is answered by the `cors()` middleware **before**
 the gate, so a credential-less browser preflight is never blocked.
+
+### Clerk key caching (#1416)
+
+When `--clerk-issuer` is configured, the gate tries the native token store first,
+then verifies JWT-shaped bearers (including `zetta_session` cookie values)
+against the configured issuer's JWKS. The subject maps to `clerk:<sub>` under
+the same role and capability checks. Without an issuer, authentication needs no
+Clerk egress.
+
+`ClerkJwksCache` uses the installed asynchronous native HTTP transport. One
+refresh per issuer serves every concurrent miss; callers suspend on
+a completion event, leaving the HTTP executor free to authenticate native tokens.
+The fetch and each cold-cache wait have a two-second deadline. The response is
+limited to 1 MiB. The initiating request owns the refresh and defers cancellation until its
+deadline; cancelling another waiter leaves that refresh running;
+a cancelled transport waiter never reads the response while I/O still owns it.
+
+Successful key sets stay fresh for 55 minutes. After that, existing keys can
+verify signatures for at most five more minutes after a refresh fails.
+A failed refresh never advances that cutoff; at 60 minutes without a successful
+refresh, Clerk authentication returns 401. A successful refresh replaces the
+whole key set, so removed keys stop verifying immediately. Unknown key IDs do
+not force another fetch or extend any deadline.
+
+Network errors, timeouts, non-2xx status, malformed or empty JWKS, and transport
+exceptions all defer the next fetch for five seconds. Retry timing uses the
+monotonic clock. Issuer mismatch, expired/not-yet-valid tokens, and malformed
+headers fail before fetching. Signature checks still apply to cached and stale
+keys. These are node-local public-key caches, not replicated identity state;
+each node verifies independently. There is no new JSON format or capability.
+The synchronous verifier remains available to non-coroutine callers and shares
+the same cache; custom blocking transports must honor `timeout_seconds`.
 
 ### From bearer to a capability decision
 
@@ -466,6 +561,7 @@ can never disagree:
 | `sql:ddl`       | `data:ddl`                     | create/drop databases + tables |
 | `mcp:call`      | `api:query`                    | invoke the MCP/REST capability surface (the API-call right) |
 | `serving:read`  | `data:predict`, `data:search`  | call the governed serving routes (predict + search) |
+| `serving:run`   | `data:run_pipeline`            | run a published pipeline (its served route, `run_published_pipeline`); object-scopable `ON PROJECT <name>`; the caller also needs `sql:read` on the tables it reads (zetta#1289) |
 | `users:manage`  | `api:manage_users`             | create/disable/drop users |
 | `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
 | `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |
@@ -477,7 +573,7 @@ can never disagree:
 | `metrics:read` / `metrics:write` | `data:metrics_read` / `data:metrics_write`, `orchestration:create_metric` | query, record and declare labelled time series (#1231, [../data/time-series.md](../data/time-series.md)) |
 | `network:read` / `network:write` | `data:network_records_read` / `data:network_records_write` | Lake reads and zetta-tunnel writes the typed, retained records in one workspace's Zetta; neither atom grants generic record access (#1281, [../network/network-records.md](../network/network-records.md)) |
 | `objects:read` / `objects:write` / `objects:manage` | `data:objects_read` / `data:objects_write` / `orchestration:objects_manage` | read, write (and hold the owner lease of) and declare object buckets; object-scopable by bucket name prefix, `ON BUCKET <prefix>`; only `admin` holds them by default (#1005, [../data/object-store.md](../data/object-store.md#rights)) |
-| `pipelines:manage` | all pipeline, dataset/connector, snapshot, graph, agent/profile/plan, solution, decision-policy, experiment, and run-metric write operations, and the dataset, model, run and index deletes (lake#645) in `permission.cpp` | drive the authoring → gate → deploy → run → governed-action control surface over MCP/REST, including run parameters, metric series, and typed artifacts (#1102, #1103, #1104, #1105, #1137) |
+| `pipelines:manage` | all pipeline, dataset/connector, snapshot, graph, agent/profile/plan, solution, decision-policy, experiment, and run-metric write operations, the run-proposal decisions `propose_run` / `approve_run_proposal` / `reject_run_proposal` (#969), and the dataset, model, run and index deletes (lake#645) in `permission.cpp` | drive the authoring → gate → deploy → run → governed-action control surface over MCP/REST, including run parameters, metric series, and typed artifacts (#1102, #1103, #1104, #1105, #1137) |
 | `studies:promote`  | `orchestration:promote_trial` | register a complete trial's Model as the Study's promoted project version (#1138) |
 | `studies:delete`   | `orchestration:delete_study` | delete a stopped or complete Study and its non-promoted trial Runs while retaining promoted lineage (#1158) |
 | `serving:manage`   | `orchestration:{expose_model, unexpose_model, expose_index, unexpose_index}` | expose / unexpose models + indexes for governed serving |
@@ -529,6 +625,43 @@ no rights and gains exactly the permissions granted — nothing more. The same
 operations exist programmatically on `Node` (`create_role`, `grant_permissions`,
 `revoke_permissions`, `drop_role`, `assign_role`, `unassign_role`).
 
+### Bounded role management (#761)
+
+`roles:manage` lets a caller run the role statements. It does **not** let the
+caller hand out more than it has: before [#761](https://github.com/oramasearch/zetta/issues/761)
+a delegate holding only `roles:manage` could run `GRANT ROLE admin TO <itself>`,
+so the permission quietly meant full admin. The executor now bounds every role
+statement by the caller's own rights:
+
+| Statement | Allowed only when |
+|---|---|
+| `GRANT <perms> TO ROLE r` | the caller holds every named permission as a flat right, **and** holds every right `r` already carries, **and** `r` is not built-in |
+| `GRANT <perms> ON <object> TO ROLE r` | the caller holds every named permission on the **whole** object (a flat right, or a grant covering it: a table needs the whole table, not some of its columns; a column list needs every column in it), and the same two conditions on `r` |
+| `REVOKE <perms> [ON <object>] FROM ROLE r` | the caller holds every right `r` carries, and `r` is not built-in |
+| `DROP ROLE r` | the caller holds every right `r` carries, and `r` is not built-in |
+| `GRANT ROLE r TO u`, `REVOKE ROLE r FROM u` | the caller holds every right `r` carries |
+| `CREATE ROLE r` | `roles:manage` alone (a new role carries nothing) |
+
+"Holds every right `r` carries" means each of `r`'s flat capabilities is one of
+the caller's flat rights, and each of its object-scoped grants is covered by the
+caller's own rights on that object. So:
+
+- **No escalation.** A caller grants only what it holds itself, so a role it
+  creates or edits, and so its own roles, never carry a right it lacks.
+- **Nothing above you.** A caller cannot assign, unassign, change or drop a role
+  that carries a right it lacks. A delegate can neither grant itself `admin` nor
+  take `admin` away from the owner (`REVOKE ROLE admin FROM owner`).
+- **Admin and owner.** `admin` carries every permission, so only a caller holding
+  all of them (an admin) may grant or remove it. The bootstrap `owner` is an
+  ordinary user holding `admin`; a delegate cannot touch that assignment.
+- **Built-ins are fixed**, for everyone (see [built-in roles](#built-in-roles)).
+
+Who is checked: a token-resolved user against its effective rights (the union
+across its roles, flat and object-scoped); a legacy `AccessKey` against its own
+flat capabilities; the trusted local session holds every right, so only the
+built-in rule binds it. A refusal is a `permission denied` error, recorded as a
+refused `data_changed` audit row like any other.
+
 ### Effective permissions = the union across roles
 
 A user's effective reach is the **union** of its assigned roles' capability sets —
@@ -574,8 +707,12 @@ tool      MCP tool name       —          —
 `object_covers(granted, target)` is the deny-by-default covering decision: a
 **database** grant covers every table/column in it; a **table** grant covers the
 whole table; a **column-set** grant covers the table for reachability and exactly
-its columns; a **blob** grant is a **prefix** (covers every id that starts with it);
-a **tool** grant is exact.
+its columns; a **blob** grant is a **path prefix**: it covers its own id and every id
+below it on a `/` segment boundary, never a bare text prefix (#767). `report` covers
+`report` and `report/q1.pdf` but not `report-secret-2026`; `2026/01` covers
+`2026/01/payroll.csv` but not `2026/01-executive-comp/…`; `2026/` covers everything
+under `2026/`. An empty blob grant covers nothing (grant a flat `blob:read` for every
+blob). A **tool** grant is exact.
 
 ### The grant model
 
@@ -597,15 +734,15 @@ read right.
 role-wide (flat), exactly as #746:
 
 ```sql
-GRANT sql:read  ON sales.customers            TO ROLE reader;   -- a whole table
-GRANT sql:read  ON sales.customers(id, email) TO ROLE reader;   -- a column set
-GRANT sql:read  ON sales.*                    TO ROLE reader;   -- a whole database
+GRANT sql:read  ON sales.customers            TO ROLE analyst;  -- a whole table
+GRANT sql:read  ON sales.customers(id, email) TO ROLE analyst;  -- a column set
+GRANT sql:read  ON sales.*                    TO ROLE analyst;  -- a whole database
 GRANT sql:write ON sales.customers(status)    TO ROLE editor;   -- writable columns
-GRANT mcp:call  ON TOOL search                TO ROLE reader;   -- one MCP tool
+GRANT mcp:call  ON TOOL search                TO ROLE analyst;  -- one MCP tool
 GRANT blob:read ON BLOB 2026/                 TO ROLE archivist;-- a blob prefix
 GRANT records:write ON COLLECTION lake_       TO ROLE lake;     -- a record collection prefix
 GRANT objects:write ON BUCKET lake_           TO ROLE lake;     -- an object bucket prefix
-REVOKE sql:read ON sales.customers(email)     FROM ROLE reader;
+REVOKE sql:read ON sales.customers(email)     FROM ROLE analyst;
 ```
 
 `ON DATABASE <db>` and `ON <db>.*` are equivalent; `TABLE` before `db.table` is
@@ -615,11 +752,15 @@ a `governance::Resource` in the executor. Programmatically:
 
 ### Enforcement (deny-by-default, admin/unrestricted bypasses)
 
-Every check bypasses object scoping for three identities: the trusted
-in-process local session (empty acting key), a legacy AccessKey (it carries
-only coarse scope/caps), and any user holding the operation as a **flat** right (so
-**admin — flat everything — reaches every object**). Only a user whose right is
-*exclusively* object-scoped is narrowed.
+Every check bypasses object scoping for two identities: the trusted
+in-process local session (empty acting key, which no network surface produces)
+and any user holding the operation as a **flat** right (so
+**admin — flat everything — reaches every object**). A user whose right is
+*exclusively* object-scoped is narrowed. A **legacy AccessKey** (in-process only:
+the headed console's key session, a library caller; over HTTP and `/mcp` an
+AccessKey id is refused at the gate) has no object-scoped grants, so it reaches an
+object exactly when it holds the operation as a flat capability of its own, and is
+refused otherwise. It used to bypass every object control (#762).
 
 - **SQL executor** (`src/core/query/executor.cpp`, the one choke point every
   statement flows through): `Node::column_scope(identity, op, db, table)` returns the
@@ -629,7 +770,12 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
   over a masked column is refused (no inference; an `ORDER BY` would choose which
   rows a `LIMIT` keeps by the hidden value, #1021). `get_dataset` follows the same
   rule for its typed columns: a masked column keeps its name and answers `type`,
-  `nullable` and `null_fraction` as null (#1021). An `INSERT` to a table or column with no
+  `nullable` and `null_fraction` as null (#1021). `analyze_dataset` and `plan_features`
+  read **as their caller** (#1300, #1396; `zetta::data::analyze_dataset_as`): the sample is
+  a `SELECT` through the executor with the caller's identity, so row security applies; a
+  column the caller may not read is **omitted** (not named, counted or sampled); a table it
+  holds no read on answers exactly as a missing one, and is never sampled as a join
+  neighbour. An `INSERT` to a table or column with no
   `sql:write` grant is **rejected**, and so is every other data-changing statement
   without its right — see [per-statement enforcement](#per-statement-enforcement).
 - **MCP / REST** (`src/core/api/registry.cpp`): the invoke right for the capability
@@ -639,8 +785,18 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
   MCP `tools/list` (`src/core/api/http_server.cpp`) is **filtered** to the tools the
   caller may invoke.
 - **Blobs** (`src/core/api/serving.cpp`, `serve_blob`): `Node::authorize_blob` gates
-  a large-object body read on `blob:read` covering the id (a flat right or a prefix
-  grant).
+  a large-object body read on `blob:read` covering the id (a flat right or a path
+  grant on the id or a `/`-segment parent of it, #767). Any route that serves a blob
+  body must call `serve_blob` or `Node::authorize_blob`.
+- **The web UI's cookie blob routes** (`src/core/api/http_server.cpp`, #1389): `POST
+  /blob`, `POST /blob/delete` and `GET /blob/download` are registered before the main
+  gate, so each checks the session user itself. Upload and delete need `sql:write` on
+  the database (`Node::authorize_object` against `database <db>`: a flat right or a
+  grant `ON DATABASE <db>`); download needs `blob:read` covering the id
+  (`Node::authorize_blob`, as `serve_blob`). An app credential is an ordinary token,
+  so it is held to its own roles. Every decision, allowed or refused, is an audit
+  event (`DataChanged` for upload and delete, `DataAccess` for download) with target
+  `web:blob_<verb>:<db>/<object>`.
 
 `system.roles` gains a **`scoped_grants`** column rendering each grant as
 `<perm> ON <object>` (e.g. `sql:read ON sales.customers(id, email)`).
@@ -659,10 +815,10 @@ the executor before it touches anything:
 | `DELETE`, `TRUNCATE` | `sql:write` | the **whole** table (they remove whole rows) |
 | `CREATE TABLE`, `DROP TABLE` | `sql:ddl` | the whole table (a grant `ON db.*` or `ON db.t`) |
 | `CREATE DATABASE`, `DROP DATABASE` | `sql:ddl` | the database (`ON db.*` / `ON DATABASE db`) or flat |
-| `CREATE VIRTUAL TABLE` | `sql:ddl` | flat only: it is a global name over a replicated key family |
+| `CREATE VIRTUAL TABLE` | `sql:ddl` and `cluster:admin` | flat only: it is a global name over a replicated key family, read raw. Reading one needs `cluster:admin`, and no one declares or reads one over a reserved family such as `row:` (#1392, [virtual-tables.md](../data/virtual-tables.md)) |
 | `CREATE USER` | `users:manage` | flat |
 | `CREATE TOKEN` | `tokens:manage` | flat — without it a caller could mint a token for the owner |
-| `CREATE/DROP ROLE`, `GRANT`/`REVOKE`, `CREATE/DROP POLICY` | `roles:manage` | flat (unchanged, #746) |
+| `CREATE/DROP ROLE`, `GRANT`/`REVOKE`, `CREATE/DROP POLICY` | `roles:manage` | flat (#746); the role statements are also bounded by the caller's own rights and never change a built-in ([#761](#bounded-role-management-761)) |
 
 A `WHERE` in `UPDATE` or `DELETE` over a column the caller may not read is
 refused, as for `SELECT` — the row count would otherwise reveal its values.
@@ -677,6 +833,15 @@ that key (`QueryService::acting_as`), not as the local session.
 Row-level security applies to `UPDATE` and `DELETE` — see
 [Enforcement](#enforcement-deny-by-default-admin--unrestricted--local-bypass) below.
 
+**Existence is not disclosed** (#252). A statement on a table the caller holds no
+right on at all (`SELECT` without `sql:read`; `INSERT`, `UPDATE`, `DELETE`,
+`TRUNCATE` without `sql:write`) is refused **before** the table is looked up, so
+the answer is the same `permission denied: no <right> grant on "<db>.<table>"`
+whether the table exists, the table does not, or the database does not. A caller
+with some right on the name still gets `does not exist`. `DROP TABLE` and
+`CREATE TABLE` already checked `sql:ddl` first. (`system.datasets` still lists
+every table to any caller until #766 restricts the `system.*` views.)
+
 The reserved `zetta_connect` database (saved connector credentials, #1230) is
 not reachable through SQL for anyone, the local session included; its governed
 surfaces are `system.connections` and the connection capabilities.
@@ -688,6 +853,12 @@ for the trusted session), the target (`sql:table:<db>.<table>`,
 `sql:database:<db>`, `sql:user:<name>`, `sql:token:<user>`, `sql:role:<name>`,
 `sql:policy:<name>`, `sql:virtual_table:<name>`), `allowed` (false for a
 refusal), and the statement's status line or error — never a value it wrote.
+A **refused `SELECT`** (no `sql:read` on the table, or a `WHERE`, `GROUP BY`,
+aggregate or `ORDER BY` over a masked column) records a `data_access` row with
+`allowed: false`, the target `sql:table:<db>.<table>` and the refusal (#252):
+the registry's per-call row only says the `sql` tool was called, so without it an
+attempt to read past a grant left no refusal on record. A permitted `SELECT`
+records nothing beyond the per-call row.
 See [audit trail](audit-trail.md).
 
 **Callers.** Every automated writer authenticates as the bootstrap `owner`
@@ -723,6 +894,15 @@ their grammar + evaluation). `system.policies` is the read view (name, table,
 command, the `using` / `check` predicates rendered back to text, roles). The value
 round-trips through `policy_value_from_json` at the trust boundary — a malformed
 policy is **skipped**, never silently enforced as open.
+
+A policy that is well formed but **lacks the predicate its command enforces** (a
+`select` or `all` policy with no `using`, an `insert` or `update` policy with
+neither `check` nor `using`) **denies** (#765). `CREATE POLICY` refuses to store
+one, but it can still arrive replicated from a peer or from an edited
+`policy.json`. It is kept rather than skipped, so it still engages RLS for its
+table, and it admits no row: an absent predicate is treated the same as one that
+does not parse. A policy that admits every row says so explicitly with
+`USING (true)`.
 
 ### The grammar
 
@@ -795,10 +975,13 @@ column grants on:
   (the numeric DDF aggregate path can't apply a row predicate — refuse rather than
   leak an aggregate over hidden rows).
 
-Three identities **bypass** RLS entirely (mirroring the #747 object-scoping bypass):
-the trusted in-process local session (empty acting key), a legacy AccessKey,
-and any **admin** user (one holding `cluster:admin` — the built-in `admin` does).
-So **admin sees every row regardless of policy**. `Node::bypasses_row_security`
+Three identities **bypass** RLS entirely: the trusted in-process local session
+(empty acting key), any **admin** user (one holding `cluster:admin` — the built-in
+`admin` does), and a legacy AccessKey that holds `api:cluster_admin` as a
+capability of its own. So **admin sees every row regardless of policy**. Any
+other legacy AccessKey is bound by row security like a non-admin user (#762); it
+has no user name or roles, so only a policy that names no roles, with a condition
+that does not need `current_user()`, can admit a row. `Node::bypasses_row_security`
 is the decision; `current_user()` / `current_roles()` are resolved from the acting
 user via `find_user_by_id` + `roles_for_user`.
 
@@ -815,14 +998,17 @@ user via `find_user_by_id` + `roles_for_user`.
 - `src/core/query/executor.cpp` — the SQL choke point that denies ungranted tables, masks ungranted columns on read, and rejects writes to ungranted columns (#747); `src/core/api/registry.cpp` (per-tool `mcp:call`), `src/core/api/http_server.cpp` (`tools/list` filter), `src/core/api/serving.cpp` (`serve_blob`).
 - `tests/query/test_sql_write_permissions.cpp` — per-statement enforcement (#1229): a reader refused and a writer allowed for every statement kind, object and column scope on `UPDATE`/`DELETE`, row security on `UPDATE`/`DELETE`/`TRUNCATE`, `users:manage`/`tokens:manage`, the legacy-AccessKey flat right, the `data_changed` audit, and the unreachable connection store.
 - `tests/governance/test_scoped_grants.cpp` + `tests/api/test_scoped_grants_api.cpp` — the scoped-grants coverage (#747): covering decision, column masking, table denial, write rejection, per-tool `mcp:call` + `tools/list` filter, blob-prefix serve, admin/local bypass.
+- `tests/api/test_web_blob_authz.cpp` — the cookie blob routes (#1389): a scoped app token and a read-only user cannot upload, download or delete outside their grants, the owner still can, and refusals are audited.
 - `include/zetta/governance/policy.hpp` — row-level security (#748): `zetta::governance::Policy` / `PolicyValue` / `policy_value_from_json` / `policy_schema` (the `policy:<uuid>` entity + its trust boundary).
 - `include/zetta/query/ast.hpp` — the RLS predicate AST (#748): `PolicyPredicate` / `PolicyTerm` / `PolicyCommand` + `CreatePolicyStmt` / `DropPolicyStmt` (the dialect-neutral parsed form the executor evaluates with `compare_cell`).
 - `include/zetta/node.hpp` — policy CRUD + the RLS bypass decision (#748): `Node::create_policy` / `drop_policy` / `find_policy` / `policies` / `bypasses_row_security`.
 - `src/core/query/postgres.cpp` + `src/core/query/executor.cpp` — the `CREATE/DROP POLICY` grammar + its `roles:manage` gate, the `system.policies` view, and the per-statement `USING` (SELECT) / `WITH CHECK` (INSERT) row rewrite reusing the WHERE evaluator (#748).
+- `tests/api/test_analysis_access.cpp` — analysis reads as its caller (#1300, #1396): a column-scoped caller gets no trace of a hidden column, an unreadable table answers as missing and is never sampled as a join neighbour, and row security keeps other rows out of the statistics.
 - `tests/governance/test_row_security.cpp` + `tests/api/test_row_security_api.cpp` — the RLS coverage (#748): `USING (owner = current_user())` limits a non-admin to its own rows, a `WITH CHECK` violation is rejected, admin bypasses, a role-scoped policy applies only to that role (deny-by-default otherwise), `current_roles()` membership, policies replicate.
+- `tests/governance/test_authz_regressions.cpp` — the authorization regression harness (#780): one test per auth review finding #759–#769, fixed ones asserted and open ones as `KNOWN_DEFECT` probes that fail once the defect stops reproducing; the map is [docs/testing/authz-regressions.md](../testing/authz-regressions.md).
 - `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
 - `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
-- `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
+- `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `kdf_hash_token_secret` / `verify_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
 - `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token` / `Node::authorize_user` (the token-resolved capability decision, #745).
 - `include/zetta/api/server.hpp` — the embedded `ApiServer` + `ServerOptions`; the auth gate is **unconditional** (#799 removed the `require_auth` and `bearer_token` options — a bearer that resolves to a user is required on every gated route).
 - `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router boundary (`bearer → user`, else 401; #745).

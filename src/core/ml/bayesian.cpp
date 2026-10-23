@@ -609,6 +609,8 @@ BayesianRunResult run_bayesian(
         result.error = "bayesian: could not create the run record";
         return result;
     }
+    // What it reads, before it reads it, so delete_dataset refuses it (zetta#1272).
+    run->add_reads({{dataset.database, dataset.table, dataset.table_id}});
     result.run_id = run->id();
     run->set_status(pipeline::RunStatus::Running);
     const auto fail = [&](std::string reason) {
