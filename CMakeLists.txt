@@ -568,6 +568,7 @@ add_library(zetta-core STATIC
   src/core/cloud/local_provisioner.cpp
   src/core/cloud/provisioner_fleet.cpp
   src/core/cloud/command_runner.cpp
+  src/core/cloud/secret_file.cpp
   src/core/cloud/azure_provisioner.cpp
   src/core/cloud/azure_cli_control_plane.cpp
   src/core/cloud/aws_provisioner.cpp

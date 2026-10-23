@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "secret_argv.hpp"
 #include "temp_dir.hpp"
 #include "zetta/cloud/burst_identity.hpp"
 #include "zetta/governance/capability.hpp"
@@ -429,8 +430,17 @@ TEST(K8sCliControlPlane, BringUpCreatesScalesThenListsPods) {
 
 TEST(K8sCliControlPlane, SeedServiceAccountAndSpotShapeTheDeployment) {
     std::vector<std::vector<std::string>> calls;
+    std::string manifest_seen;
+    bool manifest_private = false;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
+        // The Secret manifest arrives through --filename; read it during the call.
+        for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+            if (argv[index] == "--filename") {
+                manifest_seen = zetta::test::read_whole_file(argv[index + 1]);
+                manifest_private = zetta::test::owner_only(argv[index + 1]);
+            }
+        }
         CommandResult result;
         if (has_token(argv, "get") && has_token(argv, "pods")) {
             result.stdout_text = two_pod_listing();
@@ -450,13 +460,24 @@ TEST(K8sCliControlPlane, SeedServiceAccountAndSpotShapeTheDeployment) {
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
-    // Seed peer → set env ZETTA_SEED_PEER; join token → set env ZETTA_CLUSTER_TOKEN.
-    const std::vector<std::string>* env = call_with(calls, {"set", "env"});
+    // Seed peer → set env ZETTA_SEED_PEER (a literal: it is not a secret).
+    const std::vector<std::string>* env = call_with(calls, {"set", "env", "ZETTA_SEED_PEER=10.0.0.1:7777"});
     ASSERT_NE(env, nullptr);
-    EXPECT_TRUE(has_token(*env, "ZETTA_SEED_PEER=10.0.0.1:7777"));
-    EXPECT_TRUE(has_token(
-        *env,
-        "ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+
+    // Join token (#770) → a Secret applied server-side from a private file, then
+    // a secretKeyRef on the Deployment. Never a literal, never an argv value.
+    const std::vector<std::string>* apply = call_with(calls, {"apply", "--server-side"});
+    ASSERT_NE(apply, nullptr);
+    EXPECT_TRUE(manifest_private);
+    const nlohmann::json manifest = nlohmann::json::parse(manifest_seen, nullptr, false);
+    ASSERT_FALSE(manifest.is_discarded()) << manifest_seen;
+    EXPECT_EQ(manifest.value("kind", ""), "Secret");
+    EXPECT_EQ(manifest["metadata"].value("name", ""), "zetta-burst-cluster-token");
+    EXPECT_EQ(manifest["stringData"].value("ZETTA_CLUSTER_TOKEN", ""), config.join_token);
+    const std::vector<std::string>* from_secret =
+        call_with(calls, {"set", "env", "--from=secret/zetta-burst-cluster-token"});
+    ASSERT_NE(from_secret, nullptr);
+    EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
 
     // Service account → set serviceaccount.
     const std::vector<std::string>* sa = call_with(calls, {"set", "serviceaccount"});

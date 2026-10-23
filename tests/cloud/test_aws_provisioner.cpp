@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "secret_argv.hpp"
 #include "zetta/cloud/aws_cli_control_plane.hpp"
 #include "zetta/cloud/aws_provisioner.hpp"
 #include "zetta/cloud/node_capability.hpp"
@@ -372,8 +373,19 @@ TEST(AwsCliControlPlane, BringUpBuildsCreateAsgThenListsInstances) {
 
 TEST(AwsCliControlPlane, SpotConfigAddsMixedInstancesPolicyAndSeedTag) {
     std::vector<std::vector<std::string>> calls;
+    std::string stored_token;
+    bool stored_private = false;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
+        // The SSM value arrives as `file://<path>`; read it while the command runs.
+        for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+            const std::string prefix = "file://";
+            if (argv[index] == "--value" && argv[index + 1].starts_with(prefix)) {
+                const std::string path = argv[index + 1].substr(prefix.size());
+                stored_token = zetta::test::read_whole_file(path);
+                stored_private = zetta::test::owner_only(path);
+            }
+        }
         CommandResult result;
         if (has_token(argv, "describe-instances")) result.stdout_text = two_node_listing();
         return result;
@@ -393,17 +405,30 @@ TEST(AwsCliControlPlane, SpotConfigAddsMixedInstancesPolicyAndSeedTag) {
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
-    const std::vector<std::string>& create = calls.front();
+    // #770: the token goes to SSM Parameter Store as a SecureString first, from a
+    // private file; it is never a tag and never an argv value.
+    ASSERT_GE(calls.size(), 2u);
+    const std::vector<std::string>& store = calls.front();
+    EXPECT_TRUE(has_token(store, "put-parameter"));
+    EXPECT_TRUE(has_flag(store, "--type", "SecureString"));
+    EXPECT_TRUE(has_flag(store, "--name", "/zetta/" + config.pool_name + "/cluster-token"));
+    EXPECT_TRUE(has_token(store, "--overwrite"));
+    EXPECT_TRUE(has_flag(store, "--profile", "burst-dev"));
+    EXPECT_EQ(stored_token, config.join_token);
+    EXPECT_TRUE(stored_private);
+    EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
+
+    const std::vector<std::string>& create = calls[1];
+    EXPECT_TRUE(has_token(create, "create-auto-scaling-group"));
     EXPECT_TRUE(has_token(create, "--mixed-instances-policy"));
     EXPECT_TRUE(flag_value_contains(create, "--mixed-instances-policy", "InstancesDistribution"));
     EXPECT_TRUE(flag_value_contains(create, "--mixed-instances-policy", "SpotMaxPrice"));
     EXPECT_TRUE(flag_value_contains(create, "--mixed-instances-policy", "g5.xlarge"));
     EXPECT_TRUE(flag_value_contains(create, "--tags", "Key=ZETTA_SEED_PEER"));
     EXPECT_TRUE(flag_value_contains(create, "--tags", "Value=10.0.0.1:7777"));
-    EXPECT_TRUE(flag_value_contains(create, "--tags", "Key=ZETTA_CLUSTER_TOKEN"));
-    EXPECT_TRUE(flag_value_contains(
-        create, "--tags",
-        "Value=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+    EXPECT_TRUE(flag_value_contains(create, "--tags",
+                                    "Key=ZETTA_CLUSTER_TOKEN_SSM_PARAMETER,Value=/zetta/" +
+                                        config.pool_name + "/cluster-token"));
     EXPECT_TRUE(has_flag(create, "--profile", "burst-dev"));
 }
 
@@ -522,4 +547,31 @@ TEST(AwsCliControlPlane, ListReturnsEmptyOnCommandFailure) {
 
     AwsCliControlPlane control_plane{runner};
     EXPECT_TRUE(control_plane.list(sample_config()).empty());
+}
+
+TEST(AwsCliControlPlane, FailedTokenStoreFailsTheBurstClosed) {
+    // #770: nodes launched without a fetchable token could never join, so a
+    // failed SSM write stops the burst before any capacity is requested.
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "put-parameter")) {
+            result.exit_code = 254;
+            result.stderr_text = "AccessDeniedException";
+        }
+        return result;
+    };
+
+    AwsCliControlPlane control_plane{runner};
+    AwsConfig config = sample_config();
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    const ProvisionResult result =
+        control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_NE(result.detail.find("AccessDeniedException"), std::string::npos);
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_TRUE(has_token(calls.front(), "put-parameter"));
 }

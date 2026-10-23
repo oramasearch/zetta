@@ -1,5 +1,6 @@
 #include "zetta/cloud/aws_cli_control_plane.hpp"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -8,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cloud/command_runner.hpp"
+#include "zetta/cloud/secret_file.hpp"
 
 namespace zetta::cloud {
 
@@ -27,6 +29,14 @@ void append_global(std::vector<std::string>& argv, const AwsConfig& config) {
     flag(argv, "--region", config.region);
     if (!config.profile.empty()) flag(argv, "--profile", config.profile);
 }
+
+}  // namespace
+
+std::string cluster_token_parameter_name(const AwsConfig& config) {
+    return "/zetta/" + config.pool_name + "/cluster-token";
+}
+
+namespace {
 
 // Build the Auto Scaling Group mixed-instances policy that expresses an instance
 // type override and/or Spot capacity — the AWS way to ask an ASG for Spot (and to
@@ -96,21 +106,47 @@ ProvisionResult AwsCliControlPlane::bring_up(const AwsConfig& config,
     if (config.spot || !config.instance_type.empty()) {
         flag(create, "--mixed-instances-policy", mixed_instances_policy(config));
     }
-    // Hand each node the cluster seed address — and, on a secure cluster, the
-    // join token (#670) — so it auto-joins at boot with the equivalent of
-    // `zetta --peer <seed> --join-token <token>`. (A real deployment bakes these
-    // into the launch template's user-data / a secret; the reference carries them
-    // as propagating tags the bootstrap reads. The join token is a secret, so a
-    // production control plane must not leave it in a plaintext, describe-able
-    // tag — it rides here only to illustrate the same delivery seam as the seed.)
+    // Hand each node the cluster seed address — and, on a secure cluster, how to
+    // fetch the join token (#670, #770) — so it auto-joins at boot with the
+    // equivalent of `zetta --peer <seed> --join-token <token>`. The seed rides a
+    // propagating tag. The token never does: a tag is readable by any principal
+    // holding ec2:DescribeTags and lands in CloudTrail. It is stored as an SSM
+    // Parameter Store SecureString (KMS-encrypted, read only by a principal
+    // granted ssm:GetParameter on it — the node's instance profile), and the tag
+    // carries only the parameter's name. The value reaches `aws` through a
+    // private file (`file://`), never through argv.
     std::string tags;
     if (!config.seed_peer.empty()) {
         tags = "Key=ZETTA_SEED_PEER,Value=" + config.seed_peer +
                ",PropagateAtLaunch=true";
     }
     if (!config.join_token.empty()) {
+        const std::string parameter = cluster_token_parameter_name(config);
+        std::string reason;
+        const std::unique_ptr<SecretFile> token_file =
+            SecretFile::create(config.join_token, &reason);
+        if (!token_file) {
+            result.satisfied = false;
+            result.detail = "cannot stage the cluster join token for SSM: " + reason;
+            return result;
+        }
+        std::vector<std::string> store{"aws", "ssm", "put-parameter"};
+        flag(store, "--name", parameter);
+        flag(store, "--type", "SecureString");
+        flag(store, "--value", "file://" + token_file->path().string());
+        store.push_back("--overwrite");
+        append_global(store, config);
+        const CommandResult stored = runner_(store);
+        if (stored.exit_code != 0) {
+            // Fail closed: nodes launched without a fetchable token cannot join.
+            result.satisfied = false;
+            result.detail = "aws ssm put-parameter (cluster join token) failed: " +
+                            (stored.stderr_text.empty() ? stored.stdout_text
+                                                        : stored.stderr_text);
+            return result;
+        }
         if (!tags.empty()) tags += ' ';
-        tags += "Key=ZETTA_CLUSTER_TOKEN,Value=" + config.join_token +
+        tags += "Key=ZETTA_CLUSTER_TOKEN_SSM_PARAMETER,Value=" + parameter +
                 ",PropagateAtLaunch=true";
     }
     if (!tags.empty()) {

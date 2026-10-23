@@ -178,6 +178,7 @@ void print_usage(const char* argv0) {
         "flags above — a provisioned node auto-joins with no manual flags):\n"
         "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
+        "  ZETTA_CLUSTER_TOKEN_FILE File holding the join token (preferred)\n"
         "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
         "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n"
         "  ZETTA_PUBSUB_DISPATCH_MODE -> --pubsub-dispatch-mode\n"
@@ -572,6 +573,16 @@ int main(int argc, char** argv) {
 
         const zetta::cloud::BootstrapEnvApplied applied =
             zetta::cloud::apply_bootstrap_env(bootstrap);
+        // The token is in `bootstrap` now; no child process inherits it (#770).
+        zetta::cloud::scrub_bootstrap_secrets();
+        for (const std::string& warning : applied.warnings) {
+            std::fprintf(stderr, "zetta: warning: %s\n", warning.c_str());
+        }
+        if (!applied.error.empty()) {
+            std::fprintf(stderr, "zetta: provisioning env rejected: %s\n",
+                         applied.error.c_str());
+            return 1;
+        }
 
         opts.cluster.seeds = std::move(bootstrap.seeds);
         opts.join_token = std::move(bootstrap.join_token);
@@ -591,7 +602,10 @@ int main(int argc, char** argv) {
                 summary += " (--peer)";
             }
             if (applied.join_token) {
-                summary += " ZETTA_CLUSTER_TOKEN=**** (--join-token)";
+                // Name the source: a token left in an inherited environment makes
+                // this node join that token's cluster instead of founding its own.
+                summary += " " + applied.join_token_source +
+                           "=**** (--join-token; joins the cluster this token identifies)";
             }
             if (!applied.data_dir.empty()) {
                 summary += " ZETTA_DATA_DIR=" + applied.data_dir + " (--data-dir)";

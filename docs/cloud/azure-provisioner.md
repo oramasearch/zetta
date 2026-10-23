@@ -133,7 +133,7 @@ instances is teardown. It builds `az vmss` argv, runs them through an injected
 
 | `AzureControlPlane` call | `az` command (shape) |
 |---|---|
-| `bring_up` | `az vmss create … --orchestration-mode Flexible --instance-count N [--vm-sku … --image … --priority Spot --eviction-policy Delete --max-price … --assign-identity … --custom-data "ZETTA_SEED_PEER=… ZETTA_CLUSTER_TOKEN=…"]`, then `list` (the join token rides the custom-data blob only on a secure cluster — #670) |
+| `bring_up` | `az vmss create … --orchestration-mode Flexible --instance-count N [--vm-sku … --image … --priority Spot --eviction-policy Delete --max-price … --assign-identity … --custom-data "ZETTA_SEED_PEER=…" or --custom-data @<private file>]`, then `list` (on a secure cluster the custom-data also carries `ZETTA_CLUSTER_TOKEN=…` and goes to `az` as `@<file>`, never as an argv value — #670, #770) |
 | `destroy` | `az vmss delete-instances … --instance-ids <node_id>` |
 | `list` | `az vmss list-instances … --output json` |
 

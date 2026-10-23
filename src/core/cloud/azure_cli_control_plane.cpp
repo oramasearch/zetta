@@ -1,6 +1,7 @@
 #include "zetta/cloud/azure_cli_control_plane.hpp"
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -9,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cloud/command_runner.hpp"
+#include "zetta/cloud/secret_file.hpp"
 
 namespace zetta::cloud {
 
@@ -78,14 +80,32 @@ std::vector<ProvisionedNode> parse_nodes(const std::string& json_text) {
     return nodes;
 }
 
+// The cloud-init custom-data each VM boots with: the cluster seed address and,
+// on a secure cluster, the join token (#670), as KEY=VALUE lines the bootstrap
+// reads. Empty when there is nothing to hand over.
+std::string custom_data_blob(const AzureConfig& config) {
+    std::string custom_data;
+    if (!config.seed_peer.empty()) {
+        custom_data = "ZETTA_SEED_PEER=" + config.seed_peer;
+    }
+    if (!config.join_token.empty()) {
+        if (!custom_data.empty()) custom_data += '\n';
+        custom_data += "ZETTA_CLUSTER_TOKEN=" + config.join_token;
+    }
+    return custom_data;
+}
+
 // Build the `az vmss create` command for one candidate VM SKU. The Flexible shape
 // is Microsoft-Learn-verified (docs/research/azure-cli-compute.md §2.7): explicit
 // fault-domain-count + single-placement-group=false, an image + admin login, SSH
 // keys generated locally, and the cluster seed handed to each node's cloud-init.
+// `custom_data` is the `--custom-data` argument: the blob itself, or `@<file>`
+// when it carries the join token (#770 — a secret is never an argv value).
 std::vector<std::string> build_vmss_create(const AzureConfig& config,
                                            const ProvisionRequest& request,
                                            const std::string& vm_sku,
-                                           const std::string& resource_group) {
+                                           const std::string& resource_group,
+                                           const std::string& custom_data) {
     std::vector<std::string> create{"az", "vmss", "create"};
     append_pool(create, config, resource_group);
     flag(create, "--location", config.location);
@@ -107,19 +127,9 @@ std::vector<std::string> build_vmss_create(const AzureConfig& config,
     }
     // Hand each VM the cluster seed address via cloud-init custom-data — and, on a
     // secure cluster, the join token (#670) — so it boots with the equivalent of
-    // `zetta --peer <seed> --join-token <token>`. Both ride the one custom-data
-    // blob as KEY=VALUE lines the bootstrap reads. The join token is a secret; a
-    // production deployment supplies it through a proper cloud-init secret, not a
-    // readable custom-data literal — this reference carries it on the same seam as
-    // the seed only to illustrate the plumbing.
-    std::string custom_data;
-    if (!config.seed_peer.empty()) {
-        custom_data = "ZETTA_SEED_PEER=" + config.seed_peer;
-    }
-    if (!config.join_token.empty()) {
-        if (!custom_data.empty()) custom_data += '\n';
-        custom_data += "ZETTA_CLUSTER_TOKEN=" + config.join_token;
-    }
+    // `zetta --peer <seed> --join-token <token>`. Custom-data is readable from the
+    // VM's metadata endpoint and persists on its disk (/var/lib/waagent): see
+    // docs/cluster/security.md for the trade-off and the Key Vault follow-up.
     if (!custom_data.empty()) {
         flag(create, "--custom-data", custom_data);
     }
@@ -203,11 +213,27 @@ ProvisionResult AzCliControlPlane::bring_up(const AzureConfig& config,
     // shortage. Azure has no capacity API, so the only reliable way to place a VM
     // is to try a SKU and, if it returns `SkuNotAvailable (Capacity Restrictions)`,
     // clean up the partial scale set and try the next.
+    //
+    // The custom-data carries the join token on a secure cluster, so it goes to
+    // `az` as `@<file>` (a private file, removed after the burst) rather than as
+    // an argument any local user could read from the process list (#770).
+    std::string custom_data = custom_data_blob(config);
+    std::unique_ptr<SecretFile> custom_data_file;
+    if (!config.join_token.empty()) {
+        std::string reason;
+        custom_data_file = SecretFile::create(custom_data, &reason);
+        if (!custom_data_file) {
+            result.satisfied = false;
+            result.detail = "cannot stage the cloud-init custom-data: " + reason;
+            return result;
+        }
+        custom_data = "@" + custom_data_file->path().string();
+    }
     const std::vector<std::string> candidates = sku_candidates(config);
     for (std::size_t i = 0; i < candidates.size(); ++i) {
         const std::string& vm_sku = candidates[i];
-        const CommandResult created =
-            runner_(build_vmss_create(config, request, vm_sku, resource_group));
+        const CommandResult created = runner_(
+            build_vmss_create(config, request, vm_sku, resource_group, custom_data));
 
         if (created.exit_code == 0) {
             // The scale set placed the requested VMs. They boot, read the seed peer

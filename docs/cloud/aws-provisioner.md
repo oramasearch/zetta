@@ -142,7 +142,7 @@ parses the JSON the CLI returns.
 
 | `AwsControlPlane` call | `aws` command (shape) |
 |---|---|
-| `bring_up` | `aws autoscaling create-auto-scaling-group --auto-scaling-group-name <pool> --launch-template LaunchTemplateName=<lt> --min-size 0 --max-size N --desired-capacity N --vpc-zone-identifier <subnets> [--mixed-instances-policy …(Spot / instance-type)… --tags …seed…]`, falling back to `aws autoscaling set-desired-capacity --desired-capacity N` when the group already exists, then `list` |
+| `bring_up` | on a secure cluster first `aws ssm put-parameter --name /zetta/<pool>/cluster-token --type SecureString --value file://<private file> --overwrite` (the join token, fail-closed — #770); then `aws autoscaling create-auto-scaling-group --auto-scaling-group-name <pool> --launch-template LaunchTemplateName=<lt> --min-size 0 --max-size N --desired-capacity N --vpc-zone-identifier <subnets> [--mixed-instances-policy …(Spot / instance-type)… --tags …seed + ZETTA_CLUSTER_TOKEN_SSM_PARAMETER=<name>…]`, falling back to `aws autoscaling set-desired-capacity --desired-capacity N` when the group already exists, then `list` |
 | `destroy` | `aws autoscaling terminate-instance-in-auto-scaling-group --instance-id <node_id> --should-decrement-desired-capacity` |
 | `list` | `aws ec2 describe-instances --filters Name=tag:aws:autoscaling:groupName,Values=<pool> Name=instance-state-name,Values=running --query … --output json` |
 

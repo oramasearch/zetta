@@ -1,5 +1,6 @@
 #include "zetta/cloud/oci_cli_control_plane.hpp"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -8,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cloud/command_runner.hpp"
+#include "zetta/cloud/secret_file.hpp"
 
 namespace zetta::cloud {
 
@@ -84,9 +86,10 @@ std::string instance_details_json(const OciConfig& config) {
     // Hand each node the cluster seed address at boot via cloud-init user_data —
     // and, on a secure cluster, the join token (#670) — so it comes up with the
     // equivalent of `zetta --peer <seed> --join-token <token>`. (A real deployment
-    // supplies a full base64 cloud-init and sources the secret token from OCI
-    // Vault; this illustrative value carries both KEY=VALUE lines the bootstrap
-    // reads on the same seam.)
+    // supplies a full base64 cloud-init.) user_data is readable from the instance
+    // metadata endpoint by every process on the VM and by any principal that can
+    // read the instance configuration: see docs/cluster/security.md for the
+    // trade-off and the OCI Vault follow-up.
     std::string user_data;
     if (!config.seed_peer.empty()) {
         user_data = "ZETTA_SEED_PEER=" + config.seed_peer;
@@ -149,7 +152,22 @@ ProvisionResult OciCliControlPlane::bring_up(const OciConfig& config,
             "oci", "compute-management", "instance-configuration", "create"};
         flag(ensure_config, "--compartment-id", config.compartment_id);
         flag(ensure_config, "--display-name", config.pool_name + "-config");
-        flag(ensure_config, "--instance-details", instance_details_json(config));
+        // On a secure cluster the details carry the join token, so they reach
+        // `oci` as `file://<private file>`, never as an argv value (#770).
+        std::unique_ptr<SecretFile> details_file;
+        if (config.join_token.empty()) {
+            flag(ensure_config, "--instance-details", instance_details_json(config));
+        } else {
+            std::string reason;
+            details_file = SecretFile::create(instance_details_json(config), &reason);
+            if (!details_file) {
+                result.satisfied = false;
+                result.detail = "cannot stage the instance configuration: " + reason;
+                return result;
+            }
+            flag(ensure_config, "--instance-details",
+                 "file://" + details_file->path().string());
+        }
         flag(ensure_config, "--query", "data.id");
         ensure_config.push_back("--raw-output");
         append_region(ensure_config, config);

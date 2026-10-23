@@ -1,6 +1,7 @@
 #include "zetta/cloud/bare_metal_cli_control_plane.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -9,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cloud/command_runner.hpp"
+#include "zetta/cloud/secret_file.hpp"
 #include "zetta/util/uuid.hpp"
 
 namespace zetta::cloud {
@@ -86,22 +88,27 @@ std::vector<ProvisionedNode> parse_nodes(const std::string& json_text) {
 // per-worker shape — label (pool key), unique name, network, GPUs, cluster seed env
 // — lands here. `run -d` returns immediately (printing the container id), which is
 // what makes a long-lived worker launchable through the synchronous CommandRunner.
-std::vector<std::string> run_argv(const BareMetalConfig& config) {
+//
+// `token_env_file`, when set, is a private file holding `ZETTA_CLUSTER_TOKEN=<token>`
+// passed with `--env-file`, so the join token is never an argv value any local
+// user could read from the process list (#770).
+std::vector<std::string> run_argv(const BareMetalConfig& config,
+                                  const SecretFile* token_env_file) {
     std::vector<std::string> run{config.runtime, "run", "-d"};
     flag(run, "--label", config.pool_label);
     flag(run, "--name", config.name_prefix + "-" + zetta::util::new_uuid());
     if (!config.network.empty()) flag(run, "--network", config.network);
     if (config.gpus) flag(run, "--gpus", "all");
-    // Seed peer — and, on a secure cluster, the join token (#670) — ride as
-    // container env vars so the worker comes up with the equivalent of
-    // `zetta --peer <seed> --join-token <token>`. (The join token is a secret; a
-    // production runner would pass it via an env-file / secret rather than a
-    // literal --env — it rides the same seam here to illustrate the plumbing.)
+    // Seed peer — and, on a secure cluster, the join token (#670) — reach the
+    // worker as container env vars so it comes up with the equivalent of
+    // `zetta --peer <seed> --join-token <token>`. The seed is a literal --env;
+    // the token comes from the env-file. (The runtime still records container env
+    // in `inspect`: docs/cluster/security.md has the per-provider trade-off.)
     if (!config.seed_peer.empty()) {
         flag(run, "--env", "ZETTA_SEED_PEER=" + config.seed_peer);
     }
-    if (!config.join_token.empty()) {
-        flag(run, "--env", "ZETTA_CLUSTER_TOKEN=" + config.join_token);
+    if (token_env_file != nullptr) {
+        flag(run, "--env-file", token_env_file->path().string());
     }
     run.push_back(config.image);  // the image is the trailing positional arg
     return run;
@@ -120,8 +127,20 @@ ProvisionResult BareMetalCliControlPlane::bring_up(const BareMetalConfig& config
     // so a re-burst to the same count launches nothing (idempotent on the label).
     const std::vector<ProvisionedNode> already_up = list(config);
     std::string run_failure;
+    std::unique_ptr<SecretFile> token_env_file;
+    if (!config.join_token.empty() && already_up.size() < request.count) {
+        std::string reason;
+        token_env_file =
+            SecretFile::create("ZETTA_CLUSTER_TOKEN=" + config.join_token + "\n", &reason);
+        if (!token_env_file) {
+            result.nodes = already_up;
+            result.satisfied = false;
+            result.detail = "cannot stage the cluster join token env-file: " + reason;
+            return result;
+        }
+    }
     for (std::size_t index = already_up.size(); index < request.count; ++index) {
-        const CommandResult launched = runner_(run_argv(config));
+        const CommandResult launched = runner_(run_argv(config, token_env_file.get()));
         if (launched.exit_code != 0) {
             run_failure = launched.stderr_text.empty() ? launched.stdout_text
                                                        : launched.stderr_text;
