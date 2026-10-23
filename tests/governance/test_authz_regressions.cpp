@@ -336,7 +336,9 @@ TEST_F(AuthzNode, Finding765_APolicyWithNoConditionDeniesInsteadOfAllowingAll) {
                                 << r.rows.size() << " of 3 rows to a non-admin";
 }
 
-// ===== #766: the policy / user / role / token catalog is readable by anyone ===
+// ===== #766: the policy / user / role / token catalog was readable by anyone ==
+// Fixed: each system table has a reader class (docs/governance/
+// system-catalog-access.md); the governance registry is admin-only.
 
 TEST_F(AuthzNode, Finding766_AReaderCannotReadTheGovernanceCatalog) {
     run_local(
@@ -344,17 +346,12 @@ TEST_F(AuthzNode, Finding766_AReaderCannotReadTheGovernanceCatalog) {
         "USING (owner = 'restricted-eu');");
     const std::string reader = user_with_roles(node, "rita", {"reader"});
     QueryService as_reader = as(reader);
-    std::vector<std::string> leaked;
     for (const char* view : {"system.policies", "system.users", "system.roles",
                              "system.user_roles", "system.tokens"}) {
         const auto r = as_reader.run(std::string("SELECT * FROM ") + view + ";", "");
-        if (r.ok() && !r.rows.empty()) leaked.push_back(view);
+        EXPECT_TRUE(refused(r)) << view << " was readable: " << r.error;
+        EXPECT_TRUE(r.rows.empty()) << view;
     }
-    std::string list;
-    for (const auto& view : leaked) list += (list.empty() ? "" : ", ") + view;
-    // The plain assertion, once fixed: EXPECT_TRUE(leaked.empty()) (refused, or
-    // narrowed to the caller's own rows — then assert that instead).
-    KNOWN_DEFECT(766, !leaked.empty(), "a reader read " + list);
 }
 
 // ===== #767: blob grants matched by text prefix, not path =====================
@@ -536,9 +533,9 @@ TEST_F(AuthzHttp, Finding762_OnlyATokenThatResolvesToAUserGetsIn) {
     EXPECT_EQ(drive(*server, "GET", "/v1/server_info", kOwnerSecret).status, 200);
 }
 
-// #766: a user whose only right is one tool still reads every tool's spec. (The
-// OpenAPI document and llms.txt were made public on purpose, before the gate,
-// so they are not probed; /v1/specs is behind the gate.)
+// #766 (fixed): a user whose only right is one tool reads only that tool's spec.
+// (The OpenAPI document and llms.txt were made public on purpose, before the
+// gate, so they are not probed; /v1/specs is behind the gate.)
 TEST_F(AuthzHttp, Finding766_SpecsAreFilteredByTheCallersTools) {
     node.create_role("one_tool");
     ASSERT_TRUE(node.grant_scoped_permissions("one_tool", {"mcp:call"},
@@ -548,13 +545,10 @@ TEST_F(AuthzHttp, Finding766_SpecsAreFilteredByTheCallersTools) {
     ASSERT_TRUE(issued.token);
 
     const HttpResponse specs = drive(*server, "GET", "/v1/specs", issued.secret);
-    const bool lists_other_tools =
-        specs.status == 200 &&
-        specs.body.find("\"list_projects\"") != std::string::npos;
-    // The plain assertion, once fixed: EXPECT_FALSE(lists_other_tools).
-    KNOWN_DEFECT(766, lists_other_tools,
-                 "a user granted only server_info reads list_projects' spec at "
-                 "/v1/specs");
+    ASSERT_EQ(specs.status, 200) << specs.body;
+    EXPECT_EQ(specs.body.find("\"list_projects\""), std::string::npos)
+        << "a user granted only server_info reads list_projects' spec at /v1/specs";
+    EXPECT_NE(specs.body.find("\"server_info\""), std::string::npos);
 }
 
 // ===== #763 / #764: identity across the cluster ===============================

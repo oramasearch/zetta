@@ -13113,8 +13113,11 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        [&registry](const nlohmann::json&, ApiContext&) {
-            return ApiResult::success(spec_index(registry));
+        [&registry](const nlohmann::json&, ApiContext& context) {
+            // Only the capabilities the caller may call (#766).
+            return ApiResult::success(spec_index(
+                registry, callable_by(context.node, context.acting_key,
+                                      context.acting_is_user)));
         }});
 
     registry.add(Capability{
@@ -13129,9 +13132,12 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        [&registry](const nlohmann::json& input, ApiContext&) {
+        [&registry](const nlohmann::json& input, ApiContext& context) {
             const std::string name = input.at("name").get<std::string>();
-            auto spec = find_spec(registry, name);
+            // A capability the caller may not call is not_found (#766).
+            auto spec = find_spec(registry, name,
+                                  callable_by(context.node, context.acting_key,
+                                              context.acting_is_user));
             if (!spec) {
                 return ApiResult::failure(
                     "not_found",

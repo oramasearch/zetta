@@ -418,8 +418,10 @@ TEST(RoleSql, ManagingRolesRequiresRolesManage) {
     EXPECT_NE(denied.error.find("manage_roles"), std::string::npos);
     EXPECT_FALSE(node.find_role("sneaky"));  // nothing was created
 
-    // The reader can still read (SELECT is not gated on roles:manage).
-    EXPECT_TRUE(reader_svc.run("SELECT * FROM system.roles;", "").ok());
+    // The reader can still read (SELECT is not gated on roles:manage), but not
+    // the role registry, which is admin-only (#766).
+    EXPECT_TRUE(reader_svc.run("SELECT * FROM system.tables;", "").ok());
+    EXPECT_FALSE(reader_svc.run("SELECT * FROM system.roles;", "").ok());
 
     // Acting AS the admin user: allowed.
     QueryService admin_svc{node, nullptr, admin_user->id(), /*acting_is_user=*/true};

@@ -45,6 +45,18 @@ returns `{ count, specs: [ { name, kind, href, … } ] }` with four kinds:
 `{ name, kind, schema, … }`; unknown names are `std::nullopt` so every
 rendering answers not-found pointing back at the index.
 
+## Per caller (#766)
+
+Each takes an optional `CapabilityVisible` predicate, and every served rendering
+passes the caller's: `callable_by(node, acting_key, acting_is_user)`, the
+per-tool `mcp:call` scope `tools/list` applies. A user granted one tool finds
+that tool's schemas only: other tools are missing from the index, their
+`<tool>.input` / `<tool>.output` answer not-found like an unknown name, and the
+`openapi` entry's document holds only the visible paths. Boundary schemas are
+always listed. `/v1/openapi.json` stays a public discovery document (before the
+gate, #618) and so describes every capability. See
+[../governance/system-catalog-access.md](../governance/system-catalog-access.md).
+
 ## Three renderings, zero drift
 
 - **MCP / derived REST**: `list_specs` (the index) and `get_spec` (one
@@ -69,5 +81,6 @@ rendering answers not-found pointing back at the index.
 
 Tests: `tests/api/test_specs.cpp` (the 55+ enumeration acceptance, every entry
 fetchable, accessor identity, validator-loadability, the capability journey),
-`tests/api/test_rest_server.cpp` (the wire routes + 404), and
+`tests/api/test_rest_server.cpp` (the wire routes + 404, and the per-caller
+index), `tests/api/test_scoped_grants_api.cpp` (the per-caller tools), and
 `tests/test_schemas.cpp` (the shared drift check).

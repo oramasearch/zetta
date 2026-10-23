@@ -341,14 +341,16 @@ TEST_F(SandboxEscape, TheAuditTrailCannotBeAlteredFromSql) {
 // reads every user's audit rows, every dataset's name and every saved connection.
 
 TEST_F(SandboxEscape, TheAnalystCannotReadTheWholeAuditTrailOrCatalog) {
-    // Plain assertion once #766 restricts the system.* views by identity:
-    //   EXPECT_FALSE(sql("SELECT * FROM system.audit;").ok);
-    //   EXPECT_FALSE(sql("SELECT * FROM system.datasets;").ok);
+    // Fixed by #766 (PR #1358): a non-admin reads only its own audit rows (#847
+    // step 6), and system.datasets lists only the tables it may read.
     const ApiResult audit = sql("SELECT * FROM system.audit;");
+    ASSERT_TRUE(audit.ok) << audit.error.message;
+    for (const auto& row : audit.value.at("rows")) {
+        EXPECT_EQ(row.value("actor", std::string()), analyst) << row.dump();
+    }
     const ApiResult datasets = sql("SELECT * FROM system.datasets;");
-    const bool hidden_table_listed =
-        datasets.ok && datasets.value.dump().find("hidden") != std::string::npos;
-    KNOWN_DEFECT(766, audit.ok || hidden_table_listed,
-                 "a caller with no grant reads system.audit and sees app.hidden in "
-                 "system.datasets");
+    if (datasets.ok) {
+        EXPECT_EQ(datasets.value.dump().find("hidden"), std::string::npos)
+            << "the analyst sees app.hidden in system.datasets";
+    }
 }

@@ -42,3 +42,8 @@ the declared caller instead of a blank or the project's owner, the caller
 carried across `run_on_owner`, a capability's effects attributed to the calling
 user, an authorized call that then failed recorded as a failure, and a SQL
 statement's effects attributed to its session.
+`test_system_catalog_access.cpp` covers who may read each `system.*` table
+(#766): admin-only governance and node tables, public metadata, datasets and
+partitions narrowed to the caller's tables, each person's own audit rows, and
+tables that follow a read tool's scope. See
+[system-catalog-access](../../docs/governance/system-catalog-access.md).

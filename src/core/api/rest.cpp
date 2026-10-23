@@ -269,6 +269,11 @@ nlohmann::json error_response(std::string_view description) {
 }  // namespace
 
 nlohmann::json openapi_document(const Registry& registry) {
+    return openapi_document(registry, [](const Capability&) { return true; });
+}
+
+nlohmann::json openapi_document(const Registry& registry,
+                                const CapabilityVisible& visible) {
     nlohmann::json document;
     document["openapi"] = "3.1.0";
     document["info"] = {
@@ -299,6 +304,7 @@ nlohmann::json openapi_document(const Registry& registry) {
 
     nlohmann::json paths = nlohmann::json::object();
     for (const auto& capability : registry.list()) {
+        if (!visible(*capability)) continue;
         nlohmann::json operation;
         operation["operationId"] = capability->name;
         operation["summary"] = capability->title;

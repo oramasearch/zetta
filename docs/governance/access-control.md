@@ -376,7 +376,10 @@ writes the token, instead of skipping because the store is not empty.
 `system.users`, `system.roles`, and `system.tokens` are read views
 (`src/core/query/executor.cpp`) mirroring `system.principals`/`system.keys`. The
 **tokens view exposes no secret material** — id, user, type, created, expiry, and
-revoked only, never the hash or salt. A minimal SQL issuance surface exists:
+revoked only, never the hash or salt. These views, `system.policies` and the
+other governance tables are readable by an admin (`cluster:admin`) and the
+trusted local session only; who may read each system table is
+[system-catalog-access.md](system-catalog-access.md) (#766). A minimal SQL issuance surface exists:
 `CREATE USER <name>` and `CREATE TOKEN FOR <user> [TYPE access|api]` (the latter
 returns the plaintext secret once, in a single result row). Tokens can also be
 issued programmatically via `Node::create_token`.
