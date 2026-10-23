@@ -56,8 +56,13 @@ zetta: cluster node 229431f5-275e-4754-acb9-2eea4bac007b
 zetta: listening on 192.168.123.140:7777
 zetta: listening on 127.0.0.1:7777
 zetta: inter-node mTLS on (join token in <data_dir>/security/cluster-secret.json)
-zetta: add another node with: zetta --peer 192.168.123.140:7777 --join-token <64-hex>
+zetta: add another node with: zetta --peer 192.168.123.140:7777 --join-token <join-token>
 ```
+
+The printed command never carries the join token itself (#1393): the literal
+`<join-token>` stands where it goes, and the line before it names the file that
+holds it. The token is the cluster root secret, and this banner lands in pod logs
+and log pipelines.
 
 When bound to a specific host that's the one address. When bound to a **wildcard**
 (`0.0.0.0` / `::`), the wildcard itself isn't connectable, so `listen_addresses()`
@@ -66,7 +71,8 @@ falling back to `127.0.0.1` — and the join command uses the first (most
 reachable) one. Other nodes copy that `--peer` line to join.
 
 Headed mode's **Cluster** panel shows this node's id, every reachable listen
-address, the **command to add another node** (with a Copy button), an
+address, the **command to add another node** (shown with the token masked; the
+Copy button copies it with the token), an
 **[Add nodes control](../gui/add-nodes-control.md)** (below), and a **spatial node-box
 canvas** (below). Headless logs the per-node table whenever it changes.
 

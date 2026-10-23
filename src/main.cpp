@@ -828,8 +828,15 @@ int main(int argc, char** argv) {
                      "cluster-secret.json")
                         .c_str());
     }
+    // The join token is the cluster root secret (it derives the CA key and seals
+    // saved connector credentials), and this line lands in pod logs and log
+    // pipelines: peer_command() names where the token goes, never its value
+    // (#1393). The line above says where to read it.
     std::printf("zetta: add another node with: %s\n",
                 cluster.peer_command().c_str());
+    // Flush the startup lines now: under a container runtime stdout is a pipe, so
+    // they would otherwise sit in the buffer until it fills.
+    std::fflush(stdout);
 
     // Detect which cloud-burst targets this node can drive from the operator's own
     // local CLIs (`az` logged in, …) and record each on the node so it surfaces as

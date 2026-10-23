@@ -1373,17 +1373,34 @@ std::vector<std::string> Cluster::listen_addresses() const {
     return addresses;
 }
 
-std::string Cluster::peer_command() const {
-    // Prefer the first reachable address — local_ipv4_addresses() already puts
-    // non-loopback (LAN) addresses ahead of 127.0.0.1. With security on, the
-    // join token rides along: it is exactly what the next node needs to derive
-    // the cluster CA and mint an identity this cluster will trust.
-    const std::vector<std::string> addresses = listen_addresses();
+namespace {
+
+// "zetta --peer <best address>", plus "--join-token <token>" when security is on.
+std::string build_peer_command(const std::vector<std::string>& addresses,
+                               const ClusterSecurity& security,
+                               std::string_view token_text) {
     std::string command = "zetta --peer " + addresses.front();
-    if (config_.security.enabled()) {
-        command += " --join-token " + config_.security.join_token;
+    if (security.enabled()) {
+        command += " --join-token ";
+        command += token_text;
     }
     return command;
+}
+
+}  // namespace
+
+std::string Cluster::peer_command() const {
+    // Prefer the first reachable address — local_ipv4_addresses() already puts
+    // non-loopback (LAN) addresses ahead of 127.0.0.1. The join token is what the
+    // next node needs, but it is the cluster root secret, and this command is
+    // printed on every headless start (#1393): name where it goes, never the value.
+    return build_peer_command(listen_addresses(), config_.security,
+                              kJoinTokenPlaceholder);
+}
+
+std::string Cluster::peer_command_with_join_token() const {
+    return build_peer_command(listen_addresses(), config_.security,
+                              config_.security.join_token);
 }
 
 std::vector<std::string> Cluster::advertised_endpoints() const {
