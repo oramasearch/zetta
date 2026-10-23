@@ -112,6 +112,29 @@ DatasetAnalysis analyze_dataset(Node& node, const DatasetPath& path,
                                 const DatasetSampler& sampler = {},
                                 const zetta::cluster::Cluster* cluster = nullptr);
 
+// Who an analysis reads as (#1300, #1396). The analysis and feature-planning
+// capabilities run AS their caller, never as the trusted local session:
+//
+//   * the table, and every same-database table sampled for joins, must be one the
+//     caller holds `sql:read` on (`Node::column_scope` with {data, read}, the
+//     operation the SQL executor checks); a table it may not read answers exactly as
+//     a table that does not exist, and is never sampled for joins;
+//   * the sample is read through the query service as the caller, so row security
+//     admits only the caller's rows;
+//   * a column the caller may not read is OMITTED: not described, not counted, not
+//     used for grain, keys, joins or leakage — its values never reach the analysis.
+//
+// An empty `acting_key` is the trusted local session (every table, column and row).
+struct AnalysisReader {
+    std::string acting_key;
+    bool acting_is_user = false;
+};
+
+// analyze_dataset, read as `reader`.
+DatasetAnalysis analyze_dataset_as(Node& node, const DatasetPath& path,
+                                   const AnalysisOptions& options, const AnalysisReader& reader,
+                                   const zetta::cluster::Cluster* cluster = nullptr);
+
 nlohmann::json to_json(const ColumnAnalysis& column);
 nlohmann::json to_json(const DatasetAnalysis& analysis);
 
@@ -200,6 +223,12 @@ FeaturePlan plan_features(const DatasetAnalysis& analysis, const FeaturePlanOpti
 FeaturePlan plan_features(Node& node, const DatasetPath& path, const FeaturePlanOptions& options,
                           const DatasetSampler& sampler = {},
                           const zetta::cluster::Cluster* cluster = nullptr);
+
+// plan_features over analyze_dataset_as: the plan is built only from what `reader`
+// may read (#1396).
+FeaturePlan plan_features_as(Node& node, const DatasetPath& path,
+                             const FeaturePlanOptions& options, const AnalysisReader& reader,
+                             const zetta::cluster::Cluster* cluster = nullptr);
 
 nlohmann::json to_json(const FeaturePlanEntry& entry);
 nlohmann::json to_json(const FeaturePlan& plan);

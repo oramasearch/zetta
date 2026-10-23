@@ -2906,6 +2906,16 @@ std::optional<zetta::data::DatasetPath> capability_dataset_path(
         if (!requested_database.empty() && summary.database != requested_database) {
             continue;
         }
+        // #1396: a table the caller may not read is not a match — it neither
+        // resolves the name nor makes it ambiguous, as if it did not exist.
+        if (!context.acting_key.empty() &&
+            !context.node
+                 .column_scope(context.acting_key, context.acting_is_user,
+                               Operation{zetta::governance::CapabilityDomain::Data, "read"},
+                               summary.database, summary.name)
+                 .table_allowed) {
+            continue;
+        }
         matches.push_back(std::move(summary));
     }
     if (matches.empty()) {
@@ -2941,8 +2951,11 @@ ApiResult handle_analyze_dataset(const nlohmann::json& input, ApiContext& contex
     options.label_column = input.value("label", "");
     options.time_column = input.value("time_column", "");
     options.as_of = as_of_string(input);
-    const zetta::data::DatasetAnalysis analysis = zetta::data::analyze_dataset(
-        context.node, *path, options, {}, context.cluster);
+    // #1300, #1396: read as the caller — its table and column grants and its row
+    // security, as its own SQL would be — never as the trusted local session.
+    const zetta::data::DatasetAnalysis analysis = zetta::data::analyze_dataset_as(
+        context.node, *path, options, {context.acting_key, context.acting_is_user},
+        context.cluster);
     if (!analysis.ok()) {
         return ApiResult::failure("engine_error", analysis.error);
     }
@@ -3013,8 +3026,10 @@ ApiResult handle_plan_features(const nlohmann::json& input, ApiContext& context)
     options.group_column = input.value("group_column", "");
     options.as_of = as_of_string(input);
     options.sample_rows = input.value("sample_rows", options.sample_rows);
-    const zetta::data::FeaturePlan plan = zetta::data::plan_features(
-        context.node, *path, options, {}, context.cluster);
+    // #1396: planned from what the caller may read, like analyze_dataset.
+    const zetta::data::FeaturePlan plan = zetta::data::plan_features_as(
+        context.node, *path, options, {context.acting_key, context.acting_is_user},
+        context.cluster);
     if (!plan.ok()) {
         return ApiResult::failure("engine_error", plan.error);
     }
@@ -13004,7 +13019,9 @@ void register_core_capabilities(Registry& registry) {
         "analyze_dataset",
         "Analyze a dataset",
         "Read a landed dataset's semantic types, evidence, distributions, grain, candidate "
-        "keys, same-database joins, and leakage candidates. No side effects.",
+        "keys, same-database joins, and leakage candidates. Reads as the caller: only "
+        "tables, columns and rows its own SQL could read; a column it may not read is "
+        "omitted (#1396). No side effects.",
         analyze_dataset_schema(),
         analyze_dataset_output_schema(),
         CapabilityKind::Read,
@@ -13017,7 +13034,8 @@ void register_core_capabilities(Registry& registry) {
         "plan_features",
         "Plan dataset features",
         "Read a methodology-specific feature and exclusion plan from dataset analysis, or an "
-        "explicit transform_required proposal. No side effects and no transform is applied.",
+        "explicit transform_required proposal, built only from what the caller may read "
+        "(#1396). No side effects and no transform is applied.",
         plan_features_schema(),
         plan_features_output_schema(),
         CapabilityKind::Read,

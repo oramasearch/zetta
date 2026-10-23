@@ -342,6 +342,14 @@ using DatasetSampler = std::function<std::vector<nlohmann::json>(
 DatasetSampler default_dataset_sampler(Node& node,
                                        const zetta::cluster::Cluster* cluster = nullptr);
 
+// The same read, executed AS a caller (#1396): the query service carries the
+// caller's identity, so the SELECT is authorized like the caller's own SQL — a table
+// it holds no `sql:read` on is refused, a column it may not read comes back null,
+// and row security keeps only the rows its policies admit. An empty `acting_key` is
+// the trusted local session, exactly default_dataset_sampler.
+DatasetSampler caller_dataset_sampler(Node& node, const zetta::cluster::Cluster* cluster,
+                                      std::string acting_key, bool acting_is_user);
+
 // Read `columns` of up to `limit` rows (zero: every row) of `database`.`table`
 // through the node's query service: `SELECT <columns> FROM <database>.<table>
 // LIMIT <limit>`. Rows carry only the named columns. A column whose name the

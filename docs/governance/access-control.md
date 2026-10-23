@@ -629,7 +629,12 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
   over a masked column is refused (no inference; an `ORDER BY` would choose which
   rows a `LIMIT` keeps by the hidden value, #1021). `get_dataset` follows the same
   rule for its typed columns: a masked column keeps its name and answers `type`,
-  `nullable` and `null_fraction` as null (#1021). An `INSERT` to a table or column with no
+  `nullable` and `null_fraction` as null (#1021). `analyze_dataset` and `plan_features`
+  read **as their caller** (#1300, #1396; `zetta::data::analyze_dataset_as`): the sample is
+  a `SELECT` through the executor with the caller's identity, so row security applies; a
+  column the caller may not read is **omitted** (not named, counted or sampled); a table it
+  holds no read on answers exactly as a missing one, and is never sampled as a join
+  neighbour. An `INSERT` to a table or column with no
   `sql:write` grant is **rejected**, and so is every other data-changing statement
   without its right — see [per-statement enforcement](#per-statement-enforcement).
 - **MCP / REST** (`src/core/api/registry.cpp`): the invoke right for the capability
@@ -829,6 +834,7 @@ user via `find_user_by_id` + `roles_for_user`.
 - `include/zetta/query/ast.hpp` — the RLS predicate AST (#748): `PolicyPredicate` / `PolicyTerm` / `PolicyCommand` + `CreatePolicyStmt` / `DropPolicyStmt` (the dialect-neutral parsed form the executor evaluates with `compare_cell`).
 - `include/zetta/node.hpp` — policy CRUD + the RLS bypass decision (#748): `Node::create_policy` / `drop_policy` / `find_policy` / `policies` / `bypasses_row_security`.
 - `src/core/query/postgres.cpp` + `src/core/query/executor.cpp` — the `CREATE/DROP POLICY` grammar + its `roles:manage` gate, the `system.policies` view, and the per-statement `USING` (SELECT) / `WITH CHECK` (INSERT) row rewrite reusing the WHERE evaluator (#748).
+- `tests/api/test_analysis_access.cpp` — analysis reads as its caller (#1300, #1396): a column-scoped caller gets no trace of a hidden column, an unreadable table answers as missing and is never sampled as a join neighbour, and row security keeps other rows out of the statistics.
 - `tests/governance/test_row_security.cpp` + `tests/api/test_row_security_api.cpp` — the RLS coverage (#748): `USING (owner = current_user())` limits a non-admin to its own rows, a `WITH CHECK` violation is rejected, admin bypasses, a role-scoped policy applies only to that role (deny-by-default otherwise), `current_roles()` membership, policies replicate.
 - `tests/governance/test_authz_regressions.cpp` — the authorization regression harness (#780): one test per auth review finding #759–#769, fixed ones asserted and open ones as `KNOWN_DEFECT` probes that fail once the defect stops reproducing; the map is [docs/testing/authz-regressions.md](../testing/authz-regressions.md).
 - `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
