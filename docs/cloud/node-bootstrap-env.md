@@ -98,6 +98,10 @@ variable that disagree refuse the start, that a world-readable file warns, and t
 - **`ZETTA_ADVERTISE`.** There is no `--advertise` flag yet; a routable advertise
   address is Gap B in `docs/plans/cloud-provisioning.md` (public IP / overlay
   mesh), tracked separately.
+- **The VM side of the token file** is the
+  [node bootstrap script](node-bootstrap-script.md) (#1316): it fetches the token
+  from the vendor secret store at boot, writes it to a 0400 file and points
+  `ZETTA_CLUSTER_TOKEN_FILE` at it through `/etc/zetta/bootstrap.env`.
 - **Delivering + starting the binary** on the VM (a baked image / cloud-init that
   installs zetta, a Linux x86-64 artifact) is the remaining half of Gap A. Option
   (a) — the binary reads env directly — means that bootstrap unit only needs to

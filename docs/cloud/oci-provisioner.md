@@ -113,6 +113,8 @@ required; everything else has a sensible default.
 | `image_id` | `string` | | the image OCID nodes boot from; empty → the config default |
 | `spot` | `bool` | | burst preemptible (cheaper, evictable) capacity (default `false`) |
 | `seed_peer` | `string` | | cluster seed `host:port` injected into each node's cloud-init so it auto-joins |
+| `vault_id` | `string` | on a secure cluster | the OCI Vault OCID the join token is stored in, as the secret `<pool_name>-cluster-token` (#1316) |
+| `key_id` | `string` | on a secure cluster | the OCID of that vault's master encryption key, which encrypts the secret (#1316) |
 
 > **OCI vs. Azure/GCP config.** OCI is OCID-addressed and uses a separate
 > **Instance Configuration** (the per-node template) that the **Instance Pool**
@@ -145,7 +147,7 @@ teardown. It builds `oci compute-management` argv, runs them through an injected
 
 | `OciControlPlane` call | `oci` command (shape) |
 |---|---|
-| `bring_up` | resolve pool OCID by name (`oci compute-management instance-pool list … --query 'data[0].id' --raw-output`); **create path** → `instance-configuration create --instance-details <json>` (`file://<private file>` on a secure cluster, whose user_data carries the join token — #770) then `instance-pool create --instance-configuration-id … --placement-configurations <json> --size N`; **resize path** → `instance-pool update --instance-pool-id … --size N`; then `instance-pool list-instances` |
+| `bring_up` | on a secure cluster first `oci vault secret list --vault-id … --name <pool>-cluster-token --lifecycle-state ACTIVE`, then `oci vault secret create-base64 --from-json file://<private file>` (or `update-base64` when it exists — fail-closed, #1316); resolve pool OCID by name (`oci compute-management instance-pool list … --query 'data[0].id' --raw-output`); **create path** → `instance-configuration create --instance-details <json>` (its `user_data` is the base64 [node bootstrap script](node-bootstrap-script.md): the seed and the secret's name, never the token) then `instance-pool create --instance-configuration-id … --placement-configurations <json> --size N`; **resize path** → `instance-pool update --instance-pool-id … --size N`; then `instance-pool list-instances` |
 | `destroy` | `oci compute-management instance-pool-instance detach --instance-pool-id … --instance-id <id> --is-auto-terminate true --is-decrement-size true` |
 | `list` | `oci compute-management instance-pool list-instances --instance-pool-id …` |
 
@@ -167,6 +169,56 @@ requested count. `destroy` uses **DetachInstancePoolInstance** with
 teardown the seam contract wants. The command shapes are grounded in
 [research/oci-cli-compute.md](../research/oci-cli-compute.md) (the cited `oci` guide —
 §2.10 Instance Pools + autoscaling, §2.8 preemptible).
+
+### The join token — OCI Vault and the instance principal (#1316)
+
+An instance configuration's `user_data` is not a secret store: any principal that
+can read the instance configuration can read it, and so can every process on the
+instance through IMDS. So the token never rides it. On a secure cluster
+`bring_up`:
+
+1. stores the token in `vault_id` as the secret `<pool_name>-cluster-token`,
+   encrypted with `key_id`: `oci vault secret create-base64` the first time,
+   `update-base64` (a new secret version) when it already exists, on the create
+   and the resize path alike, so a rotated token reaches new nodes. All the
+   parameters, the base64 token among them, go in a private `--from-json
+   file://…` document, never argv. If that fails, the burst stops before any
+   instance configuration or pool is touched, and so it does when `vault_id` or
+   `key_id` is missing;
+2. puts the boot script in the instance configuration's `user_data`, base64 as OCI
+   requires. It names the vault, the secret and the region;
+3. at boot, the script runs `oci secrets secret-bundle get-secret-bundle-by-name
+   --auth instance_principal --vault-id … --secret-name …`, base64-decodes the
+   bundle and writes it to `/etc/zetta/cluster-token` (0400).
+
+**What the operator grants.** Create the vault and its key once. Then a dynamic
+group for the burst instances and two policies:
+
+```text
+# Dynamic group zetta-burst-nodes: the burst instances
+ALL {instance.compartment.id = '<compartment OCID>'}
+
+# The burst nodes read the token, and nothing else in the vault
+Allow dynamic-group zetta-burst-nodes to read secret-bundles in compartment <compartment>
+  where target.secret.name = 'zetta-burst-cluster-token'
+
+# The control plane (the user, group or dynamic group `oci` runs as) writes it
+Allow group zetta-operators to manage secret-family in compartment <compartment>
+  where target.vault.id = '<vault OCID>'
+Allow group zetta-operators to use keys in compartment <compartment>
+  where target.key.id = '<key OCID>'
+```
+
+A compartment-wide matching rule admits every instance in the compartment; narrow
+it with a defined tag on the instance configuration if the compartment holds other
+instances. The image needs the `oci` CLI (it authenticates with the instance
+principal, no config file), `base64` and a POSIX `sh`.
+
+**An instance configuration from before #1316 still holds the token.** The resize
+path reuses the existing pool and its instance configuration, so one created by an
+earlier build keeps handing the token out in `user_data`. Terminate the pool and
+delete `<pool_name>-config` so the next burst creates clean ones, and rotate the
+cluster token.
 
 ### The command runner — testable without `oci`
 
@@ -232,8 +284,12 @@ boundary, the lifecycle, and the reference binding:
 - **`OciCliControlPlane` (fake command runner)** — the **create path** (resolve
   finds no pool → instance-configuration create with the per-node launch JSON +
   instance-pool create + list); the **resize path** (resolve finds a pool → update
-  `--size`, no create); a Spot config adds `preemptibleInstanceConfig` + the
-  cloud-init seed to the instance-details JSON; best-effort when fewer instances
+  `--size`, no create); a Spot config adds `preemptibleInstanceConfig` to the
+  instance-details JSON, whose base64 `user_data` is a boot script naming the seed
+  and the vault secret, never the token; on a secure cluster the token is created
+  in OCI Vault (or updated when the secret exists) through a private
+  `--from-json` document before the instance configuration, and a missing
+  `vault_id` / `key_id` or a vault refusal stops the burst (#1316); best-effort when fewer instances
   come up; a create failure surfaces in the `detail`; `destroy` builds
   `instance-pool-instance detach --is-auto-terminate --is-decrement-size` (and is a
   no-op when no pool resolves); `list` unwraps the `data` envelope, parses, and

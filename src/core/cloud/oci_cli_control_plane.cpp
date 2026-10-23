@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -9,7 +10,9 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/cloud/command_runner.hpp"
+#include "zetta/cloud/node_bootstrap_script.hpp"
 #include "zetta/cloud/secret_file.hpp"
+#include "../base64.hpp"
 
 namespace zetta::cloud {
 
@@ -64,11 +67,14 @@ std::vector<ProvisionedNode> parse_nodes(const std::string& json_text) {
 }
 
 // Build the instance-configuration `--instance-details` JSON: the per-node launch
-// shape (compartment / AD / shape + shapeConfig / image / VNIC / cloud-init seed /
-// preemptible). On OCI the per-node shape lives in the instance configuration the
-// pool instantiates — preemptible is a launch property (preemptibleInstanceConfig),
-// which is why spot/seed land here, not on the pool create.
-std::string instance_details_json(const OciConfig& config) {
+// shape (compartment / AD / shape + shapeConfig / image / VNIC / boot script /
+// preemptible). `user_data` is the rendered node bootstrap script (empty when
+// there is nothing to hand over). On OCI the per-node shape lives in the instance
+// configuration the pool instantiates — preemptible is a launch property
+// (preemptibleInstanceConfig), which is why spot/seed land here, not on the pool
+// create.
+std::string instance_details_json(const OciConfig& config,
+                                  const std::string& user_data) {
     nlohmann::json launch{
         {"compartmentId", config.compartment_id},
         {"availabilityDomain", config.availability_domain},
@@ -83,29 +89,91 @@ std::string instance_details_json(const OciConfig& config) {
     if (!config.image_id.empty()) {
         launch["sourceDetails"] = {{"sourceType", "image"}, {"imageId", config.image_id}};
     }
-    // Hand each node the cluster seed address at boot via cloud-init user_data —
-    // and, on a secure cluster, the join token (#670) — so it comes up with the
-    // equivalent of `zetta --peer <seed> --join-token <token>`. (A real deployment
-    // supplies a full base64 cloud-init.) user_data is readable from the instance
-    // metadata endpoint by every process on the VM and by any principal that can
-    // read the instance configuration: see docs/cluster/security.md for the
-    // trade-off and the OCI Vault follow-up.
-    std::string user_data;
-    if (!config.seed_peer.empty()) {
-        user_data = "ZETTA_SEED_PEER=" + config.seed_peer;
-    }
-    if (!config.join_token.empty()) {
-        if (!user_data.empty()) user_data += '\n';
-        user_data += "ZETTA_CLUSTER_TOKEN=" + config.join_token;
-    }
+    // Hand each node its boot script as cloud-init user_data (base64, as OCI
+    // requires): the cluster seed address and, on a secure cluster, the name of
+    // the OCI Vault secret holding the join token (#670, #1316). user_data is
+    // readable from the instance metadata endpoint by every process on the VM and
+    // by any principal that can read the instance configuration, so it never
+    // carries the token itself: see docs/cluster/security.md.
     if (!user_data.empty()) {
-        launch["metadata"] = {{"user_data", user_data}};
+        launch["metadata"] = {
+            {"user_data", detail::base64_encode(std::as_bytes(std::span{user_data}))}};
     }
     if (config.spot) {
         launch["preemptibleInstanceConfig"] = {
             {"preemptionAction", {{"type", "TERMINATE"}, {"preserveBootVolume", false}}}};
     }
     return nlohmann::json{{"instanceType", "compute"}, {"launchDetails", launch}}.dump();
+}
+
+// The boot script each node runs: the node bootstrap script
+// (node_bootstrap_script.hpp), carrying the cluster seed address and, on a
+// secure cluster, only the *name* of the OCI Vault secret holding the join token
+// (#1316). Empty when there is nothing to hand over; nullopt (with `reason`)
+// when the script cannot be rendered.
+std::optional<std::string> boot_script(const OciConfig& config, std::string* reason) {
+    NodeBootstrapScriptOptions options;
+    options.seed_peer = config.seed_peer;
+    if (!config.join_token.empty()) {
+        options.token.store = ClusterTokenStore::oci_vault;
+        options.token.secret_name = cluster_token_secret_name(config.pool_name);
+        options.token.container = config.vault_id;
+        options.token.region = config.region;
+    } else if (config.seed_peer.empty()) {
+        return std::string{};
+    }
+    return render_node_bootstrap_script(options, reason);
+}
+
+// Store the join token as the OCI Vault secret `<pool>-cluster-token`: update it
+// (a new secret version) when the vault already has it, create it otherwise. The
+// parameters, the base64 token among them, reach `oci` through a private
+// `--from-json file://` document, never argv (#770).
+bool store_join_token(const CommandRunner& runner, const OciConfig& config,
+                      std::string* reason) {
+    const std::string secret = cluster_token_secret_name(config.pool_name);
+    const std::string content =
+        detail::base64_encode(std::as_bytes(std::span{config.join_token}));
+
+    std::vector<std::string> find{"oci", "vault", "secret", "list"};
+    flag(find, "--compartment-id", config.compartment_id);
+    flag(find, "--vault-id", config.vault_id);
+    flag(find, "--name", secret);
+    flag(find, "--lifecycle-state", "ACTIVE");
+    flag(find, "--query", "data[0].id");
+    find.push_back("--raw-output");
+    append_region(find, config);
+    const CommandResult found = runner(find);
+    const std::string secret_id = found.exit_code == 0 ? trim(found.stdout_text) : "";
+
+    nlohmann::json parameters{{"secretContentContent", content}};
+    std::vector<std::string> store{"oci", "vault", "secret"};
+    if (is_absent(secret_id)) {
+        store.push_back("create-base64");
+        parameters["compartmentId"] = config.compartment_id;
+        parameters["vaultId"] = config.vault_id;
+        parameters["keyId"] = config.key_id;
+        parameters["secretName"] = secret;
+    } else {
+        store.push_back("update-base64");
+        parameters["secretId"] = secret_id;
+    }
+    std::string stage_reason;
+    const std::unique_ptr<SecretFile> parameters_file =
+        SecretFile::create(parameters.dump(), &stage_reason);
+    if (!parameters_file) {
+        *reason = "cannot stage the cluster join token for OCI Vault: " + stage_reason;
+        return false;
+    }
+    flag(store, "--from-json", "file://" + parameters_file->path().string());
+    append_region(store, config);
+    const CommandResult stored = runner(store);
+    if (stored.exit_code != 0) {
+        *reason = "oci vault secret " + store[3] + " (cluster join token) failed: " +
+                  (stored.stderr_text.empty() ? stored.stdout_text : stored.stderr_text);
+        return false;
+    }
+    return true;
 }
 
 // Build the instance-pool `--placement-configurations` JSON.
@@ -140,6 +208,26 @@ ProvisionResult OciCliControlPlane::bring_up(const OciConfig& config,
                                              const ProvisionRequest& request) {
     ProvisionResult result;
 
+    // On a secure cluster, store the join token in OCI Vault before any capacity
+    // is requested, on the create and the resize path alike (a rotated token
+    // reaches new nodes). Fail closed: a node with no fetchable token cannot
+    // join, and the token never falls back to user_data (#1316).
+    if (!config.join_token.empty()) {
+        if (config.vault_id.empty() || config.key_id.empty()) {
+            result.satisfied = false;
+            result.detail =
+                "a secure cluster on OCI needs vault_id and key_id in the provisioner "
+                "config: the join token is stored in OCI Vault and each node reads it "
+                "with its instance principal (docs/cloud/oci-provisioner.md)";
+            return result;
+        }
+        if (std::string reason; !store_join_token(runner_, config, &reason)) {
+            result.satisfied = false;
+            result.detail = reason;
+            return result;
+        }
+    }
+
     // OCI addresses resources by OCID, not name — resolve the burst pool's OCID
     // from its stable display name to keep a re-burst idempotent (resize an
     // existing pool rather than create a duplicate).
@@ -152,22 +240,15 @@ ProvisionResult OciCliControlPlane::bring_up(const OciConfig& config,
             "oci", "compute-management", "instance-configuration", "create"};
         flag(ensure_config, "--compartment-id", config.compartment_id);
         flag(ensure_config, "--display-name", config.pool_name + "-config");
-        // On a secure cluster the details carry the join token, so they reach
-        // `oci` as `file://<private file>`, never as an argv value (#770).
-        std::unique_ptr<SecretFile> details_file;
-        if (config.join_token.empty()) {
-            flag(ensure_config, "--instance-details", instance_details_json(config));
-        } else {
-            std::string reason;
-            details_file = SecretFile::create(instance_details_json(config), &reason);
-            if (!details_file) {
-                result.satisfied = false;
-                result.detail = "cannot stage the instance configuration: " + reason;
-                return result;
-            }
-            flag(ensure_config, "--instance-details",
-                 "file://" + details_file->path().string());
+        // The details carry the boot script, which holds no secret (#1316).
+        std::string render_reason;
+        const std::optional<std::string> script = boot_script(config, &render_reason);
+        if (!script) {
+            result.satisfied = false;
+            result.detail = "cannot render the node bootstrap script: " + render_reason;
+            return result;
         }
+        flag(ensure_config, "--instance-details", instance_details_json(config, *script));
         flag(ensure_config, "--query", "data.id");
         ensure_config.push_back("--raw-output");
         append_region(ensure_config, config);
