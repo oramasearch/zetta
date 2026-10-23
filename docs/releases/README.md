@@ -4,6 +4,12 @@ One page per tagged release, newest first. A page states what changed, **what it
 someone upgrading**, and what is knowingly still broken — a release note that lists only
 wins is marketing, and the next reader rediscovers the gap expensively.
 
+- [v0.5.0](v0.5.0.md) — 2026-10-23. The security release: the auth review, multi-tenant audit,
+  TC-5 and pre-launch review fixes (sealed identity under a cluster root, per-caller catalog and
+  search, egress denied by default, approved connector destinations), plus MySQL, TiDB and lake SQL
+  connectors, safe mode per database, `WHERE` with `AND`/`OR`/`NOT`, and published pipelines.
+  **Upgrade every node together; #1442 cannot be rolled back; roll orama-operator#890 first.**
+  Image: `oramasearch/zetta:v0.5.0`.
 - [v0.4.0](v0.4.0.md) — 2026-10-19. Datasets: the source's column order and typed columns,
   `LIMIT` pushed to the partitions, text columns as categorical features, the contract typed
   from the partition catalog, and `load_dataset_object` past the 16 MiB inline cap. **Behaviour
