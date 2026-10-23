@@ -2,6 +2,7 @@
 
 #include <sys/stat.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -28,7 +29,7 @@ using EvpMdCtxPtr = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
 constexpr std::size_t kKeyBytes = 32;
 constexpr std::size_t kSignatureBytes = 64;
 constexpr std::string_view kRootDomain = "zetta-identity-root-v1";
-constexpr std::string_view kSealDomain = "zetta-identity-seal-v1";
+constexpr std::string_view kSealDomain = "zetta-identity-seal-v2";
 constexpr std::string_view kIdDomain = "zetta-identity-id-v1";
 
 void set_reason(std::string* out, std::string message) {
@@ -76,11 +77,15 @@ std::array<unsigned char, 32> sha256(std::string_view input) {
     return digest;
 }
 
-// The bytes a seal signs: the domain, the catalogue key, and the value without
-// its seal. nlohmann::json orders object keys, so every node that holds the same
-// value builds the same bytes.
-std::string seal_message(std::string_view key, const nlohmann::json& unsealed) {
+// The bytes a seal signs: the domain, the root's public key, the catalogue key,
+// and the value without its seal (its version and any tombstone marker
+// included). nlohmann::json orders object keys, so every node that holds the
+// same value builds the same bytes.
+std::string seal_message(std::string_view root_public_key, std::string_view key,
+                         const nlohmann::json& unsealed) {
     std::string message(kSealDomain);
+    message += '\n';
+    message += root_public_key;
     message += '\n';
     message += key;
     message += '\n';
@@ -240,10 +245,8 @@ std::string IdentityAuthority::seed_hex() const {
     return to_hex(seed_.data(), seed_.size());
 }
 
-std::optional<nlohmann::json> IdentityAuthority::seal(std::string_view key,
+std::optional<nlohmann::json> IdentityAuthority::sign(std::string_view key,
                                                       nlohmann::json value) const {
-    if (!has_seed_ || !value.is_object()) return std::nullopt;
-    value.erase(std::string(kIdentitySealField));
     EvpKeyPtr private_key(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
                                                        seed_.data(), seed_.size()),
                           &EVP_PKEY_free);
@@ -253,7 +256,7 @@ std::optional<nlohmann::json> IdentityAuthority::seal(std::string_view key,
                            private_key.get()) != 1) {
         return std::nullopt;
     }
-    const std::string message = seal_message(key, value);
+    const std::string message = seal_message(public_key_hex_, key, value);
     std::array<unsigned char, kSignatureBytes> signature{};
     std::size_t length = signature.size();
     if (EVP_DigestSign(context.get(), signature.data(), &length,
@@ -267,7 +270,26 @@ std::optional<nlohmann::json> IdentityAuthority::seal(std::string_view key,
     return value;
 }
 
-std::optional<nlohmann::json> IdentityAuthority::open(
+std::optional<nlohmann::json> IdentityAuthority::seal(std::string_view key,
+                                                      nlohmann::json value,
+                                                      std::uint64_t version) const {
+    if (!has_seed_ || !value.is_object() || version == 0) return std::nullopt;
+    // A live record never carries the removal marker: a removal is sealed only
+    // through seal_removal, so no caller turns a record into a tombstone.
+    if (value.contains(std::string(kIdentityTombstoneField))) return std::nullopt;
+    value.erase(std::string(kIdentitySealField));
+    value[std::string(kIdentityVersionField)] = version;
+    return sign(key, std::move(value));
+}
+
+std::optional<nlohmann::json> IdentityAuthority::seal_removal(
+    std::string_view key, std::uint64_t version) const {
+    if (!has_seed_ || version == 0) return std::nullopt;
+    return sign(key, nlohmann::json{{std::string(kIdentityTombstoneField), true},
+                                    {std::string(kIdentityVersionField), version}});
+}
+
+std::optional<OpenedIdentityRecord> IdentityAuthority::open(
     std::string_view key, const nlohmann::json& value) const {
     if (!value.is_object()) return std::nullopt;
     const auto found = value.find(std::string(kIdentitySealField));
@@ -277,6 +299,13 @@ std::optional<nlohmann::json> IdentityAuthority::open(
     const auto signature = from_hex<kSignatureBytes>(
         std::string_view(seal_text).substr(kIdentitySealPrefix.size()));
     if (!signature) return std::nullopt;
+    // The version must be a positive integer: a record with none is from before
+    // versions and cannot be ordered against a later one (#1341).
+    const auto version = value.find(std::string(kIdentityVersionField));
+    if (version == value.end() || !version->is_number_unsigned() ||
+        version->get<std::uint64_t>() == 0) {
+        return std::nullopt;
+    }
     nlohmann::json unsealed = value;
     unsealed.erase(std::string(kIdentitySealField));
     EvpKeyPtr public_key(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr,
@@ -289,13 +318,51 @@ std::optional<nlohmann::json> IdentityAuthority::open(
                              public_key.get()) != 1) {
         return std::nullopt;
     }
-    const std::string message = seal_message(key, unsealed);
+    const std::string message = seal_message(public_key_hex_, key, unsealed);
     if (EVP_DigestVerify(context.get(), signature->data(), signature->size(),
                          reinterpret_cast<const unsigned char*>(message.data()),
                          message.size()) != 1) {
         return std::nullopt;
     }
-    return unsealed;
+    OpenedIdentityRecord record;
+    record.version = version->get<std::uint64_t>();
+    record.seal = seal_text;
+    if (const auto marker = unsealed.find(std::string(kIdentityTombstoneField));
+        marker != unsealed.end()) {
+        // A sealed removal is the marker and the version, nothing else.
+        if (!marker->is_boolean() || !marker->get<bool>() || unsealed.size() != 2) {
+            return std::nullopt;
+        }
+        record.removed = true;
+        record.value = nlohmann::json::object();
+        return record;
+    }
+    unsealed.erase(std::string(kIdentityVersionField));
+    record.value = std::move(unsealed);
+    return record;
+}
+
+bool identity_record_supersedes(const OpenedIdentityRecord& a,
+                                const OpenedIdentityRecord& b) {
+    if (a.version != b.version) return a.version > b.version;
+    return a.seal > b.seal;
+}
+
+std::uint64_t next_identity_version(const IdentityAuthority& root,
+                                    std::string_view key,
+                                    const nlohmann::json* current,
+                                    std::uint64_t floor) {
+    using namespace std::chrono;
+    std::uint64_t version = static_cast<std::uint64_t>(
+        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    if (floor >= version) version = floor + 1;
+    if (current) {
+        if (const auto opened = root.open(key, *current);
+            opened && opened->version >= version) {
+            version = opened->version + 1;
+        }
+    }
+    return version;
 }
 
 std::string IdentityAuthority::derived_id(std::string_view purpose) const {

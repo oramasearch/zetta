@@ -769,6 +769,12 @@ bool Node::start() {
             running_ = false;
             return false;
         }
+        // The newest sealed identity records this node accepted before it
+        // stopped, so a replay in the persisted document is refused (#1341).
+        if (!load_identity_held()) {
+            running_ = false;
+            return false;
+        }
         seal_preexisting_identity();  // the first start under a root (#764)
         migrate_to_replication();   // capture any local-only data into it
         const zetta::cluster::ReplicationChanges changes =
@@ -1292,6 +1298,7 @@ void Node::stop() {
         audit_trail_->flush();
     }
     flush_pending_captures(true);
+    if (replication_ && identity_held_dirty_) persist_identity_held();
     if (replication_) persist_replication();
     running_ = false;
     std::printf("zetta: node stopped\n");
@@ -3618,9 +3625,9 @@ bool Node::drop_principal(const std::string& name) {
         std::vector<std::string> key_ids;
         for (const auto& key : principal->keys()) key_ids.push_back(key->id());
         for (const std::string& key_id : key_ids) {
-            replication_->remove(catalog::access_key_key(key_id));
+            remove_identity(catalog::access_key_key(key_id));
         }
-        replication_->remove(catalog::principal_key(principal->id()));
+        remove_identity(catalog::principal_key(principal->id()));
     }
     return materialize_drop_principal(principal->id());
 }
@@ -3773,7 +3780,7 @@ bool Node::drop_user(const std::string& name) {
             if (token->user_id() == user_id) token_ids.push_back(token->id());
         }
         for (const std::string& id : token_ids) {
-            replication_->remove(catalog::token_key(id));
+            remove_identity(catalog::token_key(id));
         }
         std::vector<std::string> assignment_ids;
         for (const auto& assignment : user_roles_) {
@@ -3782,9 +3789,9 @@ bool Node::drop_user(const std::string& name) {
             }
         }
         for (const std::string& id : assignment_ids) {
-            replication_->remove(catalog::user_role_key(id));
+            remove_identity(catalog::user_role_key(id));
         }
-        replication_->remove(catalog::user_key(user_id));
+        remove_identity(catalog::user_key(user_id));
     }
     // Also drop the local projections (standalone has no CRDT to reconcile from).
     std::vector<std::string> token_ids;
@@ -3981,9 +3988,9 @@ bool Node::drop_role(const std::string& name) {
     }
     if (replication_) {
         for (const std::string& id : assignment_ids) {
-            replication_->remove(catalog::user_role_key(id));
+            remove_identity(catalog::user_role_key(id));
         }
-        replication_->remove(catalog::role_key(role_id));
+        remove_identity(catalog::role_key(role_id));
     }
     for (const std::string& id : assignment_ids) materialize_drop_user_role(id);
     return materialize_drop_role(role_id);
@@ -4417,7 +4424,7 @@ bool Node::unassign_role(const std::string& user_id,
     }
     if (assignment_id.empty()) return false;  // not assigned
     if (replication_) {
-        replication_->remove(catalog::user_role_key(assignment_id));
+        remove_identity(catalog::user_role_key(assignment_id));
     }
     return materialize_drop_user_role(assignment_id);
 }
@@ -4562,7 +4569,7 @@ bool Node::drop_policy(const std::string& name) {
     if (!policy) return false;
     const std::string id = policy->id();
     if (replication_) {
-        replication_->remove(catalog::policy_key(id));
+        remove_identity(catalog::policy_key(id));
     }
     return materialize_drop_policy(id);
 }
@@ -4759,11 +4766,36 @@ bool Node::identity_writable() const {
     return !replication_ || can_issue_identity();
 }
 
+namespace {
+
+// The record the document holds for `key` now, if any (a copy, so the caller
+// may write the document afterwards).
+std::optional<nlohmann::json> current_identity_value(
+    const zetta::cluster::ReplicationManager& replication, const std::string& key) {
+    const auto view = replication.shared_snapshot();
+    if (!view) return std::nullopt;
+    const auto found = view->find(key);
+    if (found == view->end()) return std::nullopt;
+    return std::optional<nlohmann::json>(std::in_place, *found);
+}
+
+}  // namespace
+
 void Node::replicate_identity(const std::string& key, nlohmann::json value) {
     if (!replication_) return;
     if (const governance::IdentityAuthority* root = identity_authority()) {
-        std::optional<nlohmann::json> sealed = root->seal(key, std::move(value));
-        if (!sealed) {
+        // Newer than the record the document holds and than the one this node
+        // holds, so every node accepts it over both (#1341).
+        const std::optional<nlohmann::json> current =
+            current_identity_value(*replication_, key);
+        const auto held = identity_held_.find(key);
+        const std::uint64_t version = governance::next_identity_version(
+            *root, key, current ? &*current : nullptr,
+            held == identity_held_.end() ? 0 : held->second.opened.version);
+        std::optional<nlohmann::json> sealed = root->seal(key, std::move(value), version);
+        std::optional<governance::OpenedIdentityRecord> opened;
+        if (sealed) opened = root->open(key, *sealed);
+        if (!sealed || !opened) {
             // Every caller checks identity_writable() first, so this is a value
             // that is not a JSON object: write nothing a peer would refuse.
             std::fprintf(stderr, "zetta: identity record %s not sealed — not replicated\n",
@@ -4771,27 +4803,183 @@ void Node::replicate_identity(const std::string& key, nlohmann::json value) {
             return;
         }
         replication_->set(key, *sealed);
+        hold_identity(key, *sealed, *opened);
         return;
     }
     replication_->set(key, value);
 }
 
-nlohmann::json Node::trusted_identity(const nlohmann::json& values) const {
+void Node::remove_identity(const std::string& key) {
+    if (!replication_) return;
+    const governance::IdentityAuthority* root = identity_authority();
+    if (!root) {
+        replication_->remove(key);  // unsealed mode: the CRDT's own tombstone
+        return;
+    }
+    // A removal is a sealed record of its own, newer than the one it removes
+    // (#1341). The CRDT's tombstone carries no seal, so any member could write
+    // one; no node honors it.
+    const std::optional<nlohmann::json> current = current_identity_value(*replication_, key);
+    const auto held = identity_held_.find(key);
+    const std::uint64_t version = governance::next_identity_version(
+        *root, key, current ? &*current : nullptr,
+        held == identity_held_.end() ? 0 : held->second.opened.version);
+    std::optional<nlohmann::json> tombstone = root->seal_removal(key, version);
+    std::optional<governance::OpenedIdentityRecord> opened;
+    if (tombstone) opened = root->open(key, *tombstone);
+    if (!tombstone || !opened) {
+        std::fprintf(stderr, "zetta: removal of %s not sealed — not replicated\n",
+                     key.c_str());
+        return;
+    }
+    replication_->set(key, *tombstone);
+    hold_identity(key, *tombstone, *opened);
+}
+
+void Node::hold_identity(const std::string& key, const nlohmann::json& sealed,
+                         const governance::OpenedIdentityRecord& opened) {
+    const auto held = identity_held_.find(key);
+    if (held != identity_held_.end() &&
+        !governance::identity_record_supersedes(opened, held->second.opened)) {
+        return;
+    }
+    identity_held_[key] = HeldIdentity{sealed, opened};
+    identity_held_dirty_ = true;
+}
+
+nlohmann::json Node::trusted_identity(const nlohmann::json& values,
+                                      const std::vector<std::string>* keys) {
     nlohmann::json trusted = nlohmann::json::object();
     const governance::IdentityAuthority* root = identity_authority();
+    if (!root) {
+        for (const auto& [key, value] : values.items()) {
+            if (governance::is_identity_key(key)) trusted[key] = value;  // unsealed mode
+        }
+        return trusted;
+    }
+    // Every key to decide: the identity keys in `values`, and the keys that
+    // changed (one that left `values` was removed) or, on a full reconcile,
+    // every key this node holds (one missing from the document was removed).
+    std::set<std::string> candidates;
     for (const auto& [key, value] : values.items()) {
-        if (!governance::is_identity_key(key)) continue;
-        if (!root) {
-            trusted[key] = value;  // unsealed mode: trusted as replicated
+        if (governance::is_identity_key(key)) candidates.insert(key);
+    }
+    if (keys) {
+        for (const std::string& key : *keys) {
+            if (governance::is_identity_key(key)) candidates.insert(key);
+        }
+    } else {
+        for (const auto& [key, held] : identity_held_) candidates.insert(key);
+    }
+    std::vector<std::string> write_back;
+    for (const std::string& key : candidates) {
+        const auto found = values.find(key);
+        std::optional<governance::OpenedIdentityRecord> opened;
+        if (found != values.end()) opened = root->open(key, *found);
+        auto held = identity_held_.find(key);
+        if (opened && (held == identity_held_.end() ||
+                       !governance::identity_record_supersedes(held->second.opened,
+                                                               *opened))) {
+            // The document's record opens and is not older than the one held.
+            hold_identity(key, *found, *opened);
+            held = identity_held_.find(key);
+        } else if (held != identity_held_.end()) {
+            // The document holds an older sealed record (a replay), a record that
+            // does not open (unsealed, another root's, changed), or nothing (an
+            // unsealed removal). Keep the newer record, and put it back so a node
+            // that never saw it gets it too (#1341). Only an identical sealed
+            // value is ever written, so this settles in one round.
+            write_back.push_back(key);
+        } else {
+            continue;  // nothing trusted for this key: absent
+        }
+        if (!held->second.opened.removed) trusted[key] = held->second.opened.value;
+    }
+    for (const std::string& key : write_back) {
+        replication_->set(key, identity_held_.at(key).sealed);
+    }
+    if (identity_held_dirty_) persist_identity_held();
+    return trusted;
+}
+
+namespace {
+
+constexpr int kIdentityHeldFormat = 1;
+
+fs::path identity_held_path(const std::string& data_dir) {
+    return fs::path(data_dir) / "security" / "identity-held.json";
+}
+
+}  // namespace
+
+bool Node::load_identity_held() {
+    identity_held_.clear();
+    identity_held_dirty_ = false;
+    const governance::IdentityAuthority* root = identity_authority();
+    if (!replication_ || !root) return true;
+    const fs::path path = identity_held_path(config_.data_dir);
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return !ec;
+    std::ifstream in(path, std::ios::binary);
+    const nlohmann::json document = nlohmann::json::parse(in, nullptr, false);
+    if (document.is_discarded() || !document.is_object() ||
+        document.value("version", 0) != kIdentityHeldFormat ||
+        !document.contains("records") || !document["records"].is_object()) {
+        std::fprintf(stderr,
+                     "zetta: %s is malformed; refusing to start without the identity "
+                     "records this node held (docs/governance/identity-seal.md)\n",
+                     path.c_str());
+        return false;
+    }
+    // Each record is verified again: the file is only as trusted as its seals.
+    std::size_t dropped = 0;
+    for (const auto& [key, sealed] : document["records"].items()) {
+        if (!governance::is_identity_key(key)) {
+            ++dropped;
             continue;
         }
-        if (std::optional<nlohmann::json> opened = root->open(key, value)) {
-            trusted[key] = std::move(*opened);
+        if (auto opened = root->open(key, sealed)) {
+            identity_held_[key] = HeldIdentity{sealed, std::move(*opened)};
+        } else {
+            ++dropped;
         }
-        // Otherwise the record is absent: unsealed, sealed by another root, or
-        // changed since it was sealed. A reconciler drops a local copy of it.
     }
-    return trusted;
+    if (dropped > 0) {
+        std::fprintf(stderr,
+                     "zetta: %zu record(s) in %s do not open under this node's identity "
+                     "root and were ignored\n",
+                     dropped, path.c_str());
+        identity_held_dirty_ = true;
+    }
+    return true;
+}
+
+void Node::persist_identity_held() {
+    identity_held_dirty_ = false;
+    if (!replication_ || !identity_authority()) return;
+    nlohmann::json records = nlohmann::json::object();
+    for (const auto& [key, held] : identity_held_) records[key] = held.sealed;
+    const nlohmann::json document{{"version", kIdentityHeldFormat},
+                                  {"records", std::move(records)}};
+    const fs::path path = identity_held_path(config_.data_dir);
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    const fs::path tmp = path.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << document.dump() << "\n";
+        if (!out) {
+            std::fprintf(stderr, "zetta: cannot write %s\n", tmp.c_str());
+            identity_held_dirty_ = true;  // try again on the next change
+            return;
+        }
+    }
+    fs::rename(tmp, path, ec);  // atomic replace
+    if (ec) {
+        std::fprintf(stderr, "zetta: cannot write %s: %s\n", path.c_str(),
+                     ec.message().c_str());
+        identity_held_dirty_ = true;
+    }
 }
 
 void Node::seal_preexisting_identity() {
@@ -5913,28 +6101,28 @@ void Node::reconcile_replication_changes(
                              &batches.partitions.keys);
     }
     if (!batches.principals.keys.empty()) {
-        reconcile_principals(trusted_identity(batches.principals.values),
+        reconcile_principals(trusted_identity(batches.principals.values, &batches.principals.keys),
                              &batches.principals.keys);
     }
     if (!batches.access_keys.keys.empty()) {
-        reconcile_access_keys(trusted_identity(batches.access_keys.values),
+        reconcile_access_keys(trusted_identity(batches.access_keys.values, &batches.access_keys.keys),
                               &batches.access_keys.keys);
     }
     if (!batches.users.keys.empty()) {
-        reconcile_users(trusted_identity(batches.users.values), &batches.users.keys);
+        reconcile_users(trusted_identity(batches.users.values, &batches.users.keys), &batches.users.keys);
     }
     if (!batches.roles.keys.empty()) {
-        reconcile_roles(trusted_identity(batches.roles.values), &batches.roles.keys);
+        reconcile_roles(trusted_identity(batches.roles.values, &batches.roles.keys), &batches.roles.keys);
     }
     if (!batches.tokens.keys.empty()) {
-        reconcile_tokens(trusted_identity(batches.tokens.values), &batches.tokens.keys);
+        reconcile_tokens(trusted_identity(batches.tokens.values, &batches.tokens.keys), &batches.tokens.keys);
     }
     if (!batches.user_roles.keys.empty()) {
-        reconcile_user_roles(trusted_identity(batches.user_roles.values),
+        reconcile_user_roles(trusted_identity(batches.user_roles.values, &batches.user_roles.keys),
                              &batches.user_roles.keys);
     }
     if (!batches.policies.keys.empty()) {
-        reconcile_policies(trusted_identity(batches.policies.values), &batches.policies.keys);
+        reconcile_policies(trusted_identity(batches.policies.values, &batches.policies.keys), &batches.policies.keys);
     }
     if (!batches.ledger_entries.keys.empty()) {
         reconcile_ledger_entries(batches.ledger_entries.values,

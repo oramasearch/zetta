@@ -129,9 +129,12 @@ std::shared_ptr<AccessKey> Principal::create_key(Scope scope,
                              {"capabilities", capabilities},
                              {"created", created}};
         if (identity_root_) {
-            // Sealed by the identity root, or not written at all (#764).
-            std::optional<nlohmann::json> sealed =
-                identity_root_->seal(catalog::access_key_key(id), std::move(value));
+            // Sealed by the identity root, or not written at all (#764). A new
+            // key has no earlier record, so the clock is its version (#1341).
+            const std::string key = catalog::access_key_key(id);
+            std::optional<nlohmann::json> sealed = identity_root_->seal(
+                key, std::move(value),
+                next_identity_version(*identity_root_, key, nullptr));
             if (!sealed) return nullptr;
             value = std::move(*sealed);
         }
@@ -169,7 +172,26 @@ bool Principal::drop_key(const std::string& id) {
     auto key = find_key(id);
     if (!key) return false;
     if (replication_ && identity_root_ && !identity_root_->can_seal()) return false;
-    if (replication_) replication_->remove(catalog::access_key_key(id));
+    if (replication_) {
+        const std::string crdt_key = catalog::access_key_key(id);
+        if (identity_root_) {
+            // A sealed removal, newer than the key's record (#1341): an unsealed
+            // CRDT tombstone is one any member could write, and no node honors it.
+            std::optional<nlohmann::json> current;
+            if (const auto view = replication_->shared_snapshot()) {
+                if (const auto found = view->find(crdt_key); found != view->end()) {
+                    current.emplace(*found);
+                }
+            }
+            std::optional<nlohmann::json> tombstone = identity_root_->seal_removal(
+                crdt_key, next_identity_version(*identity_root_, crdt_key,
+                                                current ? &*current : nullptr));
+            if (!tombstone) return false;
+            replication_->set(crdt_key, *tombstone);
+        } else {
+            replication_->remove(crdt_key);
+        }
+    }
     return materialize_drop_key(id);
 }
 

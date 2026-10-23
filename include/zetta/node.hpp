@@ -1358,12 +1358,30 @@ private:
     // Whether an identity write may go ahead here: false on a replicated node
     // whose root is verify-only, so nothing it could not seal is written.
     bool identity_writable() const;
-    // Write an identity record into the CRDT, sealed when a root is set.
+    // Write an identity record into the CRDT, sealed when a root is set, at a
+    // version newer than any record of the key this node holds (#1341).
     void replicate_identity(const std::string& key, nlohmann::json value);
-    // The identity entries of `values` this node trusts, seals removed: every
-    // entry when unsealed, else only those whose seal the root verifies. The
-    // identity reconcilers read this, never the raw document.
-    nlohmann::json trusted_identity(const nlohmann::json& values) const;
+    // Remove an identity record: a sealed tombstone when a root is set (#1341),
+    // the CRDT's own tombstone when unsealed.
+    void remove_identity(const std::string& key);
+    // The identity entries this node trusts, seals and versions removed: every
+    // entry of `values` when unsealed. Under a root, for every identity key in
+    // `values` and in `keys` (a changed batch; null = a full reconcile, which
+    // also covers every key this node holds), the newest sealed record this
+    // node has accepted: the document's when it opens and is not older, else
+    // the one held, which is written back to the document. A removal is
+    // absent. The identity reconcilers read this, never the raw document.
+    nlohmann::json trusted_identity(const nlohmann::json& values,
+                                    const std::vector<std::string>* keys = nullptr);
+    // The newest sealed identity records this node has accepted, kept in
+    // <data_dir>/security/identity-held.json so a restart still refuses an
+    // older one (#1341). Load refuses the start on a malformed file.
+    bool load_identity_held();
+    void persist_identity_held();
+    // Remember `sealed` (already opened as `opened`) as the newest record of
+    // `key` when it supersedes the one held.
+    void hold_identity(const std::string& key, const nlohmann::json& sealed,
+                       const zetta::governance::OpenedIdentityRecord& opened);
     // On the first start under a root: seal the identity records already in
     // this node's own persisted document, which it trusted before the root
     // existed. Recorded in <data_dir>/security/identity-sealed, so it runs once
@@ -1521,6 +1539,14 @@ private:
     std::uint64_t last_replication_change_token_ = 0;
     Clock::time_point last_replication_persist_{};
     bool replication_persist_pending_ = false;
+    // The newest sealed record accepted per identity key (#1341): the sealed
+    // value as replicated, and it opened. Main-thread only.
+    struct HeldIdentity {
+        nlohmann::json sealed;
+        zetta::governance::OpenedIdentityRecord opened;
+    };
+    std::map<std::string, HeldIdentity> identity_held_;
+    bool identity_held_dirty_ = false;
     std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
     std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
     std::unique_ptr<zetta::data::ObjectStore> object_store_;  // null when standalone

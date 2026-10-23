@@ -1,5 +1,6 @@
 // The identity root (#763, #764): sealing identity records, opening them, and
-// pinning the root in the data dir. The cluster-level proofs (a joining node
+// pinning the root in the data dir. Versions, sealed removals and refusing an
+// older record (#1341) are here too. The cluster-level proofs (a joining node
 // mints no owner, a member's raw writes are not honored) are in
 // tests/cluster/test_cluster_join_authority.cpp; the regression probes are in
 // test_authz_regressions.cpp. See docs/governance/identity-seal.md.
@@ -11,6 +12,7 @@
 #include <fstream>
 #include <set>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -26,6 +28,9 @@ using zetta::NodeConfig;
 using zetta::cluster::ReplicationManager;
 using zetta::governance::IdentityAuthority;
 using zetta::governance::kIdentitySealField;
+using zetta::governance::kIdentityTombstoneField;
+using zetta::governance::kIdentityVersionField;
+using zetta::governance::OpenedIdentityRecord;
 using zetta::governance::load_or_create_identity_root;
 using zetta::test::TempDir;
 
@@ -57,19 +62,23 @@ TEST(IdentitySeal, TheSameOwnerTokenDerivesTheSameRoot) {
     EXPECT_FALSE(IdentityAuthority::from_owner_secret(""));
 }
 
-TEST(IdentitySeal, ASealedRecordOpensAndLosesItsSeal) {
+TEST(IdentitySeal, ASealedRecordOpensAndLosesItsSealAndVersion) {
     const IdentityAuthority root = root_from("owner-token");
-    const auto sealed = root.seal("user:1", kUser);
+    const auto sealed = root.seal("user:1", kUser, 7);
     ASSERT_TRUE(sealed);
     ASSERT_TRUE(sealed->contains(std::string(kIdentitySealField)));
+    EXPECT_EQ((*sealed)[std::string(kIdentityVersionField)], 7);
     const auto opened = root.open("user:1", *sealed);
     ASSERT_TRUE(opened);
-    EXPECT_EQ(*opened, kUser);
+    EXPECT_EQ(opened->value, kUser);
+    EXPECT_EQ(opened->version, 7u);
+    EXPECT_FALSE(opened->removed);
+    EXPECT_FALSE(root.seal("user:1", kUser, 0)) << "version zero is refused";
 }
 
 TEST(IdentitySeal, AnyChangeBreaksTheSeal) {
     const IdentityAuthority root = root_from("owner-token");
-    const nlohmann::json sealed = *root.seal("user:1", kUser);
+    const nlohmann::json sealed = *root.seal("user:1", kUser, 1);
 
     // An unsealed record, a changed field, an added field, another key, a seal
     // from another root, and a garbled seal all fail to open.
@@ -82,12 +91,72 @@ TEST(IdentitySeal, AnyChangeBreaksTheSeal) {
     EXPECT_FALSE(root.open("user:1", widened));
     EXPECT_FALSE(root.open("user:2", sealed));
     EXPECT_FALSE(root.open("role:1", sealed));
-    const nlohmann::json foreign = *root_from("another-token").seal("user:1", kUser);
+    const nlohmann::json foreign = *root_from("another-token").seal("user:1", kUser, 1);
     EXPECT_FALSE(root.open("user:1", foreign));
     nlohmann::json garbled = sealed;
     garbled[std::string(kIdentitySealField)] = "ed25519-v1:00";
     EXPECT_FALSE(root.open("user:1", garbled));
     EXPECT_FALSE(root.open("user:1", nlohmann::json::array()));
+    // The version is sealed too: changed, removed or not a positive integer.
+    nlohmann::json bumped = sealed;
+    bumped[std::string(kIdentityVersionField)] = 2;
+    EXPECT_FALSE(root.open("user:1", bumped));
+    nlohmann::json unversioned = sealed;
+    unversioned.erase(std::string(kIdentityVersionField));
+    EXPECT_FALSE(root.open("user:1", unversioned));
+    nlohmann::json negative = sealed;
+    negative[std::string(kIdentityVersionField)] = -1;
+    EXPECT_FALSE(root.open("user:1", negative));
+}
+
+// #1341: a removal is a sealed record of its own. A tombstone-shaped value
+// without the root's seal opens as nothing, and a live record cannot be sealed
+// with the removal marker in it.
+TEST(IdentitySeal, ARemovalIsASealedTombstone) {
+    const IdentityAuthority root = root_from("owner-token");
+    const auto tombstone = root.seal_removal("token:1", 9);
+    ASSERT_TRUE(tombstone);
+    const auto opened = root.open("token:1", *tombstone);
+    ASSERT_TRUE(opened);
+    EXPECT_TRUE(opened->removed);
+    EXPECT_EQ(opened->version, 9u);
+    EXPECT_FALSE(root.open("token:2", *tombstone)) << "a removal is bound to its key";
+
+    const nlohmann::json forged{{std::string(kIdentityTombstoneField), true},
+                                {std::string(kIdentityVersionField), 1000}};
+    EXPECT_FALSE(root.open("token:1", forged));
+    EXPECT_FALSE(root.open("token:1", nlohmann::json{{"_removed", true}}));
+    nlohmann::json smuggled = kUser;
+    smuggled[std::string(kIdentityTombstoneField)] = true;
+    EXPECT_FALSE(root.seal("user:1", smuggled, 1));
+    EXPECT_FALSE(IdentityAuthority::verify_only(root.public_key_hex())
+                     ->seal_removal("token:1", 9));
+}
+
+TEST(IdentitySeal, ANewerRecordSupersedesAnOlderOneOnEveryNode) {
+    const IdentityAuthority root = root_from("owner-token");
+    const OpenedIdentityRecord v1 = *root.open("user:1", *root.seal("user:1", kUser, 1));
+    const OpenedIdentityRecord v2 = *root.open("user:1", *root.seal("user:1", kUser, 2));
+    const OpenedIdentityRecord gone = *root.open("user:1", *root.seal_removal("user:1", 3));
+    EXPECT_TRUE(zetta::governance::identity_record_supersedes(v2, v1));
+    EXPECT_FALSE(zetta::governance::identity_record_supersedes(v1, v2));
+    EXPECT_TRUE(zetta::governance::identity_record_supersedes(gone, v2));
+    EXPECT_FALSE(zetta::governance::identity_record_supersedes(v2, v2));
+    // Two records of one version (two issuers at once) still order one way.
+    nlohmann::json renamed = kUser;
+    renamed["name"] = "alice2";
+    const OpenedIdentityRecord other = *root.open("user:1", *root.seal("user:1", renamed, 2));
+    EXPECT_NE(zetta::governance::identity_record_supersedes(v2, other),
+              zetta::governance::identity_record_supersedes(other, v2));
+
+    // The next version is newer than the document's record and the floor.
+    const nlohmann::json far_future = *root.seal("user:1", kUser, 1ull << 62);
+    EXPECT_EQ(zetta::governance::next_identity_version(root, "user:1", &far_future),
+              (1ull << 62) + 1);
+    EXPECT_EQ(zetta::governance::next_identity_version(root, "user:1", nullptr,
+                                                       (1ull << 62) + 5),
+              (1ull << 62) + 6);
+    EXPECT_GT(zetta::governance::next_identity_version(root, "user:1", nullptr), 1u);
 }
 
 TEST(IdentitySeal, AVerifyOnlyRootOpensButCannotSeal) {
@@ -95,8 +164,8 @@ TEST(IdentitySeal, AVerifyOnlyRootOpensButCannotSeal) {
     const auto verifier = IdentityAuthority::verify_only(root.public_key_hex());
     ASSERT_TRUE(verifier);
     EXPECT_FALSE(verifier->can_seal());
-    EXPECT_FALSE(verifier->seal("user:1", kUser));
-    EXPECT_TRUE(verifier->open("user:1", *root.seal("user:1", kUser)));
+    EXPECT_FALSE(verifier->seal("user:1", kUser, 1));
+    EXPECT_TRUE(verifier->open("user:1", *root.seal("user:1", kUser, 1)));
     EXPECT_FALSE(IdentityAuthority::verify_only("not-hex"));
     EXPECT_FALSE(IdentityAuthority::verify_only(std::string(64, 'A')));
 }
@@ -339,16 +408,113 @@ TEST(IdentitySealNode, AnUnsealedRecordInTheDocumentIsNotMaterialized) {
     EXPECT_EQ(node.user_count(), users);
     EXPECT_FALSE(node.find_user("alice"));
 
-    // Tampering with a sealed record removes it rather than changing it.
+    // Tampering with a sealed record neither changes it nor removes it: the
+    // node keeps the sealed record it holds and puts it back (#1341).
     auto bob = node.create_user("bob");
     ASSERT_TRUE(bob);
-    nlohmann::json tampered = replication.snapshot()["user:" + bob->id()];
+    const nlohmann::json original = replication.snapshot()["user:" + bob->id()];
+    nlohmann::json tampered = original;
     tampered["name"] = "bob-the-admin";
     replication.set("user:" + bob->id(), tampered);
     node.tick();
     EXPECT_FALSE(node.find_user("bob-the-admin"));
-    EXPECT_FALSE(node.find_user_by_id(bob->id()));
+    ASSERT_TRUE(node.find_user_by_id(bob->id()));
+    EXPECT_EQ(node.find_user_by_id(bob->id())->name(), "bob");
+    EXPECT_EQ(replication.snapshot()["user:" + bob->id()], original);
     node.stop();
+}
+
+// #1341 on one node: a sealed record older than the one the node holds is
+// refused, and a removal the node makes is a sealed tombstone.
+TEST(IdentitySealNode, AnOlderSealedRecordIsRefused) {
+    TempDir dir;
+    ReplicationManager replication(zetta::util::new_uuid());
+    Node node(config_with(dir, root_from("owner-token")), &replication);
+    ASSERT_TRUE(node.start());
+    ASSERT_TRUE(node.bootstrap_owner("owner-token").performed);
+    auto alice = node.create_user("alice");
+    ASSERT_TRUE(alice);
+    const auto issued = node.create_token(alice->id(), zetta::governance::TokenType::Access);
+    ASSERT_TRUE(issued.token);
+    const std::string key = "token:" + issued.token->id();
+    const nlohmann::json before = replication.snapshot()[key];
+
+    ASSERT_TRUE(node.revoke_token(issued.token->id()));
+    node.tick();
+    replication.set(key, before);  // the replay
+    node.tick();
+    EXPECT_EQ(node.authenticate_token(issued.secret), nullptr);
+    EXPECT_EQ(replication.snapshot()[key].value("revoked", false), true)
+        << "the newer sealed record is put back";
+
+    // A drop writes a sealed tombstone, not the CRDT's unsealed one.
+    ASSERT_TRUE(node.drop_user("alice"));
+    const nlohmann::json removed = replication.snapshot()["user:" + alice->id()];
+    const auto opened = node.identity_authority()->open("user:" + alice->id(), removed);
+    ASSERT_TRUE(opened);
+    EXPECT_TRUE(opened->removed);
+    node.tick();
+    EXPECT_FALSE(node.find_user("alice"));
+    node.stop();
+}
+
+// #1341 across a restart: the newest records a node accepted are kept in
+// <data_dir>/security/identity-held.json, so an older sealed record written
+// into its document while it was down is still refused.
+TEST(IdentitySealNode, TheRecordsANodeHeldSurviveARestart) {
+    TempDir dir;
+    const std::string node_id = "22222222-2222-4222-8222-222222222222";
+    std::string token_key;
+    std::string secret;
+    nlohmann::json before;
+    {
+        ReplicationManager replication(node_id);
+        Node node(config_with(dir, root_from("owner-token")), &replication);
+        ASSERT_TRUE(node.start());
+        ASSERT_TRUE(node.bootstrap_owner("owner-token").performed);
+        auto alice = node.create_user("alice");
+        ASSERT_TRUE(alice);
+        const auto issued =
+            node.create_token(alice->id(), zetta::governance::TokenType::Access);
+        token_key = "token:" + issued.token->id();
+        secret = issued.secret;
+        before = replication.snapshot()[token_key];
+        ASSERT_TRUE(node.revoke_token(issued.token->id()));
+        node.tick();
+        node.stop();
+    }
+    EXPECT_TRUE(std::filesystem::exists(dir.path() / "security" / "identity-held.json"));
+    {
+        // While the node is down its persisted document gets the old record.
+        const auto path = dir.path() / "replication.automerge";
+        std::ifstream in(path, std::ios::binary);
+        const std::vector<char> raw((std::istreambuf_iterator<char>(in)), {});
+        std::vector<std::byte> bytes(raw.size());
+        for (std::size_t i = 0; i < raw.size(); ++i) bytes[i] = std::byte(raw[i]);
+        ReplicationManager offline(node_id);
+        ASSERT_TRUE(offline.restore(bytes));
+        offline.set(token_key, before);
+        const std::vector<std::byte> saved = offline.save();
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(saved.data()),
+                  static_cast<std::streamsize>(saved.size()));
+    }
+    {
+        ReplicationManager replication(node_id);
+        Node node(config_with(dir, root_from("owner-token")), &replication);
+        ASSERT_TRUE(node.start());
+        EXPECT_EQ(node.authenticate_token(secret), nullptr)
+            << "the replay written while the node was down was honored";
+        EXPECT_TRUE(node.authenticate_token("owner-token"));
+        node.stop();
+    }
+    {
+        // A malformed file refuses the start rather than forgetting what it held.
+        std::ofstream(dir.path() / "security" / "identity-held.json") << "{not json";
+        ReplicationManager replication(node_id);
+        Node node(config_with(dir, root_from("owner-token")), &replication);
+        EXPECT_FALSE(node.start());
+    }
 }
 
 TEST(IdentitySealNode, RecordsHeldBeforeTheRootAreSealedOnceOnTheFirstStart) {

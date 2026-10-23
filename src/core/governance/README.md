@@ -32,5 +32,7 @@ result through it, while the ledger keeps the real input to execute (#74). See
 `identity_seal.cpp` is the identity root (#763, #764): every replicated identity
 record is sealed with Ed25519 by a root derived from the owner's admin token (or
 generated, or pinned verify-only), and a node honors a record only when its seal
-verifies. `principal.cpp` seals access keys through it. See
+verifies. The seal covers a per-key version and the root, and a removal is a
+sealed tombstone, so a node refuses a record older than the one it holds
+(#1341). `principal.cpp` seals access keys and their removal through it. See
 [identity seal](../../../docs/governance/identity-seal.md).

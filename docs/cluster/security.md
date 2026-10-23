@@ -178,6 +178,7 @@ cannot revoke secret bytes an earlier reader already obtained.
 | `node-key.pem` | this node's Ed25519 private key | 0600 |
 | `identity-root.json` | the pinned identity root: `{"version": 1, "public_key": "<64 hex>", "seed"?: "<64 hex>"}`; `seed` only for a root the node generated (no owner token). Schema `identity_root_schema()`. See [identity-seal.md](../governance/identity-seal.md) | 0600 with a seed, else 0644 |
 | `identity-sealed` | marker: the one-time sealing of identity records held before the root ran | — |
+| `identity-held.json` | the newest sealed record this node accepted for each identity key: `{"version": 1, "records": {"<key>": <sealed value>}}`, so a restart still refuses an older one. Each record is verified again on load; a file that does not parse refuses the start. See [identity-seal.md](../governance/identity-seal.md#versions-and-removals-1341) (#1341) | 0644 |
 
 The stored identity is reused while it still verifies against the derived CA
 and carries this node's id; a token change or a node-id mismatch re-mints it.

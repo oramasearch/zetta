@@ -31,6 +31,8 @@ challenge JSON and the web form use so an inline credential is never rendered
 back out (#74). See
 [secret references](../../../docs/governance/secret-references.md).
 `identity_seal.hpp` is the identity root (#763, #764): `IdentityAuthority` seals
-and opens replicated identity records, and `load_or_create_identity_root` pins
-the root in `<data_dir>/security/identity-root.json`. See
+and opens replicated identity records, each at a version, and seals removals as
+tombstones (#1341); `identity_record_supersedes` and `next_identity_version`
+order them; `load_or_create_identity_root` pins the root in
+`<data_dir>/security/identity-root.json`. See
 [identity seal](../../../docs/governance/identity-seal.md).
