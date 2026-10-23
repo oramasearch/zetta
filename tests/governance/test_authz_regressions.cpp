@@ -262,6 +262,9 @@ TEST_F(AuthzNode, Finding762_RowSecurityBindsATokenResolvedUser) {
 }
 
 // ===== #765: a row policy with no condition admitted every row ================
+// Fixed: build_rls_filter (src/core/query/executor.cpp) treats a missing
+// predicate like one that does not parse. The policy still engages row security
+// for its table and admits no row.
 
 TEST_F(AuthzNode, Finding765_APolicyWithNoConditionDeniesInsteadOfAllowingAll) {
     // Not reachable through CREATE POLICY (it requires USING); it arrives as a
@@ -271,25 +274,14 @@ TEST_F(AuthzNode, Finding765_APolicyWithNoConditionDeniesInsteadOfAllowingAll) {
                                    {"database", "app"},
                                    {"table", "people"},
                                    {"command", "select"}};
-    bool fixed = false;
-    std::size_t visible = 0;
-    if (const auto value = zetta::governance::policy_value_from_json(record)) {
-        if (node.create_policy(*value)) {
-            const std::string bo = user_with_roles(node, "bo", {"writer"});
-            const auto r = as(bo).run("SELECT * FROM app.people;", "");
-            visible = r.ok() ? r.rows.size() : 0;
-            fixed = visible == 0;
-        } else {
-            fixed = true;  // refused when stored
-        }
-    } else {
-        fixed = true;  // refused at the boundary
-    }
-    // The plain assertion, once fixed: EXPECT_TRUE(fixed) (the record is refused,
-    // or the policy admits no row).
-    KNOWN_DEFECT(765, !fixed,
-                 "a SELECT policy with no USING admitted " + std::to_string(visible) +
-                     " of 3 rows to a non-admin");
+    const auto value = zetta::governance::policy_value_from_json(record);
+    ASSERT_TRUE(value);
+    ASSERT_TRUE(node.create_policy(*value));
+    const std::string bo = user_with_roles(node, "bo", {"writer"});
+    const auto r = as(bo).run("SELECT * FROM app.people;", "");
+    ASSERT_TRUE(r.ok()) << r.error;
+    EXPECT_TRUE(r.rows.empty()) << "a SELECT policy with no USING admitted "
+                                << r.rows.size() << " of 3 rows to a non-admin";
 }
 
 // ===== #766: the policy / user / role / token catalog is readable by anyone ===
