@@ -22,8 +22,8 @@ intelligence** from quarters to hours — **Intelligence Velocity for Big Thinke
 and the per-audience [experience contracts](docs/product/experience/README.md)
 (UX · DX · AX · serving).
 
-**Release:** [`v0.4.0`](docs/releases/v0.4.0.md) (2026-10-19), image
-`oramasearch/zetta:v0.4.0`. Every release, with what it changes and what is knowingly
+**Release:** [`v0.5.0`](docs/releases/v0.5.0.md) (2026-10-23), image
+`oramasearch/zetta:v0.5.0`. Every release, with what it changes and what is knowingly
 still broken: [docs/releases/](docs/releases/README.md).
 
 ## Under the hood
