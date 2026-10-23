@@ -59,9 +59,8 @@ struct ConnectorConfig {
     std::string sslmode;           // Postgres sslmode; MySQL: verify-full (default) / verify-ca / require / disable
     // lake's SQL-over-HTTP services (type == "lake_sqlite" / "lake_duckdb" /
     // "lake_polars", #1014): the service's base URL, e.g.
-    // `http://orders.ws-1.svc.cluster.local:8080`. Without a scheme it is
-    // `https://`; plaintext `http://` must be written out. The bearer token
-    // rides in `token`.
+    // `http://orders.ws-1.svc.cluster.local:8080`. The scheme, `http://` or
+    // `https://`, must be written out (#1414). The bearer token rides in `token`.
     std::string endpoint;
 
     // The JSON form (token omitted — see above). This is the OUTWARD-facing
@@ -75,7 +74,8 @@ struct ConnectorConfig {
 
     // Parse + validate at the boundary. Unknown keys/types and malformed
     // authority/protocol fields fail without throwing. Snowflake needs an
-    // account + token; Postgres needs host + user + database.
+    // account + token; Postgres needs host + user + database; MySQL and TiDB
+    // need host + user; lake's services need an explicit http(s) endpoint + token.
     static std::optional<ConnectorConfig> from_json(const nlohmann::json& value);
 };
 

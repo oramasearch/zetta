@@ -32,12 +32,23 @@ Project needs it as a dataset: `create_connection`, `list_source_tables`, then
    "token": "<the service's bearer token>"}
   ```
 
-- **TLS:** the endpoint's scheme. An endpoint **without a scheme is `https://`**,
-  verified against the system trust store by the native client. Plaintext
-  `http://` must be written out. lake's services listen on plain HTTP inside the
+- **TLS:** the endpoint's scheme, which **must be written out**: `https://`
+  (verified against the system trust store by the native client) or `http://`.
+  An endpoint without a scheme is refused (#1414): the protocol the node dials is
+  the one the connection states. lake's services listen on plain HTTP inside the
   cluster today (`http://<name>.<ns>.svc.cluster.local:8080`), so a connection
   lake makes names `http://` and its token crosses the cluster network
-  unencrypted; the services are not reachable from outside the cluster.
+  unencrypted; the services are not reachable from outside the cluster. An
+  `https://` endpoint is never followed to `http://` on a redirect.
+- **Destination:** every request carries the connector destination policy
+  (`DestinationPolicy::Connector`, #1414). The endpoint must name one DNS host or
+  bare IP literal and an optional port 1 to 65535. A lake service resolves to a
+  private cluster address, so the node dials it only when the operator lists its
+  exact `host:port` in `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`
+  (`orders.ws-1.svc.cluster.local:8080`; the scheme's default port when none is
+  written). Metadata, link-local and reserved addresses are always refused. Every
+  resolved address and every redirect hop is checked, after the egress allowlist.
+  See [../connector-query.md](../connector-query.md#connector-destination-approval-1414-lsr-241).
 - **Credentials:** the bearer token rides only in `token`: sealed when saved with
   `create_connection`, sent as `Authorization: Bearer …` and marked secret on the
   request, never echoed by `list_connections`, never in an error. An endpoint

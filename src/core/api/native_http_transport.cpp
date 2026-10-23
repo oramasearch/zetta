@@ -473,9 +473,12 @@ private:
         }
 
         const bool connector = request.destinations == connect::DestinationPolicy::Connector;
-        if (connector && (!parsed.secure || !connect::valid_connector_host(parsed.host) ||
+        if (connector && ((!parsed.secure && !request.connector_plaintext) ||
+                          !connect::valid_connector_host(parsed.host) ||
                           !connect::connector_port(parsed.port))) {
-            co_return std::string("connector: expected an HTTPS URL with one valid authority");
+            co_return std::string(request.connector_plaintext
+                                      ? "connector: expected an HTTP(S) URL with one valid authority"
+                                      : "connector: expected an HTTPS URL with one valid authority");
         }
         const auto connector_policy = connect::connector_destinations();
         net::resolver resolver(io_context_);

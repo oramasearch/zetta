@@ -33,6 +33,11 @@ not enforce `READ ONLY`.
   client TLS today, so a lake connection names `sslmode: "disable"`. Its password
   then crosses the cluster network in the clear, though the service is not
   reachable from outside the cluster.
+- **Destination:** the same check as MySQL (#1414): one DNS name or IP literal,
+  a numeric port, and only addresses the connector destination policy approves.
+  lake's TiDB is a private cluster address, so the operator lists its exact
+  `host:port` (`orders-tidb.ws-1.svc.cluster.local:4000`) in
+  `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`.
 - **Authentication:** TiDB's default plugin is `mysql_native_password`;
   `caching_sha2_password` works as for MySQL (full authentication only over TLS).
 - **Credentials:** sealed when saved with `create_connection`, never echoed,

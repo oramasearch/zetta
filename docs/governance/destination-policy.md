@@ -56,10 +56,12 @@ An IPv6 address that carries an IPv4 one (`::ffff:a.b.c.d`, `::a.b.c.d`,
 `64:ff9b::/96`) is classified by that IPv4 address, so `::ffff:127.0.0.1` is
 loopback. Allowing `link-local` does not allow `metadata`.
 
-Model-weights fetches and Clerk JWKS keep `DestinationPolicy::Any`. Warehouse
-connectors use the independent `DestinationPolicy::Connector`: private and
-loopback addresses require an exact operator-approved host:port; metadata and
-link-local addresses are always denied. See the
+Model-weights fetches and Clerk JWKS keep `DestinationPolicy::Any`. Source
+connectors use the independent `DestinationPolicy::Connector` (Snowflake and
+lake's SQL services over HTTP; the Postgres and MySQL/TiDB drivers apply the same
+`ConnectorDestinations` check at their own dialers): private and loopback
+addresses require an exact operator-approved host:port; metadata and link-local
+addresses are always denied. See the
 [connector policy](../data/connector-query.md#connector-destination-approval-1414-lsr-241).
 
 ## Configuration

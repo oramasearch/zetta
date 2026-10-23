@@ -184,14 +184,23 @@ TEST(LakeSqlConnector, PostsTheSqlWithTheBearerMarkedSecret) {
               (nlohmann::json{{"sql", "SELECT 1 AS n"}}));
 }
 
-TEST(LakeSqlConnector, AnEndpointWithoutASchemeIsHttps) {
+// The protocol is written out (#1414): an endpoint without a scheme is refused
+// before any request, and an https:// endpoint stays on HTTPS.
+TEST(LakeSqlConnector, AnEndpointMustNameItsProtocol) {
     std::vector<HttpRequest> seen;
-    const ConnectorResult result = run_connector_query(
+    const ConnectorResult refused = run_connector_query(
         lake_config("lake_polars", "polars.example.com/base"), "SELECT 1 AS n", 10,
+        canned(200, R"({"columns":["n"],"rows":[[1]]})", &seen));
+    EXPECT_FALSE(refused.ok());
+    EXPECT_NE(refused.error.find("connector.endpoint"), std::string::npos) << refused.error;
+    EXPECT_TRUE(seen.empty());
+    const ConnectorResult result = run_connector_query(
+        lake_config("lake_polars", "https://polars.example.com/base"), "SELECT 1 AS n", 10,
         canned(200, R"({"columns":["n"],"rows":[[1]]})", &seen));
     ASSERT_TRUE(result.ok()) << result.error;
     ASSERT_EQ(seen.size(), 1u);
     EXPECT_EQ(seen[0].url, "https://polars.example.com/base/v1/query");
+    EXPECT_FALSE(seen[0].connector_plaintext);
 }
 
 TEST(LakeSqlConnector, KeepsTheServicesTypesAndFlattensNestedValues) {

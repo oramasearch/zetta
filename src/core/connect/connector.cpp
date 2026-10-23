@@ -307,7 +307,7 @@ std::string ConnectorConfig::destination_rejection() const {
     // C APIs consume terminated strings: embedded NULs must never truncate a
     // validated authority or connection parameter on the way to the protocol.
     for (const auto* field : {&type, &account, &token, &auth, &database, &schema, &warehouse, &role,
-                              &host, &port, &user, &sslmode}) {
+                              &host, &port, &user, &sslmode, &endpoint}) {
         if (field->find('\0') != std::string::npos) return "connector: embedded NUL is not allowed";
     }
     if (type == "snowflake") {
@@ -326,6 +326,35 @@ std::string ConnectorConfig::destination_rejection() const {
         if (!sslmode.empty() && sslmode != "disable" && sslmode != "allow" && sslmode != "prefer" &&
             sslmode != "require" && sslmode != "verify-ca" && sslmode != "verify-full")
             return "connector.sslmode: unsupported TLS mode";
+        return {};
+    }
+    if (type == "mysql" || type == "tidb") {
+        // The MySQL protocol driver dials one checked TCP authority; TLS keeps
+        // verifying the certificate against this host name.
+        if (!valid_connector_host(host))
+            return "connector.host: expected one DNS host or IP literal";
+        if (!port.empty() && !connector_port(port))
+            return "connector.port: expected a TCP port from 1 to 65535";
+        if (!parse_mysql_tls_mode(sslmode)) return "connector.sslmode: unsupported TLS mode";
+        return {};
+    }
+    if (lake_sql::is_lake_sql_type(type)) {
+        // lake's services are in-cluster HTTP or HTTPS. The protocol is written
+        // out (no implied default), so what the node dials is what was approved.
+        const std::string_view text = endpoint;
+        const std::size_t scheme_end = text.find("://");
+        std::string scheme(scheme_end == text.npos ? std::string_view{} : text.substr(0, scheme_end));
+        for (char& character : scheme) {
+            if (character >= 'A' && character <= 'Z') character += 'a' - 'A';
+        }
+        if (scheme != "http" && scheme != "https")
+            return "connector.endpoint: expected an explicit http:// or https:// URL";
+        const std::optional<lake_sql::Endpoint> parsed = lake_sql::parse_endpoint(endpoint, nullptr);
+        if (!parsed) return "connector.endpoint: expected http(s)://host[:port][/path]";
+        if (!valid_connector_host(parsed->host))
+            return "connector.endpoint: expected one DNS host or IP literal";
+        if (!parsed->port.empty() && !connector_port(parsed->port))
+            return "connector.endpoint: expected a TCP port from 1 to 65535";
         return {};
     }
     return "connector.type: unknown connector type '" + type + "'";
