@@ -5,11 +5,16 @@
 
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -127,6 +132,85 @@ TEST(ClusterSecurity, LoadOrCreatePersistsTokenAndIdentity) {
     ASSERT_TRUE(after) << reason;
     EXPECT_EQ(after->join_token, other_token);
     EXPECT_EQ(after->certificate_pem, rekeyed->certificate_pem);
+}
+
+TEST(ClusterSecurity, PrivateStorageAlsoUpgradesLegacyFilesAndReplacesOldInodes) {
+    zetta::test::TempDir temporary;
+    const auto directory = temporary.path() / "security";
+    const mode_t previous_umask = ::umask(0);
+    const auto first = zetta::cluster::load_or_create_cluster_security(
+        temporary.path().string(), "node");
+    ::umask(previous_umask);
+    ASSERT_TRUE(first);
+    struct stat status {};
+    ASSERT_EQ(::stat(directory.c_str(), &status), 0);
+    EXPECT_EQ(status.st_mode & 0777, 0700);
+    // Simulate a directory/file left by the older stream-based writer.
+    ASSERT_EQ(::chmod(directory.c_str(), 0777), 0);
+    for (const auto& name : {"cluster-secret.json", "node-cert.pem", "node-key.pem"}) {
+        const auto path = directory / name;
+        ASSERT_EQ(::chmod(path.c_str(), 0666), 0);
+    }
+    const auto secret_path = directory / "cluster-secret.json";
+    const int retained = ::open(secret_path.c_str(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(retained, 0);
+    struct stat before {};
+    const int inspected = ::fstat(retained, &before);
+    const auto rotated = zetta::cluster::load_or_create_cluster_security(
+        temporary.path().string(), "node", std::string(64, 'a'));
+    struct stat after {};
+    const int checked = ::fstat(retained, &after);
+    ::close(retained);
+    ASSERT_EQ(inspected, 0);
+    ASSERT_EQ(checked, 0);
+    ASSERT_TRUE(rotated);
+    // A descriptor opened before rotation still points at the old contents.
+    EXPECT_EQ(before.st_size, after.st_size);
+    ASSERT_EQ(::stat(secret_path.c_str(), &status), 0);
+    EXPECT_NE(before.st_ino, status.st_ino);
+    ASSERT_EQ(::stat(directory.c_str(), &status), 0);
+    EXPECT_EQ(status.st_mode & 0777, 0700);
+    for (const auto& name : {"cluster-secret.json", "node-cert.pem", "node-key.pem"}) {
+        ASSERT_EQ(::stat((directory / name).c_str(), &status), 0);
+        EXPECT_EQ(status.st_mode & 0777, 0600);
+    }
+}
+
+TEST(ClusterSecurity, RefusesLinkedDirectoriesAndLinkedOrSpecialFiles) {
+    for (const auto& name : {"cluster-secret.json", "node-cert.pem", "node-key.pem"}) {
+        for (const bool hard_link : {false, true}) {
+            zetta::test::TempDir temporary;
+            const auto directory = temporary.path() / "security";
+            std::filesystem::create_directory(directory);
+            const auto outside = temporary.path() / "outside";
+            const std::string contents = std::string_view(name) == "cluster-secret.json"
+                ? R"({"version":1,"join_token":")" + std::string(64, 'a') + R"("})"
+                : "dummy";
+            std::ofstream(outside) << contents;
+            if (hard_link) {
+                std::filesystem::create_hard_link(outside, directory / name);
+            } else {
+                std::filesystem::create_symlink(outside, directory / name);
+            }
+            std::string reason;
+            EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+                temporary.path().string(), "node", {}, &reason));
+            EXPECT_FALSE(reason.empty());
+            EXPECT_EQ(std::filesystem::file_size(outside), contents.size());
+        }
+    }
+    zetta::test::TempDir temporary;
+    const auto outside = temporary.path() / "outside";
+    std::filesystem::create_directory(outside);
+    std::filesystem::create_directory_symlink(outside, temporary.path() / "security");
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        temporary.path().string(), "node"));
+    EXPECT_TRUE(std::filesystem::is_empty(outside));
+    std::filesystem::remove(temporary.path() / "security");
+    std::filesystem::create_directory(temporary.path() / "security");
+    ASSERT_EQ(::mkfifo((temporary.path() / "security" / "node-key.pem").c_str(), 0600), 0);
+    EXPECT_FALSE(zetta::cluster::load_or_create_cluster_security(
+        temporary.path().string(), "node"));
 }
 
 // A re-keyed node keeps the tokens it ran under before (newest first, bounded),

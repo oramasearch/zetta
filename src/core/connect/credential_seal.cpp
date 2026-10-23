@@ -1,14 +1,12 @@
 #include "zetta/connect/credential_seal.hpp"
 
-#include <sys/stat.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
 #include <memory>
-#include <sstream>
 #include <utility>
+
+#include "../util/private_directory.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
@@ -104,24 +102,6 @@ std::optional<CredentialKey> derive_key(const std::string& root_secret) {
     return key;
 }
 
-std::optional<std::string> read_file(const fs::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return std::nullopt;
-    std::ostringstream contents;
-    contents << in.rdbuf();
-    return contents.str();
-}
-
-bool write_private_file(const fs::path& path, const std::string& contents) {
-    {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
-        out << contents;
-        if (!out) return false;
-    }
-    return ::chmod(path.c_str(), S_IRUSR | S_IWUSR) == 0;  // 0600 — a secret
-}
-
 std::string aad_for(std::string_view context) {
     return std::string(kAadPrefix) + std::string(context);
 }
@@ -168,15 +148,13 @@ const CredentialKey* CredentialKeyring::find(std::string_view id) const {
 std::optional<CredentialKeyring> load_or_create_local_keyring(
     const std::string& data_dir, std::string* reason) {
     const fs::path directory = fs::path(data_dir) / "security";
-    std::error_code ec;
-    fs::create_directories(directory, ec);
-    if (ec) {
-        set_reason(reason, "cannot create " + directory.string() + ": " + ec.message());
-        return std::nullopt;
-    }
+    const auto private_directory = util::PrivateDirectory::open(directory, reason);
+    if (!private_directory) return std::nullopt;
     const fs::path path = directory / kLocalRootSecretFile;
     std::string secret;
-    if (const std::optional<std::string> stored = read_file(path)) {
+    std::optional<std::string> stored;
+    if (!private_directory->read(kLocalRootSecretFile, stored, reason)) return std::nullopt;
+    if (stored) {
         secret = *stored;
         while (!secret.empty() && (secret.back() == '\n' || secret.back() == '\r')) {
             secret.pop_back();
@@ -194,8 +172,7 @@ std::optional<CredentialKeyring> load_or_create_local_keyring(
             return std::nullopt;
         }
         secret = to_hex(bytes.data(), bytes.size());
-        if (!write_private_file(path, secret + "\n")) {
-            set_reason(reason, "cannot write " + path.string());
+        if (!private_directory->write(kLocalRootSecretFile, secret + "\n", reason)) {
             return std::nullopt;
         }
     }

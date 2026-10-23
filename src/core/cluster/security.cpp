@@ -1,18 +1,16 @@
 #include "zetta/cluster/security.hpp"
 
-#include <sys/stat.h>
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <memory>
-#include <sstream>
 #include <utility>
 
 #include <nlohmann/json-schema.hpp>
+
+#include "../util/private_directory.hpp"
 
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
@@ -246,24 +244,6 @@ fs::path security_dir(const std::string& data_dir) {
     return fs::path(data_dir) / "security";
 }
 
-std::optional<std::string> read_file(const fs::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return std::nullopt;
-    std::ostringstream contents;
-    contents << in.rdbuf();
-    return contents.str();
-}
-
-bool write_private_file(const fs::path& path, const std::string& contents) {
-    {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
-        out << contents;
-        if (!out) return false;
-    }
-    return ::chmod(path.c_str(), S_IRUSR | S_IWUSR) == 0;  // 0600 — secrets
-}
-
 nlohmann::json_schema::json_validator& secret_validator() {
     static nlohmann::json_schema::json_validator validator(
         cluster_secret_schema());
@@ -417,22 +397,15 @@ std::optional<ClusterSecurity> load_or_create_cluster_security(
     }
 
     const fs::path directory = security_dir(data_dir);
-    std::error_code ec;
-    fs::create_directories(directory, ec);
-    if (ec) {
-        set_reason(reason, "cannot create " + directory.string() + ": " +
-                               ec.message());
-        return std::nullopt;
-    }
-    const fs::path secret_path = directory / "cluster-secret.json";
-    const fs::path certificate_path = directory / "node-cert.pem";
-    const fs::path key_path = directory / "node-key.pem";
+    const auto private_directory = util::PrivateDirectory::open(directory, reason);
+    if (!private_directory) return std::nullopt;
 
     // Resolve the join token: an operator-passed override wins (joining an
     // existing cluster re-keys this node), else the stored secret, else a
     // fresh one (this node founds a cluster).
     std::string join_token = join_token_override;
-    const std::optional<std::string> stored = read_file(secret_path);
+    std::optional<std::string> stored;
+    if (!private_directory->read("cluster-secret.json", stored, reason)) return std::nullopt;
     std::optional<SecretFile> stored_secret;
     if (stored) {
         stored_secret = parse_secret_file(*stored, reason);
@@ -472,9 +445,10 @@ std::optional<ClusterSecurity> load_or_create_cluster_security(
         set_reason(reason, "failed to derive the cluster CA key");
         return std::nullopt;
     }
-    const std::optional<std::string> stored_certificate =
-        read_file(certificate_path);
-    const std::optional<std::string> stored_key = read_file(key_path);
+    std::optional<std::string> stored_certificate;
+    std::optional<std::string> stored_key;
+    if (!private_directory->read("node-cert.pem", stored_certificate, reason) ||
+        !private_directory->read("node-key.pem", stored_key, reason)) return std::nullopt;
     std::optional<ClusterSecurity> security;
     if (stored_certificate && stored_key &&
         certificate_matches(*stored_certificate, ca_key.get(), node_id) &&
@@ -502,15 +476,12 @@ std::optional<ClusterSecurity> load_or_create_cluster_security(
                                       {"join_token", join_token}};
     if (!retired.empty()) secret_document["retired_join_tokens"] = retired;
     if (!stored || !join_token_override.empty()) {
-        if (!write_private_file(secret_path, secret_document.dump(2) + "\n")) {
-            set_reason(reason, "cannot write " + secret_path.string());
+        if (!private_directory->write("cluster-secret.json", secret_document.dump(2) + "\n", reason)) {
             return std::nullopt;
         }
     }
-    if (!write_private_file(certificate_path, security->certificate_pem) ||
-        !write_private_file(key_path, security->private_key_pem)) {
-        set_reason(reason, "cannot write the node identity under " +
-                               directory.string());
+    if (!private_directory->write("node-cert.pem", security->certificate_pem, reason) ||
+        !private_directory->write("node-key.pem", security->private_key_pem, reason)) {
         return std::nullopt;
     }
     return security;
