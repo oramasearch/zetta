@@ -192,8 +192,13 @@ This is the system working. Reaching an external provider with your credentials 
 approval must come from a **different principal** — the caller can never approve its own cloud
 action. Approvals are per-action and never remembered.
 
-To proceed: approve in the headed app's approval surface, or with an approver key via
-`approve_consent`. `list_consent_requests` shows what is pending.
+To proceed: approve under **Governance → Consent requests**, in the web console as a different
+user holding `cloud:manage` or in the desktop app as the person at the machine, or with an
+approver key via `approve_consent`. `list_consent_requests` shows what is pending. Consent
+gating is off unless the node was started with `--governance`; off, the call runs without a
+challenge and audits as `consent_bypassed`. What guards a source by default is its **safe
+mode** ([../api/safe-mode.md](../api/safe-mode.md)): at the default `warn_writes`, a read
+runs without a prompt.
 
 ---
 

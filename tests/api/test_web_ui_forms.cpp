@@ -1,4 +1,5 @@
-// The web dashboard's capability dialogs (#827, docs/data/connector-query.md).
+// The web dashboard's capability dialogs (#827, docs/data/connector-query.md),
+// and its consent approval surface on Governance -> Consent requests (#999).
 //
 // The dialog renderer only ever handled FLAT scalar properties, so a capability
 // whose input carries a structured object — `create_dataset_from_query`'s
@@ -23,6 +24,8 @@
 #include "temp_dir.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/connect/connection_store.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/consent.hpp"
 #include "zetta/governance/user.hpp"
 #include "zetta/node.hpp"
 
@@ -109,10 +112,18 @@ struct WebUiFormsFixture : ::testing::Test {
                         const std::string& form = {},
                         const std::string& headers = "Origin: http://zetta.example.test:4800\r\n",
                         bool use_session = true, bool keep_alive = false) {
+        return request_as(owner_secret, method, target, form, headers,
+                          use_session, keep_alive);
+    }
+
+    WebResponse request_as(const std::string& session, const std::string& method,
+                           const std::string& target, const std::string& form = {},
+                           const std::string& headers = "Origin: http://zetta.example.test:4800\r\n",
+                           bool use_session = true, bool keep_alive = false) {
         WebResponse response;
         std::atomic<bool> finished{false};
         std::thread client([&] {
-            response = web_request(server->port(), method, target, owner_secret,
+            response = web_request(server->port(), method, target, session,
                                    form, headers, use_session, keep_alive);
             finished = true;
         });
@@ -400,6 +411,128 @@ TEST_F(WebUiFormsFixture, ExplicitBearersKeepTheirProgrammaticContract) {
     EXPECT_FALSE(node.find_project("invalid-bearer"));
     // A bearer header cannot bypass origin binding on the browser login path.
     EXPECT_EQ(request("POST", "/login", "token=" + owner_secret, bearer, false).status, 403);
+}
+
+// --- Governance -> Consent requests: the web approval surface (#999) ----------
+//
+// The page lists each pending challenge with Approve / Deny forms that POST
+// /run as approve_consent / deny_consent, so the engine authorizes the signed-in
+// user, refuses the requester's own approval, and audits the decision.
+struct WebConsentFixture : WebUiFormsFixture {
+    std::string owner_id;
+    std::string approver_id;
+    std::string approver_secret;
+    std::string viewer_secret;
+
+    void SetUp() override {
+        WebUiFormsFixture::SetUp();
+        owner_id = node.find_user("owner")->id();
+        const auto user_with = [&](const std::string& name, const std::string& role,
+                                   std::string& secret) {
+            auto user = node.create_user(name);
+            EXPECT_TRUE(user);
+            node.assign_role(user->id(), node.find_role(role)->id());
+            secret = node.create_token(user->id(), zetta::governance::TokenType::Access)
+                         .secret;
+            return user->id();
+        };
+        approver_id = user_with("approver", "admin", approver_secret);
+        user_with("viewer", "reader", viewer_secret);
+    }
+
+    // A pending challenge whose frozen action is harmless to execute
+    // (server_info), requested by `requester` as a user.
+    std::string park_challenge(const std::string& requester) {
+        return node.consent_ledger()
+            .create("server_info", nlohmann::json::object(),
+                    {"Read this node's identity (a test action)", {}, {"server_info"}},
+                    requester, "", /*requested_is_user=*/true)
+            ->id;
+    }
+};
+
+TEST_F(WebConsentFixture, TheConsentTabListsAPendingChallengeWithApproveAndDeny) {
+    const std::string id = park_challenge(approver_id);
+    const WebResponse page = request("GET", "/?view=governance&tab=consent");
+    ASSERT_EQ(page.status, 200) << page.body.substr(0, 300);
+    EXPECT_NE(page.body.find("data-challenge=\"" + id + "\""), std::string::npos);
+    EXPECT_NE(page.body.find("Read this node&#39;s identity"), std::string::npos)
+        << "the card names what would run";
+    EXPECT_NE(page.body.find("name=\"cap\" value=\"approve_consent\""), std::string::npos);
+    EXPECT_NE(page.body.find("name=\"cap\" value=\"deny_consent\""), std::string::npos);
+    EXPECT_NE(page.body.find("name=\"challenge_id\" value=\"" + id + "\""),
+              std::string::npos);
+}
+
+TEST_F(WebConsentFixture, TheRequesterIsOfferedWithdrawNotApprove) {
+    park_challenge(owner_id);
+    const WebResponse page = request("GET", "/?view=governance&tab=consent");
+    ASSERT_EQ(page.status, 200);
+    EXPECT_NE(page.body.find("You requested this"), std::string::npos);
+    EXPECT_EQ(page.body.find("name=\"cap\" value=\"approve_consent\""), std::string::npos);
+    EXPECT_NE(page.body.find("Withdraw"), std::string::npos);
+}
+
+TEST_F(WebConsentFixture, TheRequesterCannotApproveItsOwnRequestByPostingTheForm) {
+    const std::string id = park_challenge(owner_id);
+    const WebResponse posted = request(
+        "POST", "/run",
+        "cap=approve_consent&_return=%2F%3Fview%3Dgovernance%26tab%3Dconsent"
+        "&challenge_id=" + id);
+    EXPECT_EQ(posted.status, 200) << "a refusal renders, it does not redirect";
+    EXPECT_NE(posted.body.find("unauthorized"), std::string::npos);
+    EXPECT_EQ(node.consent_ledger().find(id)->status,
+              zetta::governance::ConsentStatus::Pending);
+}
+
+TEST_F(WebConsentFixture, AUserWithoutTheApproverRightCannotApprove) {
+    const std::string id = park_challenge(owner_id);
+    const WebResponse posted = request_as(
+        viewer_secret, "POST", "/run",
+        "cap=approve_consent&_return=%2F%3Fview%3Dgovernance%26tab%3Dconsent"
+        "&challenge_id=" + id);
+    EXPECT_NE(posted.body.find("unauthorized"), std::string::npos);
+    EXPECT_EQ(node.consent_ledger().find(id)->status,
+              zetta::governance::ConsentStatus::Pending);
+}
+
+TEST_F(WebConsentFixture, ADifferentApproverApprovesAndTheDecisionIsAudited) {
+    const std::string id = park_challenge(owner_id);
+    const WebResponse posted = request_as(
+        approver_secret, "POST", "/run",
+        "cap=approve_consent&_return=%2F%3Fview%3Dgovernance%26tab%3Dconsent"
+        "&challenge_id=" + id);
+    ASSERT_EQ(posted.status, 302) << posted.body.substr(0, 600);
+    EXPECT_NE(posted.headers.find("/?view=governance&tab=consent"), std::string::npos);
+    const auto challenge = node.consent_ledger().find(id);
+    ASSERT_TRUE(challenge);
+    EXPECT_EQ(challenge->status, zetta::governance::ConsentStatus::Executed)
+        << challenge->detail;
+    EXPECT_EQ(challenge->decided_by, approver_id);
+    bool audited = false;
+    for (const auto& event : node.audit_events()) {
+        if (event->value().action == zetta::governance::AuditAction::ConsentDecided &&
+            event->value().actor == approver_id && event->value().allowed) {
+            audited = true;
+        }
+    }
+    EXPECT_TRUE(audited);
+
+    // Decided, it leaves the pending list.
+    const WebResponse page = request("GET", "/?view=governance&tab=consent");
+    EXPECT_EQ(page.body.find("data-challenge=\"" + id + "\""), std::string::npos);
+}
+
+TEST_F(WebConsentFixture, DenyRefusesTheChallengeAndTheActionNeverRuns) {
+    const std::string id = park_challenge(owner_id);
+    const WebResponse posted = request_as(
+        approver_secret, "POST", "/run",
+        "cap=deny_consent&_return=%2F%3Fview%3Dgovernance%26tab%3Dconsent"
+        "&challenge_id=" + id + "&reason=not+today");
+    ASSERT_EQ(posted.status, 302) << posted.body.substr(0, 600);
+    const auto challenge = node.consent_ledger().find(id);
+    EXPECT_EQ(challenge->status, zetta::governance::ConsentStatus::Denied);
+    EXPECT_EQ(challenge->detail, "not today");
 }
 
 }  // namespace

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -54,5 +55,13 @@ struct SourceCatalog {
 SourceCatalog list_source_catalog(const ConnectorConfig& config,
                                   const SourceCatalogRequest& request,
                                   const HttpTransport& transport = {});
+
+// Exactly what list_source_catalog runs against the source for `request`: the
+// table statement, then the column statement when columns are asked for (it
+// runs only when the table statement found a table). lake's Polars service has
+// no SQL catalog, so its one entry names the listing request. This is what a
+// safe-mode warning shows (docs/api/safe-mode.md). Non-throwing.
+std::vector<std::string> source_catalog_statements(const ConnectorConfig& config,
+                                                   const SourceCatalogRequest& request);
 
 }  // namespace zetta::connect

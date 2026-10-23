@@ -158,7 +158,8 @@ ConsentLedger::ConsentLedger(long long time_to_live_seconds,
 
 std::shared_ptr<const ConsentChallenge> ConsentLedger::create(
     std::string capability, nlohmann::json input, ConsentAction action,
-    std::string requested_by, std::string requested_principal) {
+    std::string requested_by, std::string requested_principal,
+    bool requested_is_user) {
     auto challenge = std::make_shared<ConsentChallenge>();
     challenge->id = zetta::util::new_uuid();
     challenge->capability = std::move(capability);
@@ -166,6 +167,7 @@ std::shared_ptr<const ConsentChallenge> ConsentLedger::create(
     challenge->action = std::move(action);
     challenge->requested_by = std::move(requested_by);
     challenge->requested_principal = std::move(requested_principal);
+    challenge->requested_is_user = requested_is_user;
     challenge->created_at = zetta::util::now_iso8601();
     // iso8601_seconds_ago with a negative offset lands the stamp TTL seconds
     // in the future — the expiry cutoff, compared lexicographically.

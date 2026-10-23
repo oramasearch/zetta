@@ -358,8 +358,8 @@ pre-fix binary will hit. Two separate bugs sat on top of `create_dataset_from_qu
 
 **The consent gate refused it.** It was gated per *tool*, so a query against `127.0.0.1`
 came back as *"touches a cloud provider"* — and the refusal named the web console's
-`/governance` page, which has no consent list, while the desktop app's approval surface is
-on **Admin & audit**. A single-operator workstation also has no second principal, so the
+`/governance` page, which then had no consent list, while the desktop app's approval surface
+was on **Admin & audit**. A single-operator workstation also had no second principal, so the
 challenge could be issued and then decided by nobody.
 
 **And underneath it, the call had never worked on Postgres at all.** Every connector
@@ -653,11 +653,11 @@ State these before an evaluator finds them.
   one node reading one stream and then partitioning it, because Postgres returns no result
   manifest to tile ([§4.2](#42--land-the-data)). Snowflake's connector is also **PAT/OAuth
   only**: an account that authenticates with an RSA key pair cannot be reached yet.
-- **Consent gating is off by default**, and turning it on with `--governance` leaves you
-  with no reachable approval surface on a single-operator node — the web console has no
-  consent list and the desktop app's is on Admin & audit
-  ([#995](https://github.com/oramasearch/zetta/issues/995)). Approving over the wire needs
-  a second principal holding `orchestration:approve_consent`.
+- **Consent gating is off by default** (#995). Turned on with `--governance`, a
+  challenge is decided under Governance → Consent requests: in the desktop app by the
+  person at the machine, or in the web console by a second user holding `cloud:manage`
+  ([docs/api/consent.md](../api/consent.md#a-one-person-node), #999). Remote sources are
+  guarded per database by **safe mode** ([docs/api/safe-mode.md](../api/safe-mode.md)).
 - **One methodology is executable.** The compiler produces the tabular-supervised shape
   (M-1) plus part of the NLP/embeddings shape; the other nineteen in the catalogue are
   specified and not built ([#984](https://github.com/oramasearch/zetta/issues/984)). Churn

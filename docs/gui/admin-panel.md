@@ -1,6 +1,8 @@
-# Admin & Settings panel
+# Governance page (the admin panel)
 
-The headed app's **governance surface** (`App::draw_admin`, `src/gui/app.cpp`) —
+The headed app's **governance surface** (`App::draw_admin`, `src/gui/app_governance.cpp`),
+titled **Governance** in both the nav and the page header (#999), so the page a
+`consent_required` refusal sends a user to is the page with the consent list —
 the GUI slice of **FEAT-9**, realizing screen **SCR-7** / component **CMP-5**. It
 surfaces the three governance entities zetta already models so an operator can
 *see* who can do what, and what has been done, without dropping to the C++ API or
@@ -27,9 +29,9 @@ IS a mutating affordance (approving executes the named action once).
 
 ## Layout
 
-The panel is one collapsing header, **Admin & Settings**, with three sections.
+The page has three sections, consent requests first.
 
-### Consent requests (#621)
+### Consent requests (#621, #999)
 
 `App::draw_consent_requests` — the **headed approval surface** for remote
 consent challenges ([../api/consent.md](../api/consent.md)). Each pending
@@ -43,7 +45,14 @@ async cloud workers land in `palette_background_`, pruned by
 `poll_background_ops()`); **Deny** refuses it. Outcomes render as the
 section's banner with the engine's reason verbatim (#632). Consent is
 per-action and never remembered; an empty section states where challenges
-come from.
+come from, or, on a node started without `--governance` (the default), that
+the gate is off and nothing will park here.
+
+This is also the **one-person path**: the person at the machine may approve a
+challenge their own MCP session requested, because the headed surface is exempt
+from the different-principal rule. The web console has the same list under
+Governance → Consent requests for a second user holding `cloud:manage`
+([../api/consent.md](../api/consent.md#enforcement-and-where-a-challenge-is-decided)).
 
 ### Principals & access keys
 

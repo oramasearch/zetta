@@ -64,6 +64,7 @@
 #include "zetta/ml/workspace_study.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/data/object_store.hpp"
+#include "zetta/governance/safe_mode.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/pipeline/deployment.hpp"
@@ -80,6 +81,7 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/pipeline/validation.hpp"
+#include "zetta/query/postgres.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/solutions/experiment.hpp"
 #include "zetta/solutions/snapshot.hpp"
@@ -399,6 +401,62 @@ ApiResult handle_sql(const nlohmann::json& input, ApiContext& context) {
     output["columns"] = outcome.columns;
     output["rows"] = outcome.rows;
     return ApiResult::success(std::move(output));
+}
+
+// Safe mode for Zetta SQL (#1373, docs/api/safe-mode.md): which database each
+// statement of the input runs against, and whether it writes — the parser's
+// statement kind decides (a SELECT reads; every other statement that names a
+// database or table writes). Each entry carries the input verbatim, because that
+// is exactly what will run. A statement naming no database (CREATE USER, GRANT,
+// CREATE VIRTUAL TABLE) is governed by its own rights, not by a database's
+// level; `system` and the reserved stores are never user databases. An input
+// that does not parse runs nothing, and the handler reports why.
+std::vector<zetta::governance::SafeModeStatements> describe_sql_safe_mode(
+    const nlohmann::json& input, ApiContext& context) {
+    (void)context;
+    const std::string statement = input.at("statement").get<std::string>();
+    const std::string current_database = input.value("database", "");
+    zetta::query::PostgresDialect dialect;
+    const zetta::query::ParseResult parsed = dialect.parse(statement);
+    if (!parsed.ok()) return {};
+
+    std::vector<zetta::governance::SafeModeStatements> described;
+    const auto note = [&](const std::string& database, bool writes) {
+        if (database.empty() || database == "system" ||
+            database == zetta::connect::kConnectionDatabase ||
+            database == zetta::governance::kSafeModeDatabase) {
+            return;
+        }
+        for (zetta::governance::SafeModeStatements& entry : described) {
+            if (entry.name == database) {
+                entry.writes = entry.writes || writes;
+                return;
+            }
+        }
+        described.push_back({zetta::governance::SafeModeTarget::Database, database,
+                             {statement}, writes});
+    };
+    const auto database_of = [&](const zetta::query::TableRef& ref) {
+        return ref.database.empty() ? current_database : ref.database;
+    };
+    for (const zetta::query::Statement& parsed_statement : parsed.statements) {
+        std::visit(
+            [&](const auto& node_statement) {
+                using Kind = std::decay_t<decltype(node_statement)>;
+                if constexpr (std::is_same_v<Kind, zetta::query::SelectStmt>) {
+                    note(database_of(node_statement.table), /*writes=*/false);
+                } else if constexpr (std::is_same_v<Kind, zetta::query::CreateDatabaseStmt> ||
+                                     std::is_same_v<Kind, zetta::query::DropDatabaseStmt>) {
+                    note(node_statement.name, /*writes=*/true);
+                } else if constexpr (requires { node_statement.table.database; }) {
+                    // CREATE / DROP TABLE, INSERT, UPDATE, DELETE, TRUNCATE,
+                    // CREATE POLICY.
+                    note(database_of(node_statement.table), /*writes=*/true);
+                }
+            },
+            parsed_statement);
+    }
+    return described;
 }
 
 // --- search --------------------------------------------------------------------
@@ -4063,6 +4121,12 @@ ApiResult handle_delete_dataset(const nlohmann::json& input, ApiContext& context
             "forbidden", "\"" + dataset.database +
                              "\" is the reserved connection store; remove a connection "
                              "with delete_connection");
+    }
+    if (dataset.database == zetta::governance::kSafeModeDatabase) {
+        return ApiResult::failure(
+            "forbidden", "\"" + dataset.database +
+                             "\" is the reserved safe mode store; change a level "
+                             "with set_safe_mode");
     }
     const std::shared_ptr<zetta::data::Database> owner =
         context.node.find_database(dataset.database);
@@ -8832,8 +8896,26 @@ const nlohmann::json& saved_connection_schema() {
              "credential itself."}}},
           {"created",
            {{"type", "string"},
-            {"description", "when the connection was last saved (ISO-8601 UTC)"}}}}}};
+            {"description", "when the connection was last saved (ISO-8601 UTC)"}}},
+          {"safe_mode",
+           {{"type", "string"},
+            {"enum", {"off", "warn_writes", "warn_all"}},
+            {"description",
+             "the connection's safe mode level (set_safe_mode; default "
+             "warn_writes): which statements answer safe_mode_warning before "
+             "they run"}}}}}};
     return schema;
+}
+
+// A saved connection as every read surface returns it: redacted, with its safe
+// mode level (#1373).
+nlohmann::json connection_listing(const zetta::connect::SavedConnection& saved,
+                                  const Node& node) {
+    nlohmann::json value = saved.to_redacted_json();
+    value["safe_mode"] = std::string(zetta::governance::to_string(
+        zetta::governance::effective_safe_mode(
+            node, zetta::governance::SafeModeTarget::Connection, saved.name)));
+    return value;
 }
 
 const nlohmann::json& create_connection_schema() {
@@ -8919,7 +9001,7 @@ ApiResult handle_create_connection(const nlohmann::json& input,
                                   "connection '" + name + "' did not persist");
     }
     // Redacted on the way out — a create call never echoes the credential back.
-    return ApiResult::success(saved->to_redacted_json());
+    return ApiResult::success(connection_listing(*saved, context.node));
 }
 
 ApiResult handle_list_connections(const nlohmann::json& input,
@@ -8928,7 +9010,7 @@ ApiResult handle_list_connections(const nlohmann::json& input,
     nlohmann::json connections = nlohmann::json::array();
     for (const zetta::connect::SavedConnection& saved :
          zetta::connect::list_connections(context.node)) {
-        connections.push_back(saved.to_redacted_json());
+        connections.push_back(connection_listing(saved, context.node));
     }
     nlohmann::json output;
     output["connections"] = std::move(connections);
@@ -8941,6 +9023,12 @@ ApiResult handle_delete_connection(const nlohmann::json& input,
     nlohmann::json output;
     output["name"] = name;
     output["removed"] = zetta::connect::remove_connection(context.node, name);
+    // Its safe mode level goes with it, so a later connection saved under the
+    // same name starts at the default rather than inheriting a stale level.
+    if (output["removed"].get<bool>()) {
+        zetta::governance::clear_safe_mode(
+            context.node, zetta::governance::SafeModeTarget::Connection, name);
+    }
     return ApiResult::success(std::move(output));
 }
 
@@ -9101,6 +9189,70 @@ std::optional<zetta::connect::ConnectorConfig> resolve_query_connector(
     return config;
 }
 
+// --- safe mode for sources (#1373, docs/api/safe-mode.md) --------------------
+//
+// A source's level is set on its SAVED connection, so only a call naming one is
+// described. An inline connector has no name to carry a level and runs at the
+// connection default (`warn_writes`), under which a read never warns. A saved
+// connection whose credential does not open runs nothing: the handler explains.
+std::optional<zetta::connect::SavedConnection> safe_mode_connection(
+    const nlohmann::json& input, ApiContext& context) {
+    if (!input.contains("connection") || input.contains("connector")) {
+        return std::nullopt;
+    }
+    std::optional<zetta::connect::SavedConnection> saved =
+        zetta::connect::find_connection(context.node,
+                                        input.at("connection").get<std::string>());
+    if (!saved || saved->credential == zetta::connect::CredentialState::Unreadable) {
+        return std::nullopt;
+    }
+    return saved;
+}
+
+// create_dataset_from_query runs the caller's query, verbatim. Sources are read
+// through read-only guards, so it never writes; a statement the guard refuses
+// never runs at all, and is refused by the handler rather than warned about.
+std::vector<zetta::governance::SafeModeStatements> describe_query_safe_mode(
+    const nlohmann::json& input, ApiContext& context) {
+    const std::optional<zetta::connect::SavedConnection> saved =
+        safe_mode_connection(input, context);
+    if (!saved) return {};
+    const std::string query = input.at("query").get<std::string>();
+    if (!zetta::connect::connector_query_rejection(saved->config, query).empty()) {
+        return {};
+    }
+    return {{zetta::governance::SafeModeTarget::Connection, saved->name,
+             {zetta::governance::redact_secret(query, saved->config.token)},
+             /*writes=*/false}};
+}
+
+// What list_source_tables asks the source for.
+zetta::connect::SourceCatalogRequest source_catalog_request(const nlohmann::json& input) {
+    zetta::connect::SourceCatalogRequest request;
+    request.max_tables = input.value("max_tables", static_cast<std::size_t>(200));
+    request.include_columns = input.value("include_columns", true);
+    request.schema = input.value("schema", std::string{});
+    request.match = input.value("match", std::string{});
+    return request;
+}
+
+// list_source_tables runs the catalog statements source_catalog_statements
+// names — reads, so only `warn_all` warns on them.
+std::vector<zetta::governance::SafeModeStatements> describe_catalog_safe_mode(
+    const nlohmann::json& input, ApiContext& context) {
+    const std::optional<zetta::connect::SavedConnection> saved =
+        safe_mode_connection(input, context);
+    if (!saved) return {};
+    zetta::governance::SafeModeStatements entry{
+        zetta::governance::SafeModeTarget::Connection, saved->name, {}, false};
+    for (std::string& statement : zetta::connect::source_catalog_statements(
+             saved->config, source_catalog_request(input))) {
+        entry.statements.push_back(
+            zetta::governance::redact_secret(std::move(statement), saved->config.token));
+    }
+    return {std::move(entry)};
+}
+
 // --- list_source_tables ------------------------------------------------------
 //
 // Browse a connected source's schema WITHOUT ingesting from it (#994). Until
@@ -9187,11 +9339,7 @@ ApiResult handle_list_source_tables(const nlohmann::json& input,
     // The per-source catalog reads (information_schema, MySQL's aliased
     // variant, SQLite's sqlite_master, Polars' dataset listing) live with the
     // connectors in connect/source_catalog.hpp.
-    zetta::connect::SourceCatalogRequest request;
-    request.max_tables = input.value("max_tables", static_cast<std::size_t>(200));
-    request.include_columns = input.value("include_columns", true);
-    request.schema = input.value("schema", std::string{});
-    request.match = input.value("match", std::string{});
+    const zetta::connect::SourceCatalogRequest request = source_catalog_request(input);
 
     zetta::connect::SourceCatalog catalog =
         zetta::connect::list_source_catalog(*config, request);
@@ -11737,7 +11885,10 @@ void register_core_capabilities(Registry& registry) {
         "need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at "
         "table or database scope); CREATE USER needs users:manage, CREATE TOKEN "
         "tokens:manage, role and policy statements roles:manage. Every "
-        "data-changing statement is audited as a data_changed action.",
+        "data-changing statement is audited as a data_changed action. A "
+        "database in safe mode (warn_writes: writes; warn_all: everything) "
+        "answers safe_mode_warning naming the statement first; repeat with "
+        "safe_mode_confirmation to run it.",
         sql_schema(),
         sql_output_schema(),
         CapabilityKind::Read,
@@ -11745,6 +11896,9 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_sql};
+    // Safe mode per database (#1373): a statement against a database whose level
+    // warns on it is refused with safe_mode_warning until it is confirmed.
+    sql.describe_safe_mode = describe_sql_safe_mode;
     // A statement of any length travels as a JSON body (#1231): the GET form
     // carries it in the request line, which the parser caps near 4 KiB.
     sql.post_alias = true;
@@ -12937,7 +13091,7 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_list_connections});
 
-    registry.add(Capability{
+    Capability list_source_tables{
         "list_source_tables",
         "List the tables in a connected source",
         "Browse a connected source's catalog WITHOUT ingesting from it: the "
@@ -12945,7 +13099,9 @@ void register_core_capabilities(Registry& registry) {
         "connection, filtered by schema and by a name substring. Opens one "
         "connection, runs one read-only catalog query, lands nothing \u2014 use "
         "this to FIND a table, then create_dataset_from_query to pull it. "
-        "Filter with match='score' to locate scoring tables.",
+        "Filter with match='score' to locate scoring tables. A saved "
+        "connection in safe mode warn_all answers safe_mode_warning naming the "
+        "catalog statements first; repeat with safe_mode_confirmation to run them.",
         list_source_tables_schema(),
         list_source_tables_output_schema(),
         CapabilityKind::Read,
@@ -12953,7 +13109,9 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/true,
         handle_list_source_tables,
-        describe_create_dataset_from_query});
+        describe_create_dataset_from_query};
+    list_source_tables.describe_safe_mode = describe_catalog_safe_mode;
+    registry.add(std::move(list_source_tables));
 
     registry.add(Capability{
         "delete_connection",
@@ -12968,7 +13126,7 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_delete_connection});
 
-    registry.add(Capability{
+    Capability create_dataset_from_query{
         "create_dataset_from_query",
         "Create a dataset from a connector query",
         "Run a read-only query against an external source (Snowflake, "
@@ -12979,7 +13137,9 @@ void register_core_capabilities(Registry& registry) {
         "over the network with your credentials, so it is consent-gated when the "
         "node enforces governance; a loopback Postgres, MySQL, TiDB or lake service touches no cloud "
         "and runs directly "
-        "(audited as dataset_added; visible in system.datasets).",
+        "(audited as dataset_added; visible in system.datasets). A saved "
+        "connection in safe mode warn_all answers safe_mode_warning naming the "
+        "query first; repeat with safe_mode_confirmation to run it.",
         create_dataset_from_query_schema(),
         create_dataset_from_query_output_schema(),
         CapabilityKind::Action,
@@ -12987,7 +13147,9 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/true,
         handle_create_dataset_from_query,
-        describe_create_dataset_from_query});
+        describe_create_dataset_from_query};
+    create_dataset_from_query.describe_safe_mode = describe_query_safe_mode;
+    registry.add(std::move(create_dataset_from_query));
 
     registry.add(Capability{
         "promote_dataset",
@@ -13097,6 +13259,7 @@ void register_core_capabilities(Registry& registry) {
     register_run_metrics_capabilities(registry);
     register_record_capabilities(registry);
     register_network_capabilities(registry);
+    register_safe_mode_capabilities(registry);
     register_object_capabilities(registry);
     register_storage_capabilities(registry);
     register_study_capabilities(registry);

@@ -65,6 +65,8 @@ enum class AuditAction {
     AuditPurged,
     DataChanged,  // a SQL statement changed data, schema or governance (#1229)
     EgressDenied,  // the egress policy refused an outbound connection (CTL-4, #75)
+    SafeModeChanged,    // a database's or connection's safe mode level changed (#1373)
+    SafeModeConfirmed,  // a caller confirmed a safe-mode warning and the statement ran (#1373)
 };
 
 // Completeness metadata for an authorised high-frequency read window (#1154).

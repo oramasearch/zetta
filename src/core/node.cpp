@@ -36,6 +36,7 @@
 #include "zetta/data/table.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/governance/safe_mode.hpp"
 #include "zetta/governance/permission.hpp"
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/runtime.hpp"
@@ -1852,6 +1853,13 @@ bool Node::drop_database(const std::string& name) {
     if (replication_) replication_->remove(catalog::database_key(db->id()));
     const bool dropped = materialize_drop_database(db->id());
     if (dropped) record_catalog_change(*this, "database:" + name, true, "database dropped");
+    // Its safe mode level goes with it (#1373): a database created later under
+    // the same name starts at the default. The row delete replicates like any
+    // other, so peers forget the level too.
+    if (dropped && name != zetta::governance::kSafeModeDatabase) {
+        zetta::governance::clear_safe_mode(
+            *this, zetta::governance::SafeModeTarget::Database, name);
+    }
     return dropped;
 }
 

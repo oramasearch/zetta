@@ -15,19 +15,53 @@ capability executes on the first call and the ungated call is recorded as a
 read — so "what touched a cloud on this node?" is still answerable without the
 challenge.
 
-This is a deliberate retreat, not the end state
-([#995](https://github.com/oramasearch/zetta/issues/995)). The protocol below
-is correct; its **approval surfaces are not reachable** on the node a first
-customer actually runs. The refusal used to point at the web console's
-`/governance` page, which has no consent list at all, and the desktop app's
-approval surface is on **Admin & audit**, not Governance. On a one-person
-laptop with a single API key there is no second principal either, so a
-challenge could be issued and then never decided by anybody — the gate blocked
-the action instead of gating it.
+Off has been the default since [#995](https://github.com/oramasearch/zetta/issues/995),
+when no surface a refused caller was sent to could decide a challenge. #999
+built those surfaces (below) and briefly proposed turning the gate back on by
+default, which would have made every read from a remote source (Snowflake,
+Postgres, MySQL…) wait for a second person — including Lake's Connections
+pages. **Steve decided against that on 2026-10-23**
+([#1373](https://github.com/oramasearch/zetta/pull/1373),
+[lake#906](https://github.com/oramasearch/lake/issues/906)). What guards a
+remote source by default is **safe mode**, set per database: at the default
+`warn_writes` a read runs and a write is refused with the exact statement until
+the same caller confirms it ([safe-mode.md](safe-mode.md)). Safe mode is a
+confirmation by the same person; consent is a second approver, and stays an
+opt-in per node.
 
-Turn it back on per node with `--governance` once a reachable approval surface
-ships. Nothing else about the protocol changes: the same describers run, the
-same ledger, the same different-principal rule.
+## Where a challenge is decided (#999)
+
+With the gate on, every surface the `consent_required` refusal names can decide
+a challenge:
+
+| Surface | Who decides | How |
+|---|---|---|
+| **Web console** → Governance → Consent requests (`/?view=governance&tab=consent`) | a signed-in user holding `cloud:manage` (`orchestration:approve_consent`), never the requester | each pending challenge is a card naming what would be read and run, with **Approve and run once** and **Deny**; both POST `/run` as `approve_consent` / `deny_consent`, so the engine authorizes, refuses self-approval, and audits |
+| **Desktop app** → Governance (`App::draw_consent_requests`) | the person at the machine | the trusted headed surface (`ConsentSurface::HeadedApp`), exempt from the different-principal rule because it is a human in front of the node |
+| **Over the wire** | a key or user of a different principal holding `orchestration:approve_consent` | `approve_consent` / `deny_consent` over MCP or REST |
+
+The requester is never offered Approve on the web page (only **Withdraw**), and
+an approval posted by hand from the requester is refused by
+`Registry::decide_consent`. With the gate off, both pages say so instead of
+showing an empty list.
+
+### A one-person node
+
+- **Headed (the desktop app):** open **Governance**; the pending challenge is at
+  the top with Approve / Deny. No second principal is needed.
+- **Headless:** create a second user that holds the approver right and sign in
+  to the web console as that user to decide:
+
+  ```sql
+  CREATE USER approver;
+  CREATE ROLE consent_approver;
+  GRANT mcp:call, cloud:manage TO ROLE consent_approver;
+  GRANT ROLE consent_approver TO approver;
+  CREATE TOKEN FOR approver;   -- the secret is shown once; sign in with it
+  ```
+
+  `cloud:manage` also grants `cloud_inspect`, `detect_provisioners` and
+  `add_nodes`, so give it only to someone trusted to approve those.
 
 ## The problem it closes
 
@@ -58,9 +92,14 @@ an agent auto-approves its own billable actions and the hard rule is hollow.
      **different principal** than the requester. The same key and a sibling key
      of the same principal are both refused — the calling key can never approve
      its own cloud action.
-   - **The headed app** (`ConsentSurface::HeadedApp`): the Admin panel's
+   - **The headed app** (`ConsentSurface::HeadedApp`): the Governance page's
      approval surface — the trusted human in front of the machine — set only
      by in-process code, never from request input.
+   A token-resolved **user** is an approver like a key: the web console's
+   Approve form calls `approve_consent` as the signed-in user. A challenge
+   requested by a user records `requested_is_user`, so approval re-authorizes
+   and executes as that user through the user path (`may_call_tool` and the
+   capability's own right), not the access-key path.
    Denial (`deny_consent`) is fail-safe and looser: the requester may
    withdraw its own challenge.
 3. **Approval executes exactly the named action once.** The challenge is
@@ -89,8 +128,9 @@ an agent auto-approves its own billable actions and the hard rule is hollow.
 | Cloud tools + consent tools | `src/core/api/cloud_capabilities.cpp` — `cloud_inspect` · `detect_provisioners` · `add_nodes` · `list_consent_requests` · `approve_consent` · `deny_consent` (table: [README.md](README.md)) |
 | Provisioner backends | `zetta::cloud::ProvisionerFleet` (`include/zetta/cloud/provisioner_fleet.hpp`, moved from the GUI) — one holder feeds the headed Add-nodes control AND `ApiServer::set_provisioner_resolver` |
 | Read views | `system.consent_requests` (RULE-7, computed from the ledger) + the `list_consent_requests` capability |
-| Headed approval surface | `App::draw_consent_requests()` (Admin panel): each pending card names what would be read/run, Approve / Deny drive `decide_consent` as the trusted surface |
-| The enforcement switch | `NodeConfig::enforce_consent` (`include/zetta/node.hpp`), read in `Registry::call`; `--governance` / `ZETTA_GOVERNANCE` in `src/main.cpp` |
+| Headed approval surface | `App::draw_consent_requests()` (desktop app, Governance page): each pending card names what would be read/run, Approve / Deny drive `decide_consent` as the trusted surface |
+| Web approval surface | `render_consent_requests` in `src/core/api/http_server.cpp` (web console, Governance → Consent requests): pending cards read through `list_consent_requests`, Approve / Deny forms POST `/run` as `approve_consent` / `deny_consent` |
+| The enforcement switch | `NodeConfig::enforce_consent` (`include/zetta/node.hpp`, default off), read in `Registry::call`; `--governance` / `ZETTA_GOVERNANCE=1` in `src/main.cpp` |
 
 ## Input-aware gating
 
@@ -121,8 +161,4 @@ rides the registered draft-07 input schemas (the pboettch boundary in
 - Pairing the approval with the burst cost estimate (`BurstApprovalGate` /
   APR-3) so a challenge carries the cost preview alongside the command list.
 - Notification of pending challenges (today: poll `list_consent_requests` /
-  `system.consent_requests`, or see the Admin panel).
-- **A consent list on the web console's `/governance` page**, and moving the
-  desktop app's out of Admin & audit onto Governance where both the refusal
-  text and the page name say it is (#995). Enforcement stays off by default
-  until then.
+  `system.consent_requests`, or open Governance → Consent requests).

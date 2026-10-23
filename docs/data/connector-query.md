@@ -121,6 +121,14 @@ Two qualifications on that, both per-call rather than per-tool
   that connector's real type and target — it used to describe every source as
   Snowflake.
 
+**Safe mode** ([../api/safe-mode.md](../api/safe-mode.md), #1373): a saved
+connection carries a level, `warn_writes` by default. Its reads run without a
+prompt under that default. At `warn_all`, `create_dataset_from_query` and
+`list_source_tables` answer `safe_mode_warning` with the exact query or catalog
+statements (credential redacted) and run when repeated with its
+`safe_mode_confirmation`. A statement the read-only guard refuses is refused,
+never offered for confirmation.
+
 ## Catalog filters: `list_source_tables`
 
 `list_source_tables` browses tables and optional columns through

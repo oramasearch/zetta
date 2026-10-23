@@ -196,7 +196,7 @@ void App::run_palette_capability(const std::string& capability_name) {
         // The engine's reason verbatim (banner rule #632), never a laundered
         // "operation failed". A consent-gated entry lands here with the
         // registry's consent_required reason; its challenge then awaits a
-        // decision on the Admin panel's approval surface (#621).
+        // decision on the Governance page's approval surface (#621).
         palette_failed_ = true;
         palette_status_ = result.error.code + ": " + result.error.message;
         if (!result.error.path.empty()) {

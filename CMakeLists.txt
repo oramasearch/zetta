@@ -527,6 +527,7 @@ add_library(zetta-core STATIC
   src/core/api/run_metrics_capabilities.cpp
   src/core/api/record_capabilities.cpp
   src/core/api/network_capabilities.cpp
+  src/core/api/safe_mode_capabilities.cpp
   src/core/api/object_capabilities.cpp
   src/core/api/storage_capabilities.cpp
   src/core/api/study_capabilities.cpp
@@ -668,6 +669,7 @@ add_library(zetta-core STATIC
   src/core/governance/audit_event.cpp
   src/core/governance/consent.cpp
   src/core/governance/credential_redaction.cpp
+  src/core/governance/safe_mode.cpp
   src/core/governance/rate_limiter.cpp
   src/core/governance/token_secret.cpp
   src/core/governance/identity_seal.cpp

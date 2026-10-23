@@ -78,7 +78,10 @@ relay it to a person.
 - **Errors an agent can act on**: domain failures return the engine's
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
-  itself.
+  itself. A `safe_mode_warning` names the database, its level and the exact
+  statements about to run, with a `confirmation` the same caller repeats to run
+  them; a confirmation for any other statement is refused
+  ([safe-mode.md](../../api/safe-mode.md), #1373).
 - **Audit maintenance is explicit and governed**: `purge_audit` has identical
   REST and MCP schemas, requires the admin-only `audit:purge` permission,
   refuses future cutoffs, returns the removed-row count, and leaves its own

@@ -27,6 +27,7 @@
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/connect/connection_store.hpp"
+#include "zetta/governance/safe_mode.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/virtual_table.hpp"
@@ -535,14 +536,21 @@ const zetta::governance::Operation kManageUsers{
 const zetta::governance::Operation kManageTokens{
     zetta::governance::CapabilityDomain::Api, "manage_tokens"};
 
-// The reserved database that holds saved connector connections (#827). SQL never
-// reaches it, for read or write (#1230): its rows carry sealed credentials, and
-// the governed surfaces over it are system.connections and the connection
-// capabilities.
-bool is_connection_store(const std::string& database) {
-    return database == zetta::connect::kConnectionDatabase;
+// The reserved databases SQL never reaches, for read or write: the connection
+// store (#827, #1230), whose rows carry sealed credentials and whose governed
+// surfaces are system.connections and the connection capabilities; and the
+// safe mode store (#1373), whose levels change only through set_safe_mode.
+bool is_reserved_store(const std::string& database) {
+    return database == zetta::connect::kConnectionDatabase ||
+           database == zetta::governance::kSafeModeDatabase;
 }
-std::string connection_store_refusal() {
+std::string reserved_store_refusal(const std::string& database) {
+    if (database == zetta::governance::kSafeModeDatabase) {
+        return std::string("permission denied: \"") +
+               zetta::governance::kSafeModeDatabase +
+               "\" is the reserved safe mode store and is not reachable through "
+               "SQL — use the get_safe_mode / set_safe_mode capabilities";
+    }
     return std::string("permission denied: \"") +
            zetta::connect::kConnectionDatabase +
            "\" is the reserved connection store and is not reachable through "
@@ -2972,8 +2980,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (s.name == kSystemDatabase) {
                     return error("\"system\" is a reserved (virtual) database");
                 }
-                if (is_connection_store(s.name)) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(s.name)) {
+                    return deny(reserved_store_refusal(s.name));
                 }
                 if (!may_change_database(kSqlDdl, s.name)) {
                     return deny("permission denied: no sql:ddl grant on database \"" +
@@ -2989,8 +2997,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (s.name == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
-                if (is_connection_store(s.name)) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(s.name)) {
+                    return deny(reserved_store_refusal(s.name));
                 }
                 if (!may_change_database(kSqlDdl, s.name)) {
                     return deny("permission denied: no sql:ddl grant on database \"" +
@@ -3010,8 +3018,8 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("no database selected — qualify as db.table or "
                                  "select a database");
                 }
-                if (is_connection_store(name)) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(name)) {
+                    return deny(reserved_store_refusal(name));
                 }
                 if (auto refused = require_whole_table(kSqlDdl, "sql:ddl",
                                                        "CREATE TABLE", name,
@@ -3132,8 +3140,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
-                if (is_connection_store(db_name(s.table))) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(db_name(s.table))) {
+                    return deny(reserved_store_refusal(db_name(s.table)));
                 }
                 if (!db_name(s.table).empty()) {
                     if (auto refused = require_whole_table(
@@ -3153,8 +3161,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
-                if (is_connection_store(db_name(s.table))) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(db_name(s.table))) {
+                    return deny(reserved_store_refusal(db_name(s.table)));
                 }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
@@ -3227,8 +3235,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
-                if (is_connection_store(db_name(s.table))) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(db_name(s.table))) {
+                    return deny(reserved_store_refusal(db_name(s.table)));
                 }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
@@ -3320,8 +3328,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
-                if (is_connection_store(db_name(s.table))) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(db_name(s.table))) {
+                    return deny(reserved_store_refusal(db_name(s.table)));
                 }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
@@ -3385,8 +3393,8 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
-                if (is_connection_store(db_name(s.table))) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(db_name(s.table))) {
+                    return deny(reserved_store_refusal(db_name(s.table)));
                 }
                 if (resolve_virtual_table(s.table)) {
                     return error("virtual table \"" + s.table.table +
@@ -3604,8 +3612,8 @@ QueryResult Executor::execute(const Statement& stmt,
                     return select_over_rows(s, node_.virtual_table_rows(*vtable),
                                             vtable->name, declared);
                 }
-                if (is_connection_store(db_name(s.table))) {
-                    return deny(connection_store_refusal());
+                if (is_reserved_store(db_name(s.table))) {
+                    return deny(reserved_store_refusal(db_name(s.table)));
                 }
                 if (auto problem = aggregate_shape_error(s)) return error(*problem);
                 // Object-scoped read enforcement (#747): the acting identity must

@@ -4792,6 +4792,15 @@
                         },
                         "name": {
                           "type": "string"
+                        },
+                        "safe_mode": {
+                          "description": "the connection's safe mode level (set_safe_mode; default warn_writes): which statements answer safe_mode_warning before they run",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -4843,7 +4852,7 @@
     },
     "/v1/create_dataset_from_query": {
       "post": {
-        "description": "Run a read-only query against an external source (Snowflake, Postgres, MySQL, TiDB, or lake's SQLite, DuckDB or Polars service) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run (MySQL and TiDB also admit SHOW). A remote source is reached over the network with your credentials, so it is consent-gated when the node enforces governance; a loopback Postgres, MySQL, TiDB or lake service touches no cloud and runs directly (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
+        "description": "Run a read-only query against an external source (Snowflake, Postgres, MySQL, TiDB, or lake's SQLite, DuckDB or Polars service) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run (MySQL and TiDB also admit SHOW). A remote source is reached over the network with your credentials, so it is consent-gated when the node enforces governance; a loopback Postgres, MySQL, TiDB or lake service touches no cloud and runs directly (audited as dataset_added; visible in system.datasets). A saved connection in safe mode warn_all answers safe_mode_warning naming the query first; repeat with safe_mode_confirmation to run it. Requires orchestration:create_dataset_from_query. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "create_dataset_from_query",
         "requestBody": {
           "content": {
@@ -4967,6 +4976,11 @@
                     "description": "owners per partition (default 1 — a connector result set is a cache, re-pullable from its source; promote_dataset raises it)",
                     "minimum": 1,
                     "type": "integer"
+                  },
+                  "safe_mode_confirmation": {
+                    "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
                   },
                   "table_name": {
                     "description": "name for the new table (default 'dataset')",
@@ -18722,6 +18736,145 @@
         ]
       }
     },
+    "/v1/get_safe_mode": {
+      "get": {
+        "description": "Read the safe mode level of one Zetta database or saved source connection, and whether it is the default (warn_writes for a connection, off for a database). Reading a connection's level needs list_connections. No side effects. Requires api:query.",
+        "operationId": "get_safe_mode",
+        "parameters": [
+          {
+            "description": "a saved source connection by name (give this OR database)",
+            "in": "query",
+            "name": "connection",
+            "required": false,
+            "schema": {
+              "description": "a saved source connection by name (give this OR database)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "a Zetta database by name (give this OR connection)",
+            "in": "query",
+            "name": "database",
+            "required": false,
+            "schema": {
+              "description": "a Zetta database by name (give this OR connection)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection": {
+                          "description": "a saved source connection by name (give this OR database)",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "database": {
+                          "description": "a Zetta database by name (give this OR connection)",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "is_default": {
+                          "description": "true when no level was set and the kind's default applies (warn_writes for a connection, off for a database)",
+                          "type": "boolean"
+                        },
+                        "mode": {
+                          "description": "off: every statement runs; warn_writes: a statement that writes answers safe_mode_warning first; warn_all: every statement does",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
+                        },
+                        "previous": {
+                          "description": "set_safe_mode only: the level before this change",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "is_default"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a database's safe mode",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_solution": {
       "get": {
         "description": "Read one runnable catalogue solution by id, including every production dependency and tracking issue. No side effects. Requires api:query.",
@@ -22218,6 +22371,15 @@
                                 "type": "string"
                               },
                               "name": {
+                                "type": "string"
+                              },
+                              "safe_mode": {
+                                "description": "the connection's safe mode level (set_safe_mode; default warn_writes): which statements answer safe_mode_warning before they run",
+                                "enum": [
+                                  "off",
+                                  "warn_writes",
+                                  "warn_all"
+                                ],
                                 "type": "string"
                               }
                             },
@@ -27155,7 +27317,7 @@
     },
     "/v1/list_source_tables": {
       "get": {
-        "description": "Browse a connected source's catalog WITHOUT ingesting from it: the tables (optionally with their columns and types) behind a saved connection, filtered by schema and by a name substring. Opens one connection, runs one read-only catalog query, lands nothing — use this to FIND a table, then create_dataset_from_query to pull it. Filter with match='score' to locate scoring tables. Requires orchestration:list_source_tables. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
+        "description": "Browse a connected source's catalog WITHOUT ingesting from it: the tables (optionally with their columns and types) behind a saved connection, filtered by schema and by a name substring. Opens one connection, runs one read-only catalog query, lands nothing — use this to FIND a table, then create_dataset_from_query to pull it. Filter with match='score' to locate scoring tables. A saved connection in safe mode warn_all answers safe_mode_warning naming the catalog statements first; repeat with safe_mode_confirmation to run them. Requires orchestration:list_source_tables. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "list_source_tables",
         "parameters": [
           {
@@ -27288,6 +27450,17 @@
               "maximum": 2000,
               "minimum": 1,
               "type": "integer"
+            }
+          },
+          {
+            "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+            "in": "query",
+            "name": "safe_mode_confirmation",
+            "required": false,
+            "schema": {
+              "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
             }
           },
           {
@@ -39706,6 +39879,151 @@
         ]
       }
     },
+    "/v1/set_safe_mode": {
+      "post": {
+        "description": "Set the safe mode level of one Zetta database or saved source connection: off (every statement runs), warn_writes (a statement that writes answers safe_mode_warning with the exact statement first) or warn_all (every statement does). The caller confirms a warning by repeating the call with its confirmation. Needs the right to manage what it names: sql:ddl on the database, or create_connection for a connection. The level replicates to every node and is audited as safe_mode_changed. Requires api:query.",
+        "operationId": "set_safe_mode",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connection": {
+                    "description": "a saved source connection by name (give this OR database)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "database": {
+                    "description": "a Zetta database by name (give this OR connection)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "description": "off: every statement runs; warn_writes: a statement that writes answers safe_mode_warning first; warn_all: every statement does",
+                    "enum": [
+                      "off",
+                      "warn_writes",
+                      "warn_all"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connection": {
+                          "description": "a saved source connection by name (give this OR database)",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "database": {
+                          "description": "a Zetta database by name (give this OR connection)",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "is_default": {
+                          "description": "true when no level was set and the kind's default applies (warn_writes for a connection, off for a database)",
+                          "type": "boolean"
+                        },
+                        "mode": {
+                          "description": "off: every statement runs; warn_writes: a statement that writes answers safe_mode_warning first; warn_all: every statement does",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
+                        },
+                        "previous": {
+                          "description": "set_safe_mode only: the level before this change",
+                          "enum": [
+                            "off",
+                            "warn_writes",
+                            "warn_all"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "is_default"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Set a database's safe mode",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/set_training_schedule": {
       "post": {
         "description": "Set an agent's training spec: the corpus, the base checkpoint, the step count, and the cadence (manual, on_change, daily, weekly, monthly). Manual is the default - an agent never retrains behind your back. Requires orchestration:set_training_schedule.",
@@ -40153,7 +40471,7 @@
     },
     "/v1/sql": {
       "get": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. Requires api:query.",
         "operationId": "sql",
         "parameters": [
           {
@@ -40163,6 +40481,17 @@
             "required": false,
             "schema": {
               "description": "default database for unqualified table names (optional)",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+            "in": "query",
+            "name": "safe_mode_confirmation",
+            "required": false,
+            "schema": {
+              "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+              "pattern": "^[0-9a-f]{64}$",
               "type": "string"
             }
           },
@@ -40277,7 +40606,7 @@
         ]
       },
       "post": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. Requires api:query.",
         "operationId": "sql_post",
         "requestBody": {
           "content": {
@@ -40291,6 +40620,11 @@
                   },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "safe_mode_confirmation": {
+                    "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
+                    "pattern": "^[0-9a-f]{64}$",
                     "type": "string"
                   },
                   "statement": {

@@ -11,6 +11,7 @@
 
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/consent.hpp"
+#include "zetta/governance/safe_mode.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/runtime.hpp"
 
@@ -55,7 +56,9 @@ struct ApiError {
                           // `details` says what to run, zetta#1261) |
                           // "rate_limited" (a published pipeline's per-caller
                           // limit, zetta#1289) | "payload_too_large" (its input
-                          // size limit, zetta#1289)
+                          // size limit, zetta#1289) | "safe_mode_warning" (the
+                          // database's safe mode warns on this statement;
+                          // `details` names it and its confirmation, #1373)
     std::string message;  // the engine's reason, verbatim where one exists
     std::string path;     // JSON pointer / field path when the input is at fault
     // Structured payload riding with the failure — the consent challenge for
@@ -194,6 +197,20 @@ using CapabilityHandler =
 using ConsentDescriber = std::function<std::optional<governance::ConsentAction>(
     const nlohmann::json& input, ApiContext& context)>;
 
+// Names the statements a safe-mode-guarded capability is about to run for this
+// (already schema-validated) input, one entry per database they run against
+// (docs/api/safe-mode.md). Empty = nothing this input runs is guarded (a parse
+// error the handler reports, an inline connector with no saved name, a
+// statement the source's read-only guard refuses anyway). Runs on the owner
+// thread.
+using SafeModeDescriber = std::function<std::vector<governance::SafeModeStatements>(
+    const nlohmann::json& input, ApiContext& context)>;
+
+// The input field that carries a safe-mode confirmation. Registry::add adds it
+// to the input schema of every capability with a SafeModeDescriber, and
+// Registry::call removes it before the handler runs.
+inline constexpr const char* kSafeModeConfirmationField = "safe_mode_confirmation";
+
 // REST-only execution policy for a registry read that may suspend without
 // holding a thread. Registry::call remains the one governed call path: the
 // route calls it once for the initial no-wait read and, only when should_wait
@@ -232,6 +249,11 @@ struct Capability {
     // read/run (the challenge body). Missing describer = a generic challenge
     // built from `description`. See ConsentDescriber above.
     ConsentDescriber describe_consent;
+    // Safe mode per database (#1373): when set, Registry::call asks it what
+    // this input would run and refuses with `safe_mode_warning` when the
+    // database's level warns on it, until the call is repeated with the
+    // warning's confirmation. See SafeModeDescriber above.
+    SafeModeDescriber describe_safe_mode;
     // Run this capability off the owner/tick thread, on a pool worker
     // (runtime::offload), instead of marshaling it onto the owning loop. ONLY safe
     // for a handler that touches no main-thread-only Node state — just the
@@ -300,6 +322,13 @@ public:
     // consent challenge on the node's ledger (audited, span'd) and fails with
     // code "consent_required" carrying the challenge as structured details.
     // Approval goes through decide_consent below.
+    //
+    // A capability with a SafeModeDescriber is checked before consent: when the
+    // level of a database it would run against warns on the statement, the call
+    // fails with code "safe_mode_warning" naming the database, the level, the
+    // exact statements and a confirmation; the same call repeated with
+    // `safe_mode_confirmation` set to that value runs (audited as
+    // safe_mode_confirmed).
     ApiResult call(const std::string& name, const nlohmann::json& input,
                    ApiContext& context) const;
 

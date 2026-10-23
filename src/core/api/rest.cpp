@@ -102,6 +102,9 @@ int rest_status(const ApiResult& result) {
     if (code == "forbidden") return 403;          // read-only by design (zetta#1261)
     if (code == "runner_required") return 409;    // Lake's runner runs it (zetta#1261)
     if (code == "consent_required") return 403;
+    // Safe mode (#1373): the call needs the caller's confirmation of the named
+    // statement — a precondition the repeated request supplies.
+    if (code == "safe_mode_warning") return 428;
     if (code == "not_found") return 404;
     if (code == "conflict") return 409;
     if (code == "fenced" || code == "held") return 409;  // the object lease (#1005)
