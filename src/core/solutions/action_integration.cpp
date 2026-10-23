@@ -898,7 +898,7 @@ std::optional<ActionTask> ActionRuntime::execute_closed_loop(
     return deliver_task(task->task_id, token, std::move(actor), error);
 }
 
-std::optional<ReportPublication> ActionRuntime::publish_report(
+std::optional<PreparedReportPublication> ActionRuntime::prepare_report(
     ReportPublicationSpec spec,
     std::string actor,
     std::string* error) {
@@ -918,7 +918,8 @@ std::optional<ReportPublication> ActionRuntime::publish_report(
     if (!table) {
         return std::nullopt;
     }
-    ReportPublication publication;
+    PreparedReportPublication prepared;
+    ReportPublication& publication = prepared.publication;
     const auto existing = find_record(
         table,
         "idempotency_key",
@@ -931,16 +932,8 @@ std::optional<ReportPublication> ActionRuntime::publish_report(
         publication = *parsed;
         if (publication.status == ActionTaskStatus::Delivered ||
             publication.status == ActionTaskStatus::DeadLetter) {
-            return publication;
+            return prepared;
         }
-    }
-    const zetta::connect::HttpTransport transport =
-        resolve_transport(transport_);
-    if (!transport) {
-        if (error != nullptr) {
-            *error = "no outbound HTTP transport is installed";
-        }
-        return std::nullopt;
     }
 
     if (!existing) {
@@ -986,49 +979,142 @@ std::optional<ReportPublication> ActionRuntime::publish_report(
                        {"decision_log", publication.decision_log}};
     ActionConnectorConfig connector_config = spec.connector;
     connector_config.endpoint = publication.endpoint;
-    while (publication.attempts < publication.max_attempts) {
-        const auto response = transport(
-            connector->request(message, connector_config));
-        ++publication.attempts;
-        publication.updated_at = zetta::util::now_iso8601();
-        if (response.ok()) {
-            publication.status = ActionTaskStatus::Delivered;
-            publication.acknowledgement = acknowledgement_from(response);
-            publication.last_error.clear();
-            record_delivery_outcome(
-                node_,
-                publication.ledger_action_id,
-                "acknowledged",
-                response.status,
-                publication.currency);
-            if (!persist_publication(node_, publication, error)) {
-                return std::nullopt;
-            }
-            return publication;
-        }
-        publication.last_error = response_error(response);
+    prepared.request = connector->request(message, connector_config);
+    return prepared;
+}
+
+std::optional<ReportPublication> ActionRuntime::record_report_attempt(
+    ReportPublication publication,
+    const zetta::connect::HttpResponse& response,
+    std::string* error) {
+    ++publication.attempts;
+    publication.updated_at = zetta::util::now_iso8601();
+    if (response.ok()) {
+        publication.status = ActionTaskStatus::Delivered;
+        publication.acknowledgement = acknowledgement_from(response);
+        publication.last_error.clear();
         record_delivery_outcome(
             node_,
             publication.ledger_action_id,
-            "delivery_failed",
+            "acknowledged",
             response.status,
             publication.currency);
         if (!persist_publication(node_, publication, error)) {
             return std::nullopt;
         }
+        return publication;
     }
-    publication.status = ActionTaskStatus::DeadLetter;
-    publication.updated_at = zetta::util::now_iso8601();
+    publication.last_error = response_error(response);
     record_delivery_outcome(
         node_,
         publication.ledger_action_id,
-        "dead_letter",
-        0,
+        "delivery_failed",
+        response.status,
         publication.currency);
+    if (publication.attempts >= publication.max_attempts) {
+        publication.status = ActionTaskStatus::DeadLetter;
+        record_delivery_outcome(
+            node_,
+            publication.ledger_action_id,
+            "dead_letter",
+            0,
+            publication.currency);
+    }
     if (!persist_publication(node_, publication, error)) {
         return std::nullopt;
     }
     return publication;
+}
+
+std::optional<ReportPublication> ActionRuntime::publish_report(
+    ReportPublicationSpec spec,
+    std::string actor,
+    std::string* error) {
+    if (!resolve_transport(transport_) &&
+        spec.connector.kind == ActionConnectorKind::Webhook) {
+        // Refuse before anything is persisted, as before the prepare/record
+        // split, unless the publication is already settled (prepare_report
+        // returns a settled one without a request).
+        auto table = ensure_table(node_, kPublicationTableName, error);
+        if (!table) {
+            return std::nullopt;
+        }
+        const auto existing = find_record(
+            table, "idempotency_key", spec.idempotency_key);
+        if (!existing) {
+            if (error != nullptr) {
+                *error = "no outbound HTTP transport is installed";
+            }
+            return std::nullopt;
+        }
+    }
+    auto prepared = prepare_report(std::move(spec), std::move(actor), error);
+    if (!prepared) {
+        return std::nullopt;
+    }
+    if (!prepared->request) {
+        return std::move(prepared->publication);
+    }
+    const zetta::connect::HttpTransport transport =
+        resolve_transport(transport_);
+    if (!transport) {
+        if (error != nullptr) {
+            *error = "no outbound HTTP transport is installed";
+        }
+        return std::nullopt;
+    }
+    ReportPublication publication = std::move(prepared->publication);
+    if (publication.attempts >= publication.max_attempts) {
+        // A record left pending with no attempts remaining settles now.
+        publication.status = ActionTaskStatus::DeadLetter;
+        publication.updated_at = zetta::util::now_iso8601();
+        record_delivery_outcome(
+            node_,
+            publication.ledger_action_id,
+            "dead_letter",
+            0,
+            publication.currency);
+        if (!persist_publication(node_, publication, error)) {
+            return std::nullopt;
+        }
+        return publication;
+    }
+    while (publication.status == ActionTaskStatus::Pending) {
+        auto recorded = record_report_attempt(
+            std::move(publication), transport(*prepared->request), error);
+        if (!recorded) {
+            return std::nullopt;
+        }
+        publication = std::move(*recorded);
+    }
+    return publication;
+}
+
+zetta::runtime::task<zetta::connect::HttpResponse> send_report_request(
+    zetta::connect::HttpRequest request) {
+    // Copies, so a transport swapped while this request is in flight cannot
+    // change the function under it.
+    const zetta::connect::AsyncHttpTransport asynchronous =
+        zetta::connect::default_async_http_transport();
+    if (asynchronous) {
+        // The error_code half is always clear: a transport failure arrives in
+        // HttpResponse::error (http_transport.hpp).
+        auto [transport_error, response] = co_await asynchronous(request);
+        (void)transport_error;
+        co_return std::move(response);
+    }
+    zetta::connect::HttpTransport synchronous =
+        zetta::connect::default_http_transport();
+    if (synchronous) {
+        // The synchronous transport blocks the thread it runs on, so it runs on
+        // a runtime pool worker — never on the Node owner (lake#801).
+        co_return co_await zetta::runtime::offload(
+            [synchronous = std::move(synchronous),
+             request = std::move(request)] { return synchronous(request); });
+    }
+    zetta::connect::HttpResponse response;
+    response.error = "no outbound HTTP transport is installed";
+    co_return response;
 }
 
 }  // namespace zetta::solutions

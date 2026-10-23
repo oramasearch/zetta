@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <chrono>
@@ -7313,6 +7314,127 @@ TEST_F(SolutionJourney,
     }
     EXPECT_GT(sleeping_dogs, 0u);
     EXPECT_GT(persuaded, 0u);
+}
+
+// lake#801: the run's report delivery must never hold the Node owner. The
+// transport answers action-task deliveries at once but holds every driver
+// report attempt (up to 3 s, until released) and then fails it the way an
+// endpoint behind a default-deny egress policy does. While the first attempt
+// is in flight the owner (this test thread) must still answer reads; once the
+// attempts are spent the run must fail with the delivery's reason.
+struct HeldReportDelivery {
+    zetta::connect::HttpTransport previous = zetta::connect::default_http_transport();
+    zetta::connect::AsyncHttpTransport previous_async =
+        zetta::connect::default_async_http_transport();
+    std::thread::id owner = std::this_thread::get_id();
+    std::atomic<int> report_attempts{0};
+    std::atomic<bool> report_on_owner{false};
+    std::atomic<bool> release{false};
+
+    HeldReportDelivery() {
+        zetta::connect::set_default_http_transport([this](const auto& request) {
+            const auto body = nlohmann::json::parse(request.body);
+            if (body.at("action") != "publish_driver_report") {
+                return zetta::connect::HttpResponse{200, "{}", {}};
+            }
+            if (std::this_thread::get_id() == owner) {
+                report_on_owner = true;
+            }
+            ++report_attempts;
+            const auto until =
+                std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (!release && std::chrono::steady_clock::now() < until) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return zetta::connect::HttpResponse{
+                0, "",
+                "could not connect to crm.example.test:443: Operation timed out"};
+        }, {});
+    }
+
+    ~HeldReportDelivery() {
+        zetta::connect::set_default_http_transport(previous, previous_async);
+    }
+};
+
+TEST_F(SolutionJourney,
+       ReportDeliveryRunsOffTheOwnerAndAnUnreachableEndpointFailsTheRun) {
+    HeldReportDelivery delivery;
+    land_retention_data(node);
+    ASSERT_TRUE(call("create_project", {{"name", "retention"}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "retention"},
+         {"solution", "S-1"},
+         {"level", 1},
+         {"sources",
+          {{"source", "datasets"},
+           {"table", "customers"},
+           {"M-3",
+            {{"entity_column", "entity_id"},
+             {"label_column", "label"},
+             {"feature_columns", {"feature"}}}}}},
+         {"foundation", retention_configuration()}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "retention"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    const nlohmann::json run = {{"run_id", started.value.at("run_id")}};
+
+    bool answered_during_delivery = false;
+    ApiResult status;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (std::chrono::steady_clock::now() < deadline) {
+        node.tick();
+        background.prune();
+        status = call("get_run", run);
+        ASSERT_TRUE(status.ok) << status.error.message;
+        if (!answered_during_delivery && delivery.report_attempts > 0) {
+            // The first attempt is held right now: the owner still answers.
+            EXPECT_EQ(status.value.at("status"), "running")
+                << status.value.dump(2);
+            EXPECT_TRUE(call("list_projects", nlohmann::json::object()).ok);
+            answered_during_delivery = status.value.at("status") == "running";
+            delivery.release = true;
+        }
+        if (status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    delivery.release = true;
+
+    EXPECT_FALSE(delivery.report_on_owner)
+        << "the driver report was sent from the Node owner thread";
+    EXPECT_TRUE(answered_during_delivery)
+        << "the workspace did not answer while the report was in flight";
+    ASSERT_EQ(status.value.at("status"), "failed") << status.value.dump(2);
+    EXPECT_EQ(delivery.report_attempts.load(), 3);
+    bool reported = false;
+    for (const auto& log : status.value.at("logs")) {
+        const std::string message = log.at("message");
+        if (log.at("level") == "error" &&
+            message.find("driver report delivery was not acknowledged after 3 attempt(s)") !=
+                std::string::npos &&
+            message.find("could not connect to crm.example.test:443") !=
+                std::string::npos) {
+            reported = true;
+        }
+    }
+    EXPECT_TRUE(reported) << status.value.at("logs").dump(2);
+
+    // The publication is settled as a dead letter, not left pending.
+    const auto publications =
+        node.find_database("action_delivery")->find_table("report_publications");
+    ASSERT_TRUE(publications);
+    ASSERT_EQ(publications->store().size(), 1u);
+    EXPECT_EQ(publications->store().at(0)->at("status"), "dead_letter");
+    EXPECT_EQ(publications->store().at(0)->at("attempts"), 3);
 }
 
 void land_collections_data(Node& node) {

@@ -1,12 +1,12 @@
 # The native outbound HTTP client
 
 zetta's **outbound** HTTP is a coroutine, not a subprocess. The client that fills
-the [`connect::HttpTransport`](../data/connector-query.md) seam dials Corosio
+the [`connect::HttpTransport`](../data/connector-query.md) interface dials Corosio
 sockets, wraps them in OpenSSL, and frames HTTP/1.1 with Boost.HTTP's sans-I/O
 serializer and parser ([#827](https://github.com/oramasearch/zetta/issues/827)).
 
 ```
-include/zetta/connect/http_transport.hpp     the seam: HttpRequest/HttpResponse, both transport shapes, install/read
+include/zetta/connect/http_transport.hpp     the interface: HttpRequest/HttpResponse, both transport shapes, install/read
 src/core/connect/http_transport.cpp          the registry (zetta-core; holds no HTTP code at all)
 include/zetta/api/native_http_transport.hpp  install_native_http_transport / shutdown_native_http_transport
 src/core/api/native_http_transport.cpp       the client (zetta-api target)
@@ -17,7 +17,7 @@ tests/connect/test_native_http_transport.cpp real loopback exchanges + a when_al
 
 `zetta-core` deliberately links **neither Boost.HTTP nor Beast2** — the
 `zetta-api` target exists to hold the HTTP adapters so no HTTP type reaches the
-core's public surface (the same isolation SDL and CUDA get). So the seam is
+core's public surface (the same isolation SDL and CUDA get). So the interface is
 *declared* in core and *implemented* in `zetta-api`:
 
 ```
@@ -39,7 +39,7 @@ is by direction: the cluster adapter owns inbound/peer traffic, this one owns
 outbound client traffic. Both go through `zetta::runtime::net`; neither names
 `boost::corosio` outside it.
 
-## The two shapes of the seam
+## The two shapes of the interface
 
 ```cpp
 using HttpTransport      = std::function<HttpResponse(const HttpRequest&)>;
@@ -54,7 +54,7 @@ is what the distributed connector fetch fans out with, N partition reads in
 flight at once under `runtime::when_all`.
 
 `when_all` and `timeout` were added to `include/zetta/runtime.hpp` for exactly
-this — the rule is *extend the seam, don't work around it*, so no consumer names
+this — the rule is *extend the interface, don't work around it*, so no consumer names
 `boost::capy::when_all`.
 
 ## How one exchange runs
@@ -63,7 +63,7 @@ One `io_context` on one dedicated thread multiplexes **every** outbound exchange
 in the process, so installing the client costs one thread regardless of how many
 requests are in flight. A caller's `submit()` posts the exchange coroutine onto
 that context and suspends on a `runtime::async_event`; the io_context thread sets
-the event when the response is in hand. That is the runtime seam's documented
+the event when the response is in hand. That is the runtime interface's documented
 cross-thread completion primitive — the caller never has to be running on the
 io_context.
 
@@ -86,9 +86,13 @@ resolve (async DNS)  →  connect  →  TLS handshake  →  serialize request
   never required to fit in the parser's buffer. The per-message body limit is
   raised to 512 MiB (the client default of 1 MiB would truncate a warehouse
   result partition).
-- **Deadline**: every exchange runs under `runtime::timeout`
-  (`HttpRequest::timeout_seconds`), so a hung peer cannot pin a coroutine — and
-  therefore a fan-out slot — forever.
+- **Deadline**: `HttpRequest::timeout_seconds` bounds each hop as a whole —
+  resolving, connecting, the TLS handshake, the exchange and the closing
+  `close_notify` all run under `runtime::timeout` against one deadline — so a
+  hung peer cannot pin a coroutine — and therefore a fan-out slot — forever. An
+  endpoint whose packets are dropped (a default-deny egress policy) used to hold
+  the connect for the kernel's SYN retries, about 130 s on Linux, whatever the
+  timeout ([lake#801](https://github.com/oramasearch/lake/issues/801)).
 - **Connections**: one per exchange, `Connection: close`, no pooling. Requests
   fan out concurrently rather than pipelining, so a pool would buy little and
   cost a lifetime problem; the price is one handshake per request, which is why
@@ -130,13 +134,14 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
   `max_response_bytes` raises the 512 MiB connector body cap. All default to off, so a
   connector is unchanged.
 - **No connection pooling** and **no HTTP/2** — both are changes behind the same
-  seam, invisible to connectors.
-- **TLS is not directly tested**: verifying it needs a certificate authority and
-  a real peer. The loopback suite exercises the identical coroutine over a plain
+  interface, invisible to connectors.
+- **TLS is not directly tested** beyond the handshake deadline (a loopback
+  listener that never answers the ClientHello): verifying a full exchange needs
+  a certificate authority and a real peer. The loopback suite exercises the identical coroutine over a plain
   socket, and the Corosio TLS surface itself is covered by the cluster's mTLS
   peer transport.
 - **No proxy support** (`HTTP_PROXY` / `HTTPS_PROXY` are ignored).
 
 See also [../data/connector-query.md](../data/connector-query.md) (what the
 transport is for) and [../cluster/README.md](../cluster/README.md) (the inbound
-half of the networking seam).
+half of the networking boundary).

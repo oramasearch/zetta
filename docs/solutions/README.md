@@ -104,7 +104,8 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [action-integration.md](action-integration.md) — report publication, replicated
   action outbox, webhook and CRM connector plugins, bounded retries,
   acknowledgements, dead letters, holdout suppression, and kill-switch guarded
-  closed-loop execution (#1109).
+  closed-loop execution (#1109); a solution run's report delivered off the
+  owner loop, each attempt bounded by its timeout (lake#801).
 
 - [roi-readout.md](roi-readout.md) — versioned correctness, aggregate
   incrementality with confidence intervals, customer-supplied ROI, guardrails,

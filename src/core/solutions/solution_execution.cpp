@@ -162,6 +162,58 @@ void fail_master(const std::shared_ptr<SolutionState>& state, const std::string&
     });
 }
 
+// Deliver the run's report OFF the Node owner (lake#801). Each attempt's
+// network round-trip runs here, in the run's coroutine; only the bookkeeping
+// (persist the attempt, record it in the ledger) goes to the owner, so the
+// workspace keeps answering however long the endpoint takes. Every attempt is
+// bounded by the request's own timeout and there are at most `max_attempts`.
+// Returns the run's failure reason, or empty once the report is acknowledged.
+zetta::runtime::task<std::string> deliver_report(
+    std::shared_ptr<SolutionState> state, DeferredReportDelivery delivery) {
+    ReportPublication publication = std::move(delivery.prepared->publication);
+    const zetta::connect::HttpRequest request =
+        std::move(*delivery.prepared->request);
+    update_master(state, [&](zetta::pipeline::Run& run) {
+        run.add_log({zetta::util::now_iso8601(), "info",
+                     "delivering " + publication.title + " to " +
+                         publication.endpoint});
+    });
+    if (publication.attempts >= publication.max_attempts) {
+        co_return delivery.failure + ": no delivery attempts remain";
+    }
+    while (publication.status == ActionTaskStatus::Pending) {
+        const zetta::connect::HttpResponse response =
+            co_await send_report_request(request);
+        std::optional<ReportPublication> recorded;
+        std::string error;
+        state->node->run_on_owner([&] {
+            ActionRuntime runtime(*state->node);
+            recorded = runtime.record_report_attempt(publication, response, &error);
+        });
+        if (!recorded) {
+            co_return delivery.failure + ": " +
+                (error.empty() ? "the delivery attempt could not be recorded"
+                               : error);
+        }
+        publication = std::move(*recorded);
+        if (publication.status == ActionTaskStatus::Pending) {
+            update_master(state, [&](zetta::pipeline::Run& run) {
+                run.add_log({zetta::util::now_iso8601(), "warn",
+                             "report delivery attempt " +
+                                 std::to_string(publication.attempts) + " of " +
+                                 std::to_string(publication.max_attempts) +
+                                 " failed: " + publication.last_error});
+            });
+        }
+    }
+    if (publication.status != ActionTaskStatus::Delivered) {
+        co_return delivery.failure + " after " +
+            std::to_string(publication.attempts) + " attempt(s): " +
+            publication.last_error;
+    }
+    co_return std::string{};
+}
+
 zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
     std::vector<zetta::pipeline::RunOutput> outputs;
     std::vector<std::string> lineage_steps = {"snapshot"};
@@ -314,14 +366,24 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
     scored_outputs.insert(scored_outputs.end(), supporting_outputs.begin(),
                           supporting_outputs.end());
     ApiResult finished;
+    DeferredReportDelivery delivery;
     state->node->run_on_owner([&] {
         finished = finish_solution_run(*state->node, state->binding,
                                       state->master_run_id, scored_outputs,
-                                      state->actor.empty() ? "local" : state->actor);
+                                      state->actor.empty() ? "local" : state->actor,
+                                      &delivery);
     });
     if (!finished.ok) {
         fail_master(state, finished.error.message);
         co_return;
+    }
+    if (delivery.prepared) {
+        const std::string delivery_failure =
+            co_await deliver_report(state, std::move(delivery));
+        if (!delivery_failure.empty()) {
+            fail_master(state, delivery_failure);
+            co_return;
+        }
     }
     outputs.push_back({"dataset", "solution decisions", finished.value.at("decisions")});
     for (const std::string step : {"policy", "holdout", "actions", "ledger", "monitor"}) {

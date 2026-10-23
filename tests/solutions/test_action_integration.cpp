@@ -524,4 +524,64 @@ TEST_F(ActionIntegrationFixture, PublishesDriverReportAndDecisionLog) {
     EXPECT_EQ(node.ledger_entry_count(), 2u);
 }
 
+// lake#801: the report's network round-trip can be taken off the Node owner.
+// prepare_report persists and ledger-records the publication and builds the
+// request without sending anything; record_report_attempt books one attempt
+// and settles the publication as a dead letter once max_attempts is spent; a
+// settled publication prepares no second request.
+TEST_F(ActionIntegrationFixture, PreparesAndRecordsReportAttemptsWithoutSending) {
+    ReportPublicationSpec spec;
+    spec.run_id = "run-801";
+    spec.title = "Churn and retention driver report";
+    spec.driver_report = {{"drivers", nlohmann::json::array()}};
+    spec.connector.kind = ActionConnectorKind::Webhook;
+    spec.connector.endpoint = "https://example.com/hooks/actions";
+    spec.connector.timeout_seconds = 7;
+    spec.idempotency_key = "run-801/driver-report";
+    spec.max_attempts = 2;
+    spec.model_version = "model-v1";
+    spec.policy_version = "1";
+    spec.agent_version = "solution-foundation-v1";
+    spec.cell = "retention/report";
+    spec.currency = "USD";
+    const ReportPublicationSpec again = spec;
+
+    // The injected transport fails the test if anything is sent.
+    ActionRuntime runtime(node, [](const zetta::connect::HttpRequest&) {
+        ADD_FAILURE() << "prepare_report must not send";
+        return zetta::connect::HttpResponse{};
+    });
+    std::string error;
+    auto prepared = runtime.prepare_report(spec, "report-agent", &error);
+    ASSERT_TRUE(prepared) << error;
+    ASSERT_TRUE(prepared->request);
+    EXPECT_EQ(prepared->request->url, "https://example.com/hooks/actions");
+    EXPECT_EQ(prepared->request->timeout_seconds, 7);
+    EXPECT_NE(prepared->request->body.find("publish_driver_report"),
+              std::string::npos);
+    EXPECT_EQ(prepared->publication.status, ActionTaskStatus::Pending);
+    EXPECT_EQ(prepared->publication.attempts, 0u);
+    EXPECT_FALSE(prepared->publication.ledger_action_id.empty());
+
+    zetta::connect::HttpResponse unreachable;
+    unreachable.error = "could not connect to example.com:443: timed out";
+    auto first = runtime.record_report_attempt(
+        prepared->publication, unreachable, &error);
+    ASSERT_TRUE(first) << error;
+    EXPECT_EQ(first->status, ActionTaskStatus::Pending);
+    EXPECT_EQ(first->attempts, 1u);
+    EXPECT_EQ(first->last_error, unreachable.error);
+    auto second = runtime.record_report_attempt(*first, unreachable, &error);
+    ASSERT_TRUE(second) << error;
+    EXPECT_EQ(second->status, ActionTaskStatus::DeadLetter);
+    EXPECT_EQ(second->attempts, 2u);
+
+    auto settled = runtime.prepare_report(again, "report-agent", &error);
+    ASSERT_TRUE(settled) << error;
+    EXPECT_FALSE(settled->request);
+    EXPECT_EQ(settled->publication.status, ActionTaskStatus::DeadLetter);
+    EXPECT_EQ(settled->publication.publication_id,
+              prepared->publication.publication_id);
+}
+
 }  // namespace
