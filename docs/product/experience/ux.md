@@ -29,7 +29,6 @@ lens on a cluster that is primarily driven programmatically
   [script-context encoding](../../api/registry-design.md#json-embedded-in-html-1405)
   preserves their values without letting them become HTML. An installed Studio
   bundle receives data through the authenticated API instead.
-  graph terms only in the explicitly labeled Technical view).
   Login, logout and actions accept only this browser origin (#1415); a sibling
   site cannot use the session to submit them. Cookie API reads also need origin
   evidence, and SQL writes use POST. See the
