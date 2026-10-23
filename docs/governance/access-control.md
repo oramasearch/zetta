@@ -820,6 +820,7 @@ user via `find_user_by_id` + `roles_for_user`.
 - `include/zetta/node.hpp` — policy CRUD + the RLS bypass decision (#748): `Node::create_policy` / `drop_policy` / `find_policy` / `policies` / `bypasses_row_security`.
 - `src/core/query/postgres.cpp` + `src/core/query/executor.cpp` — the `CREATE/DROP POLICY` grammar + its `roles:manage` gate, the `system.policies` view, and the per-statement `USING` (SELECT) / `WITH CHECK` (INSERT) row rewrite reusing the WHERE evaluator (#748).
 - `tests/governance/test_row_security.cpp` + `tests/api/test_row_security_api.cpp` — the RLS coverage (#748): `USING (owner = current_user())` limits a non-admin to its own rows, a `WITH CHECK` violation is rejected, admin bypasses, a role-scoped policy applies only to that role (deny-by-default otherwise), `current_roles()` membership, policies replicate.
+- `tests/governance/test_authz_regressions.cpp` — the authorization regression harness (#780): one test per auth review finding #759–#769, fixed ones asserted and open ones as `KNOWN_DEFECT` probes that fail once the defect stops reproducing; the map is [docs/testing/authz-regressions.md](../testing/authz-regressions.md).
 - `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
 - `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
 - `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
