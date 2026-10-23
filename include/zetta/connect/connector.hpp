@@ -41,7 +41,7 @@ namespace zetta::connect {
 // OAuth token). It is **input-only** — `to_json()` never emits it, so a config
 // can be echoed back to a caller or logged without leaking the secret.
 struct ConnectorConfig {
-    std::string type;              // "snowflake" | "postgres" | "mysql" | "lake_sqlite" | "lake_duckdb" | "lake_polars" (see connector_types())
+    std::string type;              // "snowflake" | "postgres" | "mysql" | "tidb" | "lake_sqlite" | "lake_duckdb" | "lake_polars" (see connector_types())
     std::string account;           // Snowflake: "ab12345.us-east-1" (the host prefix)
     std::string token;             // the secret — never serialized (Snowflake bearer / Postgres or MySQL password)
     std::string auth = "pat";      // Snowflake: "pat" (default) | "oauth"
@@ -49,12 +49,12 @@ struct ConnectorConfig {
     std::string schema;            // session schema (both)
     std::string warehouse;         // Snowflake: compute warehouse (required for token auth)
     std::string role;              // optional session role (both)
-    // Wire-protocol fields (type == "postgres" or "mysql"). The password rides in
-    // `token` (so the one redaction rule covers it). Postgres requires host +
-    // user + database; MySQL requires host + user (database is the optional
-    // default schema).
+    // Wire-protocol fields (type == "postgres", "mysql" or "tidb"). The password
+    // rides in `token` (so the one redaction rule covers it). Postgres requires
+    // host + user + database; MySQL and TiDB require host + user (database is
+    // the optional default schema).
     std::string host;              // server host (e.g. 127.0.0.1)
-    std::string port;              // server port (Postgres 5432, MySQL 3306 by default)
+    std::string port;              // server port (Postgres 5432, MySQL 3306, TiDB 4000 by default)
     std::string user;              // role/user
     std::string sslmode;           // Postgres sslmode; MySQL: verify-full (default) / verify-ca / require / disable
     // lake's SQL-over-HTTP services (type == "lake_sqlite" / "lake_duckdb" /

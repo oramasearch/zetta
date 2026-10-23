@@ -1,5 +1,7 @@
 #include "zetta/connect/mysql_client.hpp"
 
+#include "write_words.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -324,6 +326,14 @@ std::string caching_sha2_password_response(std::string_view password,
     return xor_bytes(stage1, sha256_bytes(salted));
 }
 
+bool is_tidb_version(std::string_view server_version) {
+    std::string lowered(server_version);
+    std::ranges::transform(lowered, lowered.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return lowered.find("tidb") != std::string::npos;
+}
+
 // --- The session ------------------------------------------------------------------
 
 MysqlClientSession::MysqlClientSession(MysqlSessionOptions options)
@@ -467,6 +477,28 @@ MysqlStep MysqlClientSession::on_greeting(std::string_view payload) {
                     " does not speak protocol 4.1 with secure authentication");
     }
     if (auth_plugin_.empty()) auth_plugin_ = "mysql_native_password";
+
+    // TiDB (its greeting reads like `8.0.11-TiDB-v7.5.1`) speaks this protocol
+    // but does not enforce READ ONLY: with tidb_enable_noop_functions OFF, its
+    // default, `SET SESSION TRANSACTION READ ONLY` and `START TRANSACTION READ
+    // ONLY` are errors, and with it ON they are accepted and ignored. So for
+    // TiDB, whatever connector type reached it, the statement must hold no word
+    // that writes (checked here, before any credential is sent), and it runs in
+    // a plain transaction that is rolled back, never committed, so a write the
+    // guard could not see is undone. `sql_select_limit` works as in MySQL.
+    if (is_tidb_version(server_version_)) {
+        tidb_ = true;
+        if (std::string rejection = write_word_rejection(
+                options_.sql, WriteWordDialect::Mysql, "a TiDB connection");
+            !rejection.empty()) {
+            return fail(rejection);
+        }
+        commands_ = {
+            "SET SESSION sql_select_limit = " + std::to_string(options_.max_rows),
+            "START TRANSACTION",
+            options_.sql,
+        };
+    }
 
     client_capabilities_ = kClientLongPassword | kClientLongFlag | kClientProtocol41 |
                            kClientTransactions | kClientSecureConnection;

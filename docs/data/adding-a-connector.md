@@ -98,6 +98,7 @@ Follow the **`new-connector`** skill. In brief, mirroring the two examples:
 ## The connector-skill docs
 
 - [connectors/mysql.md](connectors/mysql.md) — MySQL (#895).
+- [connectors/tidb.md](connectors/tidb.md) — TiDB, the MySQL protocol with its own fencing (#1014).
 - [connectors/lake-sql.md](connectors/lake-sql.md) — lake's SQLite, DuckDB and Polars services (#1014).
 
 ## Appendix — the connector-skill doc format

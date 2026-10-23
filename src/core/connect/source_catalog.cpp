@@ -70,10 +70,16 @@ CatalogStatements information_schema_statements(const ConnectorConfig& config,
     // upper case unless aliased (so every column is aliased to the lower-case
     // name the reader expects), its own catalog schemas are `mysql`,
     // `performance_schema` and `sys`, and its literals take backslash escapes.
-    const bool is_mysql = config.type == "mysql";
+    // TiDB is read the same way; it also has `metrics_schema`, and names its
+    // system schemas in upper case under a binary collation, so the schema is
+    // lower-cased before it is compared.
+    const bool is_mysql = config.type == "mysql" || config.type == "tidb";
     const std::string excluded_schemas =
-        is_mysql ? "('information_schema', 'mysql', 'performance_schema', 'sys')"
+        is_mysql ? "('information_schema', 'mysql', 'performance_schema', 'sys', "
+                   "'metrics_schema')"
                  : "('pg_catalog', 'information_schema')";
+    const std::string table_schema = is_mysql ? "LOWER(t.table_schema)" : "t.table_schema";
+    const std::string column_schema = is_mysql ? "LOWER(c.table_schema)" : "c.table_schema";
     const auto alias = [is_mysql](const char* column) {
         return is_mysql ? std::string(column) + " AS " + (std::string(column).substr(2))
                         : std::string(column);
@@ -83,7 +89,7 @@ CatalogStatements information_schema_statements(const ConnectorConfig& config,
         "SELECT " + alias("t.table_schema") + ", " + alias("t.table_name") + ", " +
         alias("t.table_type") +
         " FROM information_schema.tables t"
-        " WHERE t.table_schema NOT IN " + excluded_schemas;
+        " WHERE " + table_schema + " NOT IN " + excluded_schemas;
     if (!request.schema.empty()) {
         statements.tables +=
             " AND t.table_schema = " + sql_literal(request.schema, is_mysql);
@@ -99,7 +105,7 @@ CatalogStatements information_schema_statements(const ConnectorConfig& config,
         alias("c.column_name") + ", " + alias("c.data_type") + "," + " " +
         alias("c.is_nullable") + ", " + alias("c.ordinal_position") +
         " FROM information_schema.columns c"
-        " WHERE c.table_schema NOT IN " + excluded_schemas;
+        " WHERE " + column_schema + " NOT IN " + excluded_schemas;
     if (!request.schema.empty()) {
         statements.columns +=
             " AND c.table_schema = " + sql_literal(request.schema, is_mysql);

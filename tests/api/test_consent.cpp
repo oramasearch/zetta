@@ -578,6 +578,29 @@ TEST_F(ConsentFixture, ListSourceTablesSpeaksMysqlsCatalog) {
     EXPECT_EQ(listed.value.at("tables")[0].at("columns")[0].at("column"), "id");
 }
 
+// --- TiDB (#1014): the MySQL protocol, named as itself in the challenge -----------
+
+TEST_F(ConsentFixture, ARemoteTidbSourceIsNamedAsTidb) {
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "orders-tidb"},
+                      {"connector",
+                       {{"type", "tidb"},
+                        {"host", "orders-tidb.ws-1.svc.cluster.local"},
+                        {"port", "4000"},
+                        {"user", "root"},
+                        {"token", "pw"},
+                        {"database", "shop"},
+                        {"sslmode", "disable"}}}})
+                    .ok);
+    auto remote = call("create_dataset_from_query",
+                       {{"connection", "orders-tidb"}, {"query", "SELECT 1"}});
+    ASSERT_EQ(remote.error.code, "consent_required");
+    const std::string summary = remote.error.details.at("action").value("summary", "");
+    EXPECT_NE(summary.find("tidb orders-tidb.ws-1.svc.cluster.local:4000/shop"),
+              std::string::npos)
+        << summary;
+}
+
 // --- lake's SQL services (#1014): the endpoint decides local or remote ----------
 
 TEST_F(ConsentFixture, ALoopbackLakeServiceRunsUngatedAndARemoteOneIsNamed) {
