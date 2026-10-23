@@ -8,6 +8,7 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/api/native_http_transport.hpp"
+#include "zetta/api/mysql_protocol.hpp"
 #include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/compute/mlx_serving.hpp"
@@ -557,6 +558,11 @@ int main(int argc, char** argv) {
     // fails cleanly ("the Postgres connector is not built into this binary").
     zetta::connect::install_postgres_protocol();
 #endif
+    // The native MySQL connector (#895) — the protocol is implemented in
+    // zetta-core (connect/mysql_client.hpp); this installs its TCP/TLS driver so a
+    // "mysql" source connection can run its read-only query. No vendor library,
+    // so every build has it.
+    zetta::connect::install_mysql_protocol();
 #ifdef ZETTA_WITH_MLX
     // The fast Metal-GPU Qwen decode (#555) — register MlxQwenInference as the agent's
     // serving-inference runner, so chat()/respond() decode on the Apple-Silicon GPU

@@ -1,11 +1,13 @@
 #include "zetta/connect/connector.hpp"
 
 #include "snowflake_protocol.hpp"
+#include "zetta/connect/mysql_client.hpp"
 #include "zetta/connect/postgres_runner.hpp"
 #include "zetta/connect/distributed_fetch.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <string_view>
 #include <thread>
@@ -23,14 +25,15 @@ std::string to_lower(std::string text) {
 }
 
 // Strip leading whitespace and SQL comments (`--` to end of line, `/* … */`) so
-// the read-only guard sees the first real keyword.
-std::string_view skip_leading_noise(std::string_view sql) {
+// the read-only guard sees the first real keyword. `hash_comments` also strips
+// `#` to end of line — MySQL's third comment form.
+std::string_view skip_leading_noise(std::string_view sql, bool hash_comments = false) {
     for (;;) {
         while (!sql.empty() &&
                std::isspace(static_cast<unsigned char>(sql.front()))) {
             sql.remove_prefix(1);
         }
-        if (sql.starts_with("--")) {
+        if (sql.starts_with("--") || (hash_comments && sql.starts_with("#"))) {
             const std::size_t line_end = sql.find('\n');
             if (line_end == std::string_view::npos) return {};
             sql.remove_prefix(line_end + 1);
@@ -47,12 +50,76 @@ std::string_view skip_leading_noise(std::string_view sql) {
 }
 
 // A trailing `;` is fine; a `;` with anything after it is a second statement.
-bool has_trailing_statement(std::string_view sql) {
+bool has_trailing_statement(std::string_view sql, bool hash_comments = false) {
     const std::size_t semicolon = sql.find(';');
     if (semicolon == std::string_view::npos) return false;
     std::string_view rest = sql.substr(semicolon + 1);
-    rest = skip_leading_noise(rest);
+    rest = skip_leading_noise(rest, hash_comments);
     return !rest.empty();
+}
+
+// Does `sql` start with `keyword` as a whole word (case-insensitive)?
+bool starts_with_keyword(std::string_view sql, std::string_view keyword) {
+    if (sql.size() < keyword.size()) return false;
+    for (std::size_t index = 0; index < keyword.size(); ++index) {
+        if (std::tolower(static_cast<unsigned char>(sql[index])) != keyword[index]) {
+            return false;
+        }
+    }
+    return sql.size() == keyword.size() ||
+           std::isspace(static_cast<unsigned char>(sql[keyword.size()])) ||
+           sql[keyword.size()] == '(' || sql[keyword.size()] == '`';
+}
+
+// Does the word `word` (lowercase) appear anywhere in `sql` as a whole
+// identifier-like token? Deliberately blunt — it does not skip string literals,
+// so a literal containing the word is refused too. A false refusal costs a
+// rephrased query; a missed `INTO OUTFILE` writes a file on the server.
+bool contains_word(std::string_view sql, std::string_view word) {
+    const std::string lowered = to_lower(std::string(sql));
+    const auto is_word_char = [](char character) {
+        return std::isalnum(static_cast<unsigned char>(character)) || character == '_' ||
+               character == '$';
+    };
+    for (std::size_t found = lowered.find(word); found != std::string::npos;
+         found = lowered.find(word, found + 1)) {
+        const bool starts = found == 0 || !is_word_char(lowered[found - 1]);
+        const std::size_t end = found + word.size();
+        const bool ends = end == lowered.size() || !is_word_char(lowered[end]);
+        if (starts && ends) return true;
+    }
+    return false;
+}
+
+// The MySQL guard (#895). The driver enforces read-only too (a READ ONLY
+// session and transaction, no multi-statements, no LOCAL INFILE — see
+// mysql_client.hpp); this refuses at the boundary what can be recognised
+// before a connection is opened.
+std::string mysql_query_rejection(const std::string& sql) {
+    // `/*! … */` is not a comment to MySQL: the server executes its contents.
+    // The shared guard would skip it as leading noise and see the SELECT after
+    // it, so refuse it outright, wherever it appears.
+    if (sql.find("/*!") != std::string::npos) {
+        return "MySQL executable comments (/*! ... */) may not run through a "
+               "connector";
+    }
+    const std::string_view trimmed = skip_leading_noise(sql, /*hash_comments=*/true);
+    if (trimmed.empty()) return "the query is empty";
+    if (!starts_with_keyword(trimmed, "select") && !starts_with_keyword(trimmed, "with") &&
+        !starts_with_keyword(trimmed, "show")) {
+        return "only a read-only SELECT, WITH or SHOW statement may run through "
+               "the MySQL connector";
+    }
+    if (has_trailing_statement(trimmed, /*hash_comments=*/true)) {
+        return "only a single statement may run through a connector";
+    }
+    // SELECT … INTO OUTFILE / DUMPFILE writes a file on the database server —
+    // a read-only transaction does not stop it.
+    if (contains_word(trimmed, "outfile") || contains_word(trimmed, "dumpfile")) {
+        return "SELECT ... INTO OUTFILE / DUMPFILE writes a file on the server "
+               "and may not run through a connector";
+    }
+    return {};
 }
 
 // --- Snowflake (SQL API v2 over HTTPS) ---------------------------------------
@@ -178,8 +245,9 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
         *target = *field;
     }
 
-    // The secret (Snowflake bearer / Postgres password). Optional for Postgres
-    // trust/peer auth; required for Snowflake.
+    // The secret (Snowflake bearer / Postgres or MySQL password). Optional for
+    // Postgres trust/peer auth and a passwordless MySQL account; required for
+    // Snowflake.
     const std::optional<std::string> token = string_at("token");
     if (!token) return std::nullopt;
     config.token = *token;
@@ -199,6 +267,21 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
         if (config.host.empty() || config.user.empty() || config.database.empty()) {
             return std::nullopt;
         }
+    } else if (config.type == "mysql") {
+        // database is optional: a query may name `schema.table` itself.
+        if (config.host.empty() || config.user.empty()) return std::nullopt;
+        // An unknown sslmode is refused rather than read as "no TLS" — and
+        // `prefer`, which silently falls back to plaintext, is not a mode here.
+        if (!parse_mysql_tls_mode(config.sslmode)) return std::nullopt;
+        if (!config.port.empty()) {
+            unsigned port = 0;
+            const char* const first = config.port.data();
+            const char* const last = first + config.port.size();
+            const auto [end, error] = std::from_chars(first, last, port);
+            if (error != std::errc() || end != last || port == 0 || port > 65535) {
+                return std::nullopt;
+            }
+        }
     }
 
     return config;
@@ -207,7 +290,7 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
 // --- The registry + the guard -------------------------------------------------
 
 const std::vector<std::string>& connector_types() {
-    static const std::vector<std::string> types = {"snowflake", "postgres"};
+    static const std::vector<std::string> types = {"snowflake", "postgres", "mysql"};
     return types;
 }
 
@@ -216,23 +299,23 @@ const nlohmann::json& connector_config_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/connector_config.schema.json",
   "title": "ConnectorConfig",
-  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres or MySQL password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database; MySQL: host+user).",
   "type": "object",
   "required": ["type"],
   "additionalProperties": false,
   "properties": {
-    "type": {"type": "string", "enum": ["snowflake", "postgres"], "description": "Which connector implementation to use."},
+    "type": {"type": "string", "enum": ["snowflake", "postgres", "mysql"], "description": "Which connector implementation to use."},
     "account": {"type": "string", "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1)."},
-    "token": {"type": "string", "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out."},
+    "token": {"type": "string", "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres or MySQL password. Never serialized back out."},
     "auth": {"type": "string", "enum": ["pat", "oauth"], "default": "pat", "description": "Snowflake: how to present the bearer token."},
-    "database": {"type": "string", "description": "Session database (both connectors)."},
-    "schema": {"type": "string", "description": "Session schema (both connectors)."},
+    "database": {"type": "string", "description": "Session database (Snowflake, Postgres; MySQL's optional default schema)."},
+    "schema": {"type": "string", "description": "Session schema (Snowflake, Postgres)."},
     "warehouse": {"type": "string", "description": "Snowflake compute warehouse (required for token auth)."},
     "role": {"type": "string", "description": "Optional session role."},
-    "host": {"type": "string", "description": "Postgres host, e.g. 127.0.0.1."},
-    "port": {"type": "string", "description": "Postgres port (default 5432)."},
-    "user": {"type": "string", "description": "Postgres role/user."},
-    "sslmode": {"type": "string", "description": "Postgres sslmode (disable / require / verify-full / …)."}
+    "host": {"type": "string", "description": "Postgres or MySQL host, e.g. 127.0.0.1."},
+    "port": {"type": "string", "description": "Postgres or MySQL port (default 5432 / 3306)."},
+    "user": {"type": "string", "description": "Postgres role / MySQL user."},
+    "sslmode": {"type": "string", "description": "Postgres sslmode (disable / require / verify-full / …). MySQL: verify-full (the default — TLS, certificate verified against the system trust store and matched to the host), verify-ca, require (TLS without verification), or disable (plaintext, only when named)."}
   }
 })JSON",
                                                               nullptr,
@@ -264,6 +347,12 @@ std::string read_only_query_rejection(const std::string& sql) {
     return {};
 }
 
+std::string connector_query_rejection(const ConnectorConfig& config,
+                                      const std::string& sql) {
+    if (config.type == "mysql") return mysql_query_rejection(sql);
+    return read_only_query_rejection(sql);
+}
+
 ConnectorResult run_connector_query(const ConnectorConfig& config,
                                     const std::string& sql, std::size_t max_rows,
                                     const HttpTransport& transport) {
@@ -282,7 +371,7 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
                                     const AsyncHttpTransport& async_transport) {
     ConnectorResult result;
 
-    const std::string rejection = read_only_query_rejection(sql);
+    const std::string rejection = connector_query_rejection(config, sql);
     if (!rejection.empty()) {
         result.error = rejection;
         return result;
@@ -303,6 +392,17 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
             return result;
         }
         return postgres_query_runner()(config, sql, max_rows);
+    }
+    // MySQL speaks its own wire protocol too, implemented natively
+    // (mysql_client.hpp); the TCP/TLS driver is installed by zetta-api.
+    if (config.type == "mysql") {
+        if (!has_mysql_query_runner()) {
+            result.error =
+                "the MySQL connector is not installed in this binary (no zetta-api "
+                "layer called install_mysql_protocol)";
+            return result;
+        }
+        return mysql_query_runner()(config, sql, max_rows);
     }
 
     const HttpTransport& exchange = transport ? transport : default_http_transport();

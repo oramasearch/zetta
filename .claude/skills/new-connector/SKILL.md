@@ -18,9 +18,10 @@ Follow the **zetta-dev** skill for all coding conventions while doing this, and
 is the end-to-end method — **research** the source with a Perplexity deep-dive
 (the **`perplexity`** skill) into a connector-skill doc, **decide the transport**
 (HTTP+SQL API vs a wire-protocol driver — the ADR-17 gate), then **build** with
-this skill. Snowflake (HTTP API) and Postgres (libpqxx driver, coroutine-wrapped
-via `runtime::offload`, a sanctioned ADR-17 exception) are the two worked
-examples. Read [`docs/data/connector-query.md`](../../../docs/data/connector-query.md)
+this skill. Snowflake (HTTP API), MySQL (a wire protocol implemented natively: a
+sans-I/O session in zetta-core + a coroutine TCP/TLS driver in zetta-api, #895)
+and Postgres (libpqxx driver, coroutine-wrapped via `runtime::offload`, a
+sanctioned ADR-17 exception) are the three worked examples. Read [`docs/data/connector-query.md`](../../../docs/data/connector-query.md)
 too — it is the shipped design this skill operationalizes.
 
 ## Core principle: produce rows, nothing else
@@ -36,8 +37,9 @@ featurizes compute-near-data exactly the same way.
 The second half of the principle: **no foreign runtime (ADR-17)**. Never link the
 vendor's SDK, driver, or client library. A connector builds plain HTTP requests
 against the source's public REST API and parses JSON. If the source has *no* HTTP
-API and truly requires a wire protocol (raw Postgres, say), stop and raise it —
-that is a different design conversation, not a connector.
+API and truly requires a wire protocol, implement the protocol natively the way
+MySQL is (`include/zetta/connect/mysql_client.hpp`) — never reach for the
+vendor's client library without raising it first.
 
 ## The five non-negotiables
 

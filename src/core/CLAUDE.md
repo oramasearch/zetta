@@ -76,12 +76,15 @@ New capability = a new implementation of an existing interface: `StorageEngine`,
 (`FleetSource`, `IdentityHooks`, `NarratorCompletion`, `DatasetResolver`) keeps
 zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
 
-- Exactly two TUs name Corosio (via `zetta::runtime::net`):
-  `src/core/cluster/cluster.cpp` for listener/dialer traffic and
+- Exactly three TUs name Corosio (via `zetta::runtime::net`):
+  `src/core/cluster/cluster.cpp` for listener/dialer traffic,
   `src/core/api/native_http_transport.cpp` for outbound
   client traffic (the native coroutine HTTPS client behind
   `connect::HttpTransport`, #827; it lives in the `zetta-api` target because it
-  also needs Boost.HTTP, which zetta-core must never link). The shared TLS 1.3
+  also needs Boost.HTTP, which zetta-core must never link), and
+  `src/core/api/mysql_protocol.cpp` (also `zetta-api`) for the MySQL connector's
+  TCP/TLS driver (#895) — the MySQL protocol itself is the sans-I/O
+  `connect::MysqlClientSession` in zetta-core and names no socket. The shared TLS 1.3
   context and framed stream live outside zetta-core in `src/transport/` and the
   independent `zetta_transport` target (#1283).
   Within `src/core`, OpenSSL libcrypto is named by exactly two

@@ -2592,7 +2592,7 @@ const nlohmann::json& dataset_summary_schema() {
            {{"type", "string"},
             {"description",
              "what the rows were loaded from: csv, jsonl, json, parquet, a connector "
-             "type (postgres, snowflake) or rows; empty for a table not loaded from a "
+             "type (postgres, snowflake, mysql) or rows; empty for a table not loaded from a "
              "source (SQL, engine results)"}}},
           {"replication",
            {{"type", "string"},
@@ -9003,7 +9003,8 @@ const nlohmann::json& create_dataset_from_query_output_schema() {
 // A private-range address may still be a different machine across a VPN, and
 // that is a network reach worth naming.
 bool is_local_source(const zetta::connect::ConnectorConfig& config) {
-    if (config.type != "postgres") return false;  // warehouses are remote by construction
+    // warehouses are remote by construction
+    if (config.type != "postgres" && config.type != "mysql") return false;
     const std::string& host = config.host;
     if (host.empty()) return true;          // libpq default: the local socket
     if (host.front() == '/') return true;   // an explicit unix-socket directory
@@ -9133,11 +9134,15 @@ const nlohmann::json& list_source_tables_output_schema() {
 // A single-quoted SQL literal. The inputs here are caller-supplied filters that
 // go into a catalog query, so they are escaped rather than concatenated raw —
 // the connector's read-only guard stops a second statement, but it is not an
-// argument for building the first one carelessly.
-std::string sql_literal(const std::string& value) {
+// argument for building the first one carelessly. MySQL also treats a
+// backslash inside a literal as an escape (unless NO_BACKSLASH_ESCAPES), so for
+// it a backslash is doubled too — otherwise a trailing `\` would escape the
+// closing quote.
+std::string sql_literal(const std::string& value, bool backslash_escapes = false) {
     std::string out = "'";
     for (const char character : value) {
         if (character == '\'') out += '\'';
+        if (backslash_escapes && character == '\\') out += '\\';
         out += character;
     }
     out += "'";
@@ -9157,16 +9162,30 @@ ApiResult handle_list_source_tables(const nlohmann::json& input,
     const std::string only_schema = input.value("schema", std::string{});
     const std::string match = input.value("match", std::string{});
 
-    // information_schema is ISO SQL and both shipped connectors expose it, so
-    // one statement serves Postgres and Snowflake alike. The row cap is applied
-    // here rather than with LIMIT, which Snowflake and Postgres spell the same
-    // way but the read-only guard need not care about.
+    // information_schema is ISO SQL and every shipped connector exposes it, so
+    // one statement serves Postgres, Snowflake and MySQL alike. The row cap is
+    // applied here rather than with LIMIT, which they spell the same way but
+    // the read-only guard need not care about.
+    //
+    // MySQL differs in three places: 8.0 reports information_schema columns in
+    // upper case unless aliased (so every column is aliased to the lower-case
+    // name the reader below expects), its own catalog schemas are `mysql`,
+    // `performance_schema` and `sys`, and its literals take backslash escapes.
+    const bool is_mysql = config->type == "mysql";
+    const std::string excluded_schemas =
+        is_mysql ? "('information_schema', 'mysql', 'performance_schema', 'sys')"
+                 : "('pg_catalog', 'information_schema')";
+    const auto alias = [is_mysql](const char* column) {
+        return is_mysql ? std::string(column) + " AS " + (std::string(column).substr(2))
+                        : std::string(column);
+    };
     std::string statement =
-        "SELECT t.table_schema, t.table_name, t.table_type"
+        "SELECT " + alias("t.table_schema") + ", " + alias("t.table_name") + ", " +
+        alias("t.table_type") +
         " FROM information_schema.tables t"
-        " WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema')";
+        " WHERE t.table_schema NOT IN " + excluded_schemas;
     if (!only_schema.empty()) {
-        statement += " AND t.table_schema = " + sql_literal(only_schema);
+        statement += " AND t.table_schema = " + sql_literal(only_schema, is_mysql);
     }
     if (!match.empty()) {
         statement += " AND LOWER(t.table_name) LIKE " +
@@ -9177,7 +9196,7 @@ ApiResult handle_list_source_tables(const nlohmann::json& input,
                                           return static_cast<char>(std::tolower(c));
                                       });
                        return lowered;
-                     }() + "%");
+                     }() + "%", is_mysql);
     }
     statement += " ORDER BY t.table_schema, t.table_name";
 
@@ -9203,13 +9222,14 @@ ApiResult handle_list_source_tables(const nlohmann::json& input,
         // one round trip per table — a schema with 200 tables would otherwise be
         // 200 connections.
         std::string columns_statement =
-            "SELECT c.table_schema, c.table_name, c.column_name, c.data_type,"
-            " c.is_nullable, c.ordinal_position"
+            "SELECT " + alias("c.table_schema") + ", " + alias("c.table_name") + ", " +
+            alias("c.column_name") + ", " + alias("c.data_type") + "," + " " +
+            alias("c.is_nullable") + ", " + alias("c.ordinal_position") +
             " FROM information_schema.columns c"
-            " WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')";
+            " WHERE c.table_schema NOT IN " + excluded_schemas;
         if (!only_schema.empty()) {
             columns_statement +=
-                " AND c.table_schema = " + sql_literal(only_schema);
+                " AND c.table_schema = " + sql_literal(only_schema, is_mysql);
         }
         columns_statement += " ORDER BY c.table_schema, c.table_name, c.ordinal_position";
 
@@ -9339,7 +9359,7 @@ std::optional<zetta::governance::ConsentAction> describe_create_dataset_from_que
     // The source as a human reads it: "postgres 127.0.0.1:5433/motive",
     // "snowflake ab12345.us-east-1".
     std::string target = config->type;
-    if (config->type == "postgres") {
+    if (config->type == "postgres" || config->type == "mysql") {
         target += " " + (config->host.empty() ? std::string{"localhost"} : config->host);
         if (!config->port.empty()) target += ":" + config->port;
         if (!config->database.empty()) target += "/" + config->database;
@@ -13011,13 +13031,14 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "create_dataset_from_query",
         "Create a dataset from a connector query",
-        "Run a read-only query against an external source (Snowflake or "
-        "Postgres) and load its rows into a new partitioned table placed "
+        "Run a read-only query against an external source (Snowflake, "
+        "Postgres or MySQL) and load its rows into a new partitioned table placed "
         "across the cluster \u2014 the in-product path from a warehouse to a "
         "featurizable dataset, with no manual export. Only a single "
-        "SELECT/WITH may run. A remote source is reached over the network with "
-        "your credentials, so it is consent-gated when the node enforces "
-        "governance; a loopback Postgres touches no cloud and runs directly "
+        "SELECT/WITH may run (MySQL also admits SHOW). A remote source is reached "
+        "over the network with your credentials, so it is consent-gated when the "
+        "node enforces governance; a loopback Postgres or MySQL touches no cloud "
+        "and runs directly "
         "(audited as dataset_added; visible in system.datasets).",
         create_dataset_from_query_schema(),
         create_dataset_from_query_output_schema(),

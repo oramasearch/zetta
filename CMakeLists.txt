@@ -684,6 +684,7 @@ add_library(zetta-core STATIC
   src/core/util/private_directory.cpp
   src/core/util/uuid.cpp
   src/core/util/sha256.cpp
+  src/core/util/sha1.cpp
   src/core/util/timestamp.cpp
   src/core/pipeline/validation.cpp
   src/core/pipeline/gate.cpp
@@ -725,6 +726,7 @@ add_library(zetta-core STATIC
   src/core/connect/credential_seal.cpp
   src/core/connect/connector.cpp
   src/core/connect/postgres_runner.cpp
+  src/core/connect/mysql_client.cpp
   src/core/connect/distributed_fetch.cpp
   src/core/connect/distributed_ingest.cpp
   src/core/connect/snowflake_protocol.cpp
@@ -950,6 +952,8 @@ endif()
 add_library(zetta-api STATIC
   src/core/api/http_server.cpp
   src/core/api/native_http_transport.cpp
+  src/core/api/system_trust_store.cpp
+  src/core/api/mysql_protocol.cpp
   src/core/api/clerk_auth.cpp)
 target_compile_features(zetta-api PUBLIC cxx_std_26)
 target_link_libraries(zetta-api PUBLIC zetta-core)

@@ -398,8 +398,9 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
 
 - **Async/networking interfaces:** engine coroutine/IO goes through
   `zetta::runtime` (`include/zetta/runtime.hpp`); engine networking goes through
-  `zetta::runtime::net` in the cluster connection adapter and outbound HTTP
-  adapter. The independent `zetta_transport` target is the deliberate public
+  `zetta::runtime::net` in the cluster connection adapter, the outbound HTTP
+  adapter and the MySQL connector's TCP/TLS driver
+  (`src/core/api/mysql_protocol.cpp`, #895). The independent `zetta_transport` target is the deliberate public
   Corosio surface shared with zetta-tunnel: mutual TLS 1.3 context creation and
   framed streams (`include/zetta/transport/`, #1283). Do not name
   `boost::capy` / `boost::corosio` elsewhere. Extend the owning interface when
