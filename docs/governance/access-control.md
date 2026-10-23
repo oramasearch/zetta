@@ -338,6 +338,13 @@ otherwise an upgraded cluster's `admin` (seeded once into the replicated store)
 keeps denying the new right. Every role carrying a built-in name is repaired in
 place (CRDT multi-leader seeding can leave duplicates; all converge to canonical).
 
+Between starts the built-ins are **fixed** (#761): `GRANT`/`REVOKE` of a
+permission on `admin`, `writer` or `reader`, and `DROP ROLE` of one, are refused
+for every caller, an admin and the trusted local session included. Assigning and
+unassigning a built-in (`GRANT ROLE reader TO dana`) is not editing it and stays
+allowed, under the bound in [bounded role management](#bounded-role-management-761).
+A different permission set is a custom role.
+
 ### Bootstrap owner (closes #733)
 
 On node start, bootstrap runs when the **user store is empty**. It mints an
@@ -568,6 +575,43 @@ no rights and gains exactly the permissions granted — nothing more. The same
 operations exist programmatically on `Node` (`create_role`, `grant_permissions`,
 `revoke_permissions`, `drop_role`, `assign_role`, `unassign_role`).
 
+### Bounded role management (#761)
+
+`roles:manage` lets a caller run the role statements. It does **not** let the
+caller hand out more than it has: before [#761](https://github.com/oramasearch/zetta/issues/761)
+a delegate holding only `roles:manage` could run `GRANT ROLE admin TO <itself>`,
+so the permission quietly meant full admin. The executor now bounds every role
+statement by the caller's own rights:
+
+| Statement | Allowed only when |
+|---|---|
+| `GRANT <perms> TO ROLE r` | the caller holds every named permission as a flat right, **and** holds every right `r` already carries, **and** `r` is not built-in |
+| `GRANT <perms> ON <object> TO ROLE r` | the caller holds every named permission on the **whole** object (a flat right, or a grant covering it: a table needs the whole table, not some of its columns; a column list needs every column in it), and the same two conditions on `r` |
+| `REVOKE <perms> [ON <object>] FROM ROLE r` | the caller holds every right `r` carries, and `r` is not built-in |
+| `DROP ROLE r` | the caller holds every right `r` carries, and `r` is not built-in |
+| `GRANT ROLE r TO u`, `REVOKE ROLE r FROM u` | the caller holds every right `r` carries |
+| `CREATE ROLE r` | `roles:manage` alone (a new role carries nothing) |
+
+"Holds every right `r` carries" means each of `r`'s flat capabilities is one of
+the caller's flat rights, and each of its object-scoped grants is covered by the
+caller's own rights on that object. So:
+
+- **No escalation.** A caller grants only what it holds itself, so a role it
+  creates or edits, and so its own roles, never carry a right it lacks.
+- **Nothing above you.** A caller cannot assign, unassign, change or drop a role
+  that carries a right it lacks. A delegate can neither grant itself `admin` nor
+  take `admin` away from the owner (`REVOKE ROLE admin FROM owner`).
+- **Admin and owner.** `admin` carries every permission, so only a caller holding
+  all of them (an admin) may grant or remove it. The bootstrap `owner` is an
+  ordinary user holding `admin`; a delegate cannot touch that assignment.
+- **Built-ins are fixed**, for everyone (see [built-in roles](#built-in-roles)).
+
+Who is checked: a token-resolved user against its effective rights (the union
+across its roles, flat and object-scoped); a legacy `AccessKey` against its own
+flat capabilities; the trusted local session holds every right, so only the
+built-in rule binds it. A refusal is a `permission denied` error, recorded as a
+refused `data_changed` audit row like any other.
+
 ### Effective permissions = the union across roles
 
 A user's effective reach is the **union** of its assigned roles' capability sets —
@@ -640,15 +684,15 @@ read right.
 role-wide (flat), exactly as #746:
 
 ```sql
-GRANT sql:read  ON sales.customers            TO ROLE reader;   -- a whole table
-GRANT sql:read  ON sales.customers(id, email) TO ROLE reader;   -- a column set
-GRANT sql:read  ON sales.*                    TO ROLE reader;   -- a whole database
+GRANT sql:read  ON sales.customers            TO ROLE analyst;  -- a whole table
+GRANT sql:read  ON sales.customers(id, email) TO ROLE analyst;  -- a column set
+GRANT sql:read  ON sales.*                    TO ROLE analyst;  -- a whole database
 GRANT sql:write ON sales.customers(status)    TO ROLE editor;   -- writable columns
-GRANT mcp:call  ON TOOL search                TO ROLE reader;   -- one MCP tool
+GRANT mcp:call  ON TOOL search                TO ROLE analyst;  -- one MCP tool
 GRANT blob:read ON BLOB 2026/                 TO ROLE archivist;-- a blob prefix
 GRANT records:write ON COLLECTION lake_       TO ROLE lake;     -- a record collection prefix
 GRANT objects:write ON BUCKET lake_           TO ROLE lake;     -- an object bucket prefix
-REVOKE sql:read ON sales.customers(email)     FROM ROLE reader;
+REVOKE sql:read ON sales.customers(email)     FROM ROLE analyst;
 ```
 
 `ON DATABASE <db>` and `ON <db>.*` are equivalent; `TABLE` before `db.table` is
@@ -720,7 +764,7 @@ the executor before it touches anything:
 | `CREATE VIRTUAL TABLE` | `sql:ddl` | flat only: it is a global name over a replicated key family |
 | `CREATE USER` | `users:manage` | flat |
 | `CREATE TOKEN` | `tokens:manage` | flat — without it a caller could mint a token for the owner |
-| `CREATE/DROP ROLE`, `GRANT`/`REVOKE`, `CREATE/DROP POLICY` | `roles:manage` | flat (unchanged, #746) |
+| `CREATE/DROP ROLE`, `GRANT`/`REVOKE`, `CREATE/DROP POLICY` | `roles:manage` | flat (#746); the role statements are also bounded by the caller's own rights and never change a built-in ([#761](#bounded-role-management-761)) |
 
 A `WHERE` in `UPDATE` or `DELETE` over a column the caller may not read is
 refused, as for `SELECT` — the row count would otherwise reveal its values.

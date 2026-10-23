@@ -30,7 +30,9 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/virtual_table.hpp"
+#include "zetta/governance/grant.hpp"
 #include "zetta/governance/permission.hpp"
+#include "zetta/governance/role.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/ops.hpp"
@@ -2628,6 +2630,107 @@ QueryResult Executor::execute(const Statement& stmt,
         return std::nullopt;
     };
 
+    // ----- bounded role management (#761) ------------------------------------
+    // roles:manage lets a caller run the role statements; these decide WHAT it
+    // may do with them. A caller may only hand out rights it holds itself, may
+    // only change, assign, unassign or drop a role whose every right it holds,
+    // and nobody changes or drops a built-in role. So a delegate holding
+    // roles:manage cannot grant itself admin (or tokens:manage, or anything it
+    // lacks), cannot take admin away from the owner, and the built-ins keep the
+    // meaning every user relies on. The trusted local session holds every
+    // right, as it does for every other check.
+    //
+    // Does the acting identity hold `operation` as a flat right? A user is
+    // checked against its effective (role-union) rights, a legacy AccessKey
+    // against its own capabilities.
+    const auto holds_flat =
+        [&](const zetta::governance::Operation& operation) -> bool {
+        if (acting_key_.empty()) return true;
+        if (acting_is_user_) {
+            return static_cast<bool>(node_.authorize_user(acting_key_, operation));
+        }
+        return static_cast<bool>(node_.authorize(acting_key_, operation));
+    };
+    // Does it hold `operation` on the WHOLE of `object`? A flat right covers
+    // every object. A table needs the right on the whole table, not a few of
+    // its columns; a column set needs every column in it.
+    const auto holds_on = [&](const zetta::governance::Operation& operation,
+                              const zetta::governance::Resource& object) -> bool {
+        using zetta::governance::ResourceKind;
+        if (acting_key_.empty()) return true;
+        if (!acting_is_user_) return holds_flat(operation);  // no object tier
+        if (object.kind == ResourceKind::Table ||
+            (object.kind == ResourceKind::Column && object.columns.empty())) {
+            const zetta::governance::ColumnAccess access = node_.column_scope(
+                acting_key_, true, operation, object.database, object.name);
+            return access.table_allowed && access.all_columns;
+        }
+        if (object.kind == ResourceKind::Column) {
+            return std::ranges::all_of(object.columns, [&](const std::string& c) {
+                return node_.authorize_object(
+                    acting_key_, true, operation,
+                    zetta::governance::Resource::column(object.database,
+                                                        object.name, {c}));
+            });
+        }
+        return node_.authorize_object(acting_key_, true, operation, object);
+    };
+    // Does it hold every right `role` carries, flat and object-scoped?
+    const auto holds_role = [&](const zetta::governance::Role& role) -> bool {
+        const zetta::governance::RolePermissions& rights = role.permissions();
+        for (const zetta::governance::Capability& capability :
+             rights.capabilities.grants) {
+            if (!holds_flat(capability.right())) return false;
+        }
+        for (const zetta::governance::ScopedGrant& grant : rights.scoped_grants) {
+            if (!holds_on(grant.operation, grant.object)) return false;
+        }
+        return true;
+    };
+    // The refusal for a statement that would change or drop a built-in role.
+    const auto refuse_builtin_edit =
+        [&](const std::string& role_name) -> std::optional<QueryResult> {
+        const auto& builtins = zetta::governance::builtin_role_names();
+        if (std::ranges::find(builtins, role_name) == builtins.end()) {
+            return std::nullopt;
+        }
+        return deny("permission denied: \"" + role_name +
+                    "\" is a built-in role; its permissions are fixed and it "
+                    "cannot be changed or dropped (create a custom role "
+                    "instead)");
+    };
+    // The refusal for touching a role that carries a right the caller lacks.
+    // `verb` names the statement ("assign", "change", ...).
+    const auto refuse_role_above =
+        [&](const std::string& role_name,
+            std::string_view verb) -> std::optional<QueryResult> {
+        auto role = node_.find_role(role_name);
+        if (!role || holds_role(*role)) return std::nullopt;
+        return deny("permission denied: role \"" + role_name +
+                    "\" carries permissions you do not hold, so you cannot " +
+                    std::string(verb) + " it");
+    };
+    // The refusal for granting a permission the caller does not hold (on the
+    // object, for GRANT ... ON <object>).
+    const auto refuse_escalation =
+        [&](const std::vector<std::string>& permissions,
+            const std::optional<zetta::governance::Resource>& object)
+        -> std::optional<QueryResult> {
+        for (const std::string& name : permissions) {
+            for (const zetta::governance::Operation& operation :
+                 zetta::governance::permission_operations(name)) {
+                const bool held = object ? holds_on(operation, *object)
+                                         : holds_flat(operation);
+                if (!held) {
+                    return deny("permission denied: you cannot grant \"" + name +
+                                "\"" + (object ? " on that object" : "") +
+                                ", which you do not hold yourself");
+                }
+            }
+        }
+        return std::nullopt;
+    };
+
     QueryResult result = std::visit(
         overloaded{
             [&](const CreateDatabaseStmt& s) -> QueryResult {
@@ -3506,6 +3609,10 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto why = require_permission(kManageRoles)) {
                     return deny(*why);
                 }
+                if (auto refused = refuse_builtin_edit(s.name)) return *refused;
+                if (auto refused = refuse_role_above(s.name, "drop")) {
+                    return *refused;
+                }
                 if (!node_.drop_role(s.name)) {
                     return error("role \"" + s.name + "\" does not exist");
                 }
@@ -3518,6 +3625,19 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto bad = first_unknown_permission(s.permissions)) {
                     return error("unknown permission \"" + *bad +
                                  "\" — not in the permission vocabulary");
+                }
+                if (auto refused = refuse_builtin_edit(s.role)) return *refused;
+                if (auto refused = refuse_role_above(s.role, "change")) {
+                    return *refused;
+                }
+                // No escalation (#761): only a right the caller holds itself,
+                // on the whole of the object for GRANT ... ON <object>.
+                const bool role_wide = s.object.kind == GrantObjectKind::RoleWide;
+                if (auto refused = refuse_escalation(
+                        s.permissions,
+                        role_wide ? std::nullopt
+                                  : std::optional{resource_of_object(s.object)})) {
+                    return *refused;
                 }
                 // A bare GRANT adds flat rights; `ON <object>` (#747) adds
                 // object-scoped grants instead.
@@ -3538,6 +3658,10 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (auto bad = first_unknown_permission(s.permissions)) {
                     return error("unknown permission \"" + *bad +
                                  "\" — not in the permission vocabulary");
+                }
+                if (auto refused = refuse_builtin_edit(s.role)) return *refused;
+                if (auto refused = refuse_role_above(s.role, "change")) {
+                    return *refused;
                 }
                 const bool ok =
                     s.object.kind == GrantObjectKind::RoleWide
@@ -3561,6 +3685,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (!role) {
                     return error("role \"" + s.role + "\" does not exist");
                 }
+                if (auto refused = refuse_role_above(s.role, "assign")) {
+                    return *refused;
+                }
                 if (!node_.assign_role(user->id(), role->id())) {
                     return error("failed to assign role \"" + s.role +
                                  "\" to user \"" + s.user + "\"");
@@ -3578,6 +3705,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 auto role = node_.find_role(s.role);
                 if (!role) {
                     return error("role \"" + s.role + "\" does not exist");
+                }
+                if (auto refused = refuse_role_above(s.role, "unassign")) {
+                    return *refused;
                 }
                 if (!node_.unassign_role(user->id(), role->id())) {
                     return error("role \"" + s.role +

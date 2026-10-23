@@ -204,6 +204,9 @@ TEST_F(AuthzNode, Finding760_AggregateOverAMaskedColumnIsRefused) {
 }
 
 // ===== #761: roles:manage is unbounded ========================================
+// Fixed by bounded role management (src/core/query/executor.cpp): a caller may
+// grant only rights it holds, may assign, unassign, change or drop only a role
+// whose every right it holds, and nobody changes or drops a built-in role.
 
 TEST_F(AuthzNode, Finding761_RoleManagerCannotGrantWhatItDoesNotHold) {
     run_local("CREATE ROLE delegates;");
@@ -213,12 +216,13 @@ TEST_F(AuthzNode, Finding761_RoleManagerCannotGrantWhatItDoesNotHold) {
 
     const auto self_admin = as_dee.run("GRANT ROLE admin TO dee;", "");
     const auto widen = as_dee.run("GRANT tokens:manage TO ROLE delegates;", "");
-    const bool escalated =
-        node.authorize_user(dee, Operation{CapabilityDomain::Data, "write"}).allowed;
-    // The plain assertion, once fixed:
-    //   EXPECT_FALSE(self_admin.ok()); EXPECT_FALSE(widen.ok()); EXPECT_FALSE(escalated);
-    KNOWN_DEFECT(761, self_admin.ok() || widen.ok() || escalated,
-                 "a holder of only roles:manage granted itself admin / tokens:manage");
+    EXPECT_TRUE(refused(self_admin)) << self_admin.error;
+    EXPECT_TRUE(refused(widen)) << widen.error;
+    EXPECT_FALSE(
+        node.authorize_user(dee, Operation{CapabilityDomain::Data, "write"}).allowed);
+    EXPECT_FALSE(
+        node.authorize_user(dee, Operation{CapabilityDomain::Api, "manage_tokens"})
+            .allowed);
 }
 
 TEST_F(AuthzNode, Finding761_BuiltinRolesCannotBeEditedOrDropped) {
@@ -226,20 +230,14 @@ TEST_F(AuthzNode, Finding761_BuiltinRolesCannotBeEditedOrDropped) {
     QueryService as_boss = as(boss);
     const auto revoke = as_boss.run("REVOKE sql:read FROM ROLE reader;", "");
     const auto drop = as_boss.run("DROP ROLE writer;", "");
-    node.tick();  // a fix may reconcile the built-ins continuously instead
+    EXPECT_TRUE(refused(revoke)) << revoke.error;
+    EXPECT_TRUE(refused(drop)) << drop.error;
 
     const std::string now = "2026-10-20T00:00:00.000Z";
     auto reader = node.find_role("reader");
-    const bool reader_intact =
-        reader && reader->capabilities().permits({CapabilityDomain::Data, "read"}, now);
-    const bool writer_intact = static_cast<bool>(node.find_role("writer"));
-    // The plain assertion, once fixed:
-    //   EXPECT_TRUE(reader_intact); EXPECT_TRUE(writer_intact);
-    (void)revoke;
-    (void)drop;
-    KNOWN_DEFECT(761, !reader_intact || !writer_intact,
-                 "a built-in role was edited (REVOKE ... FROM ROLE reader) or "
-                 "dropped (DROP ROLE writer) and stayed changed");
+    ASSERT_TRUE(reader);
+    EXPECT_TRUE(reader->capabilities().permits({CapabilityDomain::Data, "read"}, now));
+    EXPECT_TRUE(node.find_role("writer"));
 }
 
 // ===== #762: authorization off by default; object controls skipped for =======

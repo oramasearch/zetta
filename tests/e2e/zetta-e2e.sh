@@ -788,7 +788,8 @@ if want_level 3; then
             else pass "/v1/specs lists only the caller's tools ($CODE) [#766]"; fi
         else fail "GRANT mcp:call ON TOOL refused: $(err_msg) [#747]"; fi
 
-        # #761 (open): a holder of ONLY roles:manage must not grant itself admin.
+        # #761 (fixed): a holder of roles:manage grants only what it holds, so it
+        # cannot grant itself admin.
         DUSER="e2e_delegate_${RUN}"
         sql_as "$ADMIN" "CREATE ROLE e2e_delegates_${RUN}" >/dev/null 2>&1
         sql_as "$ADMIN" "GRANT roles:manage, sql:read, mcp:call TO ROLE e2e_delegates_${RUN}" >/dev/null 2>&1
@@ -796,11 +797,14 @@ if want_level 3; then
         if [ -z "$DTOK" ]; then skip "could not mint the roles:manage delegate: $(err_msg) [#761]"
         elif ! sql_as "$DTOK" "SELECT id FROM $RTBL"; then fail "the roles:manage delegate cannot run SQL at all: $(err_msg) [#761]"
         elif sql_as "$DTOK" "GRANT ROLE admin TO $DUSER"; then
-            skip "a holder of only roles:manage granted itself admin [#761 open]"
-        else pass "a holder of only roles:manage cannot grant itself admin [#761]"; fi
+            fail "a holder of only roles:manage granted itself admin [#761]"
+        elif sql_as "$DTOK" "GRANT tokens:manage TO ROLE e2e_delegates_${RUN}"; then
+            fail "a holder of only roles:manage granted its own role tokens:manage [#761]"
+        else pass "a holder of only roles:manage cannot grant itself admin or a right it lacks [#761]"; fi
         # Editing or dropping a built-in role is asserted in-process only: on a
-        # target it would change that role for every user of the node.
-        skip "built-in roles can be edited or dropped — asserted in-process only (it would change the target's roles) [#761 open]"
+        # target running an older build it would change that role for every
+        # user of the node.
+        skip "built-in roles cannot be edited or dropped — asserted in-process only (on an older target it would change the target's roles) [#761]"
 
         # #766 (open): the governance catalog is readable by any authenticated user.
         _seen=""
