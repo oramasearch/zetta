@@ -437,7 +437,9 @@ public:
         auto exchange = std::make_shared<Exchange>();
         exchange->request = std::move(request);
         boost::capy::run_async(io_context_.get_executor())(perform(exchange));
-        [[maybe_unused]] const auto waited = co_await exchange->finished.wait();
+        const auto [wait_error] = co_await exchange->finished.wait();
+        // Cancellation must not read a response the I/O coroutine still owns.
+        if (wait_error) co_return {wait_error, connect::HttpResponse{}};
         co_return {{}, std::move(exchange->response)};
     }
 

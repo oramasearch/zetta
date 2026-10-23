@@ -37,6 +37,12 @@ lens on a cluster that is primarily driven programmatically
   field, so what they *meant* is recorded alongside what was invoked, and the
   trace + activity feed let them audit their agent afterwards.
 
+With optional Clerk authentication configured, an issuer outage leaves native
+token sign-in responsive (#1416). Existing Clerk keys can verify sessions for
+up to 60 minutes after their last successful fetch; once that limit is reached,
+Clerk requests return 401 until keys can be refreshed. The [authentication contract](../../governance/access-control.md#clerk-key-caching-1416)
+describes the cache and rotation limits.
+
 ## Principles
 
 - Structure: the view registry, the widget grammar, one status language,

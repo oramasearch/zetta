@@ -229,6 +229,24 @@ TEST_F(NativeHttpTransportFixture, TheTimeoutBoundsASilentTlsHandshake) {
         << response.error;
 }
 
+// A cancelled JWKS waiter must leave the response owned by the I/O coroutine.
+TEST_F(NativeHttpTransportFixture, CancelledWaitReturnsNoPartiallyWrittenResponse) {
+    SilentListener listener;
+    ASSERT_GT(listener.port, 0);
+    zetta::connect::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(listener.port) + "/jwks";
+    request.timeout_seconds = 1;
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    auto [error, response] = zetta::runtime::block_on(zetta::runtime::with_stop_token(
+        zetta::connect::default_async_http_transport()(request),
+        cancellation.get_token()));
+    EXPECT_TRUE(error);
+    EXPECT_EQ(response.status, 0);
+    EXPECT_TRUE(response.body.empty());
+    EXPECT_TRUE(response.error.empty());
+}
+
 // lake#801: the timeout bounds the TCP connect too. A non-routable address
 // models a default-deny egress policy that drops the SYN: without the bound the
 // connect waits out the kernel's SYN retries (about 130 s on Linux). Where the

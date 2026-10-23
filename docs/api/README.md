@@ -76,6 +76,13 @@ tool's `outputSchema`); inbound `traceparent` is honored. The handlers marshal
 onto the owning loop (headless tick / headed frame) via the bridge — the loops
 drain it beside `Node::tick()`.
 
+With `--clerk-issuer` configured, the same gate also verifies Clerk JWTs from
+bearers or the session cookie (#889, #1416). Key retrieval suspends the request;
+concurrent misses share one fetch, failed fetches are cached for five seconds,
+and each fetch/wait has a two-second deadline. Native tokens remain usable during
+an issuer outage. See [Clerk key caching](../governance/access-control.md#clerk-key-caching-1416)
+for rotation and stale-key limits. No issuer means no Clerk network requests.
+
 The same server serves the registry as **plain REST** (#618,
 [rest-openapi.md](rest-openapi.md)): reads are `GET /v1/<name>` (query-string
 input), actions/jobs are `POST /v1/<name>` (JSON body), same bearer → same

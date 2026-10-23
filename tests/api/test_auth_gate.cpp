@@ -23,6 +23,8 @@
 
 #include "temp_dir.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/api/clerk_auth.hpp"
+#include "zetta/connect/http_transport.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/token.hpp"
 #include "zetta/governance/user.hpp"
@@ -257,6 +259,78 @@ TEST(AuthGateAlwaysOn, NoUnauthenticatedLocalHttpMode) {
 
     server.stop();
     node.stop();
+}
+
+// A cold Clerk fetch must suspend the gate so the same HTTP executor can serve
+// native tokens. Both transport shapes are installed to catch a sync regression.
+TEST(AuthGateClerk, AnIssuerOutageLeavesNativeAuthenticationResponsive) {
+    zetta::test::TempDir dir;
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    ASSERT_TRUE(node.start());
+    ASSERT_TRUE(node.bootstrap_owner("clerk-outage-owner").performed);
+    zetta::api::ServerOptions options;
+    options.port = 0;
+    options.clerk_issuer = "https://clerk.example.dev";
+    zetta::api::ApiServer server(node, nullptr, options);
+    ASSERT_TRUE(server.start()) << server.reason();
+    zetta::api::clear_clerk_jwks_cache();
+    std::atomic<bool> fetching{false};
+    zetta::runtime::async_event release;
+    zetta::connect::set_default_http_transport(
+        [&](const auto&) {
+            fetching = true;
+            [[maybe_unused]] const auto waited = zetta::runtime::block_on(release.wait());
+            return zetta::connect::HttpResponse{503, {}, {}};
+        },
+        [&](const auto&) -> zetta::runtime::io_task<zetta::connect::HttpResponse> {
+            fetching = true;
+            const auto [error] = co_await release.wait();
+            co_return {error, zetta::connect::HttpResponse{503, {}, {}}};
+        });
+    // Correct issuer/algorithm, arbitrary signature: no trusted identity is
+    // needed to reach the key fetch.
+    const std::string jwt =
+        "eyJhbGciOiJSUzI1NiIsImtpZCI6InVua25vd24ifQ."
+        "eyJpc3MiOiJodHRwczovL2NsZXJrLmV4YW1wbGUuZGV2Iiwic3ViIjoidXNlciJ9.AA";
+    HttpResponse clerk_response, native_response;
+    std::atomic<bool> clerk_done{false}, native_done{false};
+    std::thread clerk_client([&] {
+        clerk_response = http_request(server.port(), "GET", "/v1/server_info", {}, jwt);
+        clerk_done = true;
+    });
+    const auto fetch_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!fetching && std::chrono::steady_clock::now() < fetch_deadline) {
+        server.drain();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_TRUE(fetching);
+    std::thread native_client([&] {
+        native_response = http_request(server.port(), "GET", "/v1/server_info", {},
+                                       "clerk-outage-owner");
+        native_done = true;
+    });
+    const auto native_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!native_done && std::chrono::steady_clock::now() < native_deadline) {
+        server.drain();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_TRUE(native_done) << "native authentication waited for the Clerk fetch";
+    EXPECT_FALSE(clerk_done);
+    release.set();
+    const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while ((!clerk_done || !native_done) &&
+           std::chrono::steady_clock::now() < completion_deadline) {
+        server.drain();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    clerk_client.join();
+    native_client.join();
+    EXPECT_EQ(clerk_response.status, 401);
+    EXPECT_EQ(native_response.status, 200);
+    server.stop();
+    node.stop();
+    zetta::connect::set_default_http_transport({}, {});
+    zetta::api::clear_clerk_jwks_cache();
 }
 
 }  // namespace
