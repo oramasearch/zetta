@@ -11,6 +11,8 @@
 
 #include "zetta/node.hpp"
 
+#include "unique_descriptor.hpp"
+
 // The import root (#1391, #1433): see include/zetta/data/import_path.hpp for the
 // rules. The walk opens each component relative to the descriptor of the one before
 // it with O_NOFOLLOW, so a symbolic link anywhere on the way is refused by the kernel
@@ -20,33 +22,6 @@ namespace zetta::data {
 namespace {
 
 namespace fs = std::filesystem;
-
-// Owns one file descriptor; closes it when replaced or destroyed.
-class Descriptor {
-public:
-    explicit Descriptor(int value = -1) : value_(value) {}
-    Descriptor(const Descriptor&) = delete;
-    Descriptor& operator=(const Descriptor&) = delete;
-    Descriptor(Descriptor&& other) noexcept : value_(std::exchange(other.value_, -1)) {}
-    Descriptor& operator=(Descriptor&& other) noexcept {
-        if (this != &other) {
-            reset();
-            value_ = std::exchange(other.value_, -1);
-        }
-        return *this;
-    }
-    ~Descriptor() { reset(); }
-
-    int get() const { return value_; }
-    bool valid() const { return value_ >= 0; }
-
-private:
-    void reset() {
-        if (value_ >= 0) ::close(value_);
-        value_ = -1;
-    }
-    int value_;
-};
 
 ImportPathResult refuse(std::string reason) {
     ImportPathResult result;
@@ -62,6 +37,47 @@ constexpr std::string_view kWhere = "the node's import directory (imports/ under
 
 }  // namespace
 
+std::vector<std::string> caller_path_components(std::string_view requested,
+                                                std::string_view where, std::string& error) {
+    const std::string where_text(where);
+    const auto fail = [&error](std::string reason) {
+        error = std::move(reason);
+        return std::vector<std::string>{};
+    };
+    if (requested.empty()) return fail("a path is required, relative to " + where_text);
+    if (requested.find('\0') != std::string_view::npos) {
+        return fail("the path contains a NUL byte");
+    }
+    if (requested.find('\\') != std::string_view::npos) {
+        return fail(quoted(requested) + ": a backslash is not allowed in a path under " +
+                    where_text);
+    }
+    if (requested.starts_with("~")) {
+        return fail(quoted(requested) + ": '~' is not expanded; name the path relative to " +
+                    where_text);
+    }
+    const fs::path given(requested);
+    if (given.is_absolute() || given.has_root_directory() || given.has_root_name()) {
+        return fail(quoted(requested) + ": an absolute path is not allowed; name it relative to " +
+                    where_text);
+    }
+    std::vector<std::string> components;
+    for (const fs::path& component : given) {
+        const std::string name = component.string();
+        if (name == "..") {
+            return fail(quoted(requested) + ": '..' is not allowed; the path must stay under " +
+                        where_text);
+        }
+        if (name.empty() || name == ".") continue;
+        components.push_back(name);
+    }
+    if (components.empty()) {
+        return fail(quoted(requested) + ": names " + where_text + " itself, not an entry in it");
+    }
+    error.clear();
+    return components;
+}
+
 fs::path import_root(const Node& node) {
     return fs::path(node.config().data_dir) / "imports";
 }
@@ -70,40 +86,14 @@ ImportPathResult resolve_import_path(const fs::path& root, std::string_view requ
                                      ImportEntry expected) {
     // --- lexical checks: nothing below touches the filesystem until these pass, so a
     // path outside the root is refused the same way whether or not it exists.
-    if (requested.empty()) return refuse("a path is required, relative to " + std::string(kWhere));
-    if (requested.find('\0') != std::string_view::npos) {
-        return refuse("the path contains a NUL byte");
-    }
-    if (requested.find('\\') != std::string_view::npos) {
-        return refuse(quoted(requested) + ": a backslash is not allowed in a path under " +
-                      std::string(kWhere));
-    }
-    if (requested.starts_with("~")) {
-        return refuse(quoted(requested) + ": '~' is not expanded; name the path relative to " +
-                      std::string(kWhere));
-    }
-    const fs::path given(requested);
-    if (given.is_absolute() || given.has_root_directory() || given.has_root_name()) {
-        return refuse(quoted(requested) + ": an absolute path is not allowed; name it relative to " +
-                      std::string(kWhere));
-    }
-    std::vector<std::string> components;
-    for (const fs::path& component : given) {
-        const std::string name = component.string();
-        if (name == "..") {
-            return refuse(quoted(requested) + ": '..' is not allowed; the path must stay under " +
-                          std::string(kWhere));
-        }
-        if (name.empty() || name == ".") continue;
-        components.push_back(name);
-    }
-    if (components.empty()) {
-        return refuse(quoted(requested) + ": names the import directory itself, not an entry in it");
-    }
+    std::string lexical_error;
+    const std::vector<std::string> components =
+        caller_path_components(requested, kWhere, lexical_error);
+    if (components.empty()) return refuse(std::move(lexical_error));
 
     // --- the walk. The root itself may sit behind a link (a mounted volume, macOS's
     // /var -> /private/var); everything below it may not.
-    Descriptor directory(::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    detail::UniqueDescriptor directory(::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (!directory.valid()) {
         return refuse(quoted(requested) + ": nothing is staged on this node; " +
                       std::string(kWhere) + " does not exist");
@@ -116,7 +106,7 @@ ImportPathResult resolve_import_path(const fs::path& root, std::string_view requ
         } else {
             flags |= O_NONBLOCK;  // a FIFO must not block the open; its type is refused below
         }
-        Descriptor next(::openat(directory.get(), components[index].c_str(), flags));
+        detail::UniqueDescriptor next(::openat(directory.get(), components[index].c_str(), flags));
         if (!next.valid()) {
             const int error = errno;
             // macOS answers O_DIRECTORY | O_NOFOLLOW on a link with ENOTDIR, Linux

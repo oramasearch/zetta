@@ -129,8 +129,10 @@ functionality lands with its testkit case, and both land observable.
    `observability::build_feedback_bundle`, validated against its own schema
    (`schemas/feedback_bundle.schema.json`), and stored as a large object in
    the `feedback` database (replicated metadata, peer-transferred body). The
-   optional `export_path` input writes the bundle to a caller-chosen local
-   path — the explicit export; nothing leaves the cluster on its own.
+   optional `export_path` input also writes the bundle to a new file under
+   the node's export directory (`<data_dir>/exports`, never an existing file,
+   never through a link; [../data/export-root.md](../data/export-root.md),
+   #1399) — the explicit export; nothing leaves the cluster on its own.
 
 Related: [../api/registry-design.md](../api/registry-design.md) (trace
 threading through every call), [../testing/mcp-journeys.md](../testing/mcp-journeys.md)

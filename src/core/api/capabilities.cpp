@@ -38,6 +38,7 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/data/export_path.hpp"
 #include "zetta/data/import_path.hpp"
 #include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/table.hpp"
@@ -4721,9 +4722,12 @@ const nlohmann::json& submit_feedback_schema() {
                             "recent traces on this node)"}}},
           {"export_path",
            {{"type", "string"},
+            {"minLength", 1},
             {"description",
-             "local file path to ALSO write the bundle to — the explicit "
-             "user export; nothing leaves the cluster on its own "
+             "ALSO write the bundle to a new file on the node, named "
+             "relative to its export directory (exports/ under the data "
+             "directory); no absolute path, no '..', no symbolic link, and "
+             "never an existing file. Nothing leaves the cluster on its own "
              "(optional)"}}}}}};
     return schema;
 }
@@ -4748,7 +4752,8 @@ const nlohmann::json& submit_feedback_output_schema() {
            {{"type", "string"},
             {"description",
              "present only when export_path was given and the export "
-             "succeeded"}}}}}};
+             "succeeded: the written file, relative to the node's export "
+             "directory"}}}}}};
     return schema;
 }
 
@@ -4804,16 +4809,20 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
 
     // The explicit export (and the ONLY way bytes leave the store): the user
     // asked for a copy at a path of their choosing.
+    // It goes only under the node's export directory, never over an existing
+    // file and never through a link (#1399).
     if (const auto export_path = input.find("export_path");
         export_path != input.end()) {
-        const std::string destination = export_path->get<std::string>();
-        if (!database->large_objects().export_file(stored->id, destination)) {
+        const zetta::data::ExportResult written = zetta::data::write_export_file(
+            context.node, export_path->get<std::string>(), bundle->dump(2));
+        if (!written.ok()) {
             return ApiResult::failure(
-                "engine_error",
+                "invalid_input",
                 "submit_feedback: bundle stored as " + stored->id +
-                    " but the export to '" + destination + "' failed");
+                    " but not exported: " + written.error,
+                "/export_path");
         }
-        output["exported_to"] = destination;
+        output["exported_to"] = written.relative;
     }
     return ApiResult::success(std::move(output));
 }
@@ -11358,7 +11367,11 @@ const nlohmann::json& generate_dataset_schema() {
            {{"type", "number"}, {"minimum", 0}, {"maximum", 1}, {"description", "canary fraction"}}},
           {"path",
            {{"type", "string"},
-            {"description", "write the gated JSONL corpus to this file on the node (optional)"}}}}}};
+            {"minLength", 1},
+            {"description",
+             "also write the gated JSONL corpus to a new file on the node, named relative to its "
+             "export directory (exports/ under the data directory); no absolute path, no '..', "
+             "no symbolic link, and never an existing file (optional)"}}}}}};
     return schema;
 }
 
@@ -11371,11 +11384,13 @@ const nlohmann::json& generate_dataset_output_schema() {
           {"subjects", {{"type", "array"}, {"items", {{"type", "string"}}}}},
           {"held_out", {{"type", "integer"}}},
           {"admitted", {{"type", "boolean"}}},
-          {"path", {{"type", "string"}}}}}};
+          {"path",
+           {{"type", "string"},
+            {"description", "the written file, relative to the node's export directory"}}}}}};
     return schema;
 }
 
-ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
+ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext& context) {
     const std::string kind = input.at("kind").get<std::string>();
     const std::shared_ptr<const zetta::dataset::DatasetGenerator> generator =
         zetta::dataset::DatasetGeneratorFactory::builtin().create(kind);
@@ -11410,14 +11425,15 @@ ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
         output["gate_failure"] = std::string(zetta::agent::to_string(gate.failures.front().kind)) +
                                  " (task '" + gate.failures.front().task_id + "')";
     }
+    // The corpus file goes only under the node's export directory, never over an
+    // existing file and never through a link (#1397).
     if (const auto path = input.find("path"); path != input.end()) {
-        std::ofstream file(path->get<std::string>());
-        if (!file) {
-            return ApiResult::failure(
-                "engine_error", "could not open '" + path->get<std::string>() + "' for writing");
+        const zetta::data::ExportResult written = zetta::data::write_export_file(
+            context.node, path->get<std::string>(), zetta::agent::dump_corpus_jsonl(dataset.cases));
+        if (!written.ok()) {
+            return ApiResult::failure("invalid_input", "/path: " + written.error, "/path");
         }
-        file << zetta::agent::dump_corpus_jsonl(dataset.cases);
-        output["path"] = *path;
+        output["path"] = written.relative;
     }
     return ApiResult::success(std::move(output));
 }

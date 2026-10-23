@@ -33,6 +33,7 @@
 #include "zetta/ml/study.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/export_path.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_controller.hpp"
@@ -2252,8 +2253,8 @@ TEST_F(RegistryFixture, SubmitFeedbackSnapshotsABundle) {
     auto failed = call("sql", nlohmann::json{{"statement", "SELCT nope;"}});
     EXPECT_FALSE(failed.ok);
 
-    const std::string export_path =
-        (dir.path() / "bundle-export.json").string();
+    // Named relative to the node's export directory (#1399).
+    const std::string export_path = "bundle-export.json";
     auto submitted = call(
         "submit_feedback",
         nlohmann::json{{"description", "the run did something odd"},
@@ -2268,7 +2269,7 @@ TEST_F(RegistryFixture, SubmitFeedbackSnapshotsABundle) {
 
     // The exported file IS the bundle: valid against its schema, carrying the
     // description verbatim, the attached trace, and the recent error span.
-    std::ifstream exported(export_path);
+    std::ifstream exported(zetta::data::export_root(node) / export_path);
     ASSERT_TRUE(exported.good());
     const nlohmann::json bundle =
         nlohmann::json::parse(exported, nullptr, /*allow_exceptions=*/false);
