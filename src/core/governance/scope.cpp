@@ -90,6 +90,17 @@ bool starts_with(std::string_view text, std::string_view prefix) {
     return text.size() >= prefix.size() &&
            text.compare(0, prefix.size(), prefix) == 0;
 }
+// A blob grant covers its own id and everything below it as a path (#767):
+// the target equals the grant, or continues the grant at a `/` segment
+// boundary. `report` covers `report` and `report/q1.pdf`, never
+// `report-secret-2026`; a grant already ending in `/` (`2026/`) covers every id
+// under it. An empty grant covers nothing (a flat `blob:read` is how every blob
+// is granted).
+bool blob_path_covers(std::string_view granted, std::string_view target) {
+    if (granted.empty() || !starts_with(target, granted)) return false;
+    if (target.size() == granted.size()) return true;
+    return granted.back() == '/' || target[granted.size()] == '/';
+}
 bool contains_column(const std::vector<std::string>& set, const std::string& col) {
     for (const std::string& c : set) {
         if (c == col) return true;
@@ -101,9 +112,10 @@ bool contains_column(const std::vector<std::string>& set, const std::string& col
 bool object_covers(const Resource& granted, const Resource& target) {
     switch (target.kind) {
         case ResourceKind::Blob:
-            // A blob grant is a PREFIX: it covers every id that starts with it.
+            // A blob grant is a PATH prefix: it covers its id and the ids under
+            // it, matched on a `/` segment boundary, never a bare text prefix (#767).
             return granted.kind == ResourceKind::Blob &&
-                   starts_with(target.name, granted.name);
+                   blob_path_covers(granted.name, target.name);
         case ResourceKind::Tool:
             return granted.kind == ResourceKind::Tool &&
                    granted.name == target.name;

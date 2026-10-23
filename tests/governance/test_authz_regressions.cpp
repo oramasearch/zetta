@@ -314,6 +314,7 @@ TEST_F(AuthzNode, Finding766_AReaderCannotReadTheGovernanceCatalog) {
 }
 
 // ===== #767: blob grants matched by text prefix, not path =====================
+// Fixed by PR #1312: a blob grant covers the id and its `/`-segment children.
 
 TEST_F(AuthzNode, Finding767_ABlobGrantStopsAtAPathBoundary) {
     node.create_role("reports");
@@ -322,10 +323,8 @@ TEST_F(AuthzNode, Finding767_ABlobGrantStopsAtAPathBoundary) {
     const std::string bella = user_with_roles(node, "bella", {"reports"});
     EXPECT_TRUE(node.authorize_blob(bella, true, "report"));
     EXPECT_TRUE(node.authorize_blob(bella, true, "report/q1.pdf"));
-    const bool sibling = node.authorize_blob(bella, true, "report-secret-2026");
-    // The plain assertion, once fixed: EXPECT_FALSE(sibling).
-    KNOWN_DEFECT(767, sibling,
-                 "a blob:read grant on \"report\" admitted \"report-secret-2026\"");
+    EXPECT_FALSE(node.authorize_blob(bella, true, "report-secret-2026"))
+        << "a blob:read grant on \"report\" admitted \"report-secret-2026\"";
 }
 
 // ===== #768: orchestration could not be granted once auth was enforced ========

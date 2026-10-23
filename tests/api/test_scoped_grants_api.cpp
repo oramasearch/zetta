@@ -168,6 +168,17 @@ TEST_F(ScopedApiFixture, ServeBlobEnforcesPrefixGrant) {
     auto refused = zetta::api::serve_blob(node, bad_request);
     EXPECT_FALSE(refused.ok);
     EXPECT_EQ(refused.error.code, "unauthorized");
+
+    // A grant on this exact id is not a text prefix of longer ids (#767): an id
+    // that merely starts with the granted one is refused before any lookup.
+    ServeRequest sibling_request;
+    sibling_request.target = blob_id + "-secret-2026";
+    sibling_request.acting_key = user->id();
+    sibling_request.acting_is_user = true;
+    sibling_request.trace = trace;
+    auto sibling = zetta::api::serve_blob(node, sibling_request);
+    EXPECT_FALSE(sibling.ok);
+    EXPECT_EQ(sibling.error.code, "unauthorized");
 }
 
 }  // namespace
