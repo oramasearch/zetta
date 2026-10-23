@@ -703,9 +703,9 @@ std::string signal_line(const Signal& signal) {
 // The line protocol runs over `stream` — the raw socket when the cluster is
 // plaintext, or the TLS layer when security is on (`tls` then owns the session
 // and wraps `socket` in reference mode). `socket` stays directly reachable so
-// the keepalive can force-close the connection under either transport; the
-// TLS session supports one in-flight read + one in-flight write, which is
-// exactly the read-pump + link-writer pattern.
+// the keepalive can force-close the connection under either transport. Both
+// transports are full duplex for one in-flight read + one in-flight write,
+// which is exactly the read-pump + link-writer pattern (#835).
 // Dispatch one received signal. `peer_node_id` is the sender. A Request is
 // answered by the registered handler and its Response queued back to the sender;
 // a Response wakes the waiting RPC; an Event/Task is delivered to the handler.
@@ -919,9 +919,9 @@ constexpr std::chrono::milliseconds kSyncResendAfter{10000};
 // Per-link output pump: flush this peer's queued signals every tick, push the
 // changes this peer lacks + our status (or a PING keepalive) and request missing
 // large-object bodies every ~0.5s, and drop the link if the peer goes silent —
-// until the connection dies. FramedStream preserves full-duplex plaintext and
-// serializes access to the TLS engine (#786). Always spawned (the signal plane
-// is always available), even with no replication/blobs.
+// until the connection dies. FramedStream is full duplex over plaintext and
+// TLS alike, so this writer never waits on the read pump (#786, #835). Always
+// spawned (the signal plane is always available), even with no replication/blobs.
 capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
                          std::string peer_node_id) {
     using namespace std::chrono_literals;
@@ -1204,7 +1204,7 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // Read pump: merge gossiped state, record peer status, serve/receive
     // large-object bodies, dispatch signals, until disconnect (or the writer's
     // keepalive closes the socket, which surfaces here as a read error).
-    // FramedStream owns buffering and TLS read/write serialization.
+    // FramedStream owns buffering; reads never hold back the writer (#835).
     for (;;) {
         std::optional<std::string> line = co_await link->stream->read_frame();
         if (!line) break;  // peer disconnected / link timed out

@@ -839,6 +839,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   util/test_private_directory.cpp permissions before writing, failed-publication cleanup and filename validation (#1413)
   cluster/test_cluster_setup.cpp TLS/HELLO setup deadline, shared admission cap, slot recovery, and accept recovery after subprocess-local descriptor exhaustion (#1401)
   transport/test_security.cpp reusable credential-file loading, valid context creation, and malformed/mismatched PEM refusal (#1283)
+  transport/test_framed_stream.cpp FramedStream over mutual TLS stays full duplex: both peers writing frames larger than the socket buffers at once, and gossip-sized frames both ways, all delivered intact and in order (#835)
   memory/README.md          navigation for memory-accounting registry and node-log tests
   memory/test_accounting.cpp probe aggregation, fixture explanation ratio, unattributed accounting, unregister, and periodic log formatting (#1163)
   ml/test_entity_resolution.cpp  M-2 blocking, scoring, conflict-safe clustering, metric, and threshold tests (#1041/#1072)
