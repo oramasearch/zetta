@@ -200,6 +200,12 @@ struct ClusterConfig {
     // "plaintext" default is reached only by embedding a bare Cluster in a
     // test/host. See docs/cluster/security.md.
     ClusterSecurity security;
+    // One deadline across TLS and both HELLO directions, accepted or dialed
+    // (#1401). Progress does not extend it; nonpositive values clamp to 1 ms.
+    std::chrono::milliseconds peer_setup_timeout{5000};
+    // Concurrent TLS/HELLO setups on accepted connections. Excess accepts are
+    // closed before TLS allocation; dials are not counted; zero clamps to one.
+    std::size_t maximum_pending_setups = 64;
 };
 
 // Replication gossip this node has sent since start() (#794), summed over every

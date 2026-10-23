@@ -178,6 +178,22 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   false and the zetta binary **exits non-zero** rather than run without its
   advertised address — never a silent drift
   ([#738](https://github.com/oramasearch/zetta/issues/738)).
+- **Peer setup is bounded** (#1401). Accepted and dialed sockets share one
+  `ClusterConfig::peer_setup_timeout` deadline (default **5 seconds**) across
+  mutual TLS and both HELLO directions, including writes. Partial TLS or HELLO
+  traffic never extends it. Expiry cancels the pending I/O and closes the socket
+  before membership is recorded. Embedded plaintext clusters use the same rule.
+  At most `maximum_pending_setups` (**64** by default) accepted links may be in
+  setup at once; excess accepts close before allocating TLS state. Dials are not
+  counted, so an inbound flood cannot block this node's own reconnects.
+  A slot is released on every failure and as soon as HELLO validation succeeds,
+  so established links do not consume setup capacity. Nonpositive deadlines clamp
+  to 1 ms and a zero capacity clamps to one; neither disables the protection.
+  Transient accept failures, including descriptor or memory exhaustion, retry
+  after **100 ms**; cancellation, a closed listener, or an invalid listener ends
+  the loop. Setup failures, capacity refusals and retries appear with
+  `--log-cluster`. No wire or on-disk format changes; peers must finish setup
+  within the configured deadline.
 - **Symmetric handshake** (line protocol): each side sends
   `ZETTA/1 HELLO <node-id> <endpoint[,endpoint,…]|-> [wan|dial-out] [audit-protocol]` and records
   the other; the dialer speaks first, the acceptor replies. The trailing

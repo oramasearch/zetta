@@ -23,3 +23,11 @@ peer, and converges a four-node mesh with stale clocks and partial views without
 leaving a gap (#794). `test_gossip_bandwidth.cpp` checks that steady-state rounds
 over mutual TLS ship deltas, and holds the `ZETTA_GOSSIP_BENCH=1` measurement of
 bytes per round and convergence time.
+
+`test_cluster_setup.cpp` covers the shared TLS/HELLO deadline, partial-frame
+progress, outbound setup, pending-setup refusal and slot recovery, dials that
+an inbound flood cannot block, and continued
+acceptance after descriptor exhaustion (#1401). The descriptor-limit case runs in
+an isolated subprocess, observes an actual accept error, releases its temporary
+files and proves a healthy peer joins. Completed setup remains connected after
+its former deadline.

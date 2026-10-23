@@ -120,6 +120,10 @@ struct Cluster::State {
     std::size_t audit_message_bytes = 0;
     std::string audit_status;
     std::chrono::steady_clock::duration idle_timeout{};
+    std::chrono::milliseconds setup_timeout{5000};
+    std::size_t maximum_pending_setups = 64;
+    std::size_t pending_setups = 0;  // network thread only, accepted links
+
     std::chrono::steady_clock::duration reconnect_interval{};
     // How long a peer stays in the membership view after its live link drops
     // (hysteresis, #739). Zero drops it immediately.
@@ -1024,62 +1028,73 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
     }
 }
 
-// Run the symmetric handshake over an established connection and stay joined
-// until the connection drops. `initiate` controls who speaks first (the dialer
-// sends HELLO first; the acceptor replies) — the recorded result is identical
-// either way. With security on, the mutual-TLS handshake runs FIRST: no
-// protocol byte crosses the wire before both sides have proven a certificate
-// chained to the token-derived cluster CA, so an unenrolled dialer (or a
-// plaintext one) is dropped here and never reaches HELLO.
-// `my_endpoints` is the candidate set we advertise in our HELLO. `dialed_endpoint`
-// is the address we connected to when we dialed (empty when we accepted) — the
-// endpoint we reached this peer on, recorded as its per-observer path. `seed_key`
-// is the original seed string this dial came from (empty for accepts / non-seed
-// dials), used to dedup redials by the node id it resolves to (#739).
+// A slot is reserved before spawning an accepted setup and released on every
+// failure or immediately after setup succeeds. Dials are bounded by our own
+// seeds and peers, so they take none: an inbound flood cannot block reconnects.
+// Only the network thread uses it.
+struct PendingSetup {
+    explicit PendingSetup(Cluster::State& cluster_state) : state(cluster_state) {
+        ++state.pending_setups;
+    }
+    ~PendingSetup() { --state.pending_setups; }
+    Cluster::State& state;
+};
+
+std::unique_ptr<PendingSetup> reserve_setup(Cluster::State& state) {
+    if (state.pending_setups >= state.maximum_pending_setups) return {};
+    return std::make_unique<PendingSetup>(state);
+}
+
+// One cancellable operation covers TLS plus both HELLO directions, including
+// writes. Progress never restarts the setup clock (#1401).
+capy::io_task<std::optional<std::string>> exchange_hello(
+    Cluster::State* self, std::shared_ptr<GossipLink> link,
+    std::string my_node_id, std::vector<std::string> my_endpoints) {
+    if (self->tls) {
+        const std::error_code handshake_error = co_await link->stream->handshake(
+            link->initiate ? zetta::transport::HandshakeRole::Client
+                           : zetta::transport::HandshakeRole::Server);
+        if (handshake_error) co_return {handshake_error, std::nullopt};
+    }
+    const std::string hello = hello_line(my_node_id, my_endpoints,
+                                        self->dial_out_only, self->audit_protocol_version);
+    if (link->initiate && !co_await link->stream->write_frame(hello)) {
+        co_return {{}, std::nullopt};
+    }
+    auto their_hello = co_await link->stream->read_frame();
+    if (their_hello && !link->initiate && !co_await link->stream->write_frame(hello)) {
+        co_return {{}, std::nullopt};
+    }
+    co_return {{}, std::move(their_hello)};
+}
+
+// Accepted and dialed links share the same bounded TLS/HELLO setup. An accepted
+// link's slot survives every suspension (dials pass none), then steady-state
+// links use the idle writer.
+// dialed_endpoint records the reached candidate; seed_key preserves the original
+// seed for reconnect deduplication even when its DNS address changes.
 capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
                                 std::string my_node_id,
                                 std::vector<std::string> my_endpoints,
                                 bool initiate, std::string dialed_endpoint,
-                                std::string seed_key) {
-    // The connection's framed transport is built before any protocol byte is
-    // exchanged and shared with the writer pump.
+                                std::string seed_key,
+                                std::unique_ptr<PendingSetup> pending_setup) {
     auto link = std::make_shared<GossipLink>();
     link->initiate = initiate;
     if (self->tls) {
         link->stream = std::make_shared<zetta::transport::FramedStream>(
             std::move(socket), *self->tls);
-        const std::error_code handshake_error = co_await link->stream->handshake(
-            initiate ? zetta::transport::HandshakeRole::Client
-                     : zetta::transport::HandshakeRole::Server);
-        if (handshake_error) {
-            log_event(self, std::string("TLS handshake failed (") +
-                                (initiate ? "dialed" : "accepted") +
-                                "): " + handshake_error.message());
-            link->stream->close();
-            co_return;
-        }
     } else {
         link->stream =
             std::make_shared<zetta::transport::FramedStream>(std::move(socket));
     }
-
-    // FramedStream owns the persistent receive buffer shared by the HELLO and
-    // steady-state read pump.
-    // The peer's HELLO is read under a small frame bound (#771): before it is
-    // parsed, an unidentified peer must not be able to make us buffer megabytes.
-    // The steady-state bound is restored once the HELLO is accepted.
     link->stream->set_maximum_frame_bytes(kMaxHelloBytes);
-    std::optional<std::string> their_hello;
-    if (initiate) {
-        co_await link->stream->write_frame(
-            hello_line(my_node_id, my_endpoints, self->dial_out_only,
-                       self->audit_protocol_version));
-        their_hello = co_await link->stream->read_frame();
-    } else {
-        their_hello = co_await link->stream->read_frame();
-        co_await link->stream->write_frame(
-            hello_line(my_node_id, my_endpoints, self->dial_out_only,
-                       self->audit_protocol_version));
+    auto [setup_error, their_hello] = co_await capy::timeout(
+        exchange_hello(self, link, my_node_id, my_endpoints), self->setup_timeout);
+    if (setup_error) {
+        log_event(self, "peer setup failed: " + setup_error.message());
+        link->stream->close();
+        co_return;
     }
     if (!their_hello) {
         link->stream->close();
@@ -1100,6 +1115,7 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     }
     link->stream->set_maximum_frame_bytes(
         zetta::transport::FramedStreamOptions{}.maximum_frame_bytes);
+    pending_setup.reset();  // setup succeeded; release admission before holding the link
     // Record which node id this seed resolved to BEFORE dedup, so the reconnect loop
     // can skip the seed while this node is linked — even if this very link then loses
     // the register_link tiebreak (the winning link still holds the node). Ends the
@@ -1177,13 +1193,31 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
 
 capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
                          std::vector<std::string> my_endpoints) {
+    net::timer retry(self->io_context);
     for (;;) {
         net::tcp_socket peer(self->io_context);
-        if (auto [ec] = co_await self->acceptor->accept(peer); ec) co_return;
+        if (auto [accept_error] = co_await self->acceptor->accept(peer); accept_error) {
+            if (!self->acceptor->is_open() ||
+                accept_error == std::errc::operation_canceled ||
+                accept_error == std::errc::bad_file_descriptor ||
+                accept_error == std::errc::invalid_argument) co_return;
+            // Includes descriptor/memory pressure and transient network errors.
+            // Back off so resource exhaustion cannot turn into a busy loop.
+            log_event(self, "peer accept failed; retrying: " + accept_error.message());
+            retry.expires_after(std::chrono::milliseconds(100));
+            if (auto [wait_error] = co_await retry.wait(); wait_error) co_return;
+            continue;
+        }
+        auto pending_setup = reserve_setup(*self);
+        if (!pending_setup) {
+            log_event(self, "peer setup capacity reached; refusing connection");
+            peer.close();
+            continue;
+        }
         capy::run_async(self->io_context.get_executor())(handshake_and_hold(
             self, std::move(peer), my_node_id, my_endpoints,
             /*initiate=*/false, /*dialed_endpoint=*/std::string{},
-            /*seed_key=*/std::string{}));
+            /*seed_key=*/std::string{}, std::move(pending_setup)));
     }
 }
 
@@ -1200,10 +1234,11 @@ capy::task<bool> connect_and_hold(Cluster::State* self, net::endpoint endpoint,
                                   std::string seed_key) {
     net::tcp_socket socket(self->io_context);
     socket.open();
-    if (auto [ec] = co_await socket.connect(endpoint); ec) co_return false;
+    if (auto [connect_error] = co_await socket.connect(endpoint); connect_error) co_return false;
     co_await handshake_and_hold(self, std::move(socket), std::move(my_node_id),
                                 std::move(my_endpoints), /*initiate=*/true,
-                                std::move(dialed_label), std::move(seed_key));
+                                std::move(dialed_label), std::move(seed_key),
+                                /*pending_setup=*/nullptr);
     co_return true;
 }
 
@@ -1405,6 +1440,8 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
     state_->replication = replication;
     state_->blobs = blobs;
     state_->audit_protocol_version = config_.audit_protocol_version;
+    state_->setup_timeout = std::max(config_.peer_setup_timeout, std::chrono::milliseconds(1));
+    state_->maximum_pending_setups = std::max<std::size_t>(1, config_.maximum_pending_setups);
     state_->idle_timeout =
         std::chrono::seconds(config_.peer_idle_timeout_seconds);
     state_->reconnect_interval =
