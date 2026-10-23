@@ -181,7 +181,12 @@ the next `version` (1, 2, …). The `run` capability takes the pinned graph from
    reads, never the exposer's.
 8. **Run**: the `run` capability's handler under the caller's identity with the
    pinned graph, and `{pipeline_id, project, name, version, run_id, status,
-   outputs, status_endpoint}` back.
+   outputs, status_endpoint}` back. Each step runs as the caller
+   ([step authority](../governance/step-authority.md), #843), so the caller also
+   needs the right every step exercises (a clean step:
+   `orchestration:create_dataset_from_query`; a model step: `train_model`; …). A
+   step the caller lacks the right for fails the run with `status: "failed"` and
+   the step named in its logs.
 
 Every step that refuses is audited (`serve:run_pipeline:<pipeline id>`,
 `allowed: false`, the reason); an admitted call is audited once with its version.

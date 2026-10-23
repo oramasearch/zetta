@@ -288,9 +288,13 @@ TEST_F(SystemCatalogAccess, AnUnknownUserReadsOnlyPublicMetadata) {
     const auto datasets = ghost.run("SELECT * FROM system.datasets;", "");
     ASSERT_TRUE(datasets.ok()) << datasets.error;
     EXPECT_TRUE(datasets.rows.empty());
+    // Its own refused reads above are audited (TC-5, #1345), and a caller reads
+    // only its own audit rows: nothing anyone else did.
     const auto audit = ghost.run("SELECT * FROM system.audit;", "");
     ASSERT_TRUE(audit.ok()) << audit.error;
-    EXPECT_TRUE(audit.rows.empty());
+    for (const auto& row : audit.rows) {
+        EXPECT_EQ(row.value("actor", std::string()), "usr:does-not-exist") << row.dump();
+    }
 }
 
 }  // namespace

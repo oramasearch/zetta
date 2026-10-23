@@ -5731,12 +5731,30 @@ bool Node::authorize_blob(const std::string& acting_id, bool acting_is_user,
 
 zetta::pipeline::ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph,
                                 std::string project, std::string graph_id) {
-    // Delegate to the standalone orchestrator with the default per-step executor.
-    // The Run it creates is owned by this node (replicated + persisted as usual).
-    zetta::pipeline::ExecutionResult result = zetta::pipeline::GraphExecutor{}.execute(
-        *this, graph, std::move(project), std::move(graph_id));
+    // The trusted local session: an empty principal runs every step unchecked.
+    return run_graph(graph, std::move(project), std::move(graph_id),
+                     zetta::pipeline::RunPrincipal{});
+}
+
+zetta::pipeline::ExecutionResult Node::run_graph(
+    const ir::ExecutionGraph& graph, std::string project, std::string graph_id,
+    const zetta::pipeline::RunPrincipal& principal) {
+    // Delegate to the standalone orchestrator with the default per-step executor,
+    // each step run as `principal` (#843). The Run it creates is owned by this
+    // node (replicated + persisted as usual).
+    // The run's audit rows name who runs it (#847): the entry point's declared
+    // actor when there is one, else the principal (`local` for the trusted
+    // session), so a console or headed-app run is not recorded with no actor.
+    std::optional<std::string> actor = zetta::governance::current_audit_actor();
+    if (!actor) actor = principal.local() ? std::string("local") : principal.acting_id;
+    const zetta::governance::AuditActorScope audit_actor{actor};
+    zetta::pipeline::GraphExecutor executor;
+    executor.run_as(principal);
+    zetta::pipeline::ExecutionResult result =
+        executor.execute(*this, graph, std::move(project), std::move(graph_id));
     // A run is a governed action (#847): record it with its outcome, so a run
-    // started from the headed app is on the trail like one started over the API.
+    // started from the headed app or a console session is on the trail like one
+    // started over the API, whichever overload started it.
     std::string target = "run:" + (result.run ? result.run->id() : std::string("(none)"));
     std::string detail = "graph run ";
     if (result.ok) {
@@ -5748,14 +5766,6 @@ zetta::pipeline::ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph
     }
     record_catalog_change(*this, std::move(target), true, std::move(detail));
     return result;
-}
-
-zetta::pipeline::ExecutionResult Node::run_graph(
-    const ir::ExecutionGraph& graph, std::string project, std::string graph_id,
-    const zetta::pipeline::RunPrincipal& principal) {
-    zetta::pipeline::GraphExecutor executor;
-    executor.run_as(principal);
-    return executor.execute(*this, graph, std::move(project), std::move(graph_id));
 }
 
 // ----- text entity-key tables (#1255) ----------------------------------------
