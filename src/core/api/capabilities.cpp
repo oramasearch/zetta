@@ -59,6 +59,7 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/streaming.hpp"
 #include "zetta/ml/score_table.hpp"
+#include "zetta/ml/segmentation_score.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/ml/workspace_methodology.hpp"
 #include "zetta/ml/workspace_study.hpp"
@@ -7956,8 +7957,133 @@ const nlohmann::json& score_output_schema() {
                {{"feature", {{"type", "string"}}},
                 {"importance", {{"type", "number"}}}}}}}}},
           {"rows_scored", {{"type", "integer"}}},
-          {"partitions_read", {{"type", "integer"}}}}}};
+          {"partitions_read", {{"type", "integer"}}},
+          {"kind",
+           {{"type", "string"},
+            {"enum", {"segmentation"}},
+            {"description",
+             "present for a segmentation model, whose answer is `assignments` and whose "
+             "`ranked` is empty"}}},
+          {"assignments",
+           {{"type", "array"},
+            {"description",
+             "segmentation models only: each row's nearest segment, in row order"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"entity",
+                 {{"oneOf", {{{"type", "integer"}}, {{"type", "string"}}}}}},
+                {"segment_id", {{"type", "integer"}}},
+                {"distance",
+                 {{"type", "number"},
+                  {"description",
+                   "Euclidean distance to the segment's centre in the model's "
+                   "standardized space, as the run's assignment table records it"}}},
+                {"label",
+                 {{"type", {"string", "null"}},
+                  {"description", "the segment profile's label, when recorded"}}}}}}}}}}}};
     return schema;
+}
+
+// A segmentation model's segment labels, by segment id (#1497): from its
+// weights, or, for a model trained before they were recorded there, from the
+// "segment profiles" table its run wrote when this member holds it. Empty when
+// neither is available; the answer then says `label: null`.
+std::vector<std::string> segmentation_labels(Node& node, const zetta::ml::Model& model,
+                                             std::vector<std::string> recorded) {
+    if (!recorded.empty()) return recorded;
+    const std::shared_ptr<zetta::pipeline::Run> run = node.find_run(model.run());
+    if (!run) return {};
+    for (const auto& output : run->outputs()) {
+        if (output.kind != "dataset" || output.name != "segment profiles") continue;
+        const zetta::data::DatasetPath path = zetta::data::parse_dataset_path(output.ref);
+        const auto database = node.find_database(path.database);
+        const auto table = database ? database->find_table(path.table) : nullptr;
+        if (!table) return {};
+        std::vector<std::string> labels;
+        for (std::size_t index = 0; index < table->row_count(); ++index) {
+            const auto row = table->store().at(index);
+            if (!row || !row->is_object()) return {};
+            const int segment = row->value("segment_id", -1);
+            if (segment < 0) return {};
+            if (labels.size() <= static_cast<std::size_t>(segment)) {
+                labels.resize(static_cast<std::size_t>(segment) + 1);
+            }
+            labels[static_cast<std::size_t>(segment)] = row->value("label", std::string());
+        }
+        return labels;
+    }
+    return {};
+}
+
+nlohmann::json segmentation_score_output(Node& node, const zetta::ml::Model& model,
+                                         const zetta::ml::SegmentationScoreResult& scored) {
+    const std::vector<std::string> labels = segmentation_labels(node, model, scored.labels);
+    nlohmann::json assignments = nlohmann::json::array();
+    for (const zetta::ml::SegmentScore& score : scored.assignments) {
+        const auto segment = static_cast<std::size_t>(score.segment_id);
+        assignments.push_back(
+            {{"entity", scored.entity_keys ? scored.entity_keys->original(score.entity)
+                                           : nlohmann::json(score.entity)},
+             {"segment_id", score.segment_id},
+             {"distance", score.distance},
+             {"label", segment < labels.size() && !labels[segment].empty()
+                           ? nlohmann::json(labels[segment])
+                           : nlohmann::json(nullptr)}});
+    }
+    nlohmann::json output;
+    output["kind"] = "segmentation";
+    output["assignments"] = std::move(assignments);
+    // No ranking: a segment is not a risk. Kept empty so a reader of ranked
+    // lists sees nothing to rank rather than a missing field.
+    output["ranked"] = nlohmann::json::array();
+    output["feature_columns"] = scored.feature_columns;
+    output["drivers"] = nlohmann::json::array();
+    output["rows_scored"] = scored.rows_scored;
+    output["partitions_read"] = scored.partitions_read;
+    return output;
+}
+
+// A table read for a segmentation model (#1497): resolved like M-3 training
+// resolves it, with no label, over the model's own columns. The entity column
+// is `dataset.entity_column` when given, else the one the model was trained
+// with.
+zetta::data::ResolvedDataset resolve_for_segmentation(ApiContext& context,
+                                                      const zetta::ml::Model& model,
+                                                      const zetta::data::DatasetPath& path,
+                                                      const nlohmann::json& input) {
+    zetta::data::ResolvedDataset failed;
+    std::string reason;
+    const auto weights = zetta::ml::load_segmentation_model(model, &reason);
+    if (!weights) {
+        failed.error = "segmentation model '" + model.id() + "' cannot be read: " + reason;
+        return failed;
+    }
+    nlohmann::json config = nlohmann::json::object();
+    std::string entity;
+    if (const auto given = input.find("dataset"); given != input.end() && given->is_object()) {
+        entity = given->value("entity_column", std::string());
+    }
+    if (entity.empty()) {
+        const nlohmann::json& schema = model.feature_schema();
+        if (schema.contains("dataset") && schema["dataset"].contains("contract") &&
+            schema["dataset"]["contract"].is_object()) {
+            entity = schema["dataset"]["contract"].value("entity_column", std::string());
+        }
+    }
+    if (!entity.empty()) config["entity_column"] = entity;
+    config["feature_columns"] = zetta::ml::segmentation_source_columns(*weights);
+    nlohmann::json categorical = nlohmann::json::array();
+    for (const zetta::ml::SegmentationFeature& feature : weights->features) {
+        if (feature.kind == zetta::ml::SegmentationFeatureKind::Categorical &&
+            std::find(categorical.begin(), categorical.end(), feature.source) ==
+                categorical.end()) {
+            categorical.push_back(feature.source);
+        }
+    }
+    config["categorical_columns"] = std::move(categorical);
+    return zetta::ml::resolve_segmentation_table(context.node, path, std::move(config),
+                                                 context.cluster);
 }
 
 ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
@@ -8022,6 +8148,13 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
                 entities.push_back(*derived);
             }
         }
+        if (zetta::ml::is_segmentation_model(*model)) {
+            const zetta::ml::SegmentationScoreResult segments =
+                zetta::ml::score_segmentation_rows(
+                    *model, rows->get<std::vector<nlohmann::json>>(), entities, entity_keys);
+            if (!segments.ok()) return ApiResult::failure("invalid_input", segments.error);
+            return ApiResult::success(segmentation_score_output(context.node, *model, segments));
+        }
         scored = zetta::ml::score_rows(*model, rows->get<std::vector<nlohmann::json>>(),
                                        entities, top_k, entity_keys);
     } else {
@@ -8032,6 +8165,15 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
                 "invalid_input",
                 "score reads a `database.table` dataset; a dataset directory has no "
                 "partitions to score near");
+        }
+        if (zetta::ml::is_segmentation_model(*model)) {
+            const zetta::data::ResolvedDataset resolved =
+                resolve_for_segmentation(context, *model, path, input);
+            if (!resolved.ok()) return ApiResult::failure("engine_error", resolved.error);
+            const zetta::ml::SegmentationScoreResult segments =
+                zetta::ml::score_segmentation_table(context.node, *model, resolved);
+            if (!segments.ok()) return ApiResult::failure("engine_error", segments.error);
+            return ApiResult::success(segmentation_score_output(context.node, *model, segments));
         }
         zetta::data::DatasetContract overrides;
         if (const auto given = input.find("dataset"); given != input.end()) {
@@ -8113,11 +8255,28 @@ const nlohmann::json& explain_schema() {
 const nlohmann::json& explain_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"contributions", "base_value", "raw", "risk"}},
+        {"anyOf",
+         {{{"required", {"contributions", "base_value", "raw", "risk"}}},
+          {{"required", {"kind", "contributions", "segment_id", "distance"}}}}},
         {"properties",
          {{"entity",
            {{"oneOf", {{{"type", "integer"}}, {{"type", "string"}}}},
             {"description", "present when a dataset entity was explained"}}},
+          {"kind",
+           {{"type", "string"},
+            {"enum", {"segmentation"}},
+            {"description",
+             "present for a segmentation model (#1497): the answer is the row's "
+             "segment, its runner-up, and each column's contribution = (distance to "
+             "the runner-up squared - distance to its own centre squared) summed over "
+             "the column's encoded features. Positive pulls the row toward its "
+             "segment; the contributions sum to runner_up.distance^2 - distance^2"}}},
+          {"segment_id", {{"type", "integer"}}},
+          {"distance", {{"type", "number"}}},
+          {"label", {{"type", {"string", "null"}}}},
+          {"runner_up",
+           {{"type", {"object", "null"}},
+            {"description", "the next nearest segment: {segment_id, distance, label}"}}},
           {"base_value",
            {{"type", "number"},
             {"description",
@@ -8177,10 +8336,17 @@ ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
             "data) or `row` (explain an account that is not in it)");
     }
 
+    const bool segmentation = zetta::ml::is_segmentation_model(*model);
     zetta::ml::RowExplanation explained;
+    zetta::ml::SegmentExplanation placed;
     std::shared_ptr<const zetta::data::EntityKeyMapping> entity_keys;
     if (row != input.end()) {
-        explained = zetta::ml::explain_row(*model, *row);
+        if (segmentation) {
+            placed = zetta::ml::explain_segmentation_row(*model, *row);
+            if (!placed.ok()) return ApiResult::failure("invalid_input", placed.error);
+        } else {
+            explained = zetta::ml::explain_row(*model, *row);
+        }
     } else {
         const auto dataset_path = input.find("dataset_path");
         if (dataset_path == input.end()) {
@@ -8195,17 +8361,23 @@ ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
                 "explain reads a `database.table` dataset; a dataset directory has no "
                 "partitions to read near");
         }
-        zetta::data::DatasetContract overrides;
-        if (const auto given = input.find("dataset"); given != input.end()) {
-            std::string reason;
-            const std::optional<zetta::data::DatasetContract> parsed =
-                zetta::data::dataset_contract_from_json(*given, &reason);
-            if (!parsed) return ApiResult::failure("invalid_input", reason);
-            overrides = *parsed;
+        zetta::data::ResolvedDataset resolved;
+        if (segmentation) {
+            // No label to find: resolved as M-3 training resolves it (#1497).
+            resolved = resolve_for_segmentation(context, *model, path, input);
+        } else {
+            zetta::data::DatasetContract overrides;
+            if (const auto given = input.find("dataset"); given != input.end()) {
+                std::string reason;
+                const std::optional<zetta::data::DatasetContract> parsed =
+                    zetta::data::dataset_contract_from_json(*given, &reason);
+                if (!parsed) return ApiResult::failure("invalid_input", reason);
+                overrides = *parsed;
+            }
+            resolved = zetta::data::resolve_dataset(
+                context.node, path, overrides,
+                zetta::data::default_dataset_sampler(context.node, context.cluster));
         }
-        const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
-            context.node, path, overrides,
-            zetta::data::default_dataset_sampler(context.node, context.cluster));
         if (!resolved.ok()) return ApiResult::failure("engine_error", resolved.error);
 
         std::int64_t internal_entity = 0;
@@ -8226,10 +8398,57 @@ ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
                 "invalid_input",
                 "a text entity requires a dataset with text entity ids");
         }
-        compute::CpuDevice device;
-        explained = zetta::ml::explain_entity(context.node, *model, resolved.table_id,
-                                              resolved.contract, device,
-                                              internal_entity);
+        if (segmentation) {
+            placed = zetta::ml::explain_segmentation_entity(context.node, *model, resolved,
+                                                            internal_entity);
+            if (!placed.ok()) return ApiResult::failure("engine_error", placed.error);
+        } else {
+            compute::CpuDevice device;
+            explained = zetta::ml::explain_entity(context.node, *model, resolved.table_id,
+                                                  resolved.contract, device,
+                                                  internal_entity);
+        }
+    }
+    if (segmentation) {
+        // Why the row is in its segment rather than the runner-up (#1497).
+        const std::vector<std::string> labels =
+            segmentation_labels(context.node, *model, [&] {
+                std::string ignored;
+                const auto weights = zetta::ml::load_segmentation_model(*model, &ignored);
+                return weights && weights->labels.size() == weights->centers.size()
+                           ? weights->labels
+                           : std::vector<std::string>{};
+            }());
+        const auto label_of = [&](int segment) {
+            const auto index = static_cast<std::size_t>(segment);
+            return index < labels.size() && !labels[index].empty()
+                       ? nlohmann::json(labels[index])
+                       : nlohmann::json(nullptr);
+        };
+        nlohmann::json contributions = nlohmann::json::array();
+        for (const zetta::ml::SegmentContribution& contribution : placed.contributions) {
+            contributions.push_back({{"feature", contribution.feature},
+                                     {"value", contribution.value},
+                                     {"contribution", contribution.contribution}});
+        }
+        nlohmann::json output;
+        output["kind"] = "segmentation";
+        if (placed.entity) {
+            output["entity"] = entity_keys ? entity_keys->original(*placed.entity)
+                                           : nlohmann::json(*placed.entity);
+        }
+        output["segment_id"] = placed.segment_id;
+        output["distance"] = placed.distance;
+        output["label"] = label_of(placed.segment_id);
+        output["runner_up"] =
+            placed.runner_up_segment_id
+                ? nlohmann::json{{"segment_id", *placed.runner_up_segment_id},
+                                 {"distance", placed.runner_up_distance},
+                                 {"label", label_of(*placed.runner_up_segment_id)}}
+                : nlohmann::json(nullptr);
+        output["residual"] = placed.residual;
+        output["contributions"] = std::move(contributions);
+        return ApiResult::success(std::move(output));
     }
     if (!explained.ok()) return ApiResult::failure("engine_error", explained.error);
 
@@ -12693,7 +12912,9 @@ void register_core_capabilities(Registry& registry) {
         "node's own partitions) or over rows you supply, and get the entities ranked by "
         "risk plus what drives it. This is how the at-risk list is answerable after the "
         "run that produced it has ended, and how an account that is not in the data at "
-        "all gets a score. Read-only.",
+        "all gets a score. A segmentation model answers `kind: segmentation` and "
+        "`assignments` (each row's nearest segment, its distance and label) instead of "
+        "a ranking. Read-only.",
         score_schema(),
         score_output_schema(),
         CapabilityKind::Read,
@@ -12725,7 +12946,8 @@ void register_core_capabilities(Registry& registry) {
         "row you supply. This is the per-account answer — `score`'s drivers are the "
         "population ranking, identical for every row, so two accounts with the same "
         "score look the same there even when they are at risk for opposite reasons. "
-        "Read-only.",
+        "For a segmentation model it answers the row's segment and which columns place "
+        "it there rather than in the runner-up segment. Read-only.",
         explain_schema(),
         explain_output_schema(),
         CapabilityKind::Read,

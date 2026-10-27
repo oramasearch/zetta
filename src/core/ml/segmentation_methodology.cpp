@@ -720,4 +720,11 @@ Json segmentation_run_report(Node &node, const pipeline::Run &run,
     }
     return report;
 }
+
+zetta::data::ResolvedDataset
+resolve_segmentation_table(Node &node, const zetta::data::DatasetPath &path,
+                           nlohmann::json config,
+                           const zetta::cluster::Cluster *cluster) {
+    return resolve_table(node, path, config, cluster);
+}
 } // namespace zetta::ml

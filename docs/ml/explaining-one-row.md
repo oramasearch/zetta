@@ -15,6 +15,10 @@ population ranking hides exactly that.
 `explain` gives the per-account answer: the exact signed contribution of every feature
 for one row.
 
+A segmentation model (kind `segmentation`) is explained differently: its row's
+segment, the runner-up, and each column's pull toward one over the other. See
+[segmentation.md](segmentation.md#scoring-and-explaining) (#1497).
+
 ## Reading it
 
 ```jsonc

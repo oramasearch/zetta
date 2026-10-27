@@ -47,6 +47,7 @@ add_executable(zetta-tests
   api/test_study_driver.cpp
   api/test_getting_started_churn.cpp
   api/test_standalone_models.cpp
+  api/test_segmentation_score.cpp
   api/test_serving.cpp
   api/test_pipeline_serving.cpp
   api/test_scoped_grants_api.cpp
@@ -247,6 +248,7 @@ add_executable(zetta-tests
   ml/test_tree_shap.cpp
   ml/test_native_oracle.cpp
   ml/test_gbdt_score.cpp
+  ml/test_segmentation_score.cpp
   ml/test_segmentation.cpp
   ml/test_segmentation_methodology.cpp
   ml/test_segmentation_launch.cpp

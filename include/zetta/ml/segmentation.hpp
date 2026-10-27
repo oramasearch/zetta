@@ -143,6 +143,9 @@ struct SegmentationModel {
     std::vector<std::vector<double>> centers;
     std::vector<std::string> excluded_columns;
     std::uint64_t seed = 0;
+    // Each segment's profile label, by segment id (#1497), so `score` can name
+    // the segment a row lands in without reading the run's profile table.
+    std::vector<std::string> labels;
 
     nlohmann::json to_json() const;
 };
@@ -215,5 +218,16 @@ SegmentationRunResult
 run_segmentation(Node &node, const zetta::data::ResolvedDataset &dataset,
                  SegmentationParams params = {},
                  const SegmentationRunOptions &options = {});
+
+// The rows of a resolved table this member reads for segmentation: the primary
+// replica of each partition it owns, or every row of an unpartitioned table,
+// keyed by `dataset.contract.entity_column` and carrying the contract's
+// feature columns. Used by `score` on a segmentation model (#1497). False with
+// `error` set when a row or partition cannot be read; `partitions_read` counts
+// the partition bodies decoded.
+bool read_segmentation_rows(Node &node,
+                            const zetta::data::ResolvedDataset &dataset,
+                            std::vector<SegmentationRow> &rows,
+                            std::size_t &partitions_read, std::string &error);
 
 } // namespace zetta::ml
