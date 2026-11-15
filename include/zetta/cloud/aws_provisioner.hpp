@@ -22,7 +22,7 @@ namespace zetta::cloud {
 struct AwsConfig {
     // Required — without these there is no place to create the pool.
     std::string region;           // the AWS region (e.g. "us-west-2")
-    std::string launch_template;  // EC2 launch template name (AMI, IAM instance profile, user-data baseline)
+    std::string launch_template;  // EC2 launch template name (AMI, IAM instance profile); bring_up adds a version carrying the node boot script as user-data (#1338)
     std::string subnets;          // comma-separated subnet ids for --vpc-zone-identifier
 
     // Optional, with defaults filled in below.
@@ -32,6 +32,8 @@ struct AwsConfig {
     double max_price = 0.0;       // Spot max $/node-hour; 0 = up to on-demand (no explicit cap)
     std::string seed_peer;        // cluster seed host:port injected into node bootstrap to auto-join
     std::string join_token;       // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst node joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
+    std::string identity_root;    // the cluster's identity root PUBLIC key (hex, not a secret) injected as ZETTA_IDENTITY_ROOT so a burst node honors the cluster's accounts, roles and tokens (#1343); set at wire time from this node's pinned root, never serialized
+    std::string cluster_ca;       // the cluster's enrollment CA PUBLIC key (64 lowercase hex, not a secret) written by the boot script as ZETTA_CLUSTER_CA, so a burst node enrolls only through a member the CA signed (#1513); set at wire time, never serialized
     std::string profile;          // optional AWS CLI named profile (which credentials to use)
 
     bool operator==(const AwsConfig&) const = default;

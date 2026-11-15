@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "../../src/core/base64.hpp"
 #include "secret_argv.hpp"
 #include "zetta/cloud/aws_cli_control_plane.hpp"
 #include "zetta/cloud/aws_provisioner.hpp"
@@ -388,6 +389,7 @@ TEST(AwsCliControlPlane, SpotConfigAddsMixedInstancesPolicyAndSeedTag) {
         }
         CommandResult result;
         if (has_token(argv, "describe-instances")) result.stdout_text = two_node_listing();
+        if (has_token(argv, "create-launch-template-version")) result.stdout_text = "7\n";
         return result;
     };
 
@@ -418,9 +420,16 @@ TEST(AwsCliControlPlane, SpotConfigAddsMixedInstancesPolicyAndSeedTag) {
     EXPECT_TRUE(stored_private);
     EXPECT_FALSE(zetta::test::any_argv_contains(calls, config.join_token));
 
-    const std::vector<std::string>& create = calls[1];
+    // The boot script's launch template version comes next (#1338), then the
+    // group, which names the template only inside its mixed-instances policy.
+    ASSERT_GE(calls.size(), 3u);
+    EXPECT_TRUE(has_token(calls[1], "create-launch-template-version"));
+    const std::vector<std::string>& create = calls[2];
     EXPECT_TRUE(has_token(create, "create-auto-scaling-group"));
     EXPECT_TRUE(has_token(create, "--mixed-instances-policy"));
+    EXPECT_TRUE(flag_value_contains(create, "--mixed-instances-policy",
+                                    "LaunchTemplateName=zetta-burst-lt,Version=7"));
+    EXPECT_FALSE(has_token(create, "--launch-template"));
     EXPECT_TRUE(flag_value_contains(create, "--mixed-instances-policy", "InstancesDistribution"));
     EXPECT_TRUE(flag_value_contains(create, "--mixed-instances-policy", "SpotMaxPrice"));
     EXPECT_TRUE(flag_value_contains(create, "--mixed-instances-policy", "g5.xlarge"));
@@ -574,4 +583,192 @@ TEST(AwsCliControlPlane, FailedTokenStoreFailsTheBurstClosed) {
     EXPECT_NE(result.detail.find("AccessDeniedException"), std::string::npos);
     ASSERT_EQ(calls.size(), 1u);
     EXPECT_TRUE(has_token(calls.front(), "put-parameter"));
+}
+
+// ---- The boot script in a launch template version (#1338) -------------------
+
+namespace {
+
+constexpr const char* kJoinToken =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+constexpr const char* kIdentityRoot =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+constexpr const char* kClusterCa =
+    "2222222222222222222222222222222222222222222222222222222222222222";
+
+// Records every call, answers the version create with `version`, and decodes
+// the user-data of the launch template data file while the command runs (the
+// file is private and removed afterwards).
+struct LaunchTemplateRecorder {
+    std::vector<std::vector<std::string>> calls;
+    std::string user_data;
+    bool data_private = false;
+    std::string version = "12";
+    bool group_exists = false;
+
+    CommandRunner runner() {
+        return [this](const std::vector<std::string>& argv) -> CommandResult {
+            calls.push_back(argv);
+            CommandResult result;
+            if (has_token(argv, "create-launch-template-version")) {
+                for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+                    const std::string prefix = "file://";
+                    if (argv[index] == "--launch-template-data" &&
+                        argv[index + 1].starts_with(prefix)) {
+                        const std::string path = argv[index + 1].substr(prefix.size());
+                        data_private = zetta::test::owner_only(path);
+                        const nlohmann::json data = nlohmann::json::parse(
+                            zetta::test::read_whole_file(path), nullptr, false);
+                        if (data.is_object() && data.contains("UserData")) {
+                            user_data = zetta::detail::base64_decode_to_string(
+                                data["UserData"].get<std::string>());
+                        }
+                    }
+                }
+                result.stdout_text = version + "\n";
+            }
+            if (group_exists && has_token(argv, "create-auto-scaling-group")) {
+                result.exit_code = 254;
+                result.stderr_text = "AlreadyExists";
+            }
+            if (has_token(argv, "describe-instances")) result.stdout_text = two_node_listing();
+            return result;
+        };
+    }
+
+    const std::vector<std::string>* find(const std::string& command) const {
+        for (const auto& call : calls) {
+            if (has_token(call, command)) return &call;
+        }
+        return nullptr;
+    }
+};
+
+AwsConfig secure_config() {
+    AwsConfig config = sample_config();
+    config.seed_peer = "10.0.0.1:7777";
+    config.join_token = kJoinToken;
+    config.identity_root = kIdentityRoot;
+    config.cluster_ca = kClusterCa;
+    return config;
+}
+
+}  // namespace
+
+TEST(AwsCliControlPlane, TheLaunchTemplateVersionCarriesTheBootScriptAndNeverTheToken) {
+    LaunchTemplateRecorder recorder;
+    AwsCliControlPlane control_plane{recorder.runner()};
+    const AwsConfig config = secure_config();
+    const ProvisionResult result = control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
+    EXPECT_TRUE(result.satisfied) << result.detail;
+
+    const std::vector<std::string>* version = recorder.find("create-launch-template-version");
+    ASSERT_NE(version, nullptr);
+    EXPECT_TRUE(has_flag(*version, "--launch-template-name", "zetta-burst-lt"));
+    EXPECT_TRUE(has_flag(*version, "--source-version", "$Default"));
+    EXPECT_TRUE(has_flag(*version, "--region", "us-west-2"));
+    EXPECT_TRUE(recorder.data_private);
+
+    // The script names the parameter, the region, and the public keys; it never
+    // holds the token, and neither does any argv.
+    EXPECT_TRUE(recorder.user_data.starts_with("#!/bin/sh\n")) << recorder.user_data;
+    EXPECT_NE(recorder.user_data.find("TOKEN_SECRET=/zetta/zetta-burst/cluster-token"),
+              std::string::npos);
+    EXPECT_NE(recorder.user_data.find("TOKEN_STORE=aws-ssm-parameter"), std::string::npos)
+        << recorder.user_data;
+    EXPECT_NE(recorder.user_data.find("TOKEN_REGION=us-west-2"), std::string::npos);
+    EXPECT_NE(recorder.user_data.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
+    EXPECT_NE(recorder.user_data.find(std::string("ZETTA_IDENTITY_ROOT=") + kIdentityRoot),
+              std::string::npos);
+    EXPECT_NE(recorder.user_data.find(std::string("ZETTA_CLUSTER_CA=") + kClusterCa),
+              std::string::npos);
+    EXPECT_EQ(recorder.user_data.find(kJoinToken), std::string::npos);
+    EXPECT_FALSE(zetta::test::any_argv_contains(recorder.calls, kJoinToken));
+
+    // The token is stored before the version, and the group launches from it.
+    const auto position = [&](const std::string& command) {
+        for (std::size_t index = 0; index < recorder.calls.size(); ++index) {
+            if (has_token(recorder.calls[index], command)) return index;
+        }
+        return recorder.calls.size();
+    };
+    EXPECT_LT(position("put-parameter"), position("create-launch-template-version"));
+    EXPECT_LT(position("create-launch-template-version"), position("create-auto-scaling-group"));
+    const std::vector<std::string>* create = recorder.find("create-auto-scaling-group");
+    ASSERT_NE(create, nullptr);
+    EXPECT_TRUE(has_flag(*create, "--launch-template", "LaunchTemplateName=zetta-burst-lt,Version=12"));
+}
+
+TEST(AwsCliControlPlane, AnExistingGroupIsPointedAtTheNewVersionBeforeItScales) {
+    LaunchTemplateRecorder recorder;
+    recorder.group_exists = true;
+    recorder.version = "13";
+    AwsCliControlPlane control_plane{recorder.runner()};
+    const ProvisionResult result =
+        control_plane.bring_up(secure_config(), ProvisionRequest{2, gpu_spec()});
+    EXPECT_TRUE(result.satisfied) << result.detail;
+
+    const std::vector<std::string>* update = recorder.find("update-auto-scaling-group");
+    ASSERT_NE(update, nullptr);
+    EXPECT_TRUE(has_flag(*update, "--auto-scaling-group-name", "zetta-burst"));
+    EXPECT_TRUE(has_flag(*update, "--launch-template", "LaunchTemplateName=zetta-burst-lt,Version=13"));
+    std::size_t updated_at = recorder.calls.size(), scaled_at = recorder.calls.size();
+    for (std::size_t index = 0; index < recorder.calls.size(); ++index) {
+        if (has_token(recorder.calls[index], "update-auto-scaling-group")) updated_at = index;
+        if (has_token(recorder.calls[index], "set-desired-capacity")) scaled_at = index;
+    }
+    EXPECT_LT(updated_at, scaled_at);
+}
+
+TEST(AwsCliControlPlane, AFailedLaunchTemplateVersionFailsTheBurstClosed) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "create-launch-template-version")) {
+            result.exit_code = 254;
+            result.stderr_text = "UnauthorizedOperation ec2:CreateLaunchTemplateVersion";
+        }
+        return result;
+    };
+    AwsCliControlPlane control_plane{runner};
+    const ProvisionResult result =
+        control_plane.bring_up(secure_config(), ProvisionRequest{2, gpu_spec()});
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_NE(result.detail.find("CreateLaunchTemplateVersion"), std::string::npos);
+    for (const auto& call : calls) {
+        EXPECT_FALSE(has_token(call, "create-auto-scaling-group"));
+        EXPECT_FALSE(has_token(call, "set-desired-capacity"));
+    }
+}
+
+TEST(AwsCliControlPlane, AVersionAnswerThatIsNotANumberFailsTheBurstClosed) {
+    LaunchTemplateRecorder recorder;
+    recorder.version = "None";
+    AwsCliControlPlane control_plane{recorder.runner()};
+    const ProvisionResult result =
+        control_plane.bring_up(secure_config(), ProvisionRequest{2, gpu_spec()});
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_EQ(recorder.find("create-auto-scaling-group"), nullptr);
+}
+
+TEST(AwsCliControlPlane, AMalformedClusterCaStopsTheBurstBeforeAnythingIsCreated) {
+    LaunchTemplateRecorder recorder;
+    AwsCliControlPlane control_plane{recorder.runner()};
+    AwsConfig config = secure_config();
+    config.cluster_ca = "NOT-HEX";
+    const ProvisionResult result = control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_NE(result.detail.find("cluster CA"), std::string::npos) << result.detail;
+    EXPECT_TRUE(recorder.calls.empty());
+}
+
+TEST(AwsCliControlPlane, NothingToHandOverLeavesTheTemplateAsItIs) {
+    LaunchTemplateRecorder recorder;
+    AwsCliControlPlane control_plane{recorder.runner()};
+    control_plane.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
+    EXPECT_EQ(recorder.find("create-launch-template-version"), nullptr);
+    const std::vector<std::string>* create = recorder.find("create-auto-scaling-group");
+    ASSERT_NE(create, nullptr);
+    EXPECT_TRUE(has_flag(*create, "--launch-template", "LaunchTemplateName=zetta-burst-lt"));
 }

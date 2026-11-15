@@ -31,9 +31,10 @@ Azure, GCP and OCI hand the script to their VMs themselves
 ([azure](azure-provisioner.md#the-join-token--key-vault-and-a-managed-identity-1316),
 [gcp](gcp-provisioner.md#the-join-token--secret-manager-and-the-node-service-account-1316),
 [oci](oci-provisioner.md#the-join-token--oci-vault-and-the-instance-principal-1316)).
-On AWS the launch template is the operator's, so the operator's user-data runs it
-([aws](aws-provisioner.md#the-join-token-on-the-node--the-launch-templates-user-data-1316));
-generating the launch template version from the binding is #1338. Each provider page
+On AWS the launch template is the operator's, so the binding creates a new version of
+it from its default version with this script as user-data, and launches the group from
+that version
+([aws](aws-provisioner.md#the-join-token-on-the-node--a-launch-template-version-1316-1338), #1338). Each provider page
 lists the IAM the operator must grant.
 
 ## What the script does
@@ -50,8 +51,12 @@ It is POSIX `sh` (Debian and Ubuntu run user-data with `dash`), and needs `curl`
    `zetta` user (created as a system user when missing), written to a temporary
    file in the same directory and renamed into place.
 4. **Write the environment file.** `/etc/zetta/bootstrap.env` (0644) holds
-   `ZETTA_SEED_PEER=<seed>` and `ZETTA_CLUSTER_TOKEN_FILE=/etc/zetta/cluster-token`,
-   never the token.
+   `ZETTA_SEED_PEER=<seed>`, the cluster's public keys when set
+   (`ZETTA_IDENTITY_ROOT`, #1343; `ZETTA_CLUSTER_CA`, the enrollment CA of #1513 /
+   zetta#1514, so a node that is not enrolled enrolls only through a member the CA
+   signed) and `ZETTA_CLUSTER_TOKEN_FILE=/etc/zetta/cluster-token`, never the token.
+   A key that is not 64 lowercase hex characters is refused when the script is
+   rendered, because the engine would refuse to start on it.
 5. **Start the engine.** When the image has a `zetta.service` unit it is enabled
    and restarted; otherwise the files are left for it and the script says so.
 
@@ -103,7 +108,9 @@ under `/bin/sh` (and `/bin/dash` where present) against fake `curl`, `oci`, `aws
 that answers only the expected request: for each provider the token lands in a 0400
 file, the environment file names it, `zetta.service` is restarted, and no access
 token or join token appears in any argument. Two more runs prove the retry while a
-grant propagates and that a malformed value is never written. No cloud is called.
+grant propagates and that a malformed value is never written, one more that the
+identity root and cluster CA land in the environment file, and a malformed key is
+refused at render time. No cloud is called.
 The control-plane tests (`test_azure_provisioner.cpp`, `test_gcp_provisioner.cpp`,
-`test_oci_provisioner.cpp`) check the store calls, the fail-closed paths, and that
+`test_oci_provisioner.cpp`, `test_aws_provisioner.cpp`) check the store calls, the fail-closed paths, and that
 the user-data each binding sends is this script.
