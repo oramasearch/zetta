@@ -63,6 +63,19 @@ NodeConfig config_for(const TempDir& tmp) {
     return cfg;
 }
 
+// A one-second ordinary retention window, so a purge test can name a cutoff
+// the window allows (#1329: a purge must reach back at least the window).
+NodeConfig short_retention_config_for(const TempDir& tmp) {
+    NodeConfig cfg = config_for(tmp);
+    cfg.audit_retention = std::chrono::seconds(1);
+    return cfg;
+}
+
+// Long enough after a record that a cutoff one second ago is after it.
+void wait_out_the_retention_window() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+}
+
 // A small connect→clean→model chain — enough to deploy / store as a named graph.
 ExecutionGraph sample_graph() {
     ExecutionGraph graph;
@@ -252,7 +265,7 @@ TEST(AuditTrail, IdlePollingWindowsKeepOnlySessionStarts) {
 
 TEST(AuditTrail, ExplicitPurgeLeavesItsRecordAndClassWatermarks) {
     TempDir tmp;
-    Node node{config_for(tmp)};
+    Node node{short_retention_config_for(tmp)};
     ASSERT_TRUE(node.start());
 
     node.record_audit_event(AuditEventValue{});
@@ -262,10 +275,14 @@ TEST(AuditTrail, ExplicitPurgeLeavesItsRecordAndClassWatermarks) {
         2, 1, "topic:orders", "2026-09-28T22:00:00Z",
         "2026-09-28T22:05:00Z"};
     node.record_audit_event(std::move(summary));
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    const std::string before = zetta::util::now_iso8601();
-
+    wait_out_the_retention_window();
     std::string error;
+    // Recent history is refused (#1329): a cutoff of now is inside the window.
+    EXPECT_FALSE(node.purge_audit_before(zetta::util::now_iso8601(), "admin-user", &error));
+    EXPECT_NE(error.find("retention window"), std::string::npos) << error;
+    ASSERT_EQ(node.audit_event_count(), 2u);
+    const std::string before = zetta::util::iso8601_seconds_ago(1);
+
     const auto removed = node.purge_audit_before(before, "admin-user", &error);
     ASSERT_TRUE(removed) << error;
     EXPECT_EQ(*removed, 2u);
@@ -285,6 +302,121 @@ TEST(AuditTrail, ExplicitPurgeLeavesItsRecordAndClassWatermarks) {
         "2999-01-01T00:00:00Z", "admin-user", &error));
     EXPECT_EQ(error, "before must not be in the future");
     EXPECT_EQ(node.audit_event_count(), count_before_refusal);
+    node.stop();
+}
+
+// #1329 (#847 step 8): the trail cannot be edited, and any trim is itself
+// recorded, and that record outlives every later trim. As an administrator:
+// an edit is refused, a purge of recent history is refused, a purge is
+// recorded, and after a second purge and a retention pass the first
+// `audit_purged` row still exists.
+TEST(AuditTrail, ATrimIsRecordedAndItsRecordOutlivesEveryLaterTrim) {
+    TempDir tmp;
+    Node node{short_retention_config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    node.ensure_builtin_roles();
+    auto admin = node.create_user("ida");
+    ASSERT_TRUE(admin);
+    node.assign_role(admin->id(), node.find_role("admin")->id());
+    const auto rows_of = [&](AuditAction action) {
+        std::size_t count = 0;
+        for (const auto& event : node.audit_events()) {
+            if (event->action() == action) ++count;
+        }
+        return count;
+    };
+
+    AuditEventValue first;
+    first.target = "trim-fixture-1";
+    node.record_audit_event(first);
+
+    // No edit: SQL against system.audit is read-only, even for an admin.
+    zetta::query::QueryService queries{node};
+    auto as_admin = queries.acting_as(admin->id(), /*acting_is_user=*/true);
+    for (const char* statement : {"UPDATE system.audit SET actor = 'someone-else';",
+                                  "DELETE FROM system.audit;",
+                                  "INSERT INTO system.audit (actor) VALUES ('forged');"}) {
+        EXPECT_FALSE(as_admin.run(statement, "").ok()) << statement;
+    }
+    for (const auto& event : node.audit_events()) {
+        EXPECT_NE(event->actor(), "someone-else");
+        EXPECT_NE(event->actor(), "forged");
+    }
+
+    // Recent history cannot be purged: the cutoff must reach back the window.
+    std::string error;
+    EXPECT_FALSE(node.purge_audit_before(zetta::util::now_iso8601(), admin->id(), &error));
+    EXPECT_NE(error.find("retention window"), std::string::npos) << error;
+    EXPECT_EQ(rows_of(AuditAction::AuditPurged), 0u);
+
+    // The first purge is recorded.
+    wait_out_the_retention_window();
+    const std::string first_cutoff = zetta::util::iso8601_seconds_ago(1);
+    const auto removed = node.purge_audit_before(first_cutoff, admin->id(), &error);
+    ASSERT_TRUE(removed) << error;
+    EXPECT_GE(*removed, 1u);
+    ASSERT_EQ(rows_of(AuditAction::AuditPurged), 1u);
+
+    // A second purge, after the first row is itself older than the cutoff.
+    AuditEventValue second;
+    second.target = "trim-fixture-2";
+    node.record_audit_event(second);
+    wait_out_the_retention_window();
+    const auto again = node.purge_audit_before(
+        zetta::util::iso8601_seconds_ago(1), admin->id(), &error);
+    ASSERT_TRUE(again) << error;
+    EXPECT_EQ(rows_of(AuditAction::AuditPurged), 2u);
+
+    // A retention pass removes ordinary records and records that it did.
+    AuditEventValue third;
+    third.target = "trim-fixture-3";
+    node.record_audit_event(third);
+    wait_out_the_retention_window();
+    EXPECT_GE(node.apply_audit_retention(), 1u);
+    EXPECT_EQ(rows_of(AuditAction::AuditRetentionExpired), 1u);
+    wait_out_the_retention_window();
+    node.apply_audit_retention();  // nothing ordinary left to remove
+
+    // Every trim's record is still there, the first purge's included.
+    EXPECT_EQ(rows_of(AuditAction::AuditPurged), 2u);
+    EXPECT_EQ(rows_of(AuditAction::AuditRetentionExpired), 1u);
+    bool first_purge_found = false;
+    for (const auto& event : node.audit_events()) {
+        if (event->action() == AuditAction::AuditPurged &&
+            event->detail().find(first_cutoff) != std::string::npos) {
+            first_purge_found = true;
+            EXPECT_EQ(event->actor(), admin->id());
+        }
+        EXPECT_NE(event->target(), "trim-fixture-1");
+        EXPECT_NE(event->target(), "trim-fixture-3");
+    }
+    EXPECT_TRUE(first_purge_found);
+
+    // They survive a restart too.
+    node.stop();
+    Node reloaded{short_retention_config_for(tmp)};
+    ASSERT_TRUE(reloaded.start());
+    std::size_t trims = 0;
+    for (const auto& event : reloaded.audit_events()) {
+        if (zetta::governance::audit_record_outlives_trims(event->action())) ++trims;
+    }
+    EXPECT_EQ(trims, 3u);
+    reloaded.stop();
+}
+
+// A node that keeps every record has no retention window, so nothing may be
+// purged (#1329).
+TEST(AuditTrail, ANodeThatKeepsEveryRecordRefusesEveryPurge) {
+    TempDir tmp;
+    NodeConfig cfg = config_for(tmp);
+    cfg.audit_retention = std::chrono::seconds(0);
+    Node node{cfg};
+    ASSERT_TRUE(node.start());
+    node.record_audit_event(AuditEventValue{});
+    std::string error;
+    EXPECT_FALSE(node.purge_audit_before("2000-01-01T00:00:00Z", "admin-user", &error));
+    EXPECT_NE(error.find("keeps every audit record"), std::string::npos) << error;
+    EXPECT_EQ(node.audit_event_count(), 1u);
     node.stop();
 }
 
@@ -351,7 +483,7 @@ TEST(AuditTrail, ReplicatesToPeer) {
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
-    Node a{config_for(dir_a), &repl_a};
+    Node a{short_retention_config_for(dir_a), &repl_a};
     Node b{config_for(dir_b), &repl_b};
     a.start();
     b.start();
@@ -412,8 +544,8 @@ TEST(AuditTrail, ReplicatesToPeer) {
     EXPECT_EQ(summary_event->value().summary->calls, 300u);
     EXPECT_EQ(summary_event->value().summary->events_delivered, 12u);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    const std::string before = zetta::util::now_iso8601();
+    wait_out_the_retention_window();
+    const std::string before = zetta::util::iso8601_seconds_ago(1);
     std::string purge_error;
     const auto removed = a.purge_audit_before(before, "cluster-admin",
                                                &purge_error);
@@ -500,6 +632,9 @@ TEST(AuditTrail, BackgroundActionSpellingsRoundTrip) {
     EXPECT_EQ(audit_action_from("dataset_added"), AuditAction::DatasetAdded);
     EXPECT_EQ(to_string(AuditAction::AuditPurged), "audit_purged");
     EXPECT_EQ(audit_action_from("audit_purged"), AuditAction::AuditPurged);
+    EXPECT_EQ(to_string(AuditAction::AuditRetentionExpired), "audit_retention_expired");
+    EXPECT_EQ(audit_action_from("audit_retention_expired"),
+              AuditAction::AuditRetentionExpired);
     EXPECT_EQ(to_string(AuditAction::EgressDenied), "egress_denied");
     EXPECT_EQ(audit_action_from("egress_denied"), AuditAction::EgressDenied);
 
@@ -1068,7 +1203,7 @@ TEST(AuditTrail, LegacyPeerIsRefusedForAuditButStillReplicatesCatalog) {
     ASSERT_EQ(rows.rows.size(), 2u);
     for (const auto& row : rows.rows) {
         const bool local = row.at("node_id") == modern_id;
-        EXPECT_EQ(row.at("audit_protocol_version"), local ? 2 : 0);
+        EXPECT_EQ(row.at("audit_protocol_version"), local ? zetta::governance::kAuditProtocolVersion : 0u);
         EXPECT_EQ(row.at("audit_compatible"), local);
     }
     modern.stop();

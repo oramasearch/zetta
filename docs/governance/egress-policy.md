@@ -81,18 +81,56 @@ gets one `egress_denied` event per refused connection:
 | Field | Value |
 | --- | --- |
 | `action` | `egress_denied` |
-| `actor` | who the connection was for (#1323): the run's principal for a graph step, the caller for a capability, `local` for the trusted session, `node` only for the node's own work |
+| `actor` | who the connection was for (#1323): the run's principal for a graph step, the caller for a capability, `local` for the trusted session, `node:<node id>` only for the node's own work (#1327) |
 | `target` | `egress:<host>:<port>` |
 | `allowed` | `false` |
 | `detail` | the reason above, and `(run <id>)` when a graph step made the connection |
+| `surface` | the surface the caller came through (#1328), carried on the denial (`HttpRequest::on_behalf_of_surface`) because the row is recorded on the client's thread; `internal` when none was declared |
 
 **Attribution (#1323).** Each graph step runs inside a `connect::OutboundCallerScope` naming the
 run's principal and the run (`pipeline/executor.cpp`); a capability call already declares its actor
 (`governance::AuditActorScope`). The native HTTP client copies whichever is innermost onto the
 request on the caller's thread (`HttpRequest::on_behalf_of`, `on_behalf_of_run`; never sent to the
-destination) and the dialler reports it with any refusal. Work a step hands to another thread
-(a compute job's worker, the distributed fetch on a peer) carries no scope yet and is attributed to
-`node`.
+destination) and the dialler reports it with any refusal. Work handed to another thread keeps it:
+`runtime::offload` carries the `OutboundCallerScope` (and the audit origin) to the pool worker
+through a registered context carrier (`runtime::register_context_carrier`), the compute-job thread
+workers reinstate the audit origin they captured, and a distributed connector fetch carries the
+principal in its launch payload (`on_behalf_of`), so each peer dials its stripe as the caller (#1323).
+Only work no caller started is attributed to `node:<node id>`.
+
+## Per-principal egress scopes (#1323)
+
+Decided under Steve's 2026-11-14 delegation: the design on #1323, with the scope a replicated
+record sealed by the identity root.
+
+An **egress scope** narrows what named principals may reach, inside the node's allowlist:
+
+1. **The record.** `egress_scope:<id>` holds `{name, principals: [user, role or access-key ids],
+   allow: "<allowlist>"}` (`connect::EgressScopeValue`, validated by
+   `connect::parse_egress_scope_value`). It is sealed and versioned by the identity root like the
+   identity records ([identity-seal.md](identity-seal.md)): a node honors only a record whose seal
+   verifies, and a verify-only node refuses the write. `cluster:admin` manages scopes with
+   `create_egress_scope {name, principals, allow}` (an existing name is replaced) and
+   `drop_egress_scope {name}`. A standalone node keeps them in
+   `<data_dir>/security/egress-scopes.json`.
+2. **The snapshot.** The owner thread compiles the scopes into one map, principal id to the union
+   of every scope that names it or one of its roles (`Node::publish_egress_scopes`), and installs
+   it with `connect::set_egress_scopes`, a mutex-guarded value like `set_egress_policy`. It is
+   rebuilt when a scope changes and, from the tick, when a role assignment moved. The dialler never
+   touches `Node`.
+3. **The check.** A destination is allowed only when the node allowlist admits it and, when the
+   connection's principal has a scope, the scope admits it too. A principal with no scope gets the
+   node allowlist alone, and so does the trusted local session. Loopback stays exempt. The
+   refusal says which one refused: `egress denied: <host>:<port> is not on the egress scope of
+   <principal> (<scopes>) ...` for the scope, the allowlist reason for the node, and
+   `EgressDenial::refused_by` is `scope` or `node`.
+4. **Handed-off work** carries the principal (above).
+
+A scope can only narrow: adding one never lets a principal reach anything the node allowlist
+refuses. Test: `EgressScope.APrincipalsScopeNarrowsTheNodeAllowlist` (a principal whose scope
+lacks a host is refused, with that principal on the denial; the same host is admitted for a
+principal with no scope; loopback is exempt), `EgressScope.TheNodePublishesItsScopesForTheDialler`,
+`EgressScope.OffloadedWorkKeepsItsOutboundCaller`, `EgressScope.TheValueIsValidatedAtTheBoundary`.
 
 A name refused by the allowlist is never resolved, so the refusal sends no DNS query either: a DNS
 lookup can carry data out on its own.
@@ -114,14 +152,13 @@ what the workspace allows. A node run any other way (on-prem, a laptop, the desk
 
 ## Limits
 
-- **The allowlist is per node; what a principal may reach is narrowed by its grants.** The
-  allowlist belongs to the running node, and a refusal now names the principal and run it was for
-  (above). What one principal may reach is narrowed where its outbound requests come from: a saved
-  connection only by its owner or a `connections:use` grant on it (#1339), an inline connector only
-  with `create_connection`, a delivery's credential only to an administrator-approved origin (#1453),
-  and each graph step only with the right its kind exercises (#843). A per-principal allowlist in the
-  dialler itself is not built: [#1323](https://github.com/oramasearch/zetta/issues/1323) carries the
-  design.
+- **The allowlist is per node; a scope narrows it per principal.** The allowlist belongs to the
+  running node, and a refusal names the principal and run it was for (above). An egress scope
+  narrows it for the principals it names, in the dialler itself (#1323, above). What one principal
+  may reach is also narrowed where its outbound requests come from: a saved connection only by its
+  owner or a `connections:use` grant on it (#1339), an inline connector only with
+  `create_connection`, a delivery's credential only to an administrator-approved origin (#1453),
+  and each graph step only with the right its kind exercises (#843).
 - **Subprocesses are outside it.** The cloud provisioner's read-only `CommandRunner` calls run a
   provider CLI as a separate process; those calls are consent-gated
   ([../api/consent.md](../api/consent.md)) and permission-gated

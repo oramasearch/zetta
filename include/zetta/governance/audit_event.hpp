@@ -15,7 +15,10 @@
 
 namespace zetta::governance {
 
-inline constexpr unsigned kAuditProtocolVersion = 2;
+// 3: audit values may carry `surface` (#1328). A node at 2 rejects such a
+// record (its schema is sealed), so every node is upgraded together
+// (docs/governance/audit-trail.md).
+inline constexpr unsigned kAuditProtocolVersion = 3;
 
 // Bounded whitespace-free identifiers used in peer status/range envelopes.
 bool valid_audit_origin(std::string_view origin);
@@ -67,7 +70,15 @@ enum class AuditAction {
     EgressDenied,  // the egress policy refused an outbound connection (CTL-4, #75)
     SafeModeChanged,    // a database's or connection's safe mode level changed (#1373)
     SafeModeConfirmed,  // a caller confirmed a safe-mode warning and the statement ran (#1373)
+    AuditRetentionExpired,  // the retention pass removed records (#1329)
 };
+
+// A record of a trim (`audit_purged`, `audit_retention_expired`) outlives every
+// later purge and retention pass (#1329): AuditTrail::retain_since never
+// removes one, and a peer keeps one it receives below its low-water mark, so
+// the trail always shows that a trim happened, who made it, the cutoff and
+// the count.
+bool audit_record_outlives_trims(AuditAction action);
 
 // Completeness metadata for an authorised high-frequency read window (#1154).
 // The first read still records a session-start event; subsequent successful
@@ -98,7 +109,18 @@ struct AuditEventValue {
     std::string detail;   // human-readable reason / summary (e.g. the deny reason)
     std::string time;     // ISO-8601 UTC stamp at the moment recorded
     std::optional<AuditReadSummary> summary;
+    // Which surface the action came through (#1328): one of kAuditSurfaces
+    // ("mcp", "rest", "web", "desktop", "pgwire", "console", "internal"), or
+    // empty when no entry point declared one (a record from before #1328, a
+    // peer reconcile). Stamped by the sink from AuditSurfaceScope.
+    std::string surface;
 };
+
+// The surfaces an audited action can come through (#1328), the `surface` enum
+// of the AuditEvent JSON Schema.
+inline constexpr std::string_view kAuditSurfaces[] = {
+    "mcp", "rest", "web", "desktop", "pgwire", "console", "internal"};
+bool is_audit_surface(std::string_view surface);
 
 // Serialize an audit-event value to its JSON shape (no id). The inverse of
 // parse_audit_event_value; used for segment records, legacy migration and tests.
@@ -154,6 +176,48 @@ private:
 // The actor of the innermost open AuditActorScope on this thread, or nullopt
 // when no entry point declared one (a background worker, a peer reconcile).
 std::optional<std::string> current_audit_actor();
+
+// The surface the current thread's work came through (#1328), declared by the
+// entry point exactly like the actor: the MCP and REST servers and the web
+// routes (through ApiContext::surface and Registry::call), the headed app's
+// frame ("desktop"), the governed console ("console") and work the node starts
+// itself ("internal"). Node::record_audit_event stamps it on any event recorded
+// without one; Node::run_on_owner and the background launchers carry it.
+// A value that is not one of kAuditSurfaces is ignored.
+class AuditSurfaceScope {
+public:
+    explicit AuditSurfaceScope(std::optional<std::string> surface);
+    ~AuditSurfaceScope();
+    AuditSurfaceScope(const AuditSurfaceScope&) = delete;
+    AuditSurfaceScope& operator=(const AuditSurfaceScope&) = delete;
+
+private:
+    std::optional<std::string> previous_;
+};
+
+std::optional<std::string> current_audit_surface();
+
+// Who is acting and through which surface, captured where work is handed off
+// (a job submitted, a background action launched, owner work queued) and
+// reinstated where it runs, so rows the work records later on another thread
+// name the caller who started it (#1327, #1328).
+struct AuditOrigin {
+    std::optional<std::string> actor;
+    std::optional<std::string> surface;
+};
+AuditOrigin capture_audit_origin();
+
+// Reinstates a captured origin for the scope's lifetime (both halves, exactly,
+// including "none declared").
+class AuditOriginScope {
+public:
+    explicit AuditOriginScope(const AuditOrigin& origin)
+        : actor_(origin.actor), surface_(origin.surface) {}
+
+private:
+    AuditActorScope actor_;
+    AuditSurfaceScope surface_;
+};
 
 // An interface for appending audit events, decoupling the entities that *emit* them
 // (e.g. a Project's graph CRUD) from the Node that owns the retained trail.

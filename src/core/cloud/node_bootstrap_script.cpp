@@ -126,6 +126,7 @@ write_env_file() {
     tmp_env=$(mktemp "$ENV_FILE.XXXXXX") || return 1
     {
         if [ -n "$ZETTA_SEED_PEER" ]; then printf 'ZETTA_SEED_PEER=%s\n' "$ZETTA_SEED_PEER"; fi
+        if [ -n "$ZETTA_IDENTITY_ROOT" ]; then printf 'ZETTA_IDENTITY_ROOT=%s\n' "$ZETTA_IDENTITY_ROOT"; fi
         if [ "$TOKEN_STORE" != none ]; then printf 'ZETTA_CLUSTER_TOKEN_FILE=%s\n' "$TOKEN_FILE"; fi
     } > "$tmp_env"
     chmod 0644 "$tmp_env"
@@ -221,6 +222,7 @@ std::optional<std::string> render_node_bootstrap_script(
 
     const ClusterTokenReference& token = options.token;
     for (const std::string_view value : {std::string_view{options.seed_peer},
+                                         std::string_view{options.identity_root},
                                          std::string_view{token.secret_name},
                                          std::string_view{token.container},
                                          std::string_view{token.identity},
@@ -272,6 +274,7 @@ std::optional<std::string> render_node_bootstrap_script(
         "set -u\n"
         "umask 077\n";
     assign(script, "ZETTA_SEED_PEER", options.seed_peer);
+    assign(script, "ZETTA_IDENTITY_ROOT", options.identity_root);
     assign(script, "TOKEN_STORE", store_label(token.store));
     assign(script, "TOKEN_SECRET", token.secret_name);
     assign(script, "TOKEN_CONTAINER", token.container);

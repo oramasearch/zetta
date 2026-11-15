@@ -41,7 +41,11 @@ and desired state is back.
 
 Every (re)start writes a log line onto the new run — either *"started run for
 deployment …"* or *"self-heal — restarted deployment … after N failed run(s)"* —
-so the heal is observable and diagnosable from the run's own logs.
+so the heal is observable and diagnosable from the run's own logs. The same
+line goes on the audit trail as `data_changed` on `run:<id>`, with actor
+`node:<node id>` and surface `internal`: the start is the node's own work, not
+the work of whoever deployed the graph (#1327,
+[audit trail](../governance/audit-trail.md#work-the-node-starts-itself-1327)).
 
 ## How it runs — driven by `tick()`
 

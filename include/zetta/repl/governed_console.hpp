@@ -91,7 +91,12 @@ public:
     // (DefaultStepExecutor). A host injects one to route a churn-shaped graph through
     // the real churn engine on the node's live JobCoordinator (#580) — see
     // `run_churn_solution_on_node` / `is_churn_graph` in churn_solution.hpp.
-    using GraphRunner = std::function<pipeline::ExecutionResult(const ir::ExecutionGraph&)>;
+    // The runner is handed the session's principal (#1322) and must execute
+    // every step as it (`GraphExecutor::run_as`, `ChurnSolutionOptions::principal`,
+    // `Node::run_graph(graph, {}, {}, principal)`); the local session is the
+    // trusted one.
+    using GraphRunner = std::function<pipeline::ExecutionResult(
+        const ir::ExecutionGraph&, const pipeline::RunPrincipal&)>;
     void set_graph_runner(GraphRunner runner) {
         graph_runner_ = std::move(runner);
     }

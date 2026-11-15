@@ -63,6 +63,33 @@ Proof: `tests/governance/test_consent.cpp` `AnInlineCredentialIsHeldToExecuteBut
 `AnInlineConnectorTokenNeverAppearsInTheChallenge` (the refusal, `list_consent_requests` and
 `system.consent_requests`).
 
+## A deployment target's credential is a saved connection's name (#1315)
+
+Decided under Steve's 2026-11-14 delegation (option 1 on #1315).
+`DeploymentTarget::credentials_ref` names a saved connection, never the secret:
+
+- **At the boundary.** `DeploymentTarget::from_json` refuses a non-empty
+  `credentials_ref` that is not a valid connection name
+  (`connect::connection_name_rejection`: 1 to 64 of `[A-Za-z0-9_-]`, starting
+  with a letter or digit). A secret pasted into it (a token with `/`, `+`, `=`
+  or spaces, or longer than 64 characters) is refused, so it is never replicated
+  and never rendered in `system.deployments`; the reason names the rule, never
+  the value. A stored or replicated record that fails the check is skipped.
+- **On deploy.** `Node::deploy_graph(graph, target, name, principal, &error)`
+  resolves the name with `pipeline::resolve_deployment_credentials` before
+  anything is placed: `find_connection`, in memory, plus
+  `may_access_connection(..., Use)` for the deploying principal (#1339). It
+  fails closed when the name names no saved connection, when its credential
+  does not open on this node or there is none, and when the principal may not
+  use the connection; that last refusal is audited on `connection:<name>`. Every
+  refusal is a denied `graph_deployed` row. A `Local` target takes no
+  `credentials_ref` and is refused with one. The API `deploy` deploys as its
+  caller.
+- No remote placement kind is built yet, so a resolved credential is not
+  presented anywhere: the deploy then stops at "not functional yet", as before.
+
+Proof: `tests/pipeline/test_deployment.cpp` `DeploymentCredentials.*`.
+
 ## What is not met yet
 
 - **An embedded node keeps its root secret beside the data.** A library or test node built
@@ -70,7 +97,6 @@ Proof: `tests/governance/test_consent.cpp` `AnInlineCredentialIsHeldToExecuteBut
   `<data_dir>/security/connection-root-secret`, which a copy of `data_dir` carries. `main` never
   does this since [#1314](https://github.com/oramasearch/zetta/issues/1314); an embedding that
   stores real credentials must pass a secret it holds elsewhere.
-- **`DeploymentTarget::credentials_ref`** (`pipeline/deployment_target.hpp`) is declared as a
-  reference but nothing resolves it: only `Local` targets are functional and they take no
-  credential. When a remote placement kind is built, its `credentials_ref` resolves through the
-  saved-connection store: [#1315](https://github.com/oramasearch/zetta/issues/1315).
+- **No remote placement kind consumes a deployment credential yet.** `credentials_ref` is
+  validated and resolved (above, #1315), but only `Local` targets are functional; the first
+  remote kind presents the resolved connection's credential from memory.

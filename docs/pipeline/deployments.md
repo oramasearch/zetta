@@ -44,7 +44,13 @@ local.is_local();                                     // true
 `to_json()` / `from_json()` serialize the shape `{ kind, binding,
 credentials_ref }`. `from_json` **validates at the boundary**: it returns
 `std::nullopt` unless the value is an object whose `kind` is a known name, so a
-malformed target never enters the in-memory tree.
+malformed target never enters the in-memory tree. A non-empty `credentials_ref`
+must be a saved-connection name (#1315): a secret pasted into it is refused
+there, so it is never replicated nor shown in `system.deployments`. On deploy,
+`Node::deploy_graph(graph, target, name, principal, &error)` resolves it through
+the saved-connection store for the deploying principal and fails closed
+(`pipeline/deployment_credentials.hpp`; a `Local` target takes none). See
+[secret references](../governance/secret-references.md#a-deployment-targets-credential-is-a-saved-connections-name-1315).
 
 ## The record — `Deployment`
 

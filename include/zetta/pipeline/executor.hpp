@@ -138,7 +138,9 @@ public:
     // step is not run, the run ends Failed (fail-fast) with the denial logged, and
     // the decision (granted or denied) is a `data_access` audit event. Without a
     // principal, or with the local one, steps run unchecked as before: the
-    // trusted local session.
+    // trusted local session. The principal is recorded on the Run (#1322); a run
+    // executed again without run_as (a study trial, a reused Run) runs as the
+    // principal it records.
     GraphExecutor& run_as(RunPrincipal principal) {
         principal_ = std::move(principal);
         return *this;

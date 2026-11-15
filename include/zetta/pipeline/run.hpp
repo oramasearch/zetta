@@ -90,6 +90,17 @@ struct RunPublication {
     friend bool operator==(const RunPublication&, const RunPublication&) = default;
 };
 
+// Who a run runs as (#1322): the user or access-key id the run's steps are
+// authorized for, recorded when a non-local principal starts the run, so a run
+// the node resumes or retries (a study trial, a reused Run) keeps its caller
+// instead of falling back to the trusted local session. Absent for a run the
+// local session started.
+struct RunPrincipalRecord {
+    std::string id;
+    bool is_user = false;
+    friend bool operator==(const RunPrincipalRecord&, const RunPrincipalRecord&) = default;
+};
+
 // The mutable, replicated/on-disk value of a run — everything the CRDT key
 // `run:<uuid>` carries (the id is the key / folder name, so it isn't repeated).
 // This is exactly the shape validated by the Run JSON Schema at every boundary.
@@ -117,6 +128,8 @@ struct RunValue {
     std::vector<TableRead> reads;
     // Set when a published pipeline's served route started the run (zetta#1289).
     std::optional<RunPublication> published;
+    // Who the run runs as (#1322); serialized only when set.
+    std::optional<RunPrincipalRecord> principal;
     // Empty for integer entities. Text-backed runs keep the deterministic
     // derived-id map so their intermediate numeric keys remain auditable: a
     // reference to its rows in the `_entity_keys` table (#1255), or inline
@@ -190,6 +203,7 @@ public:
     const RunLineage& lineage() const { return value_.lineage; }
     const std::vector<TableRead>& reads() const { return value_.reads; }
     const std::optional<RunPublication>& published() const { return value_.published; }
+    const std::optional<RunPrincipalRecord>& principal() const { return value_.principal; }
     const nlohmann::json& entity_key_mapping() const {
         return value_.entity_key_mapping;
     }
@@ -207,6 +221,8 @@ public:
     void add_reads(const std::vector<TableRead>& reads);
     // Record that a published pipeline's route served this run (zetta#1289).
     void set_published(RunPublication published);
+    // Record who the run runs as (#1322); captures only on change.
+    void set_principal(RunPrincipalRecord principal);
     void set_trace_id(std::string trace_id);  // the run's trace (#640)
     // A text entity-key mapping, inline `{column, entries}` or a reference to
     // its table (#1255). With an entity-key store (Node sets one), the inline

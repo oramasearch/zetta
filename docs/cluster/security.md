@@ -119,6 +119,13 @@ table, and rides only the bootstrap path. A `Cluster` with empty security (an
 embedded bare `Cluster` in a test/host, the only unsecured path — #799) has an
 empty token, so nothing is injected.
 
+The cluster's **identity root** public key rides the same path as
+**`ZETTA_IDENTITY_ROOT`** (#1343): `main.cpp` passes `ClusterConfig::identity_root`
+to `ProvisionerFleet::wire`, which sets it on every config (it is public, so it is a
+literal env var, tag or environment-file line, never a secret store), and the burst
+node pins the cluster's root instead of making its own
+([identity-seal.md](../governance/identity-seal.md)).
+
 #### How the token is delivered, per provider (#770)
 
 **Never on a command line.** The control planes run vendor CLIs as child

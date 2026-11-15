@@ -107,6 +107,11 @@ std::vector<std::string> run_argv(const BareMetalConfig& config,
     if (!config.seed_peer.empty()) {
         flag(run, "--env", "ZETTA_SEED_PEER=" + config.seed_peer);
     }
+    // The cluster's identity root public key (#1343), a literal like the seed:
+    // it is not a secret.
+    if (!config.identity_root.empty()) {
+        flag(run, "--env", "ZETTA_IDENTITY_ROOT=" + config.identity_root);
+    }
     if (token_env_file != nullptr) {
         flag(run, "--env-file", token_env_file->path().string());
     }

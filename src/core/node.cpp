@@ -19,6 +19,7 @@
 #include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/ml/anomaly_methodology.hpp"
 #include "zetta/ml/forecast_methodology.hpp"
+#include "zetta/pipeline/deployment_credentials.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
@@ -121,6 +122,7 @@ struct ReplicationReconcileBatches {
     ReconcileBatch tokens;
     ReconcileBatch user_roles;
     ReconcileBatch policies;
+    ReconcileBatch egress_scopes;
     ReconcileBatch ledger_entries;
     ReconcileBatch nodes;
 };
@@ -199,6 +201,9 @@ ReconcileBatch* batch_for_replication_key(
     }
     if (key.starts_with(catalog::kPolicyPrefix)) {
         return &batches.policies;
+    }
+    if (key.starts_with(catalog::kEgressScopePrefix)) {
+        return &batches.egress_scopes;
     }
     if (key.starts_with(catalog::kLedgerPrefix)) {
         return &batches.ledger_entries;
@@ -714,6 +719,7 @@ bool Node::start() {
     load_tokens();
     load_user_roles();
     load_policies();
+    load_egress_scopes();
     if (!load_audit_events()) {
         running_ = false;
         return false;
@@ -994,6 +1000,13 @@ void Node::tick() {
     drain_owner_work();
     if (!running_) return;
     ++ticks_;
+    // Everything below is work the node starts itself (#1327): the control
+    // plane's runs and self-heals, retention, study trials. It is on the trail
+    // as `node:<node id>` through `internal`, unless the work declares its own
+    // caller (a study trial runs as its principal; owner work drained above
+    // reinstated the origin it was queued with).
+    const zetta::governance::AuditOriginScope node_work{
+        zetta::governance::AuditOrigin{"node:" + node_id_, std::string("internal")}};
     // 1. Pull: the CRDT is the source of truth; when it has advanced (a local
     //    capture or a peer's gossip merged in on the network thread), reconcile
     //    the on-disk projection to match it. Reconcile only materializes (never
@@ -1035,6 +1048,9 @@ void Node::tick() {
         //     that produced it.
         flush_stores();
     }
+    // 1d. The dialler's egress-scope snapshot (#1323), when a scope or a role
+    //     assignment moved.
+    if (egress_scopes_dirty_) publish_egress_scopes();
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
     controller_.reconcile();
@@ -1195,7 +1211,13 @@ void Node::flush_pending_captures(bool force) {
 }
 
 void Node::run_on_owner(const std::function<void()>& work) {
+    run_on_owner(zetta::governance::capture_audit_origin(), work);
+}
+
+void Node::run_on_owner(const zetta::governance::AuditOrigin& origin,
+                        const std::function<void()>& work) {
     if (on_owner_thread()) {
+        const zetta::governance::AuditOriginScope scope{origin};
         work();
         return;
     }
@@ -1207,6 +1229,7 @@ void Node::run_on_owner(const std::function<void()>& work) {
     // loop iteration, so a real owner is always adopted before any background
     // action can launch.
     if (owner_thread_.load(std::memory_order_acquire) == std::thread::id{}) {
+        const zetta::governance::AuditOriginScope scope{origin};
         work();
         return;
     }
@@ -1214,11 +1237,11 @@ void Node::run_on_owner(const std::function<void()>& work) {
     // The work runs on another thread, so it carries the caller's acting
     // identity with it (#847): an audit event the work records is attributed
     // to whoever handed it over, not to whatever the owner thread was doing.
-    std::function<void()> attributed =
-        [work, actor = zetta::governance::current_audit_actor()] {
-            const zetta::governance::AuditActorScope scope{actor};
-            work();
-        };
+    // ...and the surface it came through (#1328).
+    std::function<void()> attributed = [work, origin] {
+        const zetta::governance::AuditOriginScope scope{origin};
+        work();
+    };
     {
         std::lock_guard<std::mutex> lock(owner_work_mutex_);
         owner_work_queue_.push_back(
@@ -1264,6 +1287,12 @@ void Node::drain_owner_work() {
 
 void Node::stop() {
     if (!running_) return;
+    // The dialler's egress-scope snapshot is process-wide (#1323): a node that
+    // installed one takes it with it, like the binary's egress policy.
+    if (egress_scopes_published_) {
+        zetta::connect::set_egress_scopes({});
+        egress_scopes_published_ = false;
+    }
     // A record anti-entropy round runs on the pool against the record store and
     // the cluster; let it finish before either goes away (#1231).
     if (record_anti_entropy_) {
@@ -2053,8 +2082,40 @@ std::vector<std::string> Node::project_names() const {
 std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
                                                zetta::pipeline::DeploymentTarget target,
                                                std::string graph_name) {
+    return deploy_graph(graph, std::move(target), std::move(graph_name),
+                        zetta::pipeline::RunPrincipal{});
+}
+
+std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(
+    const ir::ExecutionGraph& graph, zetta::pipeline::DeploymentTarget target,
+    std::string graph_name, const zetta::pipeline::RunPrincipal& principal,
+    std::string* error) {
+    const auto refuse = [&](std::string reason) -> std::shared_ptr<zetta::pipeline::Deployment> {
+        record_audit_event(
+            {zetta::governance::AuditAction::GraphDeployed, {}, graph_name, false, reason, {}});
+        if (error != nullptr) *error = std::move(reason);
+        return nullptr;
+    };
+    // The target's credential reference (#1315): a saved connection's name,
+    // resolved in memory for the deploying principal, failing closed. A Local
+    // target takes none. No remote kind consumes the opened credential yet,
+    // so it is dropped here once it has resolved.
+    if (!target.credentials_ref.empty()) {
+        if (target.is_local()) {
+            return refuse("a local target takes no credentials_ref");
+        }
+        const zetta::pipeline::DeploymentCredentials credentials =
+            zetta::pipeline::resolve_deployment_credentials(*this, target, principal);
+        if (!credentials.ok()) return refuse(credentials.error);
+    }
     // R1 places onto the local node only; k8s/cloud targets are deferred.
-    if (!target.is_local()) return nullptr;
+    if (!target.is_local()) {
+        if (error != nullptr) {
+            *error = "the '" + zetta::pipeline::to_string(target.kind) +
+                     "' target is planned but not functional yet; use 'local'";
+        }
+        return nullptr;
+    }
     // A deployable graph must have something to place.
     if (graph.empty()) return nullptr;
 
@@ -2514,6 +2575,12 @@ void Node::load_studies() {
 
 std::shared_ptr<zetta::ml::Study> Node::create_study(
     zetta::ml::StudySpec spec, std::string* error) {
+    return create_study(std::move(spec), error, zetta::pipeline::RunPrincipal{});
+}
+
+std::shared_ptr<zetta::ml::Study> Node::create_study(
+    zetta::ml::StudySpec spec, std::string* error,
+    const zetta::pipeline::RunPrincipal& principal) {
     std::shared_ptr<zetta::pipeline::Project> project =
         find_project_by_id(spec.project);
     if (!project) {
@@ -2539,6 +2606,9 @@ std::shared_ptr<zetta::ml::Study> Node::create_study(
     // The tables its trials read (zetta#1258): its dataset, or its pipeline's.
     value.reads = tables_read(spec.project, spec.pipeline, spec.dataset);
     value.spec = std::move(spec);
+    // Its trials run as whoever created it, never as the node (#1322).
+    value.principal = principal.acting_id;
+    value.principal_is_user = principal.acting_is_user;
     value.created = zetta::util::now_iso8601();
     value.updated = value.created;
     const std::string id = zetta::util::new_uuid();
@@ -3425,6 +3495,10 @@ std::shared_ptr<zetta::compute::ComputeJob> Node::create_job(zetta::compute::Job
     value.scaling_policy = std::move(scaling_policy);
     value.created = now;
     value.updated = now;
+    // Who queued it, so the job_finished row a worker records later names them
+    // (#1327); job_created below takes the same scopes from record_audit_event.
+    if (auto actor = zetta::governance::current_audit_actor()) value.submitted_by = *actor;
+    if (auto surface = zetta::governance::current_audit_surface()) value.submitted_via = *surface;
     if (replication_) replication_->set(catalog::job_key(id), to_json(value));
     auto job = materialize_job(id, std::move(value));
     // Audit the create (FEAT-9): queueing a compute job is a governed action.
@@ -4511,6 +4585,7 @@ std::shared_ptr<zetta::governance::UserRole> Node::materialize_user_role(
         std::move(id), std::move(user_id), std::move(role_id), dir);
     assignment->persist_meta();
     user_roles_.push_back(assignment);
+    egress_scopes_dirty_ = true;  // a role's scope may now name this user (#1323)
     return assignment;
 }
 
@@ -4524,6 +4599,7 @@ bool Node::materialize_drop_user_role(const std::string& id) {
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
     user_roles_.erase(it);
+    egress_scopes_dirty_ = true;  // #1323
     return true;
 }
 
@@ -4687,6 +4763,157 @@ void Node::reconcile_policies(
             policy->set_value(value);
         }
     }
+}
+
+// ----- per-principal egress scopes (egress_scope:<id>, #1323) ---------------
+
+bool Node::create_egress_scope(zetta::connect::EgressScopeValue value,
+                               std::string* error) {
+    if (!identity_writable()) {
+        if (error) *error = "this node cannot issue identity (its root is verify-only)";
+        return false;
+    }
+    // The same boundary every replicated copy passes.
+    const std::optional<zetta::connect::EgressScopeValue> parsed =
+        zetta::connect::parse_egress_scope_value(zetta::connect::to_json(value), error);
+    if (!parsed) return false;
+    std::string id;
+    for (const auto& [existing_id, existing] : egress_scopes_) {
+        if (existing.name == parsed->name) id = existing_id;
+    }
+    if (id.empty()) id = zetta::util::new_uuid();
+    if (replication_) {
+        replicate_identity(catalog::egress_scope_key(id), zetta::connect::to_json(*parsed));
+    }
+    egress_scopes_[id] = *parsed;
+    persist_egress_scopes();
+    publish_egress_scopes();
+    return true;
+}
+
+bool Node::drop_egress_scope(const std::string& name) {
+    if (!identity_writable()) return false;
+    for (auto it = egress_scopes_.begin(); it != egress_scopes_.end(); ++it) {
+        if (it->second.name != name) continue;
+        if (replication_) remove_identity(catalog::egress_scope_key(it->first));
+        egress_scopes_.erase(it);
+        persist_egress_scopes();
+        publish_egress_scopes();
+        return true;
+    }
+    return false;
+}
+
+std::vector<zetta::connect::EgressScopeValue> Node::egress_scopes() const {
+    std::vector<zetta::connect::EgressScopeValue> scopes;
+    for (const auto& [id, scope] : egress_scopes_) scopes.push_back(scope);
+    std::ranges::sort(scopes, {}, &zetta::connect::EgressScopeValue::name);
+    return scopes;
+}
+
+void Node::publish_egress_scopes() {
+    egress_scopes_dirty_ = false;
+    // Nothing to install, and nothing of ours installed: leave the
+    // process-wide snapshot alone (another node in this process may own it).
+    if (egress_scopes_.empty() && !egress_scopes_published_) return;
+    // A role names every user that holds it.
+    std::map<std::string, std::vector<std::string>> users_of_role;
+    for (const auto& assignment : user_roles_) {
+        users_of_role[assignment->role_id()].push_back(assignment->user_id());
+    }
+    std::map<std::string, zetta::connect::PrincipalEgress> snapshot;
+    for (const zetta::connect::EgressScopeValue& scope : egress_scopes()) {
+        const std::optional<zetta::connect::EgressPolicy> policy =
+            zetta::connect::EgressPolicy::parse(scope.allow);
+        if (!policy) continue;  // parse_egress_scope_value already refused it
+        std::set<std::string> named;
+        for (const std::string& principal : scope.principals) {
+            named.insert(principal);
+            if (const auto users = users_of_role.find(principal); users != users_of_role.end()) {
+                named.insert(users->second.begin(), users->second.end());
+            }
+        }
+        for (const std::string& principal : named) {
+            zetta::connect::PrincipalEgress& entry = snapshot[principal];
+            entry.policy.merge(*policy);
+            entry.scopes.push_back(scope.name);
+        }
+    }
+    egress_scopes_published_ = !snapshot.empty();
+    zetta::connect::set_egress_scopes(std::move(snapshot));
+}
+
+void Node::reconcile_egress_scopes(const nlohmann::json& snapshot,
+                                   const std::vector<std::string>* changed_keys) {
+    std::map<std::string, zetta::connect::EgressScopeValue> desired;
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kEgressScopePrefix);
+        if (id.empty()) continue;
+        std::optional<zetta::connect::EgressScopeValue> parsed =
+            zetta::connect::parse_egress_scope_value(value);
+        if (!parsed) continue;  // boundary
+        desired.emplace(std::move(id), std::move(*parsed));
+    }
+    bool changed = false;
+    for (auto it = egress_scopes_.begin(); it != egress_scopes_.end();) {
+        if (reconciliation_includes_key(changed_keys, catalog::egress_scope_key(it->first)) &&
+            !desired.contains(it->first)) {
+            it = egress_scopes_.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    for (auto& [id, value] : desired) {
+        auto& held = egress_scopes_[id];
+        if (held != value) {
+            held = std::move(value);
+            changed = true;
+        }
+    }
+    if (changed) egress_scopes_dirty_ = true;
+}
+
+void Node::load_egress_scopes() {
+    // A replicated node reads its scopes from the (sealed) document; the file
+    // is the standalone node's store.
+    egress_scopes_.clear();
+    if (replication_) return;
+    const fs::path path = fs::path(config_.data_dir) / "security" / "egress-scopes.json";
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return;
+    std::ifstream in(path);
+    const nlohmann::json document = nlohmann::json::parse(in, nullptr, false);
+    if (!document.is_object() || !document.contains("scopes") ||
+        !document["scopes"].is_object()) {
+        std::fprintf(stderr, "zetta: ignoring malformed %s\n", path.c_str());
+        return;
+    }
+    for (const auto& [id, value] : document["scopes"].items()) {
+        if (auto parsed = zetta::connect::parse_egress_scope_value(value)) {
+            egress_scopes_.emplace(id, std::move(*parsed));
+        }
+    }
+    egress_scopes_dirty_ = true;
+}
+
+void Node::persist_egress_scopes() const {
+    if (replication_) return;
+    nlohmann::json scopes = nlohmann::json::object();
+    for (const auto& [id, scope] : egress_scopes_) scopes[id] = zetta::connect::to_json(scope);
+    const fs::path path = fs::path(config_.data_dir) / "security" / "egress-scopes.json";
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    const fs::path tmp = path.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << nlohmann::json{{"version", 1}, {"scopes", std::move(scopes)}}.dump() << "\n";
+        if (!out) {
+            std::fprintf(stderr, "zetta: cannot write %s\n", tmp.c_str());
+            return;
+        }
+    }
+    fs::rename(tmp, path, ec);  // atomic replace
 }
 
 // ----- virtual tables (vtable:<name>, #809 slice 3) -------------------------
@@ -5265,9 +5492,23 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     // An event recorded without an actor inside a call names the caller (#847):
     // the entry point declared who is acting (AuditActorScope), so a deploy, a
     // queued job or a created project is attributed instead of left blank.
+    // No entry point declared one: the row is the node's own work, named
+    // `node:<node id>` (#1327), never left blank.
     if (value.actor.empty()) {
         if (auto actor = zetta::governance::current_audit_actor()) {
             value.actor = std::move(*actor);
+        } else {
+            value.actor = "node:" + node_id_;
+        }
+    }
+    // ...and the surface it came through (#1328), declared the same way. Every
+    // row carries one: a row recorded where no entry point declared a surface
+    // is work the node started itself, `internal`.
+    if (value.surface.empty()) {
+        if (auto surface = zetta::governance::current_audit_surface()) {
+            value.surface = std::move(*surface);
+        } else {
+            value.surface = "internal";
         }
     }
     std::string error;
@@ -5290,6 +5531,27 @@ std::optional<std::size_t> Node::purge_audit_before(
     if (!now || *cutoff > *now) {
         if (error) {
             *error = "before must not be in the future";
+        }
+        return std::nullopt;
+    }
+    // Never recent history (#1329): the cutoff must be at least the ordinary
+    // retention window in the past, so an administrator cannot remove the
+    // evidence of what they just did. A node that keeps every record has no
+    // window, and refuses every purge.
+    const long long window_seconds = config_.audit_retention.count();
+    if (window_seconds <= 0) {
+        if (error) {
+            *error = "this node keeps every audit record (audit retention is off), "
+                     "so no record may be purged";
+        }
+        return std::nullopt;
+    }
+    if (*cutoff > *now - static_cast<double>(window_seconds)) {
+        if (error) {
+            *error = "before must be at least the audit retention window (" +
+                     std::to_string(window_seconds) +
+                     " seconds) in the past, at or before " +
+                     zetta::util::iso8601_seconds_ago(window_seconds);
         }
         return std::nullopt;
     }
@@ -5318,6 +5580,8 @@ std::optional<std::size_t> Node::purge_audit_before(
     event.detail = "purged audit records before " + before + "; " +
                    std::to_string(removed) + " rows removed";
     event.time = zetta::util::now_iso8601();
+    // The surface it came through, like every other row (#1328).
+    event.surface = zetta::governance::current_audit_surface().value_or("internal");
     const std::string id = zetta::util::new_uuid();
     if (!audit_trail_->append_local(
             node_id_, id, std::move(event), error)) {
@@ -5522,14 +5786,14 @@ void Node::flush_audit_summaries() {
     audit_summary_windows_.clear();
 }
 
-void Node::apply_audit_retention() {
+std::size_t Node::apply_audit_retention() {
     last_audit_retention_ = Clock::now();
     if (!audit_trail_ ||
         (config_.audit_retention.count() <= 0 &&
          config_.audit_summary_retention.count() <= 0)) {
-        return;
+        return 0;
     }
-    const auto cutoff_for = [](std::chrono::hours retention) {
+    const auto cutoff_for = [](std::chrono::seconds retention) {
         if (retention.count() <= 0) {
             return std::string{};
         }
@@ -5541,13 +5805,30 @@ void Node::apply_audit_retention() {
     const std::string summary_cutoff =
         cutoff_for(config_.audit_summary_retention);
     std::string error;
+    std::size_t removed = 0;
     const bool retained = audit_trail_->retain_since(
         cutoff, summary_cutoff,
-        [](const std::string&) {},
+        [&removed](const std::string&) { ++removed; },
         &error);
     if (!retained) {
         std::printf("zetta: audit retention failed (%s)\n", error.c_str());
+        return 0;
     }
+    // A trim is on the trail like a purge (#1329), and the row outlives every
+    // later trim. From the tick it is the node's own work (#1327).
+    if (removed > 0) {
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::AuditRetentionExpired;
+        event.target = "audit";
+        event.allowed = true;
+        event.detail = "retention removed " + std::to_string(removed) +
+                       " records (ordinary before " +
+                       (cutoff.empty() ? std::string("never") : cutoff) +
+                       ", summaries before " +
+                       (summary_cutoff.empty() ? std::string("never") : summary_cutoff) + ")";
+        record_audit_event(std::move(event));
+    }
+    return removed;
 }
 
 // ----- solutions reward ledger (immutable, replicated as ledger:<uuid>) -----
@@ -6120,6 +6401,7 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_tokens(identity);
     reconcile_user_roles(identity);
     reconcile_policies(identity);
+    reconcile_egress_scopes(identity);
     reconcile_ledger_entries(snapshot);
 }
 
@@ -6201,6 +6483,11 @@ void Node::reconcile_replication_changes(
     }
     if (!batches.policies.keys.empty()) {
         reconcile_policies(trusted_identity(batches.policies.values, &batches.policies.keys), &batches.policies.keys);
+    }
+    if (!batches.egress_scopes.keys.empty()) {
+        reconcile_egress_scopes(
+            trusted_identity(batches.egress_scopes.values, &batches.egress_scopes.keys),
+            &batches.egress_scopes.keys);
     }
     if (!batches.ledger_entries.keys.empty()) {
         reconcile_ledger_entries(batches.ledger_entries.values,

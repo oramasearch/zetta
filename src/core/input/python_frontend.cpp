@@ -814,6 +814,14 @@ FrontendResult compile_source(std::string_view source) {
     }
     Lowerer lowerer;
     result.graph = lowerer.run(parsed.statements);
+    // A script larger than a graph may hold is rejected, never truncated (#1426).
+    if (result.graph.over_limit()) {
+        result.error = "script lowers to more than a pipeline may hold (at most " +
+                       std::to_string(zetta::ir::kMaxGraphNodes) + " steps and " +
+                       std::to_string(zetta::ir::kMaxGraphEdges) + " edges)";
+        result.graph = {};
+        return result;
+    }
     if (result.graph.empty()) {
         result.error =
             "no pipeline steps recognized (the script has no function calls to "

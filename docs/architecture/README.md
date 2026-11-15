@@ -14,7 +14,7 @@ in the sibling directories.
   REST/MCP browse; pub/sub stores remain authoritative and D39 remains deferred.
 - [../pubsub/dispatch.md](../pubsub/dispatch.md) — the node's shared pub/sub
   dispatch pool, topic-count sizing, ordering/fairness guarantees and settings.
-- [observability.md](observability.md) — **a foundation**: every operation captures intent · plan · performance · result shape as OTel-style spans threaded by trace id across surfaces and nodes; admin-only trace reads and feedback diagnostics (#1408); crash reports; the traced test suite.
+- [observability.md](observability.md) — **a foundation**: every operation captures intent · plan · performance · result shape as OTel-style spans threaded by trace id across surfaces and nodes; admin-only trace reads and feedback diagnostics (#1408), a caller's own traces in its feedback and feedback:export for export_path (#1455); crash reports; the traced test suite.
 - [coding-conventions.md](coding-conventions.md) — the canonical conventions reference: C++ style, the domain layout + namespace rule, boundaries/no-throw, interfaces, commit/branch flow.
 - [owner-gate.md](owner-gate.md) — the Node owner-thread gate (#624): `run_on_owner` lets background workers drive engine runs while node writes land on the owner loop.
 - [runtime.md](runtime.md) — `zetta::runtime` over Capy/Corosio: cross-thread events, fair IO scheduling (#1076), blocking capability offload (#1169), `parallel_for`, and the migration plan.

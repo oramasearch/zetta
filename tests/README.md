@@ -44,7 +44,11 @@ redirect hop to the metadata address, before connecting (#1394).
 ports, loopback, ranges, malformed entries), and the egress cases in
 `connect/test_native_http_transport.cpp` prove the dialler refuses an outside
 address by default, an unlisted name before DNS, and a redirect to an outside
-destination (#75).
+destination (#75). It also checks a denial names the caller's principal, run
+and surface (#1323, #1328), and its `EgressScope` cases cover per-principal
+scopes: the boundary, the dialler refusing what a scope lacks, the node's
+published snapshot and the cluster:admin capabilities, and offloaded work
+keeping its outbound caller (#1323).
 
 `data/test_object_store.cpp` covers the object capability's contracts, a
 conditional-create race, fencing, torn tails after a kill, compaction and restart,

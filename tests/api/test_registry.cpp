@@ -116,7 +116,7 @@ TEST_F(RegistryFixture, InputSchemaProblemsAreInvalidInputNeverExceptions) {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        179u); // +set_safe_mode +get_safe_mode (#1373), +4 published pipelines (#1289), +5 run proposals (#969: propose_run, approve_run_proposal, reject_run_proposal, get_run_proposal, list_run_proposals), +load_dataset_object (#1302), +2 app-credential capabilities (#1280), +2 network-record capabilities (#1281), +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        181u); // +create_egress_scope +drop_egress_scope (#1323), +set_safe_mode +get_safe_mode (#1373), +4 published pipelines (#1289), +5 run proposals (#969: propose_run, approve_run_proposal, reject_run_proposal, get_run_proposal, list_run_proposals), +load_dataset_object (#1302), +2 app-credential capabilities (#1280), +2 network-record capabilities (#1281), +append_methodology_artifact, +read_model_weights (lake#690), +export_model (lake#681), +5 workspace methodology capabilities (zetta#1261), +storage_usage (lake#658), +4 standalone models (lake#654), +4 deletes (lake#645), +8 object capability controls (#1005), +8 record store and time-series capabilities (#1231), +validate_study (#1207), +delete_study (#1158), +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -2213,6 +2213,76 @@ TEST_F(TraceAccessFixture, FeedbackBuilderOmitsDiagnosticsByDefault) {
                                    {"include_diagnostics", true}});
     EXPECT_FALSE(rejected.ok);
     EXPECT_EQ(rejected.error.code, "invalid_input");
+}
+
+// #1455: a caller without the diagnostic grant attaches its OWN traces and the
+// errors in them, never another actor's trace (even one it joined or named),
+// and never a crash report.
+TEST_F(TraceAccessFixture, OrdinaryFeedbackAttachesOnlyTheCallersOwnTraces) {
+    const auto reader = user_with_role("reader");
+    // The reader's own work, in a trace of its own.
+    const zetta::observability::TraceContext own = zetta::observability::make_root_trace();
+    {
+        ApiContext context{node, nullptr, reader, own, &node.span_recorder()};
+        context.acting_is_user = true;
+        registry.call("server_info", nlohmann::json::object(), context);
+        // A refused call is an error span in the reader's own trace.
+        registry.call("list_traces", {{"limit", 1}}, context);
+    }
+    ApiContext context{node, nullptr, reader, own, &node.span_recorder()};
+    context.acting_is_user = true;
+    const auto submitted = registry.call(
+        "submit_feedback",
+        {{"description", "mine only"}, {"trace_ids", {own.trace_id, trace.trace_id}}},
+        context);
+    ASSERT_TRUE(submitted.ok) << submitted.error.message;
+    const auto bundle = stored_bundle(submitted);
+    ASSERT_EQ(bundle.at("traces").size(), 1u);
+    EXPECT_EQ(bundle.at("traces").at(0).at("trace_id"), own.trace_id);
+    EXPECT_FALSE(bundle.at("recent_errors").empty());
+    for (const auto& span : bundle.at("recent_errors")) {
+        EXPECT_EQ(span.at("trace_id"), own.trace_id);
+    }
+    EXPECT_TRUE(bundle.at("crashes").empty());
+    EXPECT_EQ(bundle.dump().find("confidential"), std::string::npos);
+
+    // With no trace ids, the most recent traces are filtered the same way.
+    const auto recent = registry.call("submit_feedback", {{"description", "recent"}}, context);
+    ASSERT_TRUE(recent.ok) << recent.error.message;
+    const auto recent_bundle = stored_bundle(recent);
+    for (const auto& attached : recent_bundle.at("traces")) {
+        EXPECT_EQ(attached.at("trace_id"), own.trace_id);
+    }
+    EXPECT_EQ(recent_bundle.dump().find("confidential"), std::string::npos);
+
+    // The ownership rule itself: one foreign actor makes the trace not owned.
+    zetta::observability::Span mine;
+    mine.attributes = {{"actor", reader}};
+    zetta::observability::Span theirs;
+    theirs.attributes = {{"actor", "another-user"}};
+    zetta::observability::Span unnamed;
+    EXPECT_TRUE(zetta::observability::trace_is_owned_by({mine, unnamed}, reader));
+    EXPECT_FALSE(zetta::observability::trace_is_owned_by({mine, theirs}, reader));
+    EXPECT_FALSE(zetta::observability::trace_is_owned_by({unnamed}, reader));
+}
+
+// #1455: export_path writes a file on the node, so it needs feedback:export,
+// not api:query. A reader is refused before anything is stored; admin may.
+TEST_F(TraceAccessFixture, FeedbackExportNeedsItsOwnRight) {
+    const auto reader = user_with_role("reader");
+    const auto refused = call_as(reader, true, "submit_feedback",
+                                 {{"description", "export me"},
+                                  {"export_path", "reader-bundle.json"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "unauthorized");
+    EXPECT_FALSE(std::filesystem::exists(dir.path() / "exports" / "reader-bundle.json"));
+
+    const auto admin = user_with_role("admin");
+    const auto exported = call_as(admin, true, "submit_feedback",
+                                  {{"description", "export me"},
+                                   {"export_path", "admin-bundle.json"}});
+    ASSERT_TRUE(exported.ok) << exported.error.message;
+    EXPECT_TRUE(exported.value.contains("exported_to"));
 }
 
 // Coroutine-first bridge: a runtime coroutine awaits run_on_owner and resumes

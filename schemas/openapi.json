@@ -7193,6 +7193,23 @@
                         "id": {
                           "type": "string"
                         },
+                        "principal": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "is_user": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "is_user"
+                          ],
+                          "type": "object"
+                        },
                         "promoted_model": {
                           "type": "string"
                         },
@@ -14163,6 +14180,21 @@
                           ],
                           "type": "string"
                         },
+                        "submitted_by": {
+                          "type": "string"
+                        },
+                        "submitted_via": {
+                          "enum": [
+                            "mcp",
+                            "rest",
+                            "web",
+                            "desktop",
+                            "pgwire",
+                            "console",
+                            "internal"
+                          ],
+                          "type": "string"
+                        },
                         "trace_id": {
                           "type": "string"
                         },
@@ -17671,6 +17703,24 @@
                         "pipeline_name": {
                           "type": "string"
                         },
+                        "principal": {
+                          "additionalProperties": false,
+                          "description": "Who the run runs as (#1322): the user or access-key id its steps are authorized for. Absent for the trusted local session.",
+                          "properties": {
+                            "id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "is_user": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "is_user"
+                          ],
+                          "type": "object"
+                        },
                         "project": {
                           "type": "string"
                         },
@@ -19697,6 +19747,23 @@
                         },
                         "id": {
                           "type": "string"
+                        },
+                        "principal": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "is_user": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "is_user"
+                          ],
+                          "type": "object"
                         },
                         "promoted_model": {
                           "type": "string"
@@ -27808,6 +27875,23 @@
                               "pipeline_name": {
                                 "type": "string"
                               },
+                              "principal": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "id": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "is_user": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "is_user"
+                                ],
+                                "type": "object"
+                              },
                               "project_name": {
                                 "type": "string"
                               },
@@ -34095,7 +34179,7 @@
     },
     "/v1/purge_audit": {
       "post": {
-        "description": "Remove audit records strictly before a UTC cutoff, advance replicated low-water marks, and append an audit_purged record describing the action. Requires orchestration:purge_audit.",
+        "description": "Remove audit records strictly before a UTC cutoff, advance replicated low-water marks, and append an audit_purged record describing the action. The cutoff must be at least the node's audit retention window in the past, and records of earlier purges and retention passes are never removed. Requires orchestration:purge_audit.",
         "operationId": "purge_audit",
         "requestBody": {
           "content": {
@@ -40471,7 +40555,7 @@
     },
     "/v1/sql": {
       "get": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. With read_only the engine refuses, before anything runs, any text that is not exactly one SELECT. Requires api:query.",
         "operationId": "sql",
         "parameters": [
           {
@@ -40482,6 +40566,17 @@
             "schema": {
               "description": "default database for unqualified table names (optional)",
               "type": "string"
+            }
+          },
+          {
+            "description": "refuse anything but exactly one read statement (a SELECT): the engine parses the text and refuses a second statement, DDL, DML, user, token, role and policy statements before anything runs (invalid_input)",
+            "in": "query",
+            "name": "read_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "refuse anything but exactly one read statement (a SELECT): the engine parses the text and refuses a second statement, DDL, DML, user, token, role and policy statements before anything runs (invalid_input)",
+              "type": "boolean"
             }
           },
           {
@@ -40606,7 +40701,7 @@
         ]
       },
       "post": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. With read_only the engine refuses, before anything runs, any text that is not exactly one SELECT. Requires api:query.",
         "operationId": "sql_post",
         "requestBody": {
           "content": {
@@ -40621,6 +40716,11 @@
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
+                  },
+                  "read_only": {
+                    "default": false,
+                    "description": "refuse anything but exactly one read statement (a SELECT): the engine parses the text and refuses a second statement, DDL, DML, user, token, role and policy statements before anything runs (invalid_input)",
+                    "type": "boolean"
                   },
                   "safe_mode_confirmation": {
                     "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",
@@ -41399,7 +41499,7 @@
     },
     "/v1/submit_feedback": {
       "post": {
-        "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Only callers with cluster:admin attach diagnostics; other callers submit their description and version information only. Requires api:query.",
+        "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Callers with cluster:admin attach the node's diagnostics; other callers attach only their own traces and errors, never a crash report. export_path needs feedback:export. Requires api:query.",
         "operationId": "submit_feedback",
         "requestBody": {
           "content": {
@@ -41413,7 +41513,7 @@
                     "type": "string"
                   },
                   "export_path": {
-                    "description": "ALSO write the bundle to a new file on the node, named relative to its export directory (exports/ under the data directory); no absolute path, no '..', no symbolic link, and never an existing file. Nothing leaves the cluster on its own (optional)",
+                    "description": "ALSO write the bundle to a new file on the node, named relative to its export directory (exports/ under the data directory); no absolute path, no '..', no symbolic link, and never an existing file. Needs feedback:export. Nothing leaves the cluster on its own (optional)",
                     "minLength": 1,
                     "type": "string"
                   },

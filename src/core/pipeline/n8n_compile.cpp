@@ -126,6 +126,12 @@ std::optional<ExecutionGraph> build_from_validated(const nlohmann::json& documen
         }
     }
 
+    // A workflow larger than a graph may hold is rejected, never truncated (#1426).
+    if (graph.over_limit()) {
+        return reject(error, "workflow is larger than a pipeline may be (at most " +
+                                 std::to_string(ir::kMaxGraphNodes) + " steps and " +
+                                 std::to_string(ir::kMaxGraphEdges) + " connections)");
+    }
     return graph;
 }
 

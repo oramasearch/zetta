@@ -83,11 +83,15 @@ public:
                 zetta::governance::AuditEventValue event;
                 event.action = zetta::governance::AuditAction::EgressDenied;
                 // The principal the connection was for (#1323): the run's, or
-                // the capability caller's; "node" only for the node's own work.
-                event.actor = denial.principal.empty() ? "node" : denial.principal;
+                // the capability caller's. None is the node's own work, which
+                // the sink names `node:<node id>` (#1327).
+                event.actor = denial.principal;
                 event.target = "egress:" + denial.host + ":" +
                                std::to_string(denial.port);
                 event.allowed = false;
+                // Recorded on the client's thread, so the surface rides on the
+                // denial (#1328); none declared stamps `internal`.
+                event.surface = denial.surface;
                 event.detail = denial.run_id.empty()
                                    ? denial.reason
                                    : denial.reason + " (run " + denial.run_id + ")";
@@ -1278,7 +1282,11 @@ int main(int argc, char** argv) {
     const std::string default_cluster_token = opts.cluster.security.join_token;
     for (const zetta::cloud::ProvisionerFleet::Wiring& wiring :
          provisioner_fleet.wire(node.provisioner_configs(), default_seed_peer,
-                                default_cluster_token)) {
+                                default_cluster_token,
+                                // The root's public key (not a secret), so a
+                                // burst node honors this cluster's accounts
+                                // (#1343).
+                                opts.cluster.identity_root)) {
         if (wiring.wired) {
             std::printf("zetta: cloud provisioner wired for %s (local CLI)\n",
                         wiring.id.c_str());

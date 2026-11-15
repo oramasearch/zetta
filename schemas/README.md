@@ -18,8 +18,9 @@ support and the accepted search-space contract (#1158, #1207).
 
 The `node_memory` read and its process/subsystem output schema are generated from
 the registry declaration documented in [memory accounting](../docs/ops/memory.md).
-The `purge_audit` action is generated into OpenAPI, and `audit_purged` is part of
-the generated audit-event action enum; both are documented in
+The `purge_audit` action is generated into OpenAPI, and `audit_purged` and
+`audit_retention_expired` (#1329) are part of the generated audit-event action
+enum; both are documented in
 [audit trail](../docs/governance/audit-trail.md).
 
 Text entity keys and boolean predictors are represented in the generated scoring,
@@ -47,3 +48,8 @@ and the JSON header of every `object.*` signal (#1005). The role and access-key
 schemas list the `bucket` resource kind; OpenAPI carries the object byte routes
 and the bucket and lease capabilities. See
 [the object capability](../docs/data/object-store.md).
+
+The Run contract carries an optional `principal` (`{id, is_user}`, #1322), and
+the churn `run.launch` options carry the same shape, so every participant's
+copy of a coordinated run executes as the caller. See
+[step authority](../docs/governance/step-authority.md#the-principal-on-the-run-1322).

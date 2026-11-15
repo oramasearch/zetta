@@ -447,7 +447,7 @@ constexpr std::array kReservedVirtualTableFamilies = {
     // Identities, credentials and the access-control registry.
     catalog::kUserPrefix, catalog::kRolePrefix, catalog::kTokenPrefix,
     catalog::kUserRolePrefix, catalog::kAccessKeyPrefix, catalog::kPrincipalPrefix,
-    catalog::kPolicyPrefix, catalog::kAuditPrefix,
+    catalog::kPolicyPrefix, catalog::kAuditPrefix, catalog::kEgressScopePrefix,
     // Keyed records, objects and metrics: governed by their own scoped grants.
     catalog::kRecordCollectionPrefix, catalog::kObjectBucketPrefix,
     catalog::kObjectLeasePrefix, catalog::kMetricPrefix,
@@ -1720,6 +1720,10 @@ std::vector<nlohmann::json> audit_rows(const Node& node) {
         row["allowed"] = event->allowed();
         row["detail"] = event->detail();
         row["time"] = event->time();
+        // The surface it came through (#1328); null for a row from before it.
+        row["surface"] = event->value().surface.empty()
+                             ? nlohmann::json(nullptr)
+                             : nlohmann::json(event->value().surface);
         if (event->value().summary) {
             row["calls"] = event->value().summary->calls;
             row["events_delivered"] =

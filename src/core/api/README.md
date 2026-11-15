@@ -4,7 +4,9 @@ Registry declarations generate REST routes, MCP tools and OpenAPI. Pub/sub CRUD
 uses the same schemas and handlers on both transports, with coroutine long polls
 and no thread per waiter. Successful polling reads share audit sessions and
 window totals only when they return data; empty windows add no summary. Writes,
-denials and failures stay per-call. The admin-only `purge_audit` action is
+denials and failures stay per-call. A call to a mutating capability that the
+input schema refuses is recorded too, as one refused `data_access` row naming
+the field at fault (#1328). The admin-only `purge_audit` action is
 offloaded for its segment rewrite and has REST/MCP/OpenAPI parity. See
 [CRUD](../../../docs/pubsub/crud.md) and
 [REST/OpenAPI](../../../docs/api/rest-openapi.md).
@@ -73,7 +75,9 @@ the dataset contract (#957).
 
 `native_http_transport.cpp` checks the egress policy before DNS and before every
 connection and redirect hop: outbound is denied by default and each refusal is
-reported for the `egress_denied` audit event (#75,
+reported for the `egress_denied` audit event, with the caller's principal, run
+and surface (#1323, #1328). A principal's egress scope narrows the allowlist
+there too, and the refusal says which one refused (#1323) (#75,
 [egress policy](../../../docs/governance/egress-policy.md)). `/cli.md` documents
 `--egress-allow` and `ZETTA_EGRESS_ALLOW`.
 

@@ -312,8 +312,14 @@ std::optional<std::string> string_field(const json& object,
 // data-flow ancestor of `start`. A field may be provided by more than one source,
 // so each maps to the list of (raw) types seen, deduplicated by insertion order.
 // Cycles are tolerated (acyclicity isn't enforced yet) via a visited set.
-std::unordered_map<std::string, std::vector<std::string>> ancestor_schema(
-    const ir::ExecutionGraph& graph, const ir::NodeId& start) {
+//
+// `budget` is the node visits the caller still allows (#1426): one check walks
+// the ancestors of every node that declares `requires`, so the walks together
+// are bounded, not only each one. Returns nullopt when the budget runs out.
+constexpr std::size_t kSchemaCheckVisitBudget = 1'000'000;
+
+std::optional<std::unordered_map<std::string, std::vector<std::string>>> ancestor_schema(
+    const ir::ExecutionGraph& graph, const ir::NodeId& start, std::size_t& budget) {
     std::unordered_map<std::string, std::vector<std::string>> provided;
     std::unordered_set<ir::NodeId> visited;
     std::vector<ir::NodeId> frontier;
@@ -329,6 +335,8 @@ std::unordered_map<std::string, std::vector<std::string>> ancestor_schema(
         const ir::NodeId id = frontier.back();
         frontier.pop_back();
         if (!visited.insert(id).second) continue;
+        if (budget == 0) return std::nullopt;
+        --budget;
         const std::shared_ptr<ir::Node> node = graph.find_node(id);
         if (node && node->attributes.is_object()) {
             const auto schema = node->attributes.find("schema");
@@ -5754,6 +5762,7 @@ CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
 
     std::size_t checked = 0;
+    std::size_t budget = kSchemaCheckVisitBudget;
     for (const auto& node : graph.nodes()) {
         if (!node->attributes.is_object()) continue;
         const auto requires_field = node->attributes.find("requires");
@@ -5763,7 +5772,14 @@ CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
         }
         ++checked;
 
-        const auto provided = ancestor_schema(graph, node->id);
+        const auto ancestors = ancestor_schema(graph, node->id, budget);
+        if (!ancestors) {
+            // Fail closed: an unverified requirement is not a passed one.
+            return fail("the graph is too large to verify its field requirements "
+                        "(more than " + std::to_string(kSchemaCheckVisitBudget) +
+                        " upstream steps to walk)");
+        }
+        const auto& provided = *ancestors;
         for (const auto& [field, wanted_type] : requires_field->items()) {
             const std::string wanted = wanted_type.get<std::string>();
             const auto source = provided.find(field);

@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
@@ -319,7 +320,9 @@ AsyncLabelEfficiencyRun::AsyncLabelEfficiencyRun(
     : node_(node),
       dataset_(std::move(dataset)),
       options_(std::move(options)) {
-    worker_ = std::thread([this] {
+    worker_ = std::thread([this, audit_origin = zetta::governance::capture_audit_origin()] {
+        // The worker's audit rows name whoever launched it (#1327).
+        const zetta::governance::AuditOriginScope audit_scope{audit_origin};
         result_ =
             run_label_efficiency_on_dataset(node_, dataset_, options_);
         done_.store(true, std::memory_order_release);

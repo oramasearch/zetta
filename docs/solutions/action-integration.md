@@ -214,11 +214,37 @@ an unreachable endpoint fails within `max_attempts × timeout_seconds` without
 stopping the workspace. `publish_report` called directly still runs all three
 steps on the calling thread.
 
+**`deliver_action_task` and `execute_closed_loop` send off the owner loop**
+(#1406, LSR-173). Both are `blocks` entries, so REST and MCP call them on the
+blocking pool after the registry's owner-thread authorization.
+`ActionRuntime::deliver_task` runs each step that touches node state on the
+owner through `Node::run_on_owner`, and only the attempt itself on the calling
+thread:
+
+1. read the task, check its binding and status, and read its decision (owner);
+2. per attempt, recheck the kill-switch and holdout and append the ledger
+   action once (owner);
+3. build the request and send it through the transport (calling thread);
+4. count the attempt, record its outcome in the ledger and persist the task
+   (owner);
+5. when attempts run out, settle it as `dead_letter` and copy it to the
+   dead-letter table (owner).
+
+`execute_closed_loop` enqueues on the owner first. A stalled endpoint holds
+one blocking-pool thread for up to `max_attempts × timeout_seconds`; the owner
+loop keeps answering every other call. Called on the owner itself (the headed
+app, an in-process caller), `run_on_owner` is inline and the call behaves as
+before.
+
+This is the blocking-pool form of the design on #1406, not a coroutine: the
+registry has no awaitable handler, and a coroutine handler would hold
+`Registry::call`'s thread-local actor and surface scopes across a suspension.
+
 Still on the owner loop: the per-decision action deliveries made inside
-`finish_solution_run`, and the `publish_report`, `deliver_action_task` and
-`execute_closed_loop` capabilities. Each attempt is now bounded by
-`timeout_seconds`, but those calls still hold the owner for up to
-`max_attempts × timeout_seconds`.
+`finish_solution_run`, and the `publish_report` capability. Each attempt is
+bounded by `timeout_seconds`, but those calls still hold the owner for up to
+`max_attempts × timeout_seconds`
+([#1365](https://github.com/oramasearch/zetta/issues/1365)).
 
 Schema rejection, a missing decision, a holdout, a non-actionable decision, or
 an active kill-switch produces no outbound request. Missing HTTP transport also

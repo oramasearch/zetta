@@ -1,5 +1,6 @@
 #include "zetta/pipeline/deployment_controller.hpp"
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -75,6 +76,16 @@ ReconcileReport DeploymentController::reconcile() {
                       std::to_string(failed_runs) + " failed run(s)";
         run->add_log({zetta::util::now_iso8601(), "info", note});
         run->set_status(RunStatus::Running);
+        // The start (or self-heal) is the node's own work, on the trail
+        // (#1327): Node::tick declares `node:<node id>` through `internal`,
+        // and the sink falls back to the same when reconcile is called
+        // directly.
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::DataChanged;
+        event.target = "run:" + run->id();
+        event.allowed = true;
+        event.detail = note;
+        node_.record_audit_event(std::move(event));
 
         ++report.runs_started;
         ++total_runs_started_;

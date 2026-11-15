@@ -5,8 +5,11 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <map>
 #include <string_view>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 // The node's **outbound egress policy** (CTL-4,
 // [#75](https://github.com/oramasearch/zetta/issues/75)): outbound network from
@@ -136,7 +139,63 @@ struct EgressDenial {
     // graph step made it.
     std::string principal;
     std::string run_id;
+    // The surface the caller came through (#1328); empty when none was declared.
+    std::string surface;
+    // Which allowlist refused it (#1323): "node" (the node's allowlist) or
+    // "scope" (the principal's egress scope).
+    std::string refused_by = "node";
 };
+
+// ---- per-principal egress scopes (#1323) ------------------------------------
+//
+// An egress scope narrows what named principals may reach, inside the node's
+// allowlist: a destination is allowed only when the node allowlist admits it
+// and, when the connection's principal has a scope, the scope admits it too. A
+// principal with no scope gets the node allowlist alone. Loopback stays exempt
+// under every scope. The record is replicated as `egress_scope:<id>`, sealed by
+// the identity root like identity records (identity_seal.hpp), and managed by
+// `cluster:admin` through `create_egress_scope` / `drop_egress_scope`.
+// Docs: docs/governance/egress-policy.md.
+
+// The replicated value of one scope. `principals` are user, role or access-key
+// ids; a role names every user that holds it. `allow` is an allowlist in the
+// EgressPolicy syntax (an empty list admits loopback only).
+struct EgressScopeValue {
+    std::string name;
+    std::vector<std::string> principals;
+    std::string allow;
+    friend bool operator==(const EgressScopeValue&, const EgressScopeValue&) = default;
+};
+
+nlohmann::json to_json(const EgressScopeValue& value);
+
+// Boundary validation: nullopt (and `error`) unless `value` is an object with
+// exactly `name` (a valid connection-style name), `principals` (1 to 256
+// non-empty strings) and `allow` (a string EgressPolicy::parse accepts).
+std::optional<EgressScopeValue> parse_egress_scope_value(const nlohmann::json& value,
+                                                         std::string* error = nullptr);
+
+// What one principal may reach: the union of every scope that names it (or one
+// of its roles), and those scopes' names for the refusal.
+struct PrincipalEgress {
+    EgressPolicy policy;
+    std::vector<std::string> scopes;
+};
+
+// The process-wide snapshot the dialler consults, keyed by principal id. The
+// owner thread compiles it (Node::publish_egress_scopes) and installs it here,
+// so the dialler never touches the Node. Safe to call from any thread.
+void set_egress_scopes(std::map<std::string, PrincipalEgress> scopes);
+
+// The scope of `principal`, or nullopt when it has none (or is empty or
+// "local", the trusted session).
+std::optional<PrincipalEgress> egress_scope_for(std::string_view principal);
+
+// The reason a connection the principal's scope refused carries. Starts with
+// "egress denied:" like every egress refusal.
+std::string egress_scope_denied_reason(std::string_view host, std::uint16_t port,
+                                       std::string_view principal,
+                                       const std::vector<std::string>& scopes);
 
 // Who an outbound connection is made on behalf of (#1323): a graph step runs
 // inside one of these, naming the run's principal and the run, so the dialler

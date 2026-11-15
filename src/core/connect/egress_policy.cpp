@@ -6,7 +6,11 @@
 #include <cctype>
 #include <charconv>
 #include <mutex>
+#include <set>
 #include <utility>
+
+#include "zetta/connect/connection_store.hpp"
+#include "zetta/runtime.hpp"
 
 namespace zetta::connect {
 namespace {
@@ -377,6 +381,123 @@ std::string egress_denied_reason(std::string_view host, std::uint16_t port) {
     return "egress denied: " + std::string(host) + ":" + std::to_string(port) +
            " is not on this node's egress allowlist (add it with --egress-allow "
            "or ZETTA_EGRESS_ALLOW; see docs/governance/egress-policy.md)";
+}
+
+// ---- per-principal egress scopes (#1323) ------------------------------------
+
+nlohmann::json to_json(const EgressScopeValue& value) {
+    return nlohmann::json{{"name", value.name},
+                          {"principals", value.principals},
+                          {"allow", value.allow}};
+}
+
+std::optional<EgressScopeValue> parse_egress_scope_value(const nlohmann::json& value,
+                                                         std::string* error) {
+    const auto refuse = [error](std::string reason) -> std::optional<EgressScopeValue> {
+        if (error != nullptr) *error = std::move(reason);
+        return std::nullopt;
+    };
+    if (!value.is_object()) return refuse("egress scope: expected an object");
+    for (const auto& [key, field] : value.items()) {
+        (void)field;
+        if (key != "name" && key != "principals" && key != "allow") {
+            return refuse("egress scope: unknown field '" + key + "'");
+        }
+    }
+    const auto name = value.find("name");
+    if (name == value.end() || !name->is_string()) {
+        return refuse("egress scope: name must be a string");
+    }
+    EgressScopeValue parsed;
+    parsed.name = name->get<std::string>();
+    if (const std::string rejection = connection_name_rejection(parsed.name);
+        !rejection.empty()) {
+        return refuse("egress scope name: " + rejection);
+    }
+    const auto principals = value.find("principals");
+    if (principals == value.end() || !principals->is_array() || principals->empty() ||
+        principals->size() > 256) {
+        return refuse("egress scope: principals must list 1 to 256 ids");
+    }
+    std::set<std::string> seen;
+    for (const nlohmann::json& principal : *principals) {
+        if (!principal.is_string() || principal.get<std::string>().empty() ||
+            principal.get<std::string>().size() > 128) {
+            return refuse("egress scope: each principal must be a non-empty id");
+        }
+        if (seen.insert(principal.get<std::string>()).second) {
+            parsed.principals.push_back(principal.get<std::string>());
+        }
+    }
+    const auto allow = value.find("allow");
+    if (allow == value.end() || !allow->is_string()) {
+        return refuse("egress scope: allow must be a string");
+    }
+    parsed.allow = allow->get<std::string>();
+    std::string policy_error;
+    if (!EgressPolicy::parse(parsed.allow, &policy_error)) {
+        return refuse("egress scope allow: " + policy_error);
+    }
+    return parsed;
+}
+
+namespace {
+
+struct InstalledScopes {
+    std::mutex guard;
+    std::map<std::string, PrincipalEgress> by_principal;
+};
+
+InstalledScopes& installed_scopes() {
+    static InstalledScopes state;
+    return state;
+}
+
+// Offloaded work keeps who it dials out for (#1323): runtime::offload carries
+// the innermost OutboundCallerScope to the pool worker, the way run_on_owner
+// carries the audit origin. Registered once, from this translation unit.
+const bool kOutboundCallerCarried = [] {
+    runtime::register_context_carrier([]() -> runtime::ContextRestorer {
+        std::optional<OutboundCaller> captured = current_outbound_caller();
+        if (!captured) return {};
+        return [caller = std::move(*captured)](const std::function<void()>& work) {
+            const OutboundCallerScope scope{caller};
+            work();
+        };
+    });
+    return true;
+}();
+
+}  // namespace
+
+void set_egress_scopes(std::map<std::string, PrincipalEgress> scopes) {
+    (void)kOutboundCallerCarried;
+    InstalledScopes& state = installed_scopes();
+    const std::lock_guard<std::mutex> lock(state.guard);
+    state.by_principal = std::move(scopes);
+}
+
+std::optional<PrincipalEgress> egress_scope_for(std::string_view principal) {
+    if (principal.empty() || principal == "local") return std::nullopt;
+    InstalledScopes& state = installed_scopes();
+    const std::lock_guard<std::mutex> lock(state.guard);
+    const auto found = state.by_principal.find(std::string(principal));
+    if (found == state.by_principal.end()) return std::nullopt;
+    return found->second;
+}
+
+std::string egress_scope_denied_reason(std::string_view host, std::uint16_t port,
+                                       std::string_view principal,
+                                       const std::vector<std::string>& scopes) {
+    std::string names;
+    for (const std::string& scope : scopes) {
+        if (!names.empty()) names += ", ";
+        names += scope;
+    }
+    return "egress denied: " + std::string(host) + ":" + std::to_string(port) +
+           " is not on the egress scope of " + std::string(principal) + " (" + names +
+           "), though the node allows it (an administrator widens a scope with "
+           "create_egress_scope; see docs/governance/egress-policy.md)";
 }
 
 }  // namespace zetta::connect

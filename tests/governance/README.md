@@ -12,7 +12,10 @@ matrix. See [governance](../../docs/governance/README.md) and
 Audit tests cover segment migration, index-only membership, independent
 ordinary/summary retention, empty polling windows, single-node and replicated
 purge, schema round trips, and the million-record RAM/disk budgets (#1154,
-#1169).
+#1169). `ATrimIsRecordedAndItsRecordOutlivesEveryLaterTrim` is #847 step 8 as
+decided on #1329: as an administrator an edit is refused, a recent purge is
+refused, and every trim's record survives later purges, a retention pass and a
+restart. Purge tests use a one-second retention window.
 That million-record test also proves the audit probe moves after 100,000 events
 (#1163).
 The native `zetta-audit-proof` worker measures RSS independently on two nodes,
@@ -49,7 +52,13 @@ made directly (as the headed app does), deploys, jobs and graph changes naming
 the declared caller instead of a blank or the project's owner, the caller
 carried across `run_on_owner`, a capability's effects attributed to the calling
 user, an authorized call that then failed recorded as a failure, and a SQL
-statement's effects attributed to its session.
+statement's effects attributed to its session. Its #1328 cases cover the
+surface: scopes, the schema, MCP versus REST, `run_on_owner`, `internal` on a
+row no entry point declared, and the refused row an `invalid_input` call to a
+mutating capability leaves (none for a read). Its #1327 `AuditNodeWork` cases
+cover the node's own work: a row with no declared caller names `node:<node id>`,
+and the deployment controller's run start from `Node::tick` does too, whoever
+deployed the graph.
 `test_system_catalog_access.cpp` covers who may read each `system.*` table
 (#766): admin-only governance and node tables, public metadata, datasets and
 partitions narrowed to the caller's tables, each person's own audit rows, and

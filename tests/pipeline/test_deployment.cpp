@@ -11,7 +11,10 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/connect/connection_store.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/pipeline/deployment.hpp"
+#include "zetta/pipeline/deployment_credentials.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
@@ -366,4 +369,151 @@ TEST(Deployment, ReplicatesToPeer) {
     cluster_a.stop();
     a.stop();
     b.stop();
+}
+
+// ---- credentials_ref resolves through the saved-connection store (#1315) ----
+
+namespace {
+
+zetta::connect::ConnectorConfig deployment_connector() {
+    zetta::connect::ConnectorConfig config;
+    config.type = "snowflake";
+    config.account = "ab12345.us-east-1";
+    config.token = "the-deployment-secret";
+    config.warehouse = "COMPUTE_WH";
+    config.database = "ANALYTICS";
+    config.schema = "PUBLIC";
+    return config;
+}
+
+DeploymentTarget kubernetes_with(std::string credentials_ref) {
+    DeploymentTarget target;
+    target.kind = DeploymentKind::Kubernetes;
+    target.binding = "cluster-a";
+    target.credentials_ref = std::move(credentials_ref);
+    return target;
+}
+
+std::size_t denied_deploys(const Node& node, const std::string& graph_name) {
+    std::size_t count = 0;
+    for (const auto& event : node.audit_events()) {
+        if (event->action() == zetta::governance::AuditAction::GraphDeployed &&
+            event->target() == graph_name && !event->allowed()) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+}  // namespace
+
+// A secret pasted into credentials_ref is refused at the boundary, so it is
+// never replicated nor rendered in system.deployments; a connection name passes.
+TEST(DeploymentCredentials, FromJsonRefusesAReferenceThatIsNotAConnectionName) {
+    std::string error;
+    EXPECT_FALSE(DeploymentTarget::from_json(
+        {{"kind", "kubernetes"}, {"credentials_ref", "sk_live_51H8xY/abc+def=="}}, &error));
+    EXPECT_NE(error.find("must name a saved connection"), std::string::npos) << error;
+    EXPECT_EQ(error.find("sk_live"), std::string::npos) << "the reason never echoes the value";
+    EXPECT_FALSE(DeploymentTarget::from_json(
+        {{"kind", "kubernetes"}, {"credentials_ref", "has a space"}}));
+    EXPECT_FALSE(DeploymentTarget::from_json({{"kind", "kubernetes"}, {"credentials_ref", 7}}));
+
+    const auto named = DeploymentTarget::from_json(
+        {{"kind", "kubernetes"}, {"binding", "cluster-a"}, {"credentials_ref", "prod-k8s"}});
+    ASSERT_TRUE(named);
+    EXPECT_EQ(named->credentials_ref, "prod-k8s");
+    const auto local = DeploymentTarget::from_json({{"kind", "local"}});
+    ASSERT_TRUE(local);
+    EXPECT_TRUE(local->credentials_ref.empty());
+}
+
+// Resolution fails closed, and checks the deploying principal's grant (#1339).
+TEST(DeploymentCredentials, ResolvesOnlyAConnectionThePrincipalMayUse) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    node.ensure_builtin_roles();
+    auto owner = node.create_user("olga");
+    auto stranger = node.create_user("sam");
+    ASSERT_TRUE(owner && stranger);
+    node.assign_role(stranger->id(), node.find_role("writer")->id());
+    ASSERT_TRUE(zetta::connect::save_connection(node, "prod-k8s", deployment_connector(),
+                                                owner->id())
+                    .empty());
+    using zetta::pipeline::resolve_deployment_credentials;
+    using zetta::pipeline::RunPrincipal;
+
+    // No reference: nothing to present.
+    const auto none = resolve_deployment_credentials(node, kubernetes_with(""), RunPrincipal{});
+    EXPECT_TRUE(none.ok());
+    EXPECT_FALSE(none.connection);
+
+    // An unknown name, and a name that is not one, are refused.
+    const auto unknown = resolve_deployment_credentials(node, kubernetes_with("no-such"),
+                                                        {owner->id(), true});
+    EXPECT_FALSE(unknown.ok());
+    EXPECT_NE(unknown.error.find("names no saved connection"), std::string::npos);
+    EXPECT_FALSE(resolve_deployment_credentials(node, kubernetes_with("not a name"),
+                                                {owner->id(), true})
+                     .ok());
+
+    // The owner, and the trusted local session, resolve it with its credential.
+    const auto by_owner = resolve_deployment_credentials(node, kubernetes_with("prod-k8s"),
+                                                         {owner->id(), true});
+    ASSERT_TRUE(by_owner.ok()) << by_owner.error;
+    ASSERT_TRUE(by_owner.connection);
+    EXPECT_EQ(by_owner.connection->config.token, "the-deployment-secret");
+    EXPECT_TRUE(resolve_deployment_credentials(node, kubernetes_with("prod-k8s"),
+                                               RunPrincipal{})
+                    .ok());
+
+    // Someone else without connections:use on it is refused, and it is audited.
+    const auto refused = resolve_deployment_credentials(node, kubernetes_with("prod-k8s"),
+                                                        {stranger->id(), true});
+    EXPECT_FALSE(refused.ok());
+    EXPECT_TRUE(refused.unauthorized);
+    EXPECT_FALSE(refused.connection);
+    EXPECT_EQ(refused.error.find("the-deployment-secret"), std::string::npos);
+    bool audited = false;
+    for (const auto& event : node.audit_events()) {
+        if (event->target() == "connection:prod-k8s" && !event->allowed() &&
+            event->actor() == stranger->id()) {
+            audited = true;
+        }
+    }
+    EXPECT_TRUE(audited);
+    node.stop();
+}
+
+// The deploy path resolves the reference before anything is placed, failing
+// closed with a denied graph_deployed row; a Local target takes none.
+TEST(DeploymentCredentials, DeployRefusesAReferenceThatDoesNotResolve) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    const ExecutionGraph graph = sample_graph();
+    std::string error;
+
+    DeploymentTarget local = DeploymentTarget::local();
+    local.credentials_ref = "prod-k8s";
+    EXPECT_FALSE(node.deploy_graph(graph, local, "local-with-ref",
+                                   zetta::pipeline::RunPrincipal{}, &error));
+    EXPECT_NE(error.find("local target takes no credentials_ref"), std::string::npos) << error;
+    EXPECT_EQ(denied_deploys(node, "local-with-ref"), 1u);
+
+    EXPECT_FALSE(node.deploy_graph(graph, kubernetes_with("no-such"), "unresolved",
+                                   zetta::pipeline::RunPrincipal{}, &error));
+    EXPECT_NE(error.find("names no saved connection"), std::string::npos) << error;
+    EXPECT_EQ(denied_deploys(node, "unresolved"), 1u);
+
+    // A reference that resolves gets as far as the placement kind, which is
+    // not functional yet: no denial is recorded for the credential.
+    ASSERT_TRUE(zetta::connect::save_connection(node, "prod-k8s", deployment_connector()).empty());
+    EXPECT_FALSE(node.deploy_graph(graph, kubernetes_with("prod-k8s"), "resolved",
+                                   zetta::pipeline::RunPrincipal{}, &error));
+    EXPECT_NE(error.find("not functional"), std::string::npos) << error;
+    EXPECT_EQ(denied_deploys(node, "resolved"), 0u);
+    EXPECT_EQ(node.deployment_count(), 0u);
+    node.stop();
 }

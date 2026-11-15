@@ -32,6 +32,7 @@ struct AwsConfig {
     double max_price = 0.0;       // Spot max $/node-hour; 0 = up to on-demand (no explicit cap)
     std::string seed_peer;        // cluster seed host:port injected into node bootstrap to auto-join
     std::string join_token;       // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst node joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
+    std::string identity_root;    // the cluster's identity root PUBLIC key (hex, not a secret) injected as ZETTA_IDENTITY_ROOT so a burst node honors the cluster's accounts, roles and tokens (#1343); set at wire time from this node's pinned root, never serialized
     std::string profile;          // optional AWS CLI named profile (which credentials to use)
 
     bool operator==(const AwsConfig&) const = default;

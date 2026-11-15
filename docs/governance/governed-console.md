@@ -53,7 +53,9 @@ straight into `ConsoleModel::submit`. Each statement runs the same chain:
    program trains a real `Model` over the live cluster; see
    [one runner, over the live cluster](../use-cases/churn-solution.md#one-runner-over-the-live-cluster-580-637)). The
    runner runs **after** the capability check + gate and **before** the audit record,
-   so governance is identical whichever executor runs.
+   so governance is identical whichever executor runs. The runner is handed the
+   session's principal (`GraphRunner(graph, principal)`, #1322) and executes every
+   step as it; the Run it produces records the principal.
 4. **Audit.** Exactly one **`data_access`** [audit event](audit-trail.md) is
    recorded per statement — the acting key (actor), what it touched (target), the
    governance decision (`allowed`), and a one-line summary (detail). `allowed` is

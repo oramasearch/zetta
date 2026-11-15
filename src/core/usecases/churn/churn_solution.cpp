@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/usecases/churn/churn_step_executor.hpp"
 #include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/compute/cpu_device.hpp"
@@ -157,6 +158,7 @@ ChurnSolutionResult run_churn_solution_with_coordinator(
     auto churn = std::make_shared<ChurnStepExecutor>(node, coordinator, device,
                                                      std::move(pipeline));
     zetta::pipeline::GraphExecutor executor{churn};
+    executor.run_as(options.principal);  // #1322; local leaves the Run's own
 
     ChurnSolutionResult result;
     std::shared_ptr<zetta::pipeline::Run> run;
@@ -203,7 +205,7 @@ nlohmann::json_schema::json_validator& coordinated_run_validator() {
 // own validated boundary (to_json / from_json); the calibration config is the
 // three-field value shape the payload schema pins down.
 Json options_to_wire(const ChurnSolutionOptions& options) {
-    return Json{
+    Json wire{
         {"params", options.params.to_json()},
         {"calibration",
          Json{{"enabled", options.calibration.enabled},
@@ -217,6 +219,13 @@ Json options_to_wire(const ChurnSolutionOptions& options) {
         {"result_table_prefix", options.result_table_prefix},
         {"result_entity_column", options.result_entity_column},
         {"result_score_column", options.result_score_column}};
+    // Each participant's copy runs as the same principal (#1322); only when set,
+    // so a local run keeps the shape an older peer accepts.
+    if (!options.principal.local()) {
+        wire["principal"] = Json{{"id", options.principal.acting_id},
+                                 {"is_user", options.principal.acting_is_user}};
+    }
+    return wire;
 }
 
 // Parse the (schema-validated) options object back. Returns nullopt + a reason
@@ -247,6 +256,11 @@ std::optional<ChurnSolutionOptions> options_from_wire(const Json& wire,
     options.result_table_prefix = wire.value("result_table_prefix", options.result_table_prefix);
     options.result_entity_column = wire.value("result_entity_column", options.result_entity_column);
     options.result_score_column = wire.value("result_score_column", options.result_score_column);
+    if (const auto principal = wire.find("principal");
+        principal != wire.end() && principal->is_object()) {
+        options.principal = {principal->value("id", std::string{}),
+                             principal->value("is_user", false)};
+    }
     options.coordinate = false;  // a co-launched run never re-fans-out
     return options;
 }
@@ -582,6 +596,7 @@ ChurnSolutionResult run_churn_solution_on_table(
     auto churn = std::make_shared<ChurnStepExecutor>(node, *coordinator, device,
                                                      std::move(pipeline));
     zetta::pipeline::GraphExecutor executor{churn};
+    executor.run_as(options.principal);  // #1322; local leaves the Run's own
 
     ChurnSolutionResult result;
     std::shared_ptr<zetta::pipeline::Run> run;
@@ -715,7 +730,15 @@ const nlohmann::json& churn_coordinated_run_schema() {
             "result_database": { "type": "string", "minLength": 1 },
             "result_table_prefix": { "type": "string", "minLength": 1 },
             "result_entity_column": { "type": "string", "minLength": 1 },
-            "result_score_column": { "type": "string", "minLength": 1 }
+            "result_score_column": { "type": "string", "minLength": 1 },
+            "principal": {
+              "type": "object",
+              "required": ["id", "is_user"],
+              "additionalProperties": false,
+              "properties": {
+                "id":      { "type": "string", "minLength": 1 },
+                "is_user": { "type": "boolean" }
+              } }
           } }
       }
     })JSONSCHEMA");
@@ -764,7 +787,9 @@ AsyncChurnRun::AsyncChurnRun(Node& node, ir::ExecutionGraph graph,
       started_(std::chrono::steady_clock::now()) {
     // The worker's cancel flag is this handle's — wire it before launch.
     options_.cancel = &cancel_;
-    worker_ = std::thread([this] {
+    worker_ = std::thread([this, audit_origin = zetta::governance::capture_audit_origin()] {
+        // The worker's audit rows name whoever launched it (#1327).
+        const zetta::governance::AuditOriginScope audit_scope{audit_origin};
         // Everything the worker reads it owns (the by-value snapshots above);
         // every node-tree write on this path gates through Node::run_on_owner.
         result_ = table_.empty() ? run_churn_solution_on_node(node_, *device_, graph_,

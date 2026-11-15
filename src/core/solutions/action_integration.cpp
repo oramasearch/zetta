@@ -852,45 +852,65 @@ std::optional<ActionTask> ActionRuntime::deliver_task(
     std::string token,
     std::string actor,
     std::string* error) {
-    auto task = find_task(task_id, error);
-    if (!task) {
+    // The HTTP attempts never run on the owner loop when the caller is not on
+    // it (#1406, LSR-173). Every step that reads or writes node state (the
+    // outbox, the policy store, the ledger, the dead-letter table) runs through
+    // Node::run_on_owner, which is inline when the caller is already the owner;
+    // only connector->request and the transport run on the calling thread. The
+    // deliver_action_task and execute_closed_loop capabilities are `blocks`
+    // entries, so REST and MCP call this on the blocking pool: an endpoint that
+    // stalls for its whole timeout holds one pool thread, and the node keeps
+    // answering every other call meanwhile.
+    std::string reason;
+    const auto fail = [&](std::string message) -> std::optional<ActionTask> {
+        if (error != nullptr) *error = std::move(message);
         return std::nullopt;
-    }
-    if (!binding_matches(*task, actor)) {
-        if (error != nullptr) {
-            *error = "action task binding does not match actor or stored specification";
+    };
+
+    // 1. Read the task and its decision (owner).
+    std::optional<ActionTask> task;
+    std::optional<DecisionRecord> decision;
+    bool settled = false;  // already delivered or dead-lettered: nothing to send
+    bool failed = false;
+    node_.run_on_owner([&] {
+        task = find_task(task_id, &reason);
+        if (!task) {
+            failed = true;
+            return;
         }
-        return std::nullopt;
-    }
-    if (task->status == ActionTaskStatus::Delivered ||
-        task->status == ActionTaskStatus::DeadLetter) {
-        return task;
-    }
-    auto store = policy_store_for(node_, error);
-    if (!store) {
-        return std::nullopt;
-    }
-    const auto decision = store->get_decision(task->decision_id);
-    if (!decision) {
-        if (error != nullptr) {
-            *error = "decision no longer exists";
+        if (!binding_matches(*task, actor)) {
+            reason = "action task binding does not match actor or stored specification";
+            failed = true;
+            return;
         }
-        return std::nullopt;
-    }
+        if (task->status == ActionTaskStatus::Delivered ||
+            task->status == ActionTaskStatus::DeadLetter) {
+            settled = true;
+            return;
+        }
+        auto store = policy_store_for(node_, &reason);
+        if (!store) {
+            failed = true;
+            return;
+        }
+        decision = store->get_decision(task->decision_id);
+        if (!decision) {
+            reason = "decision no longer exists";
+            failed = true;
+        }
+    });
+    if (failed) return fail(std::move(reason));
+    if (settled) return task;
+
+    // Pure: no node state.
     const zetta::connect::HttpTransport transport =
         resolve_transport(transport_);
     if (!transport) {
-        if (error != nullptr) {
-            *error = "no outbound HTTP transport is installed";
-        }
-        return std::nullopt;
+        return fail("no outbound HTTP transport is installed");
     }
     const auto connector = make_action_connector(task->connector);
     if (!connector) {
-        if (error != nullptr) {
-            *error = "unknown action connector";
-        }
-        return std::nullopt;
+        return fail("unknown action connector");
     }
 
     // The credential goes only to an approved endpoint over HTTPS (#1453),
@@ -908,30 +928,38 @@ std::optional<ActionTask> ActionRuntime::deliver_task(
     config.token = std::move(token);
     config.timeout_seconds = task->timeout_seconds;
     while (task->attempts < task->max_attempts) {
-        if (const auto blocked = store->delivery_blocker(*decision)) {
-            task->status = ActionTaskStatus::Blocked;
-            task->last_error = *blocked;
-            task->updated_at = zetta::util::now_iso8601();
-            if (!persist_task(node_, *task, error)) {
-                return std::nullopt;
+        // 2. Before each attempt: the kill-switch and holdout, and the ledger
+        //    action the attempt is recorded against (owner).
+        bool blocked = false;
+        node_.run_on_owner([&] {
+            auto store = policy_store_for(node_, &reason);
+            if (!store) {
+                failed = true;
+                return;
             }
-            return task;
-        }
-        if (task->ledger_action_id.empty()) {
-            const auto action = record_task_action(
-                node_,
-                *task,
-                *decision,
-                actor);
-            if (!action) {
-                if (error != nullptr) {
-                    *error = "could not record action delivery in the ledger";
+            if (const auto blocker = store->delivery_blocker(*decision)) {
+                task->status = ActionTaskStatus::Blocked;
+                task->last_error = *blocker;
+                task->updated_at = zetta::util::now_iso8601();
+                if (!persist_task(node_, *task, &reason)) failed = true;
+                blocked = true;
+                return;
+            }
+            if (task->ledger_action_id.empty()) {
+                const auto action = record_task_action(node_, *task, *decision, actor);
+                if (!action) {
+                    reason = "could not record action delivery in the ledger";
+                    failed = true;
+                    return;
                 }
-                return std::nullopt;
+                task->ledger_action_id = action->id();
             }
-            task->ledger_action_id = action->id();
-        }
+        });
+        if (failed) return fail(std::move(reason));
+        if (blocked) return task;
 
+        // 3. The attempt itself, on the calling thread. Its timeout bounds the
+        //    whole hop: resolve, connect, TLS and the exchange (#1364).
         ActionConnectorMessage message;
         message.idempotency_key = task->idempotency_key;
         message.owner = task->owner;
@@ -940,49 +968,42 @@ std::optional<ActionTask> ActionRuntime::deliver_task(
         message.entity_id = decision->entity_id;
         message.payload = task->payload;
         const auto response = transport(connector->request(message, config));
-        ++task->attempts;
-        task->updated_at = zetta::util::now_iso8601();
-        if (response.ok()) {
-            task->status = ActionTaskStatus::Delivered;
-            task->last_error.clear();
-            task->acknowledgement = acknowledgement_from(response);
-            record_delivery_outcome(
-                node_,
-                task->ledger_action_id,
-                "acknowledged",
-                ledger_status(response.status),
-                task->currency);
-            if (!persist_task(node_, *task, error)) {
-                return std::nullopt;
+
+        // 4. Record the attempt (owner).
+        bool delivered = false;
+        node_.run_on_owner([&] {
+            ++task->attempts;
+            task->updated_at = zetta::util::now_iso8601();
+            if (response.ok()) {
+                task->status = ActionTaskStatus::Delivered;
+                task->last_error.clear();
+                task->acknowledgement = acknowledgement_from(response);
+                record_delivery_outcome(node_, task->ledger_action_id, "acknowledged",
+                                        ledger_status(response.status), task->currency);
+                delivered = true;
+            } else {
+                task->last_error = response_error(response);
+                record_delivery_outcome(node_, task->ledger_action_id, "delivery_failed",
+                                        ledger_status(response.status), task->currency);
             }
-            return task;
-        }
-        task->last_error = response_error(response);
-        record_delivery_outcome(
-            node_,
-            task->ledger_action_id,
-            "delivery_failed",
-            ledger_status(response.status),
-            task->currency);
-        if (!persist_task(node_, *task, error)) {
-            return std::nullopt;
-        }
+            if (!persist_task(node_, *task, &reason)) failed = true;
+        });
+        if (failed) return fail(std::move(reason));
+        if (delivered) return task;
     }
 
-    task->status = ActionTaskStatus::DeadLetter;
-    task->updated_at = zetta::util::now_iso8601();
-    record_delivery_outcome(
-        node_,
-        task->ledger_action_id,
-        "dead_letter",
-        0,
-        task->currency);
-    if (!persist_task(node_, *task, error)) {
-        return std::nullopt;
-    }
-    if (!copy_to_dead_letter(node_, *task, error)) {
-        return std::nullopt;
-    }
+    // 5. Out of attempts: dead-letter it (owner).
+    node_.run_on_owner([&] {
+        task->status = ActionTaskStatus::DeadLetter;
+        task->updated_at = zetta::util::now_iso8601();
+        record_delivery_outcome(node_, task->ledger_action_id, "dead_letter", 0,
+                                task->currency);
+        if (!persist_task(node_, *task, &reason) ||
+            !copy_to_dead_letter(node_, *task, &reason)) {
+            failed = true;
+        }
+    });
+    if (failed) return fail(std::move(reason));
     return task;
 }
 
@@ -991,7 +1012,10 @@ std::optional<ActionTask> ActionRuntime::execute_closed_loop(
     std::string actor,
     std::string* error) {
     const std::string token = spec.connector.token;
-    const auto task = enqueue_task(std::move(spec), actor, error);
+    // The enqueue is bookkeeping (owner); the delivery hops off it per attempt
+    // (#1406).
+    std::optional<ActionTask> task;
+    node_.run_on_owner([&] { task = enqueue_task(std::move(spec), actor, error); });
     if (!task) {
         return std::nullopt;
     }

@@ -4,9 +4,11 @@
 #include <atomic>
 #include <cstdio>
 #include <exception>
+#include <functional>
 #include <latch>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <pthread.h>
 
@@ -215,6 +217,49 @@ MemoryUsage memory_usage() noexcept {
     usage.bytes = usage.coroutine_frames * 512 +
                   usage.blocking_queue_depth * 256;
     return usage;
+}
+
+namespace {
+
+struct ContextCarriers {
+    std::mutex guard;
+    std::vector<ContextCarrier> carriers;
+};
+
+ContextCarriers& context_carriers() {
+    static ContextCarriers state;
+    return state;
+}
+
+}  // namespace
+
+void register_context_carrier(ContextCarrier carrier) {
+    if (!carrier) return;
+    ContextCarriers& state = context_carriers();
+    const std::lock_guard<std::mutex> lock(state.guard);
+    state.carriers.push_back(std::move(carrier));
+}
+
+ContextRestorer capture_thread_context() {
+    std::vector<ContextCarrier> carriers;
+    {
+        ContextCarriers& state = context_carriers();
+        const std::lock_guard<std::mutex> lock(state.guard);
+        carriers = state.carriers;
+    }
+    std::vector<ContextRestorer> restorers;
+    for (const ContextCarrier& carrier : carriers) {
+        if (ContextRestorer restorer = carrier()) restorers.push_back(std::move(restorer));
+    }
+    if (restorers.empty()) return {};
+    return [restorers = std::move(restorers)](const std::function<void()>& work) {
+        // Nest them: the first carrier's scope is outermost.
+        std::function<void()> run = work;
+        for (auto it = restorers.rbegin(); it != restorers.rend(); ++it) {
+            run = [restorer = *it, inner = std::move(run)] { restorer(inner); };
+        }
+        run();
+    };
 }
 
 void blocking_work_started() noexcept {

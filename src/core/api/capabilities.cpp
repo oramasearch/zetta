@@ -365,7 +365,15 @@ const nlohmann::json& sql_schema() {
           {"database",
            {{"type", "string"},
             {"description",
-             "default database for unqualified table names (optional)"}}}}}};
+             "default database for unqualified table names (optional)"}}},
+          {"read_only",
+           {{"type", "boolean"},
+            {"default", false},
+            {"description",
+             "refuse anything but exactly one read statement (a SELECT): the "
+             "engine parses the text and refuses a second statement, DDL, DML, "
+             "user, token, role and policy statements before anything runs "
+             "(invalid_input)"}}}}}};
     return schema;
 }
 
@@ -392,8 +400,13 @@ ApiResult handle_sql(const nlohmann::json& input, ApiContext& context) {
     zetta::query::QueryService service(context.node, context.cluster,
                                        context.acting_key, context.acting_is_user);
     const std::string database = input.value("database", "");
-    auto outcome = service.run(input.at("statement").get<std::string>(), database);
+    zetta::query::QueryService::RunOptions options;
+    options.read_only = input.value("read_only", false);
+    auto outcome =
+        service.run(input.at("statement").get<std::string>(), database, options);
     if (!outcome.ok()) {
+        // A read_only refusal is the caller's input, decided before anything ran.
+        if (outcome.refused) return ApiResult::failure("invalid_input", outcome.error);
         return ApiResult::failure("engine_error", outcome.error);
     }
     nlohmann::json output;
@@ -4807,8 +4820,8 @@ const nlohmann::json& submit_feedback_schema() {
              "ALSO write the bundle to a new file on the node, named "
              "relative to its export directory (exports/ under the data "
              "directory); no absolute path, no '..', no symbolic link, and "
-             "never an existing file. Nothing leaves the cluster on its own "
-             "(optional)"}}}}}};
+             "never an existing file. Needs feedback:export. Nothing leaves "
+             "the cluster on its own (optional)"}}}}}};
     return schema;
 }
 
@@ -4851,15 +4864,29 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
     }
     options.actor =
         context.acting_key.empty() ? std::string("local") : context.acting_key;
+    const auto holds = [&context](const zetta::governance::Operation& operation) {
+        return context.acting_key.empty() ||
+               (context.acting_is_user
+                    ? context.node.authorize_user(context.acting_key, operation).allowed
+                    : context.node.authorize(context.acting_key, operation).allowed);
+    };
+    // Writing a file on the node is its own right (feedback:export, #1455), not
+    // api:query: refused before anything is stored.
+    if (input.contains("export_path") &&
+        !holds({zetta::governance::CapabilityDomain::Api, "export_feedback"})) {
+        return ApiResult::failure(
+            "unauthorized",
+            "submit_feedback: export_path needs the feedback:export permission",
+            "/export_path");
+    }
     // Trace ids are client-controlled and do not prove ownership of any span.
-    // Feedback remains available to everyone, but node-wide diagnostics need
-    // the same explicit right as list_traces/get_trace and the SQL views (#1408).
-    const zetta::governance::Operation diagnostics{
-        zetta::governance::CapabilityDomain::Api, "cluster_admin"};
-    options.include_diagnostics = context.acting_key.empty() ||
-        (context.acting_is_user
-             ? context.node.authorize_user(context.acting_key, diagnostics).allowed
-             : context.node.authorize(context.acting_key, diagnostics).allowed);
+    // Node-wide diagnostics need the same explicit right as list_traces/get_trace
+    // and the SQL views (#1408); every other caller gets only the traces and
+    // errors that are its own (#1455), and never a crash report.
+    options.diagnostics =
+        holds({zetta::governance::CapabilityDomain::Api, "cluster_admin"})
+            ? zetta::observability::FeedbackDiagnostics::all
+            : zetta::observability::FeedbackDiagnostics::own;
 
     std::string reason;
     const auto bundle =
@@ -6565,9 +6592,12 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
     // the engine interface — this handler cannot bypass it by construction).
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
+    // Deployed as the caller (#1315): a target's credentials_ref, when one is
+    // carried, resolves only for a principal that may use that connection.
     auto deployment = context.node.deploy_graph(
         graph->graph(), zetta::pipeline::DeploymentTarget{*kind, {}, {}},
-        graph->name());
+        graph->name(),
+        zetta::pipeline::RunPrincipal{context.acting_key, context.acting_is_user});
     if (!deployment) {
         if (report.block_deploy) {
             return ApiResult::failure("engine_error",
@@ -9075,6 +9105,87 @@ ApiResult handle_delete_connection(const nlohmann::json& input,
             context.node, zetta::governance::SafeModeTarget::Connection, name);
     }
     return ApiResult::success(std::move(output));
+}
+
+// ---- per-principal egress scopes (#1323, docs/governance/egress-policy.md) ----
+
+const nlohmann::json& egress_scope_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "principals", "allow"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"principals", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"allow", {{"type", "string"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_egress_scope_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "principals", "allow"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"maxLength", 64},
+            {"description", "the scope's name; creating an existing name replaces it"}}},
+          {"principals",
+           {{"type", "array"},
+            {"minItems", 1},
+            {"maxItems", 256},
+            {"items", {{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
+            {"description",
+             "user, role or access-key ids; a role names every user that holds it"}}},
+          {"allow",
+           {{"type", "string"},
+            {"description",
+             "what they may reach, inside the node's allowlist, in the --egress-allow "
+             "syntax (hosts, *.domain, addresses, CIDR ranges, :port); empty admits "
+             "loopback only"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& drop_egress_scope_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name"}},
+        {"additionalProperties", false},
+        {"properties", {{"name", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& drop_egress_scope_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "removed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}}, {"removed", {{"type", "boolean"}}}}}};
+    return schema;
+}
+
+ApiResult handle_create_egress_scope(const nlohmann::json& input, ApiContext& context) {
+    zetta::connect::EgressScopeValue value;
+    value.name = input.at("name").get<std::string>();
+    value.principals = input.at("principals").get<std::vector<std::string>>();
+    value.allow = input.at("allow").get<std::string>();
+    std::string error;
+    if (!context.node.create_egress_scope(value, &error)) {
+        return ApiResult::failure("invalid_input", error);
+    }
+    for (const zetta::connect::EgressScopeValue& scope : context.node.egress_scopes()) {
+        if (scope.name == value.name) return ApiResult::success(zetta::connect::to_json(scope));
+    }
+    return ApiResult::failure("engine_error", "the egress scope was not recorded");
+}
+
+ApiResult handle_drop_egress_scope(const nlohmann::json& input, ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    return ApiResult::success(
+        {{"name", name}, {"removed", context.node.drop_egress_scope(name)}});
 }
 
 const nlohmann::json& create_dataset_from_query_schema() {
@@ -11868,7 +11979,9 @@ void register_core_capabilities(Registry& registry) {
         "purge_audit",
         "Purge audit records",
         "Remove audit records strictly before a UTC cutoff, advance replicated "
-        "low-water marks, and append an audit_purged record describing the action.",
+        "low-water marks, and append an audit_purged record describing the action. "
+        "The cutoff must be at least the node's audit retention window in the past, "
+        "and records of earlier purges and retention passes are never removed.",
         purge_audit_schema(),
         purge_audit_output_schema(),
         CapabilityKind::Action,
@@ -11967,7 +12080,8 @@ void register_core_capabilities(Registry& registry) {
         "data-changing statement is audited as a data_changed action. A "
         "database in safe mode (warn_writes: writes; warn_all: everything) "
         "answers safe_mode_warning naming the statement first; repeat with "
-        "safe_mode_confirmation to run it.",
+        "safe_mode_confirmation to run it. With read_only the engine refuses, "
+        "before anything runs, any text that is not exactly one SELECT.",
         sql_schema(),
         sql_output_schema(),
         CapabilityKind::Read,
@@ -12482,8 +12596,9 @@ void register_core_capabilities(Registry& registry) {
         "Snapshot a feedback bundle — your description plus the relevant "
         "traces, recent errors, crash reports, and versions — stored as a "
         "large object you explicitly export; nothing leaves the cluster on "
-        "its own. Only callers with cluster:admin attach diagnostics; other "
-        "callers submit their description and version information only.",
+        "its own. Callers with cluster:admin attach the node's diagnostics; "
+        "other callers attach only their own traces and errors, never a crash "
+        "report. export_path needs feedback:export.",
         submit_feedback_schema(),
         submit_feedback_output_schema(),
         CapabilityKind::Action,
@@ -13206,6 +13321,37 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_delete_connection});
+
+    // Per-principal egress scopes (#1323): cluster:admin only.
+    registry.add(Capability{
+        "create_egress_scope",
+        "Create an egress scope",
+        "Narrow what the named users, roles or access keys may reach over the "
+        "network, inside the node's egress allowlist: a connection made for one of "
+        "them goes only to a destination both allow. Replicated to every node and "
+        "sealed by the identity root. Creating an existing name replaces it. "
+        "Requires cluster:admin.",
+        create_egress_scope_schema(),
+        egress_scope_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Api, "cluster_admin"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_egress_scope});
+
+    registry.add(Capability{
+        "drop_egress_scope",
+        "Drop an egress scope",
+        "Remove an egress scope from every node; its principals then reach what "
+        "the node's allowlist and their other scopes allow. Returns removed=false "
+        "when no scope had that name. Requires cluster:admin.",
+        drop_egress_scope_schema(),
+        drop_egress_scope_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Api, "cluster_admin"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_drop_egress_scope});
 
     Capability create_dataset_from_query{
         "create_dataset_from_query",

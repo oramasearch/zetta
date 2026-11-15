@@ -122,9 +122,42 @@ caller's actor to the owner thread with the work it hands over, so work queued
 from a background worker is attributed to whoever queued it, not to what the
 owner thread was doing.
 
-Work that runs later on a thread no entry point started (a background job
-finishing, a scheduled retrain) has no declared caller, and its rows keep an
-empty actor; that is tracked in [#1327](https://github.com/oramasearch/zetta/issues/1327).
+### Work that finishes later, on another thread (#1327)
+
+Work handed off by an entry point keeps its caller, and the surface it came
+through, as a `zetta::governance::AuditOrigin` captured where the work is
+launched and reinstated where it runs:
+
+| Launcher | How the origin travels |
+|---|---|
+| `Node::create_job` | stored on the job as `submitted_by` / `submitted_via` (replicated, optional); `ComputeJob::set_status` puts them on `job_finished`, whichever thread finishes the job |
+| `kind: job` workers on their own thread (`AsyncChurnRun`, rank, survival, document extraction, label efficiency, streaming, testkit cases, the cloud actions) | captured in the thread's lambda when it is started, inside the handler, and opened as an `AuditOriginScope` at the top of the thread |
+| `kind: job` coroutine workers (solution runs, anomaly, segmentation, forecast, next best action) | captured in the work's state at launch and passed to `Node::run_on_owner(origin, work)` for every owner hop; each synchronous engine call between hops runs under an `AuditOriginScope` that closes before the next suspension |
+
+A scope is never held across a `co_await`: the coroutine may resume on another
+thread, and the scope would restore that thread's actor to the wrong value.
+
+### Work the node starts itself (#1327)
+
+Work no entry point started is the node's own, and is on the trail as actor
+`node:<node id>` through surface `internal`. Decided under Steve's 2026-11-14
+delegation (the recommendation on #1327). Two places make it so:
+
+- `Node::tick` opens an `AuditOriginScope` of `node:<node id>` / `internal` for
+  everything after it drains the owner queue: the deployment controller's runs
+  and self-heals, study trials, retention, the co-launches peers fanned out.
+  Work inside it that declares its own caller keeps it (a study trial runs as
+  its principal, #1322), and owner work drained before it reinstated the origin
+  it was queued with. The tick's scope replaces the desktop frame's, so a
+  self-heal on a headed node is not recorded as the person at the desk.
+- `Node::record_audit_event` names `node:<node id>` on any row recorded with no
+  actor and no declared one (an `egress_denied` row for the node's own
+  connection, a row from a thread no launcher covered), so no row is blank.
+
+The deployment controller now records each run it starts or restarts as
+`data_changed` on `run:<id>`, with the log line as detail. The engine has no
+scheduler that fires retrains today (`set_training_schedule` only records the
+schedule), so there is nothing scheduled to attribute yet.
 
 Pub/sub administrative changes use `pubsub_topic_updated`,
 `pubsub_event_updated`, and `pubsub_event_deleted`. Their details contain
@@ -146,9 +179,9 @@ second event for a peer's action. Important emitters include:
 | Access-key and cloud governance | Key, provisioning, consent, inspection, and dataset actions. |
 | Decision policy store | Policy creation/update and decision approval. |
 | Pub/sub administration | Topic setting changes and event edits/deletions. |
-| Audit administration | `audit_purged`, recorded after an explicit purge. |
+| Audit administration | `audit_purged`, recorded after an explicit purge; `audit_retention_expired`, recorded when a retention pass removes records (#1329). Both outlive every later trim. |
 | SQL executor | `data_changed` for every statement that changes data, schema or governance, allowed or refused (#1229); `data_access` with `allowed: false` for a refused `SELECT` (#252). |
-| Outbound HTTP client | `egress_denied` for every connection the egress policy refuses, with target `egress:<host>:<port>` and actor `node` ([egress-policy.md](egress-policy.md), #75). |
+| Outbound HTTP client | `egress_denied` for every connection the egress policy refuses, with target `egress:<host>:<port>` and the principal it was for as actor, `node:<node id>` for the node's own work ([egress-policy.md](egress-policy.md), #75, #1323, #1327). |
 
 `AuditSink::record_audit_event` decouples these emitters from the node-owned
 store. `Node` assigns the id and time and appends the event to its origin log
@@ -163,7 +196,8 @@ checksummed frames in bounded ranges. A relay preserves the original origin,
 sequence and id. Duplicate ids use the existing 96-bit fingerprint index.
 There is no dual writing, catalog reconciliation, or per-event CRDT tombstone.
 
-The peer hello advertises audit protocol version `2`; a missing field means the
+The peer hello advertises audit protocol version `3` (`kAuditProtocolVersion`;
+`3` since #1328 added `surface`, `2` before it); a missing field means the
 old version `0`. Mismatched peers log an explicit refusal and exchange no audit
 status, requests or responses. The rest of the catalog continues to replicate.
 The upgraded catalog adapter strips `audit:` operations from incoming documents,
@@ -273,7 +307,41 @@ return from a peer.
 
 Records from either class that remain above their own low-water mark are still
 included when a new peer pulls a range from zero. No catalog removal is written
-for retention.
+for retention. A pass that removes records appends one `audit_retention_expired`
+row naming the count and both cutoffs (#1329); from the tick its actor is
+`node:<node id>` (#1327). `Node::apply_audit_retention` runs a pass now and
+returns the count.
+
+## The trail cannot be edited, and every trim is recorded (#1329)
+
+Decided under Steve's 2026-11-14 delegation (option 1 on #1329, with the
+hardening recommended there). The trail is tamper-evident, not untrimmable: an
+untrimmable trail grows without bound on every node, and retention enforces our
+own data minimisation. What holds instead, and what #847's step 8 now checks:
+**the trail cannot be edited; any trim is itself recorded, and that record
+outlives every later trim.**
+
+- **No edit.** No API mutates an `AuditEvent`; segments are checksummed; SQL
+  against `system.audit` is read-only for everyone, administrators included.
+- **A trim's record is never removed.** `audit_purged` and
+  `audit_retention_expired` rows are exempt from every later purge and retention
+  pass (`governance::audit_record_outlives_trims`). `AuditTrail::retain_since`
+  keeps them below the low-water mark without advancing or closing its prefix
+  (so a kept row does not make every later pass rewrite the segments), and a
+  peer keeps one it receives below its own mark. The trail therefore always
+  shows that a trim happened, who made it, the cutoff and the count.
+- **Recent history cannot be purged.** A purge needs `audit:purge` and a cutoff
+  at least the ordinary retention window in the past (30 days by default,
+  `--audit-retention-days`). An administrator can never remove the evidence of
+  what they just did. A node that keeps every record (retention `0`) refuses
+  every purge.
+
+Tests: `AuditTrail.ATrimIsRecordedAndItsRecordOutlivesEveryLaterTrim` (as an
+administrator: an edit refused, a recent purge refused, a purge recorded, a
+second purge and a retention pass, and the first `audit_purged` row still there,
+after a restart too) and `AuditTrail.ANodeThatKeepsEveryRecordRefusesEveryPurge`.
+The new action is part of the audit-event schema, so it ships with the
+all-nodes-together upgrade of audit protocol `3` (#1328).
 
 ## Explicit purge
 
@@ -285,7 +353,8 @@ role has it, while `writer` and `reader` do not.
 The action runs the same segment rewrite and replicated low-water-mark path as
 scheduled retention, using `before` for both ordinary rows and summaries.
 Records strictly before the cutoff are removed on the caller and peers trim
-when they receive the new cursors. A future cutoff is refused. On success the
+when they receive the new cursors. A future cutoff is refused, and so is one
+inside the ordinary retention window (#1329, above). On success the
 node appends one `audit_purged` row after the rewrite, naming the actor, cutoff,
 and number of removed rows. Appending after the rewrite guarantees the row for
 the current purge is never one of the records it removes.
@@ -295,9 +364,48 @@ tool. The result is `{"before":"...","removed":N}`. Segment rewriting is
 offloaded through the runtime's blocking-work path while authorization and
 activity notification remain on the node owner thread.
 
+## Which surface an action came through (#1328)
+
+Each row carries `surface`: `mcp` (MCP `tools/call`), `rest` (`/v1/<name>`
+with a bearer, and the governed serving routes), `web` (the Studio web app and
+dashboard, authenticated by the `zetta_session` cookie, and the web console),
+`desktop` (the headed app), `console` (the governed console run directly),
+`pgwire` (reserved for a Postgres wire listener; zetta has none today) or
+`internal` (work the node starts itself). The entry point declares it the way
+it declares the actor: the server layers set `ApiContext::surface` and
+`Registry::call` opens a `zetta::governance::AuditSurfaceScope`, the headed
+app's frame and `GovernedConsole::run` open one themselves, and
+`Node::record_audit_event` stamps it on every row recorded without one.
+`Node::run_on_owner` carries it (with the actor, as an `AuditOrigin`) to the
+owner thread. The same capability called over MCP and over REST by two
+identities therefore gives two rows with different actors and surfaces.
+
+Every row the node records carries a surface. A row recorded where no entry
+point declared one (a tick of the node's own control plane, a background
+connection with no caller) is `internal`. An `egress_denied` row is recorded on
+the HTTP client's thread, so the denial carries the caller's surface with it
+(`HttpRequest::on_behalf_of_surface`, `EgressDenial::surface`). A row from
+before #1328 has none (`system.audit.surface` is null). The schema accepts only
+the values above. Adding the field changed the audit protocol to `3`; a node at
+`2` rejects these records (its schema is sealed), so upgrade all nodes
+together, as below.
+
+### A malformed call to a mutating capability (#1328)
+
+`Registry::call` checks the input against the capability's schema before its
+authorization step. When that check refuses a capability that changes
+something (an `action` or `job`, or a `read` marked `mutates`), the refusal is
+on the trail: one `data_access` row with `allowed=false`, the authenticated
+caller as actor (`local` for the trusted session), the surface, target
+`api:<capability>` and detail `invalid input: <JSON pointer of the field at
+fault>`. The detail names only the field, never the validator's reason, which
+can quote the input. A malformed call to a plain read leaves no row, so typos
+in reads do not flood the trail. Decided under Steve's 2026-11-14 delegation
+(the recommendation on #1328).
+
 ## Querying
 
-`system.audit` exposes the common fields plus nullable summary columns:
+`system.audit` exposes the common fields, `surface` (#1328), plus nullable summary columns:
 `calls`, `events_delivered`, `scope`, `window_started`, and `window_ended`.
 For example:
 

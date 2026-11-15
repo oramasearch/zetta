@@ -29,6 +29,7 @@
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/connect/credential_seal.hpp"
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
@@ -108,8 +109,11 @@ struct NodeConfig {
     std::optional<std::size_t> pubsub_dispatch_max_threads;
     // Ordinary audit events and window summaries have separate retention
     // windows. A non-positive value disables that class's expiration for a
-    // test or an explicitly archival node (#1154, #1169).
-    std::chrono::hours audit_retention = std::chrono::hours(24 * 30);
+    // test or an explicitly archival node (#1154, #1169). The ordinary window
+    // is also the youngest cutoff an administrator's purge may name (#1329);
+    // a node that keeps every record (0) refuses every purge. In seconds so a
+    // test can use a short window; the flags set whole days.
+    std::chrono::seconds audit_retention = std::chrono::hours(24 * 30);
     std::chrono::hours audit_summary_retention = std::chrono::hours(24 * 365);
     std::chrono::milliseconds audit_summary_window = std::chrono::minutes(5);
     std::size_t audit_recent_events = 2'048;
@@ -241,6 +245,13 @@ public:
     // rides the runtime interface (async_event + block_on) — no caller-facing
     // condition variables.
     void run_on_owner(const std::function<void()>& work);
+    // The same, with the work attributed to `origin` (who started it and
+    // through which surface) instead of whatever the calling thread declares:
+    // for a coroutine worker that resumes on pool threads, which carry no
+    // AuditActorScope, so it hands over the origin it captured at launch
+    // (#1327).
+    void run_on_owner(const zetta::governance::AuditOrigin& origin,
+                      const std::function<void()>& work);
     // How run_on_owner wakes an idle owner loop so the queued work runs now,
     // not after the loop's idle wait (#1063: every offloaded API call's gate
     // and the pub/sub authorizer queue here). Called under the queue's lock, so
@@ -407,6 +418,16 @@ public:
     std::shared_ptr<zetta::pipeline::Deployment> deploy_graph(const ir::ExecutionGraph& graph,
                                              zetta::pipeline::DeploymentTarget target,
                                              std::string graph_name);
+    // The same, deployed by `principal` (#1315): a target's credentials_ref is
+    // resolved through the saved-connection store for that principal before
+    // anything is placed (pipeline/deployment_credentials.hpp), failing
+    // closed; a refusal is a denied `graph_deployed` row and `error` says why.
+    // A Local target takes no credentials_ref. The overload above is the
+    // trusted local session.
+    std::shared_ptr<zetta::pipeline::Deployment> deploy_graph(
+        const ir::ExecutionGraph& graph, zetta::pipeline::DeploymentTarget target,
+        std::string graph_name, const zetta::pipeline::RunPrincipal& principal,
+        std::string* error = nullptr);
     std::shared_ptr<zetta::pipeline::Deployment> find_deployment(const std::string& id) const;
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments() const {
         return deployments_;
@@ -449,6 +470,11 @@ public:
     // embedded metrics, and keeps the promoted Model's producing Run.
     std::shared_ptr<zetta::ml::Study> create_study(
         zetta::ml::StudySpec spec, std::string* error = nullptr);
+    // The same, recording who creates it (#1322): its trials run as them. The
+    // overload above is the trusted local session.
+    std::shared_ptr<zetta::ml::Study> create_study(
+        zetta::ml::StudySpec spec, std::string* error,
+        const zetta::pipeline::RunPrincipal& principal);
     std::shared_ptr<zetta::ml::Study> find_study(
         const std::string& id_or_name) const;
     std::optional<zetta::ml::StudyDeleteResult> delete_study(
@@ -903,9 +929,18 @@ public:
     // it stamps a fresh id + time and appends to the local segment log, whose
     // per-origin ranges replicate without entering the CRDT (#1164).
     void record_audit_event(zetta::governance::AuditEventValue value) override;
+    // Remove records strictly before `before`, as `actor` (#1169). Refused
+    // unless `before` is at least the ordinary retention window in the past
+    // (#1329), so recent history, including the evidence of what the
+    // administrator just did, can never be removed. Records of earlier trims
+    // are never removed. Appends one `audit_purged` row.
     std::optional<std::size_t> purge_audit_before(
         const std::string& before, std::string actor,
         std::string* error = nullptr);
+    // The retention pass (the tick runs it hourly; public so a test or an
+    // operator tool can run it now). Returns how many records it removed and,
+    // when that is not zero, appends one `audit_retention_expired` row (#1329).
+    std::size_t apply_audit_retention();
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const;
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> recent_audit_events() const;
     std::size_t audit_event_count() const;
@@ -1115,6 +1150,24 @@ public:
         return policies_;
     }
     std::size_t policy_count() const { return policies_.size(); }
+
+    // --- per-principal egress scopes (#1323, docs/governance/egress-policy.md) --
+    // A scope narrows what the principals it names (users, roles, access keys)
+    // may reach, inside the node's allowlist. Replicated as `egress_scope:<id>`,
+    // sealed by the identity root like identity records (a verify-only node
+    // refuses the write). Creating a scope whose name exists replaces its
+    // principals and allowlist. false (and `error`) on an invalid value.
+    bool create_egress_scope(zetta::connect::EgressScopeValue value,
+                             std::string* error = nullptr);
+    // Drop a scope by name. false on an unknown name.
+    bool drop_egress_scope(const std::string& name);
+    // Every scope, by name.
+    std::vector<zetta::connect::EgressScopeValue> egress_scopes() const;
+    // Compile the scopes into the dialler's snapshot (principal id -> the
+    // union of every scope naming it or one of its roles) and install it with
+    // connect::set_egress_scopes. Runs on every change and from the tick when
+    // a role assignment moved. Owner thread only.
+    void publish_egress_scopes();
 
     // ----- Virtual tables (vtable:<name>, #809 slice 3) -----------------------
     // A user-declared, read-only VIRTUAL TABLE over a CRDT key-family (see
@@ -1338,7 +1391,6 @@ private:
     bool load_audit_events();
     std::filesystem::path audit_dir() const;
     void flush_due_audit_summaries();
-    void apply_audit_retention();
     void register_memory_probes();
     void report_memory(bool force);
     zetta::memory::ProbeSample audit_memory_usage() const;
@@ -1482,6 +1534,11 @@ private:
         const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_policies(const nlohmann::json& snapshot,
                             const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_egress_scopes(const nlohmann::json& snapshot,
+                                 const std::vector<std::string>* changed_keys = nullptr);
+    // A standalone node keeps its scopes in <data_dir>/security/egress-scopes.json.
+    void load_egress_scopes();
+    void persist_egress_scopes() const;
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<zetta::data::Database> materialize_database(
         std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
@@ -1674,6 +1731,9 @@ private:
     static constexpr std::string_view kLegacyTokenLookupSalt = "zetta-token-lookup-v1";
     std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles_; // user↔role assignments
     std::vector<std::shared_ptr<zetta::governance::Policy>> policies_;      // row-level security policies (#748)
+    std::map<std::string, zetta::connect::EgressScopeValue> egress_scopes_;  // id -> scope (#1323)
+    bool egress_scopes_dirty_ = false;      // a scope or a role assignment moved
+    bool egress_scopes_published_ = false;  // this node installed a non-empty snapshot
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)
     // Durable, local (non-replicated) checkpoint store for eviction tolerance
     // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.

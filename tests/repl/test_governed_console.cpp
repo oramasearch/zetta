@@ -227,9 +227,11 @@ TEST(GovernedConsole, InjectedGraphRunnerExecutesGatePassedSimPython) {
 
     int runner_calls = 0;
     console.set_graph_runner(
-        [&](const zetta::ir::ExecutionGraph& graph) {
+        [&](const zetta::ir::ExecutionGraph& graph,
+            const zetta::pipeline::RunPrincipal& principal) {
             ++runner_calls;
-            return node.run_graph(graph);  // stands in for the real-engine route
+            // stands in for the real-engine route
+            return node.run_graph(graph, {}, {}, principal);
         });
 
     const Result result = console.run(Frontend::SimPython, kPython);
@@ -257,9 +259,10 @@ TEST(GovernedConsole, InjectedGraphRunnerNotCalledWhenGateBlocks) {
 
     int runner_calls = 0;
     console.set_graph_runner(
-        [&](const zetta::ir::ExecutionGraph& graph) {
+        [&](const zetta::ir::ExecutionGraph& graph,
+            const zetta::pipeline::RunPrincipal& principal) {
             ++runner_calls;
-            return node.run_graph(graph);
+            return node.run_graph(graph, {}, {}, principal);
         });
 
     const Result result = console.run(Frontend::SimPython, kPython);
@@ -267,6 +270,80 @@ TEST(GovernedConsole, InjectedGraphRunnerNotCalledWhenGateBlocks) {
     EXPECT_EQ(runner_calls, 0) << "the gate must block before the runner";
     EXPECT_EQ(node.run_count(), 0u);
 
+    node.stop();
+}
+
+// #1322: an injected runner builds its own executor, so a key session's steps
+// are authorized before the runner is called. A key that may start a run but
+// not train a model never reaches the runner.
+TEST(GovernedConsole, InjectedGraphRunnerRefusesAStepTheKeyLacks) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    zetta::query::QueryService service{node};
+    GovernedConsole console{node, service};
+
+    int runner_calls = 0;
+    console.set_graph_runner([&](const zetta::ir::ExecutionGraph& graph,
+                                 const zetta::pipeline::RunPrincipal& principal) {
+        ++runner_calls;
+        return node.run_graph(graph, {}, {}, principal);
+    });
+
+    auto principal = node.create_principal("starter", PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    CapabilitySet caps;
+    caps.grant(CapabilityDomain::Api, "query")
+        .grant(CapabilityDomain::Orchestration, "start_run")
+        .grant(CapabilityDomain::Data, "read");  // no train_model
+    auto key = principal->create_key(Scope{}, caps);
+    ASSERT_TRUE(key);
+    console.set_session_key(key->id());
+
+    const Result result = console.run(Frontend::SimPython, kPython);
+    EXPECT_FALSE(result.ok());
+    EXPECT_NE(result.error.find("step authority"), std::string::npos) << result.error;
+    EXPECT_EQ(runner_calls, 0) << "a refused step must never reach the runner";
+    EXPECT_EQ(node.run_count(), 0u);
+    node.stop();
+}
+
+// #1322: the injected runner is handed the session's principal, and the Run it
+// produces records it, so the run's steps (and any retry of the Run) execute
+// as the key rather than as the trusted local session.
+TEST(GovernedConsole, InjectedGraphRunnerIsHandedTheSessionPrincipal) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    zetta::query::QueryService service{node};
+    GovernedConsole console{node, service};
+
+    auto principal = node.create_principal("runner", PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    CapabilitySet caps;
+    caps.grant(CapabilityDomain::Api, "query")
+        .grant(CapabilityDomain::Orchestration, "start_run")
+        .grant(CapabilityDomain::Orchestration, "train_model")
+        .grant(CapabilityDomain::Orchestration, "create_dataset_from_query")
+        .grant(CapabilityDomain::Data, "read");
+    auto key = principal->create_key(Scope{}, caps);
+    ASSERT_TRUE(key);
+    console.set_session_key(key->id());
+
+    std::string handed;
+    console.set_graph_runner([&](const zetta::ir::ExecutionGraph& graph,
+                                 const zetta::pipeline::RunPrincipal& as) {
+        handed = as.acting_id;
+        return node.run_graph(graph, {}, {}, as);
+    });
+    const Result result = console.run(Frontend::SimPython, kPython);
+    EXPECT_EQ(handed, key->id());
+    ASSERT_EQ(node.run_count(), 1u);
+    const auto run = node.runs().front();
+    ASSERT_TRUE(run->principal());
+    EXPECT_EQ(run->principal()->id, key->id());
+    EXPECT_FALSE(run->principal()->is_user);
+    (void)result;
     node.stop();
 }
 

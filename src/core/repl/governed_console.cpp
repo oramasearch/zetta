@@ -10,6 +10,7 @@
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 #include "zetta/util/duration.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/ir/execution_graph.hpp"
@@ -152,6 +153,10 @@ GovernedConsole::GovernedConsole(Node& node, query::QueryService& query,
     : node_(node), query_(query), gate_(std::move(gate)) {}
 
 Result GovernedConsole::run(Frontend frontend, const std::string& source) {
+    // The console is its own surface (#1328), unless the caller already declared
+    // one (the web console, the desktop app's console pane).
+    const zetta::governance::AuditSurfaceScope audit_surface{
+        zetta::governance::current_audit_surface().value_or("console")};
     const std::string now = zetta::util::now_iso8601();
     const zetta::governance::Operation op = required_operation(frontend);
     const std::string frontend_name(to_string(frontend));
@@ -242,11 +247,24 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
             // A key session's steps run as that key (#843): each step must be
             // authorized for it before it executes. The local session is the
             // trusted principal and runs unchecked.
+            const zetta::pipeline::RunPrincipal principal{session_key_,
+                                                          /*acting_is_user=*/false};
+            // An injected runner (the churn engine, #580) builds its own
+            // executor, so a key session's steps are authorized here, every one
+            // before anything runs (#1322): the key cannot reach through the
+            // runner what it may not do itself.
+            if (graph_runner_ && !principal.local()) {
+                const zetta::pipeline::GraphAuthorization steps =
+                    zetta::pipeline::authorize_graph_steps(node_, principal, lowered.graph);
+                if (!steps) {
+                    const std::string why = "step " + steps.step_id + ": " + steps.reason;
+                    record(false, "console sim-python refused by step authority · " + why);
+                    return Result::failure("step authority: " + why);
+                }
+            }
             const zetta::pipeline::ExecutionResult exec =
-                graph_runner_ ? graph_runner_(lowered.graph)
-                              : node_.run_graph(lowered.graph, {}, {},
-                                                zetta::pipeline::RunPrincipal{
-                                                    session_key_, /*acting_is_user=*/false});
+                graph_runner_ ? graph_runner_(lowered.graph, principal)
+                              : node_.run_graph(lowered.graph, {}, {}, principal);
             Result result = sim_python_result(lowered.graph, exec);
             record(true, "console sim-python · " + summary + " · run " +
                              (exec.run ? short_id(exec.run->id()) : "-") +

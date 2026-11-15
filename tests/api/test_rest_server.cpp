@@ -370,9 +370,18 @@ struct OpenSockets {
     }
 };
 
+// A one-second ordinary audit retention window, so the purge parity test can
+// name a cutoff the window allows (#1329). The retention pass itself runs only
+// hourly from the tick, so no other test sees records expire.
+zetta::NodeConfig rest_fixture_config(const zetta::test::TempDir& dir) {
+    zetta::NodeConfig config{dir.path().string(), /*preflight=*/false};
+    config.audit_retention = std::chrono::seconds(1);
+    return config;
+}
+
 struct RestServerFixture : ::testing::Test {
     zetta::test::TempDir dir;
-    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    zetta::Node node{rest_fixture_config(dir)};
     std::unique_ptr<zetta::api::ApiServer> server;
     zetta::api::ServerOptions options;
     // Auth is always on (#799): seed the owner (admin) so this secret
@@ -1708,25 +1717,38 @@ TEST_F(RestServerFixture, PurgeAuditHasRestAndMcpParity) {
     zetta::governance::AuditEventValue event;
     event.target = "rest-purge-fixture";
     node.record_audit_event(event);
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    const std::string rest_before = zetta::util::now_iso8601();
+    // A purge reaches back at least the retention window (#1329).
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    const auto recent = request("POST", "/v1/purge_audit",
+                                nlohmann::json{{"before", zetta::util::now_iso8601()}}.dump());
+    EXPECT_EQ(recent.status, 400) << recent.body;
+    const std::size_t rows_before_purge = node.audit_event_count();
+    const std::string rest_before = zetta::util::iso8601_seconds_ago(1);
     const auto rest = request(
         "POST", "/v1/purge_audit",
         nlohmann::json{{"before", rest_before}}.dump());
     ASSERT_EQ(rest.status, 200) << rest.body;
     const auto rest_value = json_of(rest).at("value");
     EXPECT_EQ(rest_value.at("before"), rest_before);
-    EXPECT_EQ(rest_value.at("removed"), 1u);
-    ASSERT_EQ(node.audit_event_count(), 1u);
-    EXPECT_EQ(node.audit_events().front()->action(),
-              zetta::governance::AuditAction::AuditPurged);
-    const std::string purge_actor = node.audit_events().front()->actor();
+    // Everything recorded before the cutoff goes, except the refused call's
+    // own row, recorded after it.
+    EXPECT_GE(rest_value.at("removed").get<std::size_t>(), 1u);
+    const auto purged = [&] {
+        std::vector<std::shared_ptr<zetta::governance::AuditEvent>> found;
+        for (const auto& row : node.audit_events()) {
+            if (row->action() == zetta::governance::AuditAction::AuditPurged) found.push_back(row);
+        }
+        return found;
+    };
+    ASSERT_EQ(purged().size(), 1u);
+    EXPECT_LT(node.audit_event_count(), rows_before_purge + 1);
+    const std::string purge_actor = purged().front()->actor();
     EXPECT_FALSE(purge_actor.empty());
 
     event.target = "mcp-purge-fixture";
     node.record_audit_event(event);
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    const std::string mcp_before = zetta::util::now_iso8601();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    const std::string mcp_before = zetta::util::iso8601_seconds_ago(1);
     const nlohmann::json mcp_call = {
         {"jsonrpc", "2.0"},
         {"id", 1169},
@@ -1738,12 +1760,14 @@ TEST_F(RestServerFixture, PurgeAuditHasRestAndMcpParity) {
     const auto mcp_value =
         json_of(mcp).at("result").at("structuredContent").at("value");
     EXPECT_EQ(mcp_value.at("before"), mcp_before);
-    EXPECT_EQ(mcp_value.at("removed"), 2u);
-    ASSERT_EQ(node.audit_event_count(), 1u);
-    const auto purge = node.audit_events().front();
-    EXPECT_EQ(purge->action(), zetta::governance::AuditAction::AuditPurged);
+    EXPECT_GE(mcp_value.at("removed").get<std::size_t>(), 1u);
+    // The first purge's row outlives the second (#1329).
+    const auto both = purged();
+    ASSERT_EQ(both.size(), 2u);
+    const auto purge = both.back();
     EXPECT_EQ(purge->actor(), purge_actor);
     EXPECT_NE(purge->detail().find(mcp_before), std::string::npos);
+    EXPECT_NE(both.front()->detail().find(rest_before), std::string::npos);
 
     const auto future = request(
         "POST", "/v1/purge_audit",

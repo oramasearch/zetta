@@ -12,7 +12,7 @@ cannot join or orchestrate*, steps 4 and 5).
 
 ## What is sealed
 
-Every record under the seven identity prefixes of the catalogue:
+Every record under the eight identity prefixes of the catalogue:
 
 | Key | Record |
 |---|---|
@@ -23,6 +23,7 @@ Every record under the seven identity prefixes of the catalogue:
 | `policy:<id>` | a row-level security policy |
 | `principal:<id>` | a legacy principal |
 | `key:<id>` | a legacy access key |
+| `egress_scope:<id>` | a per-principal egress scope ([egress-policy.md](egress-policy.md#per-principal-egress-scopes-1323), #1323) |
 
 A sealed value carries two extra fields:
 
@@ -154,9 +155,13 @@ nodes drop every sealed token and answer 401. Stop the old nodes, upgrade every 
   after the rotation** derives a different root from the new token and joins verify-only: handing it
   the root's seed is not built yet ([zetta#1479](https://github.com/oramasearch/zetta/issues/1479)).
   Moving to a new root is a separate follow-up.
-- **Provisioned burst nodes** get `ZETTA_SEED_PEER` and `ZETTA_CLUSTER_TOKEN` but not the root yet,
-  so they make their own and honor none of the cluster's accounts. They cannot issue identity the
-  cluster honors either. Passing `ZETTA_IDENTITY_ROOT` through the provisioners is a follow-up.
+- **Provisioned burst nodes get the root's public key, not its seed** (#1343). `main.cpp` passes the
+  pinned root (`ClusterConfig::identity_root`) to `ProvisionerFleet::wire`, which sets it on every
+  cloud config (never from a detected config, and only when it is 64 hex digits), and each control
+  plane hands it over as `ZETTA_IDENTITY_ROOT` beside `ZETTA_SEED_PEER`: an env var on Kubernetes and
+  bare metal, a propagating tag on AWS, the boot script's environment file on Azure, GCP and OCI. A
+  burst node therefore pins the cluster's root and honors its accounts, roles and tokens. It is
+  verify-only: it is given no admin token, so it cannot issue identity.
 - **Node identity.** Any join-token holder can still mint a certificate for any node id (#1319) and
   there is no per-node revocation (#1320). Neither affects the seal, which does not depend on node
   certificates; they bound who can write the document at all.
