@@ -45,6 +45,20 @@ automerge-cpp's vendored copy (a submodule), not FetchContent; the validator
 reuses that same nlohmann/json target. ccache is used as the compiler launcher
 when present.
 
+Every `FetchContent` source is pinned to its content (lake#1003), because a tag or
+a URL alone can be moved or replaced upstream. A git source names the commit its
+tag named when it was pinned (SDL `release-3.2.0` is `535d80ba`, Dear ImGui
+`v1.91.5` is `f401021d`, json-schema-validator `2.4.0` is `c780404a`, the peeled
+tag, GoogleTest `v1.15.2` is `b514bdc8`), with the tag kept in a comment. The Boost
+archive carries the `URL_HASH` Boost publishes beside it, so a changed archive
+fails configure. To move one, read the new value without building and change it in
+a reviewed commit:
+
+```sh
+git ls-remote https://github.com/<owner>/<repo>.git 'refs/tags/<tag>*'   # the ^{} line for an annotated tag
+curl -sL https://github.com/boostorg/boost/releases/download/<release>/<archive>.txt
+```
+
 ## Submodules
 
 The coroutine stack (Capy, Corosio) and the replication library (automerge-cpp,
