@@ -162,6 +162,24 @@ std::optional<std::string> ReplicatedBlobStore::read_blob(
                        std::istreambuf_iterator<char>());
 }
 
+bool ReplicatedBlobStore::read_blob_range(const std::string& id, std::uint64_t offset,
+                                          std::uint64_t length, std::string& out,
+                                          std::uint64_t& size) const {
+    const std::optional<BlobTarget> target = resolve(*replication_.shared_snapshot(), id);
+    if (!target) return false;
+    std::error_code ec;
+    const std::uintmax_t whole = fs::file_size(target->path, ec);
+    if (ec || offset > whole) return false;
+    std::ifstream in(target->path, std::ios::binary);
+    if (!in) return false;
+    size = whole;
+    const std::uint64_t take = std::min<std::uint64_t>(length, whole - offset);
+    out.assign(static_cast<std::size_t>(take), '\0');
+    in.seekg(static_cast<std::streamoff>(offset));
+    in.read(out.data(), static_cast<std::streamsize>(take));
+    return static_cast<std::uint64_t>(in.gcount()) == take;
+}
+
 bool ReplicatedBlobStore::store_blob(const std::string& id,
                                      const std::string& bytes) {
     std::optional<BlobTarget> target;

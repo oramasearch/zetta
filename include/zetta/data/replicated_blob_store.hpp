@@ -45,6 +45,13 @@ public:
     std::optional<std::string> read_blob(const std::string& id) const override;
     bool store_blob(const std::string& id, const std::string& bytes) override;
 
+    // A slice [offset, offset + length) of a body this node holds, and the
+    // body's whole size: what a member taking a backup snapshot fetches a
+    // slice at a time (zetta#1520). False when the body is not held here or
+    // `offset` is past its end; a slice past the end is cut at the end.
+    bool read_blob_range(const std::string& id, std::uint64_t offset, std::uint64_t length,
+                         std::string& out, std::uint64_t& size) const;
+
 private:
     // Where a large object's body / a model's weights body lives on disk.
     std::filesystem::path blob_path(const std::string& database_id,

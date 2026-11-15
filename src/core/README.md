@@ -58,5 +58,7 @@ See [the object capability](../../docs/data/object-store.md).
 Backup snapshots (zetta#1518) are `data/backup_snapshot.cpp`; the routes are served by
 `api/http_server.cpp`, with their authorization (`cluster:admin`), audit and result
 mapping in `api/backup_routes.cpp`. `NodeConfig::restore_target` (`--restore-target`,
-`ZETTA_RESTORE_TARGET`) marks the only nodes a discard may empty. See
+`ZETTA_RESTORE_TARGET`) marks the only nodes a discard may empty. The node owns a
+`BackupPeer` beside its stores and chains it onto the signal plane after the object store
+(`backup.gate`, `backup.body`, zetta#1520). See
 [backup snapshots](../../docs/data/backup-snapshot.md).

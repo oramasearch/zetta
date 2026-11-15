@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -15,10 +16,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/cluster/signal.hpp"
 #include "zetta/data/object_store.hpp"
+#include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/util/sha256.hpp"
 
 namespace zetta::cluster {
+class Cluster;
 class ReplicationManager;
 }
 
@@ -108,6 +112,9 @@ struct BackupStores {
     ObjectStore& objects;
     BlobStore& bodies;
     std::string node_id;
+    // The cluster this node is a member of; null on a standalone node. A body
+    // only other members hold is fetched from them through it (zetta#1520).
+    zetta::cluster::Cluster* cluster = nullptr;
 };
 
 // Whether a catalogue key is copied into a snapshot (and written by a restore).
@@ -134,24 +141,103 @@ bool holds_user_data(const BackupSummary& summary);
 nlohmann::json summary_differences(const BackupSummary& expected, const BackupSummary& observed);
 
 // Holds both write gates frozen for as long as it lives.
+// Holds the record and object write gates frozen on this node and, on a
+// cluster, on every other member (zetta#1520), for as long as it lives. Every
+// gate is frozen for a bounded lease (kLease) and lapses by itself after it, so
+// a lost thaw or a dead coordinator never leaves a member refusing writes.
+// Destroyed, it thaws its own gates and sends every member a thaw.
 class BackupFreeze {
 public:
-    // Nullopt when either gate is frozen already: another snapshot holds it.
+    static constexpr std::chrono::seconds kLease{120};
+
+    // This node only (a standalone node, and tests). Nullopt when either gate
+    // is held by another snapshot.
     static std::optional<BackupFreeze> begin(RecordStore& records, ObjectStore& objects);
+
+    // This node and every member `cluster` knows (null: this node only), all
+    // as `owner` (the snapshot's id). Busy when any member's gate is held by
+    // another snapshot, or a member does not answer (an older version without
+    // `backup.gate` among them): every gate already frozen is released then.
+    // Blocks on the signal plane: run it on the blocking pool.
+    static BackupOutcome begin(RecordStore& records, ObjectStore& objects,
+                               zetta::cluster::Cluster* cluster, std::string owner,
+                               std::optional<BackupFreeze>& out);
+
     BackupFreeze(BackupFreeze&& other) noexcept;
     BackupFreeze& operator=(BackupFreeze&&) = delete;
     BackupFreeze(const BackupFreeze&) = delete;
     BackupFreeze& operator=(const BackupFreeze&) = delete;
     ~BackupFreeze();
 
-    // Every write that passed the gates before the freeze has finished.
+    // Every write that passed this node's gates before the freeze has finished.
     bool drained() const;
+    // Every member's too: `all` is set when they have. Not ok when a member
+    // stops answering or lost its freeze. Blocks: run it on the blocking pool.
+    BackupOutcome members_drained(bool& all);
+    // Whether every gate, here and on every member, is still held by this
+    // freeze: asked after the capture, so a freeze that lapsed during it
+    // refuses the snapshot. Blocks: run it on the blocking pool.
+    BackupOutcome held();
+
+    const std::vector<std::string>& members() const { return members_; }
 
 private:
-    BackupFreeze(RecordStore& records, ObjectStore& objects);
+    BackupFreeze(RecordStore& records, ObjectStore& objects, std::string owner);
+    BackupOutcome ask_members(std::string_view op, bool& all_drained, bool& all_held);
     RecordStore* records_;
     ObjectStore* objects_;
+    zetta::cluster::Cluster* cluster_ = nullptr;
+    std::string owner_;
+    std::vector<std::string> members_;  // the other members frozen
 };
+
+// The backup snapshot's part of the signal plane on every node (zetta#1520):
+//   backup.gate   {"op": "freeze"|"status"|"thaw", "owner", "lease_ms"} — freeze
+//                 or thaw this node's record and object write gates for a
+//                 snapshot another member takes; answers {"drained", "held"}.
+//                 A thaw also arrives as an event (fire and forget).
+//   backup.body   {"id", "offset", "length"} — a slice of a large-object or
+//                 weights body this node holds; answers {"size"} and the bytes.
+// It chains over the cluster's current handler, like the stores; Node wires it
+// in after the object store.
+class BackupPeer : public zetta::cluster::SignalHandler {
+public:
+    static constexpr std::string_view kGateMethod = "backup.gate";
+    static constexpr std::string_view kBodyMethod = "backup.body";
+    static constexpr std::uint64_t kMaxSliceBytes = ObjectStore::kSliceBytes;
+
+    BackupPeer(RecordStore& records, ObjectStore& objects,
+               zetta::cluster::ReplicationManager& replication, std::filesystem::path data_dir);
+    ~BackupPeer() override;
+    BackupPeer(const BackupPeer&) = delete;
+    BackupPeer& operator=(const BackupPeer&) = delete;
+
+    void attach(zetta::cluster::Cluster& cluster);
+    void detach();
+
+    zetta::cluster::SignalResponse on_request(const zetta::cluster::Signal& request) override;
+    void on_event(const zetta::cluster::Signal& event) override;
+    void on_task(const zetta::cluster::Signal& task) override;
+
+private:
+    zetta::cluster::SignalResponse gate(const nlohmann::json& request);
+    zetta::cluster::SignalResponse body(const nlohmann::json& request);
+
+    RecordStore& records_;
+    ObjectStore& objects_;
+    ReplicatedBlobStore bodies_;
+    std::atomic<zetta::cluster::Cluster*> cluster_{nullptr};
+    std::atomic<zetta::cluster::SignalHandler*> delegate_{nullptr};
+};
+
+// Fetch the whole body `id` from one of `owners` over backup.body, a slice at a
+// time, verified against its catalogue entry's size and SHA-256 (`size`,
+// `sha256`; an empty hash is not checked). Nullopt when no owner gives it whole.
+// Blocks on the signal plane: run it on the blocking pool.
+std::optional<std::string> fetch_body(zetta::cluster::Cluster& cluster,
+                                      const std::vector<std::string>& owners,
+                                      const std::string& id, std::uint64_t size,
+                                      const std::string& sha256);
 
 // Writes one snapshot under `<directory>/<id>/`: `archive`, and `snapshot.json`
 // once it is complete. Destroyed before finish() succeeds, it removes what it

@@ -61,3 +61,131 @@ ApiResult backup_result(const zetta::data::BackupOutcome& outcome) {
 }
 
 }  // namespace zetta::api
+
+namespace zetta::api {
+
+namespace {
+
+nlohmann::json backup_error(std::string description) {
+    return {{"description", std::move(description)},
+            {"content",
+             {{"application/json",
+               {{"schema", {{"$ref", "#/components/schemas/error_envelope"}}}}}}}};
+}
+
+nlohmann::json summary_schema() {
+    return {{"type", "object"},
+            {"additionalProperties", {{"type", "integer"}}},
+            {"description",
+             "counts by stable name: table:<db>.<table> (rows), bucket:<name> (objects), "
+             "collection:<name> (records), catalogue:<family> (entries), bodies, "
+             "bodies:missing"}};
+}
+
+// The envelope with the success value's snapshot and summary at its top level.
+nlohmann::json backup_reply(std::string description, bool with_snapshot) {
+    nlohmann::json properties{{"ok", {{"type", "boolean"}, {"const", true}}},
+                              {"value", {{"type", "object"}}},
+                              {"summary", summary_schema()},
+                              {"trace_id", {{"type", "string"}}},
+                              {"span_id", {{"type", "string"}}},
+                              {"duration_ms", {{"type", "number"}}}};
+    if (with_snapshot) properties["snapshot"] = {{"type", "string"}};
+    return {{"description", std::move(description)},
+            {"content",
+             {{"application/json",
+               {{"schema",
+                 {{"type", "object"},
+                  {"required", {"ok", "value", "summary"}},
+                  {"properties", std::move(properties)}}}}}}}};
+}
+
+nlohmann::json octets() {
+    return {{"application/octet-stream",
+             {{"schema", {{"type", "string"}, {"format", "binary"}}}}}};
+}
+
+nlohmann::json tagged(nlohmann::json operation) {
+    operation["tags"] = nlohmann::json::array({"backups"});
+    return operation;
+}
+
+}  // namespace
+
+nlohmann::json backup_route_paths() {
+    const nlohmann::json id{{"name", "id"},
+                            {"in", "path"},
+                            {"required", true},
+                            {"description", "the snapshot's id"},
+                            {"schema", {{"type", "string"}}}};
+    nlohmann::json paths = nlohmann::json::object();
+    paths["/v1/backup_snapshot"]["post"] = tagged({
+        {"operationId", "backup_snapshot"},
+        {"summary", "Take a backup snapshot"},
+        {"description",
+         "Pause record and object writes on every member, capture one consistent snapshot, "
+         "and write it as one archive kept for 6 hours. Requires api:cluster_admin "
+         "(cluster:admin)."},
+        {"responses",
+         {{"200", backup_reply("the snapshot's id and what it counted", true)},
+          {"409", backup_error("a body is held only by other members and none gave it whole")},
+          {"503", backup_error("another snapshot holds the writes, a member did not pause, or "
+                               "writes did not drain (`busy`): retry")},
+          {"4XX", backup_error("the authorization is at fault")}}}});
+    nlohmann::json& item = paths["/v1/backup_snapshot/{id}"];
+    item["get"] = tagged({
+        {"operationId", "get_backup_snapshot"},
+        {"summary", "Stream a backup snapshot's archive"},
+        {"description", "The zetta-backup/1 archive, streamed. Requires api:cluster_admin."},
+        {"parameters", {id}},
+        {"responses",
+         {{"200", {{"description", "the archive"}, {"content", octets()}}},
+          {"404", backup_error("released or expired")},
+          {"4XX", backup_error("the authorization is at fault")}}}});
+    item["delete"] = tagged({
+        {"operationId", "release_backup_snapshot"},
+        {"summary", "Release a backup snapshot"},
+        {"description", "Remove the snapshot's archive. Requires api:cluster_admin."},
+        {"parameters", {id}},
+        {"responses",
+         {{"200", backup_reply("released", true)},
+          {"404", backup_error("released or expired")},
+          {"4XX", backup_error("the authorization is at fault")}}}});
+    paths["/v1/restore_snapshot"]["post"] = tagged({
+        {"operationId", "restore_snapshot"},
+        {"summary", "Restore a backup snapshot"},
+        {"description",
+         "Restore the archive in the body into this node, which must hold no user data, and "
+         "verify it against the archive's manifest. Requires api:cluster_admin."},
+        {"requestBody", {{"required", true}, {"content", octets()}}},
+        {"responses",
+         {{"200", backup_reply("what the node holds now, equal to the manifest's counts", true)},
+          {"409", backup_error("the node holds user data")},
+          {"422", backup_error("the restored counts are not the manifest's "
+                               "(`verification_failed`: details.differences)")},
+          {"4XX", backup_error("the archive is truncated or damaged, or the authorization is "
+                               "at fault")}}}});
+    paths["/v1/restore_snapshot:discard"]["post"] = tagged({
+        {"operationId", "discard_restored_snapshot"},
+        {"summary", "Empty a restored scratch target"},
+        {"description",
+         "Remove what a restore wrote. Refused unless the node was started with "
+         "--restore-target, holds a restore record, the body names it and its snapshot, and "
+         "nothing was written since. Requires api:cluster_admin."},
+        {"requestBody",
+         {{"required", true},
+          {"content",
+           {{"application/json",
+             {{"schema",
+               {{"type", "object"},
+                {"required", {"node_id", "snapshot"}},
+                {"properties",
+                 {{"node_id", {{"type", "string"}}}, {"snapshot", {{"type", "string"}}}}}}}}}}}}},
+        {"responses",
+         {{"200", backup_reply("emptied", true)},
+          {"409", backup_error("not a restore target, not restored, or changed since")},
+          {"4XX", backup_error("the body or the authorization is at fault")}}}});
+    return paths;
+}
+
+}  // namespace zetta::api

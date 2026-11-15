@@ -216,6 +216,8 @@ public:
     // (retry) and a replica install is skipped (anti-entropy brings it later).
     // Engine-internal rows (put_internal, fold) are not gated.
     WriteGate& write_gate() { return gate_; }
+    // The cluster this store is attached to; null on a standalone node.
+    zetta::cluster::Cluster* cluster() const { return cluster_.load(); }
     // Every live record of `collection` (a user or an engine-internal one) as
     // this node holds it, in key order, with its revision and expiry. `visit`
     // returns false to stop.

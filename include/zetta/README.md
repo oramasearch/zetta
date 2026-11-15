@@ -49,5 +49,8 @@ the record store. See [the object capability](../../docs/data/object-store.md).
 `BackupSnapshots` finds, releases and expires them, `SnapshotRestore` applies an
 archive fed a slice at a time and verifies it against its manifest, and
 `discard_restored` empties a restored restore target. `data/write_gate.hpp` is the
-non-blocking freeze the record and object stores carry (`write_gate()`). See
+non-blocking, bounded freeze the record and object stores carry (`write_gate()`).
+`BackupFreeze` pauses every member's gates for one snapshot, and `BackupPeer` is each
+node's `backup.gate` / `backup.body` signal handler, which also serves body slices to the
+member taking a snapshot (zetta#1520). See
 [backup snapshots](../../docs/data/backup-snapshot.md).
