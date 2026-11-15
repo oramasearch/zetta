@@ -12,6 +12,7 @@
 #include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/compute/mlx_serving.hpp"
+#include "zetta/connect/egress_gateway.hpp"
 #include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/connect/connector_destinations.hpp"
@@ -37,13 +38,16 @@
 
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <stop_token>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -143,6 +147,79 @@ std::optional<zetta::connect::EgressPolicy> configured_egress_policy(
     return policy;
 }
 
+// The workspace egress gateway (#1331): --egress-gateway, else
+// ZETTA_EGRESS_GATEWAY, and its routes from --egress-gateway-route, else
+// ZETTA_EGRESS_GATEWAY_ROUTES. Neither set means no gateway. Returns nullopt on
+// a malformed value, routes without a gateway, or a gateway without routes.
+std::optional<zetta::connect::EgressGateway> configured_egress_gateway(
+    const std::optional<std::string>& address_from_cli,
+    const std::vector<std::string>& routes_from_cli) {
+    std::string address;
+    if (address_from_cli) {
+        address = *address_from_cli;
+    } else if (const char* env = std::getenv("ZETTA_EGRESS_GATEWAY")) {
+        address = env;
+    }
+    std::string routes;
+    for (const std::string& entry : routes_from_cli) routes += entry + ",";
+    if (routes_from_cli.empty()) {
+        if (const char* env = std::getenv("ZETTA_EGRESS_GATEWAY_ROUTES")) routes = env;
+    }
+    std::string error;
+    auto gateway = zetta::connect::EgressGateway::parse(address, routes, &error);
+    if (!gateway) std::fprintf(stderr, "zetta: %s\n", error.c_str());
+    return gateway;
+}
+
+// Re-reads the egress gateway files next to the allowlist file while the node
+// runs (#1517) and installs each well-formed replacement without a restart. A
+// refused replacement is logged once; the last good gateway stays. Stops before
+// the Node goes away.
+class EgressGatewayFilesReloader {
+public:
+    static constexpr std::chrono::seconds kInterval{2};
+
+    explicit EgressGatewayFilesReloader(zetta::connect::EgressGatewayFiles files)
+        : files_(std::move(files)), thread_([this](std::stop_token stop) { run(stop); }) {}
+
+    ~EgressGatewayFilesReloader() {
+        thread_.request_stop();
+        wake_.notify_all();
+    }
+
+    EgressGatewayFilesReloader(const EgressGatewayFilesReloader&) = delete;
+    EgressGatewayFilesReloader& operator=(const EgressGatewayFilesReloader&) = delete;
+
+private:
+    void run(std::stop_token stop) {
+        using Outcome = zetta::connect::EgressGatewayFiles::Outcome;
+        while (!stop.stop_requested()) {
+            {
+                std::unique_lock<std::mutex> lock(guard_);
+                wake_.wait_for(lock, stop, kInterval, [] { return false; });
+            }
+            if (stop.stop_requested()) break;
+            const zetta::connect::EgressGatewayFiles::Result result = files_.check();
+            if (result.outcome == Outcome::Unchanged) continue;
+            if (result.outcome == Outcome::Applied) {
+                zetta::connect::set_egress_gateway(result.gateway);
+                std::printf("zetta: egress gateway reloaded from %s: %s%s\n",
+                            files_.directory().c_str(), result.gateway.describe().c_str(),
+                            result.from_files ? "" : " (no gateway files: the environment)");
+                std::fflush(stdout);
+            } else {
+                std::fprintf(stderr, "zetta: egress gateway replacement refused: %s\n",
+                             result.error.c_str());
+            }
+        }
+    }
+
+    zetta::connect::EgressGatewayFiles files_;
+    std::mutex guard_;
+    std::condition_variable_any wake_;
+    std::jthread thread_;  // last: started once the members it uses exist
+};
+
 struct Options {
     Mode mode = Mode::Headed;  // headed by default
     zetta::NodeConfig node;
@@ -156,6 +233,8 @@ struct Options {
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
+    std::optional<std::string> egress_gateway;        // --egress-gateway HOST:PORT (#1331)
+    std::vector<std::string> egress_gateway_routes;   // --egress-gateway-route (repeatable)
     std::string identity_root;      // --identity-root (the cluster's identity root, #764)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool pubsub_dispatch_mode_from_cli = false;
@@ -274,6 +353,16 @@ void print_usage(const char* argv0) {
         "                      * allows everything. Outbound is DENIED by\n"
         "                      default; loopback is always allowed (CTL-4,\n"
         "                      docs/governance/egress-policy.md)\n"
+        "  --egress-gateway HOST[:PORT]\n"
+        "                      The workspace egress gateway (zetta-tunnel egress;\n"
+        "                      port default 7445). Destinations matching a\n"
+        "                      --egress-gateway-route are reached through it\n"
+        "                      (SNI on 443, the ZTEG1 preface otherwise) (#1331)\n"
+        "  --egress-gateway-route LIST\n"
+        "                      Names reached through the gateway (repeatable;\n"
+        "                      comma separated): host or *.domain, each\n"
+        "                      optionally :port. Still checked against\n"
+        "                      --egress-allow first\n"
         "  -h, --help          Show this help\n"
         "\n"
         "Environment (provisioning; applied as defaults, overridden by the\n"
@@ -291,6 +380,8 @@ void print_usage(const char* argv0) {
         "  ZETTA_CONNECTOR_ALLOW_DESTINATIONS -> --connector-allow-destinations\n"
         "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
         "  ZETTA_EGRESS_ALLOW  Egress allowlist -> --egress-allow\n"
+        "  ZETTA_EGRESS_GATEWAY -> --egress-gateway\n"
+        "  ZETTA_EGRESS_GATEWAY_ROUTES -> --egress-gateway-route\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
         "                      Ordinary audit retention in days\n"
         "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
@@ -483,6 +574,14 @@ Options parse_args(int argc, char** argv) {
             const char* value = take_value(argc, argv, i, o, "--egress-allow");
             if (!value) break;
             o.egress_allow.emplace_back(value);
+        } else if (arg == "--egress-gateway") {
+            const char* value = take_value(argc, argv, i, o, "--egress-gateway");
+            if (!value) break;
+            o.egress_gateway = value;
+        } else if (arg == "--egress-gateway-route") {
+            const char* value = take_value(argc, argv, i, o, "--egress-gateway-route");
+            if (!value) break;
+            o.egress_gateway_routes.emplace_back(value);
         } else if (arg == "-h" || arg == "--help") {
             o.show_help = true;
         } else {
@@ -808,6 +907,30 @@ int main(int argc, char** argv) {
     if (!egress_policy) {
         return 2;
     }
+    std::optional<zetta::connect::EgressGateway> egress_gateway =
+        configured_egress_gateway(opts.egress_gateway, opts.egress_gateway_routes);
+    if (!egress_gateway) {
+        return 2;
+    }
+    // The gateway files (#1517): `gateway` and `gatewayRoutes` beside the
+    // allowlist file (ZETTA_EGRESS_ALLOW_FILE, #1332), re-read while the node
+    // runs, so a name-rule change needs no restart. The flags pin the gateway
+    // and turn the files off; without the files the environment above applies.
+    std::optional<zetta::connect::EgressGatewayFiles> egress_gateway_files;
+    if (!opts.egress_gateway && opts.egress_gateway_routes.empty()) {
+        if (const char* allow_file = std::getenv("ZETTA_EGRESS_ALLOW_FILE");
+            allow_file != nullptr && *allow_file != '\0') {
+            egress_gateway_files.emplace(
+                zetta::connect::EgressGatewayFiles::directory_of(allow_file), *egress_gateway);
+            std::string error;
+            const auto loaded = egress_gateway_files->load(&error);
+            if (!loaded) {
+                std::fprintf(stderr, "zetta: %s\n", error.c_str());
+                return 2;
+            }
+            egress_gateway = loaded->gateway;
+        }
+    }
     if (!opts.audit_retention_from_cli) {
         if (const char* environment =
                 std::getenv("ZETTA_AUDIT_RETENTION_DAYS")) {
@@ -936,6 +1059,19 @@ int main(int argc, char** argv) {
     zetta::connect::set_egress_policy(std::move(*egress_policy));
     std::printf("zetta: egress %s\n",
                 zetta::connect::egress_policy().describe().c_str());
+    // Named destinations inside a Lake workspace go through its egress gateway
+    // (#1331); the allowlist above still decides what may be reached.
+    zetta::connect::set_egress_gateway(std::move(*egress_gateway));
+    std::printf("zetta: egress gateway %s\n",
+                zetta::connect::egress_gateway().describe().c_str());
+    std::optional<EgressGatewayFilesReloader> egress_gateway_files_reloader;
+    if (egress_gateway_files) {
+        std::printf("zetta: egress gateway re-reading %s/{%s,%s}\n",
+                    egress_gateway_files->directory().c_str(),
+                    std::string(zetta::connect::EgressGatewayFiles::kGatewayFile).c_str(),
+                    std::string(zetta::connect::EgressGatewayFiles::kRoutesFile).c_str());
+        egress_gateway_files_reloader.emplace(std::move(*egress_gateway_files));
+    }
     EgressDenialAudit egress_denial_audit(node);
 
     // Keep the native coroutine HTTPS client alive only while the Node is

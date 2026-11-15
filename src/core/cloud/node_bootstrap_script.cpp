@@ -126,6 +126,8 @@ write_env_file() {
     tmp_env=$(mktemp "$ENV_FILE.XXXXXX") || return 1
     {
         if [ -n "$ZETTA_SEED_PEER" ]; then printf 'ZETTA_SEED_PEER=%s\n' "$ZETTA_SEED_PEER"; fi
+        if [ -n "$ZETTA_IDENTITY_ROOT" ]; then printf 'ZETTA_IDENTITY_ROOT=%s\n' "$ZETTA_IDENTITY_ROOT"; fi
+        if [ -n "$ZETTA_CLUSTER_CA" ]; then printf 'ZETTA_CLUSTER_CA=%s\n' "$ZETTA_CLUSTER_CA"; fi
         if [ "$TOKEN_STORE" != none ]; then printf 'ZETTA_CLUSTER_TOKEN_FILE=%s\n' "$TOKEN_FILE"; fi
     } > "$tmp_env"
     chmod 0644 "$tmp_env"
@@ -177,6 +179,17 @@ else
 fi
 )SH";
 
+// A 32-byte public key as the engine prints it: 64 lowercase hex digits.
+bool is_public_key_hex(std::string_view value) {
+    if (value.size() != 64) return false;
+    for (const char character : value) {
+        const bool digit = character >= '0' && character <= '9';
+        const bool letter = character >= 'a' && character <= 'f';
+        if (!digit && !letter) return false;
+    }
+    return true;
+}
+
 void assign(std::string& script, std::string_view name, std::string_view value) {
     script += name;
     script += '=';
@@ -221,6 +234,8 @@ std::optional<std::string> render_node_bootstrap_script(
 
     const ClusterTokenReference& token = options.token;
     for (const std::string_view value : {std::string_view{options.seed_peer},
+                                         std::string_view{options.identity_root},
+                                         std::string_view{options.cluster_ca},
                                          std::string_view{token.secret_name},
                                          std::string_view{token.container},
                                          std::string_view{token.identity},
@@ -255,6 +270,14 @@ std::optional<std::string> render_node_bootstrap_script(
             fetch = kFetchOci;
             break;
     }
+    // Both keys are public, but a malformed one would stop the engine at start
+    // (it refuses a bad --identity-root / --cluster-ca), so refuse it here.
+    if (!options.identity_root.empty() && !is_public_key_hex(options.identity_root)) {
+        return fail("the identity root must be 64 lowercase hex characters");
+    }
+    if (!options.cluster_ca.empty() && !is_public_key_hex(options.cluster_ca)) {
+        return fail("the cluster CA must be 64 lowercase hex characters");
+    }
     if (options.token_path.empty() || options.env_path.empty()) {
         return fail("the token and environment file paths must be set");
     }
@@ -272,6 +295,8 @@ std::optional<std::string> render_node_bootstrap_script(
         "set -u\n"
         "umask 077\n";
     assign(script, "ZETTA_SEED_PEER", options.seed_peer);
+    assign(script, "ZETTA_IDENTITY_ROOT", options.identity_root);
+    assign(script, "ZETTA_CLUSTER_CA", options.cluster_ca);
     assign(script, "TOKEN_STORE", store_label(token.store));
     assign(script, "TOKEN_SECRET", token.secret_name);
     assign(script, "TOKEN_CONTAINER", token.container);

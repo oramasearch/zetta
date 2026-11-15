@@ -103,7 +103,7 @@ pool are required; everything else has a sensible default.
 | Field | Type | Required | Meaning |
 |---|---|:--:|---|
 | `region` | `string` | ✓ | the AWS region the nodes burst into (e.g. `us-west-2`) |
-| `launch_template` | `string` | ✓ | the EC2 launch template name — defines the AMI, default instance type, **IAM instance profile** (the per-node AWS identity), and the user-data (the cluster-join bootstrap) |
+| `launch_template` | `string` | ✓ | the EC2 launch template name — defines the AMI, default instance type and **IAM instance profile** (the per-node AWS identity); `bring_up` adds a version whose user-data is the node boot script (#1338) |
 | `subnets` | `string` | ✓ | comma-separated VPC subnet ids (the ASG's `--vpc-zone-identifier`) |
 | `pool_name` | `string` | | Auto Scaling Group name; stable → idempotent create/scale/delete (default `zetta-burst`) |
 | `instance_type` | `string` | | an instance-type override applied via the ASG's mixed-instances policy; empty → the launch template's type |
@@ -157,22 +157,54 @@ attached as a propagating tag the bootstrap reads (a production deployment bakes
 the join into the launch template's user-data). The command shapes are grounded in
 [research/aws-cli-compute.md](../research/aws-cli-compute.md) (the cited `aws` guide).
 
-### The join token on the node — the launch template's user-data (#1316)
+### The join token on the node — a launch template version (#1316, #1338)
 
 The token is an SSM SecureString and the instance carries only its name (#770,
-above). The launch template is the operator's, so the binding cannot put its boot
-script in it: the operator's user-data runs the
-[node bootstrap script](node-bootstrap-script.md) rendered for
-`ClusterTokenStore::aws_ssm_parameter` with the secret name
-`/zetta/<pool>/cluster-token` and the region. At boot it runs `aws ssm
-get-parameter --name … --with-decryption` with the instance profile, writes the
-token to `/etc/zetta/cluster-token` (0400) and starts the engine with
-`ZETTA_CLUSTER_TOKEN_FILE`. The instance profile needs `ssm:GetParameter` on
-`arn:aws:ssm:<region>:<account>:parameter/zetta/<pool>/cluster-token` and
-`kms:Decrypt` on its key (the AWS-managed `aws/ssm` key unless you chose one);
-the control plane needs `ssm:PutParameter` on it. Generating the launch template
-version with that user-data from the binding is
-#1338.
+above). `create-auto-scaling-group` cannot override user-data, so `bring_up`
+puts the [node bootstrap script](node-bootstrap-script.md) into a **new version
+of the operator's launch template** and launches the group from it:
+
+1. `aws ssm put-parameter` stores the token (from a private `file://`, never argv).
+2. `aws_node_boot_script` renders the script for `ClusterTokenStore::aws_ssm_parameter`
+   with the secret name `/zetta/<pool>/cluster-token` and the region, plus the seed
+   (`ZETTA_SEED_PEER`) and the cluster's public keys: the identity root
+   (`ZETTA_IDENTITY_ROOT`, #1343) and the enrollment CA (`ZETTA_CLUSTER_CA`, #1513,
+   zetta#1514), each written to `/etc/zetta/bootstrap.env` when set. A key that is
+   not 64 lowercase hex characters stops the burst before anything is created.
+3. `aws ec2 create-launch-template-version --launch-template-name <template>
+   --source-version $Default --launch-template-data file://…` with only
+   `{"UserData": "<base64 script>"}` replaced. The source is `$Default`, the
+   operator's baseline, not `$Latest`, which may be an earlier zetta version. The
+   answer's `LaunchTemplateVersion.VersionNumber` must be a number.
+4. The group is created from `LaunchTemplateName=<template>,Version=<n>` (inside the
+   mixed-instances policy when Spot or an instance type override is set). When the
+   group already exists, `update-auto-scaling-group` points it at the new version
+   before `set-desired-capacity`, so every node it adds runs the current script.
+
+Any failure in steps 1 to 3 fails the burst closed: a node launched without the
+script or a fetchable token cannot join. A config with no seed, no token and no
+keys hands over nothing, and the template runs as it is.
+
+At boot the script runs `aws ssm get-parameter --name … --with-decryption` with the
+instance profile, writes the token to `/etc/zetta/cluster-token` (0400) and starts
+the engine with `ZETTA_CLUSTER_TOKEN_FILE`. The version holds the parameter's name,
+never the token.
+
+**Permissions.** The control plane's principal needs `ssm:PutParameter` on
+`arn:aws:ssm:<region>:<account>:parameter/zetta/<pool>/cluster-token`,
+`ec2:CreateLaunchTemplateVersion` (and `ec2:DescribeLaunchTemplates`,
+`ec2:DescribeLaunchTemplateVersions`) on the template,
+`autoscaling:CreateAutoScalingGroup`, `autoscaling:UpdateAutoScalingGroup` and
+`autoscaling:SetDesiredCapacity` on the group, and `iam:PassRole` on the role of
+the template's instance profile (launching from a template version passes it). The
+instance profile needs `ssm:GetParameter` on the parameter and `kms:Decrypt` on its
+key (the AWS-managed `aws/ssm` key unless you chose one).
+
+**Wiring the keys.** `AwsConfig::identity_root` and `AwsConfig::cluster_ca` are set at
+wire time and never serialized, like `join_token`. Setting `identity_root` from the
+node's pinned root is zetta#1507's provisioner wiring; setting `cluster_ca` from the
+node's enrollment CA follows the CA's arrival in zetta#1514. Until each is wired, the
+field is empty and the script writes nothing for it.
 
 ### The command runner — testable without `aws`
 
@@ -241,6 +273,13 @@ the config boundary, the lifecycle, and the reference binding:
   (with `SpotMaxPrice` + the instance-type override) and the seed tag; it falls
   back to `set-desired-capacity` when the group already exists; best-effort when
   fewer instances come up; a create+scale failure surfaces in the `detail`;
+  the launch template version (#1338) is created from `$Default` after the token
+  is stored, its user-data is the boot script naming the parameter, region, seed,
+  identity root and cluster CA and never the token, and the group launches from
+  `Version=<n>`; an existing group is pointed at the new version before it
+  scales; a failed or non-numeric version, or a malformed cluster CA, fails the
+  burst closed before any group call; nothing to hand over leaves the template
+  as it is;
   `destroy` builds `terminate-instance-in-auto-scaling-group`
   (`--should-decrement-desired-capacity`) and maps a non-zero exit to `false`;
   `list` parses the instances and skips malformed entries, and returns empty on a

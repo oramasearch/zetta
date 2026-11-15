@@ -1,14 +1,19 @@
 #include "zetta/cloud/aws_cli_control_plane.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "../base64.hpp"
 #include "zetta/cloud/command_runner.hpp"
+#include "zetta/cloud/node_bootstrap_script.hpp"
 #include "zetta/cloud/secret_file.hpp"
 
 namespace zetta::cloud {
@@ -42,9 +47,11 @@ namespace {
 // type override and/or Spot capacity — the AWS way to ask an ASG for Spot (and to
 // right-size the SKU) rather than a single create flag. Illustrative shorthand;
 // a production binding tunes the allocation strategy and instance pools.
-std::string mixed_instances_policy(const AwsConfig& config) {
+std::string mixed_instances_policy(const AwsConfig& config, const std::string& version) {
     std::string policy = "LaunchTemplate={LaunchTemplateSpecification={LaunchTemplateName=" +
-                         config.launch_template + "}";
+                         config.launch_template;
+    if (!version.empty()) policy += ",Version=" + version;
+    policy += "}";
     if (!config.instance_type.empty()) {
         policy += ",Overrides=[{InstanceType=" + config.instance_type + "}]";
     }
@@ -80,7 +87,35 @@ std::vector<ProvisionedNode> parse_nodes(const std::string& json_text) {
     return nodes;
 }
 
+// The launch template the group launches from: the operator's, at the version
+// that carries the boot script when one was created.
+std::string launch_template_spec(const AwsConfig& config, const std::string& version) {
+    std::string spec = "LaunchTemplateName=" + config.launch_template;
+    if (!version.empty()) spec += ",Version=" + version;
+    return spec;
+}
+
+std::string command_output(const CommandResult& result) {
+    return result.stderr_text.empty() ? result.stdout_text : result.stderr_text;
+}
+
 }  // namespace
+
+std::optional<std::string> aws_node_boot_script(const AwsConfig& config, std::string* reason) {
+    NodeBootstrapScriptOptions options;
+    options.seed_peer = config.seed_peer;
+    options.identity_root = config.identity_root;
+    options.cluster_ca = config.cluster_ca;
+    if (!config.join_token.empty()) {
+        options.token.store = ClusterTokenStore::aws_ssm_parameter;
+        options.token.secret_name = cluster_token_parameter_name(config);
+        options.token.region = config.region;
+    } else if (config.seed_peer.empty() && config.identity_root.empty() &&
+               config.cluster_ca.empty()) {
+        return std::string{};  // nothing to hand over: the template runs as it is
+    }
+    return render_node_bootstrap_script(options, reason);
+}
 
 AwsCliControlPlane::AwsCliControlPlane(CommandRunner runner)
     : runner_(runner ? std::move(runner) : default_command_runner()) {}
@@ -88,33 +123,28 @@ AwsCliControlPlane::AwsCliControlPlane(CommandRunner runner)
 ProvisionResult AwsCliControlPlane::bring_up(const AwsConfig& config,
                                              const ProvisionRequest& request) {
     ProvisionResult result;
+    const auto fail = [&result](std::string detail) {
+        result.satisfied = false;
+        result.detail = std::move(detail);
+        return result;
+    };
 
-    // Create the Auto Scaling Group at the requested desired capacity. A launch
-    // template defines the AMI / instance type / IAM instance profile / user-data
-    // (the cluster-join bootstrap); the ASG spans the configured subnets.
-    std::vector<std::string> create{"aws", "autoscaling",
-                                    "create-auto-scaling-group"};
-    flag(create, "--auto-scaling-group-name", config.pool_name);
-    flag(create, "--launch-template",
-         "LaunchTemplateName=" + config.launch_template);
-    flag(create, "--min-size", "0");
-    flag(create, "--max-size", std::to_string(request.count));
-    flag(create, "--desired-capacity", std::to_string(request.count));
-    flag(create, "--vpc-zone-identifier", config.subnets);
-    // Spot capacity and/or an instance-type override ride on a mixed-instances
-    // policy (the AWS way to ask an ASG for Spot).
-    if (config.spot || !config.instance_type.empty()) {
-        flag(create, "--mixed-instances-policy", mixed_instances_policy(config));
-    }
-    // Hand each node the cluster seed address — and, on a secure cluster, how to
-    // fetch the join token (#670, #770) — so it auto-joins at boot with the
-    // equivalent of `zetta --peer <seed> --join-token <token>`. The seed rides a
-    // propagating tag. The token never does: a tag is readable by any principal
-    // holding ec2:DescribeTags and lands in CloudTrail. It is stored as an SSM
-    // Parameter Store SecureString (KMS-encrypted, read only by a principal
-    // granted ssm:GetParameter on it — the node's instance profile), and the tag
-    // carries only the parameter's name. The value reaches `aws` through a
-    // private file (`file://`), never through argv.
+    // The boot script each node runs (#1316, #1338): the seed, the cluster's
+    // public identity root and enrollment CA, and on a secure cluster only the
+    // *name* of the SSM parameter holding the join token. Rendered before
+    // anything is created, so a value that cannot be written into a script
+    // stops the burst before it starts.
+    std::string script_reason;
+    const std::optional<std::string> boot_script =
+        aws_node_boot_script(config, &script_reason);
+    if (!boot_script) return fail("cannot render the node boot script: " + script_reason);
+    // The seed and the token's parameter name also ride propagating tags (#670,
+    // #770), for anything that reads the instance's tags. The token never does:
+    // a tag is readable by any principal holding ec2:DescribeTags and lands in
+    // CloudTrail. It is stored as an SSM Parameter Store SecureString
+    // (KMS-encrypted, read only by a principal granted ssm:GetParameter on it —
+    // the node's instance profile). The value reaches `aws` through a private
+    // file (`file://`), never through argv.
     std::string tags;
     if (!config.seed_peer.empty()) {
         tags = "Key=ZETTA_SEED_PEER,Value=" + config.seed_peer +
@@ -125,11 +155,7 @@ ProvisionResult AwsCliControlPlane::bring_up(const AwsConfig& config,
         std::string reason;
         const std::unique_ptr<SecretFile> token_file =
             SecretFile::create(config.join_token, &reason);
-        if (!token_file) {
-            result.satisfied = false;
-            result.detail = "cannot stage the cluster join token for SSM: " + reason;
-            return result;
-        }
+        if (!token_file) return fail("cannot stage the cluster join token for SSM: " + reason);
         std::vector<std::string> store{"aws", "ssm", "put-parameter"};
         flag(store, "--name", parameter);
         flag(store, "--type", "SecureString");
@@ -139,16 +165,70 @@ ProvisionResult AwsCliControlPlane::bring_up(const AwsConfig& config,
         const CommandResult stored = runner_(store);
         if (stored.exit_code != 0) {
             // Fail closed: nodes launched without a fetchable token cannot join.
-            result.satisfied = false;
-            result.detail = "aws ssm put-parameter (cluster join token) failed: " +
-                            (stored.stderr_text.empty() ? stored.stdout_text
-                                                        : stored.stderr_text);
-            return result;
+            return fail("aws ssm put-parameter (cluster join token) failed: " +
+                        command_output(stored));
         }
         if (!tags.empty()) tags += ' ';
         tags += "Key=ZETTA_CLUSTER_TOKEN_SSM_PARAMETER,Value=" + parameter +
                 ",PropagateAtLaunch=true";
     }
+
+    // The boot script reaches the nodes as the launch template's user-data
+    // (#1338): `create-auto-scaling-group` cannot override user-data, so a new
+    // version of the operator's template is created from its default version
+    // with only `UserData` replaced, and the group launches from that version.
+    // The source is `$Default`, the operator's baseline, never `$Latest`, which
+    // may be an earlier version made here. The version carries no secret (the
+    // script holds the parameter's name, not the token).
+    std::string version;
+    if (!boot_script->empty()) {
+        const nlohmann::json data{
+            {"UserData", detail::base64_encode(std::as_bytes(std::span{*boot_script}))}};
+        std::string reason;
+        const std::unique_ptr<SecretFile> data_file = SecretFile::create(data.dump(), &reason);
+        if (!data_file) return fail("cannot stage the launch template data: " + reason);
+        std::vector<std::string> make{"aws", "ec2", "create-launch-template-version"};
+        flag(make, "--launch-template-name", config.launch_template);
+        flag(make, "--source-version", "$Default");
+        flag(make, "--version-description", "zetta node boot script for pool " + config.pool_name);
+        flag(make, "--launch-template-data", "file://" + data_file->path().string());
+        flag(make, "--query", "LaunchTemplateVersion.VersionNumber");
+        flag(make, "--output", "text");
+        append_global(make, config);
+        const CommandResult made = runner_(make);
+        if (made.exit_code != 0) {
+            // Fail closed: a node launched without the script cannot join.
+            return fail("aws ec2 create-launch-template-version (node boot script) failed: " +
+                        command_output(made));
+        }
+        std::string text = made.stdout_text;
+        std::erase_if(text, [](unsigned char character) { return std::isspace(character); });
+        if (text.empty() || !std::ranges::all_of(text, [](unsigned char character) {
+                return std::isdigit(character) != 0;
+            })) {
+            return fail("aws ec2 create-launch-template-version answered no version number: " +
+                        made.stdout_text);
+        }
+        version = std::move(text);
+    }
+
+    // Create the Auto Scaling Group at the requested desired capacity from that
+    // version. The template defines the AMI / instance type / IAM instance
+    // profile; the ASG spans the configured subnets. Spot capacity and/or an
+    // instance-type override ride on a mixed-instances policy (the AWS way to
+    // ask an ASG for Spot), which then names the template itself.
+    const bool mixed = config.spot || !config.instance_type.empty();
+    std::vector<std::string> create{"aws", "autoscaling", "create-auto-scaling-group"};
+    flag(create, "--auto-scaling-group-name", config.pool_name);
+    if (mixed) {
+        flag(create, "--mixed-instances-policy", mixed_instances_policy(config, version));
+    } else {
+        flag(create, "--launch-template", launch_template_spec(config, version));
+    }
+    flag(create, "--min-size", "0");
+    flag(create, "--max-size", std::to_string(request.count));
+    flag(create, "--desired-capacity", std::to_string(request.count));
+    flag(create, "--vpc-zone-identifier", config.subnets);
     if (!tags.empty()) {
         flag(create, "--tags", tags);
     }
@@ -157,8 +237,23 @@ ProvisionResult AwsCliControlPlane::bring_up(const AwsConfig& config,
     const CommandResult created = runner_(create);
     if (created.exit_code != 0) {
         // The pool likely already exists (the stable name makes a re-burst
-        // idempotent) — scale the existing group to the requested count instead.
-        // If that also fails, it is a real error worth surfacing.
+        // idempotent). Point it at the new version first, so the nodes it adds
+        // run the current boot script, then scale it to the requested count. If
+        // either fails, it is a real error worth surfacing.
+        if (!version.empty()) {
+            std::vector<std::string> update{"aws", "autoscaling", "update-auto-scaling-group"};
+            flag(update, "--auto-scaling-group-name", config.pool_name);
+            if (mixed) {
+                flag(update, "--mixed-instances-policy", mixed_instances_policy(config, version));
+            } else {
+                flag(update, "--launch-template", launch_template_spec(config, version));
+            }
+            append_global(update, config);
+            const CommandResult updated = runner_(update);
+            if (updated.exit_code != 0) {
+                return fail("aws autoscaling create/update failed: " + command_output(updated));
+            }
+        }
         std::vector<std::string> scale{"aws", "autoscaling",
                                        "set-desired-capacity"};
         flag(scale, "--auto-scaling-group-name", config.pool_name);
@@ -167,11 +262,7 @@ ProvisionResult AwsCliControlPlane::bring_up(const AwsConfig& config,
 
         const CommandResult scaled = runner_(scale);
         if (scaled.exit_code != 0) {
-            result.satisfied = false;
-            result.detail = "aws autoscaling create/scale failed: " +
-                            (scaled.stderr_text.empty() ? scaled.stdout_text
-                                                        : scaled.stderr_text);
-            return result;
+            return fail("aws autoscaling create/scale failed: " + command_output(scaled));
         }
     }
 

@@ -13,7 +13,9 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -30,6 +32,7 @@
 #include "temp_dir.hpp"
 #include "zetta/api/native_http_transport.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/connect/egress_gateway.hpp"
 #include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/node.hpp"
@@ -459,6 +462,223 @@ TEST_F(NativeHttpTransportFixture, RefusesARedirectToAnOutsideDestination) {
     EXPECT_TRUE(response.error.starts_with("egress denied: 192.0.2.1:9"))
         << response.error;
     EXPECT_EQ(scope.denials.size(), 1U);
+}
+
+// --- The workspace egress gateway (#1331) ------------------------------------
+
+// Installs a gateway for one test and removes it afterwards.
+struct EgressGatewayScope {
+    EgressGatewayScope(const std::string& address, const std::string& routes) {
+        std::string error;
+        const auto gateway = zetta::connect::EgressGateway::parse(address, routes, &error);
+        EXPECT_TRUE(gateway) << error;
+        zetta::connect::set_egress_gateway(gateway.value_or(zetta::connect::EgressGateway{}));
+    }
+    ~EgressGatewayScope() { zetta::connect::set_egress_gateway({}); }
+};
+
+// A loopback stand-in for zetta-tunnel's egress role. It accepts at most one
+// connection within `wait`, records every byte the client sends until the end of
+// the HTTP header (or until the client stops writing), and then either answers
+// with a fixed HTTP response or hangs up. It never resolves or dials anything.
+struct RecordingGateway {
+    int fd = -1;
+    int port = 0;
+    std::string received;
+    bool accepted = false;
+    std::thread worker;
+
+    RecordingGateway(bool answer, std::chrono::milliseconds wait) {
+        fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        if (fd < 0 || ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+            ::listen(fd, 4) != 0) {
+            return;
+        }
+        socklen_t length = sizeof(address);
+        ::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length);
+        port = ntohs(address.sin_port);
+        worker = std::thread([this, answer, wait] {
+            timeval timeout{};
+            timeout.tv_sec = static_cast<long>(wait.count() / 1000);
+            timeout.tv_usec = static_cast<int>((wait.count() % 1000) * 1000);
+            fd_set readable;
+            FD_ZERO(&readable);
+            FD_SET(fd, &readable);
+            if (::select(fd + 1, &readable, nullptr, nullptr, &timeout) <= 0) return;
+            const int client = ::accept(fd, nullptr, nullptr);
+            if (client < 0) return;
+            accepted = true;
+            timeval read_timeout{};
+            read_timeout.tv_sec = 2;
+            ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &read_timeout, sizeof(read_timeout));
+            char buffer[4096];
+            while (received.find("\r\n\r\n") == std::string::npos) {
+                const auto count = ::recv(client, buffer, sizeof(buffer), 0);
+                if (count <= 0) break;
+                received.append(buffer, static_cast<std::size_t>(count));
+            }
+            if (answer) {
+                const std::string reply =
+                    "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n"
+                    "via-gateway";
+                [[maybe_unused]] const auto sent =
+                    ::send(client, reply.data(), reply.size(), 0);
+            }
+            ::close(client);
+        });
+    }
+    void join() {
+        if (worker.joinable()) worker.join();
+    }
+    ~RecordingGateway() {
+        join();
+        if (fd >= 0) ::close(fd);
+    }
+    std::string address() const { return "127.0.0.1:" + std::to_string(port); }
+};
+
+// A destination port other than 443 is announced with the explicit preface,
+// and the HTTP request follows it unchanged, naming the destination.
+TEST_F(NativeHttpTransportFixture, ReachesARoutedNameThroughTheGatewayWithThePreface) {
+    EgressPolicyScope policy("api.example.invalid:8080");
+    RecordingGateway gateway(/*answer=*/true, std::chrono::seconds(10));
+    ASSERT_GT(gateway.port, 0);
+    EgressGatewayScope route(gateway.address(), "api.example.invalid:8080");
+
+    zetta::connect::HttpResponse response;
+    drive([&] {
+        response = zetta::connect::default_http_transport()(
+            plain_get("http://api.example.invalid:8080/v1/things"));
+    });
+    gateway.join();
+
+    // The name is .invalid: had the node resolved it, the request would have
+    // failed in DNS. It reached the gateway instead.
+    EXPECT_TRUE(response.error.empty()) << response.error;
+    EXPECT_EQ(response.status, 200);
+    EXPECT_EQ(response.body, "via-gateway");
+    EXPECT_TRUE(gateway.received.starts_with("ZTEG1 api.example.invalid 8080\nGET /v1/things "))
+        << gateway.received;
+    EXPECT_NE(gateway.received.find("api.example.invalid:8080"), std::string::npos);
+    EXPECT_TRUE(policy.denials.empty());
+}
+
+// HTTPS on 443 sends its ordinary ClientHello to the gateway, with the
+// destination as SNI and no preface: the gateway routes on SNI and TLS stays end
+// to end. The stand-in hangs up, so the handshake fails after the hello is seen.
+TEST_F(NativeHttpTransportFixture, ReachesARoutedHttpsNameThroughTheGatewayBySni) {
+    EgressPolicyScope policy("api.example.invalid:443");
+    RecordingGateway gateway(/*answer=*/false, std::chrono::seconds(10));
+    ASSERT_GT(gateway.port, 0);
+    EgressGatewayScope route(gateway.address(), "api.example.invalid");
+
+    zetta::connect::HttpRequest request = plain_get("https://api.example.invalid/v1/things");
+    request.timeout_seconds = 5;
+    zetta::connect::HttpResponse response;
+    drive([&] { response = zetta::connect::default_http_transport()(request); });
+    gateway.join();
+
+    ASSERT_TRUE(gateway.accepted);
+    ASSERT_FALSE(gateway.received.empty());
+    EXPECT_EQ(static_cast<unsigned char>(gateway.received.front()), 0x16)
+        << "the first byte is a TLS handshake record, not a preface";
+    EXPECT_FALSE(gateway.received.starts_with("ZTEG1"));
+    EXPECT_NE(gateway.received.find("api.example.invalid"), std::string::npos)
+        << "the ClientHello carries the destination as SNI";
+    EXPECT_FALSE(response.error.empty());
+    EXPECT_EQ(response.status, 0);
+}
+
+// The allowlist decides on the destination name first: a route the allowlist
+// does not admit is refused before the gateway is dialled.
+TEST_F(NativeHttpTransportFixture, TheAllowlistStillDecidesARoutedName) {
+    EgressPolicyScope policy("");
+    RecordingGateway gateway(/*answer=*/true, std::chrono::milliseconds(1500));
+    ASSERT_GT(gateway.port, 0);
+    EgressGatewayScope route(gateway.address(), "api.example.invalid:8080");
+
+    zetta::connect::HttpResponse response;
+    drive([&] {
+        response = zetta::connect::default_http_transport()(
+            plain_get("http://api.example.invalid:8080/v1/things"));
+    });
+    gateway.join();
+
+    EXPECT_TRUE(response.error.starts_with("egress denied: api.example.invalid:8080"))
+        << response.error;
+    EXPECT_FALSE(gateway.accepted);
+    EXPECT_EQ(policy.denials.size(), 1U);
+}
+
+// A name no route matches is dialled directly, as before: here DNS fails for
+// the .invalid name, and the gateway is never contacted.
+TEST_F(NativeHttpTransportFixture, AnUnroutedNameIsDialledDirectly) {
+    EgressPolicyScope policy("direct.example.invalid");
+    RecordingGateway gateway(/*answer=*/true, std::chrono::milliseconds(1500));
+    ASSERT_GT(gateway.port, 0);
+    EgressGatewayScope route(gateway.address(), "api.example.invalid");
+
+    zetta::connect::HttpResponse response;
+    drive([&] {
+        response = zetta::connect::default_http_transport()(
+            plain_get("http://direct.example.invalid/"));
+    });
+    gateway.join();
+
+    EXPECT_NE(response.error.find("could not resolve direct.example.invalid"), std::string::npos)
+        << response.error;
+    EXPECT_FALSE(gateway.accepted);
+}
+
+// A redirect hop is a new connection and takes the same decision: a loopback
+// origin (dialled directly) that answers 302 to a routed name sends the next hop
+// through the gateway.
+TEST_F(NativeHttpTransportFixture, ARedirectHopToARoutedNameGoesThroughTheGateway) {
+    EgressPolicyScope policy("api.example.invalid:8080");
+    RecordingGateway gateway(/*answer=*/true, std::chrono::seconds(10));
+    ASSERT_GT(gateway.port, 0);
+    EgressGatewayScope route(gateway.address(), "api.example.invalid:8080");
+
+    const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(listener, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    ASSERT_EQ(::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::listen(listener, 1), 0);
+    socklen_t length = sizeof(address);
+    ASSERT_EQ(::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length), 0);
+    const int port = ntohs(address.sin_port);
+    std::thread redirector([listener] {
+        const int client = ::accept(listener, nullptr, nullptr);
+        if (client < 0) return;
+        char buffer[4096];
+        [[maybe_unused]] const auto received = ::recv(client, buffer, sizeof(buffer), 0);
+        const std::string reply =
+            "HTTP/1.1 302 Found\r\nLocation: http://api.example.invalid:8080/next\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n";
+        [[maybe_unused]] const auto sent = ::send(client, reply.data(), reply.size(), 0);
+        ::close(client);
+    });
+
+    zetta::connect::HttpRequest request =
+        plain_get("http://127.0.0.1:" + std::to_string(port) + "/start");
+    request.max_redirects = 3;
+    zetta::connect::HttpResponse response;
+    drive([&] { response = zetta::connect::default_http_transport()(request); });
+    redirector.join();
+    ::close(listener);
+    gateway.join();
+
+    EXPECT_TRUE(response.error.empty()) << response.error;
+    EXPECT_EQ(response.status, 200);
+    EXPECT_TRUE(gateway.received.starts_with("ZTEG1 api.example.invalid 8080\nGET /next "))
+        << gateway.received;
 }
 
 }  // namespace

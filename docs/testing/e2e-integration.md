@@ -71,6 +71,7 @@ node), captured rather than assumed:
 | `ZETTA_E2E_TOKEN` | — | **required**: the target's seeded admin (owner) token. Auth is always on (#799), so every request needs a bearer; §3.13 mints its own per-run users and tokens from this one |
 | `ZETTA_E2E_REQUIRE_AUTH` | — | ignored (auth is always on, #799); kept so an older runner that still sets it keeps working |
 | `ZETTA_E2E_DB` | `e2e` | scratch SQL database |
+| `ZETTA_E2E_REVOKE_LEGACY_READER` | — | `1` revokes every role the pre-#780 harness left on the fixed-name user `e2e_reader` (it held `admin`, [#1324](https://github.com/oramasearch/zetta/issues/1324)). Unset, §3.13 reports it as a FAIL while the user holds any role. Setting it is consent to that write on the target |
 | `ZETTA_E2E_TIMEOUT` / `ZETTA_E2E_RETRIES` / `ZETTA_E2E_POLL` | `45` / `10` / `240` | per-request timeout, per-request retries, async-run poll budget (seconds) |
 
 ### Run it by hand
@@ -122,7 +123,7 @@ tracks growing it). The six epic children (#777–#782) are the sections marked 
 | 3.10 | cluster + CRDT (**#781**) | membership on every node; **bidirectional** A→B and B→A convergence (latency-bounded); rebalance + blob transfer. **Gated on ≥2 reachable nodes** (mTLS-sync #786): SKIPs cleanly on a single-node target, lights up on a real cluster — never a FAIL |
 | 3.11 | observability (**#782**) | `system.activity`/`spans`/`traces` carry the e2e's ops; `get_trace` round-trip; `system.crashes` empty |
 | 3.12 | blobs / consent / audit (**#782**) | missing-object → clean 4xx; consent-gated capability → `403 consent_required` (no side effect), listable + audited, local session cannot self-decide, bogus id → clean error; audit monotonic growth across the e2e's writes. Blob put/get + approve→execute are tracked SKIPs (no black-box surface / need an approver key) |
-| 3.13 | authz enforcement (**#780**) | the regression harness for **#759–#769**, with its in-process half and the per-finding map in [authz-regressions.md](authz-regressions.md). Fixed findings are hard assertions: deny-by-default on REST + `/mcp` and a bogus bearer refused (#762/#769); a reader refused every privileged and data-changing statement (#759/#1229) and audited as refused (#769); RLS + admin bypass (#748/#762); the grammar refuses a condition-less policy (#765); column masking, and no aggregate over a masked column (#747/#760); a tool-scoped user calls only its tool (#747); orchestration grantable (#768). Open findings are SKIPs naming them that turn into PASSes when the fix is deployed: a `roles:manage`-only delegate granting itself admin (#761), the governance catalog and `/v1/specs` readable by anyone (#766). Findings with no black-box surface (#763, #764, #767, the #765 replicated path, the #769 KDF/seed, built-in role tamper) are SKIPs that point at the in-process test |
+| 3.13 | authz enforcement (**#780**) | the regression harness for **#759–#769**, with its in-process half and the per-finding map in [authz-regressions.md](authz-regressions.md). Fixed findings are hard assertions: deny-by-default on REST + `/mcp` and a bogus bearer refused (#762/#769); a reader refused every privileged and data-changing statement (#759/#1229) and audited as refused (#769); RLS + admin bypass (#748/#762); the grammar refuses a condition-less policy (#765); column masking, and no aggregate (`MAX`/`MIN`/`SUM`) over a masked column (#747/#760); a table-, column-, tool-, collection- and bucket-scoped grant each admits only its object (#747/#1231/#1005, #1335); orchestration grantable (#768). Open findings are SKIPs naming them that turn into PASSes when the fix is deployed: a `roles:manage`-only delegate granting itself admin (#761), the governance catalog and `/v1/specs` readable by anyone (#766). Findings with no black-box surface (#763, #764, #767, the #765 replicated path, the #769 KDF/seed, built-in role tamper) are SKIPs that point at the in-process test |
 
 Every SKIP names its reason and the issue it awaits, so a green run is a precise statement of what the
 target can and cannot yet enforce. Every §3.13 check made "as" a user sends that user's bearer alone
@@ -139,6 +140,19 @@ The script lives here so it evolves with the engine, and is packaged into the
 `OramaCloudV1E2ETest`. This is part of **One Orama / One Amaro**
 ([orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)); the operating +
 expansion workflow is codified in the `one-orama-dev` skill.
+
+### The `e2e_reader` the old harness left (#1324)
+
+Before #780 every "as the reader" call also carried the admin's bearer, so the old §3.13's
+`GRANT ROLE admin TO e2e_reader` ran as the admin and left the fixed-name user `e2e_reader`
+holding `admin` on every target it ran against. The current harness never uses that user (its users
+carry the run id), so §3.13 checks it first: `e2e_reader` must hold no role. A run with
+`ZETTA_E2E_REVOKE_LEGACY_READER=1` revokes each role it holds (`REVOKE ROLE <role> FROM
+e2e_reader`) and passes; without it the run fails naming the roles, so the leftover is never silent.
+Its tokens are reported (a SKIP while any is unrevoked): token revoke has no SQL surface
+([#1335](https://github.com/oramasearch/zetta/issues/1335)), and with no role they authorize nothing.
+Running it against a target is an apply that needs that target's consent; the image must be rebuilt
+from `dev` first.
 
 ## Adding coverage
 

@@ -44,7 +44,11 @@ redirect hop to the metadata address, before connecting (#1394).
 ports, loopback, ranges, malformed entries), and the egress cases in
 `connect/test_native_http_transport.cpp` prove the dialler refuses an outside
 address by default, an unlisted name before DNS, and a redirect to an outside
-destination (#75).
+destination (#75). `connect/test_egress_gateway.cpp` covers the gateway's address and
+names-only route parser, the `ZTEG1` preface and the re-read gateway files (#1517); the gateway cases in
+`connect/test_native_http_transport.cpp` drive a stand-in gateway on loopback:
+the preface, SNI on 443, the allowlist first, unrouted names direct, and redirect
+hops (#1331).
 
 `data/test_object_store.cpp` covers the object capability's contracts, a
 conditional-create race, fencing, torn tails after a kill, compaction and restart,
@@ -61,3 +65,11 @@ exact approved `host:port`, never reaching metadata or link-local addresses, and
 re-validating a saved connection whose type changed (#1414). The MySQL driver
 tests approve their loopback fake server's exact `host:port`; `RegistryFixture.ConnectorDiscoveryRequiresApprovalForInlineDestinations`
 covers saved discovery and privileged inline discovery for both identity systems.
+
+`api/test_dataset_scope.cpp` covers the per-call dataset scope (#1515): the
+header parser, the registry decision (a `SELECT` inside and outside the scope, an
+empty scope, every non-`SELECT` statement, a capability that declares no reads,
+the audited refusal, `list_datasets` and `get_dataset` under a scope and the
+capabilities that stay refused, #1519), and over REST the header confining `/v1/sql`, a malformed
+or repeated header (400), only capability routes answering (403 for `/mcp`, the
+object routes and `/v1/specs`), and a 401 that stays a 401.

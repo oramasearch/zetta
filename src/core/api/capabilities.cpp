@@ -459,6 +459,37 @@ std::vector<zetta::governance::SafeModeStatements> describe_sql_safe_mode(
     return described;
 }
 
+// What a SQL input reads, for a dataset-scoped call (#1515,
+// docs/governance/dataset-scope.md): each statement must be a SELECT, and its
+// table (with the `database` default applied) is the dataset it reads. Any other
+// statement changes something or names no dataset; a `system.*` view, the
+// connection store and the safe-mode store are not datasets; a table with no
+// database at all cannot be placed. Each of those makes the whole input refused
+// under a scope. An input that does not parse is refused too (it would run
+// nothing, but the scope does not answer for it).
+std::optional<std::vector<DatasetName>> sql_dataset_reads(const nlohmann::json& input) {
+    const std::string statement = input.at("statement").get<std::string>();
+    const std::string current_database = input.value("database", "");
+    zetta::query::PostgresDialect dialect;
+    const zetta::query::ParseResult parsed = dialect.parse(statement);
+    if (!parsed.ok() || parsed.statements.empty()) return std::nullopt;
+    std::vector<DatasetName> reads;
+    for (const zetta::query::Statement& parsed_statement : parsed.statements) {
+        const auto* select = std::get_if<zetta::query::SelectStmt>(&parsed_statement);
+        if (select == nullptr) return std::nullopt;
+        const std::string database =
+            select->table.database.empty() ? current_database : select->table.database;
+        if (database.empty() || select->table.table.empty() || database == "system" ||
+            database == zetta::connect::kConnectionDatabase ||
+            database == zetta::governance::kSafeModeDatabase) {
+            return std::nullopt;
+        }
+        DatasetName name{database, select->table.table};
+        if (std::ranges::find(reads, name) == reads.end()) reads.push_back(std::move(name));
+    }
+    return reads;
+}
+
 // --- search --------------------------------------------------------------------
 
 const nlohmann::json& search_schema() {
@@ -2779,13 +2810,45 @@ const nlohmann::json& get_dataset_schema() {
     return schema;
 }
 
+// The one dataset get_dataset reads under a dataset scope (#1519): `database`
+// plus `dataset` taken whole, or, without `database`, a `database.table` split at
+// its first dot. A bare name with no database cannot be placed (it is looked up
+// across every database), so it is refused under a scope. handle_get_dataset
+// resolves a scoped call exactly this way, so what was checked is what is read.
+std::optional<DatasetName> get_dataset_scoped_name(const nlohmann::json& input) {
+    const std::string name = input.at("dataset").get<std::string>();
+    const std::string database = input.value("database", "");
+    if (!database.empty()) return DatasetName{database, name};
+    const std::size_t dot = name.find('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 == name.size()) return std::nullopt;
+    return DatasetName{name.substr(0, dot), name.substr(dot + 1)};
+}
+
+std::optional<std::vector<DatasetName>> get_dataset_reads(const nlohmann::json& input) {
+    const std::optional<DatasetName> name = get_dataset_scoped_name(input);
+    if (!name) return std::nullopt;
+    return std::vector<DatasetName>{*name};
+}
+
 ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
     std::string name = input.at("dataset").get<std::string>();
     std::string database = input.value("database", "");
+    if (context.dataset_scope) {
+        // Resolve as get_dataset_reads did (#1519): no exact-name search across
+        // databases, which could land on a dataset the scope check never saw.
+        const std::optional<DatasetName> scoped = get_dataset_scoped_name(input);
+        if (!scoped) {
+            return ApiResult::failure("invalid_input",
+                                      "under a dataset scope, name the dataset as "
+                                      "database.table or pass database",
+                                      "/dataset");
+        }
+        database = scoped->database;
+        name = scoped->table;
+    } else if (const std::size_t dot = name.find('.'); dot != std::string::npos) {
     // `database.table`, the form analyze_dataset and run's dataset_path take
     // (#1221). An exact name is tried first, so a table whose own name holds a
     // dot is still found by it.
-    if (const std::size_t dot = name.find('.'); dot != std::string::npos) {
         const bool exact = std::ranges::any_of(
             context.node.database_names(), [&](const std::string& each) {
                 const auto found = context.node.find_database(each);
@@ -3467,14 +3530,20 @@ const nlohmann::json& list_datasets_output_schema() {
 ApiResult handle_list_datasets(const nlohmann::json& input, ApiContext& context) {
     const std::string detail = input.value("detail", std::string{"full"});
     nlohmann::json datasets = nlohmann::json::array();
+    // Under a dataset scope (#1519) only the scope's datasets are listed: one
+    // outside it is neither named nor counted.
+    const auto listed = [&context](const zetta::data::DatasetSummary& dataset) {
+        return !context.dataset_scope ||
+               context.dataset_scope->contains(DatasetName{dataset.database, dataset.name});
+    };
     if (detail == "summary") {
         for (const zetta::data::DatasetSummary& dataset :
              context.node.dataset_list_summaries()) {
-            datasets.push_back(dataset_list_summary_json(dataset));
+            if (listed(dataset)) datasets.push_back(dataset_list_summary_json(dataset));
         }
     } else {
         for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
-            datasets.push_back(dataset_summary_json(dataset));
+            if (listed(dataset)) datasets.push_back(dataset_summary_json(dataset));
         }
     }
     nlohmann::json output;
@@ -11919,6 +11988,8 @@ void register_core_capabilities(Registry& registry) {
     // Safe mode per database (#1373): a statement against a database whose level
     // warns on it is refused with safe_mode_warning until it is confirmed.
     sql.describe_safe_mode = describe_sql_safe_mode;
+    // Under a dataset scope (#1515) a SELECT runs when its table is in scope.
+    sql.dataset_reads = sql_dataset_reads;
     // A statement of any length travels as a JSON body (#1231): the GET form
     // carries it in the request line, which the parser caps near 4 KiB.
     sql.post_alias = true;
@@ -12254,7 +12325,11 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        handle_get_dataset});
+        handle_get_dataset,
+        /*describe_consent=*/{},
+        /*describe_safe_mode=*/{},
+        // Under a dataset scope (#1519): the one dataset named.
+        /*dataset_reads=*/get_dataset_reads});
 
     registry.add(Capability{
         "list_runs",
@@ -12322,7 +12397,15 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        handle_list_datasets});
+        handle_list_datasets,
+        /*describe_consent=*/{},
+        /*describe_safe_mode=*/{},
+        // Under a dataset scope (#1519) the handler lists only the scope's
+        // datasets, so it reads nothing outside it.
+        /*dataset_reads=*/
+        [](const nlohmann::json&) {
+            return std::optional<std::vector<DatasetName>>(std::vector<DatasetName>{});
+        }});
 
     registry.add(Capability{
         "list_methodologies", "List methodologies",

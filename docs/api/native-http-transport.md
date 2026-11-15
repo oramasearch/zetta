@@ -42,6 +42,17 @@ somewhere else. A refusal is a transport error starting `egress denied:` and is
 reported to the denial observer, which `src/main.cpp` records as an
 `egress_denied` audit event. Loopback is always allowed.
 
+**A routed name goes through the workspace egress gateway** (#1331,
+[../governance/egress-policy.md](../governance/egress-policy.md#the-workspace-egress-gateway)).
+After the allowlist admits the destination, `perform_url` asks
+`connect::egress_gateway()` whether a gateway route names it. If so it does not
+resolve the destination: `connect_to_gateway` resolves and connects the gateway,
+and `exchange_on` runs the same plaintext or TLS exchange over that socket. HTTPS
+on 443 sends its ClientHello with the destination as SNI (the TLS context is the
+destination's, so the certificate is checked against the destination name);
+every other port first writes `ZTEG1 <name> <port>\n`. Redirect hops take the
+same decision.
+
 This makes `src/core/api/native_http_transport.cpp` the **second** translation
 unit allowed to name Corosio, alongside `src/core/cluster/cluster.cpp`. The split
 is by direction: the cluster adapter owns inbound/peer traffic, this one owns

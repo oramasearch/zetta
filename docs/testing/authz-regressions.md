@@ -36,7 +36,7 @@ State on `dev` at `e9587213` (2026-10-20).
 | Finding | What | State | In-process test (`AuthzNode.Finding<n>_<name>` unless another fixture is named) | e2e §3.13 |
 |---|---|---|---|---|
 | [#759](https://github.com/oramasearch/zetta/issues/759) | privileged SQL skipped its permission check | **fixed** (#1229) | `ReaderCannotMintTheOwnerTokenOrRunDdl` | reader refused INSERT, `CREATE USER`, `CREATE TOKEN FOR owner`, `CREATE TABLE`/`DATABASE`, UPDATE, DELETE, TRUNCATE, DROP |
-| [#760](https://github.com/oramasearch/zetta/issues/760) | column masking bypassed with an aggregate | **fixed** (the column-grant guard checks an aggregate's column) | `AggregateOverAMaskedColumnIsRefused` | masked column null; `MAX`/`MIN` over it refused |
+| [#760](https://github.com/oramasearch/zetta/issues/760) | column masking bypassed with an aggregate | **fixed** (the column-grant guard checks an aggregate's column) | `AggregateOverAMaskedColumnIsRefused` | masked column null; `MAX`/`MIN`/`SUM` over it refused or valueless; the column grant admits no other table ([#1335](https://github.com/oramasearch/zetta/issues/1335)) |
 | [#761](https://github.com/oramasearch/zetta/issues/761) | `roles:manage` is unbounded; built-in roles mutable | **fixed** (bounded role management, [access control](../governance/access-control.md#bounded-role-management-761)) | `RoleManagerCannotGrantWhatItDoesNotHold`, `BuiltinRolesCannotBeEditedOrDropped`; more in `BoundedRoles.*` (`tests/governance/test_roles.cpp`) | a `roles:manage`-only delegate refused admin and `tokens:manage`; built-in tamper in-process only |
 | [#761](https://github.com/oramasearch/zetta/issues/761) | `roles:manage` is unbounded; built-in roles mutable | open | `RoleManagerCannotGrantWhatItDoesNotHold`, `BuiltinRolesCannotBeEditedOrDropped` (`KNOWN_DEFECT`) | a `roles:manage`-only delegate granting itself admin; built-in tamper in-process only |
 | [#762](https://github.com/oramasearch/zetta/issues/762) | auth off by default; object controls skipped for non-user identities | part 1 **fixed** (#799); part 2 **fixed** (a legacy AccessKey is held to row security and grants, see below) | `RowSecurityBindsATokenResolvedUser`, `ALegacyAccessKeyIsHeldToRowSecurityAndGrants`, `AuthzHttp.OnlyATokenThatResolvesToAUserGetsIn` | no / bogus bearer refused on REST and `/mcp`; RLS and admin bypass |
@@ -47,6 +47,18 @@ State on `dev` at `e9587213` (2026-10-20).
 | [#767](https://github.com/oramasearch/zetta/issues/767) | blob grants match by text prefix | **fixed** ([#1312](https://github.com/oramasearch/zetta/pull/1312)) | `ABlobGrantStopsAtAPathBoundary` | in-process only (the web UI's cookie blob download, #1389, calls the same `Node::authorize_blob`) |
 | [#768](https://github.com/oramasearch/zetta/issues/768) | orchestration ungrantable under auth | **fixed** (7b1ac08) | `EveryRegisteredOperationIsGrantable` | admin runs `create_project`, the reader is refused it |
 | [#769](https://github.com/oramasearch/zetta/issues/769) | hardening: owner token KDF, atomic seed, shared-secret compare, SQL audit | **fixed**: KDF and seed ([#1311](https://github.com/oramasearch/zetta/pull/1311)), shared secret and audit (#799/#806, #1229) | `TheOwnerTokenIsStoredThroughAKdf`, `AuthzSeed.AnInterruptedOwnerSeedIsResumed`, `RefusedPrivilegedSqlIsAudited`, `AuthzHttp.OnlyATokenThatResolvesToAUserGetsIn` | bogus bearer refused; the reader's refused writes audited as refused `data_changed` |
+
+**Scoped grants (#747, #1231, #1005; [#1335](https://github.com/oramasearch/zetta/issues/1335)).**
+§3.13 asserts each object kind admits only its object, as a user minted with that grant alone:
+a `sql:read ON TABLE <db>.<t>` user reads every column of `t` (nothing masked), is refused the
+run's other tables and any `INSERT`/`DELETE` into `t`; a column-scoped user is refused another
+table; an `mcp:call ON TOOL` user calls only its tool; a `records:* ON COLLECTION <prefix>` user
+puts and gets in its collection and is refused (403, no value) in another; an `objects:* ON BUCKET
+<prefix>` user puts and gets in its bucket and is refused put, get and list (403, nothing listed)
+in another. Blob grants stay in-process (no HTTP route serves a blob body to a token). Token
+revoke has no black-box surface (`REVOKE TOKEN` is not grammar; `Node::revoke_token` is
+programmatic only), so it stays a SKIP naming #1335. These assertions were written without a run
+against a live node; the counts are recorded on #1335 when they run.
 
 **#762 part 2.** A legacy `AccessKey` no longer bypasses row security, masking or object grants
 (`Node::bypasses_row_security`, `Node::authorize_object`, `Node::column_scope`): it reaches a table,

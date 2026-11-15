@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include "zetta/api/dataset_scope.hpp"
 
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/consent.hpp"
@@ -184,10 +185,23 @@ struct ApiContext {
     // after the pipeline was exposed is not what its callers get. Null
     // everywhere else.
     std::shared_ptr<zetta::pipeline::ProjectGraph> served_graph;
+
+    // The per-call dataset scope (#1515, dataset_scope.hpp): set by REST from
+    // the `Zetta-Dataset-Scope` header. When set, Registry::call runs the
+    // capability only if it declares its dataset reads for this input and every
+    // one is in the scope. Unset = not confined.
+    std::optional<DatasetScope> dataset_scope;
 };
 
 using CapabilityHandler =
     std::function<ApiResult(const nlohmann::json& input, ApiContext& context)>;
+
+// Names every dataset a capability reads for this (already schema-validated)
+// input (#1515). nullopt = this input reads something that is not a dataset, or
+// what it reads cannot be told before it runs: under a dataset scope the call is
+// refused. Consulted only for a dataset-scoped call.
+using DatasetReadsDescriber = std::function<std::optional<std::vector<DatasetName>>(
+    const nlohmann::json& input)>;
 
 // Names exactly what a consent-gated capability WOULD read/run for this
 // (already schema-validated) input — the Cloud Inspector grammar the returned
@@ -254,6 +268,9 @@ struct Capability {
     // database's level warns on it, until the call is repeated with the
     // warning's confirmation. See SafeModeDescriber above.
     SafeModeDescriber describe_safe_mode;
+    // What this capability reads for an input, for a dataset-scoped call (#1515).
+    // Missing = it cannot run under a dataset scope. See DatasetReadsDescriber.
+    DatasetReadsDescriber dataset_reads;
     // Run this capability off the owner/tick thread, on a pool worker
     // (runtime::offload), instead of marshaling it onto the owning loop. ONLY safe
     // for a handler that touches no main-thread-only Node state — just the
@@ -289,6 +306,13 @@ struct Capability {
     // create_study offers from_defaults, #1217). Empty = the reason alone.
     std::function<std::string(const nlohmann::json& input)> invalid_input_hint;
 };
+
+// The refusal a dataset-scoped call of `capability` with `input` gets (#1515),
+// or nullopt when every dataset it reads is in `scope`. Registry::call applies
+// it; exposed for tests and for an embedding that dispatches by hand.
+std::optional<ApiResult> dataset_scope_refusal(const Capability& capability,
+                                               const nlohmann::json& input,
+                                               const DatasetScope& scope);
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh
 // immediately and record the action (#620/#622). Invoked on the owning loop.

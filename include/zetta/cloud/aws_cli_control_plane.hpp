@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,15 +32,27 @@ namespace zetta::cloud {
 // (#770). The token itself is never a tag.
 std::string cluster_token_parameter_name(const AwsConfig& config);
 
+// The node boot script (node_bootstrap_script.hpp) a burst pool's launch template
+// version carries as user-data (#1338): the seed, the cluster's public identity
+// root and enrollment CA (`ZETTA_IDENTITY_ROOT`, `ZETTA_CLUSTER_CA`), and on a
+// secure cluster only the SSM parameter's *name*, read at boot with the instance
+// profile. Empty when there is nothing to hand over; nullopt (with `reason`) when
+// a value cannot be rendered. Never holds the token.
+std::optional<std::string> aws_node_boot_script(const AwsConfig& config,
+                                                std::string* reason = nullptr);
+
 class AwsCliControlPlane : public AwsControlPlane {
 public:
     // `runner` defaults to default_command_runner() (a real `aws` exec). A test
     // injects a fake that asserts on the argv and returns canned JSON.
     explicit AwsCliControlPlane(CommandRunner runner = {});
 
-    // Scale the burst pool to `request.count` nodes: create the Auto Scaling Group
-    // at that desired capacity, falling back to `set-desired-capacity` when it
-    // already exists (the stable pool name makes this idempotent), then list the
+    // Scale the burst pool to `request.count` nodes: store the join token in SSM,
+    // create a launch template version from the operator's default version with
+    // the node boot script as user-data (`create-launch-template-version`, #1338),
+    // create the Auto Scaling Group from that version at that desired capacity,
+    // or, when it already exists (the stable pool name makes this idempotent),
+    // point it at the version and `set-desired-capacity`, then list the
     // instances. The `aws ec2 describe-instances` output is parsed with
     // ProvisionedNode::from_json; malformed entries are skipped. Best-effort:
     // returns what came up with `satisfied` / `detail` set.

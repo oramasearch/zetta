@@ -395,3 +395,33 @@ TEST(NodeBootstrapScript, WithoutAStoreOnlyTheSeedIsWritten) {
     EXPECT_EQ(sandbox.env_file(), "ZETTA_SEED_PEER=10.0.0.1:7777\n");
     EXPECT_FALSE(fs::exists(sandbox.etc / "cluster-token"));
 }
+
+// The cluster's public keys reach the engine through the environment file
+// (#1343, #1513 / zetta#1514): ZETTA_IDENTITY_ROOT pins the cluster's identity
+// root, ZETTA_CLUSTER_CA the enrollment CA a node that is not yet enrolled trusts.
+TEST(NodeBootstrapScript, ThePublicIdentityRootAndClusterCaAreWrittenToTheEnvironment) {
+    const Sandbox sandbox;
+    NodeBootstrapScriptOptions options = sandbox.options(ClusterTokenReference{});
+    options.identity_root = std::string(64, 'a');
+    options.cluster_ca = std::string(64, 'b');
+    const CommandResult ran = sandbox.run(options);
+    ASSERT_EQ(ran.exit_code, 0) << ran.stdout_text << ran.stderr_text;
+    EXPECT_EQ(sandbox.env_file(), "ZETTA_SEED_PEER=10.0.0.1:7777\n"
+                                  "ZETTA_IDENTITY_ROOT=" + std::string(64, 'a') + "\n"
+                                  "ZETTA_CLUSTER_CA=" + std::string(64, 'b') + "\n");
+}
+
+TEST(NodeBootstrapScript, RefusesAMalformedIdentityRootOrClusterCa) {
+    NodeBootstrapScriptOptions options;
+    options.seed_peer = "10.0.0.1:7777";
+    std::string reason;
+    options.cluster_ca = std::string(64, 'B');  // upper case: the engine refuses it
+    EXPECT_FALSE(render_node_bootstrap_script(options, &reason).has_value());
+    EXPECT_NE(reason.find("cluster CA"), std::string::npos) << reason;
+    options.cluster_ca = std::string(63, 'b');
+    EXPECT_FALSE(render_node_bootstrap_script(options).has_value());
+    options.cluster_ca.clear();
+    options.identity_root = "not-a-key";
+    EXPECT_FALSE(render_node_bootstrap_script(options, &reason).has_value());
+    EXPECT_NE(reason.find("identity root"), std::string::npos) << reason;
+}

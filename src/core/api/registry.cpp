@@ -248,6 +248,44 @@ ApiResult invoke_contained(const Capability& capability, const nlohmann::json& i
 
 }  // namespace
 
+std::optional<ApiResult> dataset_scope_refusal(const Capability& capability,
+                                               const nlohmann::json& input,
+                                               const DatasetScope& scope) {
+    if (!capability.dataset_reads) {
+        ApiResult refused = ApiResult::failure(
+            "unauthorized", "'" + capability.name +
+                                "' cannot run under a dataset scope: it does not declare "
+                                "which datasets it reads");
+        refused.error.details = {{"dataset_scope", scope.describe()},
+                                 {"datasets_read", nullptr}};
+        return refused;
+    }
+    const std::optional<std::vector<DatasetName>> reads = capability.dataset_reads(input);
+    if (!reads) {
+        ApiResult refused = ApiResult::failure(
+            "unauthorized", "'" + capability.name +
+                                "' reads something other than a dataset for this input, "
+                                "so it cannot run under a dataset scope");
+        refused.error.details = {{"dataset_scope", scope.describe()},
+                                 {"datasets_read", nullptr}};
+        return refused;
+    }
+    nlohmann::json read = nlohmann::json::array();
+    nlohmann::json outside = nlohmann::json::array();
+    for (const DatasetName& dataset : *reads) {
+        read.push_back(dataset.text());
+        if (!scope.contains(dataset)) outside.push_back(dataset.text());
+    }
+    if (outside.empty()) return std::nullopt;
+    ApiResult refused = ApiResult::failure(
+        "unauthorized", "'" + capability.name + "' reads " + outside.front().get<std::string>() +
+                            ", which is outside the dataset scope (" + scope.describe() + ")");
+    refused.error.details = {{"dataset_scope", scope.describe()},
+                             {"datasets_read", std::move(read)},
+                             {"outside", std::move(outside)}};
+    return refused;
+}
+
 ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                          ApiContext& context) const {
     // Every call is a span (docs/architecture/observability.md): intent is
@@ -364,6 +402,17 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                 return ApiResult::failure("unauthorized", decision.reason);
             }
         }
+        // The per-call dataset scope (#1515, docs/governance/dataset-scope.md).
+        // Checked after authorization, so a caller that may not make the call
+        // at all learns nothing about what it reads, and before anything runs.
+        if (context.dataset_scope) {
+            if (std::optional<ApiResult> outside = dataset_scope_refusal(
+                    *capability, effective_input, *context.dataset_scope)) {
+                audit_call(context.node, *capability, context.acting_key,
+                           /*allowed=*/false, outside->error.message);
+                return outside;
+            }
+        }
         if (capability->audit_policy == AuditPolicy::PerCall) {
             audit_call(context.node, *capability, context.acting_key,
                        /*allowed=*/true,
@@ -372,6 +421,10 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         return std::nullopt;
     }(); });
     if (refused) return finish(std::move(*refused));
+
+    if (context.dataset_scope) {
+        span.set_attribute("dataset_scope", context.dataset_scope->describe());
+    }
 
     // Safe mode per database (#1373, docs/api/safe-mode.md). Checked after
     // authorization (a caller that may not run the statement learns nothing

@@ -15,7 +15,8 @@
 // **name**. At boot the script fetches the token with the VM's own identity
 // (managed identity, service account, instance principal, instance profile),
 // writes it to `/etc/zetta/cluster-token` (mode 0400, owned by the `zetta` user),
-// writes `/etc/zetta/bootstrap.env` with `ZETTA_SEED_PEER` and
+// writes `/etc/zetta/bootstrap.env` with `ZETTA_SEED_PEER`, the public
+// `ZETTA_IDENTITY_ROOT` and `ZETTA_CLUSTER_CA` when set, and
 // `ZETTA_CLUSTER_TOKEN_FILE`, and (re)starts `zetta.service` when the image has
 // one. The engine reads the file through `ZETTA_CLUSTER_TOKEN_FILE`
 // (node_bootstrap_env.hpp, #770).
@@ -59,6 +60,14 @@ inline constexpr std::string_view kNodeBootstrapEnvPath = "/etc/zetta/bootstrap.
 
 struct NodeBootstrapScriptOptions {
     std::string seed_peer;  // cluster seed host:port(s), written as ZETTA_SEED_PEER
+    // The cluster's identity root public key (hex, not a secret), written as
+    // ZETTA_IDENTITY_ROOT so the node pins the cluster's root (#1343).
+    std::string identity_root;
+    // The cluster's enrollment CA public key (64 lowercase hex, not a secret),
+    // written as ZETTA_CLUSTER_CA so a node that is not yet enrolled enrolls only
+    // through a member the CA signed (#1513, zetta#1514). Empty on a cluster
+    // without an enrollment CA.
+    std::string cluster_ca;
     ClusterTokenReference token;
     // The control planes keep the defaults; a test points them at a temp dir.
     std::string token_path{kNodeClusterTokenPath};
@@ -76,7 +85,8 @@ std::string cluster_token_secret_name(std::string_view pool_name);
 
 // Render the POSIX `sh` boot script. Every value is shell-quoted. Returns nullopt
 // with `reason` set when a value holds a control character (it cannot be written
-// into a script safely), or when a store is named without the fields it needs.
+// into a script safely), when a store is named without the fields it needs, or
+// when the identity root or cluster CA is not 64 lowercase hex characters.
 std::optional<std::string> render_node_bootstrap_script(
     const NodeBootstrapScriptOptions& options, std::string* reason = nullptr);
 

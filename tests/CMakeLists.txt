@@ -34,6 +34,7 @@ add_executable(zetta-tests
   api/test_mcp_prompts.cpp
   api/test_consent.cpp
   api/test_safe_mode.cpp
+  api/test_dataset_scope.cpp
   api/test_auth_gate.cpp
   api/test_mcp_server.cpp
   api/test_rest_server.cpp
@@ -277,6 +278,7 @@ add_executable(zetta-tests
   connect/test_native_http_transport.cpp
   connect/test_destination_policy.cpp
   connect/test_egress_policy.cpp
+  connect/test_egress_gateway.cpp
   connect/test_connector_destinations.cpp
   connect/test_model_fetch.cpp
   usecases/churn/test_churn_dataset.cpp

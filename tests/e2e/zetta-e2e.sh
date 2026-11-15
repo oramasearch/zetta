@@ -37,6 +37,11 @@
 #   ZETTA_E2E_REQUIRE_AUTH  Ignored (auth is always on); kept so an older runner
 #                        that still sets it keeps working.
 #   ZETTA_E2E_DB         Scratch SQL database (default "e2e").
+#   ZETTA_E2E_REVOKE_LEGACY_READER  "1" revokes every role the pre-#780 harness
+#                        left on the fixed-name user `e2e_reader` (it held
+#                        `admin`, #1324). Unset, §3.13 only reports it (a FAIL
+#                        while the user still holds a role). Setting it is
+#                        consent to that write on this target.
 #   ZETTA_E2E_TIMEOUT / _RETRIES / _POLL   45 / 10 / 240 (seconds).
 #
 # Discipline: every check is PASS / FAIL / SKIP.
@@ -81,6 +86,7 @@ if [ -z "$TOKEN" ]; then
 fi
 REQUIRE_AUTH=1
 DB="${ZETTA_E2E_DB:-e2e}"
+REVOKE_LEGACY_READER="${ZETTA_E2E_REVOKE_LEGACY_READER:-0}"
 TIMEOUT="${ZETTA_E2E_TIMEOUT:-45}"
 RETRIES="${ZETTA_E2E_RETRIES:-10}"
 POLL="${ZETTA_E2E_POLL:-240}"
@@ -676,6 +682,34 @@ if want_level 3; then
     # the admin (owner) token opens the gate.
     _c="$(http_code GET '/v1/server_info' '' "$ADMIN")"; case "$_c" in 200) pass "the admin token authenticates (200)" ;; *) fail "the admin token did not authenticate ($_c)" ;; esac
 
+    # #1324: before #780, sql_as sent the admin's bearer next to the reader's, so
+    # `GRANT ROLE admin TO e2e_reader` ran as the admin and left the fixed-name
+    # user `e2e_reader` holding `admin` on every target the old harness ran
+    # against. This harness never uses that user (its users are per run), so it
+    # must hold no role. Reported by default; revoked with
+    # ZETTA_E2E_REVOKE_LEGACY_READER=1. Its tokens cannot be revoked over SQL
+    # (#1335); with no role they authorize nothing.
+    if sql_as "$ADMIN" "SELECT * FROM system.user_roles" ""; then
+        _legacy="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[] | select(.user == "e2e_reader") | .role] | unique | join(" ")' 2>/dev/null)"
+        if [ -z "$_legacy" ]; then
+            pass "the legacy user e2e_reader holds no role [#1324]"
+        elif [ "$REVOKE_LEGACY_READER" = "1" ]; then
+            _left=""
+            for _role in $_legacy; do
+                sql_as "$ADMIN" "REVOKE ROLE $_role FROM e2e_reader" >/dev/null 2>&1 || _left="$_left $_role"
+            done
+            if [ -z "$_left" ]; then pass "revoked the roles the pre-#780 harness left on e2e_reader ($_legacy) [#1324]"
+            else fail "could not revoke$_left from e2e_reader: $(err_msg) [#1324]"; fi
+        else
+            fail "the legacy user e2e_reader still holds: $_legacy (left by the pre-#780 harness; rerun with ZETTA_E2E_REVOKE_LEGACY_READER=1 to revoke) [#1324]"
+        fi
+        if sql_as "$ADMIN" "SELECT * FROM system.tokens" ""; then
+            _live="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[] | select(.user == "e2e_reader" and .revoked != true and .revoked != "true")] | length' 2>/dev/null)"
+            [ "${_live:-0}" = "0" ] && pass "the legacy user e2e_reader has no live token [#1324]" \
+                || skip "e2e_reader keeps ${_live} unrevoked token(s); with no role they authorize nothing, and revoke has no SQL surface [#1324/#1335]"
+        else skip "system.tokens unreadable: $(err_msg) [#1324]"; fi
+    else skip "system.user_roles unreadable, the legacy e2e_reader admin role is not checked: $(err_msg) [#1324]"; fi
+
     # Seed a governed workload. Every object and user is per-run: the store is
     # append-only and a target keeps them across runs.
     sql_as "$ADMIN" "CREATE DATABASE $DB" >/dev/null 2>&1
@@ -769,8 +803,44 @@ if want_level 3; then
                         [ "$_vals" = "[]" ] && pass "an aggregate over a masked column returns no value ($_agg) [#760]" || fail "an aggregate recovered masked values $_vals ($_agg) [#760]"
                     else pass "an aggregate over a masked column is refused [#760]"; fi
                 done
+                # A sum over the masked column recovers nothing either: no
+                # non-null, non-zero total of the hidden values [#760].
+                if sql_as "$MTOK" "SELECT owner, SUM(amount) FROM $MTBL GROUP BY owner"; then
+                    _vals="$(printf '%s' "$BODY" | jq -c '[(.value.rows // .rows)[] | to_entries[] | select(.key != "owner") | .value | select(. != null and . != 0 and . != "0")]')"
+                    [ "$_vals" = "[]" ] && pass "SUM over a masked column returns no value [#760]" || fail "SUM recovered masked values $_vals [#760]"
+                else pass "SUM over a masked column is refused [#760]"; fi
+                # The column grant is on one table: another table of the same
+                # database is not admitted by it [#747].
+                if sql_as "$MTOK" "SELECT id FROM $RTBL"; then
+                    fail "a grant on $MTBL(id, owner) admitted a read of $RTBL [#747]"
+                else pass "a column grant on one table does not admit another table [#747]"; fi
             else fail "the column-scoped user could not read $MTBL: $(err_msg) [#747]"; fi
         else fail "GRANT sql:read ON <table>(<columns>) refused: $(err_msg) [#747]"; fi
+
+        # #747 table scope: a grant on one whole table returns every column of it
+        # (nothing masked), admits no other table, and admits no write.
+        OUSER="e2e_onetable_${RUN}"
+        sql_as "$ADMIN" "CREATE ROLE e2e_onetable_${RUN}" >/dev/null 2>&1
+        sql_as "$ADMIN" "GRANT mcp:call TO ROLE e2e_onetable_${RUN}" >/dev/null 2>&1  # reach the sql tool
+        if sql_as "$ADMIN" "GRANT sql:read ON TABLE $DB.$MTBL TO ROLE e2e_onetable_${RUN}"; then
+            mint_user "$OUSER" "e2e_onetable_${RUN}"; OTOK="$MINTED"
+            if [ -z "$OTOK" ]; then skip "could not mint the table-scoped user: $(err_msg) [#747]"
+            else
+                if sql_as "$OTOK" "SELECT id, owner, amount FROM $MTBL"; then
+                    _full="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[] | select(.amount != null)] | length')"
+                    [ "$_full" = "3" ] && pass "a table grant returns every column of its table (amount in 3 rows) [#747]" || fail "a table grant returned amount in $_full of 3 rows [#747]"
+                else fail "the table-scoped user could not read its own table $MTBL: $(err_msg) [#747]"; fi
+                _other=""
+                for _t in "$RTBL" "$RLSTBL"; do
+                    if sql_as "$OTOK" "SELECT id FROM $_t"; then _other="$_other $_t"; fi
+                done
+                [ -z "$_other" ] && pass "a table grant on $MTBL admits no other table [#747]" || fail "a table grant on $MTBL admitted:$_other [#747]"
+                if sql_as "$OTOK" "INSERT INTO $MTBL (id, owner, amount) VALUES (8,'x','8')"; then fail "a sql:read table grant ALLOWED an INSERT [#747/#759]"
+                else pass "a sql:read table grant refuses an INSERT into its table [#747/#759]"; fi
+                if sql_as "$OTOK" "DELETE FROM $MTBL WHERE id = 1"; then fail "a sql:read table grant ALLOWED a DELETE [#747/#759]"
+                else pass "a sql:read table grant refuses a DELETE from its table [#747/#759]"; fi
+            fi
+        else fail "GRANT sql:read ON TABLE <db>.<table> refused: $(err_msg) [#747]"; fi
 
         # Scoped tool grant (#747) and the spec index it should narrow (#766).
         TUSER="e2e_onetool_${RUN}"
@@ -787,6 +857,66 @@ if want_level 3; then
                 skip "a user granted only server_info reads every tool's spec at /v1/specs [#766 open]"
             else pass "/v1/specs lists only the caller's tools ($CODE) [#766]"; fi
         else fail "GRANT mcp:call ON TOOL refused: $(err_msg) [#747]"; fi
+
+        # #1231 collection scope: records:* ON COLLECTION <prefix> admits only the
+        # collections under that prefix. Both collections are the admin's, per run,
+        # and their names share no prefix.
+        CIN="e2ea_${RUN}"; COUT="e2eb_${RUN}"
+        http_as "$ADMIN" POST "/v1/create_collection" "$(jq -rn --arg c "$CIN" '{collection:$c}')"; _c1="$CODE"
+        http_as "$ADMIN" POST "/v1/create_collection" "$(jq -rn --arg c "$COUT" '{collection:$c}')"; _c2="$CODE"
+        if [ "$_c1" = "404" ] || [ "$_c2" = "404" ]; then skip "create_collection is not on this build [#1231]"
+        elif [ "$_c1" != "200" ] || [ "$_c2" != "200" ]; then fail "the admin could not create the run's collections ($_c1/$_c2): $(err_msg) [#1231]"
+        else
+            http_as "$ADMIN" POST "/v1/put_record" "$(jq -rn --arg c "$COUT" '{collection:$c,key:"k",value:"b3V0"}')"
+            sql_as "$ADMIN" "CREATE ROLE e2e_onecoll_${RUN}" >/dev/null 2>&1
+            sql_as "$ADMIN" "GRANT mcp:call TO ROLE e2e_onecoll_${RUN}" >/dev/null 2>&1
+            if sql_as "$ADMIN" "GRANT records:read, records:write ON COLLECTION $CIN TO ROLE e2e_onecoll_${RUN}"; then
+                mint_user "e2e_onecoll_${RUN}" "e2e_onecoll_${RUN}"; CTOK="$MINTED"
+                if [ -z "$CTOK" ]; then skip "could not mint the collection-scoped user: $(err_msg) [#1231]"
+                else
+                    http_as "$CTOK" POST "/v1/put_record" "$(jq -rn --arg c "$CIN" '{collection:$c,key:"k",value:"aW4="}')"; _w1="$CODE"
+                    http_as "$CTOK" GET "/v1/get_record?collection=$CIN&key=k"; _r1="$CODE"
+                    http_as "$CTOK" POST "/v1/put_record" "$(jq -rn --arg c "$COUT" '{collection:$c,key:"k",value:"eA=="}')"; _w2="$CODE"
+                    http_as "$CTOK" GET "/v1/get_record?collection=$COUT&key=k"; _r2="$CODE"; _leak=0
+                    case "$BODY" in *b3V0*) _leak=1 ;; esac
+                    if [ "$_w1" = "200" ] && [ "$_r1" = "200" ]; then pass "a collection grant admits its own collection (put $_w1, get $_r1) [#1231]"
+                    else fail "a collection grant on $CIN: put=$_w1 get=$_r1 (want 200/200) [#1231]"; fi
+                    if [ "$_w2" = "403" ] && [ "$_r2" = "403" ] && [ "$_leak" -eq 0 ]; then pass "a collection grant admits no other collection (put $_w2, get $_r2) [#1231]"
+                    else fail "a collection grant on $CIN reached $COUT: put=$_w2 get=$_r2 leak=$_leak (want 403/403) [#1231]"; fi
+                fi
+            else fail "GRANT records:* ON COLLECTION refused: $(err_msg) [#1231]"; fi
+        fi
+
+        # #1005 bucket scope: objects:* ON BUCKET <prefix> admits only the buckets
+        # under that prefix, on the byte routes and on list.
+        BIN="e2ea_${RUN}"; BOUT="e2eb_${RUN}"
+        http_as "$ADMIN" POST "/v1/create_bucket" "$(jq -rn --arg b "$BIN" '{bucket:$b}')"; _c1="$CODE"
+        http_as "$ADMIN" POST "/v1/create_bucket" "$(jq -rn --arg b "$BOUT" '{bucket:$b}')"; _c2="$CODE"
+        if [ "$_c1" = "404" ] || [ "$_c2" = "404" ]; then skip "create_bucket is not on this build [#1005]"
+        elif [ "$_c1" != "200" ] || [ "$_c2" != "200" ]; then fail "the admin could not create the run's buckets ($_c1/$_c2): $(err_msg) [#1005]"
+        else
+            http_as "$ADMIN" PUT "/v1/objects/$BOUT/secret" '{"owner":"admin"}'
+            sql_as "$ADMIN" "CREATE ROLE e2e_onebucket_${RUN}" >/dev/null 2>&1
+            sql_as "$ADMIN" "GRANT mcp:call TO ROLE e2e_onebucket_${RUN}" >/dev/null 2>&1
+            if sql_as "$ADMIN" "GRANT objects:read, objects:write ON BUCKET $BIN TO ROLE e2e_onebucket_${RUN}"; then
+                mint_user "e2e_onebucket_${RUN}" "e2e_onebucket_${RUN}"; BTOK="$MINTED"
+                if [ -z "$BTOK" ]; then skip "could not mint the bucket-scoped user: $(err_msg) [#1005]"
+                else
+                    http_as "$BTOK" PUT "/v1/objects/$BIN/mine" '{"owner":"user"}'; _w1="$CODE"
+                    http_as "$BTOK" GET "/v1/objects/$BIN/mine"; _r1="$CODE"
+                    http_as "$BTOK" PUT "/v1/objects/$BOUT/mine" '{"owner":"user"}'; _w2="$CODE"
+                    http_as "$BTOK" GET "/v1/objects/$BOUT/secret"; _r2="$CODE"; _leak=0
+                    case "$BODY" in *'"admin"'*) _leak=1 ;; esac
+                    http_as "$BTOK" GET "/v1/objects/$BOUT?limit=10"; _l2="$CODE"
+                    case "$BODY" in *secret*) _leak=1 ;; esac
+                    if [ "$_w1" = "200" ] && [ "$_r1" = "200" ]; then pass "a bucket grant admits its own bucket (put $_w1, get $_r1) [#1005]"
+                    else fail "a bucket grant on $BIN: put=$_w1 get=$_r1 (want 200/200) [#1005]"; fi
+                    if [ "$_w2" = "403" ] && [ "$_r2" = "403" ] && [ "$_l2" = "403" ] && [ "$_leak" -eq 0 ]; then
+                        pass "a bucket grant admits no other bucket (put $_w2, get $_r2, list $_l2) [#1005]"
+                    else fail "a bucket grant on $BIN reached $BOUT: put=$_w2 get=$_r2 list=$_l2 leak=$_leak (want 403/403/403) [#1005]"; fi
+                fi
+            else fail "GRANT objects:* ON BUCKET refused: $(err_msg) [#1005]"; fi
+        fi
 
         # #761 (fixed): a holder of roles:manage grants only what it holds, so it
         # cannot grant itself admin.
@@ -818,7 +948,7 @@ if want_level 3; then
         skip "a joining node minting a second owner needs a node started against the cluster with its own --admin-token [#763 open]"
         skip "an unsigned replicated credential needs a raw write into the replicated catalog [#764 open]"
         skip "the owner token's at-rest hash and an interrupted owner seed are not visible over the API [#769 open]"
-        skip "token expiry/revoke has no black-box SQL surface (programmatic only) [#780]"
+        skip "token revoke has no black-box surface: REVOKE TOKEN is not grammar and revoke is Node::revoke_token only, kept so until a surface is reviewed [#1335]"
 
         # #768 (fixed, 7b1ac08): orchestration is grantable — the admin runs an
         # orchestration tool, and the reader (no pipelines:manage) is refused it.

@@ -540,6 +540,7 @@ add_library(zetta-core STATIC
   src/core/api/mcp_docs.cpp
   src/core/api/mcp_prompts.cpp
   src/core/api/registry.cpp
+  src/core/api/dataset_scope.cpp
   src/core/api/rest.cpp
   src/core/api/serving.cpp
   src/core/api/pipeline_serving_capabilities.cpp
@@ -740,6 +741,7 @@ add_library(zetta-core STATIC
   src/core/connect/write_words.cpp
   src/core/connect/source_catalog.cpp
   src/core/connect/egress_policy.cpp
+  src/core/connect/egress_gateway.cpp
   src/core/connect/http_transport.cpp
   src/core/connect/model_fetch.cpp
   src/core/connect/destination_policy.cpp
