@@ -286,7 +286,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   tokenizer/
     byte_encoding.hpp       zetta::tokenizer — UTF-8 codec (utf8_decode/encode, malformed→U+FFFD) + the GPT-2 reversible byte↔unicode map (byte_to_unicode/unicode_to_byte); the byte foundation of the BPE tokenizer (FEAT-12; #555)
     pre_tokenizer.hpp       zetta::tokenizer::pre_tokenize — the Qwen2/Qwen3 pre-tokenization regex as a hand-written code-point scanner (contractions, words w/ optional non-alnum lead, single digits, punctuation runs, whitespace) (FEAT-12; #555)
-    bpe.hpp                 zetta::tokenizer::BpeTokenizer — byte-level BPE encode/decode (from_vocab_and_merges / from_gpt2_files / from_tokenizer_json / from_directory / add_special_tokens); integer-id merge loop with packed-uint64 pair keys (no string alloc in the hot path); all-256-byte base vocab → exact round-trip (FEAT-12; #555)
+    bpe.hpp                 zetta::tokenizer::BpeTokenizer — byte-level BPE encode/decode (from_vocab_and_merges / from_gpt2_files / from_tokenizer_json / from_directory / add_special_tokens); integer-id merge loop with packed-uint64 pair keys (no string alloc in the hot path); all-256-byte base vocab → exact round-trip; a token id beyond the vocabulary's size plus 2^20 (at most 2^24) is refused before the inverse table is sized (LSR-258, #1431) (FEAT-12; #555)
   agent/
     checkpoint.hpp          zetta::agent::checkpoint_directory — operator-registered model selectors and directory validation before serving (#1411)
     end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
