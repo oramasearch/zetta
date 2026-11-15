@@ -9107,6 +9107,87 @@ ApiResult handle_delete_connection(const nlohmann::json& input,
     return ApiResult::success(std::move(output));
 }
 
+// ---- per-principal egress scopes (#1323, docs/governance/egress-policy.md) ----
+
+const nlohmann::json& egress_scope_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "principals", "allow"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"principals", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"allow", {{"type", "string"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_egress_scope_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "principals", "allow"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"maxLength", 64},
+            {"description", "the scope's name; creating an existing name replaces it"}}},
+          {"principals",
+           {{"type", "array"},
+            {"minItems", 1},
+            {"maxItems", 256},
+            {"items", {{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
+            {"description",
+             "user, role or access-key ids; a role names every user that holds it"}}},
+          {"allow",
+           {{"type", "string"},
+            {"description",
+             "what they may reach, inside the node's allowlist, in the --egress-allow "
+             "syntax (hosts, *.domain, addresses, CIDR ranges, :port); empty admits "
+             "loopback only"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& drop_egress_scope_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name"}},
+        {"additionalProperties", false},
+        {"properties", {{"name", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& drop_egress_scope_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "removed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}}, {"removed", {{"type", "boolean"}}}}}};
+    return schema;
+}
+
+ApiResult handle_create_egress_scope(const nlohmann::json& input, ApiContext& context) {
+    zetta::connect::EgressScopeValue value;
+    value.name = input.at("name").get<std::string>();
+    value.principals = input.at("principals").get<std::vector<std::string>>();
+    value.allow = input.at("allow").get<std::string>();
+    std::string error;
+    if (!context.node.create_egress_scope(value, &error)) {
+        return ApiResult::failure("invalid_input", error);
+    }
+    for (const zetta::connect::EgressScopeValue& scope : context.node.egress_scopes()) {
+        if (scope.name == value.name) return ApiResult::success(zetta::connect::to_json(scope));
+    }
+    return ApiResult::failure("engine_error", "the egress scope was not recorded");
+}
+
+ApiResult handle_drop_egress_scope(const nlohmann::json& input, ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    return ApiResult::success(
+        {{"name", name}, {"removed", context.node.drop_egress_scope(name)}});
+}
+
 const nlohmann::json& create_dataset_from_query_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
@@ -13240,6 +13321,37 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_delete_connection});
+
+    // Per-principal egress scopes (#1323): cluster:admin only.
+    registry.add(Capability{
+        "create_egress_scope",
+        "Create an egress scope",
+        "Narrow what the named users, roles or access keys may reach over the "
+        "network, inside the node's egress allowlist: a connection made for one of "
+        "them goes only to a destination both allow. Replicated to every node and "
+        "sealed by the identity root. Creating an existing name replaces it. "
+        "Requires cluster:admin.",
+        create_egress_scope_schema(),
+        egress_scope_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Api, "cluster_admin"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_egress_scope});
+
+    registry.add(Capability{
+        "drop_egress_scope",
+        "Drop an egress scope",
+        "Remove an egress scope from every node; its principals then reach what "
+        "the node's allowlist and their other scopes allow. Returns removed=false "
+        "when no scope had that name. Requires cluster:admin.",
+        drop_egress_scope_schema(),
+        drop_egress_scope_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Api, "cluster_admin"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_drop_egress_scope});
 
     Capability create_dataset_from_query{
         "create_dataset_from_query",

@@ -76,7 +76,8 @@ the dataset contract (#957).
 `native_http_transport.cpp` checks the egress policy before DNS and before every
 connection and redirect hop: outbound is denied by default and each refusal is
 reported for the `egress_denied` audit event, with the caller's principal, run
-and surface (#1323, #1328) (#75,
+and surface (#1323, #1328). A principal's egress scope narrows the allowlist
+there too, and the refusal says which one refused (#1323) (#75,
 [egress policy](../../../docs/governance/egress-policy.md)). `/cli.md` documents
 `--egress-allow` and `ZETTA_EGRESS_ALLOW`.
 

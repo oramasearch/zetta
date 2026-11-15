@@ -191,6 +191,7 @@ bool is_identity_key(std::string_view key) {
            key.starts_with(catalog::kTokenPrefix) ||
            key.starts_with(catalog::kUserRolePrefix) ||
            key.starts_with(catalog::kPolicyPrefix) ||
+           key.starts_with(catalog::kEgressScopePrefix) ||  // #1323
            key.starts_with(catalog::kPrincipalPrefix) ||
            key.starts_with(catalog::kAccessKeyPrefix);
 }

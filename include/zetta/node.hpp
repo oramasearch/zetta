@@ -29,6 +29,7 @@
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/connect/credential_seal.hpp"
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
@@ -1150,6 +1151,24 @@ public:
     }
     std::size_t policy_count() const { return policies_.size(); }
 
+    // --- per-principal egress scopes (#1323, docs/governance/egress-policy.md) --
+    // A scope narrows what the principals it names (users, roles, access keys)
+    // may reach, inside the node's allowlist. Replicated as `egress_scope:<id>`,
+    // sealed by the identity root like identity records (a verify-only node
+    // refuses the write). Creating a scope whose name exists replaces its
+    // principals and allowlist. false (and `error`) on an invalid value.
+    bool create_egress_scope(zetta::connect::EgressScopeValue value,
+                             std::string* error = nullptr);
+    // Drop a scope by name. false on an unknown name.
+    bool drop_egress_scope(const std::string& name);
+    // Every scope, by name.
+    std::vector<zetta::connect::EgressScopeValue> egress_scopes() const;
+    // Compile the scopes into the dialler's snapshot (principal id -> the
+    // union of every scope naming it or one of its roles) and install it with
+    // connect::set_egress_scopes. Runs on every change and from the tick when
+    // a role assignment moved. Owner thread only.
+    void publish_egress_scopes();
+
     // ----- Virtual tables (vtable:<name>, #809 slice 3) -----------------------
     // A user-declared, read-only VIRTUAL TABLE over a CRDT key-family (see
     // data/virtual_table.hpp / docs/data/virtual-tables.md). The definition is
@@ -1515,6 +1534,11 @@ private:
         const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_policies(const nlohmann::json& snapshot,
                             const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_egress_scopes(const nlohmann::json& snapshot,
+                                 const std::vector<std::string>* changed_keys = nullptr);
+    // A standalone node keeps its scopes in <data_dir>/security/egress-scopes.json.
+    void load_egress_scopes();
+    void persist_egress_scopes() const;
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<zetta::data::Database> materialize_database(
         std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
@@ -1707,6 +1731,9 @@ private:
     static constexpr std::string_view kLegacyTokenLookupSalt = "zetta-token-lookup-v1";
     std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles_; // user↔role assignments
     std::vector<std::shared_ptr<zetta::governance::Policy>> policies_;      // row-level security policies (#748)
+    std::map<std::string, zetta::connect::EgressScopeValue> egress_scopes_;  // id -> scope (#1323)
+    bool egress_scopes_dirty_ = false;      // a scope or a role assignment moved
+    bool egress_scopes_published_ = false;  // this node installed a non-empty snapshot
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)
     // Durable, local (non-replicated) checkpoint store for eviction tolerance
     // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.

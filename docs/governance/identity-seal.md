@@ -12,7 +12,7 @@ cannot join or orchestrate*, steps 4 and 5).
 
 ## What is sealed
 
-Every record under the seven identity prefixes of the catalogue:
+Every record under the eight identity prefixes of the catalogue:
 
 | Key | Record |
 |---|---|
@@ -23,6 +23,7 @@ Every record under the seven identity prefixes of the catalogue:
 | `policy:<id>` | a row-level security policy |
 | `principal:<id>` | a legacy principal |
 | `key:<id>` | a legacy access key |
+| `egress_scope:<id>` | a per-principal egress scope ([egress-policy.md](egress-policy.md#per-principal-egress-scopes-1323), #1323) |
 
 A sealed value carries two extra fields:
 

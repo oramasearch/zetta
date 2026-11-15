@@ -4,7 +4,10 @@ Public headers mirror their implementation domains. `Node` owns the audit
 segment log and exposes bounded recent reads, per-origin class watermarks and
 memory accounting. Cluster interfaces exchange versioned audit ranges
 separately from the CRDT catalog (#1164). Audit interfaces also expose
-independent summary retention and the admin purge action (#1169). See
+independent summary retention and the admin purge action (#1169). `Node` also
+holds the per-principal egress scopes (`create_egress_scope`,
+`publish_egress_scopes`, #1323), and `runtime.hpp` lets a layer carry its
+thread-local caller context across `offload` (`register_context_carrier`). See
 [audit replication](../../docs/governance/audit-trail.md).
 
 The public Study lifecycle includes a replicated background driver, retryable

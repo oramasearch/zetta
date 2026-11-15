@@ -37,6 +37,23 @@ MemoryUsage memory_usage() noexcept;
 void blocking_work_started() noexcept;
 void blocking_work_finished() noexcept;
 
+// --- Thread context carried with offloaded work (#1323) ---------------------
+//
+// Some state is thread-local on purpose: who an outbound connection is made
+// for (connect::OutboundCallerScope) and who an audit row names
+// (governance::AuditOriginScope). Work `offload` hands to a pool worker would
+// lose it, so a higher layer registers a **context carrier**: called on the
+// handing-off thread, it captures what it needs and returns a restorer, which
+// runs the work on the worker inside the captured context (or an empty
+// restorer when there is nothing to carry). The runtime names no layer above
+// it; each layer registers its own carrier once.
+using ContextRestorer = std::function<void(const std::function<void()>&)>;
+using ContextCarrier = std::function<ContextRestorer()>;
+void register_context_carrier(ContextCarrier carrier);
+// Capture every registered carrier's context now; the result runs a callable
+// inside all of them.
+ContextRestorer capture_thread_context();
+
 // A coroutine returning Value (void by default).
 template <class Value = void>
 using task = boost::capy::task<Value>;
@@ -180,11 +197,18 @@ void spawn(task<> coroutine, std::function<void()> on_complete);
 // that dangles): its frame owns the callable + the slot until it completes.
 template <class Callable, class Result>
 task<> detail_run_blocking(Callable callable,
-                           std::shared_ptr<std::optional<Result>> slot) {
+                           std::shared_ptr<std::optional<Result>> slot,
+                           ContextRestorer context) {
     struct Activity {
         ~Activity() { blocking_work_finished(); }
     } activity;
-    slot->emplace(callable());
+    // The caller's thread context (#1323), reinstated around the blocking call
+    // only: no scope is held across a suspension.
+    if (context) {
+        context([&] { slot->emplace(callable()); });
+    } else {
+        slot->emplace(callable());
+    }
     co_return;
 }
 
@@ -198,7 +222,8 @@ task<std::invoke_result_t<Callable>> offload(Callable callable) {
     auto slot = std::make_shared<std::optional<Result>>();
     auto done = std::make_shared<async_event>();
     blocking_work_started();
-    spawn(detail_run_blocking<Callable, Result>(std::move(callable), slot),
+    spawn(detail_run_blocking<Callable, Result>(std::move(callable), slot,
+                                                capture_thread_context()),
           [done] { done->set(); });
     [[maybe_unused]] auto ready = co_await done->wait();  // io_result: completion only
     co_return std::move(**slot);

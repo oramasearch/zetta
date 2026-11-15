@@ -205,6 +205,8 @@ inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
 inline constexpr std::string_view kUserRolePrefix = "user_role:";
 inline constexpr std::string_view kPolicyPrefix = "policy:";
+// A per-principal egress scope (#1323), sealed like the identity records.
+inline constexpr std::string_view kEgressScopePrefix = "egress_scope:";
 inline constexpr std::string_view kDecisionPolicyPrefix = "decision_policy:";
 inline constexpr std::string_view kDecisionPrefix = "decision:";
 inline constexpr std::string_view kVirtualTablePrefix = "vtable:";
@@ -334,6 +336,9 @@ inline std::string user_role_key(const std::string& user_role_id) {
 }
 inline std::string policy_key(const std::string& policy_id) {
     return std::string(kPolicyPrefix) + policy_id;
+}
+inline std::string egress_scope_key(const std::string& scope_id) {
+    return std::string(kEgressScopePrefix) + scope_id;
 }
 // A virtual table is keyed by its human name (globally unique), not a UUID.
 inline std::string virtual_table_key(const std::string& name) {

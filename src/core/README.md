@@ -9,6 +9,8 @@ startup migrates and compacts legacy catalog audit history (#1164).
 Flat audit fingerprints and reserved segment/base64 buffers limit retained
 allocation overhead; bulk phase boundaries request allocator pressure relief.
 Pub/sub payloads and topic/message CRUD remain node-local.
+The node compiles its sealed `egress_scope:` records into the dialler's
+per-principal snapshot on every change and when a role assignment moves (#1323).
 The default shared dispatcher grows at one worker per 250 active keys.
 The node memory registry combines cheap ownership probes with platform allocator
 and RSS readings, then feeds SQL, telemetry, API, logs, and status output.

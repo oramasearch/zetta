@@ -474,6 +474,27 @@ private:
         if (!name_allowed && !policy.has_network_rule_for(port_number)) {
             co_return refuse();
         }
+        // The principal's egress scope (#1323): inside the node allowlist, a
+        // principal that has a scope reaches only what the scope admits too.
+        // A principal with none gets the node allowlist alone; loopback stays
+        // exempt (allows_name admits it under every policy).
+        const std::optional<connect::PrincipalEgress> scope =
+            connect::egress_scope_for(request.on_behalf_of);
+        const bool scope_name_allowed =
+            !scope || scope->policy.allows_name(parsed.host, port_number);
+        const auto refuse_scope = [&]() {
+            std::string reason = connect::egress_scope_denied_reason(
+                parsed.host, port_number, request.on_behalf_of, scope->scopes);
+            connect::EgressDenial denial{parsed.host, port_number, reason,
+                                         request.on_behalf_of, request.on_behalf_of_run,
+                                         request.on_behalf_of_surface};
+            denial.refused_by = "scope";
+            connect::report_egress_denial(denial);
+            return reason;
+        };
+        if (!scope_name_allowed && !scope->policy.has_network_rule_for(port_number)) {
+            co_return refuse_scope();
+        }
 
         const bool connector = request.destinations == connect::DestinationPolicy::Connector;
         if (connector && ((!parsed.secure && !request.connector_plaintext) ||
@@ -508,6 +529,7 @@ private:
         socket.open();
         bool connected = false;
         bool any_address_allowed = name_allowed;
+        bool any_scope_address_allowed = scope_name_allowed;
         std::string connect_reason = "no address resolved for " + parsed.host;
         for (const auto& entry : results) {
             const net::endpoint endpoint = entry.get_endpoint();
@@ -519,6 +541,15 @@ private:
                                      : endpoint.v6_address().to_string();
                 if (!policy.allows_address(address, port_number)) continue;
                 any_address_allowed = true;
+            }
+            if (!scope_name_allowed) {
+                // The scope admits the name only through an address range: the
+                // same rule, for the principal's scope (#1323).
+                const std::string address =
+                    endpoint.is_v4() ? endpoint.v4_address().to_string()
+                                     : endpoint.v6_address().to_string();
+                if (!scope->policy.allows_address(address, port_number)) continue;
+                any_scope_address_allowed = true;
             }
             if (public_only || connector) {
                 const std::string address = endpoint.is_v4()
@@ -552,6 +583,7 @@ private:
             }
         }
         if (!any_address_allowed) co_return refuse();
+        if (!any_scope_address_allowed) co_return refuse_scope();
         if (!any_allowed && !refused_reason.empty()) co_return refused_reason;
         if (!connected) co_return connect_reason;
 

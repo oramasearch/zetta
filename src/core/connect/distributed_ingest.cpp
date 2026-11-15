@@ -12,6 +12,7 @@
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/connect/distributed_fetch.hpp"
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/add_dataset.hpp"
@@ -21,6 +22,7 @@
 #include "zetta/data/large_object.hpp"
 #include "zetta/data/partition_writer.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/node.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
@@ -307,6 +309,14 @@ LaunchOutcome run_connector_fetch_launch(
     const std::chrono::milliseconds timeout{
         payload.at("coordination_timeout_ms").get<std::int64_t>()};
 
+    // This node's stripe is fetched for the initiator's principal (#1323), so
+    // the principal's egress scope applies here too and a denial names it.
+    std::optional<OutboundCallerScope> outbound;
+    if (const auto caller = payload.find("on_behalf_of"); caller != payload.end()) {
+        outbound.emplace(OutboundCaller{caller->at("principal").get<std::string>(),
+                                        caller->value("run_id", std::string{})});
+    }
+
     const auto decline = [&](std::string reason) {
         agree_on_the_ingest(*coordinator, request.id,
                             request.participants.size(), /*landed=*/false, 0, 0,
@@ -439,7 +449,17 @@ const nlohmann::json& connector_fetch_launch_schema() {
         "table":          { "type": "string", "minLength": 1 },
         "table_name":     { "type": "string", "minLength": 1 },
         "max_rows":            { "type": "integer", "minimum": 1 },
-        "coordination_timeout_ms": { "type": "integer", "minimum": 1 }
+        "coordination_timeout_ms": { "type": "integer", "minimum": 1 },
+        "on_behalf_of": {
+          "type": "object",
+          "description": "who the initiator fetched for (#1323): each participant dials the source as that principal, so its egress scope applies and a denial names it",
+          "required": ["principal"],
+          "additionalProperties": false,
+          "properties": {
+            "principal": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "run_id":    { "type": "string", "maxLength": 128 }
+          }
+        }
       }
     })JSONSCHEMA");
         // The plan's shape is owned by partition_scheduler.hpp — embed it rather
@@ -727,6 +747,15 @@ DistributedIngestResult run_distributed_connector_ingest(
              {"plan", data::to_json(result.plan)},
              {"max_rows", options.max_rows},
              {"coordination_timeout_ms", options.coordination_timeout.count()}};
+    // Who this fetch is for (#1323): every participant dials as that principal.
+    if (const std::optional<OutboundCaller> caller = current_outbound_caller();
+        caller && !caller->principal.empty()) {
+        request.payload["on_behalf_of"] = Json{{"principal", caller->principal},
+                                               {"run_id", caller->run_id}};
+    } else if (const std::optional<std::string> actor = governance::current_audit_actor();
+               actor && !actor->empty()) {
+        request.payload["on_behalf_of"] = Json{{"principal", *actor}};
+    }
     listener->fan_out(request);
     result.coordinated = true;
     result.participants = roster;

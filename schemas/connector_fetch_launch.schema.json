@@ -43,6 +43,25 @@
       "minimum": 1,
       "type": "integer"
     },
+    "on_behalf_of": {
+      "additionalProperties": false,
+      "description": "who the initiator fetched for (#1323): each participant dials the source as that principal, so its egress scope applies and a denial names it",
+      "properties": {
+        "principal": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 128,
+          "type": "string"
+        }
+      },
+      "required": [
+        "principal"
+      ],
+      "type": "object"
+    },
     "partition_rows": {
       "description": "rows per result partition, in partition order — the tiling's weights",
       "items": {

@@ -122,6 +122,7 @@ struct ReplicationReconcileBatches {
     ReconcileBatch tokens;
     ReconcileBatch user_roles;
     ReconcileBatch policies;
+    ReconcileBatch egress_scopes;
     ReconcileBatch ledger_entries;
     ReconcileBatch nodes;
 };
@@ -200,6 +201,9 @@ ReconcileBatch* batch_for_replication_key(
     }
     if (key.starts_with(catalog::kPolicyPrefix)) {
         return &batches.policies;
+    }
+    if (key.starts_with(catalog::kEgressScopePrefix)) {
+        return &batches.egress_scopes;
     }
     if (key.starts_with(catalog::kLedgerPrefix)) {
         return &batches.ledger_entries;
@@ -715,6 +719,7 @@ bool Node::start() {
     load_tokens();
     load_user_roles();
     load_policies();
+    load_egress_scopes();
     if (!load_audit_events()) {
         running_ = false;
         return false;
@@ -1043,6 +1048,9 @@ void Node::tick() {
         //     that produced it.
         flush_stores();
     }
+    // 1d. The dialler's egress-scope snapshot (#1323), when a scope or a role
+    //     assignment moved.
+    if (egress_scopes_dirty_) publish_egress_scopes();
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
     controller_.reconcile();
@@ -1279,6 +1287,12 @@ void Node::drain_owner_work() {
 
 void Node::stop() {
     if (!running_) return;
+    // The dialler's egress-scope snapshot is process-wide (#1323): a node that
+    // installed one takes it with it, like the binary's egress policy.
+    if (egress_scopes_published_) {
+        zetta::connect::set_egress_scopes({});
+        egress_scopes_published_ = false;
+    }
     // A record anti-entropy round runs on the pool against the record store and
     // the cluster; let it finish before either goes away (#1231).
     if (record_anti_entropy_) {
@@ -4571,6 +4585,7 @@ std::shared_ptr<zetta::governance::UserRole> Node::materialize_user_role(
         std::move(id), std::move(user_id), std::move(role_id), dir);
     assignment->persist_meta();
     user_roles_.push_back(assignment);
+    egress_scopes_dirty_ = true;  // a role's scope may now name this user (#1323)
     return assignment;
 }
 
@@ -4584,6 +4599,7 @@ bool Node::materialize_drop_user_role(const std::string& id) {
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
     user_roles_.erase(it);
+    egress_scopes_dirty_ = true;  // #1323
     return true;
 }
 
@@ -4747,6 +4763,157 @@ void Node::reconcile_policies(
             policy->set_value(value);
         }
     }
+}
+
+// ----- per-principal egress scopes (egress_scope:<id>, #1323) ---------------
+
+bool Node::create_egress_scope(zetta::connect::EgressScopeValue value,
+                               std::string* error) {
+    if (!identity_writable()) {
+        if (error) *error = "this node cannot issue identity (its root is verify-only)";
+        return false;
+    }
+    // The same boundary every replicated copy passes.
+    const std::optional<zetta::connect::EgressScopeValue> parsed =
+        zetta::connect::parse_egress_scope_value(zetta::connect::to_json(value), error);
+    if (!parsed) return false;
+    std::string id;
+    for (const auto& [existing_id, existing] : egress_scopes_) {
+        if (existing.name == parsed->name) id = existing_id;
+    }
+    if (id.empty()) id = zetta::util::new_uuid();
+    if (replication_) {
+        replicate_identity(catalog::egress_scope_key(id), zetta::connect::to_json(*parsed));
+    }
+    egress_scopes_[id] = *parsed;
+    persist_egress_scopes();
+    publish_egress_scopes();
+    return true;
+}
+
+bool Node::drop_egress_scope(const std::string& name) {
+    if (!identity_writable()) return false;
+    for (auto it = egress_scopes_.begin(); it != egress_scopes_.end(); ++it) {
+        if (it->second.name != name) continue;
+        if (replication_) remove_identity(catalog::egress_scope_key(it->first));
+        egress_scopes_.erase(it);
+        persist_egress_scopes();
+        publish_egress_scopes();
+        return true;
+    }
+    return false;
+}
+
+std::vector<zetta::connect::EgressScopeValue> Node::egress_scopes() const {
+    std::vector<zetta::connect::EgressScopeValue> scopes;
+    for (const auto& [id, scope] : egress_scopes_) scopes.push_back(scope);
+    std::ranges::sort(scopes, {}, &zetta::connect::EgressScopeValue::name);
+    return scopes;
+}
+
+void Node::publish_egress_scopes() {
+    egress_scopes_dirty_ = false;
+    // Nothing to install, and nothing of ours installed: leave the
+    // process-wide snapshot alone (another node in this process may own it).
+    if (egress_scopes_.empty() && !egress_scopes_published_) return;
+    // A role names every user that holds it.
+    std::map<std::string, std::vector<std::string>> users_of_role;
+    for (const auto& assignment : user_roles_) {
+        users_of_role[assignment->role_id()].push_back(assignment->user_id());
+    }
+    std::map<std::string, zetta::connect::PrincipalEgress> snapshot;
+    for (const zetta::connect::EgressScopeValue& scope : egress_scopes()) {
+        const std::optional<zetta::connect::EgressPolicy> policy =
+            zetta::connect::EgressPolicy::parse(scope.allow);
+        if (!policy) continue;  // parse_egress_scope_value already refused it
+        std::set<std::string> named;
+        for (const std::string& principal : scope.principals) {
+            named.insert(principal);
+            if (const auto users = users_of_role.find(principal); users != users_of_role.end()) {
+                named.insert(users->second.begin(), users->second.end());
+            }
+        }
+        for (const std::string& principal : named) {
+            zetta::connect::PrincipalEgress& entry = snapshot[principal];
+            entry.policy.merge(*policy);
+            entry.scopes.push_back(scope.name);
+        }
+    }
+    egress_scopes_published_ = !snapshot.empty();
+    zetta::connect::set_egress_scopes(std::move(snapshot));
+}
+
+void Node::reconcile_egress_scopes(const nlohmann::json& snapshot,
+                                   const std::vector<std::string>* changed_keys) {
+    std::map<std::string, zetta::connect::EgressScopeValue> desired;
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kEgressScopePrefix);
+        if (id.empty()) continue;
+        std::optional<zetta::connect::EgressScopeValue> parsed =
+            zetta::connect::parse_egress_scope_value(value);
+        if (!parsed) continue;  // boundary
+        desired.emplace(std::move(id), std::move(*parsed));
+    }
+    bool changed = false;
+    for (auto it = egress_scopes_.begin(); it != egress_scopes_.end();) {
+        if (reconciliation_includes_key(changed_keys, catalog::egress_scope_key(it->first)) &&
+            !desired.contains(it->first)) {
+            it = egress_scopes_.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    for (auto& [id, value] : desired) {
+        auto& held = egress_scopes_[id];
+        if (held != value) {
+            held = std::move(value);
+            changed = true;
+        }
+    }
+    if (changed) egress_scopes_dirty_ = true;
+}
+
+void Node::load_egress_scopes() {
+    // A replicated node reads its scopes from the (sealed) document; the file
+    // is the standalone node's store.
+    egress_scopes_.clear();
+    if (replication_) return;
+    const fs::path path = fs::path(config_.data_dir) / "security" / "egress-scopes.json";
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return;
+    std::ifstream in(path);
+    const nlohmann::json document = nlohmann::json::parse(in, nullptr, false);
+    if (!document.is_object() || !document.contains("scopes") ||
+        !document["scopes"].is_object()) {
+        std::fprintf(stderr, "zetta: ignoring malformed %s\n", path.c_str());
+        return;
+    }
+    for (const auto& [id, value] : document["scopes"].items()) {
+        if (auto parsed = zetta::connect::parse_egress_scope_value(value)) {
+            egress_scopes_.emplace(id, std::move(*parsed));
+        }
+    }
+    egress_scopes_dirty_ = true;
+}
+
+void Node::persist_egress_scopes() const {
+    if (replication_) return;
+    nlohmann::json scopes = nlohmann::json::object();
+    for (const auto& [id, scope] : egress_scopes_) scopes[id] = zetta::connect::to_json(scope);
+    const fs::path path = fs::path(config_.data_dir) / "security" / "egress-scopes.json";
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    const fs::path tmp = path.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << nlohmann::json{{"version", 1}, {"scopes", std::move(scopes)}}.dump() << "\n";
+        if (!out) {
+            std::fprintf(stderr, "zetta: cannot write %s\n", tmp.c_str());
+            return;
+        }
+    }
+    fs::rename(tmp, path, ec);  // atomic replace
 }
 
 // ----- virtual tables (vtable:<name>, #809 slice 3) -------------------------
@@ -6234,6 +6401,7 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_tokens(identity);
     reconcile_user_roles(identity);
     reconcile_policies(identity);
+    reconcile_egress_scopes(identity);
     reconcile_ledger_entries(snapshot);
 }
 
@@ -6315,6 +6483,11 @@ void Node::reconcile_replication_changes(
     }
     if (!batches.policies.keys.empty()) {
         reconcile_policies(trusted_identity(batches.policies.values, &batches.policies.keys), &batches.policies.keys);
+    }
+    if (!batches.egress_scopes.keys.empty()) {
+        reconcile_egress_scopes(
+            trusted_identity(batches.egress_scopes.values, &batches.egress_scopes.keys),
+            &batches.egress_scopes.keys);
     }
     if (!batches.ledger_entries.keys.empty()) {
         reconcile_ledger_entries(batches.ledger_entries.values,

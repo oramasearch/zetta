@@ -1,4 +1,5 @@
 #include "zetta/governance/audit_event.hpp"
+#include "zetta/runtime.hpp"
 
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
@@ -1643,6 +1644,25 @@ AuditSurfaceScope::~AuditSurfaceScope() { t_audit_surface = std::move(previous_)
 
 std::optional<std::string> current_audit_surface() { return t_audit_surface; }
 
-AuditOrigin capture_audit_origin() { return {t_audit_actor, t_audit_surface}; }
+namespace {
+// Offloaded blocking work keeps its caller (#1323, #1327): runtime::offload
+// reinstates the origin on the pool worker, the way run_on_owner does.
+const bool kAuditOriginCarried = [] {
+    runtime::register_context_carrier([]() -> runtime::ContextRestorer {
+        AuditOrigin origin{t_audit_actor, t_audit_surface};
+        if (!origin.actor && !origin.surface) return {};
+        return [origin = std::move(origin)](const std::function<void()>& work) {
+            const AuditOriginScope scope{origin};
+            work();
+        };
+    });
+    return true;
+}();
+}  // namespace
+
+AuditOrigin capture_audit_origin() {
+    (void)kAuditOriginCarried;
+    return {t_audit_actor, t_audit_surface};
+}
 
 }  // namespace zetta::governance
