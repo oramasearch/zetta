@@ -149,6 +149,7 @@ second event for a peer's action. Important emitters include:
 | Audit administration | `audit_purged`, recorded after an explicit purge. |
 | SQL executor | `data_changed` for every statement that changes data, schema or governance, allowed or refused (#1229); `data_access` with `allowed: false` for a refused `SELECT` (#252). |
 | Outbound HTTP client | `egress_denied` for every connection the egress policy refuses, with target `egress:<host>:<port>` and actor `node` ([egress-policy.md](egress-policy.md), #75). |
+| Egress allowlist file | `egress_policy_reloaded` when the file is loaded at startup, when a replacement is put in force (`allowed: true`), and when a malformed, unreadable or removed replacement is refused (`allowed: false`); target `egress_allow_file:<path>`, actor `node`, detail the policy in force ([egress-policy.md](egress-policy.md#the-allowlist-file-re-read-while-running), #1332). |
 
 `AuditSink::record_audit_event` decouples these emitters from the node-owned
 store. `Node` assigns the id and time and appends the event to its origin log

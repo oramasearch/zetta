@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -145,5 +146,72 @@ void report_egress_denial(const EgressDenial& denial);
 // allow it. Every refusal starts with "egress denied:" so callers and tests
 // can tell it from a network failure.
 std::string egress_denied_reason(std::string_view host, std::uint16_t port);
+
+// Parse the text of an egress allowlist **file** (#1332): the same entries as
+// `ZETTA_EGRESS_ALLOW`, separated by commas, spaces or line breaks, where `#`
+// starts a comment that runs to the end of its line. Returns nullopt (and fills
+// `error`) on the first malformed entry.
+std::optional<EgressPolicy> parse_egress_allow_file(std::string_view text,
+                                                    std::string* error = nullptr);
+
+// An egress allowlist the node re-reads while it runs (#1332,
+// `--egress-allow-file PATH` / `ZETTA_EGRESS_ALLOW_FILE`), so a change to what
+// the node may reach does not need a restart. Under Kubernetes the file is a
+// projected ConfigMap, which kubelet replaces atomically through a symlink:
+// every read opens the path afresh, so it follows the link to the new target.
+//
+// The policy in force is always `base` (the entries that do not come from the
+// file: `--egress-allow` / `ZETTA_EGRESS_ALLOW` and the Clerk issuer) plus the
+// file's last good contents. A replacement that is malformed, unreadable or
+// missing never changes it: the last good policy stays, and the refusal is
+// reported once per distinct state of the file. A file missing at startup
+// contributes nothing (deny); one malformed or unreadable at startup stops the
+// node, like a malformed `--egress-allow`.
+//
+// Not thread-safe: one owner calls `load` once, then `check` repeatedly.
+// Neither installs the policy; the caller passes it to `set_egress_policy`.
+class EgressAllowFile {
+public:
+    EgressAllowFile(std::string path, EgressPolicy base);
+
+    enum class Outcome {
+        Unchanged,  // the file reads as it did last time
+        Applied,    // a new, well-formed file: `policy` is the one now in force
+        Refused,    // a replacement was refused: `policy` is the last good one
+    };
+
+    struct Result {
+        Outcome outcome = Outcome::Unchanged;
+        EgressPolicy policy;  // the policy in force after this read
+        std::string error;    // Refused: why. Applied by `load`: a note when the file is missing
+    };
+
+    // The first read, at startup. nullopt (and `error`) when the file exists
+    // but is malformed or unreadable. A missing file gives `base` alone
+    // (Applied, with a note in `Result::error`).
+    std::optional<Result> load(std::string* error = nullptr);
+
+    // A later read: Unchanged, Applied or Refused. Never throws.
+    Result check();
+
+    const std::string& path() const { return path_; }
+    const EgressPolicy& policy() const { return policy_; }
+
+    // The largest file read; a bigger one is refused.
+    static constexpr std::size_t kMaxFileBytes = std::size_t{1} << 20;
+
+private:
+    // The file's bytes, or nullopt with `error` set (and `missing` when the
+    // path does not exist).
+    std::optional<std::string> read(bool& missing, std::string& error) const;
+
+    std::string path_;
+    EgressPolicy base_;
+    EgressPolicy policy_;
+    // What the last read saw: the bytes, or nullopt when the file was missing
+    // or unreadable (`last_error_` then says why), so a state is reported once.
+    std::optional<std::string> last_text_;
+    std::string last_error_;
+};
 
 }  // namespace zetta::connect

@@ -37,12 +37,15 @@
 
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -93,6 +96,71 @@ public:
 
     EgressDenialAudit(const EgressDenialAudit&) = delete;
     EgressDenialAudit& operator=(const EgressDenialAudit&) = delete;
+};
+
+// One `egress_policy_reloaded` audit event for the allowlist file (#1332):
+// allowed when the file's policy was put in force, refused when a replacement
+// was kept out. The detail names the policy in force either way.
+void record_egress_file_event(zetta::Node& node, const std::string& path,
+                              const zetta::connect::EgressAllowFile::Result& result) {
+    zetta::governance::AuditEventValue event;
+    event.action = zetta::governance::AuditAction::EgressPolicyReloaded;
+    event.actor = "node";
+    event.target = "egress_allow_file:" + path;
+    event.allowed = result.outcome != zetta::connect::EgressAllowFile::Outcome::Refused;
+    event.detail = "in force: " + result.policy.describe();
+    if (!result.error.empty()) event.detail += " (" + result.error + ")";
+    node.record_audit_event(std::move(event));
+}
+
+// Re-reads the egress allowlist file while the node runs (#1332) and installs
+// each well-formed replacement without a restart. Stops before the Node goes
+// away. A refused replacement is logged and audited; the last good policy stays.
+class EgressAllowFileReloader {
+public:
+    static constexpr std::chrono::seconds kInterval{2};
+
+    EgressAllowFileReloader(zetta::Node& node, zetta::connect::EgressAllowFile file)
+        : node_(node), file_(std::move(file)),
+          thread_([this](std::stop_token stop) { run(stop); }) {}
+
+    ~EgressAllowFileReloader() {
+        thread_.request_stop();
+        wake_.notify_all();
+    }
+
+    EgressAllowFileReloader(const EgressAllowFileReloader&) = delete;
+    EgressAllowFileReloader& operator=(const EgressAllowFileReloader&) = delete;
+
+private:
+    void run(std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            {
+                std::unique_lock<std::mutex> lock(guard_);
+                wake_.wait_for(lock, stop, kInterval, [] { return false; });
+            }
+            if (stop.stop_requested()) break;
+            const zetta::connect::EgressAllowFile::Result result = file_.check();
+            using Outcome = zetta::connect::EgressAllowFile::Outcome;
+            if (result.outcome == Outcome::Unchanged) continue;
+            if (result.outcome == Outcome::Applied) {
+                zetta::connect::set_egress_policy(result.policy);
+                std::printf("zetta: egress reloaded from %s: %s\n", file_.path().c_str(),
+                            result.policy.describe().c_str());
+                std::fflush(stdout);
+            } else {
+                std::fprintf(stderr, "zetta: egress allowlist replacement refused: %s\n",
+                             result.error.c_str());
+            }
+            record_egress_file_event(node_, file_.path(), result);
+        }
+    }
+
+    zetta::Node& node_;
+    zetta::connect::EgressAllowFile file_;
+    std::mutex guard_;
+    std::condition_variable_any wake_;
+    std::jthread thread_;  // last: started once the members it uses exist
 };
 
 // The `host[:port]` of an http(s) URL as an egress allowlist entry, or empty.
@@ -156,6 +224,7 @@ struct Options {
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
+    std::string egress_allow_file;  // --egress-allow-file PATH (re-read while running, #1332)
     std::string identity_root;      // --identity-root (the cluster's identity root, #764)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool pubsub_dispatch_mode_from_cli = false;
@@ -274,6 +343,12 @@ void print_usage(const char* argv0) {
         "                      * allows everything. Outbound is DENIED by\n"
         "                      default; loopback is always allowed (CTL-4,\n"
         "                      docs/governance/egress-policy.md)\n"
+        "  --egress-allow-file PATH\n"
+        "                      More allowlist entries from a file the node\n"
+        "                      re-reads while running (e.g. a mounted\n"
+        "                      ConfigMap); a malformed replacement keeps the\n"
+        "                      last good policy; missing at startup = deny\n"
+        "                      (#1332)\n"
         "  -h, --help          Show this help\n"
         "\n"
         "Environment (provisioning; applied as defaults, overridden by the\n"
@@ -291,6 +366,7 @@ void print_usage(const char* argv0) {
         "  ZETTA_CONNECTOR_ALLOW_DESTINATIONS -> --connector-allow-destinations\n"
         "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
         "  ZETTA_EGRESS_ALLOW  Egress allowlist -> --egress-allow\n"
+        "  ZETTA_EGRESS_ALLOW_FILE -> --egress-allow-file\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
         "                      Ordinary audit retention in days\n"
         "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
@@ -483,6 +559,9 @@ Options parse_args(int argc, char** argv) {
             const char* value = take_value(argc, argv, i, o, "--egress-allow");
             if (!value) break;
             o.egress_allow.emplace_back(value);
+        } else if (arg == "--egress-allow-file") {
+            const char* value = take_value(argc, argv, i, o, "--egress-allow-file");
+            if (value) o.egress_allow_file = value;
         } else if (arg == "-h" || arg == "--help") {
             o.show_help = true;
         } else {
@@ -808,6 +887,27 @@ int main(int argc, char** argv) {
     if (!egress_policy) {
         return 2;
     }
+    // The allowlist file (#1332): its entries join the policy above and are
+    // re-read while the node runs. Missing now is deny until it appears;
+    // malformed now stops the node, like a malformed --egress-allow.
+    if (opts.egress_allow_file.empty()) {
+        if (const char* env = std::getenv("ZETTA_EGRESS_ALLOW_FILE")) opts.egress_allow_file = env;
+    }
+    std::optional<zetta::connect::EgressAllowFile> egress_allow_file;
+    std::optional<zetta::connect::EgressAllowFile::Result> egress_file_loaded;
+    if (!opts.egress_allow_file.empty()) {
+        egress_allow_file.emplace(opts.egress_allow_file, *egress_policy);
+        std::string error;
+        egress_file_loaded = egress_allow_file->load(&error);
+        if (!egress_file_loaded) {
+            std::fprintf(stderr, "zetta: %s\n", error.c_str());
+            return 2;
+        }
+        if (!egress_file_loaded->error.empty()) {
+            std::fprintf(stderr, "zetta: %s\n", egress_file_loaded->error.c_str());
+        }
+        egress_policy = egress_file_loaded->policy;
+    }
     if (!opts.audit_retention_from_cli) {
         if (const char* environment =
                 std::getenv("ZETTA_AUDIT_RETENTION_DAYS")) {
@@ -934,9 +1034,20 @@ int main(int argc, char** argv) {
     // only to loopback and the destinations its operator allowed. Refusals land
     // on the audit trail as egress_denied.
     zetta::connect::set_egress_policy(std::move(*egress_policy));
-    std::printf("zetta: egress %s\n",
-                zetta::connect::egress_policy().describe().c_str());
+    if (egress_allow_file) {
+        std::printf("zetta: egress %s (re-reading %s)\n",
+                    zetta::connect::egress_policy().describe().c_str(),
+                    egress_allow_file->path().c_str());
+    } else {
+        std::printf("zetta: egress %s\n",
+                    zetta::connect::egress_policy().describe().c_str());
+    }
     EgressDenialAudit egress_denial_audit(node);
+    std::optional<EgressAllowFileReloader> egress_allow_file_reloader;
+    if (egress_allow_file) {
+        record_egress_file_event(node, egress_allow_file->path(), *egress_file_loaded);
+        egress_allow_file_reloader.emplace(node, std::move(*egress_allow_file));
+    }
 
     // Keep the native coroutine HTTPS client alive only while the Node is
     // alive. This guard joins the worker before Node destruction on every

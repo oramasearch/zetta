@@ -14,7 +14,8 @@ The projection also reports flat/seek index, segment-cache, recent-window, and p
 to the node memory registry (#1163).
 The `data_changed` action records SQL statements that change data, schema or
 governance (#1229). The `egress_denied` action records an outbound connection the
-egress policy refused (#75).
+egress policy refused (#75), and `egress_policy_reloaded` each load, replacement
+or refused replacement of the allowlist file the node re-reads (#1332).
 
 `records:read`, `records:write` and `records:manage` are object-scopable by
 collection name prefix (`ResourceKind::Collection`); `metrics:read` and

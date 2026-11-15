@@ -29,6 +29,7 @@ anything it sends out goes through the HTTP client, and so through the policy.
 | --- | --- |
 | Command line | `--egress-allow LIST`, repeatable |
 | Environment | `ZETTA_EGRESS_ALLOW=LIST` (used only when no `--egress-allow` is given) |
+| A file re-read while running | `--egress-allow-file PATH`, or `ZETTA_EGRESS_ALLOW_FILE=PATH` when no flag is given ([below](#the-allowlist-file-re-read-while-running), #1332) |
 
 `LIST` is comma- or space-separated. Each entry is one destination, optionally followed by `:port`
 (no port means any port):
@@ -51,6 +52,55 @@ The node prints the policy it runs with at startup:
 zetta: egress deny (loopback only)
 zetta: egress allow *.snowflakecomputing.com:443,hooks.example.com:443
 ```
+
+### The allowlist file, re-read while running
+
+`--egress-allow-file PATH` ([#1332](https://github.com/oramasearch/zetta/issues/1332)) names a file
+of further entries that the node re-reads while it runs, so a change to what it may reach takes
+effect without a restart. The file uses the same entries as `LIST`, separated by commas, spaces or
+line breaks; `#` starts a comment that runs to the end of its line:
+
+```
+# rendered by whoever runs the node
+api.example.com:443
+*.snowflakecomputing.com:443
+10.20.0.0/16
+```
+
+- **What is in force** is always the static part (`--egress-allow` / `ZETTA_EGRESS_ALLOW` and the
+  Clerk issuer) plus the file's last good contents. A replacement can widen or narrow the file's
+  part; it never removes the static part.
+- **Re-read every 2 seconds.** Each read opens the path afresh and follows symlinks, so a Kubernetes
+  projected ConfigMap, which kubelet replaces by swapping its `..data` symlink, is picked up. A
+  read that finds the same bytes changes nothing.
+- **A bad replacement never changes the policy.** A malformed file, one that cannot be read, one
+  larger than 1 MiB, one that is not a regular file, or one that was removed keeps the last good
+  policy in force. It is logged on stderr and audited once per distinct state, until a well-formed
+  file replaces it. To deny everything the file allowed, write an empty file (or one of only
+  comments); removing it does not.
+- **At startup**, a missing file adds nothing (deny, apart from the static part) and is applied once
+  it appears; a malformed or unreadable file stops the node with the entry and the reason, like a
+  malformed `--egress-allow`.
+- **Every load and reload names the policy in force**: the startup line says which file is re-read,
+  each applied replacement prints a line, and each load, replacement and refusal is an
+  `egress_policy_reloaded` audit event:
+
+```
+zetta: egress allow api.example.com:443 (re-reading /etc/zetta/egress/allow)
+zetta: egress reloaded from /etc/zetta/egress/allow: allow api.example.com:443,10.20.0.0/16
+zetta: egress allowlist replacement refused: egress allowlist file /etc/zetta/egress/allow: egress allowlist entry 'host!': ...; the last good policy stays in force
+```
+
+| Field | Value |
+| --- | --- |
+| `action` | `egress_policy_reloaded` |
+| `actor` | `node` |
+| `target` | `egress_allow_file:<path>` |
+| `allowed` | `true` when the file's policy was put in force (at startup or on a replacement), `false` when a replacement was refused |
+| `detail` | `in force: <the policy>`, then the reason in parentheses for a refusal or a missing file |
+
+A connection already open when a replacement lands is not cut; the new policy decides every
+connection (and redirect hop) dialled after it.
 
 ### Added automatically
 
@@ -101,7 +151,11 @@ process.
 
 The operator sets `ZETTA_EGRESS_ALLOW=*` on the Zettas it runs for a Lake, so the namespace's
 NetworkSandbox stays the one place those destinations are declared and the engine does not refuse
-what the workspace allows. A node run any other way (on-prem, a laptop, the desktop app, a VM, an
+what the workspace allows. Where the operator renders a per-Zetta allowlist from the NetworkSandbox
+instead ([orama-operator#724](https://github.com/oramasearch/orama-operator/issues/724)), the
+variable sits in the pod template and every rule or Connection change restarts the Zetta; projecting
+a ConfigMap and passing its path as `ZETTA_EGRESS_ALLOW_FILE` stops that. That switch is an operator
+change, not made here. A node run any other way (on-prem, a laptop, the desktop app, a VM, an
 `OramaZettaCluster` outside a Lake) has no such layer, and this policy is what denies its egress.
 
 ## Limits
@@ -123,10 +177,16 @@ what the workspace allows. A node run any other way (on-prem, a laptop, the desk
   its parser, the process-wide installed policy and the denial observer.
 - `src/core/api/native_http_transport.cpp` (`perform_url`): the check before DNS and before each
   connect, for every hop.
-- `src/main.cpp`: `--egress-allow` / `ZETTA_EGRESS_ALLOW`, the Clerk issuer, the startup line, the
-  `egress_denied` audit events, and `zetta pull`'s allowance.
+- `include/zetta/connect/egress_policy.hpp` `EgressAllowFile`, `parse_egress_allow_file`: the
+  allowlist file (#1332).
+- `src/main.cpp`: `--egress-allow` / `ZETTA_EGRESS_ALLOW`, `--egress-allow-file` /
+  `ZETTA_EGRESS_ALLOW_FILE` and the thread that re-reads it (`EgressAllowFileReloader`), the Clerk
+  issuer, the startup line, the `egress_denied` and `egress_policy_reloaded` audit events, and
+  `zetta pull`'s allowance (which does not read the file).
 - `tests/connect/test_egress_policy.cpp`: parsing, every entry kind, ports, loopback, ranges, malformed
-  entries, the observer.
+  entries, the observer; the file's comments, a missing file at startup, a malformed file at startup,
+  a replacement on top of the static part, a malformed or removed replacement keeping the last good
+  policy (reported once), a kubelet-style symlink swap, and a directory refused.
 - `tests/connect/test_native_http_transport.cpp`: an outside address refused by default, an unlisted
   name refused before DNS, an allowlisted name dialled, loopback allowed, and a redirect from an
   allowed host to an outside one refused.

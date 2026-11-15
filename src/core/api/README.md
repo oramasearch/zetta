@@ -75,7 +75,8 @@ the dataset contract (#957).
 connection and redirect hop: outbound is denied by default and each refusal is
 reported for the `egress_denied` audit event (#75,
 [egress policy](../../../docs/governance/egress-policy.md)). `/cli.md` documents
-`--egress-allow` and `ZETTA_EGRESS_ALLOW`.
+`--egress-allow` and `ZETTA_EGRESS_ALLOW`, and `--egress-allow-file` /
+`ZETTA_EGRESS_ALLOW_FILE`, the allowlist file the node re-reads while running (#1332).
 
 `mcp_docs.cpp` also renders `/cli.md`. Its pub/sub and audit sections document
 the dispatch-pool and class-specific retention flags with their environment

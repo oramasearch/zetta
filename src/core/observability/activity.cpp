@@ -63,6 +63,7 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::EgressDenied:       return "egress denied";
         case AuditAction::SafeModeChanged:    return "safe mode changed";
         case AuditAction::SafeModeConfirmed:  return "safe mode confirmed";
+        case AuditAction::EgressPolicyReloaded: return "egress policy reloaded";
     }
     return "data access";
 }
