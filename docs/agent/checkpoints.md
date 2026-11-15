@@ -1,7 +1,7 @@
 # Registered agent checkpoints
 
 Native agent serving accepts exact checkpoint selectors registered by the node operator
-(#1411, LSR-238). A workspace writer can choose an installed model, but cannot turn
+(#1411). A workspace writer can choose an installed model, but cannot turn
 `agent.model` into an arbitrary local directory probe.
 
 The default registry contains `base-agent` and the legacy selector

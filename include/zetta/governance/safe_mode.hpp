@@ -9,8 +9,8 @@
 
 namespace zetta { class Node; }
 
-// **Safe mode, per database** (docs/api/safe-mode.md; decided by Steve on
-// 2026-10-23 on #1373 and https://github.com/oramasearch/lake/issues/906).
+// **Safe mode, per database** (docs/api/safe-mode.md; decided on #1373 and
+// https://github.com/oramasearch/lake/issues/906).
 //
 // Each database — a saved source connection, or a Zetta SQL database — carries
 // one of three levels, modelled on Bobby Tables' safe mode:

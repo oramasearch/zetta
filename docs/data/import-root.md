@@ -1,7 +1,7 @@
 # The import root: the one directory a caller may name files under
 
-**Issues:** [#1391](https://github.com/oramasearch/zetta/issues/1391) (LSR-071),
-[#1433](https://github.com/oramasearch/zetta/issues/1433) (LSR-260), the filesystem half of
+**Issues:** [#1391](https://github.com/oramasearch/zetta/issues/1391),
+[#1433](https://github.com/oramasearch/zetta/issues/1433), the filesystem half of
 [#1323](https://github.com/oramasearch/zetta/issues/1323) ·
 **Code:** [`include/zetta/data/import_path.hpp`](../../include/zetta/data/import_path.hpp),
 [`src/core/data/import_path.cpp`](../../src/core/data/import_path.cpp) ·
@@ -21,9 +21,9 @@ with the node's own file access:
 
 So a caller holding `orchestration:add_dataset` and read access to the table it made could
 import `<data_dir>/security/cluster-secret.json` and read the cluster join credential back
-as a row (LSR-071). A run could probe any directory for the fixed churn file names, telling
+as a row. A run could probe any directory for the fixed churn file names, telling
 a missing file from an invalid one, or train on a compatible dataset outside the catalog
-(LSR-260). `parse_dataset_path` also asked the filesystem whether a bare name existed in
+(#1433). `parse_dataset_path` also asked the filesystem whether a bare name existed in
 the node's working directory.
 
 ## The rule
@@ -74,12 +74,12 @@ confinement is at the API boundary, where the path comes from a caller.
 
 - Paths a caller names for **writing** (`generate_dataset`'s `path`, `submit_feedback`'s
   `export_path`) go under the sibling export root, `<data_dir>/exports`, with the same
-  lexical rules: [export-root.md](export-root.md) (LSR-164
-  [#1397](https://github.com/oramasearch/zetta/issues/1397), LSR-166
+  lexical rules: [export-root.md](export-root.md)
+  ([#1397](https://github.com/oramasearch/zetta/issues/1397),
   [#1399](https://github.com/oramasearch/zetta/issues/1399)).
 - The resolver checks the path, then the loader opens it again by name. Someone who can
   already write inside the import directory could swap an entry between the two opens;
   the real-path check narrows that, and anyone with that access can stage the file anyway.
-- Separating filesystem import authority from `orchestration:add_dataset` (LSR-071's second
-  recommendation) is a permission-vocabulary change, not made here: with the import root,
+- Separating filesystem import authority from `orchestration:add_dataset` (the second
+  recommendation of #1391) is a permission-vocabulary change, not made here: with the import root,
   that right reaches only what an operator staged.

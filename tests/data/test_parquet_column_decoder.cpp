@@ -57,7 +57,7 @@ nlohmann::json read_json(const fs::path& path) {
 // A file whose one REQUIRED int64 column `x` is split into row groups of two
 // rows, with the physical type of the LAST row group's chunk rewritten to
 // boolean in the footer. The schema still says int64, so the file declares two
-// physical types for one leaf (LSR-167). The patch is the compact-protocol
+// physical types for one leaf. The patch is the compact-protocol
 // field header for ColumnMetaData.type (0x15) followed by the zigzag code
 // (int64 = 0x04 becomes boolean = 0x00); the caller checks it landed by parsing
 // the footer back.
@@ -357,7 +357,7 @@ TEST(ParquetColumnDecoder, RejectsOutOfRangeIndices) {
     EXPECT_FALSE(zetta::parquet::decode_column_chunk(bytes, meta.metadata, 0, 99).ok());
 }
 
-// LSR-167: a chunk whose physical type disagrees with the schema leaf is refused.
+// a chunk whose physical type disagrees with the schema leaf is refused.
 // Merging the row groups used to keep the first group's type, append each
 // group's values to a different typed vector, and count every row — so the row
 // transpose indexed past the end of the int64 vector.

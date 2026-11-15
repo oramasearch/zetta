@@ -8,7 +8,7 @@
 
 #include <arpa/inet.h>
 
-// The destination policy (LSR-161, #1394): see
+// The destination policy (#1394): see
 // include/zetta/connect/destination_policy.hpp for the rules. This file only
 // classifies addresses and holds the node's setting; the native HTTP client
 // (src/core/api/native_http_transport.cpp) applies it to each resolved address.

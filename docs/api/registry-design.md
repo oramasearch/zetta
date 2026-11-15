@@ -34,7 +34,7 @@ derives `GET /v1/<name>` (reads) and `POST /v1/<name>` (actions) plus the
 OpenAPI document from the same schemas; the command palette (#625) is the same
 list rendered for humans. **A capability added once appears everywhere.**
 
-**MCP ↔ REST parity is mandatory (Steve, 2026-07-25).** Every capability
+**MCP ↔ REST parity is mandatory.** Every capability
 surfaces on **both** MCP (`tools/list` / `tools/call`) **and** REST (`/v1/<name>`)
 — there is **no** REST-only or MCP-only capability, and no per-capability
 "exclude from MCP" flag. This is by construction (both are thin renderings of the
@@ -173,11 +173,11 @@ reaps the child before joining clients so a regression cannot strand the suite.
 
 ## Auth, governance, audit — nothing new
 
-- **A web run's return path is one this origin only (#1435, LSR-262).** `/run` redirects to its
+- **A web run's return path is one this origin only (#1435).** `/run` redirects to its
   `_return` only when it is a path a browser cannot read as another origin: one leading `/`, no
   `\`, no control character or space, and no `//` or `:` before any `?` or `#`
   (`same_origin_return_path`). Any other `_return` gets the result page instead of a redirect.
-- **Browser origin binding (#1415, LSR-242).** Every browser POST route
+- **Browser origin binding (#1415).** Every browser POST route
   (`/login`, `/session`, both logout routes, `/run`, `/assist`, `/shell`,
   `/graph-save`, `/blob`, `/blob/delete`) requires exactly one `Origin` matching
   the request's scheme and `Host`, including the port. Missing, opaque (`null`),
@@ -199,7 +199,7 @@ reaps the child before joining clients so a regression cannot strand the suite.
   are not used. Direct HTTP uses `http://Host`. Headers stripped by a proxy or
   privacy policy can cause a 403; browser callers must retain origin evidence.
   No capability schema or new JSON format is added. Return URL normalization is
-  tracked separately under LSR-262.
+  tracked separately.
 - **Bearer token = an `AccessKey` id.** Possession of the key id is the
   credential, exactly the strength of the existing model (V1); minting a
   dedicated API-secret rides the existing key entity later, not a parallel

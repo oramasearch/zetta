@@ -136,9 +136,7 @@ The script lives here so it evolves with the engine, and is packaged into the
 `zetta-bridge/build/images/zetta-e2e/`). The **orama-operator** owns a
 `ZettaClusterE2ETest` CRD that runs the image as an in-cluster Job against a deployed
 `OramaZettaCluster` and surfaces pass/fail in the CR status — the same pattern as its
-`OramaCloudV1E2ETest`. This is part of **One Orama / One Amaro**
-([orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)); the operating +
-expansion workflow is codified in the `one-orama-dev` skill.
+`OramaCloudV1E2ETest`. The operator side is documented with the operator.
 
 ## Adding coverage
 

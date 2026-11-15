@@ -17,7 +17,7 @@ GET/HEAD may use same-origin Fetch Metadata or a strictly parsed Referer.
 Cookie GET SQL permits only parsed SELECT batches; writes use POST. Explicit
 bearer API clients retain their contract. Proxy requirements and failure behavior
 are in [registry design](../../../docs/api/registry-design.md#auth-governance-audit--nothing-new)
-(#1415, LSR-242).
+(#1415).
 
 `node_memory` renders the node's memory-accounting registry through the same
 REST/MCP declaration. HTTP sessions, cached parsers, active requests, and

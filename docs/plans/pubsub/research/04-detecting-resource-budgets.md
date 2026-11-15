@@ -1,7 +1,7 @@
 # Research: detecting the memory, CPU and disk budget from the environment
 
 > **Provenance.** One Perplexity (`perplexity_ask`, high context) run,
-> 2026-09-27, after Steve asked that defaults be auto-selected from the
+> 2026-09-27, after a request that defaults be auto-selected from the
 > environment instead of guessed. Plus a read of zetta's own
 > `src/core/cluster/node_metrics.cpp`. **Status:** background; describes no
 > pub/sub code.

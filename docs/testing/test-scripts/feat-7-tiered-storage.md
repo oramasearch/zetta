@@ -83,7 +83,5 @@ placement decisions.
 
 ## Related
 
-- Cost model and unit prices, including the archive-tier economics:
-  https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/oramacore-as-turbopuffer-alternative/cost-at-scale.md
 - [`env-4-ephemeral-burst`](env-4-ephemeral-burst.md) — the compute equivalent of this
   question: borrow capacity, pay only for what you used.

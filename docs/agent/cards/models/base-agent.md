@@ -140,7 +140,7 @@ This card is the in-repo datasheet; the Hub card is the same content for a reade
 - **Scale path — 0.6B → Qwen 3.5 9B, on evidence, and only for this model.** The ladder is
   #863 (full fine-tune 0.6B) → #864 (LoRA/adapters, constrained hardware) → #865 (full
   fine-tune on dedicated Linux/CUDA). *Retarget: those issues name Qwen3-8B; the current target
-  is **Qwen 3.5 9B** (Steve, 2026-07-25).* Two rules govern the jump:
+  is **Qwen 3.5 9B**.* Two rules govern the jump:
   - **Trigger on a measured plateau, not a hunch** — parse rate + grader pass-rate on the
     held-out set, *after* RLVR has had its shot. A number with no dated report is not evidence.
   - **Scale selectively.** Emitting a valid nested-JSON pipeline is the hard task and is what

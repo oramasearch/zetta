@@ -1,4 +1,4 @@
-// zetta#1392 (LSR-072): virtual tables never read around table grants, row-level
+// zetta#1392: virtual tables never read around table grants, row-level
 // security or the connection-store refusal.
 //
 // A virtual table projects raw replicated values from a CRDT key family. Before

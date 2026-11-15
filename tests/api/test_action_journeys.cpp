@@ -422,7 +422,7 @@ nlohmann::json live_shape_foundation(const std::string& target_table,
            {"complaints", "monthly_value", "tenure_months", "usage"}}}},
         {"delivery",
          {{"kind", "webhook"},
-          {"endpoint", "https://e2e-webhook.oramadev.net/hook"},
+          {"endpoint", "https://e2e-webhook.example.com/hook"},
           {"owner", "retention-team"}}},
         {"roi_model",
          {{"currency", "USD"},
@@ -8036,7 +8036,7 @@ TEST_F(Uc1Journey, FeaturePlanRefusesEventGrainBeforeStartingM1) {
     EXPECT_TRUE(node.runs().empty());
 }
 
-// LSR-260 (#1433): a run's dataset directory resolves under the node's import
+// #1433: a run's dataset directory resolves under the node's import
 // directory only. A valid churn dataset anywhere else on the node, or reached through
 // a symbolic link from inside the import directory, is refused before any of its
 // files is opened, and no Run is created.

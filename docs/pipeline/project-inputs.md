@@ -57,7 +57,7 @@ auto project = node.create_project("churn");
 project->create_input(zetta::pipeline::ProjectInputKind::Intent,
                       zetta::pipeline::ProjectInputSource::Pasted,
                       "score every active account for churn risk and tell me why",
-                      /*filename=*/{}, /*created_by=*/"user:steve");
+                      /*filename=*/{}, /*created_by=*/"user:riley");
 
 // An artifact the team uploaded (keeps its original filename):
 project->create_input(zetta::pipeline::ProjectInputKind::Artifact,
@@ -81,7 +81,7 @@ auto project = node.create_project("churn");
 
 auto intent = project->capture_intent(
     "score every active account for churn risk and tell me why",
-    /*created_by=*/"user:steve");
+    /*created_by=*/"user:riley");
 // intent->kind()   == ProjectInputKind::Intent
 // intent->source() == ProjectInputSource::Pasted   (typed/pasted, no filename)
 ```

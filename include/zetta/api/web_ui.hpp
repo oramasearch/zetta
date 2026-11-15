@@ -78,7 +78,7 @@ std::string web_ui_page_hero(std::string_view eyebrow, std::string_view title,
 // Render one run's report (#958, #960 item 4) — the Reports surface of Orama
 // Studio, from the JSON `get_run_report` returns. Pure: data in, HTML out.
 //
-// The design's Reports screens (oramasearch/orama-design, feat/reports-surface)
+// The design's Reports screens (the design repository's Reports surface)
 // are React; this re-implements their information architecture, copy and states
 // in server-rendered HTML, and renders the ENGINE's numbers rather than the
 // design's fixtures.

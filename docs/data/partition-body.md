@@ -3,7 +3,7 @@
 A partition body was JSON Lines: one `{"_zid": <id>, "doc": <row>}` object per
 line. It is now **Parquet** — the row's fields as columns, the row's stable id in
 a `_zid` column beside them — for **every** dataset, not only connector ones
-(#833, decision 1).
+(#833).
 
 One body format buys three things at once:
 

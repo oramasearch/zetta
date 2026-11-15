@@ -65,7 +65,7 @@ export CCACHE_DIR="$PWD/build/ccache"
 export CCACHE_TEMPDIR="$PWD/build/ccache/tmp"
 export TMPDIR="$PWD/build/test-tmp"
 export ZETTA_PG_TEST_HOST=127.0.0.1
-export ZETTA_PG_TEST_USER=stevesperandeo
+export ZETTA_PG_TEST_USER="$USER"
 export ZETTA_PG_TEST_DB=zetta_issue1122_20260928_proof_8127
 ```
 

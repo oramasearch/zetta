@@ -4,8 +4,8 @@
 #include <string>
 #include <string_view>
 
-// **Which addresses an outbound request may reach** (LSR-161,
-// [#1394](https://github.com/oramasearch/zetta/issues/1394)).
+// **Which addresses an outbound request may reach**
+// ([#1394](https://github.com/oramasearch/zetta/issues/1394)).
 //
 // Some outbound requests go to a URL a caller chose: an action connector's
 // `endpoint` (a webhook, a CRM task API) and a solution's report delivery

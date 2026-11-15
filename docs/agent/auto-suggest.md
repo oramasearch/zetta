@@ -89,4 +89,4 @@ corpus's own search family, so the two models agree on when search is the right 
 - #555 — the agent Auto-Suggest feeds (its output is the agent's input prompt).
 - #556 — Personalized MCP (the interface trio's third leg).
 - #866 — the base-agent corpus (same generator family); #853 — the per-customer fork.
-- The **rlvr-training-data** skill (the method) · `homer6/blender-rl` (the reference).
+- The **rlvr-training-data** skill (the method) · blender-rl (an earlier RLVR prototype, not public) (the reference).

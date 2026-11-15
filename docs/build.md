@@ -68,7 +68,7 @@ automerge-cpp nests submodules — or the build fails at
 `add_subdirectory(modules/capy)` / a missing `upstream/json`:
 
 ```bash
-git clone --recurse-submodules git@github.com:homer6/zetta.git
+git clone --recurse-submodules https://github.com/oramasearch/zetta.git
 # existing checkout:
 git submodule update --init --recursive
 ```

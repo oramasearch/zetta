@@ -67,7 +67,7 @@ TEST(N8nImport, ImportsAndRoundTripsChurnFixture) {
     ASSERT_FALSE(raw.empty());
 
     auto result = import_n8n_workflow_file(*project, churn_fixture(),
-                                           "user:steve");
+                                           "user:riley");
     ASSERT_TRUE(result.ok()) << result.error;
     ASSERT_TRUE(result.input);
 
@@ -75,7 +75,7 @@ TEST(N8nImport, ImportsAndRoundTripsChurnFixture) {
     EXPECT_EQ(result.input->kind(), ProjectInputKind::Artifact);
     EXPECT_EQ(result.input->source(), ProjectInputSource::Upload);
     EXPECT_EQ(result.input->filename(), "churn_workflow.json");
-    EXPECT_EQ(result.input->created_by(), "user:steve");
+    EXPECT_EQ(result.input->created_by(), "user:riley");
     EXPECT_EQ(result.input->size(), raw.size());
 
     // sha256 is computed at the boundary over the raw bytes.

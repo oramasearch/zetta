@@ -105,7 +105,7 @@ already consumes JSON rows. Before transposing a column it checks the decoded
 shape with `validate_decoded_column` (one dense value per present row, in the
 vector the column's physical type selects), so a crafted file whose row groups
 disagree on a column's physical type fails with a reason instead of reading past
-the values (LSR-167, see [the decoders](parquet-column-decoders.md)).
+the values (see [the decoders](parquet-column-decoders.md)).
 
 That is how the **churn dataset loader** ([churn-dataset.md](../use-cases/churn-dataset.md))
 now reads Parquet: `load_churn_dataset(dir, ChurnDataFormat::Parquet)` reads

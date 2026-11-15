@@ -16,9 +16,8 @@ the engine is general (GBDT today; RL, LLM fine-tuning behind the same seams)
   different label, featurize spec, trap, and driver→action map on the same
   engine.
 - **Growing the catalog**: the upstream flow (deep-research prompt →
-  blueprint UC-N artifact → issues → worktree plan) is amaro-bridge's
-  add-use-case skill + [runbook](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md);
-  the zetta-side build recipe is
+  blueprint UC-N artifact → issues → build plan) is described in
+  [../use-cases/README.md](../use-cases/README.md); the zetta-side build recipe is
   [../use-cases/creating-a-use-case.md](../use-cases/creating-a-use-case.md)
   (the two laws: compose-don't-invent; name the Contoso test).
 - **In the product**, the catalog is the AI Solution Library

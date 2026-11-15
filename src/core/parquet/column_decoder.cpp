@@ -585,7 +585,7 @@ DecodedColumnResult decode_column_chunk(std::string_view file_bytes, const FileM
     }
     // The page decoders follow the chunk's type and every consumer follows the
     // leaf's; a footer that states two different types for one column is refused
-    // here, so no row group can append to a different typed vector (LSR-167).
+    // here, so no row group can append to a different typed vector.
     if (chunk.type != leaf.type) {
         return fail("parquet: column chunk physical type " + std::string(to_string(chunk.type)) +
                     " does not match the schema's " + std::string(to_string(leaf.type)) +

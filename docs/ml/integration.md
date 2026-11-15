@@ -20,7 +20,7 @@ commits. All 21 portfolio methodologies are runnable.
   catalogue's first method, mapped to portfolio numbering by
   [buildable-models §8](https://github.com/oramasearch/zetta-bridge/blob/main/docs/solutions/buildable-models.md):
   the catalogue calls anomaly detection M-5 and survival M-6. Its
-  [S-8 framing](https://github.com/oramasearch/solutions-designs/blob/main/docs/plan/04-solutions-catalog.md#111-framing-methodology-correctness)
+  S-8 framing (in the solutions-catalog plan, not public)
   explicitly lists anomaly detection first.
 - M-15 does not take over S-11 from M-8: it remains reachable by its ID and
   bandit model kinds. Both lookup implementations prefer runnable entries

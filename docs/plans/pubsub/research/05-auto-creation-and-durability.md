@@ -1,7 +1,7 @@
 # Research: topic auto-creation, and durability across shutdown and crash
 
 > **Provenance.** One Perplexity (`perplexity_ask`, high context) run,
-> 2026-09-27, after Steve asked for runtime-defined, persisted topics and
+> 2026-09-27, after a request for runtime-defined, persisted topics and
 > Kafka-style auto-creation. **Status:** background; describes no zetta code.
 
 ## Auto-creation

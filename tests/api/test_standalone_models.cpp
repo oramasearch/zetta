@@ -439,7 +439,7 @@ TEST_F(StandaloneModels, BringCommonFormatsAndDownloadWeights) {
     EXPECT_EQ(call("export_model", {{"model_id", "no-such-model"}}).error.code, "not_found");
 }
 
-// zetta#1390 (LSR-070): a brought file whose splits read past its own final
+// zetta#1390: a brought file whose splits read past its own final
 // feature list is refused before anything can score or explain it, and leaves
 // nothing behind.
 TEST_F(StandaloneModels, AModelWhoseSplitsReadPastItsFeaturesIsRefused) {

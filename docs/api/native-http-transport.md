@@ -152,7 +152,7 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
   Neither option buffers a multi-GB shard on the heap (`HttpResponse::body` stays empty);
   `max_response_bytes` raises the 512 MiB connector body cap. All default to off, so a
   connector is unchanged.
-- **Confined model downloads (#1412, LSR-239)** — the complete `weight_map` is
+- **Confined model downloads (#1412)** — the complete `weight_map` is
   validated before any shard request. Each value must be an ASCII basename
   using only letters, digits, `.`, `_`, or `-`, at most 255 bytes, ending in
   `.safetensors`. Empty names, non-string values, separators, traversal,

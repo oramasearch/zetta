@@ -130,7 +130,7 @@ warning for the corosio accessor)
 - **The agent programme.** #555 is the main feature and where the work lands; #193 keeps the
   programme context and verifies the data and linkage integrate. Shape: #554 curriculum (p2)
   → #555 training (p1) → #849 the interface (p1) → #556 personalization (p4). The reference
-  implementation is `homer6/blender-rl`, to be **re-implemented in canonical C++26**
+  implementation is blender-rl (an earlier RLVR prototype, not public), to be **re-implemented in canonical C++26**
   (distributed, coroutines) rather than embedded — the same "re-implement, don't run"
   principle already governing input languages.
 - **Vocabulary: "agent".** An *agent* is something we create; the RLVR agent is the default

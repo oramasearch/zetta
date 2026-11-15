@@ -13,7 +13,7 @@ Owner: the agent + compute domains. Tracking: [#920](https://github.com/oramasea
 | Job | Where | Why |
 |---|---|---|
 | **Train the agent today** | **the Mac** (MLX) | The only working training path. See [training-runbook.md](training-runbook.md). |
-| **Develop CUDA kernels** (#922) | **server2**, the build box | Needs *a* CUDA GPU, not a fast one. RTX 3080 is `sm_86` — same architecture as an A10. Free. |
+| **Develop CUDA kernels** (#922) | **a local Linux box** with a CUDA GPU | Needs *a* CUDA GPU, not a fast one. RTX 3080 is `sm_86` — same architecture as an A10. Free. |
 | **Train on CUDA** | rented A10 / A100 | **Blocked on #923.** Nothing trains on Linux until `CudaQwenModel` exists. |
 | **9B LoRA** (#864) | rented A100 40 GB | 40 GB is the unlock; 24 GB is tight. |
 | **9B full fine-tune** (#865) | 2x H100 80 GB | Needs a sharded path that does not exist yet. |
@@ -249,7 +249,7 @@ released, then relaunch.
 - **A training run must never be able to take down its host.** A run exhausted memory on the Mac and
   the kernel panicked on a watchdog timeout (#919). Cap device memory and fail loudly with "OOM at
   step N" instead. This is #924 and it applies to every backend.
-- **Do not run a node and a training run on the same box.** server2 is also the local k0s cluster.
+- **Do not run a node and a training run on the same box.** A box that also runs a local cluster is no exception.
 - **A CUDA-saved checkpoint must load on the CPU path.** A checkpoint only its own backend can read
   is a trap, and the whole point is training in one place and serving in another (#923).
 - **No foreign runtime** (ADR-17). CUDA is a `ComputeDevice` backend and kernels we write — never a

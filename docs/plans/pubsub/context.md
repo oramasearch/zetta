@@ -31,7 +31,7 @@ Two things follow for pub/sub:
 
 - **Coroutine-based:** "never a blocking mutex/condition-variable surface". A
   raw `std::mutex` is allowed only as the lowest cross-thread handoff, contained
-  and commented, never in a public API. **Steve overrode this for pub/sub on
+  and commented, never in a public API. **This was overridden for pub/sub on
   2026-09-27** ([D1](decisions.md)): locks and condition variables are allowed
   inside the topic, and stage 1 does not use coroutines at all: subscribers are
   threads, with a mutex per queue ([D5](decisions.md)).

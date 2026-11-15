@@ -1,7 +1,7 @@
 # The export root: the one directory a caller may have the node write in
 
-**Issues:** [#1397](https://github.com/oramasearch/zetta/issues/1397) (LSR-164),
-[#1399](https://github.com/oramasearch/zetta/issues/1399) (LSR-166) ·
+**Issues:** [#1397](https://github.com/oramasearch/zetta/issues/1397),
+[#1399](https://github.com/oramasearch/zetta/issues/1399) ·
 **Code:** [`include/zetta/data/export_path.hpp`](../../include/zetta/data/export_path.hpp),
 [`src/core/data/export_path.cpp`](../../src/core/data/export_path.cpp) ·
 **Tests:** `tests/data/test_export_path.cpp` · **Sibling:** [import-root.md](import-root.md)
@@ -60,8 +60,8 @@ the confinement is at the API boundary, where the name comes from a caller.
 ## Not covered here
 
 - `submit_feedback` still attaches the node's most recent traces, errors and crash reports
-  regardless of who asks, and needs only `api:query` (LSR-166's second and third
-  recommendations). Filtering the attachments by the caller's authority and requiring an
+  regardless of who asks, and needs only `api:query` (the second and third
+  recommendations of #1399). Filtering the attachments by the caller's authority and requiring an
   export right are tracked separately (see #1399's closing comment).
 - Disk use: each export is a new file and nothing prunes `exports/`. A caller with the right
   can fill the volume, as it can already through the large-object store.

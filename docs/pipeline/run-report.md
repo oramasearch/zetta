@@ -234,7 +234,7 @@ app, MCP and chat cannot disagree about what a run found:
 | Desktop GUI | Data library → Reports (`src/gui/app_reports.cpp`) |
 
 Reports is **one item under Data library** on both, matching the design
-(`oramasearch/orama-design@4621d87`); the import is recorded in
+(the design repository at `4621d87`); the import is recorded in
 [`docs/product/experience/design-sync.md`](../product/experience/design-sync.md).
 
 ## Bayesian uncertainty reports

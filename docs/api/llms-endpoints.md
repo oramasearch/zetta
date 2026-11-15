@@ -13,7 +13,7 @@ custom wherever AX demands it.
 Served by the same embedded Beast2 server as `POST /mcp` (#615) — same bind,
 same flags (`--mcp-listen`, `--no-mcp`). These discovery pages are public,
 including when a bearer is supplied. They describe the build's API and contain
-no live workspace inventory (#1402, LSR-169). Live reads use the authenticated
+no live workspace inventory (#1402). Live reads use the authenticated
 MCP or REST capability routes and their authorization checks:
 
 | Route | Serves |
