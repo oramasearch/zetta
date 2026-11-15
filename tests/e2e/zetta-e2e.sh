@@ -37,6 +37,11 @@
 #   ZETTA_E2E_REQUIRE_AUTH  Ignored (auth is always on); kept so an older runner
 #                        that still sets it keeps working.
 #   ZETTA_E2E_DB         Scratch SQL database (default "e2e").
+#   ZETTA_E2E_REVOKE_LEGACY_READER  "1" revokes every role the pre-#780 harness
+#                        left on the fixed-name user `e2e_reader` (it held
+#                        `admin`, #1324). Unset, §3.13 only reports it (a FAIL
+#                        while the user still holds a role). Setting it is
+#                        consent to that write on this target.
 #   ZETTA_E2E_TIMEOUT / _RETRIES / _POLL   45 / 10 / 240 (seconds).
 #
 # Discipline: every check is PASS / FAIL / SKIP.
@@ -81,6 +86,7 @@ if [ -z "$TOKEN" ]; then
 fi
 REQUIRE_AUTH=1
 DB="${ZETTA_E2E_DB:-e2e}"
+REVOKE_LEGACY_READER="${ZETTA_E2E_REVOKE_LEGACY_READER:-0}"
 TIMEOUT="${ZETTA_E2E_TIMEOUT:-45}"
 RETRIES="${ZETTA_E2E_RETRIES:-10}"
 POLL="${ZETTA_E2E_POLL:-240}"
@@ -675,6 +681,34 @@ if want_level 3; then
     _c="$(http_code GET '/v1/server_info' '' 'e2e-not-a-real-token')"; case "$_c" in 401|403) pass "a bogus bearer is denied ($_c) [#762/#769]" ;; *) fail "a bogus bearer was accepted ($_c) [#762/#769]" ;; esac
     # the admin (owner) token opens the gate.
     _c="$(http_code GET '/v1/server_info' '' "$ADMIN")"; case "$_c" in 200) pass "the admin token authenticates (200)" ;; *) fail "the admin token did not authenticate ($_c)" ;; esac
+
+    # #1324: before #780, sql_as sent the admin's bearer next to the reader's, so
+    # `GRANT ROLE admin TO e2e_reader` ran as the admin and left the fixed-name
+    # user `e2e_reader` holding `admin` on every target the old harness ran
+    # against. This harness never uses that user (its users are per run), so it
+    # must hold no role. Reported by default; revoked with
+    # ZETTA_E2E_REVOKE_LEGACY_READER=1. Its tokens cannot be revoked over SQL
+    # (#1335); with no role they authorize nothing.
+    if sql_as "$ADMIN" "SELECT * FROM system.user_roles" ""; then
+        _legacy="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[] | select(.user == "e2e_reader") | .role] | unique | join(" ")' 2>/dev/null)"
+        if [ -z "$_legacy" ]; then
+            pass "the legacy user e2e_reader holds no role [#1324]"
+        elif [ "$REVOKE_LEGACY_READER" = "1" ]; then
+            _left=""
+            for _role in $_legacy; do
+                sql_as "$ADMIN" "REVOKE ROLE $_role FROM e2e_reader" >/dev/null 2>&1 || _left="$_left $_role"
+            done
+            if [ -z "$_left" ]; then pass "revoked the roles the pre-#780 harness left on e2e_reader ($_legacy) [#1324]"
+            else fail "could not revoke$_left from e2e_reader: $(err_msg) [#1324]"; fi
+        else
+            fail "the legacy user e2e_reader still holds: $_legacy (left by the pre-#780 harness; rerun with ZETTA_E2E_REVOKE_LEGACY_READER=1 to revoke) [#1324]"
+        fi
+        if sql_as "$ADMIN" "SELECT * FROM system.tokens" ""; then
+            _live="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[] | select(.user == "e2e_reader" and .revoked != true and .revoked != "true")] | length' 2>/dev/null)"
+            [ "${_live:-0}" = "0" ] && pass "the legacy user e2e_reader has no live token [#1324]" \
+                || skip "e2e_reader keeps ${_live} unrevoked token(s); with no role they authorize nothing, and revoke has no SQL surface [#1324/#1335]"
+        else skip "system.tokens unreadable: $(err_msg) [#1324]"; fi
+    else skip "system.user_roles unreadable, the legacy e2e_reader admin role is not checked: $(err_msg) [#1324]"; fi
 
     # Seed a governed workload. Every object and user is per-run: the store is
     # append-only and a target keeps them across runs.

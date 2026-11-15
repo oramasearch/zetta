@@ -71,6 +71,7 @@ node), captured rather than assumed:
 | `ZETTA_E2E_TOKEN` | — | **required**: the target's seeded admin (owner) token. Auth is always on (#799), so every request needs a bearer; §3.13 mints its own per-run users and tokens from this one |
 | `ZETTA_E2E_REQUIRE_AUTH` | — | ignored (auth is always on, #799); kept so an older runner that still sets it keeps working |
 | `ZETTA_E2E_DB` | `e2e` | scratch SQL database |
+| `ZETTA_E2E_REVOKE_LEGACY_READER` | — | `1` revokes every role the pre-#780 harness left on the fixed-name user `e2e_reader` (it held `admin`, [#1324](https://github.com/oramasearch/zetta/issues/1324)). Unset, §3.13 reports it as a FAIL while the user holds any role. Setting it is consent to that write on the target |
 | `ZETTA_E2E_TIMEOUT` / `ZETTA_E2E_RETRIES` / `ZETTA_E2E_POLL` | `45` / `10` / `240` | per-request timeout, per-request retries, async-run poll budget (seconds) |
 
 ### Run it by hand
@@ -139,6 +140,19 @@ The script lives here so it evolves with the engine, and is packaged into the
 `OramaCloudV1E2ETest`. This is part of **One Orama / One Amaro**
 ([orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)); the operating +
 expansion workflow is codified in the `one-orama-dev` skill.
+
+### The `e2e_reader` the old harness left (#1324)
+
+Before #780 every "as the reader" call also carried the admin's bearer, so the old §3.13's
+`GRANT ROLE admin TO e2e_reader` ran as the admin and left the fixed-name user `e2e_reader`
+holding `admin` on every target it ran against. The current harness never uses that user (its users
+carry the run id), so §3.13 checks it first: `e2e_reader` must hold no role. A run with
+`ZETTA_E2E_REVOKE_LEGACY_READER=1` revokes each role it holds (`REVOKE ROLE <role> FROM
+e2e_reader`) and passes; without it the run fails naming the roles, so the leftover is never silent.
+Its tokens are reported (a SKIP while any is unrevoked): token revoke has no SQL surface
+([#1335](https://github.com/oramasearch/zetta/issues/1335)), and with no role they authorize nothing.
+Running it against a target is an apply that needs that target's consent; the image must be rebuilt
+from `dev` first.
 
 ## Adding coverage
 
