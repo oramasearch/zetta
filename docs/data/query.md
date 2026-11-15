@@ -533,6 +533,30 @@ Future system tables slot into the same database — notably **`system.leadershi
 (which exclusive resource is held by which node, with lease/timeout), which is
 **planned, not built** (see [replication.md](../cluster/replication.md) → *Consistency model*).
 
+## Read-only runs (`read_only`, #1501)
+
+`QueryService::run(sql, database, {.read_only = true})`, and the `sql`
+capability's `read_only: true`, make the engine itself decide what is a read.
+The text is parsed with the engine's own parser, and before any statement runs
+the run is refused unless it is **exactly one `SELECT`**:
+
+- a second statement is refused, even when the first is a read
+  (`SELECT 1 FROM t; DELETE FROM t` runs nothing);
+- every other statement kind is refused: DDL, `INSERT`, `UPDATE`, `DELETE`,
+  `TRUNCATE`, `CREATE USER`, `CREATE TOKEN`, role and policy statements;
+- comments and quoted text cannot move a statement boundary, because the
+  boundary is the parser's, not a lexical guess.
+
+A refusal sets `Outcome::refused`, and the `sql` capability answers
+`invalid_input` naming the statement kind (`read_only: refused a DELETE
+statement; only a SELECT runs`). Without the flag nothing changes.
+
+Who uses it: lake's `workspace_sql` and its App gateway `sql` forward a
+caller's SQL under the workspace administrator's credential (finding LSR-017,
+https://github.com/oramasearch/lake/issues/926). They send `read_only: true`, so
+a reader's text cannot carry a write past lake's lexical guard. The lake side
+(always sending the flag, and its test) is separate work in lake.
+
 ## Timing
 
 `QueryService::Outcome::elapsed` is the wall-clock time of the whole parse +

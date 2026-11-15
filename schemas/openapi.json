@@ -40471,7 +40471,7 @@
     },
     "/v1/sql": {
       "get": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. With read_only the engine refuses, before anything runs, any text that is not exactly one SELECT. Requires api:query.",
         "operationId": "sql",
         "parameters": [
           {
@@ -40482,6 +40482,17 @@
             "schema": {
               "description": "default database for unqualified table names (optional)",
               "type": "string"
+            }
+          },
+          {
+            "description": "refuse anything but exactly one read statement (a SELECT): the engine parses the text and refuses a second statement, DDL, DML, user, token, role and policy statements before anything runs (invalid_input)",
+            "in": "query",
+            "name": "read_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "refuse anything but exactly one read statement (a SELECT): the engine parses the text and refuses a second statement, DDL, DML, user, token, role and policy statements before anything runs (invalid_input)",
+              "type": "boolean"
             }
           },
           {
@@ -40606,7 +40617,7 @@
         ]
       },
       "post": {
-        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. Requires api:query.",
+        "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. Each statement is authorized on its own: SELECT needs sql:read; INSERT, UPDATE, DELETE and TRUNCATE need sql:write; CREATE/DROP DATABASE and TABLE need sql:ddl (each at table or database scope); CREATE USER needs users:manage, CREATE TOKEN tokens:manage, role and policy statements roles:manage. Every data-changing statement is audited as a data_changed action. A database in safe mode (warn_writes: writes; warn_all: everything) answers safe_mode_warning naming the statement first; repeat with safe_mode_confirmation to run it. With read_only the engine refuses, before anything runs, any text that is not exactly one SELECT. Requires api:query.",
         "operationId": "sql_post",
         "requestBody": {
           "content": {
@@ -40621,6 +40632,11 @@
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
+                  },
+                  "read_only": {
+                    "default": false,
+                    "description": "refuse anything but exactly one read statement (a SELECT): the engine parses the text and refuses a second statement, DDL, DML, user, token, role and policy statements before anything runs (invalid_input)",
+                    "type": "boolean"
                   },
                   "safe_mode_confirmation": {
                     "description": "the `confirmation` from a safe_mode_warning: repeat the same call with it to run the statements the warning named (it confirms those statements against that database, nothing else)",

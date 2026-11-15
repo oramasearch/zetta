@@ -365,7 +365,15 @@ const nlohmann::json& sql_schema() {
           {"database",
            {{"type", "string"},
             {"description",
-             "default database for unqualified table names (optional)"}}}}}};
+             "default database for unqualified table names (optional)"}}},
+          {"read_only",
+           {{"type", "boolean"},
+            {"default", false},
+            {"description",
+             "refuse anything but exactly one read statement (a SELECT): the "
+             "engine parses the text and refuses a second statement, DDL, DML, "
+             "user, token, role and policy statements before anything runs "
+             "(invalid_input)"}}}}}};
     return schema;
 }
 
@@ -392,8 +400,13 @@ ApiResult handle_sql(const nlohmann::json& input, ApiContext& context) {
     zetta::query::QueryService service(context.node, context.cluster,
                                        context.acting_key, context.acting_is_user);
     const std::string database = input.value("database", "");
-    auto outcome = service.run(input.at("statement").get<std::string>(), database);
+    zetta::query::QueryService::RunOptions options;
+    options.read_only = input.value("read_only", false);
+    auto outcome =
+        service.run(input.at("statement").get<std::string>(), database, options);
     if (!outcome.ok()) {
+        // A read_only refusal is the caller's input, decided before anything ran.
+        if (outcome.refused) return ApiResult::failure("invalid_input", outcome.error);
         return ApiResult::failure("engine_error", outcome.error);
     }
     nlohmann::json output;
@@ -11908,7 +11921,8 @@ void register_core_capabilities(Registry& registry) {
         "data-changing statement is audited as a data_changed action. A "
         "database in safe mode (warn_writes: writes; warn_all: everything) "
         "answers safe_mode_warning naming the statement first; repeat with "
-        "safe_mode_confirmation to run it.",
+        "safe_mode_confirmation to run it. With read_only the engine refuses, "
+        "before anything runs, any text that is not exactly one SELECT.",
         sql_schema(),
         sql_output_schema(),
         CapabilityKind::Read,
