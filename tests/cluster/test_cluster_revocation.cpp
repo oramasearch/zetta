@@ -3,7 +3,8 @@
 // revocation arrives, and the revocation itself is a sealed identity record
 // (node_revocation:<key hash>) that a member cannot forge. #848 step 6: a node
 // removed from the cluster that comes back with its old key and certificate is
-// refused by every node. See docs/cluster/security.md ("Revocation").
+// refused by every node, and so is the same id under a fresh key (#1513). See
+// docs/cluster/security.md ("Revocation").
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -48,14 +49,20 @@ bool eventually(Predicate predicate, int timeout_ms = 20000) {
     return predicate();
 }
 
+// A node that runs enrollment: holding the CA (`holds_ca`, self-enrolled), or
+// only trusting it (--cluster-ca) and enrolling through a seed (#1513).
 ClusterSecurity enrolling(const std::string& token, const std::string& node_id,
-                          const std::string& ca_seed = {}) {
+                          const zetta::cluster::EnrollmentCa& ca, bool holds_ca = false) {
     std::string reason;
     auto security = zetta::cluster::derive_cluster_security(token, node_id, &reason);
     EXPECT_TRUE(security) << reason;
     if (!security) return {};
     security->enroll = true;
-    security->enrollment_ca_seed = ca_seed;
+    security->cluster_ca_public_key = ca.public_key;
+    if (holds_ca) {
+        security->enrollment_ca_seed = ca.seed;
+        EXPECT_TRUE(zetta::cluster::self_enroll(*security, &reason)) << reason;
+    }
     return *security;
 }
 
@@ -101,14 +108,14 @@ TEST(ClusterRevocation, ARevokedNodeIsRefusedByEveryNode) {
     const std::string id_c = zetta::util::new_uuid();
 
     ReplicationManager replication_a(id_a);
-    Cluster node_a(id_a, config_on(46620, enrolling(token, id_a, ca->seed)), &replication_a);
+    Cluster node_a(id_a, config_on(46620, enrolling(token, id_a, *ca, true)), &replication_a);
     node_a.start();
     ReplicationManager replication_c(id_c);
-    Cluster node_c(id_c, config_on(46622, enrolling(token, id_c), {"127.0.0.1:46620"}),
+    Cluster node_c(id_c, config_on(46622, enrolling(token, id_c, *ca), {"127.0.0.1:46620"}),
                    &replication_c);
     node_c.start();
 
-    const ClusterSecurity security_b = enrolling(token, id_b);
+    const ClusterSecurity security_b = enrolling(token, id_b, *ca);
     {
         ReplicationManager replication_b(id_b);
         Cluster node_b(id_b, config_on(46621, security_b, {"127.0.0.1:46620", "127.0.0.1:46622"}),
@@ -134,7 +141,19 @@ TEST(ClusterRevocation, ARevokedNodeIsRefusedByEveryNode) {
     EXPECT_FALSE(has_peer(node_c, id_b)) << "a revoked node rejoined";
     EXPECT_TRUE(has_peer(node_a, id_c)) << "the revocation cut a node that was not revoked";
 
+    // #1513: a fresh key under the revoked id is refused too. The id stays
+    // pinned to the revoked key (no allow_rekey), so enrolling it is refused.
     returning.stop();
+    ReplicationManager replication_fresh(id_b);
+    Cluster fresh(id_b, config_on(46624, enrolling(token, id_b, *ca),
+                                  {"127.0.0.1:46620", "127.0.0.1:46622"}),
+                  &replication_fresh);
+    fresh.start();
+    sleep_ms(5000);
+    EXPECT_FALSE(has_peer(node_a, id_b)) << "a revoked id came back under a fresh key";
+    EXPECT_FALSE(has_peer(node_c, id_b)) << "a revoked id came back under a fresh key";
+
+    fresh.stop();
     node_c.stop();
     node_a.stop();
 }
@@ -146,9 +165,9 @@ TEST(ClusterRevocation, ALiveLinkIsClosedWhenTheRevocationArrives) {
     const std::string id_a = zetta::util::new_uuid();
     const std::string id_b = zetta::util::new_uuid();
     ReplicationManager replication_a(id_a);
-    Cluster node_a(id_a, config_on(46625, enrolling(token, id_a, ca->seed)), &replication_a);
+    Cluster node_a(id_a, config_on(46625, enrolling(token, id_a, *ca, true)), &replication_a);
     node_a.start();
-    const ClusterSecurity security_b = enrolling(token, id_b);
+    const ClusterSecurity security_b = enrolling(token, id_b, *ca);
     ReplicationManager replication_b(id_b);
     Cluster node_b(id_b, config_on(46626, security_b, {"127.0.0.1:46625"}), &replication_b);
     node_b.start();
@@ -174,10 +193,10 @@ TEST(NodeRevocation, ARevocationIsSealedAndRemovesTheNodeFromMembership) {
     ASSERT_TRUE(node.start());
     // The victim's enrollment record, as the cluster writes it.
     const std::string victim = zetta::util::new_uuid();
-    const ClusterSecurity victim_security =
-        enrolling(zetta::cluster::generate_join_token(), victim);
     const auto ca = zetta::cluster::generate_enrollment_ca();
     ASSERT_TRUE(ca);
+    const ClusterSecurity victim_security =
+        enrolling(zetta::cluster::generate_join_token(), victim, *ca);
     const std::string certificate = zetta::cluster::sign_enrollment_certificate(
         *ca, victim, zetta::cluster::certificate_pem_to_der(victim_security.certificate_pem));
     const auto enrolled = zetta::cluster::verify_enrolled_certificate(certificate,

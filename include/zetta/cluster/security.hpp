@@ -20,14 +20,14 @@
 // a certificate for any node id, so the cluster also keeps a second CA, the
 // ENROLLMENT CA: a random Ed25519 key, never derived from the token, generated
 // once per cluster and handed to a member only inside an authenticated link.
-// Every node enrolls the key it presents (its CSR is the TLS key the handshake
-// just proved it holds) and gets a 30-day enrollment certificate for its node
-// id, recorded as the replicated `node_cert:<node_id>`. Every node pins each
-// enrolled node id to that key, and refuses a peer presenting another key for
-// an enrolled id, whatever CA signed its certificate. A token holder can still
-// join under a NEW id in this release (the token-derived CA is accepted for one
-// more release, so a rolling upgrade works); it can no longer take an id that is
-// already enrolled. See docs/cluster/security.md.
+// Every node gets a 30-day enrollment certificate for its node id and key,
+// recorded as the replicated `node_cert:<node_id>`, and every node pins each
+// enrolled node id to that key. Since #1513 (the second release) the enrollment
+// CA is the transport's only trust anchor: a token-derived certificate is
+// refused, and a node that is not enrolled yet enrolls over a link where only
+// the member authenticates, checking the member against the CA's public key
+// (--cluster-ca) and proving it holds its own key and the join token. See
+// docs/cluster/security.md.
 
 #include <cstddef>
 #include <cstdint>
@@ -65,6 +65,10 @@ struct ClusterSecurity : zetta::transport::TlsCredentials {
     std::string enrollment_ca_seed;
     // This node's enrollment certificate (PEM), when it has one.
     std::string enrolled_certificate_pem;
+    // The enrollment CA's raw public key (64 hex): set from the CA this node
+    // holds, else from --cluster-ca (ZETTA_CLUSTER_CA). A node that is not
+    // enrolled verifies the member it enrolls through against it (#1513).
+    std::string cluster_ca_public_key;
 
     bool enabled() const {
         return !join_token.empty() && complete();
@@ -127,6 +131,42 @@ bool enrollment_proof_matches(std::string_view join_token, std::string_view node
 
 // The DER bytes of the first certificate in `pem`; empty when there is none.
 std::vector<unsigned char> certificate_pem_to_der(std::string_view pem);
+
+// --- Enrolling without a client certificate (#1513) --------------------------
+
+// `ca`'s enrollment certificate for `node_id` over a raw Ed25519 public key.
+std::string sign_enrollment_certificate_for_key(const EnrollmentCa& ca,
+                                                const std::string& node_id,
+                                                std::string_view raw_public_key_hex);
+// SHA-256 of the SubjectPublicKeyInfo of a raw Ed25519 public key (the same
+// hash certificate_public_key_sha256 gives a certificate over that key).
+std::string raw_public_key_sha256(std::string_view raw_public_key_hex);
+// The raw public key (64 hex) of a node's PEM private key.
+std::string node_raw_public_key(std::string_view private_key_pem);
+// An Ed25519 signature (128 hex) over `message` with a node's PEM private key,
+// and its check against a raw public key.
+std::string sign_with_node_key(std::string_view private_key_pem, std::string_view message);
+bool verify_with_raw_public_key(std::string_view raw_public_key_hex, std::string_view message,
+                                std::string_view signature_hex);
+// Whether `der` is a certificate the enrollment CA with this raw public key
+// signed, inside its validity window now.
+bool certificate_signed_by(std::span<const unsigned char> der,
+                           std::string_view ca_public_key_hex);
+// The raw public key of a self-signed enrollment CA certificate; empty when it
+// is not one.
+std::string enrollment_ca_public_key_of(std::string_view ca_certificate_pem);
+
+// Sign and store this node's own enrollment certificate under the CA it holds.
+bool self_enroll(ClusterSecurity& security, std::string* reason = nullptr);
+// Give this node the enrollment CA from its seed (--cluster-ca-seed-file, for a
+// cluster whose nodes all get the token from outside, such as one the operator
+// runs): store it and self-enroll. Refused when the node holds another CA, or
+// when the seed's public key is not cluster_ca_public_key.
+bool provision_enrollment_ca(ClusterSecurity& security, std::string_view seed_hex,
+                             std::string* reason = nullptr);
+// The credentials an enrolled node's transport runs on: the enrollment CA as
+// the only trust anchor, its enrollment certificate and its key.
+zetta::transport::TlsCredentials enrollment_credentials(const ClusterSecurity& security);
 
 // The pins: node id -> the SHA-256 of the key it enrolled (#1319). Kept in
 // <directory>/node-pins.json ({"version": 1, "pins": {...}}). A missing file is

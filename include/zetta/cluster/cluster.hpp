@@ -408,6 +408,10 @@ public:
     // re-keying releases the id's pin. Any thread.
     void set_revoked_keys(std::map<std::string, NodeRevocation> revoked);
 
+    // The enrollment CA's public key this node trusts (#1513), the value a
+    // joiner's --cluster-ca takes; empty when the cluster runs no enrollment.
+    std::string enrollment_ca_public_key() const;
+
     // Send an RPC request to a peer (by node id) and block the calling thread
     // until the peer's response arrives, the timeout elapses, or the peer is
     // found unreachable. Returns ok=false with a reason on an unknown / dropped

@@ -46,7 +46,11 @@ carries the key the node presented, the proof binds token, id and key, the
 founder generates the CA and a joiner is handed it, a token change keeps the
 node's key, the pins persist, a joiner enrolls over a real mutual-TLS link and
 is recorded as `node_cert:<id>`, and a token holder that mints a certificate for
-an enrolled id with another key is refused.
+an enrolled id with another key is refused. Since #1513: the signed enrollment
+request, a certificate checked against the CA's public key, a provisioned CA
+seed, a joiner enrolling over a server-authenticated link and then linking, a
+token-derived certificate refused under any id, and enrolling refused without the
+token or through a member outside the joiner's CA.
 
 `test_cluster_revocation.cpp` is per-node revocation (#1320): #848 step 6 (a
 revoked node returning with its old key and certificate is refused by every

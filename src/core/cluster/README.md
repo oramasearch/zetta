@@ -15,9 +15,12 @@ re-keys a node, so the connector-credential key derived from an earlier token
 still opens (#1230). See [transport security](../../../docs/cluster/security.md).
 Enrollment (#1319): `security.cpp` holds the enrollment CA (random, never from
 the token), signs and verifies enrollment certificates and keeps the pins;
-`cluster.cpp` pins every enrolled node id to its key at the handshake, answers
-`ENROLL` with a certificate and the CA, and runs the enrollment upkeep loop. A
-token change keeps the node's key, so its id stays pinned to it.
+`cluster.cpp` pins every enrolled node id to its key at the handshake and runs
+the enrollment upkeep loop. Since #1513 an enrolling cluster's transport trusts
+only the enrollment CA (`rebuild_transport_locked`): the listener lets a client
+without a certificate reach `answer_enrollment` and nothing else, and a node that
+is not enrolled dials only to `enroll_through` a member it checked against
+`--cluster-ca`. A token change keeps the node's key, so its id stays pinned to it.
 Revocation (#1320): `Cluster::set_revoked_keys` takes the revoked keys the Node
 trusts; the handshake refuses them, the link writer closes a live link
 presenting one, and `ENROLL` refuses them.
