@@ -1185,6 +1185,11 @@ std::uint64_t ObjectStore::bucket_bytes(Bucket& state, const std::string& bucket
 }
 
 ObjectOutcome ObjectStore::decide(const Mutation& mutation, std::string_view bytes) {
+    const WriteGate::Pass pass = gate_.enter();
+    if (!pass) {
+        return failure(ObjectStatus::Unavailable,
+                       "a backup snapshot is being captured on " + node_id_ + "; retry");
+    }
     const std::optional<ObjectBucket> definition = find_bucket(mutation.bucket);
     if (!definition) {
         return failure(ObjectStatus::NotFound, "no bucket '" + mutation.bucket + "'", "/bucket");
@@ -1315,6 +1320,11 @@ ObjectOutcome ObjectStore::decide(const Mutation& mutation, std::string_view byt
 }
 
 ObjectOutcome ObjectStore::install(const Mutation& mutation, std::string_view bytes) {
+    const WriteGate::Pass pass = gate_.enter();
+    if (!pass) {
+        return failure(ObjectStatus::Unavailable,
+                       "a backup snapshot is being captured on " + node_id_ + "; retry");
+    }
     Bucket* state = bucket_state(mutation.bucket, /*create=*/true);
     if (!state) {
         return failure(ObjectStatus::Unavailable,

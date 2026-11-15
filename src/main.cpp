@@ -261,6 +261,10 @@ void print_usage(const char* argv0) {
         "                      executes on the first call and the bypass is\n"
         "                      audited as consent_bypassed. Turn this on to\n"
         "                      require a distinctly-privileged approval again\n"
+        "  --restore-target    Mark this node a scratch or restore target: only\n"
+        "                      then may POST /v1/restore_snapshot:discard empty\n"
+        "                      it after a restore (zetta#1518). Never set it on a\n"
+        "                      live Zetta\n"
         "  --connector-allow-destinations LIST\n"
         "                exact host:port entries allowed for private/loopback connectors\n"
         "  --action-allow-destinations LIST\n"
@@ -288,6 +292,7 @@ void print_usage(const char* argv0) {
         "  ZETTA_PUBSUB_DISPATCH_THREADS -> --pubsub-dispatch-threads\n"
         "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
+        "  ZETTA_RESTORE_TARGET 1/true/yes/on -> --restore-target\n"
         "  ZETTA_CONNECTOR_ALLOW_DESTINATIONS -> --connector-allow-destinations\n"
         "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
         "  ZETTA_EGRESS_ALLOW  Egress allowlist -> --egress-allow\n"
@@ -473,6 +478,8 @@ Options parse_args(int argc, char** argv) {
             o.audit_summary_retention_from_cli = true;
         } else if (arg == "--governance") {
             o.node.enforce_consent = true;
+        } else if (arg == "--restore-target") {
+            o.node.restore_target = true;
         } else if (arg == "--connector-allow-destinations") {
             const char* value = take_value(argc, argv, i, o, "--connector-allow-destinations");
             if (value) o.connector_allow_destinations = value;
@@ -766,6 +773,15 @@ int main(int argc, char** argv) {
             const std::string value = env;
             opts.node.enforce_consent = value == "1" || value == "true" ||
                                         value == "yes" || value == "on";
+        }
+    }
+    // A restore target is marked by flag or by environment, like --governance:
+    // the environment can only turn it ON (zetta#1518).
+    if (!opts.node.restore_target) {
+        if (const char* env = std::getenv("ZETTA_RESTORE_TARGET")) {
+            const std::string value = env;
+            opts.node.restore_target = value == "1" || value == "true" || value == "yes" ||
+                                       value == "on";
         }
     }
     if (!apply_pubsub_environment(opts)) {

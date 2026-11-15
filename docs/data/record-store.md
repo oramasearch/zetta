@@ -210,6 +210,18 @@ save and read timings for a reviewer. `ZETTA_RECORD_SOAK_PUTS` sets its length; 
 | `RecordStoreLatency.ReadsDoNotWaitForTheCatalogueDocument` | 200 record reads complete while another thread holds the catalogue document's mutex (as `save()` and `merge()` do), inside an `update()` that waits. It counts reads instead of timing them, so a loaded host cannot fail it; before #1248 none completed until the holder's five-second deadline |
 | `RecordCapabilities.*`, `ReplicatedRestServerFixture.RecordCapabilitiesWorkOverRestAndMcp` | the registry journey, 409 details, the `ON COLLECTION` grant, REST and MCP |
 
+## Backup snapshots
+
+A backup snapshot ([backup-snapshot.md](backup-snapshot.md), zetta#1518) freezes the store's
+write gate (`RecordStore::write_gate()`) while it captures: a write ordered here answers
+`Unavailable` (retry) and a replica install is skipped until the gate thaws (anti-entropy
+brings it). Engine-internal rows (`put_internal`, `fold`) are not gated.
+`RecordStore::export_records` reads every live record of a collection, a user or an
+engine-internal one, as stored; `import_record` installs one exactly as stored (its revision,
+indexes and expiry) and sends it to every live peer, replacing a deletion this node holds by a
+revision past it, and refusing a key that holds a live record. Tested by
+`BackupSnapshot.*` (`tests/data/test_backup_snapshot.cpp`).
+
 ## Later
 
 - A `system.record_collections` read view.

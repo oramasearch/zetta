@@ -54,3 +54,9 @@ every 100 ms — tombstone grace, idle uploads, flushing rolled segments, a comp
 step — with anti-entropy every five seconds; stop waits for a round in flight. The
 object store joins the signal plane after the record store and leaves it first.
 See [the object capability](../../docs/data/object-store.md).
+
+Backup snapshots (zetta#1518) are `data/backup_snapshot.cpp`; the routes are served by
+`api/http_server.cpp`, with their authorization (`cluster:admin`), audit and result
+mapping in `api/backup_routes.cpp`. `NodeConfig::restore_target` (`--restore-target`,
+`ZETTA_RESTORE_TARGET`) marks the only nodes a discard may empty. See
+[backup snapshots](../../docs/data/backup-snapshot.md).

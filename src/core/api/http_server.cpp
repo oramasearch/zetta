@@ -64,8 +64,13 @@
 #include "zetta/api/web_ui.hpp"
 #include "zetta/agent/agent_store.hpp"
 #include "object_routes.hpp"
+#include "backup_routes.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/data/backup_snapshot.hpp"
 #include "zetta/data/object_store.hpp"
+#include "zetta/data/record_store.hpp"
+#include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/governance/audit_event.hpp"
@@ -76,6 +81,7 @@
 #include "zetta/storage/engine.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/repl/governed_console.hpp"
+#include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
 namespace zetta::api {
@@ -792,6 +798,8 @@ struct ApiServer::Impl {
     std::atomic<bool> is_running{false};
     std::atomic<bool> io_work_held{false};
     std::atomic<std::size_t> requests_in_flight{0};
+    // A restore or a discard is running (zetta#1518): one at a time per node.
+    std::atomic<bool> restoring{false};
     std::atomic<std::size_t> active_connection_count{0};
     std::atomic<std::size_t> idle_connection_count{0};
     std::atomic<std::size_t> poll_waiter_count{0};
@@ -1360,9 +1368,11 @@ struct ApiServer::Impl {
     }
 
     // Send a JSON envelope for a finished object call.
+    // `top_level`'s fields are added to the envelope (the backup routes' contract).
     boost::http::route_task send_object_result(boost::http::route_params& route,
                                                const ApiResult& result,
-                                               bool body_unread = false) {
+                                               bool body_unread = false,
+                                               nlohmann::json top_level = nullptr) {
         namespace http = boost::http;
         if (body_unread) {
             // A request body this route did not read would be parsed as the next
@@ -1386,7 +1396,11 @@ struct ApiServer::Impl {
             }
             if (!eof) route.res.set_keep_alive(false);
         }
-        const std::string body = wire_dump(rest_envelope(result));
+        nlohmann::json envelope = rest_envelope(result);
+        if (top_level.is_object()) {
+            for (auto& [field, value] : top_level.items()) envelope[field] = std::move(value);
+        }
+        const std::string body = wire_dump(envelope);
         route.status(http_status_of(rest_status(result)));
         route.res.set(http::field::content_type, "application/json");
         stamp_response_headers(route, body);
@@ -1816,6 +1830,326 @@ struct ApiServer::Impl {
         route.res.erase(http::field::content_type);
         if (eof_error) co_return http::route_error(eof_error);
         co_return http::route_done;
+    }
+
+    // ---- the backup routes (zetta#1518, docs/data/backup-snapshot.md) ----------
+    //
+    // The Orama operator's backup Job takes a snapshot (POST), streams its
+    // archive to its bucket (GET) and releases it (DELETE); a restore streams an
+    // archive back (POST /v1/restore_snapshot). Every call needs cluster:admin
+    // and is audited twice: the authorization, then what it did. A success also
+    // carries `snapshot` and `summary` at the top level of the envelope, the
+    // contract the operator reads (operator#732).
+
+    // Answer a backup call: the envelope, plus the success value's fields at its
+    // top level.
+    boost::http::route_task send_backup_result(boost::http::route_params& route,
+                                               const ApiResult& result, bool body_unread = false) {
+        nlohmann::json top_level = nlohmann::json::object();
+        if (result.ok && result.value.is_object()) {
+            for (const char* field : {"snapshot", "summary"}) {
+                if (result.value.contains(field)) top_level[field] = result.value[field];
+            }
+        }
+        co_return co_await send_object_result(route, result, body_unread, top_level);
+    }
+
+    // The stores a backup reads and a restore writes, or why there are none.
+    struct BackupHandles {
+        std::unique_ptr<zetta::data::ReplicatedBlobStore> bodies;
+        std::unique_ptr<zetta::data::BackupStores> stores;
+    };
+    std::optional<BackupHandles> backup_handles() {
+        zetta::cluster::ReplicationManager* replication = node.replication();
+        zetta::data::RecordStore* records = node.record_store();
+        zetta::data::ObjectStore* objects = node.object_store();
+        if (!replication || !records || !objects) return std::nullopt;
+        BackupHandles handles;
+        handles.bodies =
+            std::make_unique<zetta::data::ReplicatedBlobStore>(node.config().data_dir, *replication);
+        handles.stores = std::make_unique<zetta::data::BackupStores>(zetta::data::BackupStores{
+            *replication, *records, *objects, *handles.bodies, replication->node_id()});
+        return handles;
+    }
+
+    std::filesystem::path backups_directory() const {
+        return std::filesystem::path(node.config().data_dir) / "backups";
+    }
+
+    // Authorize on the owner loop; a refusal is answered here.
+    runtime::task<std::optional<ApiResult>> authorize_backup(const RequestIdentity& identity,
+                                                             std::string_view route_name) {
+        std::optional<ApiResult> denied;
+        co_await bridge.run_on_owner([&] {
+            denied = authorize_backup_route(node, identity.acting_key, identity.is_user, route_name);
+        });
+        co_return denied;
+    }
+
+    runtime::task<> audit_backup(const RequestIdentity& identity, std::string_view route_name,
+                                 bool changed_data, const zetta::data::BackupOutcome& outcome,
+                                 std::string detail) {
+        if (!outcome.ok()) detail += ": " + outcome.message;
+        co_await bridge.run_on_owner([&] {
+            audit_backup_outcome(node, identity.acting_key, route_name, changed_data, outcome.ok(),
+                                 detail);
+        });
+    }
+
+    // POST /v1/backup_snapshot: freeze the stores' writes, capture, thaw, then
+    // write the archive. Answers {snapshot, summary}.
+    boost::http::route_task serve_backup_snapshot(boost::http::route_params& route) {
+        namespace http = boost::http;
+        RequestLifetime request_lifetime(requests_in_flight);
+        const RequestIdentity identity = identity_of(route);
+        constexpr std::string_view kRoute = "backup_snapshot";
+        if (auto denied = co_await authorize_backup(identity, kRoute)) {
+            co_return co_await send_backup_result(route, *denied, true);
+        }
+        std::optional<BackupHandles> handles = backup_handles();
+        if (!handles) {
+            co_return co_await send_backup_result(
+                route,
+                ApiResult::failure("engine_error",
+                                   "this node has no replicated catalogue and stores to back up"),
+                true);
+        }
+        // The call carries no body; drop whatever came.
+        {
+            StringBodySink ignored;
+            auto [read_error, bytes_read] = co_await boost::capy::push_to(route.req_body, ignored);
+            (void)bytes_read;
+            if (read_error) co_return http::route_error(read_error);
+        }
+        zetta::data::BackupStores& stores = *handles->stores;
+        zetta::data::BackupSnapshots snapshots(backups_directory());
+        [[maybe_unused]] const std::size_t expired =
+            co_await on_pool([&] { return snapshots.expire(std::chrono::system_clock::now()); });
+
+        std::optional<zetta::data::BackupFreeze> freeze =
+            zetta::data::BackupFreeze::begin(stores.records, stores.objects);
+        if (!freeze) {
+            const zetta::data::BackupOutcome busy{zetta::data::BackupStatus::Busy,
+                                                  "another backup snapshot is being captured on "
+                                                  "this node; retry"};
+            co_await audit_backup(identity, kRoute, false, busy, "snapshot");
+            co_return co_await send_backup_result(route, backup_result(busy));
+        }
+        // Writes that passed the gates before the freeze finish first.
+        const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!freeze->drained() && std::chrono::steady_clock::now() < drain_deadline) {
+            co_await runtime::delay(std::chrono::milliseconds(2));
+        }
+        if (!freeze->drained()) {
+            freeze.reset();
+            const zetta::data::BackupOutcome busy{
+                zetta::data::BackupStatus::Busy,
+                "writes in flight did not finish within 10 seconds; retry the snapshot"};
+            co_await audit_backup(identity, kRoute, false, busy, "snapshot");
+            co_return co_await send_backup_result(route, backup_result(busy));
+        }
+        auto writer = std::make_unique<zetta::data::SnapshotWriter>(stores, backups_directory(),
+                                                                    zetta::util::new_uuid());
+        // The catalogue between two owner tasks, so no statement is half applied.
+        std::shared_ptr<const nlohmann::json> catalogue;
+        co_await bridge.run_on_owner([&] { catalogue = stores.replication.shared_snapshot(); });
+        zetta::data::BackupOutcome outcome =
+            co_await on_pool([&] { return writer->capture(catalogue); });
+        freeze.reset();  // thaw: writes resume while the bytes are copied
+        if (outcome.ok()) outcome = co_await on_pool([&] { return writer->finish(); });
+        writer.reset();
+        co_await audit_backup(identity, kRoute, false, outcome,
+                              outcome.ok() ? "snapshot " + outcome.snapshot + ": " +
+                                                 std::to_string(outcome.summary.size()) +
+                                                 " counts, " + std::to_string(outcome.size_bytes) +
+                                                 " bytes"
+                                           : std::string("snapshot"));
+        co_return co_await send_backup_result(route, backup_result(outcome));
+    }
+
+    // GET (stream) and DELETE (release) /v1/backup_snapshot/<id>.
+    boost::http::route_task serve_backup_item(boost::http::route_params& route) {
+        namespace http = boost::http;
+        RequestLifetime request_lifetime(requests_in_flight);
+        const RequestIdentity identity = identity_of(route);
+        constexpr std::string_view kPrefix = "/v1/backup_snapshot/";
+        const std::string path(route.url.path());
+        const std::string id = path.size() > kPrefix.size() ? path.substr(kPrefix.size()) : "";
+        const bool streaming = route.req.method() == http::method::get;
+        const std::string_view route_name =
+            streaming ? "get_backup_snapshot" : "release_backup_snapshot";
+        if (auto denied = co_await authorize_backup(identity, route_name)) {
+            co_return co_await send_backup_result(route, *denied, true);
+        }
+        zetta::data::BackupSnapshots snapshots(backups_directory());
+        if (!streaming) {
+            const zetta::data::BackupOutcome released = co_await on_pool([&] {
+                snapshots.expire(std::chrono::system_clock::now());
+                return snapshots.release(id);
+            });
+            co_await audit_backup(identity, route_name, false, released, "snapshot " + id);
+            co_return co_await send_backup_result(route, backup_result(released), true);
+        }
+        const zetta::data::BackupOutcome found = co_await on_pool([&] {
+            snapshots.expire(std::chrono::system_clock::now());
+            return snapshots.find(id);
+        });
+        if (!found.ok()) {
+            co_await audit_backup(identity, route_name, false, found, "snapshot " + id);
+            co_return co_await send_backup_result(route, backup_result(found), true);
+        }
+        std::ifstream archive(found.archive, std::ios::binary);
+        if (!archive) {
+            const zetta::data::BackupOutcome unreadable{zetta::data::BackupStatus::Failed,
+                                                        "the snapshot's archive cannot be read"};
+            co_await audit_backup(identity, route_name, false, unreadable, "snapshot " + id);
+            co_return co_await send_backup_result(route, backup_result(unreadable), true);
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/octet-stream");
+        route.res.erase(http::field::etag);
+        route.res.erase(http::field::content_length);
+        route.res.set_payload_size(found.size_bytes);
+        // A slice at a time: memory stays flat whatever the archive's size.
+        constexpr std::uint64_t kChunk = 1024 * 1024;
+        std::string chunk;
+        for (std::uint64_t from = 0; from < found.size_bytes; from += kChunk) {
+            const std::uint64_t take = std::min(kChunk, found.size_bytes - from);
+            const bool read = co_await on_pool([&] {
+                chunk.resize(static_cast<std::size_t>(take));
+                archive.read(chunk.data(), static_cast<std::streamsize>(take));
+                return archive.gcount() == static_cast<std::streamsize>(take);
+            });
+            if (!read) {
+                // The headers are gone already: all that is left is to cut the stream.
+                co_return http::route_error(
+                    boost::system::error_code(EIO, boost::system::generic_category()));
+            }
+            auto [write_error, written] =
+                co_await route.res_body.write(boost::capy::const_buffer(chunk.data(), chunk.size()));
+            (void)written;
+            if (write_error) co_return http::route_error(write_error);
+        }
+        auto [eof_error] = co_await route.res_body.write_eof();
+        route.res.erase(http::field::content_type);
+        co_await audit_backup(identity, route_name, false, found,
+                              "snapshot " + id + ": " + std::to_string(found.size_bytes) +
+                                  " bytes streamed");
+        if (eof_error) co_return http::route_error(eof_error);
+        co_return http::route_done;
+    }
+
+    // POST /v1/restore_snapshot: the body is an archive, applied a slice at a
+    // time as it arrives, into a node that holds no user data. Answers {summary}.
+    boost::http::route_task serve_restore_snapshot(boost::http::route_params& route) {
+        namespace http = boost::http;
+        RequestLifetime request_lifetime(requests_in_flight);
+        const RequestIdentity identity = identity_of(route);
+        constexpr std::string_view kRoute = "restore_snapshot";
+        if (auto denied = co_await authorize_backup(identity, kRoute)) {
+            co_return co_await send_backup_result(route, *denied, true);
+        }
+        std::optional<BackupHandles> handles = backup_handles();
+        if (!handles) {
+            co_return co_await send_backup_result(
+                route,
+                ApiResult::failure("engine_error",
+                                   "this node has no replicated catalogue and stores to restore into"),
+                true);
+        }
+        if (restoring.exchange(true)) {
+            const zetta::data::BackupOutcome busy{zetta::data::BackupStatus::Busy,
+                                                  "another restore is running on this node"};
+            co_await audit_backup(identity, kRoute, false, busy, "restore");
+            co_return co_await send_backup_result(route, backup_result(busy), true);
+        }
+        struct Restoring {
+            std::atomic<bool>& flag;
+            ~Restoring() { flag.store(false); }
+        } restoring_guard{restoring};
+
+        zetta::data::SnapshotRestore restore(
+            *handles->stores, zetta::data::restore_record_path(node.config().data_dir));
+        zetta::data::BackupOutcome outcome = co_await on_pool([&] { return restore.begin(); });
+        if (!outcome.ok()) {
+            co_await audit_backup(identity, kRoute, false, outcome, "restore");
+            co_return co_await send_backup_result(route, backup_result(outcome), true);
+        }
+        // An archive has no cap but the node's disk.
+        if (const auto parser = parsers.find(&route); parser != parsers.end()) {
+            parser->second->set_body_limit(std::numeric_limits<std::uint64_t>::max());
+        }
+        constexpr std::size_t kSlice = zetta::data::ObjectStore::kSliceBytes;
+        std::string slice;
+        bool eof = false;
+        while (!eof) {
+            slice.clear();
+            if (auto error = co_await read_body_slice(route, slice, kSlice, eof); error) {
+                co_return http::route_error(error);
+            }
+            if (slice.empty()) continue;
+            outcome = co_await on_pool([&] { return restore.feed(slice); });
+            if (!outcome.ok()) break;
+        }
+        if (outcome.ok()) outcome = co_await on_pool([&] { return restore.finish(); });
+        co_await audit_backup(identity, kRoute, restore.wrote(), outcome,
+                              outcome.ok() ? "restored snapshot " + outcome.snapshot + ": " +
+                                                 std::to_string(outcome.summary.size()) +
+                                                 " counts verified"
+                                           : std::string("restore"));
+        co_return co_await send_backup_result(route, backup_result(outcome), !eof);
+    }
+
+    // POST /v1/restore_snapshot:discard, body {"node_id", "snapshot"}: empty a
+    // node restored from that snapshot. Refused on any node not started as a
+    // restore target, without a restore record, or changed since its restore.
+    boost::http::route_task serve_discard_restored(boost::http::route_params& route) {
+        namespace http = boost::http;
+        RequestLifetime request_lifetime(requests_in_flight);
+        const RequestIdentity identity = identity_of(route);
+        constexpr std::string_view kRoute = "discard_restored_snapshot";
+        if (auto denied = co_await authorize_backup(identity, kRoute)) {
+            co_return co_await send_backup_result(route, *denied, true);
+        }
+        http::json_sink body_sink;
+        auto [read_error, bytes_read] = co_await boost::capy::push_to(route.req_body, body_sink);
+        nlohmann::json input = nlohmann::json::object();
+        if (!read_error && bytes_read > 0) input = to_nlohmann(body_sink.release());
+        if (read_error || !input.is_object() || !input.contains("node_id") ||
+            !input["node_id"].is_string() || !input.contains("snapshot") ||
+            !input["snapshot"].is_string()) {
+            co_return co_await send_backup_result(
+                route, ApiResult::failure("invalid_input",
+                                          "want {\"node_id\": \"<this node>\", \"snapshot\": "
+                                          "\"<the snapshot it was restored from>\"}"));
+        }
+        std::optional<BackupHandles> handles = backup_handles();
+        if (!handles) {
+            co_return co_await send_backup_result(
+                route, ApiResult::failure("engine_error", "this node has no replicated catalogue"));
+        }
+        if (restoring.exchange(true)) {
+            const zetta::data::BackupOutcome busy{zetta::data::BackupStatus::Busy,
+                                                  "a restore is running on this node"};
+            co_await audit_backup(identity, kRoute, false, busy, "discard");
+            co_return co_await send_backup_result(route, backup_result(busy));
+        }
+        struct Restoring {
+            std::atomic<bool>& flag;
+            ~Restoring() { flag.store(false); }
+        } restoring_guard{restoring};
+        const zetta::data::DiscardRequest request{input["node_id"].get<std::string>(),
+                                                  input["snapshot"].get<std::string>()};
+        const bool restore_target = node.config().restore_target;
+        const zetta::data::BackupOutcome outcome = co_await on_pool([&] {
+            return zetta::data::discard_restored(
+                *handles->stores, zetta::data::restore_record_path(node.config().data_dir),
+                restore_target, request);
+        });
+        co_await audit_backup(identity, kRoute, outcome.ok(), outcome,
+                              "discard snapshot " + request.snapshot + " from node " +
+                                  request.node_id);
+        co_return co_await send_backup_result(route, backup_result(outcome));
     }
 
     // The last handler on the router: a request NO route answered (#1007).
@@ -5069,6 +5403,27 @@ bool ApiServer::start() {
                        return impl.serve_objects(route);
                    });
     }
+
+    // The backup routes (zetta#1518, docs/data/backup-snapshot.md): the
+    // archive moves raw, so they are served here rather than by the registry.
+    router.add(http::method::post, "/v1/backup_snapshot",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_backup_snapshot(route);
+               });
+    for (const http::method method : {http::method::get, http::method::delete_}) {
+        router.add(method, "/v1/backup_snapshot/*rest",
+                   [&impl](http::route_params& route) -> http::route_task {
+                       return impl.serve_backup_item(route);
+                   });
+    }
+    router.add(http::method::post, "/v1/restore_snapshot",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_restore_snapshot(route);
+               });
+    router.add(http::method::post, "/v1/restore_snapshot\\:discard",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_discard_restored(route);
+               });
 
     // The governed serving routes (#648, docs/api/serving.md): per-entity
     // endpoints for EXPOSED models and indexes. Registered unconditionally —

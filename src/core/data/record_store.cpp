@@ -609,6 +609,11 @@ RecordOutcome RecordStore::create_collection(const RecordCollection& requested) 
 }
 
 RecordOutcome RecordStore::commit(const RecordWrite& write, std::int64_t now) {
+    const WriteGate::Pass pass = gate_.enter();
+    if (!pass) {
+        return failure(RecordStatus::Unavailable,
+                       "a backup snapshot is being captured on " + node_id_ + "; retry");
+    }
     const std::optional<RecordCollection> definition = find_collection(write.collection);
     if (!definition) {
         return failure(RecordStatus::NotFound,
@@ -687,6 +692,9 @@ RecordOutcome RecordStore::commit(const RecordWrite& write, std::int64_t now) {
 
 bool RecordStore::install(const StoredRecord& record, std::int64_t now) {
     if (record.expires_ms && *record.expires_ms <= now) return false;
+    // A backup snapshot is being captured: anti-entropy installs it afterwards.
+    const WriteGate::Pass pass = gate_.enter();
+    if (!pass) return false;
     return log_->update(record.collection, record.key,
                         [&](const StoredRecord* existing) -> std::optional<StoredRecord> {
                             if (existing && existing->revision >= record.revision) return std::nullopt;
@@ -895,6 +903,52 @@ void RecordStore::scan(const std::string& collection, const std::string& from_ke
                         if (!visible(record, now)) return true;
                         return visit(record.key, record.value);
                     });
+}
+
+void RecordStore::export_records(
+    const std::string& collection,
+    const std::function<bool(const StoredRecord&)>& visit) const {
+    if (!valid_stored_collection(collection)) return;
+    const std::int64_t now = now_ms();
+    log_->scan_keys(collection, std::nullopt, /*inclusive=*/false, /*descending=*/false,
+                    [&](StoredRecord&& record) {
+                        if (!visible(record, now)) return true;
+                        record.collection = collection;
+                        return visit(record);
+                    });
+}
+
+bool RecordStore::import_record(const StoredRecord& record) {
+    if (!valid_stored_collection(record.collection) || !valid_key(record.key) ||
+        record.deleted) {
+        return false;
+    }
+    const std::int64_t now = now_ms();
+    if (record.expires_ms && *record.expires_ms <= now) return false;
+    const WriteGate::Pass pass = gate_.enter();
+    if (!pass) return false;
+    // Into a node that holds no live record of the key. A deletion it holds (an
+    // emptied scratch target, zetta#1518) is replaced: the revision rises past it.
+    bool live = false;
+    const RecordLog::Written written = log_->update(
+        record.collection, record.key,
+        [&](const StoredRecord* existing) -> std::optional<StoredRecord> {
+            if (existing && visible(*existing, now)) {
+                live = true;
+                return std::nullopt;
+            }
+            StoredRecord next = record;
+            if (existing) next.revision = std::max(record.revision, existing->revision + 1);
+            return next;
+        },
+        /*with_value=*/false, /*sync=*/false);
+    if (live || !written.record) return false;
+    StoredRecord installed = *written.record;
+    installed.collection = record.collection;
+    installed.key = record.key;
+    RecordOutcome outcome;
+    replicate(apply_payload(installed), {}, outcome);
+    return true;
 }
 
 bool RecordStore::put_internal(const std::string& collection, const std::string& key,

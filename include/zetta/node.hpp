@@ -134,6 +134,11 @@ struct NodeConfig {
     // test and embedding mode: identity replicates unsealed and is trusted as
     // it was before the root existed.
     std::optional<zetta::governance::IdentityAuthority> identity_authority;
+    // A scratch or restore target (zetta#1518, docs/data/backup-snapshot.md):
+    // only a node started with --restore-target (or ZETTA_RESTORE_TARGET=1) may
+    // be emptied by POST /v1/restore_snapshot:discard. Off by default, so a live
+    // Zetta can never be wiped through it.
+    bool restore_target = false;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
