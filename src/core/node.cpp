@@ -2513,6 +2513,12 @@ void Node::load_studies() {
 
 std::shared_ptr<zetta::ml::Study> Node::create_study(
     zetta::ml::StudySpec spec, std::string* error) {
+    return create_study(std::move(spec), error, zetta::pipeline::RunPrincipal{});
+}
+
+std::shared_ptr<zetta::ml::Study> Node::create_study(
+    zetta::ml::StudySpec spec, std::string* error,
+    const zetta::pipeline::RunPrincipal& principal) {
     std::shared_ptr<zetta::pipeline::Project> project =
         find_project_by_id(spec.project);
     if (!project) {
@@ -2538,6 +2544,9 @@ std::shared_ptr<zetta::ml::Study> Node::create_study(
     // The tables its trials read (zetta#1258): its dataset, or its pipeline's.
     value.reads = tables_read(spec.project, spec.pipeline, spec.dataset);
     value.spec = std::move(spec);
+    // Its trials run as whoever created it, never as the node (#1322).
+    value.principal = principal.acting_id;
+    value.principal_is_user = principal.acting_is_user;
     value.created = zetta::util::now_iso8601();
     value.updated = value.created;
     const std::string id = zetta::util::new_uuid();

@@ -11,6 +11,23 @@
     "id": {
       "type": "string"
     },
+    "principal": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "is_user": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "is_user"
+      ],
+      "type": "object"
+    },
     "promoted_model": {
       "type": "string"
     },

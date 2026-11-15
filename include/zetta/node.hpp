@@ -445,6 +445,11 @@ public:
     // embedded metrics, and keeps the promoted Model's producing Run.
     std::shared_ptr<zetta::ml::Study> create_study(
         zetta::ml::StudySpec spec, std::string* error = nullptr);
+    // The same, recording who creates it (#1322): its trials run as them. The
+    // overload above is the trusted local session.
+    std::shared_ptr<zetta::ml::Study> create_study(
+        zetta::ml::StudySpec spec, std::string* error,
+        const zetta::pipeline::RunPrincipal& principal);
     std::shared_ptr<zetta::ml::Study> find_study(
         const std::string& id_or_name) const;
     std::optional<zetta::ml::StudyDeleteResult> delete_study(

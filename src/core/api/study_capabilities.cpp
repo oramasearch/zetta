@@ -15,6 +15,7 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/pipeline/project.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 #include "zetta/pubsub/pubsub.hpp"
 #include "zetta/util/timestamp.hpp"
 
@@ -895,7 +896,10 @@ ApiResult handle_create_study(const nlohmann::json& input,
                                   validation.path);
     }
     std::string reason;
-    const auto study = context.node.create_study(*validation.spec, &reason);
+    // The study records its creator: every trial runs as them (#1322).
+    const auto study = context.node.create_study(
+        *validation.spec, &reason,
+        zetta::pipeline::RunPrincipal{context.acting_key, context.acting_is_user});
     if (!study) {
         const StudyValidation failure =
             validation_failure("invalid_input", std::move(reason));
