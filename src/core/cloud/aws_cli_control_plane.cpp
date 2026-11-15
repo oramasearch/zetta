@@ -120,6 +120,14 @@ ProvisionResult AwsCliControlPlane::bring_up(const AwsConfig& config,
         tags = "Key=ZETTA_SEED_PEER,Value=" + config.seed_peer +
                ",PropagateAtLaunch=true";
     }
+    // The cluster's identity root public key (#1343): not a secret, so it rides a
+    // propagating tag beside the seed, and the node pins the cluster's root
+    // instead of making its own.
+    if (!config.identity_root.empty()) {
+        if (!tags.empty()) tags += ' ';
+        tags += "Key=ZETTA_IDENTITY_ROOT,Value=" + config.identity_root +
+                ",PropagateAtLaunch=true";
+    }
     if (!config.join_token.empty()) {
         const std::string parameter = cluster_token_parameter_name(config);
         std::string reason;

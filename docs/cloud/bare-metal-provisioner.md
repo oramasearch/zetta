@@ -137,7 +137,8 @@ label and launches only `count − current` new workers, so a re-burst to the sa
 count launches nothing (idempotent on the label). `docker run -d` returns
 immediately, so each launch is a synchronous command that completes. The per-worker
 shape — the pool label, a unique name, the network, `--gpus all`, the
-`ZETTA_SEED_PEER` env, and (on a secure cluster) the `ZETTA_CLUSTER_TOKEN` env
+`ZETTA_SEED_PEER` and `ZETTA_IDENTITY_ROOT` (the cluster's identity root public
+key, #1343) envs, and (on a secure cluster) the `ZETTA_CLUSTER_TOKEN` env
 (#670) — lands on the `run` argv, except the token, which comes from a mode-0600
 `--env-file` removed after the burst so it never shows in the host's process list
 (#770; the runtime still records it in `docker inspect` — see

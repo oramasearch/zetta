@@ -91,12 +91,13 @@ std::optional<std::string> custom_data_blob(const AzureConfig& config,
                                             std::string* reason) {
     NodeBootstrapScriptOptions options;
     options.seed_peer = config.seed_peer;
+    options.identity_root = config.identity_root;
     if (!config.join_token.empty()) {
         options.token.store = ClusterTokenStore::azure_key_vault;
         options.token.secret_name = cluster_token_secret_name(config.pool_name);
         options.token.container = config.key_vault;
         options.token.identity = config.managed_identity;
-    } else if (config.seed_peer.empty()) {
+    } else if (config.seed_peer.empty() && config.identity_root.empty()) {
         return std::string{};
     }
     return render_node_bootstrap_script(options, reason);

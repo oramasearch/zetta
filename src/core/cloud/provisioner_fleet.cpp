@@ -1,11 +1,24 @@
 #include "zetta/cloud/provisioner_fleet.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <string_view>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
 namespace zetta::cloud {
 namespace {
+
+// An identity root public key as the node prints it: 32 bytes as 64 hex digits.
+// Anything else is never handed to a burst node (it would refuse to start on a
+// malformed --identity-root, or pin the wrong root).
+bool is_identity_root_public_key(std::string_view value) {
+    return value.size() == 64 &&
+           std::ranges::all_of(value, [](unsigned char character) {
+               return std::isxdigit(character) != 0;
+           });
+}
 
 // Wire one provider: parse its config from `root[id]` with the provider's own
 // validated XConfig::from_json, inject the cluster seed and (for a secure
@@ -24,6 +37,7 @@ template <class Config, class ControlPlane, class Backend>
 ProvisionerFleet::Wiring wire_one(const char* id, const nlohmann::json& root,
                                   const std::string& seed_peer,
                                   const std::string& cluster_token,
+                                  const std::string& identity_root,
                                   std::optional<ControlPlane>& cp_slot,
                                   std::optional<Backend>& prov_slot) {
     ProvisionerFleet::Wiring out{id, false, {}};
@@ -39,6 +53,10 @@ ProvisionerFleet::Wiring wire_one(const char* id, const nlohmann::json& root,
     }
     if (config->seed_peer.empty()) config->seed_peer = seed_peer;
     if (config->join_token.empty()) config->join_token = cluster_token;
+    // The identity root is always this node's (never a detected config's): a
+    // burst node must pin the root of the cluster it joins (#1343).
+    config->identity_root =
+        is_identity_root_public_key(identity_root) ? identity_root : std::string{};
     cp_slot.emplace();  // default CommandRunner → the real provider CLI
     prov_slot.emplace(*cp_slot, std::move(*config));
     out.wired = true;
@@ -50,7 +68,8 @@ ProvisionerFleet::Wiring wire_one(const char* id, const nlohmann::json& root,
 std::vector<ProvisionerFleet::Wiring> ProvisionerFleet::wire(
     const std::vector<ProvisionerConfig>& configs,
     const std::string& default_seed_peer,
-    const std::string& default_cluster_token) {
+    const std::string& default_cluster_token,
+    const std::string& identity_root) {
     // Index the detected configs by catalog id (latest wins, like the node's
     // own per-target store), so wire_one can look each provider up by name. A
     // provider with no detected config is absent from the object and reported
@@ -62,21 +81,21 @@ std::vector<ProvisionerFleet::Wiring> ProvisionerFleet::wire(
 
     std::vector<Wiring> wirings;
     wirings.push_back(wire_one<AzureConfig, AzCliControlPlane, AzureProvisioner>(
-        "azure", root, default_seed_peer, default_cluster_token, azure_cp_,
+        "azure", root, default_seed_peer, default_cluster_token, identity_root, azure_cp_,
         azure_));
     wirings.push_back(wire_one<AwsConfig, AwsCliControlPlane, AwsProvisioner>(
-        "aws", root, default_seed_peer, default_cluster_token, aws_cp_, aws_));
+        "aws", root, default_seed_peer, default_cluster_token, identity_root, aws_cp_, aws_));
     wirings.push_back(wire_one<GcpConfig, GcpCliControlPlane, GcpProvisioner>(
-        "gcp", root, default_seed_peer, default_cluster_token, gcp_cp_, gcp_));
+        "gcp", root, default_seed_peer, default_cluster_token, identity_root, gcp_cp_, gcp_));
     wirings.push_back(wire_one<OciConfig, OciCliControlPlane, OciProvisioner>(
-        "oci", root, default_seed_peer, default_cluster_token, oci_cp_, oci_));
+        "oci", root, default_seed_peer, default_cluster_token, identity_root, oci_cp_, oci_));
     wirings.push_back(wire_one<K8sConfig, K8sCliControlPlane, K8sProvisioner>(
-        "kubernetes", root, default_seed_peer, default_cluster_token, k8s_cp_,
+        "kubernetes", root, default_seed_peer, default_cluster_token, identity_root, k8s_cp_,
         k8s_));
     wirings.push_back(
         wire_one<BareMetalConfig, BareMetalCliControlPlane, BareMetalProvisioner>(
             "bare-metal", root, default_seed_peer, default_cluster_token,
-            bare_metal_cp_, bare_metal_));
+            identity_root, bare_metal_cp_, bare_metal_));
     return wirings;
 }
 

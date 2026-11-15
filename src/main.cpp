@@ -1183,7 +1183,11 @@ int main(int argc, char** argv) {
     const std::string default_cluster_token = opts.cluster.security.join_token;
     for (const zetta::cloud::ProvisionerFleet::Wiring& wiring :
          provisioner_fleet.wire(node.provisioner_configs(), default_seed_peer,
-                                default_cluster_token)) {
+                                default_cluster_token,
+                                // The root's public key (not a secret), so a
+                                // burst node honors this cluster's accounts
+                                // (#1343).
+                                opts.cluster.identity_root)) {
         if (wiring.wired) {
             std::printf("zetta: cloud provisioner wired for %s (local CLI)\n",
                         wiring.id.c_str());

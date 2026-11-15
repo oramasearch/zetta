@@ -153,7 +153,8 @@ the group exists, so the binding falls back to `set-desired-capacity` to scale t
 existing group (a real failure — bad subnet, quota — surfaces in the result
 `detail`). Spot capacity and an instance-type override ride on the ASG's
 `--mixed-instances-policy` (the AWS way to ask an ASG for Spot); the seed peer is
-attached as a propagating tag the bootstrap reads (a production deployment bakes
+attached as a propagating tag the bootstrap reads, and so is the cluster's identity
+root public key (`ZETTA_IDENTITY_ROOT`, not a secret, #1343) (a production deployment bakes
 the join into the launch template's user-data). The command shapes are grounded in
 [research/aws-cli-compute.md](../research/aws-cli-compute.md) (the cited `aws` guide).
 

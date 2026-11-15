@@ -716,7 +716,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     provisioner_detect.cpp  zetta::cloud::detect_provisioner_configs — the per-provider detectors: run each local CLI's fast read-only context queries through the CommandRunner, parse the output, build the provider's validated XConfig JSON + one-line summary → ProvisionerConfig
     add_nodes.cpp           zetta::cloud::add_nodes — permanent-add control action over the Provisioner interface (provision + report, no teardown) + AddNodesRequest JSON boundary (#518); the Node& overloads drive rebalance_partitions onto the new members (#519)
     local_provisioner.cpp   zetta::cloud::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
-    provisioner_fleet.cpp   zetta::cloud::ProvisionerFleet — per-provider wire_one from the validated XConfig (seed injected), stable-address optional slots, provisioner_for lookup (#621)
+    provisioner_fleet.cpp   zetta::cloud::ProvisionerFleet — per-provider wire_one from the validated XConfig (seed, join token and the cluster's identity root public key injected, #1343), stable-address optional slots, provisioner_for lookup (#621)
     azure_provisioner.cpp   zetta::cloud::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane interface + AzureConfig JSON boundary (#376)
     azure_cli_control_plane.cpp  zetta::cloud::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
     command_runner.cpp      zetta::cloud::default_command_runner — the shared fork/execvp/pipe exec runner (argv, no shell; #376)

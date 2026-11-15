@@ -108,6 +108,7 @@ add_executable(zetta-tests
   cloud/test_k8s_provisioner.cpp
   cloud/test_bare_metal_provisioner.cpp
   cloud/test_burst_identity.cpp
+  cloud/test_burst_identity_root.cpp
   compute/test_scaling_policy.cpp
   cloud/test_burst_approval_gate.cpp
   compute/test_job_autoscaler.cpp
