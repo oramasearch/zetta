@@ -89,9 +89,9 @@ COMPONENTS: list[dict] = [
      "use": "vendored font files", "url": "https://github.com/floriankarsten/space-grotesk",
      "text": {"github": "floriankarsten/space-grotesk", "ref": None, "path": "OFL.txt"}},
     {"name": "Orama Studio web app (webapp/, built from orama-design)", "version": "fc2cc41",
-     "license": "MIT (to be confirmed)", "use": "vendored build, served by the node",
-     "url": "https://github.com/oramasearch/orama-design",
-     "text": {"inline": "Orama Search Inc.; to be released under MIT with this stack (license to be confirmed before release). The runtime packages of that build are listed below as \"runtime dependency of the webapp/ build\"."}},
+     "license": "MIT", "use": "vendored build, served by the node",
+     "url": "vendored from a private Orama Search Inc. repository",
+     "text": {"inline": "Copyright (c) 2026 Orama Search Inc. Released under the MIT License as part of this repository (see LICENSE); vendored from a private Orama Search Inc. repository. The runtime packages of that build are listed below as \"runtime dependency of the webapp/ build\"."}},
 ]
 NPM_USE = {"webapp": "runtime dependency of the webapp/ build"}
 NOTES: list[str] = [

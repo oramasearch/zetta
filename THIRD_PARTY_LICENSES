@@ -4,7 +4,7 @@ zetta is licensed under the MIT License (see LICENSE). It includes or uses the
 components below, each under its own license. This file is generated; do not edit it
 by hand.
 Generated with: python3 tools/third-party-licenses.py --npm webapp=<installed webapp tree>
-From: .gitmodules, the CMake files and tools/third-party-licenses.py at 3b9f8b45; npm trees: webapp
+From: .gitmodules, the CMake files and tools/third-party-licenses.py at e9789a3f; npm trees: webapp
 
 System libraries, linked but not part of this source tree: OpenSSL (Apache-2.0), zlib
 (Zlib) and libpq (PostgreSQL License), from the operating system or its package manager.
@@ -16,109 +16,109 @@ scripts/gen-model-import-fixtures.py from synthetic rows; they are this project'
 
 Summary
 
-Component                                                    Version                                   License                How it is used                                 Source
-Boost                                                        1.91.0                                    BSL-1.0                fetched at build (CMake FetchContent), linked  https://github.com/boostorg/boost
-capy                                                         ce1c7d710c4baaeeddb57fa101707c610f6eb975  BSL-1.0                submodule, linked                              https://github.com/cppalliance/capy
-corosio (Orama's fork of cppalliance/corosio)                be51422484784a35eef412934e4d8fd3511e5918  BSL-1.0                submodule, linked                              https://github.com/cppalliance/corosio
-http (Orama's fork of cppalliance/http)                      af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4  BSL-1.0                submodule, linked                              https://github.com/cppalliance/http
-beast2                                                       fb0a9c8dc860590bd13cb2d7afd3e2232291ff19  BSL-1.0                submodule, linked                              https://github.com/cppalliance/beast2
-libpqxx                                                      853bc0a48f0327d8670c1c0855f7abf731046319  BSD-3-Clause           submodule, linked                              https://github.com/jtv/libpqxx
-oramacore-cpp (Orama Search Inc., released with this stack)  f612ea8f6170d051eca55122c1cc2956649e0c66  MIT                    submodule, linked                              https://github.com/oramasearch/oramacore-cpp
-automerge-cpp (Steve Sperandeo)                              4dd795513510ae2c58bacd384c3d8fd98f523123  MIT                    submodule, linked                              https://github.com/homer6/automerge-cpp
-nlohmann/json (vendored by automerge-cpp, upstream/json)     8167d2f64122c3ef7e5a0d9cab239fdba37aa54c  MIT                    header-only, through automerge-cpp             https://github.com/nlohmann/json
-json-schema-validator                                        2.4.0                                     MIT                    fetched at build, linked                       https://github.com/pboettch/json-schema-validator
-SDL                                                          release-3.2.0                             Zlib                   fetched at build, linked into the desktop app  https://github.com/libsdl-org/SDL
-Dear ImGui                                                   v1.91.5                                   MIT                    fetched at build, linked into the desktop app  https://github.com/ocornut/imgui
-GoogleTest                                                   v1.15.2                                   BSD-3-Clause           fetched at build, tests only                   https://github.com/google/googletest
-IBM Plex Sans and IBM Plex Mono (assets/fonts)               as vendored                               OFL-1.1                vendored font files, embedded in the binaries  https://github.com/IBM/plex
-Geist and Geist Mono (assets/fonts, webapp/fonts)            as vendored                               OFL-1.1                vendored font files                            https://github.com/vercel/geist-font
-Space Grotesk (webapp/fonts)                                 as vendored                               OFL-1.1                vendored font files                            https://github.com/floriankarsten/space-grotesk
-Orama Studio web app (webapp/, built from orama-design)      fc2cc41                                   MIT (to be confirmed)  vendored build, served by the node             https://github.com/oramasearch/orama-design
-@babel/runtime                                               7.29.7                                    MIT                    runtime dependency of the webapp/ build        https://github.com/babel/babel
-@carbon/colors                                               11.54.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/feature-flags                                        1.5.0                                     Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/grid                                                 11.58.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/icon-helpers                                         10.78.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/icons-react                                          11.84.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/layout                                               11.55.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/motion                                               11.48.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/react                                                1.112.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/styles                                               1.111.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/themes                                               11.77.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/type                                                 11.63.0                                   Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@carbon/utilities                                            0.22.0                                    Apache-2.0             runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
-@floating-ui/core                                            1.8.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
-@floating-ui/dom                                             1.8.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
-@floating-ui/react-dom                                       2.1.9                                     MIT                    runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
-@floating-ui/react                                           0.27.20                                   MIT                    runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
-@floating-ui/utils                                           0.2.12                                    MIT                    runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
-@fontsource-variable/fraunces                                5.2.9                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
-@fontsource-variable/geist-mono                              5.2.8                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
-@fontsource-variable/geist                                   5.2.9                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
-@fontsource-variable/inter                                   5.2.8                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
-@fontsource-variable/schibsted-grotesk                       5.3.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
-@fontsource/ibm-plex-mono                                    5.3.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
-@fontsource/ibm-plex-sans                                    5.2.8                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
-@ibm/plex-mono                                               1.1.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/plex-sans-arabic                                        1.1.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/plex-sans-devanagari                                    1.1.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/plex-sans-hebrew                                        1.1.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/plex-sans-thai-looped                                   1.1.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/plex-sans-thai                                          1.1.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/plex-sans                                               1.1.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/plex-serif                                              2.0.0                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/plex                                                    6.4.1                                     OFL-1.1                runtime dependency of the webapp/ build        https://github.com/ibm/plex
-@ibm/telemetry-js                                            1.11.0                                    Apache-2.0             runtime dependency of the webapp/ build        https://github.com/ibm-telemetry/telemetry-js
-@internationalized/number                                    3.6.7                                     Apache-2.0             runtime dependency of the webapp/ build        https://github.com/adobe/react-spectrum
-@parcel/watcher-darwin-arm64                                 2.6.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/parcel-bundler/watcher
-@parcel/watcher                                              2.6.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/parcel-bundler/watcher
-@swc/helpers                                                 0.5.23                                    Apache-2.0             runtime dependency of the webapp/ build        https://github.com/swc-project/swc
-chokidar                                                     5.0.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/paulmillr/chokidar
-classnames                                                   2.5.1                                     MIT                    runtime dependency of the webapp/ build        https://github.com/JedWatson/classnames
-color-convert                                                2.0.1                                     MIT                    runtime dependency of the webapp/ build        https://github.com/Qix-/color-convert
-color-name                                                   1.1.4                                     MIT                    runtime dependency of the webapp/ build        https://github.com/colorjs/color-name
-color-string                                                 1.9.1                                     MIT                    runtime dependency of the webapp/ build        https://github.com/Qix-/color-string
-color                                                        4.2.3                                     MIT                    runtime dependency of the webapp/ build        https://github.com/Qix-/color
-compute-scroll-into-view                                     3.1.1                                     MIT                    runtime dependency of the webapp/ build        https://github.com/scroll-into-view/compute-scroll-into-view
-cookie                                                       1.1.1                                     MIT                    runtime dependency of the webapp/ build        https://github.com/jshttp/cookie
-copy-to-clipboard                                            3.3.3                                     MIT                    runtime dependency of the webapp/ build        https://github.com/sudodoki/copy-to-clipboard
-detect-libc                                                  2.1.2                                     Apache-2.0             runtime dependency of the webapp/ build        https://github.com/lovell/detect-libc
-downshift                                                    9.0.10                                    MIT                    runtime dependency of the webapp/ build        https://github.com/downshift-js/downshift
-es-toolkit                                                   1.49.0                                    MIT                    runtime dependency of the webapp/ build        https://github.com/toss/es-toolkit
-flatpickr                                                    4.6.13                                    MIT                    runtime dependency of the webapp/ build        https://github.com/chmln/flatpickr
-framer-motion                                                12.42.2                                   MIT                    runtime dependency of the webapp/ build        https://github.com/motiondivision/motion
-immutable                                                    5.1.9                                     MIT                    runtime dependency of the webapp/ build        https://github.com/immutable-js/immutable-js
-invariant                                                    2.2.4                                     MIT                    runtime dependency of the webapp/ build        https://github.com/zertosh/invariant
-is-arrayish                                                  0.3.4                                     MIT                    runtime dependency of the webapp/ build        https://github.com/qix-/node-is-arrayish
-is-extglob                                                   2.1.1                                     MIT                    runtime dependency of the webapp/ build        https://github.com/jonschlinkert/is-extglob
-is-glob                                                      4.0.3                                     MIT                    runtime dependency of the webapp/ build        https://github.com/micromatch/is-glob
-js-tokens                                                    4.0.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/lydell/js-tokens
-loose-envify                                                 1.4.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/zertosh/loose-envify
-motion-dom                                                   12.42.2                                   MIT                    runtime dependency of the webapp/ build        https://github.com/motiondivision/motion
-motion-utils                                                 12.39.0                                   MIT                    runtime dependency of the webapp/ build        https://github.com/motiondivision/motion
-motion                                                       12.42.2                                   MIT                    runtime dependency of the webapp/ build        https://github.com/motiondivision/motion
-node-addon-api                                               7.1.1                                     MIT                    runtime dependency of the webapp/ build        https://github.com/nodejs/node-addon-api
-object-assign                                                4.1.1                                     MIT                    runtime dependency of the webapp/ build        https://github.com/sindresorhus/object-assign
-picomatch                                                    4.0.5                                     MIT                    runtime dependency of the webapp/ build        https://github.com/micromatch/picomatch
-prop-types                                                   15.8.1                                    MIT                    runtime dependency of the webapp/ build        https://github.com/facebook/prop-types
-react-dom                                                    19.2.7                                    MIT                    runtime dependency of the webapp/ build        https://github.com/facebook/react
-react-fast-compare                                           3.2.2                                     MIT                    runtime dependency of the webapp/ build        https://github.com/FormidableLabs/react-fast-compare
-react-is                                                     16.13.1                                   MIT                    runtime dependency of the webapp/ build        https://github.com/facebook/react
-react-is                                                     18.2.0                                    MIT                    runtime dependency of the webapp/ build        https://github.com/facebook/react
-react-is                                                     19.2.7                                    MIT                    runtime dependency of the webapp/ build        https://github.com/facebook/react
-react-router-dom                                             7.18.1                                    MIT                    runtime dependency of the webapp/ build        https://github.com/remix-run/react-router
-react-router                                                 7.18.1                                    MIT                    runtime dependency of the webapp/ build        https://github.com/remix-run/react-router
-react                                                        19.2.7                                    MIT                    runtime dependency of the webapp/ build        https://github.com/facebook/react
-readdirp                                                     5.0.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/paulmillr/readdirp
-sass                                                         1.101.3                                   MIT                    runtime dependency of the webapp/ build        https://github.com/sass/dart-sass
-scheduler                                                    0.27.0                                    MIT                    runtime dependency of the webapp/ build        https://github.com/facebook/react
-set-cookie-parser                                            2.7.2                                     MIT                    runtime dependency of the webapp/ build        https://github.com/nfriedly/set-cookie-parser
-simple-swizzle                                               0.2.4                                     MIT                    runtime dependency of the webapp/ build        https://github.com/qix-/node-simple-swizzle
-source-map-js                                                1.2.1                                     BSD-3-Clause           runtime dependency of the webapp/ build        https://github.com/7rulnik/source-map-js
-tabbable                                                     6.5.0                                     MIT                    runtime dependency of the webapp/ build        https://github.com/focus-trap/tabbable
-three                                                        0.185.1                                   MIT                    runtime dependency of the webapp/ build        https://github.com/mrdoob/three.js
-toggle-selection                                             1.0.6                                     MIT                    runtime dependency of the webapp/ build        https://github.com/sudodoki/toggle-selection
-tslib                                                        2.8.1                                     0BSD                   runtime dependency of the webapp/ build        https://github.com/Microsoft/tslib
+Component                                                    Version                                   License       How it is used                                 Source
+Boost                                                        1.91.0                                    BSL-1.0       fetched at build (CMake FetchContent), linked  https://github.com/boostorg/boost
+capy                                                         ce1c7d710c4baaeeddb57fa101707c610f6eb975  BSL-1.0       submodule, linked                              https://github.com/cppalliance/capy
+corosio (Orama's fork of cppalliance/corosio)                be51422484784a35eef412934e4d8fd3511e5918  BSL-1.0       submodule, linked                              https://github.com/cppalliance/corosio
+http (Orama's fork of cppalliance/http)                      af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4  BSL-1.0       submodule, linked                              https://github.com/cppalliance/http
+beast2                                                       fb0a9c8dc860590bd13cb2d7afd3e2232291ff19  BSL-1.0       submodule, linked                              https://github.com/cppalliance/beast2
+libpqxx                                                      853bc0a48f0327d8670c1c0855f7abf731046319  BSD-3-Clause  submodule, linked                              https://github.com/jtv/libpqxx
+oramacore-cpp (Orama Search Inc., released with this stack)  f612ea8f6170d051eca55122c1cc2956649e0c66  MIT           submodule, linked                              https://github.com/oramasearch/oramacore-cpp
+automerge-cpp (Steve Sperandeo)                              4dd795513510ae2c58bacd384c3d8fd98f523123  MIT           submodule, linked                              https://github.com/homer6/automerge-cpp
+nlohmann/json (vendored by automerge-cpp, upstream/json)     8167d2f64122c3ef7e5a0d9cab239fdba37aa54c  MIT           header-only, through automerge-cpp             https://github.com/nlohmann/json
+json-schema-validator                                        2.4.0                                     MIT           fetched at build, linked                       https://github.com/pboettch/json-schema-validator
+SDL                                                          release-3.2.0                             Zlib          fetched at build, linked into the desktop app  https://github.com/libsdl-org/SDL
+Dear ImGui                                                   v1.91.5                                   MIT           fetched at build, linked into the desktop app  https://github.com/ocornut/imgui
+GoogleTest                                                   v1.15.2                                   BSD-3-Clause  fetched at build, tests only                   https://github.com/google/googletest
+IBM Plex Sans and IBM Plex Mono (assets/fonts)               as vendored                               OFL-1.1       vendored font files, embedded in the binaries  https://github.com/IBM/plex
+Geist and Geist Mono (assets/fonts, webapp/fonts)            as vendored                               OFL-1.1       vendored font files                            https://github.com/vercel/geist-font
+Space Grotesk (webapp/fonts)                                 as vendored                               OFL-1.1       vendored font files                            https://github.com/floriankarsten/space-grotesk
+Orama Studio web app (webapp/, built from orama-design)      fc2cc41                                   MIT           vendored build, served by the node             vendored from a private Orama Search Inc. repository
+@babel/runtime                                               7.29.7                                    MIT           runtime dependency of the webapp/ build        https://github.com/babel/babel
+@carbon/colors                                               11.54.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/feature-flags                                        1.5.0                                     Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/grid                                                 11.58.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/icon-helpers                                         10.78.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/icons-react                                          11.84.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/layout                                               11.55.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/motion                                               11.48.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/react                                                1.112.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/styles                                               1.111.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/themes                                               11.77.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/type                                                 11.63.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@carbon/utilities                                            0.22.0                                    Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
+@floating-ui/core                                            1.8.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
+@floating-ui/dom                                             1.8.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
+@floating-ui/react-dom                                       2.1.9                                     MIT           runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
+@floating-ui/react                                           0.27.20                                   MIT           runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
+@floating-ui/utils                                           0.2.12                                    MIT           runtime dependency of the webapp/ build        https://github.com/floating-ui/floating-ui
+@fontsource-variable/fraunces                                5.2.9                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
+@fontsource-variable/geist-mono                              5.2.8                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
+@fontsource-variable/geist                                   5.2.9                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
+@fontsource-variable/inter                                   5.2.8                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
+@fontsource-variable/schibsted-grotesk                       5.3.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
+@fontsource/ibm-plex-mono                                    5.3.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
+@fontsource/ibm-plex-sans                                    5.2.8                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/fontsource/font-files
+@ibm/plex-mono                                               1.1.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/plex-sans-arabic                                        1.1.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/plex-sans-devanagari                                    1.1.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/plex-sans-hebrew                                        1.1.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/plex-sans-thai-looped                                   1.1.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/plex-sans-thai                                          1.1.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/plex-sans                                               1.1.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/plex-serif                                              2.0.0                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/plex                                                    6.4.1                                     OFL-1.1       runtime dependency of the webapp/ build        https://github.com/ibm/plex
+@ibm/telemetry-js                                            1.11.0                                    Apache-2.0    runtime dependency of the webapp/ build        https://github.com/ibm-telemetry/telemetry-js
+@internationalized/number                                    3.6.7                                     Apache-2.0    runtime dependency of the webapp/ build        https://github.com/adobe/react-spectrum
+@parcel/watcher-darwin-arm64                                 2.6.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/parcel-bundler/watcher
+@parcel/watcher                                              2.6.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/parcel-bundler/watcher
+@swc/helpers                                                 0.5.23                                    Apache-2.0    runtime dependency of the webapp/ build        https://github.com/swc-project/swc
+chokidar                                                     5.0.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/paulmillr/chokidar
+classnames                                                   2.5.1                                     MIT           runtime dependency of the webapp/ build        https://github.com/JedWatson/classnames
+color-convert                                                2.0.1                                     MIT           runtime dependency of the webapp/ build        https://github.com/Qix-/color-convert
+color-name                                                   1.1.4                                     MIT           runtime dependency of the webapp/ build        https://github.com/colorjs/color-name
+color-string                                                 1.9.1                                     MIT           runtime dependency of the webapp/ build        https://github.com/Qix-/color-string
+color                                                        4.2.3                                     MIT           runtime dependency of the webapp/ build        https://github.com/Qix-/color
+compute-scroll-into-view                                     3.1.1                                     MIT           runtime dependency of the webapp/ build        https://github.com/scroll-into-view/compute-scroll-into-view
+cookie                                                       1.1.1                                     MIT           runtime dependency of the webapp/ build        https://github.com/jshttp/cookie
+copy-to-clipboard                                            3.3.3                                     MIT           runtime dependency of the webapp/ build        https://github.com/sudodoki/copy-to-clipboard
+detect-libc                                                  2.1.2                                     Apache-2.0    runtime dependency of the webapp/ build        https://github.com/lovell/detect-libc
+downshift                                                    9.0.10                                    MIT           runtime dependency of the webapp/ build        https://github.com/downshift-js/downshift
+es-toolkit                                                   1.49.0                                    MIT           runtime dependency of the webapp/ build        https://github.com/toss/es-toolkit
+flatpickr                                                    4.6.13                                    MIT           runtime dependency of the webapp/ build        https://github.com/chmln/flatpickr
+framer-motion                                                12.42.2                                   MIT           runtime dependency of the webapp/ build        https://github.com/motiondivision/motion
+immutable                                                    5.1.9                                     MIT           runtime dependency of the webapp/ build        https://github.com/immutable-js/immutable-js
+invariant                                                    2.2.4                                     MIT           runtime dependency of the webapp/ build        https://github.com/zertosh/invariant
+is-arrayish                                                  0.3.4                                     MIT           runtime dependency of the webapp/ build        https://github.com/qix-/node-is-arrayish
+is-extglob                                                   2.1.1                                     MIT           runtime dependency of the webapp/ build        https://github.com/jonschlinkert/is-extglob
+is-glob                                                      4.0.3                                     MIT           runtime dependency of the webapp/ build        https://github.com/micromatch/is-glob
+js-tokens                                                    4.0.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/lydell/js-tokens
+loose-envify                                                 1.4.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/zertosh/loose-envify
+motion-dom                                                   12.42.2                                   MIT           runtime dependency of the webapp/ build        https://github.com/motiondivision/motion
+motion-utils                                                 12.39.0                                   MIT           runtime dependency of the webapp/ build        https://github.com/motiondivision/motion
+motion                                                       12.42.2                                   MIT           runtime dependency of the webapp/ build        https://github.com/motiondivision/motion
+node-addon-api                                               7.1.1                                     MIT           runtime dependency of the webapp/ build        https://github.com/nodejs/node-addon-api
+object-assign                                                4.1.1                                     MIT           runtime dependency of the webapp/ build        https://github.com/sindresorhus/object-assign
+picomatch                                                    4.0.5                                     MIT           runtime dependency of the webapp/ build        https://github.com/micromatch/picomatch
+prop-types                                                   15.8.1                                    MIT           runtime dependency of the webapp/ build        https://github.com/facebook/prop-types
+react-dom                                                    19.2.7                                    MIT           runtime dependency of the webapp/ build        https://github.com/facebook/react
+react-fast-compare                                           3.2.2                                     MIT           runtime dependency of the webapp/ build        https://github.com/FormidableLabs/react-fast-compare
+react-is                                                     16.13.1                                   MIT           runtime dependency of the webapp/ build        https://github.com/facebook/react
+react-is                                                     18.2.0                                    MIT           runtime dependency of the webapp/ build        https://github.com/facebook/react
+react-is                                                     19.2.7                                    MIT           runtime dependency of the webapp/ build        https://github.com/facebook/react
+react-router-dom                                             7.18.1                                    MIT           runtime dependency of the webapp/ build        https://github.com/remix-run/react-router
+react-router                                                 7.18.1                                    MIT           runtime dependency of the webapp/ build        https://github.com/remix-run/react-router
+react                                                        19.2.7                                    MIT           runtime dependency of the webapp/ build        https://github.com/facebook/react
+readdirp                                                     5.0.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/paulmillr/readdirp
+sass                                                         1.101.3                                   MIT           runtime dependency of the webapp/ build        https://github.com/sass/dart-sass
+scheduler                                                    0.27.0                                    MIT           runtime dependency of the webapp/ build        https://github.com/facebook/react
+set-cookie-parser                                            2.7.2                                     MIT           runtime dependency of the webapp/ build        https://github.com/nfriedly/set-cookie-parser
+simple-swizzle                                               0.2.4                                     MIT           runtime dependency of the webapp/ build        https://github.com/qix-/node-simple-swizzle
+source-map-js                                                1.2.1                                     BSD-3-Clause  runtime dependency of the webapp/ build        https://github.com/7rulnik/source-map-js
+tabbable                                                     6.5.0                                     MIT           runtime dependency of the webapp/ build        https://github.com/focus-trap/tabbable
+three                                                        0.185.1                                   MIT           runtime dependency of the webapp/ build        https://github.com/mrdoob/three.js
+toggle-selection                                             1.0.6                                     MIT           runtime dependency of the webapp/ build        https://github.com/sudodoki/toggle-selection
+tslib                                                        2.8.1                                     0BSD          runtime dependency of the webapp/ build        https://github.com/Microsoft/tslib
 
 ================================================================================
 Boost 1.91.0 — BSL-1.0
@@ -772,10 +772,10 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ================================================================================
-Orama Studio web app (webapp/, built from orama-design) fc2cc41 — MIT (to be confirmed)
-https://github.com/oramasearch/orama-design
+Orama Studio web app (webapp/, built from orama-design) fc2cc41 — MIT
+vendored from a private Orama Search Inc. repository
 --------------------------------------------------------------------------------
-Orama Search Inc.; to be released under MIT with this stack (license to be confirmed before release). The runtime packages of that build are listed below as "runtime dependency of the webapp/ build".
+Copyright (c) 2026 Orama Search Inc. Released under the MIT License as part of this repository (see LICENSE); vendored from a private Orama Search Inc. repository. The runtime packages of that build are listed below as "runtime dependency of the webapp/ build".
 
 ================================================================================
 @babel/runtime 7.29.7 — MIT
