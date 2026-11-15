@@ -34,5 +34,7 @@ back out (#74). See
 and opens replicated identity records, each at a version, and seals removals as
 tombstones (#1341); `identity_record_supersedes` and `next_identity_version`
 order them; `load_or_create_identity_root` pins the root in
-`<data_dir>/security/identity-root.json`. See
+`<data_dir>/security/identity-root.json`. `seal_succession`,
+`open_identity_succession`, `identity_succession_chain` and `repin_identity_root`
+move the root by succession (#1342). See
 [identity seal](../../../docs/governance/identity-seal.md).

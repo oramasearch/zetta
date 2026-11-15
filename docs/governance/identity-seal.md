@@ -1,4 +1,4 @@
-# The identity root: sealed identity records (#763, #764, #1341)
+# The identity root: sealed identity records (#763, #764, #1341, #1342)
 
 **Membership is not authority.** The join token ([../cluster/security.md](../cluster/security.md))
 lets a node into the cluster's replicated document. It does not let the node decide who the users
@@ -116,6 +116,59 @@ So, by deployment:
 - **A joiner with a different `--admin-token`** derives a different root. Whatever it seeds is
   sealed by that root, so no other node honors it (#763).
 
+## Rotating the root (#1342)
+
+The pinned root does not move by itself: a node restarted with a new `ZETTA_ADMIN_TOKEN` keeps the
+root it pinned. Moving the cluster to a new root is a deliberate step, a **succession**.
+
+**Decided under Steve's 2026-11-14 delegation:** rotation does not revoke the tokens issued under the
+old root by default, with an optional `revoke_tokens: true` for a rotation after a compromise,
+because an ordinary rotation (a token that reached a log, a staff change) should not lock every user
+and app out, while a compromise needs every credential gone.
+
+1. **Run it on a node that holds the current root.** `rotate_identity_root {new_admin_token,
+   revoke_tokens?}` (MCP and REST, needs `cluster:admin`, audited per call;
+   `Node::rotate_identity_root`) refuses on a verify-only node. It derives the new root from the new
+   admin token.
+2. **The succession record.** `identity_root_succession:<new root's public key>` holds `{"old",
+   "new", "issued_at", "_seal"}`. The seal is `"ed25519-succession-v1:<128 hex>"`, the **old** root's
+   signature over `zetta-identity-succession-v1`, old, new and `issued_at`. Its own prefix keeps it
+   from passing for a record seal. The key names the new root, so the record cannot be moved to hand
+   identity to another one, and it never changes, so it carries no version.
+3. **Re-sealing.** The rotating node moves to the new root first, then re-seals every identity record
+   it holds under it at a newer version of each key (`replicate_identity`); a removal stays a sealed
+   removal. With `revoke_tokens`, every `token:` record is removed instead. The owner (the user named
+   `owner`) is issued a token whose secret is the new admin token, under the id the new root fixes, so
+   a node restarted with it authenticates the owner as before. The pin is rewritten with the new
+   root's seed.
+4. **Every other node moves its pin.** `Node::follow_identity_succession` runs before identity is
+   reconciled, on every full reconcile and whenever a succession key changes. It follows the chain of
+   verified successions from the root the node pinned (`identity_succession_chain`; where one root has
+   two successors, the one issued last wins, then the larger key) and takes the last root. When that
+   root is the one the node's own admin token derives (`NodeConfig::identity_owner_candidate`), the
+   node issues identity again; otherwise it verifies only. It rewrites `identity-root.json`
+   atomically (`repin_identity_root`) with the roots it left in `previous` (oldest first, at most
+   eight), then reconciles every identity family again from the whole document, since records the new
+   root sealed may have arrived before the succession and been refused.
+5. **The old root is history.** After the move a node opens a record under the new root only. A record
+   the old root sealed stays honored only while it is **exactly** the record the node already held for
+   that key, until the re-sealed version (newer) replaces it; it is not written back as a replay. A
+   record the old root seals after the move does not open, so a leaked old seed issues nothing.
+   `identity-held.json` is re-opened on load under the current root or one of the `previous` roots.
+6. **A node restarted with the new token.** Its pin still names the old root, so it starts as before
+   (verify-only, unless it stored the old seed) with the token's root as the candidate. It issues
+   identity only once the document gives it a chain of successions to that root. Until then the
+   warning says: start one node with the previous admin token and run `rotate_identity_root`.
+7. **Joiners.** `--identity-root` may name the current root or an older one; a joiner pinned to an
+   older root follows the chain the same way.
+
+A root the cluster already left cannot be the target of a rotation: the chain would become a cycle that
+nodes pinned at different points read differently. **Run one rotation at a time.** Two nodes rotating from
+the same root at once both write a succession: every node still on the old root follows the one issued
+last, but the node that made the other has already moved to its own new root and stays there, and the
+two sides honor none of each other's new records. Rotate that node again, from the root it is on, to the
+cluster's.
+
 ## Seeding after the join (#763)
 
 `main.cpp` seeds the owner and reconciles the built-in roles **after** the cluster starts. With
@@ -149,11 +202,10 @@ nodes drop every sealed token and answer 401. Stop the old nodes, upgrade every 
   one is left to write it back (see [Versions](#versions-and-removals-1341)).
 - **Rotating the owner token keeps the root, on nodes that already hold it.** The root's seed is
   stored in `identity-root.json` (mode 0600) the first time it is derived, so a node restarted with a
-  new `ZETTA_ADMIN_TOKEN` keeps issuing identity under the same root. A node pinned by the earlier build
-  (public key only) stores the seed on its next start with the old token. A node **new to the cluster
-  after the rotation** derives a different root from the new token and joins verify-only: handing it
-  the root's seed is not built yet ([zetta#1479](https://github.com/oramasearch/zetta/issues/1479)).
-  Moving to a new root is a separate follow-up.
+  new `ZETTA_ADMIN_TOKEN` keeps issuing identity under the same root. A node **new to the cluster
+  after the token changed** derives a different root from the new token and joins verify-only: handing
+  it the root's seed is not built yet ([zetta#1479](https://github.com/oramasearch/zetta/issues/1479)).
+  Moving the cluster to the new token's root is a rotation ([Rotating the root](#rotating-the-root-1342)).
 - **Provisioned burst nodes** get `ZETTA_SEED_PEER` and `ZETTA_CLUSTER_TOKEN` but not the root yet,
   so they make their own and honor none of the cluster's accounts. They cannot issue identity the
   cluster honors either. Passing `ZETTA_IDENTITY_ROOT` through the provisioners is a follow-up.
@@ -167,11 +219,15 @@ nodes drop every sealed token and answer 401. Stop the old nodes, upgrade every 
   seal and open, derived ids, the pin file and its schema.
 - `src/core/node.cpp` — `replicate_identity`, `remove_identity`, `trusted_identity`,
   `hold_identity`, `load_identity_held`/`persist_identity_held`, `identity_writable`,
-  `seal_preexisting_identity`, `seeded_identity_id`, `bootstrap_owner`.
+  `seal_preexisting_identity`, `seeded_identity_id`, `bootstrap_owner`, and the rotation:
+  `rotate_identity_root`, `follow_identity_succession`, `open_held_identity` (#1342).
+- `src/core/api/identity_capabilities.cpp` — the `rotate_identity_root` capability.
 - `src/core/governance/principal.cpp` — sealed access keys and their sealed removal.
 - `src/main.cpp` — root setup, seeding after the join, the join command with `--identity-root`.
 - Tests: `tests/governance/test_identity_seal.cpp` (seal, versions, tombstones, pin, node
   behaviour, the held records across a restart, upgrade),
+  `tests/governance/test_identity_rotation.cpp` (successions, the chain, two nodes rotating, the
+  old root refused after the move, a forged succession, a restart with the new token, #1342),
   `tests/cluster/test_cluster_join_authority.cpp` (two nodes over mutual TLS: #848 steps 4 and 5, and
   #1341: a member replaying a revoked token and a removed assignment, and deleting identity with
   unsealed removals),

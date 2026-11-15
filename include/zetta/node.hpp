@@ -134,6 +134,13 @@ struct NodeConfig {
     // test and embedding mode: identity replicates unsealed and is trusted as
     // it was before the root existed.
     std::optional<zetta::governance::IdentityAuthority> identity_authority;
+    // The root the owner's admin token derives, when it is not the pinned root
+    // (IdentityRootSetup::owner_candidate, #1342): taken, with its private key,
+    // when a chain of replicated successions moves the pin to it.
+    std::optional<zetta::governance::IdentityAuthority> identity_owner_candidate;
+    // Roots trusted before the pin moved, oldest first (identity-root.json
+    // `previous`): records they sealed that this node held stay readable.
+    std::vector<std::string> identity_previous_roots;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -1192,6 +1199,28 @@ public:
     // owner's first request does not pay for the derivation.
     BootstrapResult bootstrap_owner(const std::string& admin_token_secret);
 
+    // The outcome of rotate_identity_root (#1342). Never carries a secret.
+    struct IdentityRotationResult {
+        bool ok = false;
+        std::string reason;        // why it was refused, when !ok
+        std::string old_root;      // public keys, 64 hex
+        std::string new_root;
+        std::size_t resealed = 0;  // records re-sealed under the new root
+        std::size_t revoked = 0;   // tokens removed (revoke_tokens)
+        std::string owner_token_id;  // the owner's token for the new admin token
+    };
+    // Rotate the identity root to the one `new_admin_token` derives (#1342,
+    // docs/governance/identity-seal.md, "Rotating the root"). Runs only on a
+    // node that holds the current root's private key. It writes the succession
+    // record (sealed by the current root), moves this node to the new root,
+    // re-seals every identity record it holds under it (a newer version of each
+    // key), issues the owner a token whose secret is `new_admin_token`, and
+    // re-pins identity-root.json. With `revoke_tokens`, every other token is
+    // removed instead of re-sealed. Every other node moves its pin when the
+    // succession reaches it.
+    IdentityRotationResult rotate_identity_root(const std::string& new_admin_token,
+                                                bool revoke_tokens);
+
     // The control plane that reconciles local deployments desired → actual and
     // self-heals their runs (see deployment_controller.hpp). Driven each tick();
     // exposed so tests/UI can introspect its counters or run a pass directly.
@@ -1390,6 +1419,22 @@ private:
     // The id of a record every node of one root seeds identically (the owner,
     // its token and assignment, the built-in roles); a fresh UUID when unsealed.
     std::string seeded_identity_id(std::string_view purpose) const;
+    // Move the pin along the replicated successions from the pinned root
+    // (#1342): the node takes the last root of the chain (with its private key
+    // when it is identity_owner_candidate), keeps the roots it leaves as history,
+    // and re-pins identity-root.json. True when the pin moved.
+    bool follow_identity_succession(const nlohmann::json& snapshot);
+    // `value` opened under the current root, or, for a record this node held
+    // before its pin moved, under one of the earlier roots (history).
+    std::optional<zetta::governance::OpenedIdentityRecord> open_held_identity(
+        const std::string& key, const nlohmann::json& value) const;
+    // Reconcile every identity family from the full `snapshot`.
+    void reconcile_identity(const nlohmann::json& snapshot);
+    // Issue the owner user an access token whose secret is `secret` (PBKDF2
+    // form, #769), under the id the current root fixes for `purpose`. Empty on
+    // a failure; nothing is written then.
+    std::string issue_owner_token(const std::string& owner_id, const std::string& secret,
+                                  std::string_view purpose);
     // apply the CRDT document (the given snapshot) to the projection
     void reconcile_from_replication(const nlohmann::json& snapshot);
     void reconcile_replication_changes(
@@ -1547,6 +1592,9 @@ private:
     };
     std::map<std::string, HeldIdentity> identity_held_;
     bool identity_held_dirty_ = false;
+    // Roots this node trusted before its pin moved, oldest first (#1342):
+    // verify-only, used only to re-open records loaded from identity-held.json.
+    std::vector<zetta::governance::IdentityAuthority> previous_identity_roots_;
     std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
     std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
     std::unique_ptr<zetta::data::ObjectStore> object_store_;  // null when standalone

@@ -924,6 +924,10 @@ int main(int argc, char** argv) {
         // next node pins this cluster's root (Cluster::peer_command).
         opts.cluster.identity_root = root.authority->public_key_hex();
         opts.node.identity_authority = std::move(root.authority);
+        // A rotation (#1342) the node has not followed yet: it takes the admin
+        // token's root once the replicated successions reach it.
+        opts.node.identity_owner_candidate = std::move(root.owner_candidate);
+        opts.node.identity_previous_roots = std::move(root.previous_roots);
     }
 
     zetta::cluster::ReplicationManager replication(node_id);

@@ -527,6 +527,7 @@ add_library(zetta-core STATIC
   src/core/api/run_metrics_capabilities.cpp
   src/core/api/record_capabilities.cpp
   src/core/api/network_capabilities.cpp
+  src/core/api/identity_capabilities.cpp
   src/core/api/safe_mode_capabilities.cpp
   src/core/api/object_capabilities.cpp
   src/core/api/storage_capabilities.cpp

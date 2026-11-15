@@ -103,6 +103,11 @@ assignment and revokes every token for that connection. The issued
 identity reaches only its table/database and topic-prefix grants and their
 specific tools. See [scoped app access](../../../docs/network/scoped-app-access.md).
 
+`identity_capabilities.cpp` is cluster identity administration, every entry
+needing `cluster:admin`: `rotate_identity_root` hands identity to the root a new
+owner admin token derives (`Node::rotate_identity_root`, #1342). See
+[identity seal](../../../docs/governance/identity-seal.md).
+
 The object capability (`object_capabilities.cpp`, #1005) registers the bucket and
 lease operations as `blocks` capabilities scoped `ON BUCKET`, and
 `object_route_paths()` documents the byte routes in OpenAPI. `http_server.cpp`
