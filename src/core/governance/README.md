@@ -42,5 +42,6 @@ verifies. The seal covers a per-key version and the root, and a removal is a
 sealed tombstone, so a node refuses a record older than the one it holds
 (#1341). It also seals and opens root successions and follows their chain from
 the pinned root, and re-pins `identity-root.json` with the roots left behind
-(#1342). `principal.cpp` seals access keys and their removal through it. See
+(#1342), and builds and checks the identity epoch's committed versions and digest
+(#1360). `principal.cpp` seals access keys and their removal through it. See
 [identity seal](../../../docs/governance/identity-seal.md).

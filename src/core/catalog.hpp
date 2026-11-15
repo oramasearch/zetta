@@ -110,6 +110,13 @@
 //                          Postgres-style RLS: a USING read filter + a WITH CHECK
 //                          write filter, evaluated by the SQL WHERE engine against
 //                          the acting identity; see governance/policy.hpp / #748)
+//   identity_root_succession:<root> -> { old, new, issued_at, _seal }  (the old
+//                          identity root handing identity to <root>, sealed by
+//                          the old root — #1342; see governance/identity_seal.hpp)
+//   identity_epoch:cluster -> { entries: {<identity key>: <version>}, digest,
+//                          issued_at, _v, _seal }  (the root's commitment to the
+//                          version of every identity record; `_v` is the epoch
+//                          number — #1360; see governance/identity_seal.hpp)
 //   decision_policy:<uuid> -> { id, name, current_version, versions, created,
 //                          updated }  (the immutable version history for one
 //                          score-to-action policy; see decision_policy.hpp)

@@ -30,6 +30,16 @@
 // kept an earlier sealed value (a token before its revocation) cannot write it
 // back, and a member cannot delete a record without the root.
 //
+// The identity epoch (#1360). The root also seals one record,
+// `identity_epoch:cluster`, that commits to the version of every identity record
+// it holds (and a SHA-256 digest over them). Its `_v` is the epoch number and
+// only grows. A node accepts a record of key K only at a version at least the
+// one its newest verified epoch commits to for K, so an older record replayed
+// after every node that held the newer one has left is still refused once the
+// epoch reaches the node; and an epoch is itself held and never replaced by an
+// older one. --identity-min-epoch refuses every identity record until an epoch
+// at least that high arrives.
+//
 // Rotation (#1342). The root moves by succession: the current root seals a
 // record naming its successor (`identity_root_succession:<new key>`), the
 // rotating node re-seals every identity record under the successor, and every
@@ -44,6 +54,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -87,6 +98,23 @@ bool identity_record_supersedes(const OpenedIdentityRecord& a,
 // True when `key` is an identity record's catalogue key (user:, role:,
 // token:, user_role:, policy:, principal:, key:) — the records a seal guards.
 bool is_identity_key(std::string_view key);
+
+// The identity epoch's one catalogue key (#1360). is_identity_key is true for
+// it, so it is sealed, versioned, held and written back like any identity record.
+inline constexpr std::string_view kIdentityEpochKey = "identity_epoch:cluster";
+
+// The SHA-256 digest an epoch carries (64 hex): over "<key>\n<version>\n" for
+// every entry, in key order. `entries` is {"<key>": <version>, ...}.
+std::string identity_epoch_digest(const nlohmann::json& entries);
+
+// The epoch's value before sealing: {"entries", "digest", "issued_at"}.
+nlohmann::json identity_epoch_value(nlohmann::json entries, std::uint64_t issued_at);
+
+// The versions an opened epoch commits to, by key. Empty optional when the
+// value is not an epoch (no entries object, a version that is not a positive
+// integer, a key that is not an identity key, or a digest that does not match).
+std::optional<std::map<std::string, std::uint64_t>> identity_epoch_entries(
+    const OpenedIdentityRecord& epoch);
 
 // The catalogue prefix of a root succession (#1342):
 // `identity_root_succession:<new root's public key>`.

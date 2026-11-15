@@ -178,6 +178,7 @@ add_executable(zetta-tests
   governance/test_authz_regressions.cpp
   governance/test_identity_seal.cpp
   governance/test_identity_rotation.cpp
+  governance/test_identity_epoch.cpp
   governance/test_scoped_grants.cpp
   governance/test_row_security.cpp
   governance/test_system_catalog_access.cpp

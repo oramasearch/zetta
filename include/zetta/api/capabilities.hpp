@@ -92,6 +92,7 @@ void register_network_capabilities(Registry& registry);
 // docs/cluster/security.md), each needing cluster:admin:
 //
 //   rotate_identity_root  action  hand identity to a new owner admin token's root (#1342)
+//   get_identity_epoch    read    the identity epoch this node holds (#1360)
 void register_identity_capabilities(Registry& registry);
 
 // Safe mode per database (#1373, docs/api/safe-mode.md):

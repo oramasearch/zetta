@@ -213,7 +213,7 @@ bool write_root_file(const fs::path& path, const IdentityAuthority& root,
 }  // namespace
 
 bool is_identity_key(std::string_view key) {
-    return key.starts_with(catalog::kUserPrefix) ||
+    return key == kIdentityEpochKey || key.starts_with(catalog::kUserPrefix) ||
            key.starts_with(catalog::kRolePrefix) ||
            key.starts_with(catalog::kTokenPrefix) ||
            key.starts_with(catalog::kUserRolePrefix) ||
@@ -387,6 +387,49 @@ std::optional<IdentityRootSuccession> open_identity_succession(
         return std::nullopt;
     }
     return succession;
+}
+
+std::string identity_epoch_digest(const nlohmann::json& entries) {
+    std::string input;
+    if (entries.is_object()) {
+        // nlohmann::json objects iterate in key order.
+        for (const auto& [key, version] : entries.items()) {
+            input += key;
+            input += '\n';
+            input += version.dump();
+            input += '\n';
+        }
+    }
+    const std::array<unsigned char, 32> digest = sha256(input);
+    return to_hex(digest.data(), digest.size());
+}
+
+nlohmann::json identity_epoch_value(nlohmann::json entries, std::uint64_t issued_at) {
+    const std::string digest = identity_epoch_digest(entries);
+    return nlohmann::json{{"entries", std::move(entries)},
+                          {"digest", digest},
+                          {"issued_at", issued_at}};
+}
+
+std::optional<std::map<std::string, std::uint64_t>> identity_epoch_entries(
+    const OpenedIdentityRecord& epoch) {
+    if (epoch.removed || !epoch.value.is_object()) return std::nullopt;
+    const auto entries = epoch.value.find("entries");
+    const auto digest = epoch.value.find("digest");
+    if (entries == epoch.value.end() || !entries->is_object() ||
+        digest == epoch.value.end() || !digest->is_string() ||
+        digest->get<std::string>() != identity_epoch_digest(*entries)) {
+        return std::nullopt;
+    }
+    std::map<std::string, std::uint64_t> committed;
+    for (const auto& [key, version] : entries->items()) {
+        if (key == kIdentityEpochKey || !is_identity_key(key) ||
+            !version.is_number_unsigned() || version.get<std::uint64_t>() == 0) {
+            return std::nullopt;
+        }
+        committed.emplace(key, version.get<std::uint64_t>());
+    }
+    return committed;
 }
 
 std::vector<IdentityRootSuccession> identity_succession_chain(

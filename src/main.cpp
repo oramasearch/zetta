@@ -157,6 +157,7 @@ struct Options {
     std::string join_token;         // --join-token (join an existing cluster)
     std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
     std::string identity_root;      // --identity-root (the cluster's identity root, #764)
+    std::string identity_min_epoch; // --identity-min-epoch (#1360)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool pubsub_dispatch_mode_from_cli = false;
     bool pubsub_topics_per_thread_from_cli = false;
@@ -240,6 +241,9 @@ void print_usage(const char* argv0) {
         "                      accounts, roles and tokens sealed by this root.\n"
         "                      Not needed when the node gets the cluster's\n"
         "                      --admin-token, which derives the same root (#764)\n"
+        "  --identity-min-epoch N  Honor no account, role or token until an identity\n"
+        "                      epoch at least N arrives (or ZETTA_IDENTITY_MIN_EPOCH).\n"
+        "                      Read N from get_identity_epoch on a live node (#1360)\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
         "  --pubsub-dispatch-mode MODE\n"
@@ -395,6 +399,10 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--identity-root");
             if (!v) break;
             o.identity_root = v;
+        } else if (arg == "--identity-min-epoch") {
+            const char* v = take_value(argc, argv, i, o, "--identity-min-epoch");
+            if (!v) break;
+            o.identity_min_epoch = v;
         } else if (arg == "--log-cluster") {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
@@ -886,6 +894,25 @@ int main(int argc, char** argv) {
     }
     if (opts.identity_root.empty()) {
         if (const char* env = std::getenv("ZETTA_IDENTITY_ROOT")) opts.identity_root = env;
+    }
+    // The lowest identity epoch this node accepts (#1360): set on a node joining
+    // a cluster whose epoch the operator recorded, so an older epoch replayed to
+    // it is refused even when no node that held a newer one is left.
+    if (opts.identity_min_epoch.empty()) {
+        if (const char* env = std::getenv("ZETTA_IDENTITY_MIN_EPOCH")) {
+            opts.identity_min_epoch = env;
+        }
+    }
+    if (!opts.identity_min_epoch.empty()) {
+        std::uint64_t min_epoch = 0;
+        const std::string& text = opts.identity_min_epoch;
+        const auto [pointer, error] =
+            std::from_chars(text.data(), text.data() + text.size(), min_epoch);
+        if (error != std::errc{} || pointer != text.data() + text.size()) {
+            std::fprintf(stderr, "zetta: --identity-min-epoch wants a number\n");
+            return 1;
+        }
+        opts.node.identity_min_epoch = min_epoch;
     }
 
     // The identity root (#763 / #764, docs/governance/identity-seal.md): who may

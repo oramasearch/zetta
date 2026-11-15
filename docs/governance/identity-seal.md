@@ -1,4 +1,4 @@
-# The identity root: sealed identity records (#763, #764, #1341, #1342)
+# The identity root: sealed identity records (#763, #764, #1341, #1342, #1360)
 
 **Membership is not authority.** The join token ([../cluster/security.md](../cluster/security.md))
 lets a node into the cluster's replicated document. It does not let the node decide who the users
@@ -84,8 +84,50 @@ an identity record from the document, or writes a tombstone of its own, deletes 
 with a sealed record neither widens it nor removes it: the node keeps the record it holds.
 
 A node that has **never** seen the newer record and is told only the older one (it was offline, and
-every node that held the newer one is gone) accepts the older one: it holds nothing to compare
-against. That needs every node that saw the change to be lost at once.
+every node that held the newer one is gone) has nothing of its own to compare against. The identity
+epoch closes that, below.
+
+## The identity epoch (#1360)
+
+**Decided under Steve's 2026-11-14 delegation:** a sealed, monotonic identity epoch that commits to
+the version of every identity record (option 1, with the committed `(key, _v)` list held beside a
+digest), rather than a separate revocation list (option 2 alone), because one record then bounds every
+key at once: a revocation, a removed assignment and a changed role are all just newer versions.
+
+- **The record.** `identity_epoch:cluster` holds `{"entries": {"<identity key>": <version>, ...},
+  "digest": "<64 hex>", "issued_at": <ms>}`, sealed by the root like any identity record. Its `_v` is
+  the **epoch number**. The digest is SHA-256 over `"<key>\n<version>\n"` for every entry in key order
+  (`identity_epoch_digest`); an epoch whose digest does not match its entries, or that lists a key that
+  is not an identity key, is not an epoch (`identity_epoch_entries`). Tombstones are committed too, at
+  their version.
+- **Who writes it.** A node that holds the root seals a new epoch over every record it holds after any
+  identity write or removal, coalesced to at most once per second (`Node::maybe_write_identity_epoch`,
+  `kIdentityEpochInterval`, from `tick`), and once soon after it starts. It takes its number from
+  `next_identity_version`, so the number only grows. When a node holding the root accepts an epoch
+  that misses a record it holds, or commits an older version of one, it seals the next epoch over its
+  newer view, so concurrent writers converge.
+- **Held like a record.** `is_identity_key` is true for it, so it is held in `identity-held.json`,
+  refused when older than the one held, and written back like any identity record (#1341).
+- **The accept rule.** `Node::trusted_identity` settles the epoch before any other key. A record of key
+  K is accepted only at a version at least the one the held epoch commits to for K; an older one is
+  refused, and a record the node itself holds at an older version is no longer trusted until the newer
+  one arrives. Keys the epoch does not list (records written since) are decided as before. When a newer
+  epoch outdates a record the node already trusted, every identity family is reconciled again
+  (`Node::accept_identity_epoch`).
+- **`--identity-min-epoch N`** (or `ZETTA_IDENTITY_MIN_EPOCH`, `NodeConfig::identity_min_epoch`): the
+  node refuses every epoch below N and honors **no** identity record until it holds an epoch at least
+  N. `get_identity_epoch` (cluster:admin) reads a live node's epoch number, so the operator records it
+  and starts a joining node with it.
+
+**HELLO does not carry the epoch.** The design proposed sending each node's epoch number in the
+cluster `HELLO` and refusing a lower peer's identity records. Gossip merges documents rather than
+attributing each record to the peer it came from, so there is no per-peer record to refuse; and the
+held epoch already refuses an older epoch from any peer, and every record it outdates, whoever sends it.
+
+**What is left (documented, closed operationally).** If every node that held epoch N **and** every
+node holding the root are gone at once, an attacker with an older sealed epoch and the records it
+committed could replay them to a brand-new cluster that holds nothing. `--identity-min-epoch` closes
+that: a node started with the recorded floor refuses anything older.
 
 ## Where the root comes from
 
@@ -198,8 +240,9 @@ nodes drop every sealed token and answer 401. Stop the old nodes, upgrade every 
 - **A node handed the owner token is the owner.** It holds the root's private key and can issue
   anything. Under the operator every node has the token, so a compromised node can still issue
   identity. Narrowing that needs identity issued by a key no node holds, which is not built.
-- **A node that never saw a change** accepts an older sealed record when no node that holds the newer
-  one is left to write it back (see [Versions](#versions-and-removals-1341)).
+- **A node that never saw a change** refuses an older sealed record once the epoch that commits the
+  newer version reaches it. A brand-new cluster offered an old epoch with nothing newer left anywhere
+  needs `--identity-min-epoch` ([the identity epoch](#the-identity-epoch-1360)).
 - **Rotating the owner token keeps the root, on nodes that already hold it.** The root's seed is
   stored in `identity-root.json` (mode 0600) the first time it is derived, so a node restarted with a
   new `ZETTA_ADMIN_TOKEN` keeps issuing identity under the same root. A node **new to the cluster
@@ -220,14 +263,18 @@ nodes drop every sealed token and answer 401. Stop the old nodes, upgrade every 
 - `src/core/node.cpp` — `replicate_identity`, `remove_identity`, `trusted_identity`,
   `hold_identity`, `load_identity_held`/`persist_identity_held`, `identity_writable`,
   `seal_preexisting_identity`, `seeded_identity_id`, `bootstrap_owner`, and the rotation:
-  `rotate_identity_root`, `follow_identity_succession`, `open_held_identity` (#1342).
-- `src/core/api/identity_capabilities.cpp` — the `rotate_identity_root` capability.
+  `rotate_identity_root`, `follow_identity_succession`, `open_held_identity` (#1342), and the epoch:
+  `accept_identity_epoch`, `maybe_write_identity_epoch`, `committed_identity_versions` (#1360).
+- `src/core/api/identity_capabilities.cpp` — the `rotate_identity_root` and `get_identity_epoch`
+  capabilities.
 - `src/core/governance/principal.cpp` — sealed access keys and their sealed removal.
 - `src/main.cpp` — root setup, seeding after the join, the join command with `--identity-root`.
 - Tests: `tests/governance/test_identity_seal.cpp` (seal, versions, tombstones, pin, node
   behaviour, the held records across a restart, upgrade),
   `tests/governance/test_identity_rotation.cpp` (successions, the chain, two nodes rotating, the
   old root refused after the move, a forged succession, a restart with the new token, #1342),
+  `tests/governance/test_identity_epoch.cpp` (the epoch's digest and growth, a fresh node refusing a
+  pre-revocation record, an older or forged epoch refused, the minimum epoch, #1360),
   `tests/cluster/test_cluster_join_authority.cpp` (two nodes over mutual TLS: #848 steps 4 and 5, and
   #1341: a member replaying a revoked token and a removed assignment, and deleting identity with
   unsealed removals),

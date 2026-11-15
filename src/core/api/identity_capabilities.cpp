@@ -3,6 +3,7 @@
 //
 //   rotate_identity_root  action  hand identity to the root a new admin token
 //                                 derives (#1342)
+//   get_identity_epoch    read    the identity epoch this node holds (#1360)
 //
 // Every capability here needs cluster:admin (api:cluster_admin) and is audited
 // per call by the registry.
@@ -67,6 +68,33 @@ ApiResult handle_rotate_identity_root(const nlohmann::json& input, ApiContext& c
                                {"owner_token_id", rotation.owner_token_id}});
 }
 
+const nlohmann::json& get_identity_epoch_schema() {
+    static const nlohmann::json schema = {{"type", "object"},
+                                          {"additionalProperties", false},
+                                          {"properties", nlohmann::json::object()}};
+    return schema;
+}
+
+const nlohmann::json& get_identity_epoch_output_schema() {
+    static const nlohmann::json schema = object_schema(
+        {{"epoch", {{"type", "integer"}, {"minimum", 0}}},
+         {"entries", {{"type", "integer"}, {"minimum", 0}}},
+         {"digest", {{"type", "string"}}},
+         {"min_epoch", {{"type", "integer"}, {"minimum", 0}}},
+         {"floor_met", {{"type", "boolean"}}}},
+        {"epoch", "entries", "digest", "min_epoch", "floor_met"});
+    return schema;
+}
+
+ApiResult handle_get_identity_epoch(const nlohmann::json& /*input*/, ApiContext& context) {
+    const Node::IdentityEpochStatus status = context.node.identity_epoch_status();
+    return ApiResult::success({{"epoch", status.epoch},
+                               {"entries", status.entries},
+                               {"digest", status.digest},
+                               {"min_epoch", status.min_epoch},
+                               {"floor_met", status.floor_met}});
+}
+
 }  // namespace
 
 void register_identity_capabilities(Registry& registry) {
@@ -87,6 +115,21 @@ void register_identity_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_rotate_identity_root});
+
+    registry.add(Capability{
+        "get_identity_epoch",
+        "Get the identity epoch",
+        "Read the identity epoch this node holds (#1360): its number, how many "
+        "identity records it commits to, its digest, and the --identity-min-epoch "
+        "floor. Record the number to start a joining node with "
+        "--identity-min-epoch. Requires cluster:admin. No side effects.",
+        get_identity_epoch_schema(),
+        get_identity_epoch_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "cluster_admin"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_identity_epoch});
 }
 
 }  // namespace zetta::api

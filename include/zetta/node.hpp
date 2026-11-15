@@ -141,6 +141,10 @@ struct NodeConfig {
     // Roots trusted before the pin moved, oldest first (identity-root.json
     // `previous`): records they sealed that this node held stay readable.
     std::vector<std::string> identity_previous_roots;
+    // The lowest identity epoch this node accepts (#1360, --identity-min-epoch).
+    // Non-zero, the node honors no identity record until it holds a sealed epoch
+    // at least this high, and refuses any lower epoch. Zero: no floor.
+    std::uint64_t identity_min_epoch = 0;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -1221,6 +1225,20 @@ public:
     IdentityRotationResult rotate_identity_root(const std::string& new_admin_token,
                                                 bool revoke_tokens);
 
+    // The identity epoch this node holds (#1360): its number (the sealed `_v`),
+    // how many records it commits to, its digest, and whether it meets
+    // NodeConfig::identity_min_epoch. epoch == 0 when none is held.
+    struct IdentityEpochStatus {
+        std::uint64_t epoch = 0;
+        std::size_t entries = 0;
+        std::string digest;
+        std::uint64_t min_epoch = 0;
+        bool floor_met = true;
+    };
+    IdentityEpochStatus identity_epoch_status() const;
+    // How often, at most, a node holding the root seals a new epoch (#1360).
+    static constexpr std::chrono::milliseconds kIdentityEpochInterval{1000};
+
     // The control plane that reconciles local deployments desired → actual and
     // self-heals their runs (see deployment_controller.hpp). Driven each tick();
     // exposed so tests/UI can introspect its counters or run a pass directly.
@@ -1430,6 +1448,17 @@ private:
         const std::string& key, const nlohmann::json& value) const;
     // Reconcile every identity family from the full `snapshot`.
     void reconcile_identity(const nlohmann::json& snapshot);
+    // The identity epoch (#1360). committed_identity_versions: the version the
+    // held epoch commits to per key (empty without one, or below the floor).
+    // identity_epoch_floor_met: no --identity-min-epoch, or an epoch at least it
+    // is held. maybe_write_identity_epoch: on a node that holds the root, seal a
+    // new epoch over every held record when an identity write or a newer view
+    // made it stale, at most once per kIdentityEpochInterval. accept_identity_epoch:
+    // decide the epoch from `snapshot` first; true when it advanced.
+    std::map<std::string, std::uint64_t> committed_identity_versions() const;
+    bool identity_epoch_floor_met() const;
+    void maybe_write_identity_epoch();
+    bool accept_identity_epoch(const nlohmann::json& snapshot);
     // Issue the owner user an access token whose secret is `secret` (PBKDF2
     // form, #769), under the id the current root fixes for `purpose`. Empty on
     // a failure; nothing is written then.
@@ -1595,6 +1624,10 @@ private:
     // Roots this node trusted before its pin moved, oldest first (#1342):
     // verify-only, used only to re-open records loaded from identity-held.json.
     std::vector<zetta::governance::IdentityAuthority> previous_identity_roots_;
+    // An identity write (or a newer view than the held epoch) since the last
+    // epoch this node sealed (#1360), and when it sealed one.
+    bool identity_epoch_dirty_ = false;
+    Clock::time_point last_identity_epoch_write_{};
     std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
     std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
     std::unique_ptr<zetta::data::ObjectStore> object_store_;  // null when standalone
