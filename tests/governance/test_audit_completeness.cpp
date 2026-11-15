@@ -380,6 +380,69 @@ TEST(AuditSurface, RunOnOwnerCarriesTheSurface) {
     node.stop();
 }
 
+// Every row carries a surface (#1328): one recorded where no entry point
+// declared a surface is the node's own work, `internal`.
+TEST(AuditSurface, ARowWithNoDeclaredSurfaceIsInternal) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    ASSERT_FALSE(zetta::governance::current_audit_surface());
+    ASSERT_TRUE(node.create_database("undeclared"));
+    const auto found = rows(node, AuditAction::DataChanged, "database:undeclared");
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found.front()->value().surface, "internal");
+    for (const auto& event : node.audit_events()) {
+        EXPECT_FALSE(event->value().surface.empty()) << event->target();
+    }
+    node.stop();
+}
+
+// A call refused as invalid_input before authorization (#1328): a mutating
+// capability leaves one refused data_access row naming the caller, the surface
+// and the field at fault (never the reason, which can quote the input); a plain
+// read's typo leaves none.
+TEST(AuditSurface, AnInvalidInputRefusalOfAMutatingCapabilityIsRecorded) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    node.ensure_builtin_roles();
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    auto user = node.create_user("fay");
+    ASSERT_TRUE(user);
+    node.assign_role(user->id(), node.find_role("admin")->id());
+
+    const auto trace = zetta::observability::make_root_trace();
+    const auto call = [&](const std::string& name, nlohmann::json input) {
+        zetta::api::ApiContext context{node, nullptr, user->id(), trace,
+                                       &node.span_recorder()};
+        context.acting_is_user = true;
+        context.surface = "rest";
+        return registry.call(name, input, context);
+    };
+
+    // create_project requires a string name: a number is refused by the schema.
+    const auto refused = call("create_project", {{"name", 42}});
+    ASSERT_FALSE(refused.ok);
+    ASSERT_EQ(refused.error.code, "invalid_input");
+    const auto found = rows(node, AuditAction::DataAccess, "api:create_project");
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_FALSE(found.front()->allowed());
+    EXPECT_EQ(found.front()->actor(), user->id());
+    EXPECT_EQ(found.front()->value().surface, "rest");
+    EXPECT_EQ(found.front()->detail().rfind("invalid input: ", 0), 0u)
+        << found.front()->detail();
+    EXPECT_EQ(found.front()->detail().find("42"), std::string::npos);
+
+    // A read with a malformed input leaves no row.
+    const std::size_t before = node.audit_event_count();
+    const auto typo = call("list_projects", {{"no_such_field", true}});
+    ASSERT_FALSE(typo.ok);
+    ASSERT_EQ(typo.error.code, "invalid_input");
+    EXPECT_EQ(node.audit_event_count(), before);
+    node.stop();
+}
+
 // ---- work that finishes later, on another thread (#1327) -----------------------
 
 // A job queued by user X and finished on a worker with no entry point open names

@@ -88,6 +88,9 @@ public:
                 event.target = "egress:" + denial.host + ":" +
                                std::to_string(denial.port);
                 event.allowed = false;
+                // Recorded on the client's thread, so the surface rides on the
+                // denial (#1328); none declared stamps `internal`.
+                event.surface = denial.surface;
                 event.detail = denial.run_id.empty()
                                    ? denial.reason
                                    : denial.reason + " (run " + denial.run_id + ")";

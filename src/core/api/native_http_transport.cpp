@@ -467,7 +467,8 @@ private:
             std::string reason =
                 connect::egress_denied_reason(parsed.host, port_number);
             connect::report_egress_denial({parsed.host, port_number, reason,
-                                           request.on_behalf_of, request.on_behalf_of_run});
+                                           request.on_behalf_of, request.on_behalf_of_run,
+                                           request.on_behalf_of_surface});
             return reason;
         };
         if (!name_allowed && !policy.has_network_rule_for(port_number)) {
@@ -661,6 +662,11 @@ connect::HttpRequest attributed(const connect::HttpRequest& request) {
         } else if (const std::optional<std::string> actor =
                        governance::current_audit_actor()) {
             copy.on_behalf_of = *actor;
+        }
+    }
+    if (copy.on_behalf_of_surface.empty()) {
+        if (const std::optional<std::string> surface = governance::current_audit_surface()) {
+            copy.on_behalf_of_surface = *surface;
         }
     }
     return copy;

@@ -211,4 +211,32 @@ TEST(EgressPolicy, ADenialNamesThePrincipalAndRunItWasFor) {
     EXPECT_FALSE(zetta::connect::current_outbound_caller());
 }
 
+// #1328: the denial carries the surface the caller came through, so its audit
+// row (recorded on the client's thread, where no scope is open) names it.
+TEST(EgressPolicy, ADenialCarriesTheCallersSurface) {
+    zetta::connect::set_egress_policy({});
+    zetta::api::install_native_http_transport();
+    std::vector<zetta::connect::EgressDenial> heard;
+    zetta::connect::set_egress_denial_observer(
+        [&heard](const zetta::connect::EgressDenial& denial) { heard.push_back(denial); });
+    zetta::connect::HttpRequest request;
+    request.method = "GET";
+    request.url = "https://denied.example.test/";
+    request.timeout_seconds = 3;
+    {
+        const zetta::governance::AuditActorScope actor{std::string("principal-bob")};
+        const zetta::governance::AuditSurfaceScope surface{std::string("mcp")};
+        EXPECT_TRUE(zetta::connect::default_http_transport()(request).error.starts_with(
+            "egress denied:"));
+    }
+    EXPECT_TRUE(
+        zetta::connect::default_http_transport()(request).error.starts_with("egress denied:"));
+    zetta::connect::set_egress_denial_observer({});
+    zetta::api::shutdown_native_http_transport();
+
+    ASSERT_EQ(heard.size(), 2U);
+    EXPECT_EQ(heard[0].surface, "mcp");
+    EXPECT_TRUE(heard[1].surface.empty());  // none declared: the row says internal
+}
+
 }  // namespace

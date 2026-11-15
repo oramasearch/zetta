@@ -5290,10 +5290,14 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
             value.actor = std::move(*actor);
         }
     }
-    // ...and the surface it came through (#1328), declared the same way.
+    // ...and the surface it came through (#1328), declared the same way. Every
+    // row carries one: a row recorded where no entry point declared a surface
+    // is work the node started itself, `internal`.
     if (value.surface.empty()) {
         if (auto surface = zetta::governance::current_audit_surface()) {
             value.surface = std::move(*surface);
+        } else {
+            value.surface = "internal";
         }
     }
     std::string error;

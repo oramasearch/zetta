@@ -85,6 +85,7 @@ gets one `egress_denied` event per refused connection:
 | `target` | `egress:<host>:<port>` |
 | `allowed` | `false` |
 | `detail` | the reason above, and `(run <id>)` when a graph step made the connection |
+| `surface` | the surface the caller came through (#1328), carried on the denial (`HttpRequest::on_behalf_of_surface`) because the row is recorded on the client's thread; `internal` when none was declared |
 
 **Attribution (#1323).** Each graph step runs inside a `connect::OutboundCallerScope` naming the
 run's principal and the run (`pipeline/executor.cpp`); a capability call already declares its actor

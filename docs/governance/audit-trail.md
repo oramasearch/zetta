@@ -314,7 +314,7 @@ activity notification remain on the node owner thread.
 
 ## Which surface an action came through (#1328)
 
-Each row may carry `surface`: `mcp` (MCP `tools/call`), `rest` (`/v1/<name>`
+Each row carries `surface`: `mcp` (MCP `tools/call`), `rest` (`/v1/<name>`
 with a bearer, and the governed serving routes), `web` (the Studio web app and
 dashboard, authenticated by the `zetta_session` cookie, and the web console),
 `desktop` (the headed app), `console` (the governed console run directly),
@@ -328,15 +328,28 @@ app's frame and `GovernedConsole::run` open one themselves, and
 owner thread. The same capability called over MCP and over REST by two
 identities therefore gives two rows with different actors and surfaces.
 
-`surface` is optional: a row from before #1328, or one recorded where no entry
-point declared a surface, has none (`system.audit.surface` is null). The schema
-accepts only the values above. Adding the field changed the audit protocol to
-`3`; a node at `2` rejects these records (its schema is sealed), so upgrade all
-nodes together, as below.
+Every row the node records carries a surface. A row recorded where no entry
+point declared one (a tick of the node's own control plane, a background
+connection with no caller) is `internal`. An `egress_denied` row is recorded on
+the HTTP client's thread, so the denial carries the caller's surface with it
+(`HttpRequest::on_behalf_of_surface`, `EgressDenial::surface`). A row from
+before #1328 has none (`system.audit.surface` is null). The schema accepts only
+the values above. Adding the field changed the audit protocol to `3`; a node at
+`2` rejects these records (its schema is sealed), so upgrade all nodes
+together, as below.
 
-Not decided yet: whether a call `Registry::call` refuses as `invalid_input`
-before its authorization step (so it leaves no row today) should be recorded
-for a mutating capability. That question stays open on #1328.
+### A malformed call to a mutating capability (#1328)
+
+`Registry::call` checks the input against the capability's schema before its
+authorization step. When that check refuses a capability that changes
+something (an `action` or `job`, or a `read` marked `mutates`), the refusal is
+on the trail: one `data_access` row with `allowed=false`, the authenticated
+caller as actor (`local` for the trusted session), the surface, target
+`api:<capability>` and detail `invalid input: <JSON pointer of the field at
+fault>`. The detail names only the field, never the validator's reason, which
+can quote the input. A malformed call to a plain read leaves no row, so typos
+in reads do not flood the trail. Decided under Steve's 2026-11-14 delegation
+(the recommendation on #1328).
 
 ## Querying
 

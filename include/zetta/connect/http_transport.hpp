@@ -78,6 +78,9 @@ struct HttpRequest {
     // named on an egress denial. Not sent to the destination.
     std::string on_behalf_of;
     std::string on_behalf_of_run;
+    // ...and the surface the caller came through (#1328), from the caller's
+    // AuditSurfaceScope, so the denial's audit row names it.
+    std::string on_behalf_of_surface;
 
     // Which resolved addresses may be dialled (#1394, #1414).
     // `Connector` checks the separate exact connector authority allowance on

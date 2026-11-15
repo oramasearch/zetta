@@ -136,6 +136,8 @@ struct EgressDenial {
     // graph step made it.
     std::string principal;
     std::string run_id;
+    // The surface the caller came through (#1328); empty when none was declared.
+    std::string surface;
 };
 
 // Who an outbound connection is made on behalf of (#1323): a graph step runs
