@@ -461,4 +461,70 @@ TEST_F(NativeHttpTransportFixture, RefusesARedirectToAnOutsideDestination) {
     EXPECT_EQ(scope.denials.size(), 1U);
 }
 
+// LSR-256 (#1429): a secret header stays on its origin. A redirect to the same host on another
+// port is another origin, so the bearer is dropped before that hop.
+TEST_F(NativeHttpTransportFixture, ARedirectToAnotherPortDropsTheSecretHeaders) {
+    EgressPolicyScope scope("");
+    const auto listen_on_loopback = [](int& port) {
+        const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        ::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+        ::listen(listener, 1);
+        socklen_t length = sizeof(address);
+        ::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length);
+        port = ntohs(address.sin_port);
+        return listener;
+    };
+    int first_port = 0;
+    int second_port = 0;
+    const int first = listen_on_loopback(first_port);
+    const int second = listen_on_loopback(second_port);
+    ASSERT_GE(first, 0);
+    ASSERT_GE(second, 0);
+    std::string second_request;
+    std::thread redirector([first, second_port] {
+        const int client = ::accept(first, nullptr, nullptr);
+        if (client < 0) return;
+        char buffer[4096];
+        [[maybe_unused]] const auto received = ::recv(client, buffer, sizeof(buffer), 0);
+        const std::string reply = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:" +
+                                  std::to_string(second_port) +
+                                  "/next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        [[maybe_unused]] const auto sent = ::send(client, reply.data(), reply.size(), 0);
+        ::close(client);
+    });
+    std::thread target([second, &second_request] {
+        const int client = ::accept(second, nullptr, nullptr);
+        if (client < 0) return;
+        char buffer[4096];
+        const auto received = ::recv(client, buffer, sizeof(buffer), 0);
+        if (received > 0) second_request.assign(buffer, static_cast<std::size_t>(received));
+        const std::string reply =
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+        [[maybe_unused]] const auto sent = ::send(client, reply.data(), reply.size(), 0);
+        ::close(client);
+    });
+
+    zetta::connect::HttpRequest request;
+    request.method = "GET";
+    request.url = "http://127.0.0.1:" + std::to_string(first_port) + "/start";
+    request.timeout_seconds = 20;
+    request.headers.push_back({"Authorization", "Bearer must-not-travel"});
+    request.secret_headers.push_back("Authorization");
+    request.max_redirects = 3;
+    zetta::connect::HttpResponse response;
+    drive([&] { response = zetta::connect::default_http_transport()(request); });
+    redirector.join();
+    target.join();
+    ::close(first);
+    ::close(second);
+
+    EXPECT_EQ(response.status, 200) << response.error;
+    EXPECT_FALSE(second_request.empty());
+    EXPECT_EQ(second_request.find("must-not-travel"), std::string::npos) << second_request;
+}
+
 }  // namespace
