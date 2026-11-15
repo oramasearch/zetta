@@ -99,6 +99,18 @@
       ],
       "type": "object"
     },
+    "surface": {
+      "enum": [
+        "mcp",
+        "rest",
+        "web",
+        "desktop",
+        "pgwire",
+        "console",
+        "internal"
+      ],
+      "type": "string"
+    },
     "target": {
       "type": "string"
     },

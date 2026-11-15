@@ -269,3 +269,113 @@ TEST(AuditCompleteness, SqlEffectsNameTheStatementsSession) {
     expect_one(node, AuditAction::DataChanged, "database:app", user->id());
     node.stop();
 }
+
+// ---- the surface an action came through (#1328) --------------------------------
+
+TEST(AuditSurfaceScope, NestsRestoresAndIgnoresUnknownSpellings) {
+    using zetta::governance::AuditSurfaceScope;
+    using zetta::governance::current_audit_surface;
+    EXPECT_FALSE(current_audit_surface());
+    {
+        const AuditSurfaceScope outer{std::string("mcp")};
+        EXPECT_EQ(current_audit_surface(), "mcp");
+        {
+            const AuditSurfaceScope bogus{std::string("carrier-pigeon")};
+            EXPECT_EQ(current_audit_surface(), "mcp");  // unknown: outer stays
+        }
+        {
+            const AuditSurfaceScope inner{std::string("rest")};
+            EXPECT_EQ(current_audit_surface(), "rest");
+        }
+        EXPECT_EQ(current_audit_surface(), "mcp");
+    }
+    EXPECT_FALSE(current_audit_surface());
+}
+
+TEST(AuditSurface, TheValueRoundTripsAndTheSchemaRefusesAnUnknownSurface) {
+    zetta::governance::AuditEventValue value;
+    value.time = "2026-11-14T00:00:00Z";
+    value.surface = "web";
+    const nlohmann::json json = zetta::governance::to_json(value);
+    EXPECT_EQ(json.at("surface"), "web");
+    const auto parsed = zetta::governance::parse_audit_event_value(json);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed->surface, "web");
+
+    nlohmann::json unknown = json;
+    unknown["surface"] = "fax";
+    EXPECT_FALSE(zetta::governance::parse_audit_event_value(unknown));
+
+    value.surface.clear();
+    EXPECT_FALSE(zetta::governance::to_json(value).contains("surface"));
+}
+
+// The issue's step: the same capability over MCP and over REST as two identities
+// gives two rows with distinct actors and surfaces, and system.audit shows them.
+TEST(AuditSurface, TheSameCapabilityOverMcpAndRestGivesDistinctRows) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    node.ensure_builtin_roles();
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    auto ada = node.create_user("ada");
+    auto bo = node.create_user("bo");
+    ASSERT_TRUE(ada && bo);
+    node.assign_role(ada->id(), node.find_role("admin")->id());
+    node.assign_role(bo->id(), node.find_role("admin")->id());
+
+    const auto trace = zetta::observability::make_root_trace();
+    const auto call = [&](const std::string& user, const std::string& surface) {
+        zetta::api::ApiContext context{node, nullptr, user, trace, &node.span_recorder()};
+        context.acting_is_user = true;
+        context.surface = surface;
+        return registry.call("create_project", {{"name", "p_" + surface}}, context);
+    };
+    ASSERT_TRUE(call(ada->id(), "mcp").ok);
+    ASSERT_TRUE(call(bo->id(), "rest").ok);
+
+    const auto over_mcp = rows(node, AuditAction::DataChanged, "project:p_mcp");
+    const auto over_rest = rows(node, AuditAction::DataChanged, "project:p_rest");
+    ASSERT_EQ(over_mcp.size(), 1u);
+    ASSERT_EQ(over_rest.size(), 1u);
+    EXPECT_EQ(over_mcp.front()->actor(), ada->id());
+    EXPECT_EQ(over_mcp.front()->value().surface, "mcp");
+    EXPECT_EQ(over_rest.front()->actor(), bo->id());
+    EXPECT_EQ(over_rest.front()->value().surface, "rest");
+
+    zetta::query::QueryService queries(node);
+    const auto audit = queries.run(
+        "SELECT actor, surface FROM system.audit WHERE target = 'project:p_mcp';", "");
+    ASSERT_TRUE(audit.ok()) << audit.error;
+    ASSERT_FALSE(audit.rows.empty());
+    EXPECT_EQ(audit.rows.front().at("surface"), "mcp");
+    node.stop();
+}
+
+// The surface rides to the owner thread with the actor.
+TEST(AuditSurface, RunOnOwnerCarriesTheSurface) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    node.tick();  // adopt this thread as the owner
+
+    std::atomic<bool> done{false};
+    std::thread worker([&] {
+        const AuditActorScope caller{std::string("user-cy")};
+        const zetta::governance::AuditSurfaceScope surface{std::string("rest")};
+        node.run_on_owner([&] { node.create_database("from_rest_worker"); });
+        done = true;
+    });
+    while (!done) {
+        const AuditActorScope desk{std::string("local")};
+        const zetta::governance::AuditSurfaceScope surface{std::string("desktop")};
+        node.drain_owner_work();
+        std::this_thread::yield();
+    }
+    worker.join();
+    const auto found = rows(node, AuditAction::DataChanged, "database:from_rest_worker");
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found.front()->value().surface, "rest");
+    node.stop();
+}

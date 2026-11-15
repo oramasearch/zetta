@@ -369,7 +369,8 @@ diverge), each computed at query time from the live `Node` accessors:
   carries no secret material, so this exposes nothing the Admin panel doesn't.
 - **`system.audit`** — the immutable audit trail (`Node::audit_events()`).
   Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`,
-  plus nullable summary fields `calls`, `events_delivered`, `scope`,
+  `surface` (mcp / rest / web / desktop / pgwire / console / internal, null when
+  undeclared, #1328), plus nullable summary fields `calls`, `events_delivered`, `scope`,
   `window_started`, `window_ended`. See the
   [windowed read policy](../governance/audit-trail.md#audit-policy).
 - **`system.ledger`** — the immutable, replicated solutions reward ledger

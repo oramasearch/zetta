@@ -152,6 +152,10 @@ GovernedConsole::GovernedConsole(Node& node, query::QueryService& query,
     : node_(node), query_(query), gate_(std::move(gate)) {}
 
 Result GovernedConsole::run(Frontend frontend, const std::string& source) {
+    // The console is its own surface (#1328), unless the caller already declared
+    // one (the web console, the desktop app's console pane).
+    const zetta::governance::AuditSurfaceScope audit_surface{
+        zetta::governance::current_audit_surface().value_or("console")};
     const std::string now = zetta::util::now_iso8601();
     const zetta::governance::Operation op = required_operation(frontend);
     const std::string frontend_name(to_string(frontend));

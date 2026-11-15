@@ -1205,9 +1205,10 @@ void Node::run_on_owner(const std::function<void()>& work) {
     // The work runs on another thread, so it carries the caller's acting
     // identity with it (#847): an audit event the work records is attributed
     // to whoever handed it over, not to whatever the owner thread was doing.
+    // ...and the surface it came through (#1328).
     std::function<void()> attributed =
-        [work, actor = zetta::governance::current_audit_actor()] {
-            const zetta::governance::AuditActorScope scope{actor};
+        [work, origin = zetta::governance::capture_audit_origin()] {
+            const zetta::governance::AuditOriginScope scope{origin};
             work();
         };
     {
@@ -5211,6 +5212,12 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     if (value.actor.empty()) {
         if (auto actor = zetta::governance::current_audit_actor()) {
             value.actor = std::move(*actor);
+        }
+    }
+    // ...and the surface it came through (#1328), declared the same way.
+    if (value.surface.empty()) {
+        if (auto surface = zetta::governance::current_audit_surface()) {
+            value.surface = std::move(*surface);
         }
     }
     std::string error;
