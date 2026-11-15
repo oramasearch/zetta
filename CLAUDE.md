@@ -807,7 +807,7 @@ Project skills live in `.claude/skills/` (committed, shared):
   bounded deadline (hypothesis · fault · invariant · deadline · blast radius);
   the safety rules and the prove-the-fault-landed discipline.
 - **add-use-case** — build a UC-N in the engine (compose-don't-invent, the
-  FedEx-test rule, the nine-step recipe).
+  Contoso-test rule, the nine-step recipe).
 - **native-ai-dev** — build AI natively: a model / layer / autograd op / tokenizer
   / training or RLVR loop on `zetta::autograd` + the `ComputeDevice` interface + the BPE
   tokenizer, **no foreign runtime** (ADR-17). The gradient-check discipline, the

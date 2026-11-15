@@ -8,8 +8,8 @@
 
 // The entity-resolution correctness eval (FEAT-3 / TC-4, #312) — the make-or-break
 // gate check. It verifies that an execution graph's entity-resolution step resolved
-// entities *division-correct*: "FedEx Freight" lands on the right CRM account
-// without conflating the 5–6 sibling FedEx subsidiaries (FedEx Ground, Express,
+// entities *division-correct*: "Contoso Freight" lands on the right CRM account
+// without conflating the 5–6 sibling Contoso subsidiaries (Contoso Ground, Express,
 // Office, Logistics, …), which are separate accounts. Conflating them is the
 // canonical failure this check exists to catch.
 //
@@ -25,10 +25,10 @@ namespace zetta::usecases::churn {
 //     {
 //       "entity_resolution": {
 //         "records": [
-//           { "mention": "FedEx Freight", "entity": "fedex_freight",
-//             "resolved": "acct_fedex_freight" },
-//           { "mention": "FedEx Ground",  "entity": "fedex_ground",
-//             "resolved": "acct_fedex_ground" },
+//           { "mention": "Contoso Freight", "entity": "contoso_freight",
+//             "resolved": "acct_contoso_freight" },
+//           { "mention": "Contoso Ground",  "entity": "contoso_ground",
+//             "resolved": "acct_contoso_ground" },
 //           …
 //         ]
 //       }

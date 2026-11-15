@@ -62,7 +62,7 @@ project->create_input(zetta::pipeline::ProjectInputKind::Intent,
 // An artifact the team uploaded (keeps its original filename):
 project->create_input(zetta::pipeline::ProjectInputKind::Artifact,
                       zetta::pipeline::ProjectInputSource::Upload,
-                      workflow_json, "churn.json", "user:charles");
+                      workflow_json, "churn.json", "user:alice");
 ```
 
 `create_input` takes the **raw payload content**, computes

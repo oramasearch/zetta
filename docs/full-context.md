@@ -26,7 +26,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 | Blueprint (design source of truth) | wtm project `ORAMA-ZETTA` (id 9, ~328 artifacts, 14 domains); projected to GitHub issues + the docs site by `zetta-sync` (skill in amaro-bridge; generators in `zetta-docs/.sync/`); local snapshot: zetta-bridge `docs/blueprint/` |
 | Docs website | `oramasearch/zetta-docs` (MkDocs, Railway) — generated, never hand-edit |
 | Grouping repo | `oramasearch/zetta-bridge` (submodules: zetta, zetta-docs) |
-| Business context | `oramasearch/amaro-bridge` → [orama-platform-2](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/orama-platform-2) (one-pager, vision, personas, briefs, design-partner research), [motive-problem-definition](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-problem-definition), meetings (2026-07-01 Charles: direction validated, beta in ~2–3 weeks, RL deferred to a seed) |
+| Business context | `oramasearch/amaro-bridge` → [orama-platform-2](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/orama-platform-2) (one-pager, vision, personas, briefs, design-partner research) |
 | Marketing site (public voice) | `oramasearch/amaro-marketingsite`, branch `live` — Orama Zetta rebrand, "Auto-AI for the enterprise" |
 | Pattern references | worktree-manager `wtm-mcp` (full-parity MCP); `cppalliance/beast2` (HTTP layer — docs/research/beast2-http.md); installer sidecar (local search API, superseded by distributed-first) |
 
@@ -54,7 +54,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   (simulated user tests; the promotion rule).
 - **Use cases**: [use-cases/](use-cases/README.md) — UC-1 end to end +
   [creating-a-use-case.md](use-cases/creating-a-use-case.md) (compose-don't-
-  invent; name the FedEx test).
+  invent; name the Contoso test).
 - **Plans (in-flight)**: [plans/](plans/README.md) — mcp-service ·
   cloud-provisioning.
 - **Skills** (`.claude/skills/`): zetta-dev · gui-dev · api-dev ·

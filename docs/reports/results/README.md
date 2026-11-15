@@ -20,25 +20,14 @@ That difference is the whole point of separating them, and it sets the rules:
 - **Every number carries its method and its date.** A number with no method is an
   assertion; the value of one decays.
 - **Diagrams are generated, not drawn.** Graphviz `.dot` sources live in
-  [`diagrams/`](diagrams/) beside the rendered `.svg`, so a diagram can never drift from
+  `diagrams/` beside the rendered `.svg`, so a diagram can never drift from
   what it documents.
 - **Say plainly whether customer data was involved.** Where the answer is "none", say so.
 
 ## Reports
 
-- [motive-churn-results-2026-08-04.md](motive-churn-results-2026-08-04.md) — churn for
-  Motive. A pipeline that turns a query against their communications data into a ranked
-  at-risk list with reasons: **held-out AUC 0.726** over 15,000 accounts and 3.87M events,
-  a 0.04 generalization gap, repeat support escalations first and account size last.
-  Diagrams: [pipeline](diagrams/motive-churn-flow.svg) ·
-  [signal structure](diagrams/motive-dataset-signal.svg)
-
-- [motive-churn-run-report-2026-08-04.md](motive-churn-run-report-2026-08-04.md) — **the
-  run report itself**: the artifact a run produces, generated from its facts by the prompt
-  in [`docs/pipeline/run-report-prompt.md`](../../pipeline/run-report-prompt.md). Every
-  number in it appears verbatim in the facts artifact — the narrator arranges, it never
-  computes. Regenerate with
-  [`docs/runbooks/regenerating-the-run-report.md`](../../runbooks/regenerating-the-run-report.md).
+None published yet. A report added here follows the rules above; its diagrams go in a
+`diagrams/` folder beside it.
 
 ## Rendering the diagrams
 

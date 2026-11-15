@@ -89,7 +89,7 @@ ResolvedMention EntityResolver::resolve(std::string_view mention) const {
     if (strategy_ == ResolutionStrategy::Brand) {
         // Coarse: collapse to the brand bucket of the first candidate whose (whole)
         // brand appears among the mention's tokens. This is what conflates the
-        // siblings — every "FedEx …" mention lands on acct_brand_fedex.
+        // siblings — every "Contoso …" mention lands on acct_brand_contoso.
         const std::set<std::string> tokens = token_set(normalized);
         for (std::size_t index = 0; index < candidates_.size(); ++index) {
             const std::string& brand = normalized_brands_[index];
@@ -167,7 +167,7 @@ const nlohmann::json& entity_resolution_schema() {
       "additionalProperties": false,
       "properties": {
         "mention": {
-          "description": "The raw input string the resolver saw (e.g. \"FedEx Freight\"). Provenance/display only.",
+          "description": "The raw input string the resolver saw (e.g. \"Contoso Freight\"). Provenance/display only.",
           "type": "string"
         },
         "entity": {

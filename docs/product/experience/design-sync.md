@@ -48,7 +48,7 @@ wears").
 
 **What the design does NOT supply, and the engine does:**
 
-The design's reports render a fixture (`fixtures/motive-churn-run-report.json`).
+The design's reports render a fixture run report.
 Both zetta surfaces render **the engine's own numbers** through `get_run_report`
 ([#958](https://github.com/oramasearch/zetta/issues/958)) — one behavior path,
 so the GUI, the web app, MCP and chat cannot disagree about what a run found.

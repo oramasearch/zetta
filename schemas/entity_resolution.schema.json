@@ -12,7 +12,7 @@
           "type": "string"
         },
         "mention": {
-          "description": "The raw input string the resolver saw (e.g. \"FedEx Freight\"). Provenance/display only.",
+          "description": "The raw input string the resolver saw (e.g. \"Contoso Freight\"). Provenance/display only.",
           "type": "string"
         },
         "resolved": {

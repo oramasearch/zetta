@@ -189,7 +189,7 @@ add_executable(zetta-tests
   usecases/churn/test_churn_step_executor.cpp
   usecases/churn/test_churn_solution.cpp
   usecases/churn/test_churn_table_run.cpp
-  usecases/churn/test_motive_demo_dataset.cpp
+  usecases/churn/test_comms_demo_dataset.cpp
   usecases/churn/test_churn_coordinated_launch.cpp
   usecases/churn/test_uc1_end_to_end.cpp
   testkit/test_testkit.cpp

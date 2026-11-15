@@ -88,7 +88,7 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
         }
         result.outcome = TestOutcome::Pass;
         result.summary =
-            "the Brand resolver conflated the FedEx siblings; the gate blocked the run (RULE-1)";
+            "the Brand resolver conflated the Contoso siblings; the gate blocked the run (RULE-1)";
         result.metric("gate", "blocked").metric("pipeline", "not run");
         return result;
     }

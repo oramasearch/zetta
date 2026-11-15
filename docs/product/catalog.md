@@ -20,7 +20,7 @@ the engine is general (GBDT today; RL, LLM fine-tuning behind the same seams)
   add-use-case skill + [runbook](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md);
   the zetta-side build recipe is
   [../use-cases/creating-a-use-case.md](../use-cases/creating-a-use-case.md)
-  (the two laws: compose-don't-invent; name the FedEx test).
+  (the two laws: compose-don't-invent; name the Contoso test).
 - **In the product**, the catalog is the AI Solution Library
   ([../pipeline/solution-catalog.md](../pipeline/solution-catalog.md)) behind
   one-button deploy — and later the personalization trio ranks it per

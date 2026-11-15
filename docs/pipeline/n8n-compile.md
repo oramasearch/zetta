@@ -49,7 +49,7 @@ if (!graph) {
 ## Node-type → step-kind mapping (R1)
 
 `n8n_step_kind` is a static table keyed on the exact n8n `type` string. R1 covers
-the kinds in Charles's churn workflows plus their obvious neighbours:
+the kinds a typical churn workflow uses plus their obvious neighbours:
 
 | n8n `type` | `StepKind` | Why |
 |---|---|---|

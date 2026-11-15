@@ -139,7 +139,7 @@ The separate refused-start process regression passes in the static build:
 Both full runs pass all six solution journeys and all 18 solution-registry
 tests, including every S-1, S-2, S-3, S-4, and S-12 test. Their 16 built-in
 skips cover ten optional checkpoint tests, three corpus input/output tests,
-the optional Motive demo dataset, the CUDA-only training test, and the
+the optional communications demo dataset, the CUDA-only training test, and the
 search-engine-absent fallback test in this engine-enabled build. Schema drift
 checks pass after regeneration.
 

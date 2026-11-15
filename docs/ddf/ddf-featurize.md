@@ -38,8 +38,8 @@ signal.
 
 The [synthetic churn fixture](../use-cases/churn-dataset.md) plants this trap: a handful of
 events after its `as_of_date` of `2026-03-01` (a fourth `payment_failed` for
-`acct_fedex_office` on `2026-04-05`, a second `support_ticket` for `acct_globex` on
-`2026-03-20`, a `login` for `acct_fedex_freight` on `2026-03-15`). The acceptance
+`acct_contoso_office` on `2026-04-05`, a second `support_ticket` for `acct_globex` on
+`2026-03-20`, a `login` for `acct_contoso_freight` on `2026-03-15`). The acceptance
 test featurizes the fixture and asserts every feature matches a leakage-free ground
 truth computed independently — and that the windowed values are strictly below the
 leaky (no-cutoff) values where the trap fired.

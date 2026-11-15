@@ -4,7 +4,7 @@
 **Serves:** [#948](https://github.com/oramasearch/zetta/issues/948) ·
 **Code:** [`include/zetta/data/dataset_path.hpp`](../../include/zetta/data/dataset_path.hpp),
 [`src/core/data/dataset_path.cpp`](../../src/core/data/dataset_path.cpp) ·
-**Tests:** `tests/data/test_dataset_path.cpp`, `tests/data/test_dataset_catalog_typing.cpp` (#1203 item 3), and the #956 timing in `tests/usecases/churn/test_motive_demo_dataset.cpp`
+**Tests:** `tests/data/test_dataset_path.cpp`, `tests/data/test_dataset_catalog_typing.cpp` (#1203 item 3), and the #956 timing in `tests/usecases/churn/test_comms_demo_dataset.cpp`
 
 ## The break this closes
 
@@ -199,7 +199,7 @@ A table of numbers with a boolean label, or with the entity and label named, is 
 **no row read at all**. The first note says which happened:
 
 ```
-column types: from the partition catalog (2 partitions); values of churned, finance_segment, finance_sub_segment, sfdc_account_id read from the first 256 rows (text, or a label or entity the catalog cannot type)
+column types: from the partition catalog (2 partitions); values of churned, crm_account_id, segment, sub_segment read from the first 256 rows (text, or a label or entity the catalog cannot type)
 column types: from the partition catalog (4 partitions); no rows read to type them
 column types: from the first 256 rows, every column (the table has no partitions in the catalog)
 ```
@@ -220,8 +220,8 @@ sample's, and `CatalogTyping.TypesMatchWhatTheSamplerProduced` holds it to that 
 the same rows landed partitioned, unpartitioned and partition-only.
 
 **Measured** ([#956](https://github.com/oramasearch/zetta/issues/956)'s path:
-`MotiveDemoDataset.TrainsAndExplainsWithTreeShap` over the 15,000-row demo table from
-`scripts/gen_motive_demo_dataset.py --accounts 15000`, median of 5 per run, three runs each,
+`CommsDemoDataset.TrainsAndExplainsWithTreeShap` over the 15,000-row demo table from
+`scripts/gen_comms_demo_dataset.py --accounts 15000`, median of 5 per run, three runs each,
 macOS arm64 Release, same machine back to back):
 
 | | before | after |
@@ -232,7 +232,7 @@ macOS arm64 Release, same machine back to back):
 
 Before, a resolve ran `SELECT *` twice (the typing sample and the fit for the two
 categories). After, it reads four of eighteen columns for typing (`churned` when the label is
-inferred, `finance_segment`, `finance_sub_segment`, `sfdc_account_id`) and two for fitting.
+inferred, `segment`, `sub_segment`, `crm_account_id`) and two for fitting.
 
 **With SQL `LIMIT` pushdown** ([#1021](https://github.com/oramasearch/zetta/issues/1021)): the
 typing read already sends `LIMIT <n>` (`SELECT <columns> FROM <db>.<table> LIMIT 256`, and the

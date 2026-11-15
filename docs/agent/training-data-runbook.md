@@ -5,7 +5,7 @@ feed three things:
 - the **base-agent corpus** (→ a private HuggingFace dataset) → base training (#863, #866);
 - the **Auto-Suggest corpus** (→ its own private HF dataset) → the Auto-Suggest model (#554);
 - the **synthetic churn data** (→ local Postgres) → the churn fork (#853) + the
-  Charles/Motive demo (#862).
+  churn demo (#862).
 
 The method is blender-rl's *grow by generation, gate by verification* — see the
 **rlvr-training-data** skill and [`scripts/README.md`](../../scripts/README.md).
@@ -74,7 +74,7 @@ the **methodology toolbox**. Every generated task is validated against
 ```bash
 export OPENROUTER_API_KEY=…  PERPLEXITY_API_KEY=…  HF_TOKEN=…  HF_DATASET_REPO=<owner>/<name>
 uv run scripts/gen_base_corpus.py --out corpus.jsonl                 # 20 samples per use case
-uv run scripts/gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json
+uv run scripts/gen_base_corpus.py --out corpus.jsonl --current-state UC-1=current-workflow.n8n.json
 uv run scripts/gen_base_corpus.py --out corpus.jsonl --append        # resume where it left off
 uv run scripts/gen_base_corpus.py --out corpus.jsonl --push          # after reviewing corpus.jsonl
 ```
@@ -82,7 +82,7 @@ uv run scripts/gen_base_corpus.py --out corpus.jsonl --push          # after rev
 Generates **20 samples per use case by default**, each phrased in a rotating **style**
 (the same outcome asked many ways) so the agent learns intent invariance, and some
 transforming a pasted **current state** — pass `--current-state UC-N=path` to hydrate a
-real artifact (e.g. Charles's n8n). Each admitted task is **written + flushed to `--out`
+real artifact (e.g. an existing n8n workflow). Each admitted task is **written + flushed to `--out`
 as it is generated**, so a Ctrl-C mid-run (or an OpenRouter credit-out) leaves a valid
 partial corpus. Re-running with **`--append` auto-resumes**: it reads the existing file,
 attributes each task to its use case (by the `uc:` tag, or a use-case-name keyword match
@@ -152,15 +152,15 @@ in Step 0). The script prints the resolved target before inserting.
 
 ```bash
 uv run scripts/gen_synthetic_churn_pg.py --accounts 500              # → orama_churn_synth
-uv run scripts/gen_synthetic_churn_pg.py --accounts 500 --database motive_demo
+uv run scripts/gen_synthetic_churn_pg.py --accounts 500 --database churn_demo
 uv run scripts/gen_synthetic_churn_pg.py --accounts 500 --realistic # frontier-written comms
 # or a full DSN:
 DATABASE_URL=postgresql://…/<db> uv run scripts/gen_synthetic_churn_pg.py --accounts 500
 ```
 
-Creates `account_registry` / `account_events` / `account_labels` (Charles's schema) and
+Creates `account_registry` / `account_events` / `account_labels` (CRM-style tables) and
 inserts synthetic accounts with learnable churn signal. The insert is idempotent per
-`sfdc_account_id` (`ON CONFLICT DO NOTHING`).
+`crm_account_id` (`ON CONFLICT DO NOTHING`).
 
 ## Step 6 — hand off to training
 

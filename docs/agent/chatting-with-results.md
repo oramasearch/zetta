@@ -67,7 +67,7 @@ own `connect` as an unknown tool while building it.
 **"Which accounts are most at risk?"** → `score` with the model and the dataset:
 
 ```jsonc
-{"model": "<model-id>", "dataset_path": "motive_demo.account_features", "top_k": 10}
+{"model": "<model-id>", "dataset_path": "comms_demo.account_features", "top_k": 10}
 ```
 
 Returns entities ranked by risk, the feature columns the model expects, and the population
