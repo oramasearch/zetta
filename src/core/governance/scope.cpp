@@ -15,6 +15,7 @@ std::string_view to_string(ResourceKind kind) {
         case ResourceKind::Topic:    return "topic";
         case ResourceKind::Collection: return "collection";
         case ResourceKind::Bucket:   return "bucket";
+        case ResourceKind::Connection: return "connection";
     }
     return "unknown";
 }
@@ -29,6 +30,7 @@ bool resource_kind_from_string(std::string_view text, ResourceKind& out) {
     if (text == "topic")    { out = ResourceKind::Topic;    return true; }
     if (text == "collection") { out = ResourceKind::Collection; return true; }
     if (text == "bucket")   { out = ResourceKind::Bucket;   return true; }
+    if (text == "connection") { out = ResourceKind::Connection; return true; }
     return false;
 }
 
@@ -85,6 +87,13 @@ Resource Resource::bucket(std::string name_or_prefix) {
     return r;
 }
 
+Resource Resource::connection(std::string name) {
+    Resource r;
+    r.kind = ResourceKind::Connection;
+    r.name = std::move(name);
+    return r;
+}
+
 namespace {
 bool starts_with(std::string_view text, std::string_view prefix) {
     return text.size() >= prefix.size() &&
@@ -133,6 +142,11 @@ bool object_covers(const Resource& granted, const Resource& target) {
             // can reserve a namespace such as `lake_`.
             return granted.kind == ResourceKind::Bucket &&
                    starts_with(target.name, granted.name);
+        case ResourceKind::Connection:
+            // A saved connection holds one credential: a grant names it exactly,
+            // never by prefix (#1339).
+            return granted.kind == ResourceKind::Connection &&
+                   granted.name == target.name;
         case ResourceKind::Table:
             // A database grant covers all its tables; a table/column grant on the
             // same table makes the table reachable.

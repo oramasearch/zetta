@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "../util/private_directory.hpp"
@@ -177,6 +179,86 @@ std::optional<CredentialKeyring> load_or_create_local_keyring(
         }
     }
     return CredentialKeyring::from_root_secrets(secret, {}, reason);
+}
+
+std::optional<ExternalRootSecret> load_external_root_secret(
+    const std::string& path, const std::string& data_dir, std::string* reason) {
+    std::error_code error;
+    const fs::path target = fs::canonical(fs::path(path), error);
+    if (error) {
+        set_reason(reason, "connection root secret file " + path + ": " + error.message());
+        return std::nullopt;
+    }
+    // Inside data_dir it would be copied with the data it protects (#1314).
+    fs::path data = fs::weakly_canonical(fs::path(data_dir), error).lexically_normal();
+    if (!error && !data.has_filename()) data = data.parent_path();  // a trailing '/'
+    if (!error) {
+        const auto [data_end, target_at] =
+            std::mismatch(data.begin(), data.end(), target.begin(), target.end());
+        if (data_end == data.end()) {
+            set_reason(reason, "connection root secret file " + path + " resolves to " +
+                                   target.string() + ", inside the data directory " +
+                                   data.string() +
+                                   ": keep it outside, e.g. a mounted Secret");
+            return std::nullopt;
+        }
+    }
+    const fs::file_status status = fs::status(target, error);
+    if (error || !fs::is_regular_file(status)) {
+        set_reason(reason, "connection root secret file " + target.string() +
+                               " is not a regular file");
+        return std::nullopt;
+    }
+    if ((status.permissions() & (fs::perms::group_write | fs::perms::others_write)) !=
+        fs::perms::none) {
+        set_reason(reason, "connection root secret file " + target.string() +
+                               " is writable by group or others; make it 0400 or 0600");
+        return std::nullopt;
+    }
+    constexpr std::uintmax_t kMaximumBytes = 64 * 1024;
+    const std::uintmax_t size = fs::file_size(target, error);
+    if (error || size > kMaximumBytes) {
+        set_reason(reason, "connection root secret file " + target.string() +
+                               " is unreadable or larger than 64 KiB");
+        return std::nullopt;
+    }
+    std::ifstream in(target, std::ios::binary);
+    if (!in) {
+        set_reason(reason, "connection root secret file " + target.string() +
+                               " cannot be opened");
+        return std::nullopt;
+    }
+    ExternalRootSecret secrets;
+    std::string line;
+    while (std::getline(in, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' ||
+                                 line.back() == '\t')) {
+            line.pop_back();
+        }
+        const std::size_t first = line.find_first_not_of(" \t");
+        if (first == std::string::npos) continue;
+        line.erase(0, first);
+        if (line.front() == '#') continue;
+        if (line.size() < kMinimumRootSecretLength) {
+            set_reason(reason, "connection root secret file " + target.string() +
+                                   ": a secret is shorter than " +
+                                   std::to_string(kMinimumRootSecretLength) +
+                                   " characters (try `openssl rand -hex 32`)");
+            return std::nullopt;
+        }
+        if (secrets.current.empty()) {
+            secrets.current = line;
+        } else if (line != secrets.current &&
+                   std::ranges::find(secrets.retired, line) == secrets.retired.end()) {
+            secrets.retired.push_back(line);
+        }
+    }
+    if (secrets.current.empty()) {
+        set_reason(reason, "connection root secret file " + target.string() +
+                               " holds no secret");
+        return std::nullopt;
+    }
+    return secrets;
 }
 
 std::optional<nlohmann::json> seal_credential(const CredentialKeyring& keyring,

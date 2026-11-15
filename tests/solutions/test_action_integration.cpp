@@ -282,9 +282,17 @@ struct ActionIntegrationFixture : ::testing::Test {
         zetta::connect::AllowedDestinations allowed;
         allowed.loopback = true;
         zetta::connect::set_allowed_destinations(allowed);
+        // The fixtures' tokens go to their own loopback servers, which an
+        // administrator approves for delivery credentials (#1453).
+        const auto approved = zetta::connect::ApprovedDeliveryEndpoints::parse(
+            "http://127.0.0.1:*, http://localhost:*, https://example.test, "
+            "https://example.com");
+        ASSERT_TRUE(approved);
+        zetta::connect::set_approved_delivery_endpoints(*approved);
     }
 
     void TearDown() override {
+        zetta::connect::set_approved_delivery_endpoints({});
         zetta::connect::set_allowed_destinations({});
         zetta::api::shutdown_native_http_transport();
         node.stop();
@@ -354,7 +362,9 @@ TEST_F(ActionIntegrationFixture, WebhookRetriesWithOneIdempotencyKeyAndRecordsLe
     ASSERT_TRUE(delivered) << error;
     EXPECT_EQ(delivered->status, ActionTaskStatus::Delivered);
     EXPECT_EQ(delivered->attempts, 3u);
-    EXPECT_EQ(delivered->acknowledgement.at("http_status"), 200);
+    // A coarse outcome (#1453): the class, never the peer's status or body.
+    EXPECT_EQ(delivered->acknowledgement,
+              (Json{{"outcome", "acknowledged"}, {"status_class", "2xx"}}));
     server.wait();
     ASSERT_TRUE(server.error().empty()) << server.error();
     ASSERT_EQ(server.requests().size(), 3u);
@@ -969,6 +979,82 @@ TEST_F(ActionIntegrationFixture, DeliveryRefusesALoopbackEndpointTheNodeDoesNotA
     }
 }
 
+// #1453: a delivery's credential goes only to an endpoint an administrator
+// approved, over HTTPS (loopback excepted), and nothing is sent otherwise; the
+// stored outcome is coarse, never the peer's status text or body.
+TEST_F(ActionIntegrationFixture, CredentialsGoOnlyToApprovedHttpsEndpoints) {
+    zetta::connect::set_approved_delivery_endpoints({});
+    IdleListener listener;
+    ASSERT_NE(listener.port(), 0);
+    const auto [policy_id, decision_id] = create_decision("unapproved");
+    ASSERT_FALSE(decision_id.empty());
+
+    ActionRuntime runtime(node);
+    std::string error;
+    // Not approved: refused before anything is sent, the task left pending.
+    const auto refused = runtime.execute_closed_loop(
+        task_spec(decision_id, listener.url("127.0.0.1"), ActionConnectorKind::Webhook,
+                  "unapproved-key"),
+        "agent-key", &error);
+    EXPECT_FALSE(refused);
+    EXPECT_NE(error.find("approved"), std::string::npos) << error;
+    EXPECT_FALSE(listener.was_dialled());
+
+    // A plaintext endpoint off loopback is refused for every delivery.
+    error.clear();
+    EXPECT_FALSE(runtime.enqueue_task(
+        task_spec(decision_id, "http://crm.example.test/tasks", ActionConnectorKind::Webhook,
+                  "plaintext-key"),
+        "agent-key", &error));
+    EXPECT_NE(error.find("https"), std::string::npos) << error;
+
+    // The rules themselves.
+    EXPECT_TRUE(zetta::connect::delivery_endpoint_rejection("https://crm.example.test/x").empty());
+    EXPECT_TRUE(zetta::connect::delivery_endpoint_rejection("http://127.0.0.1:9/x").empty());
+    EXPECT_TRUE(zetta::connect::delivery_endpoint_rejection("http://[::1]:9/x").empty());
+    EXPECT_FALSE(zetta::connect::delivery_endpoint_rejection("http://10.0.0.7/x").empty());
+    EXPECT_FALSE(zetta::connect::delivery_endpoint_rejection("ftp://crm.example.test").empty());
+    std::string parse_error;
+    EXPECT_FALSE(zetta::connect::ApprovedDeliveryEndpoints::parse("http://crm.example.test",
+                                                                  &parse_error));
+    const auto approved =
+        zetta::connect::ApprovedDeliveryEndpoints::parse("https://crm.example.test");
+    ASSERT_TRUE(approved);
+    EXPECT_TRUE(approved->approves("https://CRM.example.test/tasks?x=1"));
+    EXPECT_TRUE(approved->approves("https://crm.example.test:443/tasks"));
+    EXPECT_FALSE(approved->approves("https://crm.example.test:8443/tasks"));
+    EXPECT_FALSE(approved->approves("https://crm.example.test.evil.test/tasks"));
+    EXPECT_FALSE(approved->approves("https://user@crm.example.test/tasks"));
+    zetta::connect::set_approved_delivery_endpoints(*approved);
+    EXPECT_TRUE(zetta::connect::delivery_credential_rejection(
+                    "https://crm.example.test/tasks", true)
+                    .empty());
+    EXPECT_FALSE(zetta::connect::delivery_credential_rejection(
+                     "https://other.example.test/tasks", true)
+                     .empty());
+    // Without a credential only HTTPS is required.
+    EXPECT_TRUE(zetta::connect::delivery_credential_rejection(
+                    "https://other.example.test/tasks", false)
+                    .empty());
+
+    // A failed delivery records the class, not the peer's words.
+    LocalHttpServer server({503});
+    const auto approved_loopback =
+        zetta::connect::ApprovedDeliveryEndpoints::parse("http://127.0.0.1:*");
+    ASSERT_TRUE(approved_loopback);
+    zetta::connect::set_approved_delivery_endpoints(*approved_loopback);
+    const auto [second_policy, second_decision] = create_decision("coarse");
+    ASSERT_FALSE(second_decision.empty());
+    ActionTaskSpec spec =
+        task_spec(second_decision, server.url(), ActionConnectorKind::Webhook, "coarse-key");
+    spec.max_attempts = 1;
+    const auto failed = runtime.execute_closed_loop(std::move(spec), "agent-key", &error);
+    ASSERT_TRUE(failed) << error;
+    EXPECT_EQ(failed->status, ActionTaskStatus::DeadLetter);
+    EXPECT_EQ(failed->last_error, "the endpoint failed (5xx)");
+    server.wait();
+}
+
 // The same check guards a solution's report delivery, whose endpoint a writer
 // stores and a later run sends its delivery token to.
 TEST_F(ActionIntegrationFixture, ReportDeliveryRefusesAPrivateOrMetadataEndpoint) {
@@ -987,10 +1073,17 @@ TEST_F(ActionIntegrationFixture, ReportDeliveryRefusesAPrivateOrMetadataEndpoint
     } restore_egress;
     IdleListener listener;
     ASSERT_NE(listener.port(), 0);
+    // Approved for the credential (#1453), so the destination policy is what
+    // refuses them; plaintext is allowed only to loopback.
+    const auto approved = zetta::connect::ApprovedDeliveryEndpoints::parse(
+        "http://127.0.0.1:*, http://[::ffff:127.0.0.1]:*, https://169.254.169.254, "
+        "https://10.0.0.7:8080");
+    ASSERT_TRUE(approved);
+    zetta::connect::set_approved_delivery_endpoints(*approved);
     const std::vector<std::pair<std::string, std::string>> endpoints = {
         {listener.url("127.0.0.1", "/forum/reports"), "loopback"},
-        {"http://169.254.169.254/latest/meta-data/", "metadata"},
-        {"http://10.0.0.7:8080/hook", "private"},
+        {"https://169.254.169.254/latest/meta-data/", "metadata"},
+        {"https://10.0.0.7:8080/hook", "private"},
         {"http://[::ffff:127.0.0.1]:" + std::to_string(listener.port()) + "/r", "loopback"},
     };
     int index = 0;

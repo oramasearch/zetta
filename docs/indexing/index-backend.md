@@ -204,7 +204,9 @@ backend's concern, rebuilt per node — building a deployed index is a later sli
 `Index` is validated against a formal **JSON Schema** (draft-07) at the storage
 boundary — the same discipline as the [Run](../pipeline/runs.md) / [Model](../ml/models.md) records:
 `table` / `backend` are required + non-empty, `kind` is a closed enum, `fields` is
-a non-empty array of **unique** non-empty strings, and no stray fields are allowed
+a non-empty array of **unique** non-empty strings, the optional `database_id` (the
+id of the database holding `table`, #1428 — see
+[node-search.md](node-search.md#the-source-database-1428)) is non-empty when present, and no stray fields are allowed
 (`additionalProperties: false`). Every value entering from disk (`index.json`) or
 the CRDT (`index:<id>`) passes `parse_index_value`, so a malformed record is
 rejected with a clear reason (logged + skipped on load) instead of corrupting the

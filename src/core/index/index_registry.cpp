@@ -10,7 +10,10 @@ namespace zetta::index {
 // that may hold many: table + kind + the fields in order. `backend` is NOT part of
 // it — `backend` selects the implementation, not the index.
 std::string IndexSpec::key() const {
-    std::string key = table;
+    // The database id leads when known (#1428); a spec without one keeps its
+    // earlier key, so nothing built before the change is renamed.
+    std::string key = database_id.empty() ? std::string{} : database_id + '\x1f';
+    key += table;
     key += '|';
     key += to_string(kind);
     for (const std::string& field : fields) {

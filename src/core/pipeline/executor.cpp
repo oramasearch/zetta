@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "zetta/connect/egress_policy.hpp"
 #include "zetta/node.hpp"
 #include "zetta/util/timestamp.hpp"
 
@@ -250,6 +251,11 @@ ExecutionResult GraphExecutor::execute(Node& node,
         }
         StepOutcome outcome;
         if (authority) {
+            // Outbound connections the step opens are made for the run's
+            // principal and this run (#1323): an egress denial names them,
+            // not the node.
+            const zetta::connect::OutboundCallerScope outbound{
+                {principal_.local() ? std::string("local") : principal_.acting_id, run_id}};
             outcome = step_executor_->run_step(*step);
         } else {
             outcome.ok = false;

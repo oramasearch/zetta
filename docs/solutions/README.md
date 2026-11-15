@@ -106,7 +106,9 @@ one-tick checks for all added catalog families and existing table-backed state.
   acknowledgements, dead letters, holdout suppression, and kill-switch guarded
   closed-loop execution (#1109); a solution run's report delivered off the
   owner loop, each attempt bounded by its timeout (lake#801); keys bound to the
-  actor and complete non-secret specification before using credentials (#1410).
+  actor and complete non-secret specification before using credentials (#1410);
+  HTTPS delivery, credentials only to administrator-approved origins, and coarse
+  outcomes (#1453).
 
 - [roi-readout.md](roi-readout.md) — versioned correctness, aggregate
   incrementality with confidence intervals, customer-supplied ROI, guardrails,

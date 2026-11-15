@@ -158,3 +158,60 @@ TEST(CredentialSeal, LocalRootRefusesLinksAndSpecialFiles) {
     ASSERT_EQ(::mkfifo(path.c_str(), 0600), 0);
     EXPECT_FALSE(zetta::connect::load_or_create_local_keyring(temporary.path().string()));
 }
+
+// #1314: the root secret a node started by main seals under comes from a file
+// outside data_dir. One inside it (directly, or through a symbolic link, as a
+// Secret mount is links) is refused, as are a writable-by-others file and a
+// short secret; later lines are retired secrets.
+TEST(CredentialSeal, TheExternalRootSecretMustLiveOutsideTheDataDirectory) {
+    zetta::test::TempDir temporary;
+    const auto data_dir = temporary.path() / "data";
+    const auto mount = temporary.path() / "mounted-secret";
+    std::filesystem::create_directories(data_dir / "security");
+    std::filesystem::create_directories(mount);
+    const std::string current(64, 'c');
+    const std::string retired(64, 'r');
+    const auto secret_file = mount / "root";
+    std::ofstream(secret_file) << "# connector root secret\n" << current << "\n\n" << retired << "\n";
+    std::filesystem::permissions(secret_file, std::filesystem::perms::owner_read);
+
+    std::string reason;
+    const auto loaded = zetta::connect::load_external_root_secret(
+        secret_file.string(), data_dir.string(), &reason);
+    ASSERT_TRUE(loaded) << reason;
+    EXPECT_EQ(loaded->current, current);
+    ASSERT_EQ(loaded->retired.size(), 1u);
+    EXPECT_EQ(loaded->retired.front(), retired);
+
+    // Inside data_dir, directly or through a link that resolves there.
+    const auto inside = data_dir / "security" / "root";
+    std::ofstream(inside) << current << "\n";
+    std::filesystem::permissions(inside, std::filesystem::perms::owner_read);
+    EXPECT_FALSE(zetta::connect::load_external_root_secret(inside.string(),
+                                                           data_dir.string(), &reason));
+    EXPECT_NE(reason.find("inside the data directory"), std::string::npos) << reason;
+    const auto link = mount / "link";
+    std::filesystem::create_symlink(inside, link);
+    EXPECT_FALSE(zetta::connect::load_external_root_secret(link.string(),
+                                                           data_dir.string(), &reason));
+    EXPECT_FALSE(zetta::connect::load_external_root_secret(
+        inside.string(), data_dir.string() + "/", &reason));
+
+    // Writable by others, too short, empty, missing.
+    const auto loose = mount / "loose";
+    std::ofstream(loose) << current << "\n";
+    std::filesystem::permissions(loose, std::filesystem::perms::owner_read |
+                                            std::filesystem::perms::owner_write |
+                                            std::filesystem::perms::others_write);
+    EXPECT_FALSE(zetta::connect::load_external_root_secret(loose.string(), data_dir.string()));
+    const auto short_file = mount / "short";
+    std::ofstream(short_file) << "too-short\n";
+    EXPECT_FALSE(
+        zetta::connect::load_external_root_secret(short_file.string(), data_dir.string()));
+    const auto empty_file = mount / "empty";
+    std::ofstream(empty_file) << "# nothing\n";
+    EXPECT_FALSE(
+        zetta::connect::load_external_root_secret(empty_file.string(), data_dir.string()));
+    EXPECT_FALSE(zetta::connect::load_external_root_secret((mount / "absent").string(),
+                                                           data_dir.string()));
+}

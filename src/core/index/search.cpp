@@ -19,25 +19,71 @@
 #include "zetta/storage/engine.hpp"
 
 namespace zetta::index {
+
 namespace {
 
-// A spec names its source table by NAME; partitions record the table's ID.
-// Resolve name -> id across the node's databases (first match), falling back to
-// the name itself (mirrors the build path in distributed_fulltext.cpp).
-std::string resolve_table_id(Node& node, const std::string& table) {
-    for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<zetta::data::Database> database =
-            node.find_database(name);
-        if (!database) continue;
-        if (const std::shared_ptr<zetta::data::Table> found =
-                database->find_table(table)) {
-            return found->id();
-        }
+constexpr std::string_view kAmbiguousSource = "several databases hold a table named";
+
+IndexSource resolved_in(const std::shared_ptr<zetta::data::Database>& database,
+                        const std::string& table, const std::string& missing) {
+    IndexSource source;
+    if (database) source.table = database->find_table(table);
+    if (!source.table) {
+        source.reason = missing;
+        return source;
     }
-    return table;
+    source.database = database->name();
+    source.database_id = database->id();
+    return source;
 }
 
 }  // namespace
+
+IndexSource resolve_index_source(Node& node, const IndexSpec& spec,
+                                 const std::string& database_name) {
+    if (!spec.database_id.empty()) {
+        return resolved_in(node.find_database_by_id(spec.database_id), spec.table,
+                           "table '" + spec.table +
+                               "' is not in the database the index records");
+    }
+    if (!database_name.empty()) {
+        return resolved_in(node.find_database(database_name), spec.table,
+                           "table '" + spec.table + "' is not in database '" +
+                               database_name + "'");
+    }
+    IndexSource source;
+    // A record from before the database was persisted: accept it only when the
+    // name is unambiguous, so it can never bind to another database's table.
+    std::vector<std::shared_ptr<zetta::data::Database>> holders;
+    for (const std::string& name : node.database_names()) {
+        std::shared_ptr<zetta::data::Database> database = node.find_database(name);
+        if (database && database->find_table(spec.table)) {
+            holders.push_back(std::move(database));
+        }
+    }
+    if (holders.empty()) {
+        source.reason = "table '" + spec.table + "' not found";
+        return source;
+    }
+    if (holders.size() > 1) {
+        std::string names;
+        for (const auto& database : holders) {
+            if (!names.empty()) names += ", ";
+            names += database->name();
+        }
+        source.reason = "the index records no database and " +
+                        std::string(kAmbiguousSource) + " '" + spec.table +
+                        "' (" + names +
+                        "); recreate it with create_index naming `database`";
+        return source;
+    }
+    return resolved_in(holders.front(), spec.table,
+                       "table '" + spec.table + "' not found");
+}
+
+bool ambiguous_index_source(const IndexSource& source) {
+    return !source.ok() && source.reason.find(kAmbiguousSource) != std::string::npos;
+}
 
 // Resolve `target` to a registered Index entity: an exact index id wins;
 // otherwise the most recently created Search-kind index over the table named
@@ -75,8 +121,9 @@ bool has_placed_partitions(Node& node, const std::string& table_id) {
 
 // The consolidated path's row lookup (#1243): the index was built over the
 // table's own store (the index step executor), so its rows are on this node.
-// Removes missing or unauthorized rows before filling requested fields.
-void attach_consolidated_fields(Node& node, const std::string& table,
+// Reads only the resolved source table (#1428). Removes missing or
+// unauthorized rows before filling requested fields.
+void attach_consolidated_fields(const zetta::data::Table& source,
                                 const std::vector<std::string>& fields,
                                 std::vector<SearchHit>& hits,
                                 const zetta::query::ReadFilter& filter) {
@@ -84,13 +131,8 @@ void attach_consolidated_fields(Node& node, const std::string& table,
     std::unordered_set<std::string> allowed;
     std::unordered_map<std::string, SearchHit*> wanted;
     for (SearchHit& hit : hits) wanted.emplace(hit.row_id, &hit);
-    for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<zetta::data::Database> database =
-            node.find_database(name);
-        if (!database) continue;
-        const std::shared_ptr<zetta::data::Table> found = database->find_table(table);
-        if (!found) continue;
-        const zetta::storage::StorageEngine& store = found->store();
+    {
+        const zetta::storage::StorageEngine& store = source.store();
         for (std::size_t i = 0; i < store.size() && !wanted.empty(); ++i) {
             const auto hit = wanted.find(store.id_at(i));
             if (hit == wanted.end()) continue;
@@ -109,7 +151,6 @@ void attach_consolidated_fields(Node& node, const std::string& table,
             }
             wanted.erase(hit);
         }
-        break;
     }
     std::erase_if(hits, [&](const SearchHit& hit) {
         return !allowed.contains(hit.row_id);
@@ -193,20 +234,16 @@ SearchResult search(Node& node, const SearchRequest& request,
             "search: query field is not indexed"));
     }
 
-    // Resolve once, exactly as hydration/build does. Authorization must apply
-    // to that database's table, never a different same-named table (#1403).
-    std::string database_name;
-    for (const std::string& name : node.database_names()) {
-        const auto database = node.find_database(name);
-        if (database && database->find_table(result.spec.table)) {
-            database_name = name;
-            break;
-        }
+    // Resolve once, by the rule the build uses (#1428): the index's recorded
+    // database, or the one database holding the name for an older record.
+    // Authorization, routing and hydration all apply to that table, never a
+    // different same-named one (#1403).
+    const IndexSource source = resolve_index_source(node, result.spec);
+    if (!source.ok()) {
+        return fail(IndexStatus::not_found(
+            "search: source table is unavailable: " + source.reason));
     }
-    if (database_name.empty()) {
-        return fail(
-            IndexStatus::not_found("search: source table is unavailable"));
-    }
+    const std::string& database_name = source.database;
     // SQL exposes system views instead of stored system tables, and never
     // exposes the reserved connection store, even to an administrator.
     if (database_name == "system" ||
@@ -247,8 +284,7 @@ SearchResult search(Node& node, const SearchRequest& request,
     // per-partition path (the distributed-first default); otherwise the
     // consolidated registry backend (the degraded path).
     DistributedFulltextIndex* distributed = node.distributed_fulltext();
-    const bool placed =
-        has_placed_partitions(node, resolve_table_id(node, result.spec.table));
+    const bool placed = has_placed_partitions(node, source.table->id());
     const zetta::observability::TraceContext inner{trace.trace_id,
                                                    root_span.span_id()};
 
@@ -308,8 +344,8 @@ SearchResult search(Node& node, const SearchRequest& request,
                 i < query_result.scores.size() ? query_result.scores[i] : 0.0;
             result.hits.push_back(SearchHit{query_result.row_ids[i], score});
         }
-        attach_consolidated_fields(node, result.spec.table, return_fields,
-                                   result.hits, filter);
+        attach_consolidated_fields(*source.table, return_fields, result.hits,
+                                   filter);
         NodeContribution self;
         self.node_id = node.node_id();
         self.local = true;

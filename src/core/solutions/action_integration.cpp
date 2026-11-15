@@ -6,6 +6,7 @@
 
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/connect/destination_policy.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
@@ -346,21 +347,41 @@ public:
     }
 };
 
-Json acknowledgement_from(const zetta::connect::HttpResponse& response) {
-    Json body = Json::parse(response.body, nullptr, false);
-    if (body.is_discarded()) {
-        body = response.body;
+// Coarse delivery outcomes (#1453): the ledger and the stored task say what
+// happened in classes, never the peer's raw status or body, so an endpoint
+// cannot write its own text into the record or probe through it.
+std::string status_class(int status) {
+    if (status < 100 || status > 599) return "unknown";
+    return std::to_string(status / 100) + "xx";
+}
+
+std::string status_class_meaning(int status) {
+    switch (status / 100) {
+        case 2: return "accepted";
+        case 3: return "redirected";
+        case 4: return "rejected the request";
+        case 5: return "failed";
+        default: return "answered unexpectedly";
     }
-    return {{"http_status", response.status}, {"body", std::move(body)}};
+}
+
+Json acknowledgement_from(const zetta::connect::HttpResponse& response) {
+    return {{"outcome", "acknowledged"}, {"status_class", status_class(response.status)}};
 }
 
 std::string response_error(const zetta::connect::HttpResponse& response) {
     if (!response.error.empty()) {
+        // The node's own transport reason (a refused destination, a timeout,
+        // a TLS failure): it never carries the peer's body.
         return response.error;
     }
-    return "HTTP " + std::to_string(response.status) +
-           (response.body.empty() ? std::string{} : ": " + response.body);
+    return "the endpoint " + status_class_meaning(response.status) + " (" +
+           status_class(response.status) + ")";
 }
+
+// The ledger value of one delivery: the status class (200, 400, 500), not
+// the peer's exact status.
+int ledger_status(int status) { return status >= 100 && status <= 599 ? status / 100 * 100 : 0; }
 
 void record_delivery_outcome(
     zetta::Node& node,
@@ -744,6 +765,13 @@ std::optional<ActionTask> ActionRuntime::enqueue_task(
         }
         return std::nullopt;
     }
+    // Every delivery goes over HTTPS (or stays on loopback), #1453.
+    if (std::string rejection =
+            zetta::connect::delivery_endpoint_rejection(spec.connector.endpoint);
+        !rejection.empty()) {
+        if (error != nullptr) *error = std::move(rejection);
+        return std::nullopt;
+    }
     auto task = task_from_spec(spec, actor);
     if (task.spec_digest.empty()) {
         if (error != nullptr) {
@@ -865,6 +893,15 @@ std::optional<ActionTask> ActionRuntime::deliver_task(
         return std::nullopt;
     }
 
+    // The credential goes only to an approved endpoint over HTTPS (#1453),
+    // checked before anything is sent; a refusal attempts nothing and leaves
+    // the task pending for a delivery that may proceed.
+    if (std::string rejection =
+            zetta::connect::delivery_credential_rejection(task->endpoint, !token.empty());
+        !rejection.empty()) {
+        if (error != nullptr) *error = std::move(rejection);
+        return std::nullopt;
+    }
     ActionConnectorConfig config;
     config.kind = task->connector;
     config.endpoint = task->endpoint;
@@ -913,7 +950,7 @@ std::optional<ActionTask> ActionRuntime::deliver_task(
                 node_,
                 task->ledger_action_id,
                 "acknowledged",
-                response.status,
+                ledger_status(response.status),
                 task->currency);
             if (!persist_task(node_, *task, error)) {
                 return std::nullopt;
@@ -925,7 +962,7 @@ std::optional<ActionTask> ActionRuntime::deliver_task(
             node_,
             task->ledger_action_id,
             "delivery_failed",
-            response.status,
+            ledger_status(response.status),
             task->currency);
         if (!persist_task(node_, *task, error)) {
             return std::nullopt;
@@ -981,6 +1018,13 @@ std::optional<PreparedReportPublication> ActionRuntime::prepare_report(
         if (error != nullptr) {
             *error = "max_attempts must not exceed 100";
         }
+        return std::nullopt;
+    }
+    // HTTPS always, and an approved endpoint for a credential (#1453).
+    if (std::string rejection = zetta::connect::delivery_credential_rejection(
+            spec.connector.endpoint, !spec.connector.token.empty());
+        !rejection.empty()) {
+        if (error != nullptr) *error = std::move(rejection);
         return std::nullopt;
     }
     auto candidate = publication_from_spec(spec, actor);
@@ -1074,7 +1118,7 @@ std::optional<ReportPublication> ActionRuntime::record_report_attempt(
             node_,
             publication.ledger_action_id,
             "acknowledged",
-            response.status,
+            ledger_status(response.status),
             publication.currency);
         if (!persist_publication(node_, publication, error)) {
             return std::nullopt;
@@ -1086,7 +1130,7 @@ std::optional<ReportPublication> ActionRuntime::record_report_attempt(
         node_,
         publication.ledger_action_id,
         "delivery_failed",
-        response.status,
+        ledger_status(response.status),
         publication.currency);
     if (publication.attempts >= publication.max_attempts) {
         publication.status = ActionTaskStatus::DeadLetter;

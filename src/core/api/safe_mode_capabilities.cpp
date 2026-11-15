@@ -198,6 +198,30 @@ ApiResult handle_set_safe_mode(const nlohmann::json& input, ApiContext& context)
                 : "changing a database's safe mode needs sql:ddl on database '" +
                       selector->name + "' (the right to manage that database)");
     }
+    // A connection's guard is that connection's to manage (#1339): its owner,
+    // or connections:manage on it, not any holder of create_connection.
+    if (selector->target == SafeModeTarget::Connection) {
+        const std::optional<zetta::connect::SavedConnection> saved =
+            zetta::connect::find_connection(context.node, selector->name);
+        if (saved && !zetta::connect::may_access_connection(
+                         context.node, *saved, context.acting_key, context.acting_is_user,
+                         zetta::connect::ConnectionAccess::Manage)) {
+            zetta::governance::AuditEventValue event;
+            event.action = zetta::governance::AuditAction::DataAccess;
+            event.actor = context.acting_key.empty() ? "local" : context.acting_key;
+            event.target = "connection:" + selector->name;
+            event.allowed = false;
+            event.detail = "set_safe_mode: no connections:manage grant on it";
+            context.node.record_audit_event(std::move(event));
+            return ApiResult::failure(
+                "unauthorized",
+                "changing connection '" + selector->name +
+                    "''s safe mode needs connections:manage on it (GRANT "
+                    "connections:manage ON CONNECTION " + selector->name +
+                    "), or to have created it",
+                "/connection");
+        }
+    }
     const std::optional<SafeMode> mode =
         zetta::governance::parse_safe_mode(input.at("mode").get<std::string>());
     if (!mode) {  // the schema's enum already refuses anything else

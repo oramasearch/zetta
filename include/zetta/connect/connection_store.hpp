@@ -60,6 +60,11 @@ struct SavedConnection {
     std::string name;
     ConnectorConfig config;  // includes the opened token (empty when Unreadable)
     std::string created;     // ISO-8601 UTC, when it was last saved
+    // Who saved it (#1339): the acting user (or legacy key) id. It may use and
+    // manage the connection without a grant. Empty for a row saved by the
+    // trusted local session, or before the owner was recorded: then only a
+    // holder of the flat right or an ON CONNECTION grant may.
+    std::string owner;
     CredentialState credential = CredentialState::None;
     std::string credential_error;  // why it is Unreadable
 
@@ -78,9 +83,31 @@ std::string connection_name_rejection(const std::string& name);
 // Save `config` under `name`, replacing any existing connection with that name
 // — which is how a credential is rotated: the new one is sealed afresh. Creates
 // the reserved database + table on first use. Returns a path-qualified reason on
-// failure (including no sealing key), empty on success. Non-throwing.
+// failure (including no sealing key), empty on success. Non-throwing. `owner`
+// is recorded on a new row; replacing a row keeps the owner it had. Callers
+// must check may_access_connection(..., Manage) before replacing one.
 std::string save_connection(Node& node, const std::string& name,
-                            const ConnectorConfig& config);
+                            const ConnectorConfig& config,
+                            const std::string& owner = {});
+
+// What a caller wants to do with a saved connection (#1339).
+enum class ConnectionAccess {
+    Use,     // present its credential to the source (connections:use)
+    Manage,  // replace, delete or set its safe mode (connections:manage)
+};
+
+// May `acting_id` do `access` on `saved`? Deny-by-default:
+//   - the trusted local session (an empty id) may;
+//   - the connection's owner may;
+//   - otherwise the identity needs the right (connections:use /
+//     connections:manage) flat, as admin holds it, or granted ON CONNECTION
+//     <name> (Node::authorize_object; a legacy AccessKey needs it flat).
+// Holding the capability that opens connections (list_source_tables,
+// create_dataset_from_query, create_connection) is not enough: knowing a
+// connection's name is not being able to use it. Main-thread only.
+bool may_access_connection(const Node& node, const SavedConnection& saved,
+                           const std::string& acting_id, bool acting_is_user,
+                           ConnectionAccess access);
 
 // The saved connection called `name`, or nullopt. **Carries the opened token**
 // — this is the resolution path a connector query uses, not a read surface. A

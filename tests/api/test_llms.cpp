@@ -217,8 +217,17 @@ TEST_F(LlmsHttpFixture, DocumentationNeverDisclosesWorkspaceInventory) {
         targets.push_back("/llms/" + topic.name);
         targets.push_back("/llms/" + topic.name + ".txt");
     }
-    std::vector<std::string> before;
-    for (const auto& target : targets) before.push_back(get(target));
+    // The pages answer per caller (#1357): anonymous and invalid bearers read
+    // the public rendering, any authenticated caller the full one. Neither
+    // changes with workspace state.
+    const std::vector<std::string> bearers{std::string{}, std::string{"invalid-docs-token"},
+                                           issued.secret, owner_secret};
+    std::vector<std::vector<std::string>> before;
+    for (const auto& target : targets) {
+        std::vector<std::string> per_bearer;
+        for (const std::string& bearer : bearers) per_bearer.push_back(get(target, bearer));
+        before.push_back(std::move(per_bearer));
+    }
 
     auto database = node.create_database("private-inventory-database");
     ASSERT_TRUE(database);
@@ -237,17 +246,16 @@ TEST_F(LlmsHttpFixture, DocumentationNeverDisclosesWorkspaceInventory) {
 
     for (std::size_t position = 0; position < targets.size(); ++position) {
         SCOPED_TRACE(targets[position]);
-        for (const std::string& bearer :
-             {std::string{}, std::string{"invalid-docs-token"}, issued.secret,
-              owner_secret}) {
-            const auto response = get(targets[position], bearer);
+        for (std::size_t which = 0; which < bearers.size(); ++which) {
+            const auto response = get(targets[position], bearers[which]);
             EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
             const auto body_start = response.find("\r\n\r\n");
-            const auto before_start = before[position].find("\r\n\r\n");
+            const std::string& earlier = before[position][which];
+            const auto before_start = earlier.find("\r\n\r\n");
             ASSERT_NE(body_start, std::string::npos);
             ASSERT_NE(before_start, std::string::npos);
             const auto body = response.substr(body_start + 4);
-            EXPECT_TRUE(body == before[position].substr(before_start + 4));
+            EXPECT_TRUE(body == earlier.substr(before_start + 4));
             EXPECT_EQ(body.find(node.node_id()), std::string::npos);
             EXPECT_EQ(body.find("private-inventory-"), std::string::npos);
         }
@@ -275,11 +283,11 @@ TEST_F(LlmsHttpFixture, OneGetOrientsANoMcpAgent) {
 }
 
 TEST_F(LlmsHttpFixture, TopicAndFullPagesAreServed) {
-    const std::string capabilities = get("/llms/capabilities.txt");
+    const std::string capabilities = get("/llms/capabilities.txt", owner_secret);
     EXPECT_NE(capabilities.find("200"), std::string::npos);
     EXPECT_NE(capabilities.find("`create_project`"), std::string::npos);
 
-    const std::string full = get("/llms-full.txt");
+    const std::string full = get("/llms-full.txt", owner_secret);
     EXPECT_NE(full.find("200"), std::string::npos);
     EXPECT_NE(full.find("# Observability"), std::string::npos);
 
@@ -287,6 +295,50 @@ TEST_F(LlmsHttpFixture, TopicAndFullPagesAreServed) {
     EXPECT_NE(missing.find("404"), std::string::npos);
     EXPECT_NE(missing.find("unknown topic"), std::string::npos);
     EXPECT_NE(missing.find("capabilities"), std::string::npos);
+}
+
+// #1357: the public discovery documents list capabilities only to an
+// authenticated caller. An anonymous (or invalid) caller learns how to
+// authenticate and reads no capability description, schema or OpenAPI path.
+TEST_F(LlmsHttpFixture, AnonymousCallersReadNoCapabilityCatalogue) {
+    auto nobody = node.create_user("docs-reader");
+    ASSERT_TRUE(nobody);
+    const auto issued = node.create_token(nobody->id(), zetta::governance::TokenType::Api);
+    ASSERT_TRUE(issued.token);
+    const auto create_project = server->registry().find("create_project");
+    ASSERT_TRUE(create_project);
+
+    for (const std::string& bearer : {std::string{}, std::string{"invalid-docs-token"}}) {
+        SCOPED_TRACE(bearer.empty() ? "anonymous" : "invalid");
+        const std::string capabilities = get("/llms/capabilities.txt", bearer);
+        EXPECT_TRUE(capabilities.starts_with("HTTP/1.1 200"));
+        EXPECT_EQ(capabilities.find("`create_project`"), std::string::npos);
+        EXPECT_NE(capabilities.find("Authorization: Bearer"), std::string::npos);
+        const std::string full = get("/llms-full.txt", bearer);
+        EXPECT_EQ(full.find(create_project->description), std::string::npos);
+        EXPECT_EQ(full.find("Input schema:"), std::string::npos);
+        const std::string index = get("/llms.txt", bearer);
+        EXPECT_NE(index.find("`server_info`"), std::string::npos);
+        EXPECT_NE(index.find("Authorization: Bearer"), std::string::npos);
+        const std::string openapi = get("/v1/openapi.json", bearer);
+        EXPECT_TRUE(openapi.starts_with("HTTP/1.1 200"));
+        const auto document =
+            nlohmann::json::parse(openapi.substr(openapi.find("\r\n\r\n") + 4), nullptr, false);
+        ASSERT_TRUE(document.is_object());
+        EXPECT_EQ(document,
+                  zetta::api::openapi_document(server->registry(), zetta::api::publicly_callable()));
+        EXPECT_FALSE(document.at("paths").contains("/v1/server_info"));
+    }
+    // Any authenticated caller reads the full catalogue, the build's API shape.
+    for (const std::string& bearer : {issued.secret, owner_secret}) {
+        const std::string capabilities = get("/llms/capabilities.txt", bearer);
+        EXPECT_NE(capabilities.find("`create_project`"), std::string::npos);
+        const std::string openapi = get("/v1/openapi.json", bearer);
+        const auto document =
+            nlohmann::json::parse(openapi.substr(openapi.find("\r\n\r\n") + 4), nullptr, false);
+        ASSERT_TRUE(document.is_object());
+        EXPECT_TRUE(document.at("paths").contains("/v1/server_info"));
+    }
 }
 
 // Regression for #700: the beast2 worker reuses one response object across

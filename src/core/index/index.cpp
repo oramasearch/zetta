@@ -40,7 +40,8 @@ const nlohmann::json& schema_document() {
           "items": { "type": "string", "minLength": 1 }
         },
         "created": { "type": "string" },
-        "exposed": { "type": "boolean" }
+        "exposed": { "type": "boolean" },
+        "database_id": { "type": "string", "minLength": 1 }
       },
       "required": ["table", "kind", "backend", "fields"],
       "additionalProperties": false
@@ -86,6 +87,9 @@ nlohmann::json to_json(const IndexValue& value) {
     // Emitted only when set, so records written before serving existed (#648)
     // and never-exposed indexes keep byte-identical metadata.
     if (value.exposed) document["exposed"] = true;
+    // Likewise only when known (#1428): a record from before the database was
+    // persisted keeps its bytes, and resolve_index_source decides it.
+    if (!value.database_id.empty()) document["database_id"] = value.database_id;
     return document;
 }
 
@@ -116,6 +120,7 @@ std::optional<IndexValue> parse_index_value(const nlohmann::json& value,
     parsed.fields = value.value("fields", std::vector<std::string>{});
     parsed.created = value.value("created", std::string{});
     parsed.exposed = value.value("exposed", false);
+    parsed.database_id = value.value("database_id", std::string{});
     return parsed;
 }
 

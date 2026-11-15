@@ -34,6 +34,7 @@ add_executable(zetta-tests
   api/test_mcp_prompts.cpp
   api/test_consent.cpp
   api/test_safe_mode.cpp
+  api/test_connection_grants.cpp
   api/test_auth_gate.cpp
   api/test_mcp_server.cpp
   api/test_rest_server.cpp
@@ -174,6 +175,7 @@ add_executable(zetta-tests
   pubsub/test_node_pubsub.cpp
   pubsub/test_pubsub_capabilities.cpp
   governance/test_users_roles_tokens.cpp
+  governance/test_failed_auth_limiter.cpp
   governance/test_roles.cpp
   governance/test_authz_regressions.cpp
   governance/test_identity_seal.cpp

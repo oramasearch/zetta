@@ -11,10 +11,14 @@ custom wherever AX demands it.
 ## The endpoints
 
 Served by the same embedded Beast2 server as `POST /mcp` (#615) — same bind,
-same flags (`--mcp-listen`, `--no-mcp`). These discovery pages are public,
-including when a bearer is supplied. They describe the build's API and contain
-no live workspace inventory (#1402, LSR-169). Live reads use the authenticated
-MCP or REST capability routes and their authorization checks:
+same flags (`--mcp-listen`, `--no-mcp`). These discovery pages are registered
+before the auth gate, so every caller gets a page, and they answer **per caller**
+(#1357): an authenticated caller reads every capability; an anonymous caller (or
+one whose credential does not resolve) reads only the publicly callable ones,
+`publicly_callable()` in `rest.hpp`, which is none today. They describe the
+build's API and contain no live workspace inventory (#1402, LSR-169). Live reads
+use the authenticated MCP or REST capability routes and their authorization
+checks:
 
 | Route | Serves |
 |---|---|
@@ -41,8 +45,30 @@ pages: the renderer API accepts only the registry, with no `Node` access.
 Node ids, cluster membership, database/table/partition names, index fields,
 projects, and resource or span counts are never included, for anonymous or
 authenticated callers. Clients that consumed those facts from the documentation
-must use the corresponding authenticated capabilities. The separate API-shape
-visibility decision remains tracked by #1357.
+must use the corresponding authenticated capabilities.
+
+## Who sees the capability catalogue (#1357)
+
+The pages accept the same credentials as the gate (`Authorization: Bearer`, else
+the `zetta_session` cookie from a trusted origin) and resolve them the same way,
+spending the same per-source failed-authentication budget (#1417). They never
+refuse: a missing or failed credential only selects the anonymous rendering.
+
+| Caller | `/llms.txt` | `/llms/<topic>`, `/llms-full.txt` | `/v1/openapi.json` |
+|---|---|---|---|
+| anonymous, or a credential that does not resolve | product, version, the first three reads **by name only**, how to authenticate and call, the topic index | the topic prose with no capability lines; `capabilities` says to authenticate | the document over no capability: `info`, `servers`, the security scheme and the shared components, no `/v1` path |
+| any authenticated user | the same with each first read's description | every capability, description and schema | every capability (the drift-checked `schemas/openapi.json`) |
+
+Why this split and not per-tool filtering: the catalogue is the build's API shape,
+identical on every node of a version, and holds no workspace data, so hiding parts
+of it from a user who holds one tool protects nothing (#766's reasoning); the
+per-tool views stay in `tools/list` and the `/v1/specs` index. Hiding it from
+callers with no credential removes the one thing an anonymous scanner gained from
+the node: a ready map of every capability, its inputs and its required rights.
+The anonymous pages still teach an agent how to authenticate, which is why they
+stay before the gate. Responses carry `Vary: Authorization, Cookie` and
+`Cache-Control: private, no-cache` so no shared cache serves one caller's
+rendering to another.
 
 ## Placement
 

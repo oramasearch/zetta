@@ -763,6 +763,7 @@ bool Node::start() {
         object_store_ = std::make_unique<zetta::data::ObjectStore>(
             *replication_, replication_->node_id(),
             std::filesystem::path(config_.data_dir) / "objects");
+        object_store_->set_default_quota_bytes(config_.object_default_quota_bytes);
         std::string object_log_error;
         if (!object_store_->open(&object_log_error)) {
             std::fprintf(stderr, "zetta: cannot open the object logs: %s\n",
@@ -848,8 +849,16 @@ bool Node::start() {
     {
         const zetta::connect::ResealReport resealed =
             zetta::connect::reseal_connections(*this);
-        if (resealed.resealed > 0 || !resealed.unreadable.empty() ||
-            !resealed.error.empty()) {
+        if (!resealed.error.empty() && config_.connection_root_secret_required &&
+            config_.connection_root_secret.empty()) {
+            // Saved connections exist and nothing can open them (#1314): say so
+            // once, plainly; connector work refuses until a secret is supplied.
+            std::fprintf(stderr,
+                         "zetta: saved connections exist but their credentials cannot be "
+                         "opened: %s\n",
+                         resealed.error.c_str());
+        } else if (resealed.resealed > 0 || !resealed.unreadable.empty() ||
+                   !resealed.error.empty()) {
             std::printf(
                 "zetta: connection credentials: %zu re-sealed, %zu not openable "
                 "on this node%s%s\n",
@@ -1454,21 +1463,20 @@ void Node::reconcile_search_indexes() {
     std::map<std::string, std::pair<zetta::index::IndexSpec, std::string>> desired;
     for (const std::shared_ptr<zetta::index::Index>& index : indexes_) {
         if (!index || index->kind() != zetta::index::IndexKind::Search) continue;
+        // The index's own source (#1428): its recorded database, or the one
+        // database holding the name for an older record. An index whose source
+        // does not resolve (missing, or ambiguous) builds nothing; search
+        // reports why.
+        const zetta::index::IndexSource source =
+            zetta::index::resolve_index_source(*this, index->spec());
+        if (!source.ok()) continue;
         zetta::index::IndexSpec spec = index->spec();
         const std::string key = spec.key();
         if (desired.contains(key)) continue;
 
         // Partitions record the table's ID; the spec names it by NAME.
-        std::string table_id = spec.table;
-        std::string source_database;
-        for (const std::shared_ptr<zetta::data::Database>& database : databases_) {
-            if (const std::shared_ptr<zetta::data::Table> found =
-                    database->find_table(spec.table)) {
-                table_id = found->id();
-                source_database = database->name();
-                break;
-            }
-        }
+        const std::string table_id = source.table->id();
+        const std::string& source_database = source.database;
         std::string fingerprint = spec.backend + '\n' + source_database + '\n' +
                                   table_id + '\n';
         for (const std::shared_ptr<zetta::data::DatasetPartition>& partition :
@@ -4232,10 +4240,15 @@ Node::TokenIssue Node::create_token(const std::string& user_id,
                                     std::string expires_at) {
     if (!identity_writable()) return {};
     if (!find_user_by_id(user_id)) return {};  // unknown user
-    const std::string secret = governance::generate_token_secret();
+    // The bearer names its token (#1417): `zt1_<id>_<random>`, hashed whole,
+    // so authentication verifies only the token it names.
+    const std::string id = zetta::util::new_uuid();
+    const std::string random = governance::generate_token_secret();
+    if (random.empty()) return {};  // RNG failure
+    const std::string secret = governance::format_token_bearer(id, random);
     const std::string salt = governance::generate_token_salt();
     const std::string hash = governance::hash_token_secret(salt, secret);
-    if (secret.empty() || salt.empty() || hash.empty()) return {};  // RNG failure
+    if (salt.empty() || hash.empty()) return {};  // RNG failure
     governance::TokenValue value;
     value.user_id = user_id;
     value.type = type;
@@ -4244,7 +4257,6 @@ Node::TokenIssue Node::create_token(const std::string& user_id,
     value.created = zetta::util::now_iso8601();
     value.expires_at = std::move(expires_at);
     value.revoked = false;
-    const std::string id = zetta::util::new_uuid();
     if (replication_) {
         nlohmann::json crdt = value.expires_at.empty()
             ? nlohmann::json{{"user", value.user_id},
@@ -4339,9 +4351,39 @@ void Node::reconcile_tokens(
 }
 
 std::shared_ptr<zetta::governance::User> Node::authenticate_token(
-    std::string_view secret) const {
+    std::string_view secret, bool allow_scan) const {
     if (secret.empty()) return nullptr;
     const std::string now = zetta::util::now_iso8601();
+    // A bearer in the issued format names its token (#1417): verify that one
+    // token and stop. A wrong or unknown one costs one digest, never a scan.
+    if (const std::optional<std::string_view> named = governance::token_lookup_id(secret)) {
+        const auto token = find_token_by_id(std::string(*named));
+        if (!token || !token->validates(secret, now, /*allow_kdf=*/false)) return nullptr;
+        auto user = find_user_by_id(token->user_id());
+        return user && user->active() ? user : nullptr;
+    }
+    // A bearer without the prefix: an operator-chosen admin token, or a token
+    // issued before the format. One this process already verified is found by
+    // its digest; anything else scans, only when `allow_scan` (the HTTP gate
+    // withholds it from a source past its failed-authentication budget).
+    const std::string digest = governance::hash_token_secret(kLegacyTokenLookupSalt, secret);
+    if (const auto cached = legacy_token_lookup_.find(digest);
+        cached != legacy_token_lookup_.end()) {
+        const auto token = find_token_by_id(cached->second);
+        if (token && token->validates(secret, now, /*allow_kdf=*/false)) {
+            auto user = find_user_by_id(token->user_id());
+            if (user && user->active()) return user;
+        }
+        legacy_token_lookup_.erase(cached);
+    }
+    if (!allow_scan) return nullptr;
+    const auto remember = [&](const governance::Token& token) {
+        if (digest.empty()) return;
+        if (legacy_token_lookup_.size() >= kLegacyTokenLookupCapacity) {
+            legacy_token_lookup_.clear();
+        }
+        legacy_token_lookup_.emplace(digest, token.id());
+    };
     bool unverified_kdf_token = false;
     for (const auto& token : tokens_) {
         // validates() is constant-time on the hash compare and rejects revoked /
@@ -4351,7 +4393,10 @@ std::shared_ptr<zetta::governance::User> Node::authenticate_token(
         if (token->uses_kdf() && !token->kdf_verified()) unverified_kdf_token = true;
         if (!token->validates(secret, now, /*allow_kdf=*/false)) continue;
         auto user = find_user_by_id(token->user_id());
-        if (user && user->active()) return user;
+        if (user && user->active()) {
+            remember(*token);
+            return user;
+        }
     }
     if (!unverified_kdf_token) return nullptr;
     // The slow pass (#769), budgeted: refill one check per kColdKdfRefill up to
@@ -4372,7 +4417,10 @@ std::shared_ptr<zetta::governance::User> Node::authenticate_token(
         if (!token->uses_kdf() || token->kdf_verified()) continue;
         if (!token->validates(secret, now)) continue;
         auto user = find_user_by_id(token->user_id());
-        if (user && user->active()) return user;
+        if (user && user->active()) {
+            remember(*token);
+            return user;
+        }
     }
     return nullptr;
 }
@@ -4729,12 +4777,21 @@ const zetta::connect::CredentialKeyring* Node::connection_keyring(
     std::string* reason) const {
     if (!connection_keyring_ && connection_keyring_error_.empty()) {
         std::string why;
-        std::optional<zetta::connect::CredentialKeyring> keyring =
-            config_.connection_root_secret.empty()
-                ? zetta::connect::load_or_create_local_keyring(config_.data_dir, &why)
-                : zetta::connect::CredentialKeyring::from_root_secrets(
-                      config_.connection_root_secret,
-                      config_.retired_connection_root_secrets, &why);
+        std::optional<zetta::connect::CredentialKeyring> keyring;
+        if (!config_.connection_root_secret.empty()) {
+            keyring = zetta::connect::CredentialKeyring::from_root_secrets(
+                config_.connection_root_secret, config_.retired_connection_root_secrets,
+                &why);
+        } else if (config_.connection_root_secret_required) {
+            // Fail closed (#1314): never fall back to a secret kept in data_dir.
+            why = "no connector-credential root secret: start the node with "
+                  "--connection-root-secret-file PATH (or "
+                  "ZETTA_CONNECTION_ROOT_SECRET_FILE), a file outside the data "
+                  "directory such as a mounted Secret "
+                  "(docs/governance/secret-references.md)";
+        } else {
+            keyring = zetta::connect::load_or_create_local_keyring(config_.data_dir, &why);
+        }
         if (keyring) {
             connection_keyring_ = std::move(*keyring);
         } else {

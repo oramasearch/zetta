@@ -45,8 +45,9 @@ MCP/HTTP work.
   GET /v1/<name>, actions → POST /v1/<name>, output schemas, and the
   drift-checked OpenAPI document generated from the registry.
 - [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
-  pages (#645, #1402): public agent docs from the registry, with no workspace
-  inventory.
+  pages (#645, #1402): agent docs from the registry, with no workspace
+  inventory, served before the gate and per caller: the capability catalogue
+  (and `/v1/openapi.json`'s paths) only to an authenticated caller (#1357).
 - [specs-index.md](specs-index.md) — the spec index (#646): `/v1/specs` +
   `list_specs`/`get_spec` serving the OpenAPI document + every capability and
   boundary schema from their C++ accessors, drift-checked through one shared

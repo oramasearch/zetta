@@ -43,7 +43,9 @@ zetta-core) derives everything mechanically from each registry entry:
 - **actions and jobs** → `POST /v1/<name>` — input as the **JSON body**
   (empty body = `{}`).
 - `GET /v1/openapi.json` — the OpenAPI 3.1 document, generated from the same
-  schemas (below).
+  schemas (below). Served before the auth gate and per caller (#1357): every
+  capability to an authenticated caller, none to an anonymous one
+  ([llms-endpoints.md](llms-endpoints.md#who-sees-the-capability-catalogue-1357)).
 
 The Beast2 adapter TU (`src/core/api/http_server.cpp` — still the ONE
 wire-facing TU) registers the routes at `start()` by iterating the registry;
@@ -132,8 +134,10 @@ ZETTA_WRITE_SCHEMAS=1 ctest --test-dir build -R OpenApi
 ```
 
 The served `/v1/openapi.json` is generated from the live registry at
-`start()` (after any embedding-added entries), so the wire document, the
-committed artifact, and the registry are one source. Per capability the
+`start()` (after any embedding-added entries), so the wire document an
+authenticated caller reads, the committed artifact, and the registry are one
+source. The anonymous rendering is `openapi_document(registry,
+publicly_callable())`, generated at the same time. Per capability the
 document carries: `operationId` = name, the governance line (required
 operation, job/consent notes) appended to the description mechanically, query
 parameters or a request body from the input schema **plus the reserved

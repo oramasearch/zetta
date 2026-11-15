@@ -226,6 +226,59 @@ TEST(CredentialStore, CreateUserTokenValidatesAndSecretIsHashed) {
     node.stop();
 }
 
+// #1417 (LSR-244): an issued bearer names its token, so authentication
+// verifies only that token. Another token's id on this secret, or this id on a
+// wrong secret, is refused; an unprefixed bearer (an operator-chosen owner
+// secret) still authenticates through the scanning path and is then found by
+// its digest.
+TEST(AuthenticateToken, IssuedBearersNameTheirTokenAndLegacyBearersStillWork) {
+    TempDir dir;
+    Node node{config_for(dir), nullptr};
+    ASSERT_TRUE(node.start());
+    ASSERT_TRUE(node.bootstrap_owner("operator-chosen-owner-secret").performed);
+    auto first_user = node.create_user("first");
+    auto second_user = node.create_user("second");
+    ASSERT_TRUE(first_user && second_user);
+    const Node::TokenIssue first = node.create_token(first_user->id(), TokenType::Api);
+    const Node::TokenIssue second = node.create_token(second_user->id(), TokenType::Api);
+    ASSERT_TRUE(first.token && second.token);
+
+    const std::string prefix = std::string(zetta::governance::kTokenLookupPrefix) +
+                               first.token->id() + "_";
+    ASSERT_TRUE(first.secret.starts_with(prefix)) << first.secret;
+    const auto named = zetta::governance::token_lookup_id(first.secret);
+    ASSERT_TRUE(named);
+    EXPECT_EQ(*named, first.token->id());
+    EXPECT_FALSE(zetta::governance::token_lookup_id("zt1_short"));
+    EXPECT_FALSE(zetta::governance::token_lookup_id(std::string(64, 'a')));
+
+    auto authed = node.authenticate_token(first.secret);
+    ASSERT_TRUE(authed);
+    EXPECT_EQ(authed->id(), first_user->id());
+
+    // The id is bound into the hashed secret: moving it onto another token's
+    // random part, or keeping it with a wrong one, is refused.
+    const std::string first_random = first.secret.substr(prefix.size());
+    EXPECT_FALSE(node.authenticate_token(std::string(zetta::governance::kTokenLookupPrefix) +
+                                         second.token->id() + "_" + first_random));
+    EXPECT_FALSE(node.authenticate_token(prefix + std::string(64, '0')));
+    // An unknown id costs no scan and resolves nothing.
+    EXPECT_FALSE(node.authenticate_token(std::string(zetta::governance::kTokenLookupPrefix) +
+                                         zetta::util::new_uuid() + "_" + first_random));
+
+    // The operator-chosen owner secret has no prefix: the scanning path, then
+    // the memory-only digest lookup, both answer the owner.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        auto owner = node.authenticate_token("operator-chosen-owner-secret");
+        ASSERT_TRUE(owner) << attempt;
+        EXPECT_EQ(owner->name(), "owner");
+    }
+    // A revoked token is refused on either path.
+    ASSERT_TRUE(node.revoke_token(first.token->id()));
+    EXPECT_FALSE(node.authenticate_token(first.secret));
+    node.stop();
+}
+
 TEST(CredentialStore, DisabledUserTokensStopValidating) {
     TempDir dir;
     Node node{config_for(dir), nullptr};

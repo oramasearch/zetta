@@ -183,12 +183,12 @@ cannot revoke secret bytes an earlier reader already obtained.
 The stored identity is reused while it still verifies against the derived CA
 and carries this node's id; a token change or a node-id mismatch re-mints it.
 
-The join token is also the root secret of the **connector-credential sealing
-key** (#1230): `main` passes it as `NodeConfig::connection_root_secret`, and saved
-connections' credentials are sealed under an HKDF-SHA256 key derived from it, so
-every member opens what another sealed and the key is never in the replicated
-catalogue. The retired tokens let a re-keyed node open what was sealed under the
-previous one; its next start re-seals those entries under the current token. See
+The join token is **no longer** the root secret of the connector-credential
+sealing key (#1314): it lives here, in `data_dir`, so a copy of the directory
+opened every saved credential. `main` now reads the root secret from
+`--connection-root-secret-file` (a file outside `data_dir`) and keeps the join
+tokens only as retired secrets, so entries sealed under them before #1314 re-seal
+under the external secret at the next start. See
 [connector query](../data/connector-query.md#the-credential-is-sealed-at-rest-1230).
 
 ## Code map

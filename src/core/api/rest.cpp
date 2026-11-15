@@ -278,6 +278,10 @@ nlohmann::json openapi_document(const Registry& registry) {
     return openapi_document(registry, [](const Capability&) { return true; });
 }
 
+CapabilityVisible publicly_callable() {
+    return [](const Capability&) { return false; };
+}
+
 nlohmann::json openapi_document(const Registry& registry,
                                 const CapabilityVisible& visible) {
     nlohmann::json document;

@@ -14,6 +14,7 @@
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/partition_body.hpp"
 #include "zetta/index/oramacore_fulltext_index.hpp"
+#include "zetta/index/search.hpp"
 #include "zetta/data/large_object.hpp"
 #include "zetta/node.hpp"
 #include "zetta/data/table.hpp"
@@ -152,20 +153,6 @@ std::optional<std::string> read_blob_body(Node& node, const std::string& blob_re
     return std::nullopt;
 }
 
-// Resolve `table` (a name from the IndexSpec) to the `tbl:` id the partition catalog
-// records, so owned partitions can be enumerated. Falls back to `table` unchanged
-// when no table of that name is found (it may already be an id).
-std::string resolve_table_id(Node& node, const std::string& table) {
-    for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<zetta::data::Database> database = node.find_database(name);
-        if (!database) continue;
-        if (const std::shared_ptr<zetta::data::Table> found = database->find_table(table)) {
-            return found->id();
-        }
-    }
-    return table;
-}
-
 // Parse a partition body into IndexDocuments through the shared partition-body
 // reader, which sniffs Parquet vs the legacy JSON Lines from the bytes. **Fails
 // fast** on a body it cannot read (a silent drop would diverge from the
@@ -221,6 +208,7 @@ const nlohmann::json& fulltext_query_schema() {
 )JSONSCHEMA");
         document["properties"]["statistics"] = statistics_schema();
         document["properties"]["database"] = {{"type", "string"}, {"minLength", 1}};
+        document["properties"]["database_id"] = {{"type", "string"}, {"minLength", 1}};
         return document;
     }();
     return schema;
@@ -320,7 +308,9 @@ std::vector<FulltextHit> merge_fulltext_hits(
 // --- wire messages -----------------------------------------------------------
 
 IndexSpec FulltextQueryRequest::spec() const {
-    return IndexSpec{table, kind, backend, fields};
+    // The database id the coordinator's index records (#1428), so the peer's
+    // key names the same sub-indexes it built.
+    return IndexSpec{table, kind, backend, fields, database_id};
 }
 
 IndexQuery FulltextQueryRequest::query() const {
@@ -344,6 +334,7 @@ std::string encode_fulltext_query(const FulltextQueryRequest& request) {
     document["top_k"] = request.top_k;
     if (request.return_fields) document["return_fields"] = *request.return_fields;
     if (request.database) document["database"] = *request.database;
+    if (!request.database_id.empty()) document["database_id"] = request.database_id;
     if (request.statistics) document["statistics"] = encode_statistics(*request.statistics);
     return document.dump();
 }
@@ -385,6 +376,7 @@ std::optional<FulltextQueryRequest> decode_fulltext_query(std::string_view paylo
     if (const auto database = document.find("database"); database != document.end()) {
         request.database = database->get<std::string>();
     }
+    request.database_id = document.value("database_id", std::string{});
     if (const auto statistics = document.find("statistics");
         statistics != document.end()) {
         request.statistics = decode_statistics(*statistics);
@@ -495,7 +487,16 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
     Node& node, const IndexSpec& spec) {
     BuildResult out;
     const std::string& self = node.node_id();
-    const std::string table_id = resolve_table_id(node, spec.table);
+    // The index's own source (#1428): its recorded database, or the one
+    // database holding the name for an older record; never the first match.
+    // The key stays the spec's own, which every node derives from the same
+    // replicated index record.
+    const IndexSource source = resolve_index_source(node, spec);
+    if (!source.ok()) {
+        out.status = IndexStatus::not_found("build_local: " + source.reason);
+        return out;
+    }
+    const std::string table_id = source.table->id();
 
     // Enumerate this node's owned partitions of the table, ascending by row range so
     // the build is deterministic / reproducible (compute-near-data: only the bodies
@@ -523,14 +524,7 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
         sub_specs_.erase(prior);
     }
     rows_.erase(spec.key());
-    source_databases_.erase(spec.key());
-    for (const auto& name : node.database_names()) {
-        const auto database = node.find_database(name);
-        if (database && database->find_table(spec.table)) {
-            source_databases_[spec.key()] = name;
-            break;
-        }
-    }
+    source_databases_[spec.key()] = source.database;
     std::map<std::string, nlohmann::json> rows;
 
     std::vector<IndexSpec> subs;
@@ -693,6 +687,7 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
 
     FulltextQueryRequest request;
     request.table = spec.table;
+    request.database_id = spec.database_id;
     request.kind = spec.kind;
     request.backend = spec.backend;
     request.fields = spec.fields;

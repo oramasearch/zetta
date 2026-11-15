@@ -29,6 +29,7 @@
 #include "system_trust_store.hpp"
 #include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/runtime/net.hpp"
 #include "zetta/connect/connector_destinations.hpp"
@@ -465,7 +466,8 @@ private:
         const auto refuse = [&]() {
             std::string reason =
                 connect::egress_denied_reason(parsed.host, port_number);
-            connect::report_egress_denial({parsed.host, port_number, reason});
+            connect::report_egress_denial({parsed.host, port_number, reason,
+                                           request.on_behalf_of, request.on_behalf_of_run});
             return reason;
         };
         if (!name_allowed && !policy.has_network_rule_for(port_number)) {
@@ -645,6 +647,25 @@ std::unique_ptr<NativeHttpClient>& client_slot() {
     return client;
 }
 
+// The request as the caller's thread knows it (#1323): who it is for, from the
+// innermost OutboundCallerScope (a graph step: the run's principal and run),
+// else the audit actor the entry point declared (a capability call). Read on
+// the caller's thread, before the exchange moves to the client's.
+connect::HttpRequest attributed(const connect::HttpRequest& request) {
+    connect::HttpRequest copy = request;
+    if (copy.on_behalf_of.empty()) {
+        if (const std::optional<connect::OutboundCaller> caller =
+                connect::current_outbound_caller()) {
+            copy.on_behalf_of = caller->principal;
+            copy.on_behalf_of_run = caller->run_id;
+        } else if (const std::optional<std::string> actor =
+                       governance::current_audit_actor()) {
+            copy.on_behalf_of = *actor;
+        }
+    }
+    return copy;
+}
+
 }  // namespace
 
 void install_native_http_transport() {
@@ -655,13 +676,13 @@ void install_native_http_transport() {
     connect::AsyncHttpTransport asynchronous =
         [running](const connect::HttpRequest& request)
         -> runtime::io_task<connect::HttpResponse> {
-        return running->submit(request);
+        return running->submit(attributed(request));
     };
     // The synchronous shape is the async one driven to completion on the
     // caller's thread — one client, one code path, no second implementation.
     connect::HttpTransport synchronous =
         [running](const connect::HttpRequest& request) -> connect::HttpResponse {
-        auto [error, response] = runtime::block_on(running->submit(request));
+        auto [error, response] = runtime::block_on(running->submit(attributed(request)));
         (void)error;
         return std::move(response);
     };

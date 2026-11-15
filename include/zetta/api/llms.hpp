@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "zetta/api/rest.hpp"
+
 // The llms.txt progressive-disclosure surface (#645, docs/api/llms-endpoints.md;
 // the AX contract is docs/product/experience/ax.md): the node serves its own
 // agent-readable documentation over plain HTTP — GET /llms.txt (what this
@@ -13,10 +15,11 @@
 // Generated from the capability registry and build version only (#1402): no
 // Node access, workspace inventory or counts. Live reads use authenticated
 // capabilities and their authorization checks. The HTTP-free renderers live in
-// zetta-core; the Beast2 adapter serves every page as public discovery docs.
+// zetta-core; the Beast2 adapter serves every page before the auth gate, and
+// renders the capability catalogue only for an authenticated caller (#1357):
+// an anonymous one gets the pages under `publicly_callable()` (rest.hpp), which
+// say how to authenticate and list no capability.
 namespace zetta::api {
-
-class Registry;
 
 // One /llms/<name>.txt page. `summary` is the one-line hook shown on the
 // /llms.txt topic index.
@@ -32,13 +35,20 @@ const std::vector<LlmsTopic>& llms_topics();
 // three reads (their descriptions pulled from the registry), how to call a
 // capability over POST /mcp, and the topic index.
 std::string render_llms_index(const Registry& registry);
+// The same, describing only the capabilities `visible` admits (the first reads
+// are still named).
+std::string render_llms_index(const Registry& registry, const CapabilityVisible& visible);
 
 // GET /llms/<topic>.txt — one topic page; nullopt on an unknown topic (the
 // caller answers 404 listing llms_topics()).
 std::optional<std::string> render_llms_topic(const Registry& registry,
                                              const std::string& topic);
+std::optional<std::string> render_llms_topic(const Registry& registry,
+                                             const std::string& topic,
+                                             const CapabilityVisible& visible);
 
 // GET /llms-full.txt — the index plus every topic page, one document.
 std::string render_llms_full(const Registry& registry);
+std::string render_llms_full(const Registry& registry, const CapabilityVisible& visible);
 
 }  // namespace zetta::api

@@ -193,9 +193,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // The canonical list carries the #746 atoms, blob:read (#747), six
     // orchestration atoms, eight pub/sub atoms (#1029/#1136), study promotion
     // (#1138), study deletion (#1158), five record-store and time-series atoms
-    // (#1231), three object atoms (#1005), two network-record atoms (#1281), and
-    // serving:run (#1289).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 35u);
+    // (#1231), three object atoms (#1005), two network-record atoms (#1281),
+    // serving:run (#1289), and two saved-connection atoms (#1339).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 37u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

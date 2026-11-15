@@ -101,8 +101,7 @@ reaches only public addresses. Both checks apply when both are present.
 
 ## Not covered here
 
-- Binding a delivery credential to an administrator-approved connector with a
-  fixed endpoint, requiring HTTPS, and reporting coarse delivery outcomes
-  instead of the peer's status and body: tracked separately (see #1394's
-  closing comment).
+- HTTPS, approved endpoints for a delivery's credential, and coarse delivery
+  outcomes are the action runtime's rules on top of this policy (#1453):
+  [../solutions/action-integration.md](../solutions/action-integration.md#https-and-credentials-only-to-approved-endpoints-1453).
 - Per-principal egress scoping: [#1323](https://github.com/oramasearch/zetta/issues/1323).

@@ -12,6 +12,8 @@
 #include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/compute/mlx_serving.hpp"
+#include "zetta/connect/credential_seal.hpp"
+#include "zetta/connect/destination_policy.hpp"
 #include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/connect/connector_destinations.hpp"
@@ -80,11 +82,15 @@ public:
             [&node](const zetta::connect::EgressDenial& denial) {
                 zetta::governance::AuditEventValue event;
                 event.action = zetta::governance::AuditAction::EgressDenied;
-                event.actor = "node";
+                // The principal the connection was for (#1323): the run's, or
+                // the capability caller's; "node" only for the node's own work.
+                event.actor = denial.principal.empty() ? "node" : denial.principal;
                 event.target = "egress:" + denial.host + ":" +
                                std::to_string(denial.port);
                 event.allowed = false;
-                event.detail = denial.reason;
+                event.detail = denial.run_id.empty()
+                                   ? denial.reason
+                                   : denial.reason + " (run " + denial.run_id + ")";
                 node.record_audit_event(std::move(event));
             });
     }
@@ -153,7 +159,9 @@ struct Options {
     std::string clerk_issuer;                   // --clerk-issuer URL (Clerk JWT verify; else bearer-only)
     std::optional<std::string> connector_allow_destinations;  // exact host:port entries (#1414)
     std::optional<std::string> action_allow_destinations;  // --action-allow-destinations LIST (#1394)
+    std::optional<std::string> action_approved_endpoints;  // --action-approved-endpoints LIST (#1453)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
+    std::string connection_root_secret_file;  // --connection-root-secret-file (#1314)
     std::string join_token;         // --join-token (join an existing cluster)
     std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
     std::string identity_root;      // --identity-root (the cluster's identity root, #764)
@@ -208,6 +216,12 @@ void print_usage(const char* argv0) {
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
         "  --webapp-dir PATH   Serve the built Studio web app at /app from PATH\n"
+        "  --connection-root-secret-file PATH\n"
+        "                      The secret saved connector credentials are\n"
+        "                      sealed under, from a file outside --data-dir\n"
+        "                      (e.g. a mounted Secret): line 1 current, later\n"
+        "                      lines retired. Without it no credential is\n"
+        "                      saved or opened (#1314)\n"
         "  --admin-token T     Seed the owner user's access token from this\n"
         "                      secret on first boot (or ZETTA_ADMIN_TOKEN);\n"
         "                      hashed at rest, never logged. If omitted on a\n"
@@ -268,6 +282,12 @@ void print_usage(const char* argv0) {
         "                      endpoint may reach besides public addresses:\n"
         "                      loopback, private, link-local, metadata\n"
         "                      (comma separated; default none) (#1394)\n"
+        "  --action-approved-endpoints LIST\n"
+        "                      Origins (https://host[:port], comma separated)\n"
+        "                      an action or report delivery may send its\n"
+        "                      credential to; default none, so a delivery\n"
+        "                      carrying a bearer is refused. Every delivery\n"
+        "                      endpoint must be https:// unless loopback (#1453)\n"
         "  --egress-allow LIST Outside destinations this node may connect to\n"
         "                      (repeatable; comma separated): host, *.domain,\n"
         "                      address or CIDR range, each optionally :port;\n"
@@ -281,6 +301,7 @@ void print_usage(const char* argv0) {
         "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
         "  ZETTA_CLUSTER_TOKEN_FILE File holding the join token (preferred)\n"
+        "  ZETTA_CONNECTION_ROOT_SECRET_FILE -> --connection-root-secret-file\n"
         "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
         "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n"
         "  ZETTA_PUBSUB_DISPATCH_MODE -> --pubsub-dispatch-mode\n"
@@ -290,13 +311,19 @@ void print_usage(const char* argv0) {
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
         "  ZETTA_CONNECTOR_ALLOW_DESTINATIONS -> --connector-allow-destinations\n"
         "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
+        "  ZETTA_ACTION_APPROVED_ENDPOINTS -> --action-approved-endpoints\n"
         "  ZETTA_EGRESS_ALLOW  Egress allowlist -> --egress-allow\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
         "                      Ordinary audit retention in days\n"
         "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
         "                      Audit summary retention in days\n"
         "  ZETTA_MALLOC_TRIM_THRESHOLD_BYTES\n"
-        "                      Opt-in free-held threshold for malloc_trim(0)\n",
+        "                      Opt-in free-held threshold for malloc_trim(0)\n"
+        "  ZETTA_OBJECT_DEFAULT_QUOTA_BYTES\n"
+        "                      Cap on an object bucket created without\n"
+        "                      quota_bytes (default 10 GiB); 0 removes it, and\n"
+        "                      such a bucket then takes no body past the\n"
+        "                      request cap (#1421)\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -329,6 +356,9 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--admin-token") {
             const char* v = take_value(argc, argv, i, o, "--admin-token");
             if (v) o.admin_token = v;
+        } else if (arg == "--connection-root-secret-file") {
+            const char* v = take_value(argc, argv, i, o, "--connection-root-secret-file");
+            if (v) o.connection_root_secret_file = v;
         } else if (arg == "--headless") {
             o.mode = Mode::Headless;
         } else if (arg == "--headed") {
@@ -479,6 +509,9 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--action-allow-destinations") {
             const char* v = take_value(argc, argv, i, o, "--action-allow-destinations");
             if (v) o.action_allow_destinations = v;
+        } else if (arg == "--action-approved-endpoints") {
+            const char* v = take_value(argc, argv, i, o, "--action-approved-endpoints");
+            if (v) o.action_approved_endpoints = v;
         } else if (arg == "--egress-allow") {
             const char* value = take_value(argc, argv, i, o, "--egress-allow");
             if (!value) break;
@@ -803,6 +836,24 @@ int main(int argc, char** argv) {
         zetta::connect::set_allowed_destinations(*allowed);
         std::printf("zetta: action delivery destinations: %s\n", allowed->describe().c_str());
     }
+    // The endpoints a delivery's credential may go to (#1453): only origins an
+    // administrator approved here, never one a solution author stored.
+    {
+        std::optional<std::string> list = opts.action_approved_endpoints;
+        if (!list) {
+            if (const char* env = std::getenv("ZETTA_ACTION_APPROVED_ENDPOINTS")) list = env;
+        }
+        std::string error;
+        const auto approved =
+            zetta::connect::ApprovedDeliveryEndpoints::parse(list.value_or(""), &error);
+        if (!approved) {
+            std::fprintf(stderr, "zetta: --action-approved-endpoints: %s\n", error.c_str());
+            return 2;
+        }
+        zetta::connect::set_approved_delivery_endpoints(*approved);
+        std::printf("zetta: delivery credential endpoints: %s\n",
+                    approved->describe().c_str());
+    }
     std::optional<zetta::connect::EgressPolicy> egress_policy =
         configured_egress_policy(opts.egress_allow, opts.clerk_issuer);
     if (!egress_policy) {
@@ -845,6 +896,18 @@ int main(int argc, char** argv) {
         }
         opts.node.malloc_trim_threshold_bytes = threshold;
     }
+    if (const char* environment = std::getenv("ZETTA_OBJECT_DEFAULT_QUOTA_BYTES")) {
+        const std::string_view text(environment);
+        std::uint64_t bytes = 0;
+        const auto [pointer, error] =
+            std::from_chars(text.data(), text.data() + text.size(), bytes);
+        if (error != std::errc{} || pointer != text.data() + text.size()) {
+            std::fprintf(stderr,
+                         "zetta: ZETTA_OBJECT_DEFAULT_QUOTA_BYTES wants a non-negative number\n");
+            return 2;
+        }
+        opts.node.object_default_quota_bytes = bytes;
+    }
 
     // One UUID is both the cluster node id and the replication actor id, so a
     // node's changes are attributed to it and merge conflict-free. It's stable
@@ -869,12 +932,44 @@ int main(int argc, char** argv) {
                          reason.c_str());
             return 1;
         }
-        // Saved connector credentials are sealed under a key derived from the
-        // join token (#1230): every member holds the token outside the
-        // replicated catalogue, so every member opens what another sealed.
-        // The retired tokens let a rotated node re-seal what the old one sealed.
-        opts.node.connection_root_secret = security->join_token;
-        opts.node.retired_connection_root_secrets = security->retired_join_tokens;
+        // Saved connector credentials are sealed under a root secret read from
+        // a file OUTSIDE data_dir (#1314): the join token lives in
+        // <data_dir>/security/, so a copy of data_dir opened everything sealed
+        // under it. Every member is given the same file. The join tokens stay
+        // as retired secrets only, so rows sealed under them before #1314
+        // re-seal under the external secret at start. With no file the node
+        // holds no keyring: connector credentials are refused, nothing else.
+        if (opts.connection_root_secret_file.empty()) {
+            if (const char* environment = std::getenv("ZETTA_CONNECTION_ROOT_SECRET_FILE")) {
+                opts.connection_root_secret_file = environment;
+            }
+        }
+        opts.node.connection_root_secret_required = true;
+        if (!opts.connection_root_secret_file.empty()) {
+            std::string secret_reason;
+            const std::optional<zetta::connect::ExternalRootSecret> external =
+                zetta::connect::load_external_root_secret(opts.connection_root_secret_file,
+                                                          opts.node.data_dir, &secret_reason);
+            if (!external) {
+                std::fprintf(stderr, "zetta: %s\n", secret_reason.c_str());
+                return 1;
+            }
+            opts.node.connection_root_secret = external->current;
+            opts.node.retired_connection_root_secrets = external->retired;
+            opts.node.retired_connection_root_secrets.push_back(security->join_token);
+            for (const std::string& retired : security->retired_join_tokens) {
+                opts.node.retired_connection_root_secrets.push_back(retired);
+            }
+            std::fprintf(stderr,
+                         "zetta: connector credentials sealed under the root secret in %s "
+                         "(%zu retired secrets kept for re-sealing)\n",
+                         opts.connection_root_secret_file.c_str(),
+                         opts.node.retired_connection_root_secrets.size());
+        } else {
+            std::fprintf(stderr,
+                         "zetta: no --connection-root-secret-file: saved connector "
+                         "credentials are refused on this node (#1314)\n");
+        }
         opts.cluster.security = std::move(*security);
     }
 

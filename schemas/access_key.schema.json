@@ -54,7 +54,8 @@
             "tool",
             "topic",
             "collection",
-            "bucket"
+            "bucket",
+            "connection"
           ],
           "type": "string"
         },

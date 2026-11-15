@@ -11,6 +11,7 @@
 #include "zetta/data/database.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_backend.hpp"
+#include "zetta/index/search.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
@@ -24,26 +25,6 @@ namespace {
 // has one, else its (UUID) id — the convention the other executors use.
 std::string step_label(const ir::Node& step) {
     return step.name.empty() ? step.id : step.name;
-}
-
-// Resolve the source table an index is built over. The IndexSpec names the table
-// by name only; a table in zetta lives in a database, so resolve it within the
-// `database` the step optionally names, else by scanning the node's databases for
-// the first table with that name. Empty handle when none matches.
-std::shared_ptr<zetta::data::Table> find_source_table(Node& node, const std::string& table,
-                                         const std::string& database_hint) {
-    if (!database_hint.empty()) {
-        const std::shared_ptr<zetta::data::Database> database = node.find_database(database_hint);
-        return database ? database->find_table(table) : nullptr;
-    }
-    for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<zetta::data::Database> database = node.find_database(name);
-        if (!database) continue;
-        if (const std::shared_ptr<zetta::data::Table> found = database->find_table(table)) {
-            return found;
-        }
-    }
-    return nullptr;
 }
 
 // A zero-padded chunk id (the JsonlStore chunk-file convention: 000000, 000001…),
@@ -112,36 +93,42 @@ zetta::pipeline::StepOutcome IndexStepExecutor::run_index(const ir::Node& step) 
                            {}};
     }
 
-    // (3) Resolve the source table, then read its rows into partitions.
+    // (3) Resolve the source table, then read its rows into partitions: in the
+    // step's optional `database`, else the one database holding the name
+    // (#1428), so the index never binds to the first match.
     std::string database_hint;
     if (step.attributes.is_object()) {
         database_hint = step.attributes.value("database", std::string{});
     }
-    const std::shared_ptr<zetta::data::Table> table =
-        find_source_table(node_, spec->table, database_hint);
-    if (!table) {
+    const IndexSource source = resolve_index_source(node_, *spec, database_hint);
+    if (!source.ok()) {
         return zetta::pipeline::StepOutcome{/*ok=*/false,
-                           "index source table '" + spec->table + "' not found",
+                           "index source: " + source.reason,
                            {},
                            {}};
     }
     const std::vector<IndexPartition> partitions =
-        read_index_partitions(table->store());
+        read_index_partitions(source.table->store());
 
-    // (4) Build the real index over the partitions.
-    const IndexStatus status = backend->build(*spec, partitions);
+    // (4) Build the real index over the partitions, under the key search will
+    // use (the spec with its database id).
+    IndexSpec built = *spec;
+    built.database_id = source.database_id;
+    const IndexStatus status = backend->build(built, partitions);
     if (!status.ok()) {
         return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "index build failed: " + status.message, {}, {}};
     }
 
     // (5) Record the durable Index entity (validated at its JSON-Schema boundary
-    // by create_index); its real id is the run output's ref.
+    // by create_index), with the database it was built from; its real id is the
+    // run output's ref.
     IndexValue value;
     value.table = spec->table;
     value.kind = spec->kind;
     value.backend = spec->backend;
     value.fields = spec->fields;
+    value.database_id = source.database_id;
     const std::shared_ptr<Index> index = node_.create_index(std::move(value));
     if (!index) {
         return zetta::pipeline::StepOutcome{/*ok=*/false,

@@ -646,12 +646,16 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
         std::string reason;
         node_.run_on_owner([&] {
             std::shared_ptr<zetta::data::Table> table;
+            std::string database_id;
             for (const std::string& name : node_.database_names()) {
                 if (const std::shared_ptr<zetta::data::Database> database =
                         node_.find_database(name)) {
                     table = database->find_table_by_id(config_.accounts_table);
                     if (!table) table = database->find_table(config_.accounts_table);
-                    if (table) break;
+                    if (table) {
+                        database_id = database->id();
+                        break;
+                    }
                 }
             }
             if (!table) {
@@ -660,6 +664,9 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
             }
             zetta::index::IndexValue value;
             value.table = table->name();
+            // The database this table was found in (#1428), so the index never
+            // resolves to a same-named table elsewhere.
+            value.database_id = database_id;
             value.kind = zetta::index::IndexKind::Search;
             // The ranked full-text backend when this build has it, else the
             // exact-match reference one.

@@ -19,7 +19,8 @@ namespace zetta::governance {
 // `Topic` (#1029) names a pub/sub topic by name or name prefix, like `Blob`.
 // `Collection` (#1231) names a keyed record collection by name or name prefix.
 // `Bucket` (#1005) names an object bucket by name or name prefix.
-enum class ResourceKind { Database, Project, Table, Column, Blob, Tool, Topic, Collection, Bucket };
+// `Connection` (#1339) names one saved source connection by its exact name.
+enum class ResourceKind { Database, Project, Table, Column, Blob, Tool, Topic, Collection, Bucket, Connection };
 
 // Canonical lowercase name of a resource kind ("database" / "project" / "table"
 // / "column" / "blob" / "tool"). This is BOTH the display label AND the stored
@@ -65,6 +66,7 @@ struct Resource {
     static Resource topic(std::string name_or_prefix);
     static Resource collection(std::string name_or_prefix);
     static Resource bucket(std::string name_or_prefix);
+    static Resource connection(std::string name);
 };
 
 // Does a granted object cover a requested `target`? The deny-by-default object
@@ -75,6 +77,7 @@ struct Resource {
 //     columns for column-level checks;
 //   - a blob grant covers every blob id that starts with its (id or) prefix;
 //   - a tool grant covers exactly that tool;
+//   - a connection grant covers exactly that saved connection (#1339);
 //   - database/project otherwise match exactly (same kind + name).
 // A `target` Column carrying a single column asks "is THIS column covered?".
 bool object_covers(const Resource& granted, const Resource& target);

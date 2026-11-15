@@ -60,6 +60,12 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"objects:read", {{CapabilityDomain::Data, "objects_read"}}},
         {"objects:write", {{CapabilityDomain::Data, "objects_write"}}},
         {"objects:manage", {{CapabilityDomain::Orchestration, "objects_manage"}}},
+        // Saved source connections (#1339): using a connection's credential, and
+        // replacing or deleting the connection. Both are object-scopable to one
+        // connection (ON CONNECTION <name>); a connection's creator holds both on
+        // it without a grant.
+        {"connections:use", {{CapabilityDomain::Data, "use_connection"}}},
+        {"connections:manage", {{CapabilityDomain::Orchestration, "manage_connection"}}},
         // Orchestration — the pipeline authoring/deploy/run + serving + cloud
         // control surface. The capability model is exact-match (no wildcards), so
         // every registry Orchestration op must appear here or NO role can grant it.

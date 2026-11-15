@@ -73,6 +73,12 @@ struct HttpRequest {
     // default. A model shard exceeds the connector default, so the fetch lifts it.
     std::size_t max_response_bytes = 0;
 
+    // Who this request is made for (#1323), filled by the native transport from
+    // the caller's OutboundCallerScope (or audit actor) when left empty, and
+    // named on an egress denial. Not sent to the destination.
+    std::string on_behalf_of;
+    std::string on_behalf_of_run;
+
     // Which resolved addresses may be dialled (#1394, #1414).
     // `Connector` checks the separate exact connector authority allowance on
     // every resolved address and every redirect hop; metadata, link-local and

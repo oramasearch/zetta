@@ -371,6 +371,37 @@ All three are `Orchestration` operations under the `pipelines:manage` permission
 alongside `create_dataset_from_query`. `system.connections` renders the same
 source as a read view.
 
+### Who may use a connection (#1339)
+
+Holding those rights is not enough to use a particular connection: knowing a
+connection's name is not being able to use it. Each saved row records its
+**owner**, the user (or legacy key) that created it. `connect::may_access_connection`
+is the per-connection check:
+
+| Caller | Use the credential (`list_source_tables`, `create_dataset_from_query`) | Replace (`create_connection` on its name), delete, set its safe mode |
+| --- | --- | --- |
+| the connection's owner | yes | yes |
+| `connections:use` flat (admin) or `ON CONNECTION <name>` | yes | no |
+| `connections:manage` flat (admin) or `ON CONNECTION <name>` | only with `connections:use` too | yes |
+| anyone else, including another holder of `pipelines:manage` | **refused**, `unauthorized`, audited | **refused**, `unauthorized`, audited |
+| the trusted local session (no network caller) | yes | yes |
+
+```sql
+GRANT connections:use ON CONNECTION warehouse TO ROLE analysts;
+GRANT connections:manage ON CONNECTION warehouse TO ROLE platform;
+```
+
+A refusal records a `data_access` audit event with `allowed: false`, the caller as
+actor, `connection:<name>` as target, and the capability and missing right as
+detail. Replacing a connection keeps its owner, so a manager rotating the
+credential does not take it over. A connection grant names one connection exactly,
+never a prefix. A row saved before the owner was recorded, or by the trusted local
+session, has no owner: only a holder of the right may use it, so an existing
+non-admin caller needs a grant after upgrading (`GRANT connections:use ON
+CONNECTION <name> TO ROLE …`). The cross-node launch is not re-checked on peers:
+the coordinator checked the caller before launching, and the launch carries only
+the connection's name between mutually authenticated members.
+
 ### The credential is sealed at rest (#1230)
 
 Until [#1230](https://github.com/oramasearch/zetta/issues/1230) the store row held
@@ -384,20 +415,30 @@ catalogue every node gossips and persists, and was readable through
   [`sealed_credential`](../../schemas/sealed_credential.schema.json) schema). The
   connection's name is the associated data, so a sealed value copied onto another
   row does not open.
-- **The key is outside the catalogue.** It is derived (HKDF-SHA256) from the
-  cluster **join token** that `main` passes as `NodeConfig::connection_root_secret`
-  — the 0600 secret under `<data_dir>/security/` every member already holds, never
-  a catalogue key. Every member derives the same key, so each opens what another
-  sealed and the distributed fetch still finds the credential on every node. A node
-  embedded without a join token (the library, a test) creates a node-local secret
-  in `<data_dir>/security/connection-root-secret` (0600) on first use.
+- **The key is outside the catalogue, and outside `data_dir` (#1314).** It is
+  derived (HKDF-SHA256) from the root secret `main` reads from
+  `--connection-root-secret-file PATH` (or `ZETTA_CONNECTION_ROOT_SECRET_FILE`): a
+  file outside the data directory, such as a mounted Kubernetes Secret, held in
+  memory only. Every member is given the same file, so each opens what another
+  sealed and the distributed fetch still finds the credential on every node. A
+  file that resolves inside `data_dir`, is writable by group or others, or holds a
+  secret shorter than 32 characters stops the node at start. Without the file the
+  node holds no keyring: `create_connection` is refused, saved connections list as
+  `credential: "unreadable"`, and everything else runs. (Before #1314 the key came
+  from the join token in `<data_dir>/security/`, so a copy of `data_dir` opened
+  every credential; the join tokens are now kept only as retired secrets, so those
+  rows re-seal under the external secret at the first start that has it. The
+  operator mounts the file: [orama-operator#1166](https://github.com/oramasearch/orama-operator/issues/1166).)
+  A node embedded without one (the library, a test, `connection_root_secret_required`
+  unset) creates a node-local secret in `<data_dir>/security/connection-root-secret`
+  (0600) on first use.
   Both paths create the security directory at 0700 and secret files at 0600
   before writing; the local root loader also restricts legacy permissions and
   rejects links and special files ([storage contract](../cluster/security.md#on-disk--data_dirsecurity), #1413).
-- **Rotation re-seals.** A sealed value names its key id. When a node is re-keyed
-  with `--join-token`, the secret file keeps the earlier token in
-  `retired_join_tokens` (at most four), the keyring can still open values sealed
-  under it, and `Node::start` runs `connect::reseal_connections`, which rewrites
+- **Rotation re-seals.** A sealed value names its key id. The root secret file's
+  first line is the current secret and later lines are retired secrets the keyring
+  can still open (the join token and its `retired_join_tokens` are added as
+  retired too); `Node::start` runs `connect::reseal_connections`, which rewrites
   every entry not under the current key — and any legacy plaintext row — sealed
   under the current one. A steady store is not rewritten. Saving a new credential
   under an existing name seals it afresh (credential rotation).
