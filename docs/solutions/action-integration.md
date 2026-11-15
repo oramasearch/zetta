@@ -49,9 +49,14 @@ Every task provides:
 The outbox stores connector kind and endpoint, but never the bearer token.
 Credentials are request-local: pass them on the enqueue-and-execute call, or on
 the later delivery call. Connector requests carry
-`Idempotency-Key: <idempotency_key>`. A successful 2xx response stores its HTTP
-status and response body as the acknowledgement. A failed transport or non-2xx
-response is recorded and retried until the bound is reached.
+`Idempotency-Key: <idempotency_key>`. A successful 2xx response stores a **coarse**
+acknowledgement, `{"outcome": "acknowledged", "status_class": "2xx"}` (#1453): never
+the peer's exact status or body, so an endpoint cannot write its own text into the
+outbox or the ledger. A failed transport records the node's own reason (a refused
+destination, a timeout); a non-2xx response records only its class (`the endpoint
+failed (5xx)`, `the endpoint rejected the request (4xx)`). Either is retried until
+the bound is reached. The ledger's outcome value is the status class (200, 400,
+500), not the exact status.
 
 When all attempts fail, the outbox row becomes `dead_letter` and is copied once
 to `action_delivery.dead_letter`. Both tables are ordinary Node catalog tables;
@@ -119,6 +124,34 @@ connection goes to the address that was checked. A refused attempt records
 `destination refused: <host> resolves to <address>, a <class> address ...` as
 its error and counts toward the attempt bound like any transport failure. See
 [../governance/destination-policy.md](../governance/destination-policy.md).
+
+### HTTPS, and credentials only to approved endpoints (#1453)
+
+Two more rules apply before anything is sent
+(`connect::delivery_endpoint_rejection`, `connect::delivery_credential_rejection`):
+
+- **Every delivery endpoint is `https://`.** `enqueue_task` (and so
+  `enqueue_action_task` and `execute_closed_loop`) refuses a plaintext endpoint,
+  and delivery refuses a stored one. The one exception is a loopback host
+  (`127.0.0.0/8`, `::1`, `localhost`), where nothing leaves the machine and the
+  destination policy still decides whether loopback is reachable.
+- **A credential goes only to an approved origin.** A delivery that carries a bearer
+  (`deliver_task`'s token, a report's `connector.token`) is sent only when its
+  endpoint's origin is one an administrator approved for the node:
+  `--action-approved-endpoints https://crm.example.com,https://hooks.example.com:8443`
+  (or `ZETTA_ACTION_APPROVED_ENDPOINTS`). The default approves nothing, so a
+  tokened delivery is refused with `delivery refused: … is not an endpoint an
+  administrator approved for delivery credentials`; nothing is sent, no attempt is
+  counted, and the task stays pending. A delivery with no bearer needs only HTTPS
+  and the destination policy. An entry is `https://host[:port]`; `http://` is
+  accepted only for a loopback host, and `:*` matches any port of that host (a test
+  fixture's ephemeral server). Host matching is exact, so
+  `crm.example.com.attacker.test` never matches `crm.example.com`.
+
+The endpoint a run will deliver to is fixed when the task is enqueued and shown in
+the enqueued task (`endpoint` in `enqueue_action_task`'s output and in
+`action_delivery.outbox`) before any delivery: changing it is a new task with a new
+idempotency key (#1410), and the credential supplied later goes there or nowhere.
 
 ## Holdout and kill-switch rules
 

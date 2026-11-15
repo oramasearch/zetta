@@ -13,6 +13,7 @@
 #include "zetta/api/server.hpp"
 #include "zetta/compute/mlx_serving.hpp"
 #include "zetta/connect/credential_seal.hpp"
+#include "zetta/connect/destination_policy.hpp"
 #include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/connect/connector_destinations.hpp"
@@ -154,6 +155,7 @@ struct Options {
     std::string clerk_issuer;                   // --clerk-issuer URL (Clerk JWT verify; else bearer-only)
     std::optional<std::string> connector_allow_destinations;  // exact host:port entries (#1414)
     std::optional<std::string> action_allow_destinations;  // --action-allow-destinations LIST (#1394)
+    std::optional<std::string> action_approved_endpoints;  // --action-approved-endpoints LIST (#1453)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string connection_root_secret_file;  // --connection-root-secret-file (#1314)
     std::string join_token;         // --join-token (join an existing cluster)
@@ -276,6 +278,12 @@ void print_usage(const char* argv0) {
         "                      endpoint may reach besides public addresses:\n"
         "                      loopback, private, link-local, metadata\n"
         "                      (comma separated; default none) (#1394)\n"
+        "  --action-approved-endpoints LIST\n"
+        "                      Origins (https://host[:port], comma separated)\n"
+        "                      an action or report delivery may send its\n"
+        "                      credential to; default none, so a delivery\n"
+        "                      carrying a bearer is refused. Every delivery\n"
+        "                      endpoint must be https:// unless loopback (#1453)\n"
         "  --egress-allow LIST Outside destinations this node may connect to\n"
         "                      (repeatable; comma separated): host, *.domain,\n"
         "                      address or CIDR range, each optionally :port;\n"
@@ -299,6 +307,7 @@ void print_usage(const char* argv0) {
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
         "  ZETTA_CONNECTOR_ALLOW_DESTINATIONS -> --connector-allow-destinations\n"
         "  ZETTA_ACTION_ALLOW_DESTINATIONS -> --action-allow-destinations\n"
+        "  ZETTA_ACTION_APPROVED_ENDPOINTS -> --action-approved-endpoints\n"
         "  ZETTA_EGRESS_ALLOW  Egress allowlist -> --egress-allow\n"
         "  ZETTA_AUDIT_RETENTION_DAYS\n"
         "                      Ordinary audit retention in days\n"
@@ -496,6 +505,9 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--action-allow-destinations") {
             const char* v = take_value(argc, argv, i, o, "--action-allow-destinations");
             if (v) o.action_allow_destinations = v;
+        } else if (arg == "--action-approved-endpoints") {
+            const char* v = take_value(argc, argv, i, o, "--action-approved-endpoints");
+            if (v) o.action_approved_endpoints = v;
         } else if (arg == "--egress-allow") {
             const char* value = take_value(argc, argv, i, o, "--egress-allow");
             if (!value) break;
@@ -819,6 +831,24 @@ int main(int argc, char** argv) {
         }
         zetta::connect::set_allowed_destinations(*allowed);
         std::printf("zetta: action delivery destinations: %s\n", allowed->describe().c_str());
+    }
+    // The endpoints a delivery's credential may go to (#1453): only origins an
+    // administrator approved here, never one a solution author stored.
+    {
+        std::optional<std::string> list = opts.action_approved_endpoints;
+        if (!list) {
+            if (const char* env = std::getenv("ZETTA_ACTION_APPROVED_ENDPOINTS")) list = env;
+        }
+        std::string error;
+        const auto approved =
+            zetta::connect::ApprovedDeliveryEndpoints::parse(list.value_or(""), &error);
+        if (!approved) {
+            std::fprintf(stderr, "zetta: --action-approved-endpoints: %s\n", error.c_str());
+            return 2;
+        }
+        zetta::connect::set_approved_delivery_endpoints(*approved);
+        std::printf("zetta: delivery credential endpoints: %s\n",
+                    approved->describe().c_str());
     }
     std::optional<zetta::connect::EgressPolicy> egress_policy =
         configured_egress_policy(opts.egress_allow, opts.clerk_issuer);

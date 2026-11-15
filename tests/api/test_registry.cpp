@@ -2516,6 +2516,9 @@ TEST_F(RegistryFixture, ConnectorDiscoveryRequiresApprovalForInlineDestinations)
     permissions.capabilities.grant(zetta::governance::CapabilityDomain::Api, "query");
     permissions.capabilities.grant(zetta::governance::CapabilityDomain::Orchestration,
                                    "list_source_tables");
+    // Using a saved connection also needs connections:use on it (#1339).
+    permissions.capabilities.grant(zetta::governance::CapabilityDomain::Data,
+                                   "use_connection");
     role->set_metadata(role->name(), permissions, role->created());
     const auto user = node.create_user("reader");
     ASSERT_TRUE(user);
