@@ -4148,9 +4148,12 @@ ApiResult handle_delete_dataset(const nlohmann::json& input, ApiContext& context
                                 "its studies (stop_study), then delete it");
     }
     // An index records the table by the name create_index was given: the bare
-    // name, or `database.table`.
+    // name, or `database.table`. One that records its database (#1428) goes
+    // only with this database's table, never with a same-named one elsewhere.
     std::vector<std::string> indexes;
     for (const auto& index : context.node.indexes()) {
+        const std::string& index_database = index->value().database_id;
+        if (!index_database.empty() && index_database != owner->id()) continue;
         if (index->table() == dataset.name || index->table() == qualified) {
             indexes.push_back(index->id());
         }
@@ -4594,28 +4597,6 @@ const nlohmann::json& create_index_output_schema() {
     return schema;
 }
 
-// Resolve a table by name — within `database` when named, else the first database
-// holding a table of that name (the index_step_executor resolution).
-std::shared_ptr<zetta::data::Table> resolve_index_source_table(
-    Node& node, const std::string& table, const std::string& database_hint) {
-    if (!database_hint.empty()) {
-        const std::shared_ptr<zetta::data::Database> database =
-            node.find_database(database_hint);
-        return database ? database->find_table(table) : nullptr;
-    }
-    for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<zetta::data::Database> database =
-            node.find_database(name);
-        if (database) {
-            if (const std::shared_ptr<zetta::data::Table> found =
-                    database->find_table(table)) {
-                return found;
-            }
-        }
-    }
-    return nullptr;
-}
-
 ApiResult handle_create_index(const nlohmann::json& input, ApiContext& context) {
     const std::string table = input.at("table").get<std::string>();
     std::vector<std::string> fields =
@@ -4626,13 +4607,24 @@ ApiResult handle_create_index(const nlohmann::json& input, ApiContext& context) 
     const std::string database_hint = input.value("database", std::string{});
 
     // (1) The source table must exist — an index is built over its partitions.
-    const std::shared_ptr<zetta::data::Table> source_table =
-        resolve_index_source_table(context.node, table, database_hint);
-    if (!source_table) {
+    // The one source rule (#1428): the named database, else the only database
+    // holding the name; several holders and no `database` is refused.
+    zetta::index::IndexSpec requested;
+    requested.table = table;
+    const zetta::index::IndexSource source =
+        zetta::index::resolve_index_source(context.node, requested, database_hint);
+    if (!source.ok()) {
+        if (zetta::index::ambiguous_index_source(source)) {
+            return ApiResult::failure(
+                "invalid_input",
+                "table '" + table + "' exists in several databases — name the "
+                "one to index with `database`");
+        }
         return ApiResult::failure(
             "not_found",
             "table '" + table + "' not found — load it first with add_dataset");
     }
+    const std::shared_ptr<zetta::data::Table>& source_table = source.table;
 
     // Default the indexed fields to ALL of the table's columns (from its first
     // row) when none are named — indexing everything is the sane default; a
@@ -4663,6 +4655,9 @@ ApiResult handle_create_index(const nlohmann::json& input, ApiContext& context) 
     value.kind = *kind;
     value.backend = backend;
     value.fields = fields;
+    // Persisted so routing and hydration use this table, never a same-named
+    // table in another database (#1428).
+    value.database_id = source.database_id;
 
     // (3) The backend must resolve for this kind, or the recorded index could
     // never build — fail with the reason rather than persist a dead entity.

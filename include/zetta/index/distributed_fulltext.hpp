@@ -138,9 +138,12 @@ struct FulltextQueryRequest {
     // The database authorized by the coordinator. A peer must have built its
     // index from this same database (#1403).
     std::optional<std::string> database;
+    // The id of the database the index records (#1428), part of the spec's key.
+    // Empty for an index recorded before the database was persisted.
+    std::string database_id;
 
-    // The IndexSpec this request names (table/kind/backend/fields) — what a peer
-    // looks its sub-indexes up by.
+    // The IndexSpec this request names (database id/table/kind/backend/fields)
+    // — what a peer looks its sub-indexes up by.
     IndexSpec spec() const;
     // The IndexQuery this request names (field/term/top_k/statistics).
     IndexQuery query() const;

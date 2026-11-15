@@ -32,11 +32,17 @@ struct IndexValue {
     std::vector<std::string> fields;   // the indexed fields (>= 1, unique)
     std::string created;               // ISO-8601 UTC stamp at creation
     bool exposed = false;              // serve over HTTP? (docs/api/serving.md, #648)
+    // The id of the database that holds `table` (#1428), recorded at creation
+    // so routing and hydration never pick a same-named table in another
+    // database. The Database's uuid, so a rename keeps the binding. Empty only
+    // on a record written before it was persisted.
+    std::string database_id;
 
-    // This value's IndexBackend view (table + kind + backend + fields). The bridge
-    // from the durable entity to the seam: registry.resolve(value.spec()).
+    // This value's IndexBackend view (database id + table + kind + backend +
+    // fields). The bridge from the durable entity to the backend interface:
+    // registry.resolve(value.spec()).
     IndexSpec spec() const {
-        return IndexSpec{table, kind, backend, fields};
+        return IndexSpec{table, kind, backend, fields, database_id};
     }
 
     bool operator==(const IndexValue&) const = default;

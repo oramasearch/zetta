@@ -9,6 +9,10 @@
       "minLength": 1,
       "type": "string"
     },
+    "database_id": {
+      "minLength": 1,
+      "type": "string"
+    },
     "field": {
       "type": "string"
     },

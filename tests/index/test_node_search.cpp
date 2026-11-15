@@ -759,3 +759,105 @@ TEST(NodeSearch, SqlReservedDatabasesCannotBeSearched) {
     EXPECT_FALSE(node.search(request).ok());
     node.stop();
 }
+
+// #1428 (LSR-255): an index records the database its table lives in, so two
+// databases holding a table of the same name never swap. Routing and hydration
+// read the recorded database only; an older record that names no database is
+// refused while the name is ambiguous, never bound to the first database.
+TEST(NodeSearch, IndexKeepsItsSourceDatabaseWhenTableNamesCollide) {
+    TempDir dir;
+    Node node(node_config(dir));
+    ASSERT_TRUE(node.start());
+    node.index_registry().add(std::make_shared<TermFrequencyBackend>());
+
+    auto alpha = node.create_database("alpha");
+    auto beta = node.create_database("beta");
+    ASSERT_TRUE(alpha && beta);
+    auto alpha_articles = alpha->create_table("articles");
+    auto beta_articles = beta->create_table("articles");
+    ASSERT_TRUE(alpha_articles && beta_articles);
+    alpha_articles->add_row(article("postgres alpha", "postgres in alpha"));
+    beta_articles->add_row(article("postgres beta", "postgres in beta"));
+    beta_articles->add_row(article("postgres beta two", "postgres again in beta"));
+
+    // create_index without `database` is refused: the name is ambiguous.
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{node};
+    const auto ambiguous = registry.call(
+        "create_index", {{"table", "articles"}, {"backend", "tf_reference"}}, context);
+    ASSERT_FALSE(ambiguous.ok);
+    EXPECT_EQ(ambiguous.error.code, "invalid_input");
+
+    // Naming the database records its stable id on the index.
+    const auto created = registry.call(
+        "create_index",
+        {{"table", "articles"}, {"backend", "tf_reference"}, {"database", "beta"},
+         {"fields", {"title", "body"}}},
+        context);
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const auto index = node.find_index(created.value.at("index_id").get<std::string>());
+    ASSERT_TRUE(index);
+    EXPECT_EQ(index->value().database_id, beta->id());
+    EXPECT_EQ(zetta::index::to_json(index->value()).at("database_id"), beta->id());
+    const auto parsed =
+        zetta::index::parse_index_value(zetta::index::to_json(index->value()));
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed->database_id, beta->id());
+
+    const zetta::index::IndexSource source =
+        zetta::index::resolve_index_source(node, index->spec());
+    ASSERT_TRUE(source.ok()) << source.reason;
+    EXPECT_EQ(source.database, "beta");
+    EXPECT_EQ(source.table->id(), beta_articles->id());
+
+    // Search hydrates from beta only, whatever order the databases list in.
+    const IndexSpec spec = index->spec();
+    ASSERT_TRUE(node.index_registry()
+                    .resolve(spec)
+                    ->build(spec, zetta::index::read_index_partitions(
+                                      beta_articles->store()))
+                    .ok());
+    SearchRequest request;
+    request.target = index->id();
+    request.query = "postgres";
+    const SearchResult result = node.search(request);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    ASSERT_EQ(result.hits.size(), 2u);
+    for (const zetta::index::SearchHit& hit : result.hits) {
+        EXPECT_NE(hit.fields.at("title").get<std::string>().find("beta"),
+                  std::string::npos);
+    }
+
+    // A rename keeps the binding: the record holds the database id.
+    ASSERT_TRUE(node.rename_database("beta", "gamma"));
+    const zetta::index::IndexSource renamed =
+        zetta::index::resolve_index_source(node, index->spec());
+    ASSERT_TRUE(renamed.ok()) << renamed.reason;
+    EXPECT_EQ(renamed.database, "gamma");
+
+    // An index recorded before the database was persisted is refused while
+    // the name is ambiguous, rather than reading the first database's table.
+    IndexValue legacy = articles_index("tf_reference");
+    legacy.fields = {"body"};
+    const auto legacy_index = node.create_index(std::move(legacy));
+    ASSERT_TRUE(legacy_index);
+    const zetta::index::IndexSource refused =
+        zetta::index::resolve_index_source(node, legacy_index->spec());
+    EXPECT_FALSE(refused.ok());
+    EXPECT_TRUE(zetta::index::ambiguous_index_source(refused));
+    SearchRequest legacy_request;
+    legacy_request.target = legacy_index->id();
+    legacy_request.query = "postgres";
+    const SearchResult legacy_result = node.search(legacy_request);
+    EXPECT_FALSE(legacy_result.ok());
+    EXPECT_NE(legacy_result.status.message.find("several databases"), std::string::npos);
+
+    // Once the name is unambiguous again, the older record resolves.
+    ASSERT_TRUE(node.drop_database("alpha"));
+    const zetta::index::IndexSource unambiguous =
+        zetta::index::resolve_index_source(node, legacy_index->spec());
+    ASSERT_TRUE(unambiguous.ok()) << unambiguous.reason;
+    EXPECT_EQ(unambiguous.database_id, beta->id());
+    node.stop();
+}

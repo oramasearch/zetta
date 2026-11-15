@@ -122,7 +122,9 @@ reaches the index:
   its sub-indexes up by (`table` / `kind` / `fields`, with `backend` for provenance)
   plus the query (`field` / `term` / `top_k`), and an optional `return_fields`
   list: the row fields each hit should carry back ([#1243](https://github.com/oramasearch/zetta/issues/1243)).
-  `Node::search` also sends `database`, the database it authorized (#1403).
+  `Node::search` also sends `database`, the database it authorized (#1403),
+  and `database_id` when the index records one (#1428): it is part of the
+  spec's key, so a peer looks up the sub-indexes it built for that database.
   A peer refuses hits from a same-named table built from another database.
   Direct in-process callers may omit it; the public search surfaces always
   set it after table/column authorization and refuse searches subject to RLS.

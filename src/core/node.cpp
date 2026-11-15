@@ -1454,21 +1454,20 @@ void Node::reconcile_search_indexes() {
     std::map<std::string, std::pair<zetta::index::IndexSpec, std::string>> desired;
     for (const std::shared_ptr<zetta::index::Index>& index : indexes_) {
         if (!index || index->kind() != zetta::index::IndexKind::Search) continue;
+        // The index's own source (#1428): its recorded database, or the one
+        // database holding the name for an older record. An index whose source
+        // does not resolve (missing, or ambiguous) builds nothing; search
+        // reports why.
+        const zetta::index::IndexSource source =
+            zetta::index::resolve_index_source(*this, index->spec());
+        if (!source.ok()) continue;
         zetta::index::IndexSpec spec = index->spec();
         const std::string key = spec.key();
         if (desired.contains(key)) continue;
 
         // Partitions record the table's ID; the spec names it by NAME.
-        std::string table_id = spec.table;
-        std::string source_database;
-        for (const std::shared_ptr<zetta::data::Database>& database : databases_) {
-            if (const std::shared_ptr<zetta::data::Table> found =
-                    database->find_table(spec.table)) {
-                table_id = found->id();
-                source_database = database->name();
-                break;
-            }
-        }
+        const std::string table_id = source.table->id();
+        const std::string& source_database = source.database;
         std::string fingerprint = spec.backend + '\n' + source_database + '\n' +
                                   table_id + '\n';
         for (const std::shared_ptr<zetta::data::DatasetPartition>& partition :

@@ -49,6 +49,34 @@ zetta::index::SearchResult result = node.search(request, recorder, &trace);
    scatter-gather made visible, plus `wire_bytes_moved` and which `path`
    answered.
 
+## The source database (#1428)
+
+An index records the id of the database its table lives in (`database_id`
+on the `Index` entity, the Database's uuid, so a rename keeps it).
+`resolve_index_source` (search.hpp) is the one rule every path uses:
+`create_index`, the IR `index` step, the per-partition build
+(`reconcile_search_indexes` → `build_local`), and search's authorization,
+routing and hydration.
+
+- An index that records its database resolves in that database only. If the
+  database is dropped, the index resolves to nothing and search answers
+  `not_found`; it never falls through to a same-named table elsewhere.
+- `create_index` (and an `index` step with a `database` attribute) resolves in
+  the named database. Without one, the table name must be unambiguous:
+  `create_index` answers `invalid_input` when several databases hold it.
+- An index recorded before the database was persisted has no `database_id`.
+  It resolves only while exactly one database holds the table name. While
+  several do, it is refused with a reason naming them ("recreate it with
+  create_index naming `database`"); it is never bound to the first database
+  in iteration order. Nothing is rewritten in place: the record is migrated by
+  recreating it.
+
+Consolidated hydration reads only the resolved table, and `delete_dataset`
+removes only the indexes that record that dataset's database (or record none).
+A spec's backend key leads with its `database_id` when it has one, so two
+indexes over same-named tables in different databases never share a built
+index; a record without one keeps its earlier key.
+
 ## Caller authorization (#1403)
 
 The capability and served HTTP route set `SearchRequest::acting_id` and
@@ -158,8 +186,9 @@ machinery:
 ## Boundaries
 
 The existing schema-validated `fulltext_query` message gains optional
-`database`, identifying the authorized source (#1403); `fulltext_hits` is
-unchanged ([distributed-fulltext.md](distributed-fulltext.md)). The capability's
+`database`, identifying the authorized source (#1403), and optional
+`database_id`, the index's recorded database id that its key carries (#1428);
+`fulltext_hits` is unchanged ([distributed-fulltext.md](distributed-fulltext.md)). The capability's
 input rides the registry's schema-as-code validation; `SearchRequest` and
 `SearchResult` are in-process C++ types.
 

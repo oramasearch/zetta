@@ -9,6 +9,10 @@
     "created": {
       "type": "string"
     },
+    "database_id": {
+      "minLength": 1,
+      "type": "string"
+    },
     "exposed": {
       "type": "boolean"
     },

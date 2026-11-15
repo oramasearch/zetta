@@ -41,11 +41,18 @@ struct IndexSpec {
     IndexKind kind = IndexKind::Search;  // what the index accelerates
     std::string backend;               // the backend that should build it
     std::vector<std::string> fields;   // the fields it indexes (>= 1)
+    // The id of the database that holds `table` (#1428): the Database's uuid,
+    // stable across a rename. Empty only on a spec recorded before it was
+    // persisted; resolve_index_source (search.hpp) fills it, and refuses such a
+    // spec when several databases hold the table name.
+    std::string database_id;
 
     // A stable key identifying *this* index within a backend that may hold many
-    // (table + kind + fields, in field order). build()/query()/drop() use it so a
-    // backend can store/look up the right index. Two specs differing only in
-    // `backend` share a key — `backend` selects the implementation, not the index.
+    // (database id + table + kind + fields, in field order). build()/query()/drop()
+    // use it so a backend can store/look up the right index, and two same-named
+    // tables in different databases never share one (#1428). Two specs
+    // differing only in `backend` share a key — `backend` selects the
+    // implementation, not the index.
     std::string key() const;
 
     bool operator==(const IndexSpec&) const = default;

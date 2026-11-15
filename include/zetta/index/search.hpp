@@ -34,10 +34,42 @@
 // IndexStatus with a path-qualified reason. Main-thread only (it reads the Node
 // tree and may build local sub-indexes). See docs/indexing/node-search.md.
 namespace zetta { class Node; }
+namespace zetta::data { class Table; }
 
 namespace zetta::index {
 
 class Index;
+
+// The table an index is built over, resolved once (#1428). `database` is the
+// database's current name (what authorization checks) and `database_id` its
+// stable id (what a new index records). The spec's key is not changed here: an
+// index is keyed by what its record says, which every node agrees on. `table`
+// is empty when the source does not resolve, and `reason` says why.
+struct IndexSource {
+    std::shared_ptr<zetta::data::Table> table;
+    std::string database;
+    std::string database_id;
+    std::string reason;
+    bool ok() const { return table != nullptr; }
+};
+
+// THE source rule for an index (#1428), shared by create_index, the index
+// step, the per-partition build and search's routing and hydration:
+//   - a spec that records its database id resolves in that database only
+//     (a rename keeps it; a dropped database leaves it unresolved);
+//   - otherwise, when `database_name` is given (create_index's `database`, an
+//     index step's `database` attribute), in that database only;
+//   - otherwise (a record written before the database was persisted) only
+//     when exactly one database holds a table of that name. When several do it
+//     is refused, never bound to the first: recreate the index naming its
+//     database.
+// Main-thread only (reads the Node tree).
+IndexSource resolve_index_source(Node& node, const IndexSpec& spec,
+                                 const std::string& database_name = {});
+
+// Is `source` refused only because several databases hold its table name?
+// create_index answers that as invalid input naming `database`.
+bool ambiguous_index_source(const IndexSource& source);
 
 // What the caller asked for, verbatim — the search's *intent*.
 struct SearchRequest {
