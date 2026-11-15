@@ -130,4 +130,6 @@ checks it in the same step as the write. See
 only a `/v1/<capability>` route; `Registry::call` then runs the capability only
 when its `dataset_reads` names every dataset the input reads and each is in the
 scope. `sql` declares its reads (`sql_dataset_reads`: a `SELECT` of a scoped
-table); every other capability is refused under a scope.
+table), `get_dataset` the one dataset it names (`get_dataset_reads`), and
+`list_datasets` lists only the scope's datasets (#1519); every other capability is
+refused under a scope.

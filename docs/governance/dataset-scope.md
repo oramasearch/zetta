@@ -60,9 +60,19 @@ an authenticated request; without a valid bearer the answer is still 401.
 | Capability | Reads | Refused under a scope |
 | --- | --- | --- |
 | `sql` | each statement's table, `SELECT` only, with the `database` input as the default | any other statement (writes, DDL, users, tokens, roles, policies), a `system.*` view, the connection and safe-mode stores, a table with no database, an input that does not parse |
+| `list_datasets` | only the scope's datasets: the handler leaves every other one out of the answer, `summary` and `full` alike ([#1519](https://github.com/oramasearch/zetta/issues/1519)) | never |
+| `get_dataset` | the one dataset named: `database` plus `dataset` taken whole, or `database.table` split at its first dot; a scoped call is resolved exactly that way, with no search across databases (#1519) | a bare name with no `database` (it would be looked up in every database) |
 
-Every other capability is refused under a scope until it declares its reads. Score,
-explain and search are the next candidates.
+Every other capability is refused under a scope until it declares its reads. These stay refused
+because what they read cannot be bounded from the input (#1519):
+
+| Capability | Why |
+| --- | --- |
+| `score`, `explain` | they also read the model's entity-key table (#1255), which the model names, not the input |
+| `analyze_dataset`, `plan_features` | they look for joins across the dataset's whole database |
+| `create_dataset_from_query`, `upload_dataset`, `promote_dataset`, `generate_dataset` | they write a dataset, which is outside the scope |
+| `run`, `create_study`, `run_solution` and the other pipeline actions | a graph reads whatever its steps name |
+| `server_info` | not a dataset read; lake's probe relies on its refusal to tell an engine that enforces the scope |
 
 ## Using it from lake
 
@@ -78,8 +88,8 @@ engine calls from confined credentials.
   carries the scope to `ApiContext::dataset_scope` for the REST call.
 - `src/core/api/registry.cpp` (`Registry::call`): `dataset_scope_refusal` after
   authorization and before anything runs, audited.
-- `src/core/api/capabilities.cpp` (`sql_dataset_reads`): what a SQL input reads.
+- `src/core/api/capabilities.cpp` (`sql_dataset_reads`, `get_dataset_reads`, the scoped `list_datasets` filter): what each declared capability reads.
 - `tests/api/test_dataset_scope.cpp`: parsing, the registry decision (inside, outside,
   empty scope, every non-`SELECT` statement, an undeclared capability, the audit row), and
-  over REST: the header confines, a malformed or repeated header is 400, only capability
+  the scoped `list_datasets` and `get_dataset`, the capabilities that stay refused, and over REST: the header confines, a malformed or repeated header is 400, only capability
   routes answer, and an unauthenticated scoped request is still 401.

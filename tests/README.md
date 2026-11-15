@@ -69,6 +69,7 @@ covers saved discovery and privileged inline discovery for both identity systems
 `api/test_dataset_scope.cpp` covers the per-call dataset scope (#1515): the
 header parser, the registry decision (a `SELECT` inside and outside the scope, an
 empty scope, every non-`SELECT` statement, a capability that declares no reads,
-the audited refusal), and over REST the header confining `/v1/sql`, a malformed
+the audited refusal, `list_datasets` and `get_dataset` under a scope and the
+capabilities that stay refused, #1519), and over REST the header confining `/v1/sql`, a malformed
 or repeated header (400), only capability routes answering (403 for `/mcp`, the
 object routes and `/v1/specs`), and a 401 that stays a 401.

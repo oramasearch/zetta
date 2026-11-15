@@ -17,6 +17,8 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "temp_dir.hpp"
 #include "zetta/api/background.hpp"
@@ -172,6 +174,72 @@ TEST_F(DatasetScopeFixture, ARefusalIsAudited) {
         }
     }
     EXPECT_TRUE(refused);
+}
+
+// #1519: list_datasets lists only the scope's datasets.
+TEST_F(DatasetScopeFixture, ListDatasetsListsOnlyTheScope) {
+    const auto names = [](const ApiResult& result) {
+        std::vector<std::string> out;
+        for (const auto& dataset : result.value.at("datasets")) {
+            out.push_back(dataset.value("database", std::string{}) + "." +
+                          dataset.value("name", std::string{}));
+        }
+        return out;
+    };
+    const ApiResult unconfined = call("list_datasets", {{"detail", "summary"}});
+    ASSERT_TRUE(unconfined.ok) << unconfined.error.message;
+    const auto all = names(unconfined);
+    ASSERT_NE(std::ranges::find(all, "sales.refunds"), all.end()) << unconfined.value.dump();
+
+    for (const char* detail : {"summary", "full"}) {
+        const ApiResult confined =
+            call("list_datasets", {{"detail", detail}}, scope_of("sales.accounts"));
+        ASSERT_TRUE(confined.ok) << confined.error.message;
+        for (const std::string& name : names(confined)) {
+            EXPECT_EQ(name, "sales.accounts") << detail;
+        }
+        EXPECT_EQ(confined.value.at("datasets").size(), 1U) << detail;
+    }
+    const ApiResult none = call("list_datasets", nlohmann::json::object(), scope_of(""));
+    ASSERT_TRUE(none.ok);
+    EXPECT_TRUE(none.value.at("datasets").empty());
+}
+
+// #1519: get_dataset reads the one dataset it names, resolved the way the scope
+// check resolved it.
+TEST_F(DatasetScopeFixture, GetDatasetReadsOnlyTheNamedDataset) {
+    const DatasetScope scope = scope_of("sales.accounts");
+    const ApiResult dotted = call("get_dataset", {{"dataset", "sales.accounts"}}, scope);
+    EXPECT_TRUE(dotted.ok) << dotted.error.message;
+    const ApiResult with_database =
+        call("get_dataset", {{"dataset", "accounts"}, {"database", "sales"}}, scope);
+    EXPECT_TRUE(with_database.ok) << with_database.error.message;
+
+    const ApiResult outside = call("get_dataset", {{"dataset", "sales.refunds"}}, scope);
+    ASSERT_FALSE(outside.ok);
+    EXPECT_EQ(outside.error.code, "unauthorized");
+    EXPECT_EQ(outside.error.details.at("outside"), nlohmann::json::array({"sales.refunds"}));
+
+    // A bare name is looked up across every database, so it cannot be placed.
+    const ApiResult bare = call("get_dataset", {{"dataset", "accounts"}}, scope);
+    ASSERT_FALSE(bare.ok);
+    EXPECT_EQ(bare.error.code, "unauthorized");
+}
+
+// Capabilities that read something they cannot bound stay refused (#1519):
+// score and explain read the model's entity-key table, analyze_dataset and
+// plan_features read same-database joins, and the dataset actions write a dataset.
+TEST_F(DatasetScopeFixture, WhatCannotBeBoundedStaysRefused) {
+    const DatasetScope scope = scope_of("sales.accounts");
+    for (const auto& [name, input] : std::vector<std::pair<std::string, nlohmann::json>>{
+             {"score", {{"model", "m"}, {"dataset_path", "sales.accounts"}}},
+             {"explain", {{"model", "m"}, {"dataset_path", "sales.accounts"}, {"entity", 1}}},
+             {"analyze_dataset", {{"dataset_path", "sales.accounts"}}},
+             {"server_info", nlohmann::json::object()}}) {
+        const ApiResult result = call(name, input, scope);
+        EXPECT_FALSE(result.ok) << name;
+        EXPECT_EQ(result.error.code, "unauthorized") << name << ": " << result.error.message;
+    }
 }
 
 TEST(DatasetScopeRefusal, NamesWhatTheCapabilityReads) {

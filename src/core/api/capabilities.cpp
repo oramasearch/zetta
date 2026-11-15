@@ -2810,13 +2810,45 @@ const nlohmann::json& get_dataset_schema() {
     return schema;
 }
 
+// The one dataset get_dataset reads under a dataset scope (#1519): `database`
+// plus `dataset` taken whole, or, without `database`, a `database.table` split at
+// its first dot. A bare name with no database cannot be placed (it is looked up
+// across every database), so it is refused under a scope. handle_get_dataset
+// resolves a scoped call exactly this way, so what was checked is what is read.
+std::optional<DatasetName> get_dataset_scoped_name(const nlohmann::json& input) {
+    const std::string name = input.at("dataset").get<std::string>();
+    const std::string database = input.value("database", "");
+    if (!database.empty()) return DatasetName{database, name};
+    const std::size_t dot = name.find('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 == name.size()) return std::nullopt;
+    return DatasetName{name.substr(0, dot), name.substr(dot + 1)};
+}
+
+std::optional<std::vector<DatasetName>> get_dataset_reads(const nlohmann::json& input) {
+    const std::optional<DatasetName> name = get_dataset_scoped_name(input);
+    if (!name) return std::nullopt;
+    return std::vector<DatasetName>{*name};
+}
+
 ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
     std::string name = input.at("dataset").get<std::string>();
     std::string database = input.value("database", "");
+    if (context.dataset_scope) {
+        // Resolve as get_dataset_reads did (#1519): no exact-name search across
+        // databases, which could land on a dataset the scope check never saw.
+        const std::optional<DatasetName> scoped = get_dataset_scoped_name(input);
+        if (!scoped) {
+            return ApiResult::failure("invalid_input",
+                                      "under a dataset scope, name the dataset as "
+                                      "database.table or pass database",
+                                      "/dataset");
+        }
+        database = scoped->database;
+        name = scoped->table;
+    } else if (const std::size_t dot = name.find('.'); dot != std::string::npos) {
     // `database.table`, the form analyze_dataset and run's dataset_path take
     // (#1221). An exact name is tried first, so a table whose own name holds a
     // dot is still found by it.
-    if (const std::size_t dot = name.find('.'); dot != std::string::npos) {
         const bool exact = std::ranges::any_of(
             context.node.database_names(), [&](const std::string& each) {
                 const auto found = context.node.find_database(each);
@@ -3498,14 +3530,20 @@ const nlohmann::json& list_datasets_output_schema() {
 ApiResult handle_list_datasets(const nlohmann::json& input, ApiContext& context) {
     const std::string detail = input.value("detail", std::string{"full"});
     nlohmann::json datasets = nlohmann::json::array();
+    // Under a dataset scope (#1519) only the scope's datasets are listed: one
+    // outside it is neither named nor counted.
+    const auto listed = [&context](const zetta::data::DatasetSummary& dataset) {
+        return !context.dataset_scope ||
+               context.dataset_scope->contains(DatasetName{dataset.database, dataset.name});
+    };
     if (detail == "summary") {
         for (const zetta::data::DatasetSummary& dataset :
              context.node.dataset_list_summaries()) {
-            datasets.push_back(dataset_list_summary_json(dataset));
+            if (listed(dataset)) datasets.push_back(dataset_list_summary_json(dataset));
         }
     } else {
         for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
-            datasets.push_back(dataset_summary_json(dataset));
+            if (listed(dataset)) datasets.push_back(dataset_summary_json(dataset));
         }
     }
     nlohmann::json output;
@@ -12287,7 +12325,11 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        handle_get_dataset});
+        handle_get_dataset,
+        /*describe_consent=*/{},
+        /*describe_safe_mode=*/{},
+        // Under a dataset scope (#1519): the one dataset named.
+        /*dataset_reads=*/get_dataset_reads});
 
     registry.add(Capability{
         "list_runs",
@@ -12355,7 +12397,15 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        handle_list_datasets});
+        handle_list_datasets,
+        /*describe_consent=*/{},
+        /*describe_safe_mode=*/{},
+        // Under a dataset scope (#1519) the handler lists only the scope's
+        // datasets, so it reads nothing outside it.
+        /*dataset_reads=*/
+        [](const nlohmann::json&) {
+            return std::optional<std::vector<DatasetName>>(std::vector<DatasetName>{});
+        }});
 
     registry.add(Capability{
         "list_methodologies", "List methodologies",
