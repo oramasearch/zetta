@@ -408,6 +408,10 @@ type:
   (float) but no upstream data source provides it`).
 - field present but no provided type matches → **fail** (`requires field "revenue"
   as float but the upstream source provides it as string (type mismatch)`).
+- the walks together visit more than 1,000,000 upstream steps → **fail** (`the
+  graph is too large to verify its field requirements`, #1426). The budget is
+  per check, across every requiring step, so a large caller-built graph cannot
+  hold the owner loop; an unverified requirement never passes.
 
 Type tokens are **opaque strings compared case-insensitively** (`Int` matches
 `int `); the check does not interpret a type system, only equality of the names

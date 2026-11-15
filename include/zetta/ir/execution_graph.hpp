@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -70,6 +71,15 @@ struct Edge {
     EdgeKind kind = EdgeKind::DataFlow;
 };
 
+// The most nodes and edges one graph may hold (#1426, LSR-253). A graph is
+// caller-controlled (save_graph, the compilers, a deploy), and every check,
+// compile and run walks it on the node's owner loop, so its size is bounded at
+// construction: add_node / add_edge refuse past these, from_json rejects a
+// document that names more, and the compilers report a graph that hit them.
+// A real pipeline is tens of steps; these leave orders of magnitude of room.
+inline constexpr std::size_t kMaxGraphNodes = 4096;
+inline constexpr std::size_t kMaxGraphEdges = 16384;
+
 // An in-memory directed graph of typed step nodes and typed edges.
 //
 // Nodes are handed back as shared_ptr handles (empty on miss), matching the rest
@@ -81,13 +91,16 @@ public:
     // --- build -------------------------------------------------------------
 
     // Add a step node and return its handle. When `id` is empty a fresh UUID is
-    // assigned. Returns an empty handle if `id` is already taken (no overwrite).
+    // assigned. Returns an empty handle if `id` is already taken (no overwrite),
+    // or when the graph already holds kMaxGraphNodes (then over_limit() is set).
     std::shared_ptr<Node> add_node(StepKind kind, std::string name,
                                    nlohmann::json attributes = {}, NodeId id = {});
 
     // Connect `from` → `to` with the given edge kind. Returns false if either
     // endpoint is unknown (no dangling edges) or the identical edge already
-    // exists (no duplicates). Self-edges are permitted by the data model.
+    // exists (no duplicates), or when the graph already holds kMaxGraphEdges
+    // (then over_limit() is set). Self-edges are permitted by the data model.
+    // The duplicate check is a hash lookup, not a scan of every edge.
     bool add_edge(const NodeId& from, const NodeId& to,
                   EdgeKind kind = EdgeKind::DataFlow);
 
@@ -115,6 +128,10 @@ public:
     std::size_t node_count() const { return nodes_.size(); }
     std::size_t edge_count() const { return edges_.size(); }
     bool empty() const { return nodes_.empty(); }
+    // True once an add_node / add_edge was refused because the graph was full
+    // (kMaxGraphNodes / kMaxGraphEdges): the graph is a truncated copy of what
+    // its builder asked for, and must be rejected rather than used.
+    bool over_limit() const { return over_limit_; }
 
     // --- traversal ---------------------------------------------------------
 
@@ -123,7 +140,8 @@ public:
     // All edges of a given kind (traverse by edge kind).
     std::vector<Edge> edges_of_kind(EdgeKind kind) const;
 
-    // Edges leaving / entering a node, in insertion order.
+    // Edges leaving / entering a node, in insertion order. Each reads the node's
+    // own adjacency list (O(degree)), never every edge of the graph.
     std::vector<Edge> edges_from(const NodeId& id) const;
     std::vector<Edge> edges_into(const NodeId& id) const;
 
@@ -136,6 +154,13 @@ private:
     std::vector<std::shared_ptr<Node>> nodes_;                 // insertion order
     std::unordered_map<NodeId, std::shared_ptr<Node>> index_;  // id → node
     std::vector<Edge> edges_;                                  // insertion order
+    // Adjacency indexes (#1426): each node's outgoing and incoming edges in
+    // insertion order, and every edge's identity for the duplicate check. Kept
+    // in step with edges_ by add_edge / remove_edge / remove_node.
+    std::unordered_map<NodeId, std::vector<Edge>> outgoing_;
+    std::unordered_map<NodeId, std::vector<Edge>> incoming_;
+    std::unordered_set<std::string> edge_keys_;
+    bool over_limit_ = false;
 };
 
 }  // namespace zetta::ir

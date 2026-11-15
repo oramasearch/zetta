@@ -500,7 +500,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     reader.cpp              zetta::parquet::read_parquet_rows — decode every leaf column + transpose to one JSON object per row (the untyped whole-file reader; powers load_churn_dataset Parquet) (zetta-core; #508)
     writer.cpp              zetta::parquet::write_parquet_rows/infer_parquet_schema — emit PAR1 + v1 data pages (definition levels + PLAIN values, snappy-compressed) + the Thrift FileMetaData footer; JSON-row schema inference, path-qualified failures (zetta-core; #833)
   ir/
-    execution_graph.cpp     ExecutionGraph IR build + traversal
+    execution_graph.cpp     ExecutionGraph IR build + traversal; per-node adjacency + hashed edge identity (O(degree) traversal and duplicate check) and the kMaxGraphNodes / kMaxGraphEdges caps (#1426)
     serialization.cpp       ExecutionGraph IR ↔ JSON (+ boundary validation)
   input/
     python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the engine-faithful python_step_kind verb table (#520/#522)
