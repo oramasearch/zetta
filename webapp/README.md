@@ -1,5 +1,9 @@
 # The Studio web app bundle (vendored build)
 
+**Not in the public export.** `.public-exclude` leaves this folder out until the bundle is rebuilt
+from a cleaned source (https://github.com/oramasearch/zetta/issues/1526); nothing in the build,
+the install rules or the tests reads it.
+
 The design repo's React Studio app, built and vendored here so the node (and
 the headless image) can serve it at `/studio/` with no npm anywhere in
 zetta's build. The engine serves it when `--webapp-dir` (or the image-seated
