@@ -89,6 +89,15 @@ ProvisionResult K8sCliControlPlane::bring_up(const K8sConfig& config,
         append_scope(env, config);
         runner_(env);
     }
+    // The cluster's identity root public key (#1343): a literal env var like the
+    // seed (it is not a secret), so each pod pins the cluster's root and honors
+    // its accounts instead of making a root of its own.
+    if (!config.identity_root.empty()) {
+        std::vector<std::string> env{"kubectl", "set", "env", deployment_ref(config),
+                                     "ZETTA_IDENTITY_ROOT=" + config.identity_root};
+        append_scope(env, config);
+        runner_(env);
+    }
     if (!config.join_token.empty()) {
         // The token lives in a Kubernetes Secret, never as a literal in the
         // Deployment spec (readable by anyone who can get Deployments) and never

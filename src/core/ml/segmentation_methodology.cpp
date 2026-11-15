@@ -11,6 +11,7 @@
 
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/api/background.hpp"
 #include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/coordinated_launch.hpp"
@@ -330,6 +331,10 @@ Json launch_payload(const data::ResolvedDataset &dataset, const Json &config,
 struct BackgroundSegmentation {
     Node &node;
     std::atomic<bool> finished{false};
+    // Who launched the work and through which surface, captured on the
+    // handler's thread: the coroutine resumes on pool threads, so its owner
+    // hops and engine calls name this origin explicitly (#1327).
+    zetta::governance::AuditOrigin audit_origin = zetta::governance::capture_audit_origin();
 
     explicit BackgroundSegmentation(Node &owner) : node(owner) {
     }
@@ -347,14 +352,17 @@ runtime::task<> execute(BackgroundSegmentation *worker,
                         SegmentationRunOptions options,
                         compute::CoordinatedLaunchRequest launch) {
     Node &node = worker->node;
-    node.run_on_owner([&] {
+    node.run_on_owner(worker->audit_origin, [&] {
         if (launch.participants.size() > 1) {
             node.coordinated_launch()->fan_out(launch);
         }
     });
-    const auto result =
-        run_segmentation(node, dataset, segmentation_params(config), options);
-    node.run_on_owner([&] {
+    // Synchronous between owner hops, so the scope never spans a suspension.
+    const auto result = [&] {
+        const zetta::governance::AuditOriginScope audit_scope{worker->audit_origin};
+        return run_segmentation(node, dataset, segmentation_params(config), options);
+    }();
+    node.run_on_owner(worker->audit_origin, [&] {
         if (auto run = node.find_run(options.run_id)) {
             if (!result.ok()) {
                 run->add_log({util::now_iso8601(), "error", result.error});

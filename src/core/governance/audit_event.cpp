@@ -66,6 +66,9 @@ const nlohmann::json& schema_document() {
         "allowed": { "type": "boolean" },
         "detail":  { "type": "string" },
         "time":    { "type": "string" },
+        "surface": { "type": "string",
+                     "enum": ["mcp", "rest", "web", "desktop", "pgwire",
+                              "console", "internal"] },
         "summary": {
           "type": "object",
           "properties": {
@@ -191,6 +194,7 @@ nlohmann::json to_json(const AuditEventValue& value) {
                           {"allowed", value.allowed},
                           {"detail", value.detail},
                           {"time", value.time}};
+    if (!value.surface.empty()) result["surface"] = value.surface;
     if (value.summary) {
         result["summary"] = {
             {"calls", value.summary->calls},
@@ -230,6 +234,7 @@ std::optional<AuditEventValue> parse_audit_event_value(
     parsed.allowed = value.value("allowed", true);
     parsed.detail = value.value("detail", std::string{});
     parsed.time = value.value("time", std::string{});
+    parsed.surface = value.value("surface", std::string{});
     if (value.contains("summary")) {
         const nlohmann::json& summary = value.at("summary");
         parsed.summary = AuditReadSummary{
@@ -1596,5 +1601,31 @@ AuditActorScope::AuditActorScope(std::optional<std::string> actor)
 AuditActorScope::~AuditActorScope() { t_audit_actor = std::move(previous_); }
 
 std::optional<std::string> current_audit_actor() { return t_audit_actor; }
+
+// ---- the surface (#1328) ------------------------------------------------------
+
+namespace {
+thread_local std::optional<std::string> t_audit_surface;
+}  // namespace
+
+bool is_audit_surface(std::string_view surface) {
+    for (const std::string_view known : kAuditSurfaces) {
+        if (known == surface) return true;
+    }
+    return false;
+}
+
+AuditSurfaceScope::AuditSurfaceScope(std::optional<std::string> surface)
+    : previous_(t_audit_surface) {
+    // An unknown spelling never reaches the trail; the outer surface stays.
+    if (surface && is_audit_surface(*surface)) t_audit_surface = std::move(surface);
+    else if (!surface) t_audit_surface = std::nullopt;
+}
+
+AuditSurfaceScope::~AuditSurfaceScope() { t_audit_surface = std::move(previous_); }
+
+std::optional<std::string> current_audit_surface() { return t_audit_surface; }
+
+AuditOrigin capture_audit_origin() { return {t_audit_actor, t_audit_surface}; }
 
 }  // namespace zetta::governance

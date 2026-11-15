@@ -1195,7 +1195,13 @@ void Node::flush_pending_captures(bool force) {
 }
 
 void Node::run_on_owner(const std::function<void()>& work) {
+    run_on_owner(zetta::governance::capture_audit_origin(), work);
+}
+
+void Node::run_on_owner(const zetta::governance::AuditOrigin& origin,
+                        const std::function<void()>& work) {
     if (on_owner_thread()) {
+        const zetta::governance::AuditOriginScope scope{origin};
         work();
         return;
     }
@@ -1207,6 +1213,7 @@ void Node::run_on_owner(const std::function<void()>& work) {
     // loop iteration, so a real owner is always adopted before any background
     // action can launch.
     if (owner_thread_.load(std::memory_order_acquire) == std::thread::id{}) {
+        const zetta::governance::AuditOriginScope scope{origin};
         work();
         return;
     }
@@ -1214,11 +1221,11 @@ void Node::run_on_owner(const std::function<void()>& work) {
     // The work runs on another thread, so it carries the caller's acting
     // identity with it (#847): an audit event the work records is attributed
     // to whoever handed it over, not to whatever the owner thread was doing.
-    std::function<void()> attributed =
-        [work, actor = zetta::governance::current_audit_actor()] {
-            const zetta::governance::AuditActorScope scope{actor};
-            work();
-        };
+    // ...and the surface it came through (#1328).
+    std::function<void()> attributed = [work, origin] {
+        const zetta::governance::AuditOriginScope scope{origin};
+        work();
+    };
     {
         std::lock_guard<std::mutex> lock(owner_work_mutex_);
         owner_work_queue_.push_back(
@@ -2514,6 +2521,12 @@ void Node::load_studies() {
 
 std::shared_ptr<zetta::ml::Study> Node::create_study(
     zetta::ml::StudySpec spec, std::string* error) {
+    return create_study(std::move(spec), error, zetta::pipeline::RunPrincipal{});
+}
+
+std::shared_ptr<zetta::ml::Study> Node::create_study(
+    zetta::ml::StudySpec spec, std::string* error,
+    const zetta::pipeline::RunPrincipal& principal) {
     std::shared_ptr<zetta::pipeline::Project> project =
         find_project_by_id(spec.project);
     if (!project) {
@@ -2539,6 +2552,9 @@ std::shared_ptr<zetta::ml::Study> Node::create_study(
     // The tables its trials read (zetta#1258): its dataset, or its pipeline's.
     value.reads = tables_read(spec.project, spec.pipeline, spec.dataset);
     value.spec = std::move(spec);
+    // Its trials run as whoever created it, never as the node (#1322).
+    value.principal = principal.acting_id;
+    value.principal_is_user = principal.acting_is_user;
     value.created = zetta::util::now_iso8601();
     value.updated = value.created;
     const std::string id = zetta::util::new_uuid();
@@ -3425,6 +3441,10 @@ std::shared_ptr<zetta::compute::ComputeJob> Node::create_job(zetta::compute::Job
     value.scaling_policy = std::move(scaling_policy);
     value.created = now;
     value.updated = now;
+    // Who queued it, so the job_finished row a worker records later names them
+    // (#1327); job_created below takes the same scopes from record_audit_event.
+    if (auto actor = zetta::governance::current_audit_actor()) value.submitted_by = *actor;
+    if (auto surface = zetta::governance::current_audit_surface()) value.submitted_via = *surface;
     if (replication_) replication_->set(catalog::job_key(id), to_json(value));
     auto job = materialize_job(id, std::move(value));
     // Audit the create (FEAT-9): queueing a compute job is a governed action.
@@ -5268,6 +5288,12 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     if (value.actor.empty()) {
         if (auto actor = zetta::governance::current_audit_actor()) {
             value.actor = std::move(*actor);
+        }
+    }
+    // ...and the surface it came through (#1328), declared the same way.
+    if (value.surface.empty()) {
+        if (auto surface = zetta::governance::current_audit_surface()) {
+            value.surface = std::move(*surface);
         }
     }
     std::string error;

@@ -117,6 +117,19 @@ The data model guards its own shape — this is *structure*, not the gate's
 - `add_edge` rejects a **dangling** endpoint (both nodes must already exist) and
   an **exact duplicate** (same `from`, `to`, *and* kind); it returns `false`.
   Distinct edge kinds between the same pair, and self-edges, are allowed.
+- **Size is bounded** (#1426, LSR-253): a graph holds at most `kMaxGraphNodes`
+  (4096) nodes and `kMaxGraphEdges` (16384) edges. Past them `add_node` returns
+  an empty handle, `add_edge` returns `false`, and `over_limit()` turns true, so
+  a builder can tell a truncated graph from a complete one. `from_json` rejects a
+  document naming more before it builds anything (`graph has N nodes; at most
+  4096 are allowed`), and the Python and n8n compilers reject a source that hit
+  the bounds. A graph is caller-built and every check, compile and run walks it
+  on the node's owner loop.
+- **Edges are indexed**: each node keeps its outgoing and incoming edges in
+  insertion order, and each edge's identity is hashed. `add_edge`'s duplicate
+  check, `edges_from` / `edges_into` and `successors` / `predecessors` cost the
+  node's degree, never a scan of every edge. `remove_edge` / `remove_node` keep
+  the indexes in step.
 
 ### Editing a graph (remove)
 

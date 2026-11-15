@@ -151,7 +151,7 @@ deleting a pod is teardown. It builds `kubectl` argv, runs them through an injec
 
 | `K8sControlPlane` call | `kubectl` command (shape) |
 |---|---|
-| `bring_up` | `kubectl create deployment <name> --image <image>` (ensure); then per-pod shape — `kubectl set env deployment/<name> ZETTA_SEED_PEER=…`; on a secure cluster `kubectl apply --server-side --field-manager zetta --filename <private file>` (Secret `<name>-cluster-token`, key `ZETTA_CLUSTER_TOKEN`) then `kubectl set env deployment/<name> --from=secret/<name>-cluster-token` (a secretKeyRef — #670, #770), `kubectl set serviceaccount deployment/<name> <sa>`, `kubectl patch deployment <name> --patch <nodeSelector>` (spot); then `kubectl scale deployment/<name> --replicas N`; then `kubectl get pods --selector app=<name> --output json` |
+| `bring_up` | `kubectl create deployment <name> --image <image>` (ensure); then per-pod shape — `kubectl set env deployment/<name> ZETTA_SEED_PEER=…`, `kubectl set env deployment/<name> ZETTA_IDENTITY_ROOT=<public key>` (#1343); on a secure cluster `kubectl apply --server-side --field-manager zetta --filename <private file>` (Secret `<name>-cluster-token`, key `ZETTA_CLUSTER_TOKEN`) then `kubectl set env deployment/<name> --from=secret/<name>-cluster-token` (a secretKeyRef — #670, #770), `kubectl set serviceaccount deployment/<name> <sa>`, `kubectl patch deployment <name> --patch <nodeSelector>` (spot); then `kubectl scale deployment/<name> --replicas N`; then `kubectl get pods --selector app=<name> --output json` |
 | `destroy` | `kubectl delete pod <pod-name>` |
 | `list` | `kubectl get pods --selector app=<name> --output json` |
 

@@ -62,6 +62,8 @@ that may call `run` now also needs the rights of the steps its pipelines contain
 | API `run`, pipelines a methodology runs | the call's acting identity | `authorize_graph_steps` over every step before the methodology starts; a denial is `unauthorized` and nothing runs |
 | API `run_solution` | the call's acting identity | `authorize_graph_steps` over each stage graph before the solution Run is created |
 | Governed console, simulated Python | the session key | `Node::run_graph` with the key (`acting_is_user` false) |
+| Governed console with an injected runner (`set_graph_runner`, the churn engine #580) | the session key | `authorize_graph_steps` over every step before the runner is called; a denial runs nothing (#1322) |
+| Study trials (`create_study`) | the study's creator, recorded on the Study as `principal` | before each trial (a node retry included): `authorize_graph_steps` over the trial's graph, then one connect-step check per table the study reads; a denial fails the trial. The trial's audit rows name the principal (#1322) |
 
 ## The trusted local session
 
@@ -73,13 +75,14 @@ and MCP the gate is always on (#799), so an API run always has a named principal
 
 ## What this does not do yet
 
-- **Host-injected runners are not covered.** The console's `set_graph_runner` (the churn
-  engine, #580) and the GUI's churn path build their own `GraphExecutor` without a principal.
-  They are local-session paths today. Study trials (`create_study`) also run their steps as
-  the node: [#1322](https://github.com/oramasearch/zetta/issues/1322).
+- **The headed app's own churn path** builds its executor without a principal. It is the
+  person at the desktop, the trusted local session, so it runs unchecked like every other
+  local-session path.
 - **Per-step authority is not carried on the Run record.** It is resolved per step from the
-  principal of the call that started the run; a run resumed or retried by the node itself runs
-  as the local session ([#1322](https://github.com/oramasearch/zetta/issues/1322)).
+  principal of the call that started the run. A Study carries its principal, so its trials
+  (retries included) run as it; a plain run resumed or retried by the node itself still runs as
+  the local session. Carrying the principal on the `Run` value is a schema change still to be
+  decided ([#1322](https://github.com/oramasearch/zetta/issues/1322)).
 - **Egress and filesystem.** Outbound network is the node-wide allowlist of
   [egress-policy](https://github.com/oramasearch/zetta/pull/1321) (CTL-4), not yet scoped per
   principal or per run; filesystem reads are not scoped per step:

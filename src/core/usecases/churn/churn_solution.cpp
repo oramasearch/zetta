@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/usecases/churn/churn_step_executor.hpp"
 #include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/compute/cpu_device.hpp"
@@ -764,7 +765,9 @@ AsyncChurnRun::AsyncChurnRun(Node& node, ir::ExecutionGraph graph,
       started_(std::chrono::steady_clock::now()) {
     // The worker's cancel flag is this handle's — wire it before launch.
     options_.cancel = &cancel_;
-    worker_ = std::thread([this] {
+    worker_ = std::thread([this, audit_origin = zetta::governance::capture_audit_origin()] {
+        // The worker's audit rows name whoever launched it (#1327).
+        const zetta::governance::AuditOriginScope audit_scope{audit_origin};
         // Everything the worker reads it owns (the by-value snapshots above);
         // every node-tree write on this path gates through Node::run_on_owner.
         result_ = table_.empty() ? run_churn_solution_on_node(node_, *device_, graph_,

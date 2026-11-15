@@ -114,12 +114,13 @@ std::string instance_details_json(const OciConfig& config,
 std::optional<std::string> boot_script(const OciConfig& config, std::string* reason) {
     NodeBootstrapScriptOptions options;
     options.seed_peer = config.seed_peer;
+    options.identity_root = config.identity_root;
     if (!config.join_token.empty()) {
         options.token.store = ClusterTokenStore::oci_vault;
         options.token.secret_name = cluster_token_secret_name(config.pool_name);
         options.token.container = config.vault_id;
         options.token.region = config.region;
-    } else if (config.seed_peer.empty()) {
+    } else if (config.seed_peer.empty() && config.identity_root.empty()) {
         return std::string{};
     }
     return render_node_bootstrap_script(options, reason);

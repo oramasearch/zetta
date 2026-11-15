@@ -218,7 +218,12 @@ void register_action_capabilities(Registry& registry) {
         true,
         false,
         handle_enqueue});
-    registry.add(Capability{
+    // Both send HTTP (#1406, LSR-173): `blocks` runs them on the blocking pool
+    // from REST and MCP. ActionRuntime::deliver_task does every outbox, policy
+    // and ledger step on the owner through Node::run_on_owner and only the
+    // attempts on the pool thread, so a stalled endpoint never holds the owner
+    // loop.
+    Capability deliver{
         "deliver_action_task",
         "Deliver an action task",
         "Deliver one outbox task with retries, an idempotency key, acknowledgements, and dead-letter handling.",
@@ -228,8 +233,10 @@ void register_action_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Orchestration, "deliver_action_task"},
         true,
         false,
-        handle_deliver});
-    registry.add(Capability{
+        handle_deliver};
+    deliver.blocks = true;
+    registry.add(std::move(deliver));
+    Capability closed_loop{
         "execute_closed_loop",
         "Execute a bounded closed loop",
         "Enqueue and deliver one policy-approved task while rechecking holdout and the policy kill-switch before execution.",
@@ -239,7 +246,9 @@ void register_action_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Orchestration, "execute_closed_loop"},
         true,
         false,
-        handle_closed_loop});
+        handle_closed_loop};
+    closed_loop.blocks = true;
+    registry.add(std::move(closed_loop));
 }
 
 }  // namespace zetta::api

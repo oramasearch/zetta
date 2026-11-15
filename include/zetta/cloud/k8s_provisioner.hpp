@@ -35,6 +35,7 @@ struct K8sConfig {
     bool spot = false;                             // schedule onto spot/preemptible nodes (a nodeSelector)
     std::string seed_peer;                         // cluster seed host:port injected as ZETTA_SEED_PEER to auto-join
     std::string join_token;                        // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst pod joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
+    std::string identity_root;                     // the cluster's identity root PUBLIC key (hex, not a secret) injected as ZETTA_IDENTITY_ROOT so a burst node honors the cluster's accounts, roles and tokens (#1343); set at wire time from this node's pinned root, never serialized
 
     bool operator==(const K8sConfig&) const = default;
 

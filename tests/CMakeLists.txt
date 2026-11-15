@@ -109,6 +109,7 @@ add_executable(zetta-tests
   cloud/test_k8s_provisioner.cpp
   cloud/test_bare_metal_provisioner.cpp
   cloud/test_burst_identity.cpp
+  cloud/test_burst_identity_root.cpp
   compute/test_scaling_policy.cpp
   cloud/test_burst_approval_gate.cpp
   compute/test_job_autoscaler.cpp
@@ -155,6 +156,7 @@ add_executable(zetta-tests
   query/test_distributed_select.cpp
   query/test_sql_write_permissions.cpp
   query/test_parse_errors_never_crash.cpp
+  query/test_sql_read_only.cpp
   index/test_node_search.cpp
   compute/test_compute_job.cpp
   compute/test_checkpoint.cpp

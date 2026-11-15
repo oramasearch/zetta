@@ -365,7 +365,15 @@ const nlohmann::json& sql_schema() {
           {"database",
            {{"type", "string"},
             {"description",
-             "default database for unqualified table names (optional)"}}}}}};
+             "default database for unqualified table names (optional)"}}},
+          {"read_only",
+           {{"type", "boolean"},
+            {"default", false},
+            {"description",
+             "refuse anything but exactly one read statement (a SELECT): the "
+             "engine parses the text and refuses a second statement, DDL, DML, "
+             "user, token, role and policy statements before anything runs "
+             "(invalid_input)"}}}}}};
     return schema;
 }
 
@@ -392,8 +400,13 @@ ApiResult handle_sql(const nlohmann::json& input, ApiContext& context) {
     zetta::query::QueryService service(context.node, context.cluster,
                                        context.acting_key, context.acting_is_user);
     const std::string database = input.value("database", "");
-    auto outcome = service.run(input.at("statement").get<std::string>(), database);
+    zetta::query::QueryService::RunOptions options;
+    options.read_only = input.value("read_only", false);
+    auto outcome =
+        service.run(input.at("statement").get<std::string>(), database, options);
     if (!outcome.ok()) {
+        // A read_only refusal is the caller's input, decided before anything ran.
+        if (outcome.refused) return ApiResult::failure("invalid_input", outcome.error);
         return ApiResult::failure("engine_error", outcome.error);
     }
     nlohmann::json output;
@@ -4807,8 +4820,8 @@ const nlohmann::json& submit_feedback_schema() {
              "ALSO write the bundle to a new file on the node, named "
              "relative to its export directory (exports/ under the data "
              "directory); no absolute path, no '..', no symbolic link, and "
-             "never an existing file. Nothing leaves the cluster on its own "
-             "(optional)"}}}}}};
+             "never an existing file. Needs feedback:export. Nothing leaves "
+             "the cluster on its own (optional)"}}}}}};
     return schema;
 }
 
@@ -4851,15 +4864,29 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
     }
     options.actor =
         context.acting_key.empty() ? std::string("local") : context.acting_key;
+    const auto holds = [&context](const zetta::governance::Operation& operation) {
+        return context.acting_key.empty() ||
+               (context.acting_is_user
+                    ? context.node.authorize_user(context.acting_key, operation).allowed
+                    : context.node.authorize(context.acting_key, operation).allowed);
+    };
+    // Writing a file on the node is its own right (feedback:export, #1455), not
+    // api:query: refused before anything is stored.
+    if (input.contains("export_path") &&
+        !holds({zetta::governance::CapabilityDomain::Api, "export_feedback"})) {
+        return ApiResult::failure(
+            "unauthorized",
+            "submit_feedback: export_path needs the feedback:export permission",
+            "/export_path");
+    }
     // Trace ids are client-controlled and do not prove ownership of any span.
-    // Feedback remains available to everyone, but node-wide diagnostics need
-    // the same explicit right as list_traces/get_trace and the SQL views (#1408).
-    const zetta::governance::Operation diagnostics{
-        zetta::governance::CapabilityDomain::Api, "cluster_admin"};
-    options.include_diagnostics = context.acting_key.empty() ||
-        (context.acting_is_user
-             ? context.node.authorize_user(context.acting_key, diagnostics).allowed
-             : context.node.authorize(context.acting_key, diagnostics).allowed);
+    // Node-wide diagnostics need the same explicit right as list_traces/get_trace
+    // and the SQL views (#1408); every other caller gets only the traces and
+    // errors that are its own (#1455), and never a crash report.
+    options.diagnostics =
+        holds({zetta::governance::CapabilityDomain::Api, "cluster_admin"})
+            ? zetta::observability::FeedbackDiagnostics::all
+            : zetta::observability::FeedbackDiagnostics::own;
 
     std::string reason;
     const auto bundle =
@@ -11967,7 +11994,8 @@ void register_core_capabilities(Registry& registry) {
         "data-changing statement is audited as a data_changed action. A "
         "database in safe mode (warn_writes: writes; warn_all: everything) "
         "answers safe_mode_warning naming the statement first; repeat with "
-        "safe_mode_confirmation to run it.",
+        "safe_mode_confirmation to run it. With read_only the engine refuses, "
+        "before anything runs, any text that is not exactly one SELECT.",
         sql_schema(),
         sql_output_schema(),
         CapabilityKind::Read,
@@ -12482,8 +12510,9 @@ void register_core_capabilities(Registry& registry) {
         "Snapshot a feedback bundle — your description plus the relevant "
         "traces, recent errors, crash reports, and versions — stored as a "
         "large object you explicitly export; nothing leaves the cluster on "
-        "its own. Only callers with cluster:admin attach diagnostics; other "
-        "callers submit their description and version information only.",
+        "its own. Callers with cluster:admin attach the node's diagnostics; "
+        "other callers attach only their own traces and errors, never a crash "
+        "report. export_path needs feedback:export.",
         submit_feedback_schema(),
         submit_feedback_output_schema(),
         CapabilityKind::Action,

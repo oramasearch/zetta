@@ -66,6 +66,13 @@ struct ComputeJobValue {
     std::string trace_id;        // the job's trace (32-hex W3C id, optional) —
                                  // replicated, so every node's spans for this
                                  // job join ONE trace (#640)
+    // Who queued the job and through which surface (#1327), captured from the
+    // caller's AuditActorScope / AuditSurfaceScope at creation. A job usually
+    // finishes later on a worker or the coordinator, where no entry point is
+    // open, so its job_finished row names these. Optional (empty before #1327,
+    // or when nothing declared a caller), and serialized only when set.
+    std::string submitted_by;
+    std::string submitted_via;
 };
 
 // Serialize a compute-job value to its JSON shape (no id). The inverse of

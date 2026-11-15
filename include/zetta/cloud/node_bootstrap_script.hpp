@@ -59,6 +59,9 @@ inline constexpr std::string_view kNodeBootstrapEnvPath = "/etc/zetta/bootstrap.
 
 struct NodeBootstrapScriptOptions {
     std::string seed_peer;  // cluster seed host:port(s), written as ZETTA_SEED_PEER
+    // The cluster's identity root public key (hex, not a secret), written as
+    // ZETTA_IDENTITY_ROOT so the node pins the cluster's root (#1343).
+    std::string identity_root;
     ClusterTokenReference token;
     // The control planes keep the defaults; a test points them at a temp dir.
     std::string token_path{kNodeClusterTokenPath};

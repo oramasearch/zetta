@@ -12,6 +12,7 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 
 namespace {
 
@@ -382,5 +383,43 @@ TEST(Study, DeleteRemovesNonPromotedRunsAndKeepsPromotedLineage) {
     ASSERT_TRUE(kept_run);
     EXPECT_FALSE(kept_run->get_metrics().at("series").empty());
     EXPECT_TRUE(reloaded.find_model(kept_model_id));
+    reloaded.stop();
+}
+
+// #1322: a study records who created it, so its trials (and any the node retries
+// later) run as that principal. The principal survives the JSON boundary and a
+// restart; the trusted local session records none.
+TEST(Study, RecordsItsCreatorAsThePrincipalItsTrialsRunAs) {
+    zetta::test::TempDir directory;
+    std::string study_id;
+    {
+        zetta::Node node{{directory.path().string(), false}};
+        ASSERT_TRUE(node.start());
+        const auto local = node.create_study(synthetic_spec(
+            "local-study", zetta::ml::SamplerKind::Random,
+            zetta::ml::PrunerKind::None, 1));
+        ASSERT_TRUE(local);
+        EXPECT_TRUE(local->value().principal.empty());
+        EXPECT_FALSE(zetta::ml::to_json(local->value()).contains("principal"));
+
+        const auto study = node.create_study(
+            synthetic_spec("user-study", zetta::ml::SamplerKind::Random,
+                           zetta::ml::PrunerKind::None, 1),
+            nullptr, zetta::pipeline::RunPrincipal{"user-ada", true});
+        ASSERT_TRUE(study);
+        study_id = study->id();
+        EXPECT_EQ(study->value().principal, "user-ada");
+        EXPECT_TRUE(study->value().principal_is_user);
+        const auto parsed = zetta::ml::parse_study_value(zetta::ml::to_json(study->value()));
+        ASSERT_TRUE(parsed);
+        EXPECT_EQ(parsed->principal, "user-ada");
+        EXPECT_TRUE(parsed->principal_is_user);
+        node.stop();
+    }
+    zetta::Node reloaded{{directory.path().string(), false}};
+    ASSERT_TRUE(reloaded.start());
+    const auto study = reloaded.find_study(study_id);
+    ASSERT_TRUE(study);
+    EXPECT_EQ(study->value().principal, "user-ada");
     reloaded.stop();
 }

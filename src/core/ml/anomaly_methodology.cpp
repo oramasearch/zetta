@@ -1,4 +1,5 @@
 #include "zetta/ml/anomaly_methodology.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
@@ -225,6 +226,10 @@ struct AnomalyWork {
   }
   Node &node;
   std::atomic<bool> done{false};
+  // Who launched the work and through which surface, captured on the
+  // handler's thread: the coroutine resumes on pool threads, so its owner
+  // hops and engine calls name this origin explicitly (#1327).
+  zetta::governance::AuditOrigin audit_origin = zetta::governance::capture_audit_origin();
 };
 
 // The background-action owner drains pending owner writes during shutdown,
@@ -251,7 +256,7 @@ runtime::task<> execute_anomaly(std::shared_ptr<AnomalyWork> work,
                                 observability::TraceContext trace) {
   observability::ScopedSpan span(&work->node.span_recorder(), trace,
                                  "anomaly:run");
-  work->node.run_on_owner([&] {
+  work->node.run_on_owner(work->audit_origin, [&] {
     run->set_status(pipeline::RunStatus::Running);
     run->add_log({util::now_iso8601(), "info",
                   "dataset: " + dataset.database + "." + dataset.table});
@@ -266,9 +271,13 @@ runtime::task<> execute_anomaly(std::shared_ptr<AnomalyWork> work,
   options.round_tag = "ml.anomaly:" + launch.id;
   options.model_name = std::move(model_name);
   options.materialize_on_caller = true;
-  const AnomalyTableResult result = run_anomaly_on_table(
-      work->node, dataset, params, run.get(), kDefaultAnomalyTimeout, options);
-  work->node.run_on_owner([&] {
+  // Synchronous between owner hops, so the scope never spans a suspension.
+  const AnomalyTableResult result = [&] {
+    const zetta::governance::AuditOriginScope audit_scope{work->audit_origin};
+    return run_anomaly_on_table(work->node, dataset, params, run.get(),
+                                kDefaultAnomalyTimeout, options);
+  }();
+  work->node.run_on_owner(work->audit_origin, [&] {
     if (result.ok()) {
       auto outputs = run->outputs();
       outputs.push_back({"report", "Anomaly findings", run->id()});

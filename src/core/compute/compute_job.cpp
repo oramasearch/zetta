@@ -41,7 +41,11 @@ const nlohmann::json& schema_document() {
         "created":        { "type": "string" },
         "updated":        { "type": "string" },
         "detail":         { "type": "string" },
-        "trace_id":       { "type": "string" }
+        "trace_id":       { "type": "string" },
+        "submitted_by":   { "type": "string" },
+        "submitted_via":  { "type": "string",
+                            "enum": ["mcp", "rest", "web", "desktop", "pgwire",
+                                     "console", "internal"] }
       },
       "required": ["kind", "status"],
       "additionalProperties": false
@@ -121,7 +125,7 @@ bool is_terminal(JobStatus status) {
 }
 
 nlohmann::json to_json(const ComputeJobValue& value) {
-    return nlohmann::json{
+    nlohmann::json result{
         {"kind", to_string(value.kind)},
         {"status", to_string(value.status)},
         {"project", value.project},
@@ -132,6 +136,10 @@ nlohmann::json to_json(const ComputeJobValue& value) {
         {"updated", value.updated},
         {"detail", value.detail},
         {"trace_id", value.trace_id}};
+    // Only when set, so a job no caller queued keeps its earlier shape.
+    if (!value.submitted_by.empty()) result["submitted_by"] = value.submitted_by;
+    if (!value.submitted_via.empty()) result["submitted_via"] = value.submitted_via;
+    return result;
 }
 
 const nlohmann::json& compute_job_value_schema() { return schema_document(); }
@@ -167,6 +175,8 @@ std::optional<ComputeJobValue> parse_compute_job_value(
     parsed.updated = value.value("updated", std::string{});
     parsed.detail = value.value("detail", std::string{});
     parsed.trace_id = value.value("trace_id", std::string{});
+    parsed.submitted_by = value.value("submitted_by", std::string{});
+    parsed.submitted_via = value.value("submitted_via", std::string{});
     return parsed;
 }
 
@@ -190,13 +200,18 @@ void ComputeJob::set_status(JobStatus status, std::string detail) {
     // from apply_value (the reconcile path), where a peer's finish arrives
     // already-audited as its own replicated `audit:` event.
     if (audit_ && !was_terminal && is_terminal(value_.status)) {
-        audit_->record_audit_event(
-            {zetta::governance::AuditAction::JobFinished, {}, id_,
-             value_.status == JobStatus::Succeeded,
-             "compute job " + std::string(to_string(value_.kind)) + " " +
-                 std::string(to_string(value_.status)) +
-                 (value_.detail.empty() ? "" : " (" + value_.detail + ")"),
-             {}});
+        // The row names who queued the job (#1327): the finish usually runs on
+        // a worker or the coordinator, where no entry point declared anyone.
+        // A job with no recorded submitter falls back to the sink's scopes.
+        zetta::governance::AuditEventValue event{
+            zetta::governance::AuditAction::JobFinished, value_.submitted_by, id_,
+            value_.status == JobStatus::Succeeded,
+            "compute job " + std::string(to_string(value_.kind)) + " " +
+                std::string(to_string(value_.status)) +
+                (value_.detail.empty() ? "" : " (" + value_.detail + ")"),
+            {}};
+        event.surface = value_.submitted_via;
+        audit_->record_audit_event(std::move(event));
     }
 }
 

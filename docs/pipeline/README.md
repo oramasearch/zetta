@@ -13,7 +13,7 @@ governance of who may run what is [../governance/](../governance/access-control.
 - [run-proposals.md](run-proposals.md) — a run the chat agent proposes and a person approves (#969): `propose_run` records an impact preview and creates nothing; `approve_run_proposal` creates exactly the previewed Project and Pipeline and runs it; `reject_run_proposal` is the cancel path.
 - [projects.md](projects.md) — the AI project (`zetta::pipeline::Project`) data model, lifecycle CRUD (incl. `delete_project`: inputs + graphs go, runs + models stay, #1009), and the execution graphs it owns, incl. a graph's publication (`exposure`, pinned version, zetta#1289).
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::pipeline::ProjectInput`): raw intent/artifact ingestion + provenance, replicated.
-- [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→…→act taxonomy, and its schema-validated JSON form.
+- [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→…→act taxonomy, and its schema-validated JSON form; bounded size and indexed edges (#1426).
 - [intent-compiler.md](intent-compiler.md) — intent + optional methodology/solution → a runnable methodology's named, editable graph; unsupported requests name their tracking issue (#1061, #1082).
 - [n8n-import.md](n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - [n8n-compile.md](n8n-compile.md) — compiling an imported n8n workflow into the IR: nodes → typed steps, connections → edges (FEAT-2 / #308).

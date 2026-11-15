@@ -50,7 +50,8 @@ It is POSIX `sh` (Debian and Ubuntu run user-data with `dash`), and needs `curl`
    `zetta` user (created as a system user when missing), written to a temporary
    file in the same directory and renamed into place.
 4. **Write the environment file.** `/etc/zetta/bootstrap.env` (0644) holds
-   `ZETTA_SEED_PEER=<seed>` and `ZETTA_CLUSTER_TOKEN_FILE=/etc/zetta/cluster-token`,
+   `ZETTA_SEED_PEER=<seed>`, `ZETTA_IDENTITY_ROOT=<public key>` (the cluster's
+   identity root, #1343) and `ZETTA_CLUSTER_TOKEN_FILE=/etc/zetta/cluster-token`,
    never the token.
 5. **Start the engine.** When the image has a `zetta.service` unit it is enabled
    and restarted; otherwise the files are left for it and the script says so.

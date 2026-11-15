@@ -121,11 +121,12 @@ void App::draw_audit_log(
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY;
     const float table_h = ImGui::GetTextLineHeightWithSpacing() * 12.0f;
-    if (ImGui::BeginTable("##audit_log", 6, table_flags, ImVec2(0, table_h))) {
+    if (ImGui::BeginTable("##audit_log", 7, table_flags, ImVec2(0, table_h))) {
         ImGui::TableSetupScrollFreeze(0, 1);  // keep the header row pinned
         ImGui::TableSetupColumn("Time");
         ImGui::TableSetupColumn("Action");
         ImGui::TableSetupColumn("Actor");
+        ImGui::TableSetupColumn("Via");  // the surface it came through (#1328)
         ImGui::TableSetupColumn("Target");
         ImGui::TableSetupColumn("Outcome");
         ImGui::TableSetupColumn("Detail");
@@ -143,6 +144,10 @@ void App::draw_audit_log(
             ImGui::TextUnformatted(
                 event->actor().empty() ? "·" : event->actor().c_str());
             ImGui::TableSetColumnIndex(3);
+            ImGui::TextUnformatted(event->value().surface.empty()
+                                       ? "·"
+                                       : event->value().surface.c_str());
+            ImGui::TableSetColumnIndex(4);
             if (event->target().empty()) {
                 ImGui::TextUnformatted("·");
             } else {
@@ -173,13 +178,13 @@ void App::draw_audit_log(
                 }
                 ImGui::PopID();
             }
-            ImGui::TableSetColumnIndex(4);
+            ImGui::TableSetColumnIndex(5);
             if (event->allowed()) {
                 status_label(Tone::Ok, "allow");
             } else {
                 status_label(Tone::Error, "deny");
             }
-            ImGui::TableSetColumnIndex(5);
+            ImGui::TableSetColumnIndex(6);
             ImGui::TextWrapped(
                 "%s", event->detail().empty() ? "·" : event->detail().c_str());
         }

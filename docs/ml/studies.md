@@ -547,7 +547,14 @@ The replicated catalog key is `study:<uuid>`. A Study records the tables its
 trials read in `reads` (`{database, table, table_id}`, zetta#1258) when it is
 created: its `dataset`, or its Pipeline's connect steps. Each trial Run adds them
 to its own `reads`, and [`delete_dataset`](../api/deletes.md#refusals) refuses a
-dataset a running Study reads, even between trials. Its local projection is
+dataset a running Study reads, even between trials. A Study also records who
+created it as `principal` (`{id, is_user}`, #1322; absent for the trusted local
+session): every trial runs as that principal under step authority. Before a trial
+runs, each step of its graph and each table in `reads` is authorized for the
+principal and audited, and a denial fails the trial with `step authority: ...`, so
+a creator who may not read the table gets no trial step run on their behalf. The
+trial's audit rows name the principal
+([../governance/step-authority.md](../governance/step-authority.md)). Its local projection is
 `<data-dir>/<uuid>/study.json`; restart and reconciliation validate the closed
 Study schema before materializing it. A running Study is eligible on exactly
 one replicated member after reconciliation, including after a restart, and a node

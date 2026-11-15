@@ -241,6 +241,13 @@ public:
     // rides the runtime interface (async_event + block_on) — no caller-facing
     // condition variables.
     void run_on_owner(const std::function<void()>& work);
+    // The same, with the work attributed to `origin` (who started it and
+    // through which surface) instead of whatever the calling thread declares:
+    // for a coroutine worker that resumes on pool threads, which carry no
+    // AuditActorScope, so it hands over the origin it captured at launch
+    // (#1327).
+    void run_on_owner(const zetta::governance::AuditOrigin& origin,
+                      const std::function<void()>& work);
     // How run_on_owner wakes an idle owner loop so the queued work runs now,
     // not after the loop's idle wait (#1063: every offloaded API call's gate
     // and the pub/sub authorizer queue here). Called under the queue's lock, so
@@ -449,6 +456,11 @@ public:
     // embedded metrics, and keeps the promoted Model's producing Run.
     std::shared_ptr<zetta::ml::Study> create_study(
         zetta::ml::StudySpec spec, std::string* error = nullptr);
+    // The same, recording who creates it (#1322): its trials run as them. The
+    // overload above is the trusted local session.
+    std::shared_ptr<zetta::ml::Study> create_study(
+        zetta::ml::StudySpec spec, std::string* error,
+        const zetta::pipeline::RunPrincipal& principal);
     std::shared_ptr<zetta::ml::Study> find_study(
         const std::string& id_or_name) const;
     std::optional<zetta::ml::StudyDeleteResult> delete_study(
