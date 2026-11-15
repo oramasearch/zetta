@@ -413,7 +413,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   api/pipeline_serving_capabilities.cpp  expose_pipeline/unexpose_pipeline (approval + gate + local-tables check, pinning, declared input schema, limits) and run_published_pipeline/get_published_pipeline_run over serving.cpp's served run (zetta#1289, docs/api/serving.md)
   api/study_capabilities.cpp  create/validate/get/list/list-trials/stop/stop-trial/promote/analysis registry schemas, permissions, published M-1 search definitions, shared validation and normalization, lifecycle events and owner-loop handlers (#1138/#1205/#1207)
   api/decision_policy_capabilities.cpp  create/get/update/decide/approve registry entries, owner-loop handlers, and schemas (#1104)
-  api/action_capabilities.cpp publish-report, enqueue/deliver-task, and bounded closed-loop registry entries, owner-loop handlers, and schemas (#1109)
+  api/action_capabilities.cpp publish-report, enqueue/deliver-task, and bounded closed-loop registry entries, owner-loop handlers, and schemas (#1109); deliver/closed-loop are `blocks` entries (#1406)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   json_boundary.hpp         internal: the shared JSON-boundary field readers (string/int/…, required/optional) every cloud-burst Config from_json parser uses, so the boundary checks live once instead of copy-pasted per <x>_provisioner.cpp
@@ -633,7 +633,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
   solutions/decision_policy.cpp  versioned decision-policy storage, catalog reconciliation, evaluation, approval, and batch table adapter (#1104)
   solutions/experiment.cpp zetta::solutions::ExperimentManager — SHA-256 allocation, protected decisions, exemption accounting, report construction, disk projection, and independent experiment:/experiment_assignment: CRDT records (#1105)
-  solutions/action_integration.cpp replicated action outbox/report state, connector request builders, bounded delivery, dead letters, policy checks, and ledger recording (#1109)
+  solutions/action_integration.cpp replicated action outbox/report state, connector request builders, bounded delivery (attempts on the calling thread, bookkeeping through Node::run_on_owner, #1406), dead letters, policy checks, and ledger recording (#1109)
   solutions/roi_readout.cpp versioned replicated definition storage and live readout assembly from graph gates, experiments, ledger outcomes, policy decisions, and monitors (#1108)
   solutions/solution_templates.cpp executable policy, experiment, guardrail and measurement defaults for S-1 through S-12 and B-1 through B-8 (#1118, #1128, #1175, #1176, #1177, #1178, #1179, #1180, #1181, #1182)
   solutions/solution_execution.cpp durable parent/child Run orchestration over snapshot, methodology and foundation stages, including per-methodology settings and module evidence (#1128, #1175, #1177, #1180)
@@ -900,7 +900,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   solutions/test_decision_policy.cpp policy constraints, versioning, replication/restart, A1 approval, kill-switch, table output, capability journey, and request p99 (#1104)
   solutions/test_monitor.cpp shifted-input PSI, guardrail bounds, score/calibration/cohort metrics, pub/sub events, persistence, replication, and malformed boundaries (#1106)
   ml/test_solution.cpp      20-entry runnable solution catalogue, module domain refusals including B-1 through B-8, portfolio mapping, template schema validation and methodology availability, level selection, and callback composition (#1102/#1110/#1121/#1128/#1175/#1176/#1177/#1178/#1179/#1180/#1181/#1182)
-  solutions/test_action_integration.cpp loopback webhook retries/idempotency, dead letters, CRM plugins, replicated outbox, holdout suppression, kill-switch stop, report publication, and ledger evidence (#1109)
+  solutions/test_action_integration.cpp loopback webhook retries/idempotency, dead letters, CRM plugins, replicated outbox, holdout suppression, kill-switch stop, report publication, and ledger evidence (#1109); a stalled endpoint leaves the owner loop free (#1406)
   api/test_action_journeys.cpp synthetic solution journeys, including B-1 through B-8 outcomes, through build, run, decision, action, holdout, ledger, outcomes, and ROI readout (#1118, #1175, #1176, #1177, #1178, #1179, #1180, #1181, #1182)
   solutions/test_roi_readout.cpp planted-effect confidence interval, no-holdout refusal, policy approval and override accounting, version selection, ROI arithmetic, guardrails, and schema rejection (#1108)
   ml/test_survival.cpp      survival censor labels, known-hazard ranking, monotone curves, determinism, and multi-member partition equivalence (#1044)

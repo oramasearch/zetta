@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -483,6 +484,59 @@ TEST_F(ActionIntegrationFixture, DeliveryRechecksTheKillSwitchBeforeHttp) {
     EXPECT_NE(blocked->last_error.find("kill-switch"), std::string::npos);
     EXPECT_EQ(requests.load(), 0);
     EXPECT_EQ(node.ledger_entry_count(), 0u);
+}
+
+// #1406 (LSR-173): a delivery called off the owner loop (REST and MCP run
+// deliver_action_task on the blocking pool) sends its attempts from the calling
+// thread and does only its bookkeeping on the owner. An endpoint that stalls
+// leaves the owner loop free to serve other work the whole time.
+TEST_F(ActionIntegrationFixture, AStalledDeliveryLeavesTheOwnerLoopFree) {
+    node.tick();  // adopt this thread as the owner loop
+    const auto [policy_id, decision_id] = create_decision("stalled-endpoint");
+    ASSERT_FALSE(policy_id.empty());
+
+    std::atomic<bool> in_transport{false};
+    std::atomic<bool> release{false};
+    std::thread::id transport_thread;
+    ActionRuntime runtime(node, [&](const zetta::connect::HttpRequest&) {
+        transport_thread = std::this_thread::get_id();
+        in_transport = true;
+        while (!release.load()) std::this_thread::yield();  // the endpoint stalls
+        return zetta::connect::HttpResponse{200, "{}", {}};
+    });
+    std::string error;
+    const auto queued = runtime.enqueue_task(
+        task_spec(decision_id, "http://127.0.0.1:1/stalls", ActionConnectorKind::Webhook,
+                  "stalled-key"),
+        "agent-key", &error);
+    ASSERT_TRUE(queued) << error;
+
+    std::optional<zetta::solutions::ActionTask> delivered;
+    std::string worker_error;
+    std::atomic<bool> done{false};
+    std::thread worker([&] {
+        delivered = runtime.deliver_task(queued->task_id, "local-test-token", "agent-key",
+                                         &worker_error);
+        done = true;
+    });
+    while (!in_transport.load()) {
+        node.drain_owner_work();
+        std::this_thread::yield();
+    }
+    // The endpoint is stalled and the owner loop is not held: it reads and
+    // writes node state freely meanwhile.
+    EXPECT_NE(transport_thread, std::this_thread::get_id());
+    EXPECT_TRUE(node.find_database("action_delivery"));
+    EXPECT_TRUE(node.create_database("served_while_stalled"));
+    release = true;
+    while (!done.load()) {
+        node.drain_owner_work();
+        std::this_thread::yield();
+    }
+    worker.join();
+    ASSERT_TRUE(delivered) << worker_error;
+    EXPECT_EQ(delivered->status, ActionTaskStatus::Delivered);
+    EXPECT_EQ(delivered->attempts, 1u);
 }
 
 TEST_F(ActionIntegrationFixture, HoldoutDecisionCannotEnterTheOutbox) {
