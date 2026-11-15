@@ -41415,7 +41415,7 @@
     },
     "/v1/submit_feedback": {
       "post": {
-        "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Only callers with cluster:admin attach diagnostics; other callers submit their description and version information only. Requires api:query.",
+        "description": "Snapshot a feedback bundle — your description plus the relevant traces, recent errors, crash reports, and versions — stored as a large object you explicitly export; nothing leaves the cluster on its own. Callers with cluster:admin attach the node's diagnostics; other callers attach only their own traces and errors, never a crash report. export_path needs feedback:export. Requires api:query.",
         "operationId": "submit_feedback",
         "requestBody": {
           "content": {
@@ -41429,7 +41429,7 @@
                     "type": "string"
                   },
                   "export_path": {
-                    "description": "ALSO write the bundle to a new file on the node, named relative to its export directory (exports/ under the data directory); no absolute path, no '..', no symbolic link, and never an existing file. Nothing leaves the cluster on its own (optional)",
+                    "description": "ALSO write the bundle to a new file on the node, named relative to its export directory (exports/ under the data directory); no absolute path, no '..', no symbolic link, and never an existing file. Needs feedback:export. Nothing leaves the cluster on its own (optional)",
                     "minLength": 1,
                     "type": "string"
                   },

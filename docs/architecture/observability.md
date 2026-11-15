@@ -59,10 +59,12 @@ W3C/OTel where it fits, extended where DX/UX demands more:
 describes a bug/feature wish; the node snapshots a **feedback bundle** — the
 description, the relevant trace(s) with intents + spans, recent errors/crash
 reports, versions, platform — as a large object the user can export and send
-us. Only callers holding `cluster:admin` attach traces, recent errors and
-crash reports (#1408). Other callers submit their description, actor and
-version/platform/node information with empty diagnostic arrays, even if they
-name trace ids explicitly. Users can hand us reproducible reality instead of
+us. Callers holding `cluster:admin` attach any trace, the node's recent errors
+and its crash reports (#1408). Every other caller attaches only **its own**
+traces and the error spans in them, and never a crash report (#1455): a trace
+is the caller's when at least one of its spans names an actor and every span
+that names one names the caller, so a trace the caller only joined (an inbound
+`traceparent`) is left out, even when named explicitly. Users can hand us reproducible reality instead of
 anecdotes. (Bundles are
 explicit, user-initiated exports — nothing leaves the cluster on its own; the
 no-egress posture is untouched.)
@@ -79,10 +81,17 @@ legacy AccessKeys follow the same rule. The trusted local library session
 retains its existing access.
 
 `submit_feedback` keeps its ordinary tool invocation right. Its handler checks
-the caller's current diagnostic grant before enabling attachments;
-`FeedbackBundleOptions::include_diagnostics` defaults to false and is never
-accepted from the wire. Without that opt-in the builder does not read the span
-ring or crash files. Grant revocation takes effect on the next call.
+the caller's current diagnostic grant before choosing attachments:
+`FeedbackBundleOptions::diagnostics` is `all` with `cluster:admin` and `own`
+otherwise (`observability::trace_is_owned_by`, #1455). It defaults to `none`
+and is never accepted from the wire; under `none` the builder does not read the
+span ring or crash files, and only `all` reads crash files. Grant revocation
+takes effect on the next call.
+
+`export_path` writes a file on the node, so it needs its own right,
+`feedback:export` (`api:export_feedback`, #1455), not `api:query`. Only the
+`admin` role holds it by default. Without it the call is refused
+(`unauthorized`) before anything is stored.
 
 These changes preserve the JSON formats. Ordinary agents lose trace reads
 and diagnostic attachments in feedback. Admin diagnostics retain raw intent,
@@ -164,7 +173,7 @@ functionality lands with its testkit case, and both land observable.
    `observability::build_feedback_bundle`, validated against its own schema
    (`schemas/feedback_bundle.schema.json`), and stored as a large object in
    the `feedback` database (replicated metadata, peer-transferred body). The
-   optional `export_path` input also writes the bundle to a new file under
+   optional `export_path` input (needs `feedback:export`, #1455) also writes the bundle to a new file under
    the node's export directory (`<data_dir>/exports`, never an existing file,
    never through a link; [../data/export-root.md](../data/export-root.md),
    #1399) — the explicit export; nothing leaves the cluster on its own.

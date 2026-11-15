@@ -194,8 +194,8 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // orchestration atoms, eight pub/sub atoms (#1029/#1136), study promotion
     // (#1138), study deletion (#1158), five record-store and time-series atoms
     // (#1231), three object atoms (#1005), two network-record atoms (#1281), and
-    // serving:run (#1289).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 35u);
+    // serving:run (#1289), and feedback:export (#1455).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 36u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

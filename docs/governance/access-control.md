@@ -566,6 +566,7 @@ can never disagree:
 | `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
 | `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |
 | `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
+| `feedback:export` | `api:export_feedback`        | `submit_feedback`'s `export_path`: write the bundle to a new file under the node's export directory; only `admin` holds it by default (#1455) |
 | `audit:purge`   | `orchestration:purge_audit`   | remove audit rows before an explicit cutoff and record the purge (#1169) |
 | `pubsub:publish` / `pubsub:subscribe` / `pubsub:send_wildcard` | `data:pubsub_publish` / `data:pubsub_subscribe` / `data:pubsub_send_wildcard` | publish to, read from, and address wildcards in pub/sub (#1029, [../pubsub/governance.md](../pubsub/governance.md)) |
 | `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
