@@ -1999,6 +1999,15 @@ TEST(RestServerAuth, OpenApiIsAPublicDiscoveryDoc) {
     EXPECT_EQ(denied.status, 200);
     EXPECT_EQ(wrong.status, 200);
     EXPECT_EQ(allowed.status, 200);
+    // Per caller (#1357): no capability path without a credential, every one
+    // with it.
+    const auto anonymous = nlohmann::json::parse(denied.body, nullptr, false);
+    const auto invalid = nlohmann::json::parse(wrong.body, nullptr, false);
+    const auto authenticated = nlohmann::json::parse(allowed.body, nullptr, false);
+    ASSERT_TRUE(anonymous.is_object() && invalid.is_object() && authenticated.is_object());
+    EXPECT_FALSE(anonymous.at("paths").contains("/v1/server_info"));
+    EXPECT_EQ(invalid, anonymous);
+    EXPECT_EQ(authenticated, zetta::api::openapi_document(server.registry()));
 
     server.stop();
     node.stop();

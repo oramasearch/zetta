@@ -777,6 +777,7 @@ struct ApiServer::Impl {
     // configured AND the bearer is JWT-shaped, verify it against the issuer's
     // JWKS and map the subject to a principal named clerk:<sub> (provisioned
     // on first sight). No issuer configured: this never runs (bearer-only).
+    // The auth gate and the public discovery documents (#1357) share it.
     // `allow_scan` false (a source past its failed-authentication budget,
     // #1417) keeps the native check to the bounded lookups.
     runtime::task<std::string> resolve_credential(std::string bearer, bool allow_scan) {
@@ -798,6 +799,27 @@ struct ApiServer::Impl {
             }
         }
         co_return resolved_user_id;
+    }
+
+    // Is the caller of a public discovery document authenticated (#1357)? The
+    // same credential sources as the gate (a bearer, else the session cookie
+    // from a trusted origin), and the same failed-authentication budget; any
+    // failure only means the anonymous rendering, never a refusal.
+    runtime::task<bool> discovery_caller_authenticated(boost::http::route_params& route) {
+        std::string bearer = bearer_of(route);
+        if (bearer.empty()) {
+            bearer = cookie_value(route, "zetta_session");
+            if (!bearer.empty() && !trusted_browser_origin(route, true)) co_return false;
+        }
+        if (bearer.empty()) co_return false;
+        const std::string source = request_source(route);
+        const bool allow_scan = auth_limiter.admit(source).admitted;
+        const std::string user = co_await resolve_credential(std::move(bearer), allow_scan);
+        if (user.empty()) {
+            auth_limiter.record_failure(source);
+            co_return false;
+        }
+        co_return true;
     }
 
     // The gate's 401: no credential, or one that did not resolve to a user.
@@ -1162,19 +1184,26 @@ struct ApiServer::Impl {
             zetta::observability::parse_traceparent(traceparent)
                 .value_or(zetta::observability::make_root_trace());
 
+        // Every capability for an authenticated caller; for an anonymous one
+        // only the publicly callable set, which is none (#1357).
+        const bool authenticated = co_await discovery_caller_authenticated(route);
+        const CapabilityVisible visible =
+            authenticated ? CapabilityVisible([](const Capability&) { return true; })
+                          : publicly_callable();
         std::string body;
         bool found = true;
         co_await bridge.run_on_owner([&] {
             zetta::observability::ScopedSpan span(
                 &node.span_recorder(), trace, "llms:" + page);
             span.set_attribute("page", page);
+            span.set_attribute("authenticated", authenticated);
             if (page == "index") {
-                body = render_llms_index(capability_registry);
+                body = render_llms_index(capability_registry, visible);
             } else if (page == "full") {
-                body = render_llms_full(capability_registry);
+                body = render_llms_full(capability_registry, visible);
             } else {
                 auto rendered =
-                    render_llms_topic(capability_registry, page);
+                    render_llms_topic(capability_registry, page, visible);
                 found = rendered.has_value();
                 if (found) body = std::move(*rendered);
             }
@@ -1191,6 +1220,9 @@ struct ApiServer::Impl {
             route.status(http::status::ok);
         }
         route.res.set(http::field::content_type, "text/plain; charset=utf-8");
+        // The body depends on the caller's credential.
+        route.res.set(http::field::vary, "Authorization, Cookie");
+        route.res.set(http::field::cache_control, "private, no-cache");
         stamp_response_headers(route, body);
         auto [send_error] = co_await route.send(body);
         if (send_error) co_return http::route_error(send_error);
@@ -1199,8 +1231,11 @@ struct ApiServer::Impl {
 
     // The serialized OpenAPI document — generated from the registry once at
     // start() (schema-as-code: the same generator output is drift-checked
-    // into schemas/openapi.json) and served at GET /v1/openapi.json.
+    // into schemas/openapi.json) and served at GET /v1/openapi.json to an
+    // authenticated caller. An anonymous caller gets openapi_public_body: the
+    // same document over only the publicly callable capabilities (#1357).
     std::string openapi_body;
+    std::string openapi_public_body;
 
     // Serve one REST rendering of a capability (#618, docs/api/rest-openapi.md):
     // GET for reads (input in the query string, coerced by the input schema),
@@ -2233,14 +2268,19 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
-    // GET /v1/openapi.json — the OpenAPI rendering. Auth is enforced once, up
-    // front, by the router authorization filter (#745).
+    // GET /v1/openapi.json — the OpenAPI rendering, served before the auth
+    // gate: every capability to an authenticated caller, the publicly callable
+    // ones (none) to an anonymous caller (#1357).
     boost::http::route_task serve_openapi(boost::http::route_params& route) {
         namespace http = boost::http;
+        const bool authenticated = co_await discovery_caller_authenticated(route);
+        const std::string& body = authenticated ? openapi_body : openapi_public_body;
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "application/json");
-        stamp_response_headers(route, openapi_body);
-        auto [send_error] = co_await route.send(openapi_body);
+        route.res.set(http::field::vary, "Authorization, Cookie");
+        route.res.set(http::field::cache_control, "private, no-cache");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     }
@@ -4796,11 +4836,15 @@ bool ApiServer::start() {
         return impl.serve_webapp(route, joined(route, "fonts"));
     });
 
-    // Discovery docs are PUBLIC (registered before the gate, like /mcp.md): llms.txt is meant to be
-    // fetched credential-free (an agent reads it to learn how to authenticate), and the OpenAPI
-    // document is the API's own spec. LLM renderers take no Node state (#1402).
-    // The capability routes + /v1/specs stay bearer-gated below.
+    // Discovery docs are registered before the gate, like /mcp.md: llms.txt is meant to be
+    // fetched credential-free (an agent reads it to learn how to authenticate). Each answers
+    // per caller (#1357): an authenticated caller reads every capability; an anonymous one
+    // the publicly callable set, which is empty, so it learns how to authenticate and no
+    // more. LLM renderers take no Node state (#1402). The capability routes + /v1/specs
+    // stay bearer-gated below.
     impl.openapi_body = openapi_document(impl.capability_registry).dump(2);
+    impl.openapi_public_body =
+        openapi_document(impl.capability_registry, publicly_callable()).dump(2);
     router.add(http::method::get, "/llms.txt", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_llms(route, "index");
     });

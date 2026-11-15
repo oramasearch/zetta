@@ -68,4 +68,11 @@ using CapabilityVisible = std::function<bool(const Capability&)>;
 nlohmann::json openapi_document(const Registry& registry,
                                 const CapabilityVisible& visible);
 
+// The capabilities a caller with no credential may call, which is what the
+// public discovery documents show it (#1357): /v1/openapi.json,
+// /llms-full.txt and /llms/<topic> list every capability only to an
+// authenticated caller. Today the set is empty: every capability route is
+// behind the auth gate.
+CapabilityVisible publicly_callable();
+
 }  // namespace zetta::api

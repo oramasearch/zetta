@@ -5,6 +5,7 @@
 #include "zetta/api/llms.hpp"
 
 #include <string>
+#include <string_view>
 
 #include "zetta/api/registry.hpp"
 #include "zetta/api/rest.hpp"
@@ -13,6 +14,14 @@
 namespace zetta::api {
 
 namespace {
+
+bool every_capability(const Capability&) { return true; }
+
+// What a page says where an anonymous caller sees no capability (#1357).
+constexpr std::string_view kAuthenticateToList =
+    "No capability is callable without a credential, so none is listed here. "
+    "Send `Authorization: Bearer <token>` with this request to read every "
+    "capability with its description and schemas.\n";
 
 // One capability rendered from its registry entry, verbatim: name, kind, the
 // required operation, the flags, the description, and the input schema.
@@ -39,68 +48,75 @@ void append_capability(std::string& out, const Capability& capability) {
 // One line per capability, pulled from the registry (used by topic pages that
 // point at their related capabilities).
 void append_capability_line(std::string& out, const Registry& registry,
+                            const CapabilityVisible& visible,
                             const std::string& name) {
     const auto capability = registry.find(name);
-    if (!capability) return;
+    if (!capability || !visible(*capability)) return;
     out += "- `" + capability->name + "` — " + capability->description + "\n";
 }
 
 // ---- topic renderers --------------------------------------------------------
 
-std::string render_capabilities(const Registry& registry) {
+std::string render_capabilities(const Registry& registry,
+                                const CapabilityVisible& visible) {
     std::string out = "# Capabilities\n\n";
     out += "Every entry on this node's control surface, rendered live from "
            "the capability registry (`tools/list` over POST /mcp returns the "
            "same set). Every capability also accepts the reserved optional "
            "`intent` field — say what you are trying to do; it is recorded on "
            "the call's trace.\n\n";
+    bool any = false;
     for (const auto& capability : registry.list()) {
+        if (!visible(*capability)) continue;
         append_capability(out, *capability);
+        any = true;
     }
+    if (!any) out += kAuthenticateToList;
     return out;
 }
 
-std::string render_cluster(const Registry& registry) {
+std::string render_cluster(const Registry& registry, const CapabilityVisible& visible) {
     std::string out = "# Cluster\n\n";
     out += "Read cluster identity and membership with an authenticated "
            "capability call:\n\n";
-    append_capability_line(out, registry, "server_info");
-    append_capability_line(out, registry, "sql");
+    append_capability_line(out, registry, visible, "server_info");
+    append_capability_line(out, registry, visible, "sql");
     out += "\nThe `system.nodes` view (via `sql`) lists every member with its "
            "observed state.\n";
     return out;
 }
 
-std::string render_data(const Registry& registry) {
+std::string render_data(const Registry& registry, const CapabilityVisible& visible) {
     std::string out = "# Data\n\n";
     out += "Query databases, tables and the dataset-partition placement "
            "catalog through authenticated SQL. Results require the caller's "
            "resource permissions:\n\n";
-    append_capability_line(out, registry, "sql");
+    append_capability_line(out, registry, visible, "sql");
     return out;
 }
 
-std::string render_indexes(const Registry& registry) {
+std::string render_indexes(const Registry& registry, const CapabilityVisible& visible) {
     std::string out = "# Indexes\n\n";
     out += "Search an index with an authenticated capability call and "
            "permission to search that index:\n\n";
-    append_capability_line(out, registry, "search");
+    append_capability_line(out, registry, visible, "search");
     out += "\nThe `system.indexes` view (via `sql`) shows the same registry.\n";
     return out;
 }
 
-std::string render_projects(const Registry& registry) {
+std::string render_projects(const Registry& registry, const CapabilityVisible& visible) {
     std::string out = "# Projects\n\n";
     out += "Read projects through authenticated capabilities. Related "
            "runs, models and jobs are available through `system.runs`, "
            "`system.models` and `system.jobs` via authenticated SQL.\n\n";
     out += "Work with projects:\n\n";
-    append_capability_line(out, registry, "list_projects");
-    append_capability_line(out, registry, "create_project");
+    append_capability_line(out, registry, visible, "list_projects");
+    append_capability_line(out, registry, visible, "create_project");
     return out;
 }
 
-std::string render_observability(const Registry& registry) {
+std::string render_observability(const Registry& registry,
+                                 const CapabilityVisible& visible) {
     std::string out = "# Observability\n\n";
     out += "Every operation on this node records OpenTelemetry-style spans — "
            "intent, plan, timings, result shape — threaded by trace id. Every "
@@ -108,14 +124,14 @@ std::string render_observability(const Registry& registry) {
            "`duration_ms`, so you can always read back what actually "
            "happened.\n\n";
     out += "Read them with authenticated capability calls:\n\n";
-    append_capability_line(out, registry, "list_traces");
-    append_capability_line(out, registry, "get_trace");
-    append_capability_line(out, registry, "submit_feedback");
+    append_capability_line(out, registry, visible, "list_traces");
+    append_capability_line(out, registry, visible, "get_trace");
+    append_capability_line(out, registry, visible, "submit_feedback");
     out += "\nThe same spans are `system.traces` / `system.spans` via `sql`.\n";
     return out;
 }
 
-using TopicRenderer = std::string (*)(const Registry&);
+using TopicRenderer = std::string (*)(const Registry&, const CapabilityVisible&);
 
 struct TopicEntry {
     LlmsTopic topic;
@@ -157,6 +173,10 @@ const std::vector<LlmsTopic>& llms_topics() {
 }
 
 std::string render_llms_index(const Registry& registry) {
+    return render_llms_index(registry, every_capability);
+}
+
+std::string render_llms_index(const Registry& registry, const CapabilityVisible& visible) {
     std::string out = "# Orama Zetta\n\n";
     out += "> A zetta node: a distributed database + AI-project engine, "
            "driven entirely through a capability registry you can call over "
@@ -168,11 +188,24 @@ std::string render_llms_index(const Registry& registry) {
     out += "## First three reads\n\n";
     out += "Orient by calling these, in order:\n\n";
     int position = 1;
+    bool described = false;
     for (const std::string name : {"server_info", "sql", "list_traces"}) {
         const auto capability = registry.find(name);
         if (!capability) continue;
-        out += std::to_string(position++) + ". `" + capability->name + "` — " +
-               capability->description + "\n";
+        // An anonymous caller is told the names only (#1357); descriptions and
+        // schemas are for an authenticated caller.
+        out += std::to_string(position++) + ". `" + capability->name + "`";
+        if (visible(*capability)) {
+            out += " — " + capability->description;
+            described = true;
+        }
+        out += "\n";
+    }
+    if (!described) {
+        out += "\nEvery capability needs a credential. Send `Authorization: Bearer "
+               "<token>` with this request (and with /llms-full.txt, the topic "
+               "pages and /v1/openapi.json) to read their descriptions and "
+               "schemas.\n";
     }
 
     out += "\n## How to call a capability\n\n";
@@ -204,16 +237,26 @@ std::string render_llms_index(const Registry& registry) {
 
 std::optional<std::string> render_llms_topic(const Registry& registry,
                                              const std::string& topic) {
+    return render_llms_topic(registry, topic, every_capability);
+}
+
+std::optional<std::string> render_llms_topic(const Registry& registry,
+                                             const std::string& topic,
+                                             const CapabilityVisible& visible) {
     for (const auto& entry : topic_entries()) {
-        if (entry.topic.name == topic) return entry.render(registry);
+        if (entry.topic.name == topic) return entry.render(registry, visible);
     }
     return std::nullopt;
 }
 
 std::string render_llms_full(const Registry& registry) {
-    std::string out = render_llms_index(registry);
+    return render_llms_full(registry, every_capability);
+}
+
+std::string render_llms_full(const Registry& registry, const CapabilityVisible& visible) {
+    std::string out = render_llms_index(registry, visible);
     for (const auto& entry : topic_entries()) {
-        out += "\n---\n\n" + entry.render(registry);
+        out += "\n---\n\n" + entry.render(registry, visible);
     }
     return out;
 }
