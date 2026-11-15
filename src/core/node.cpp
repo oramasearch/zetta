@@ -763,6 +763,7 @@ bool Node::start() {
         object_store_ = std::make_unique<zetta::data::ObjectStore>(
             *replication_, replication_->node_id(),
             std::filesystem::path(config_.data_dir) / "objects");
+        object_store_->set_default_quota_bytes(config_.object_default_quota_bytes);
         std::string object_log_error;
         if (!object_store_->open(&object_log_error)) {
             std::fprintf(stderr, "zetta: cannot open the object logs: %s\n",

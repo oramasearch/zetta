@@ -296,7 +296,12 @@ void print_usage(const char* argv0) {
         "  ZETTA_AUDIT_SUMMARY_RETENTION_DAYS\n"
         "                      Audit summary retention in days\n"
         "  ZETTA_MALLOC_TRIM_THRESHOLD_BYTES\n"
-        "                      Opt-in free-held threshold for malloc_trim(0)\n",
+        "                      Opt-in free-held threshold for malloc_trim(0)\n"
+        "  ZETTA_OBJECT_DEFAULT_QUOTA_BYTES\n"
+        "                      Cap on an object bucket created without\n"
+        "                      quota_bytes (default 10 GiB); 0 removes it, and\n"
+        "                      such a bucket then takes no body past the\n"
+        "                      request cap (#1421)\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -844,6 +849,18 @@ int main(int argc, char** argv) {
             return 2;
         }
         opts.node.malloc_trim_threshold_bytes = threshold;
+    }
+    if (const char* environment = std::getenv("ZETTA_OBJECT_DEFAULT_QUOTA_BYTES")) {
+        const std::string_view text(environment);
+        std::uint64_t bytes = 0;
+        const auto [pointer, error] =
+            std::from_chars(text.data(), text.data() + text.size(), bytes);
+        if (error != std::errc{} || pointer != text.data() + text.size()) {
+            std::fprintf(stderr,
+                         "zetta: ZETTA_OBJECT_DEFAULT_QUOTA_BYTES wants a non-negative number\n");
+            return 2;
+        }
+        opts.node.object_default_quota_bytes = bytes;
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a

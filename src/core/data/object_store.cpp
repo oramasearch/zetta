@@ -680,6 +680,19 @@ ObjectStore::ObjectStore(zetta::cluster::ReplicationManager& replication, std::s
 
 ObjectStore::~ObjectStore() { detach(); }
 
+std::optional<std::uint64_t> ObjectStore::effective_quota(const ObjectBucket& bucket) const {
+    if (bucket.quota_bytes) return bucket.quota_bytes;
+    const std::uint64_t fallback = default_quota_bytes();
+    if (fallback == 0) return std::nullopt;
+    return fallback;
+}
+
+std::optional<std::uint64_t> ObjectStore::effective_quota(const std::string& bucket) const {
+    const std::optional<ObjectBucket> definition = find_bucket(bucket);
+    if (!definition) return std::nullopt;
+    return effective_quota(*definition);
+}
+
 bool ObjectStore::open(std::string* reason) {
     if (directory_.empty()) return true;
     std::error_code error;
@@ -1227,8 +1240,10 @@ ObjectOutcome ObjectStore::decide(const Mutation& mutation, std::string_view byt
             return outcome;
         }
     }
-    // The quota: refuse a write that would take the bucket past it.
-    if (definition->quota_bytes && mutation.op != Mutation::Op::Remove) {
+    // The quota: refuse a write that would take the bucket past it. A bucket
+    // without its own quota is held to the node default (#1421).
+    if (const std::optional<std::uint64_t> quota = effective_quota(*definition);
+        quota && mutation.op != Mutation::Op::Remove) {
         const std::optional<ObjectVersion> held = state->log->stat(mutation.key);
         const std::uint64_t existing = held && !held->deleted ? held->size : 0;
         std::uint64_t grows = 0;
@@ -1246,10 +1261,10 @@ ObjectOutcome ObjectStore::decide(const Mutation& mutation, std::string_view byt
             case Mutation::Op::Remove: break;
         }
         const std::uint64_t used = bucket_bytes(*state, mutation.bucket);
-        if (grows > 0 && used + grows > *definition->quota_bytes) {
+        if (grows > 0 && used + grows > *quota) {
             return failure(ObjectStatus::QuotaExceeded,
                            "bucket '" + mutation.bucket + "' holds " + std::to_string(used) +
-                               " bytes of its " + std::to_string(*definition->quota_bytes) +
+                               " bytes of its " + std::to_string(*quota) +
                                "-byte quota; this write needs " + std::to_string(grows) + " more");
         }
     }
@@ -1530,15 +1545,16 @@ ObjectOutcome ObjectStore::begin_upload(const std::string& bucket, const std::st
             return outcome;
         }
     }
-    if (definition->quota_bytes && expected_size) {
+    if (const std::optional<std::uint64_t> quota = effective_quota(*definition);
+        quota && expected_size) {
         const std::optional<ObjectVersion> current = state->log->stat(key);
         const std::uint64_t replaced = current && !current->deleted ? current->size : 0;
         const std::uint64_t counted = bucket_bytes(*state, bucket);
         const std::uint64_t used = counted > replaced ? counted - replaced : 0;
-        if (used + *expected_size > *definition->quota_bytes) {
+        if (used + *expected_size > *quota) {
             return failure(ObjectStatus::QuotaExceeded,
                            "bucket '" + bucket + "' holds " + std::to_string(used) +
-                               " bytes of its " + std::to_string(*definition->quota_bytes) +
+                               " bytes of its " + std::to_string(*quota) +
                                "-byte quota; this object is " + std::to_string(*expected_size));
         }
     }
@@ -1564,16 +1580,16 @@ ObjectOutcome ObjectStore::upload_part(ObjectUpload& upload, std::string_view by
         return failure(ObjectStatus::Unavailable,
                        "the bucket's object log could not be opened on " + node_id_);
     }
-    if (definition->quota_bytes) {
+    if (const std::optional<std::uint64_t> quota = effective_quota(*definition)) {
         // A put replaces the key's current version, whose bytes it frees.
         const std::optional<ObjectVersion> current = state->log->stat(upload.key);
         const std::uint64_t replaced = current && !current->deleted ? current->size : 0;
         const std::uint64_t counted = bucket_bytes(*state, upload.bucket);
         const std::uint64_t used = counted > replaced ? counted - replaced : 0;
-        if (used + bytes.size() > *definition->quota_bytes) {
+        if (used + bytes.size() > *quota) {
             return failure(ObjectStatus::QuotaExceeded,
                            "bucket '" + upload.bucket + "' holds " + std::to_string(used) +
-                               " bytes of its " + std::to_string(*definition->quota_bytes) +
+                               " bytes of its " + std::to_string(*quota) +
                                "-byte quota; this object does not fit");
         }
     }
@@ -1900,7 +1916,9 @@ ObjectUsage ObjectStore::usage(const std::string& bucket) {
         usage.message = "no bucket '" + bucket + "'";
         return usage;
     }
-    usage.quota_bytes = definition->quota_bytes;
+    // The quota writes are held to: the bucket's own, else the node default
+    // (#1421).
+    usage.quota_bytes = effective_quota(*definition);
     const std::vector<std::string> peers = live_peers();
     Bucket* state = bucket_state(bucket, /*create=*/false);
     if (state && state->log->failed()) {

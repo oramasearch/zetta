@@ -116,6 +116,10 @@ struct NodeConfig {
     // Linux-only, opt-in allocator release. Zero disables it. A periodic memory
     // sample calls malloc_trim(0) when allocator-held free bytes reach this.
     std::uint64_t malloc_trim_threshold_bytes = 0;
+    // The cap on an object bucket created without `quota_bytes` (#1421,
+    // docs/data/object-store.md). 0 removes the default: such a bucket is then
+    // uncapped, and the HTTP routes take no body past the request cap for it.
+    std::uint64_t object_default_quota_bytes = zetta::data::ObjectStore::kDefaultQuotaBytes;
     // The root secret saved connector credentials are sealed under (#1230). main
     // passes the cluster join token, so every member of one cluster derives the
     // same sealing key and can open what another sealed — and the key is never

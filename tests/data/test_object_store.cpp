@@ -261,6 +261,48 @@ TEST_F(ObjectStoreFixture, QuotaRefusesWritesPastIt) {
     EXPECT_EQ(store->usage("tiny").bytes, 0u);
 }
 
+// #1421 (LSR-248): a bucket created without quota_bytes is held to the node
+// default, so a writer of it cannot fill the volume; the bucket's own quota
+// always wins; a default of 0 leaves such a bucket uncapped (the HTTP routes
+// then keep the request cap for it).
+TEST_F(ObjectStoreFixture, BucketWithoutQuotaIsHeldToTheNodeDefault) {
+    EXPECT_EQ(store->default_quota_bytes(), ObjectStore::kDefaultQuotaBytes);
+    ASSERT_TRUE(store->create_bucket(bucket("open")).ok());
+    EXPECT_EQ(store->effective_quota("open"),
+              std::optional<std::uint64_t>(ObjectStore::kDefaultQuotaBytes));
+    EXPECT_EQ(store->usage("open").quota_bytes,
+              std::optional<std::uint64_t>(ObjectStore::kDefaultQuotaBytes));
+
+    store->set_default_quota_bytes(1000);
+    ASSERT_TRUE(store->put("open", "a", std::string(600, 'a'), {}).ok());
+    EXPECT_EQ(store->put("open", "b", std::string(600, 'b'), {}).status,
+              ObjectStatus::QuotaExceeded);
+    EXPECT_EQ(store->put_range("open", "a", 600, std::string(401, 'a'), {}).status,
+              ObjectStatus::QuotaExceeded);
+    EXPECT_TRUE(store->put_range("open", "a", 600, std::string(400, 'a'), {}).ok());
+    // A streamed upload of unknown size is refused as its parts pass the cap.
+    zetta::data::ObjectUpload upload;
+    ASSERT_TRUE(store->remove("open", "a", {}).ok());
+    ASSERT_TRUE(store->begin_upload("open", "streamed", {}, std::nullopt, upload).ok());
+    EXPECT_TRUE(store->upload_part(upload, std::string(900, 's')).ok());
+    store->abort_upload(upload);
+    zetta::data::ObjectUpload declared;
+    EXPECT_EQ(store->begin_upload("open", "declared", {}, 1001, declared).status,
+              ObjectStatus::QuotaExceeded);
+
+    // The bucket's own quota wins over the default.
+    ASSERT_TRUE(store->create_bucket(bucket("own", 5000)).ok());
+    EXPECT_EQ(store->effective_quota("own"), std::optional<std::uint64_t>(5000));
+    EXPECT_TRUE(store->put("own", "a", std::string(2000, 'a'), {}).ok());
+
+    // 0 removes the default: an operator's explicit choice.
+    store->set_default_quota_bytes(0);
+    EXPECT_FALSE(store->effective_quota("open"));
+    EXPECT_FALSE(store->usage("open").quota_bytes);
+    EXPECT_TRUE(store->put("open", "b", std::string(2000, 'b'), {}).ok());
+    EXPECT_FALSE(store->effective_quota("missing"));
+}
+
 // Eight threads race a conditional create of the same key, twenty times: exactly
 // one wins each time and the object holds the winner's bytes.
 TEST_F(ObjectStoreFixture, ConditionalCreateUnderARaceHasExactlyOneWinner) {

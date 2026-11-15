@@ -45,7 +45,7 @@ and every mutation and barrier an optional `Zetta-Incarnation` precondition
 | remove | `DELETE /v1/objects/<bucket>/<key>` | Delete one object (the `delete_object` capability). `404` when absent. |
 | list | `GET /v1/objects/<bucket>?prefix=&after=&limit=` | Keys, sizes and update times ordered by key, `limit` 1 to 1000, `next_after` while there is more (`list_objects`). |
 | barrier | `POST /v1/objects/<bucket>:barrier` | Answers once every write acknowledged before the call is fsynced on every live node (`object_barrier`). |
-| usage | `GET /v1/objects/<bucket>:usage` | `{objects, bytes, quota_bytes}` (`object_usage`). |
+| usage | `GET /v1/objects/<bucket>:usage` | `{objects, bytes, quota_bytes}` (`object_usage`); `quota_bytes` is the effective quota, the node default when the bucket has none (#1421). |
 | owner lease | `POST /v1/objects/<bucket>:acquire` `{holder, ttl_ms, wait_ms}`, `:renew` `{holder, fence, ttl_ms}`, `:release` `{holder, fence}` | `{bucket, holder, fence, expires_ms, incarnation, object_log_prefix_durability}`, or `409 held` naming the holder once the wait ends (`acquire_object_lease`, `renew_object_lease`, `release_object_lease`). |
 
 A write answers `{bucket, key, size, generation, updated_ms, incarnation, owner, replicas,
@@ -276,7 +276,15 @@ steady write load does to the Automerge document. Objects therefore live in `Obj
 
 - Bodies stream; nothing buffers a whole object. There is no per-object size cap beyond the
   volume and the bucket quota.
-- **Quota.** A write that would take the bucket past `quota_bytes` answers `507 quota_exceeded`;
+- **Default quota (#1421).** A bucket created without `quota_bytes` is held to the node's default,
+  `ObjectStore::kDefaultQuotaBytes` (10 GiB), set per node with `ZETTA_OBJECT_DEFAULT_QUOTA_BYTES`
+  (`NodeConfig::object_default_quota_bytes`). A writer of an unquotaed bucket therefore cannot fill
+  the node's volume. The bucket's own quota always wins, larger or smaller. `usage` reports the
+  quota writes are held to: the bucket's own, else the default. A default of `0` is an
+  operator's explicit choice to leave such buckets uncapped; the HTTP byte routes then keep the
+  normal request cap for them (`413 payload_too_large` when the declared length already exceeds it),
+  so only a bucket with an effective quota takes an unbounded streamed body.
+- **Quota.** A write that would take the bucket past its quota answers `507 quota_exceeded`;
   an upload is checked against its `Content-Length` before any byte is staged and again as each
   part arrives, and replacing an object frees its old bytes. On one node the count is exact. On a
   multi-node cluster the primary estimates the bucket's bytes from what every node held at the
@@ -455,6 +463,7 @@ catalogue did not grow. Two changes the soak forced:
 | `ObjectStoreFixture.PutRangeAppendsAtTheExactOffsetAndARetryChangesNothing` | the exact-offset contract, retried appends, conflicts with the size, ranges larger than a slice |
 | `ObjectStoreFixture.ListRemoveUsageAndBarrier` | prefix and paged listing, remove, usage, barrier |
 | `ObjectStoreFixture.QuotaRefusesWritesPastIt` | the quota for puts, appends and uploads; replacement frees bytes |
+| `ObjectStoreFixture.BucketWithoutQuotaIsHeldToTheNodeDefault` | #1421: a bucket without `quota_bytes` is capped by the node default for puts, appends, streamed and declared uploads; its own quota wins; a default of 0 leaves it uncapped |
 | `ObjectStoreFixture.ConditionalCreateUnderARaceHasExactlyOneWinner` | 8 threads, 20 rounds, one winner each |
 | `ObjectStoreFixture.LargePutsAreAtomicForReaders` | a reader beside 10 MiB replacements never sees a mix; an aborted upload leaves the old object |
 | `ObjectStoreFixture.FencingRefusesAStaleHolderAfterATakeover` | fences, held, release, renewal keeping the lease, expiry, the fence across a restart |

@@ -279,6 +279,24 @@ public:
     ObjectOutcome create_bucket(const ObjectBucket& bucket);
     std::optional<ObjectBucket> find_bucket(const std::string& name) const;
 
+    // The node-wide cap on a bucket that declares no quota (#1421). A bucket's
+    // own `quota_bytes` always wins; one without it is capped here, so no
+    // writer of an unquotaed bucket can fill the node's volume. 0 removes the
+    // default (an operator's explicit choice): such a bucket is then uncapped,
+    // and the HTTP routes refuse a body larger than the request cap for it.
+    static constexpr std::uint64_t kDefaultQuotaBytes = 10ULL << 30;  // 10 GiB
+    void set_default_quota_bytes(std::uint64_t bytes) {
+        default_quota_bytes_.store(bytes, std::memory_order_relaxed);
+    }
+    std::uint64_t default_quota_bytes() const {
+        return default_quota_bytes_.load(std::memory_order_relaxed);
+    }
+    // The quota the store enforces on `bucket`: its own, else the default;
+    // nullopt only when it has none and the default is 0.
+    std::optional<std::uint64_t> effective_quota(const ObjectBucket& bucket) const;
+    // The same for a bucket by name; nullopt also when there is no such bucket.
+    std::optional<std::uint64_t> effective_quota(const std::string& bucket) const;
+
     // ---- mutations ----------------------------------------------------------------
 
     // Atomically replace the whole object. Bodies larger than kSliceBytes go
@@ -395,6 +413,7 @@ private:
     std::string node_id_;
     std::filesystem::path directory_;
     std::uint64_t segment_bytes_;
+    std::atomic<std::uint64_t> default_quota_bytes_{kDefaultQuotaBytes};
     std::string incarnation_;
     Fsync fsync_;  // tests only (set_fsync)
     std::function<void()> before_log_write_;     // tests only

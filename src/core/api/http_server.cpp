@@ -1626,9 +1626,23 @@ struct ApiServer::Impl {
         if (route.req.count(http::field::content_length) != 0) {
             declared = parse_unsigned(route.req.at(http::field::content_length));
         }
-        // No cap but the bucket's quota, which the store enforces as bytes arrive.
-        if (const auto parser = parsers.find(&route); parser != parsers.end()) {
-            parser->second->set_body_limit(std::numeric_limits<std::uint64_t>::max());
+        // The request cap is lifted only for a bucket with an effective quota
+        // (its own, else the node default), which the store enforces as bytes
+        // arrive (#1421). A bucket with neither keeps the request cap, refused
+        // up front when the declared length already exceeds it.
+        if (store.effective_quota(bucket)) {
+            if (const auto parser = parsers.find(&route); parser != parsers.end()) {
+                parser->second->set_body_limit(std::numeric_limits<std::uint64_t>::max());
+            }
+        } else if (declared && *declared > kMaxRequestBodyBytes) {
+            co_return co_await send_object_result(
+                route,
+                ApiResult::failure("payload_too_large",
+                                   "bucket '" + bucket + "' has no quota and this node sets no "
+                                   "default, so a body is capped at " +
+                                       std::to_string(kMaxRequestBodyBytes) +
+                                       " bytes: create the bucket with quota_bytes"),
+                true);
         }
 
         std::string slice;
