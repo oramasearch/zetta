@@ -56,7 +56,7 @@ COMPONENTS: list[dict] = [
     {"name": "libpqxx", "submodule": "modules/libpqxx", "license": "BSD-3-Clause",
      "use": "submodule, linked", "url": "https://github.com/jtv/libpqxx",
      "text": {"github": "jtv/libpqxx", "path": "COPYING"}},
-    {"name": "oramacore-cpp (Orama Search Inc., released with this stack)",
+    {"name": "oramacore-cpp (OramaSearch, Inc., released with this stack)",
      "submodule": "modules/oramacore-cpp", "license": "MIT", "use": "submodule, linked",
      "url": "https://github.com/oramasearch/oramacore-cpp", "text": {"file": "LICENSE"}},
     {"name": "automerge-cpp (Steve Sperandeo)", "submodule": "modules/automerge-cpp",
@@ -90,8 +90,8 @@ COMPONENTS: list[dict] = [
      "text": {"github": "floriankarsten/space-grotesk", "ref": None, "path": "OFL.txt"}},
     {"name": "Orama Studio web app (webapp/, built from orama-design)", "version": "fc2cc41",
      "license": "MIT", "use": "vendored build, served by the node",
-     "url": "vendored from a private Orama Search Inc. repository",
-     "text": {"inline": "Copyright (c) 2026 Orama Search Inc. Released under the MIT License as part of this repository (see LICENSE); vendored from a private Orama Search Inc. repository. The runtime packages of that build are listed below as \"runtime dependency of the webapp/ build\"."}},
+     "url": "vendored from a private OramaSearch, Inc. repository",
+     "text": {"inline": "Copyright (c) 2026 OramaSearch, Inc. Released under the MIT License as part of this repository (see LICENSE); vendored from a private OramaSearch, Inc. repository. The runtime packages of that build are listed below as \"runtime dependency of the webapp/ build\"."}},
 ]
 NPM_USE = {"webapp": "runtime dependency of the webapp/ build"}
 NOTES: list[str] = [

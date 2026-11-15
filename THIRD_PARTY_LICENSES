@@ -23,7 +23,7 @@ corosio (Orama's fork of cppalliance/corosio)                be51422484784a35eef
 http (Orama's fork of cppalliance/http)                      af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4  BSL-1.0       submodule, linked                              https://github.com/cppalliance/http
 beast2                                                       fb0a9c8dc860590bd13cb2d7afd3e2232291ff19  BSL-1.0       submodule, linked                              https://github.com/cppalliance/beast2
 libpqxx                                                      853bc0a48f0327d8670c1c0855f7abf731046319  BSD-3-Clause  submodule, linked                              https://github.com/jtv/libpqxx
-oramacore-cpp (Orama Search Inc., released with this stack)  f612ea8f6170d051eca55122c1cc2956649e0c66  MIT           submodule, linked                              https://github.com/oramasearch/oramacore-cpp
+oramacore-cpp (OramaSearch, Inc., released with this stack)  f612ea8f6170d051eca55122c1cc2956649e0c66  MIT           submodule, linked                              https://github.com/oramasearch/oramacore-cpp
 automerge-cpp (Steve Sperandeo)                              4dd795513510ae2c58bacd384c3d8fd98f523123  MIT           submodule, linked                              https://github.com/homer6/automerge-cpp
 nlohmann/json (vendored by automerge-cpp, upstream/json)     8167d2f64122c3ef7e5a0d9cab239fdba37aa54c  MIT           header-only, through automerge-cpp             https://github.com/nlohmann/json
 json-schema-validator                                        2.4.0                                     MIT           fetched at build, linked                       https://github.com/pboettch/json-schema-validator
@@ -33,7 +33,7 @@ GoogleTest                                                   v1.15.2            
 IBM Plex Sans and IBM Plex Mono (assets/fonts)               as vendored                               OFL-1.1       vendored font files, embedded in the binaries  https://github.com/IBM/plex
 Geist and Geist Mono (assets/fonts, webapp/fonts)            as vendored                               OFL-1.1       vendored font files                            https://github.com/vercel/geist-font
 Space Grotesk (webapp/fonts)                                 as vendored                               OFL-1.1       vendored font files                            https://github.com/floriankarsten/space-grotesk
-Orama Studio web app (webapp/, built from orama-design)      fc2cc41                                   MIT           vendored build, served by the node             vendored from a private Orama Search Inc. repository
+Orama Studio web app (webapp/, built from orama-design)      fc2cc41                                   MIT           vendored build, served by the node             vendored from a private OramaSearch, Inc. repository
 @babel/runtime                                               7.29.7                                    MIT           runtime dependency of the webapp/ build        https://github.com/babel/babel
 @carbon/colors                                               11.54.0                                   Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
 @carbon/feature-flags                                        1.5.0                                     Apache-2.0    runtime dependency of the webapp/ build        https://github.com/carbon-design-system/carbon
@@ -292,12 +292,12 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
-oramacore-cpp (Orama Search Inc., released with this stack) f612ea8f6170d051eca55122c1cc2956649e0c66 — MIT
+oramacore-cpp (OramaSearch, Inc., released with this stack) f612ea8f6170d051eca55122c1cc2956649e0c66 — MIT
 https://github.com/oramasearch/oramacore-cpp
 --------------------------------------------------------------------------------
 MIT License
 
-Copyright (c) 2026 Orama Search Inc.
+Copyright (c) 2026 OramaSearch, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -773,9 +773,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ================================================================================
 Orama Studio web app (webapp/, built from orama-design) fc2cc41 — MIT
-vendored from a private Orama Search Inc. repository
+vendored from a private OramaSearch, Inc. repository
 --------------------------------------------------------------------------------
-Copyright (c) 2026 Orama Search Inc. Released under the MIT License as part of this repository (see LICENSE); vendored from a private Orama Search Inc. repository. The runtime packages of that build are listed below as "runtime dependency of the webapp/ build".
+Copyright (c) 2026 OramaSearch, Inc. Released under the MIT License as part of this repository (see LICENSE); vendored from a private OramaSearch, Inc. repository. The runtime packages of that build are listed below as "runtime dependency of the webapp/ build".
 
 ================================================================================
 @babel/runtime 7.29.7 — MIT
