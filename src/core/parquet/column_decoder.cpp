@@ -204,7 +204,9 @@ bool decode_rle_hybrid(std::string_view data, int width, std::int64_t count,
                        std::vector<std::uint64_t>& out) {
     out.clear();
     if (count < 0 || width < 0 || width > 64) return false;
-    out.reserve(static_cast<std::size_t>(count));
+    // The count comes from a page header: reserve no more than the bytes could plainly encode,
+    // and let a run that really repeats a value grow the vector as it decodes (#1425).
+    out.reserve(std::min<std::size_t>(static_cast<std::size_t>(count), data.size() * 8 + 8));
     if (count == 0) return true;
 
     CompactReader reader(data);
@@ -285,7 +287,8 @@ bool decode_plain(std::string_view data, PhysicalType type, std::int64_t count,
     switch (type) {
         case PhysicalType::Boolean: {
             // Bit-packed, one bit per value, LSB-first within each byte.
-            const std::size_t needed = (n + 7) / 8;
+            if (n / 8 > data.size()) return false;  // no overflow (#1425)
+            const std::size_t needed = n / 8 + (n % 8 != 0 ? 1 : 0);
             if (data.size() < needed) return false;
             out.bool_values.reserve(out.bool_values.size() + n);
             for (std::size_t index = 0; index < n; ++index) {
@@ -295,7 +298,7 @@ bool decode_plain(std::string_view data, PhysicalType type, std::int64_t count,
             return true;
         }
         case PhysicalType::Int32: {
-            if (data.size() < n * 4) return false;
+            if (n > data.size() / 4) return false;  // no overflow (#1425)
             out.int32_values.reserve(out.int32_values.size() + n);
             for (std::size_t index = 0; index < n; ++index) {
                 std::int32_t value = 0;
@@ -305,7 +308,7 @@ bool decode_plain(std::string_view data, PhysicalType type, std::int64_t count,
             return true;
         }
         case PhysicalType::Int64: {
-            if (data.size() < n * 8) return false;
+            if (n > data.size() / 8) return false;  // no overflow (#1425)
             out.int64_values.reserve(out.int64_values.size() + n);
             for (std::size_t index = 0; index < n; ++index) {
                 std::int64_t value = 0;
@@ -315,7 +318,7 @@ bool decode_plain(std::string_view data, PhysicalType type, std::int64_t count,
             return true;
         }
         case PhysicalType::Float: {
-            if (data.size() < n * 4) return false;
+            if (n > data.size() / 4) return false;  // no overflow (#1425)
             out.float_values.reserve(out.float_values.size() + n);
             for (std::size_t index = 0; index < n; ++index) {
                 float value = 0;
@@ -325,7 +328,7 @@ bool decode_plain(std::string_view data, PhysicalType type, std::int64_t count,
             return true;
         }
         case PhysicalType::Double: {
-            if (data.size() < n * 8) return false;
+            if (n > data.size() / 8) return false;  // no overflow (#1425)
             out.double_values.reserve(out.double_values.size() + n);
             for (std::size_t index = 0; index < n; ++index) {
                 double value = 0;
@@ -337,6 +340,8 @@ bool decode_plain(std::string_view data, PhysicalType type, std::int64_t count,
         case PhysicalType::ByteArray: {
             // Each value: 4-byte LE length, then that many bytes.
             std::size_t offset = 0;
+            // Every value takes at least its 4-byte length (#1425): more than that is a lie.
+            if (n > data.size() / 4) return false;
             out.byte_array_values.reserve(out.byte_array_values.size() + n);
             for (std::size_t index = 0; index < n; ++index) {
                 std::uint32_t length = 0;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -43,6 +44,10 @@ struct ParquetRowsResult {
 
     bool ok() const { return error.empty(); }
 };
+
+// The most rows read_parquet_rows holds as JSON objects (LSR-252, #1425). A footer claiming more is
+// refused before anything is allocated; larger files go through the column decoder instead.
+inline constexpr std::int64_t kMaxParquetRowsInMemory = 10'000'000;
 
 // Read `file_bytes` (the whole Parquet file) into one JSON object per row. Each
 // object maps every leaf column's dotted path to its value for that row (JSON

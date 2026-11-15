@@ -22,6 +22,15 @@ ParquetRowsResult read_parquet_rows(std::string_view file_bytes) {
         result.error = "parquet reader: negative row count in footer";
         return result;
     }
+    // This reader holds every row as a JSON object, so the footer's count, which is the file's
+    // to choose, is bounded before anything is allocated (LSR-252, #1425).
+    if (num_rows > kMaxParquetRowsInMemory) {
+        result.error = "parquet reader: the footer claims " + std::to_string(num_rows) +
+                       " rows; this reader holds at most " +
+                       std::to_string(kMaxParquetRowsInMemory) +
+                       " in memory (use the streaming column decoder)";
+        return result;
+    }
     result.rows.assign(static_cast<std::size_t>(num_rows), nlohmann::json::object());
 
     const std::vector<LeafColumn> leaves = metadata.metadata.leaf_columns();
