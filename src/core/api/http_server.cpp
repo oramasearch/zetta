@@ -82,6 +82,24 @@ namespace zetta::api {
 
 namespace {
 
+// A path on this origin a browser will not read as another origin (LSR-262, zetta#1435): it starts
+// with one `/`, and holds no `\` (browsers read `/\host` as `//host`), no control character or
+// space (stripped or rewritten before parsing), and no scheme or authority. Only then is it
+// a redirect target.
+bool same_origin_return_path(std::string_view path) {
+    if (path.size() < 2 || path.size() > 2048 || path[0] != '/' || path[1] == '/') {
+        return false;
+    }
+    for (const unsigned char c : path) {
+        if (c == '\\' || c < 0x21 || c == 0x7F) {
+            return false;
+        }
+    }
+    const std::size_t end = path.find_first_of("?#");
+    const std::string_view route = path.substr(0, end);
+    return route.find("//") == std::string_view::npos && route.find(':') == std::string_view::npos;
+}
+
 constexpr std::string_view kProtocolVersion = "2025-06-18";
 
 // The largest request body the server reads (#1008). The HTTP parser's server
@@ -4043,8 +4061,7 @@ struct ApiServer::Impl {
             // A dialog-launched mutation returns to the view it came from so the
             // page reflects the new state, instead of a standalone result page
             // (relative same-origin targets only — never an open redirect).
-            if (succeeded && return_url.size() > 1 && return_url[0] == '/' &&
-                return_url[1] != '/') {
+            if (succeeded && same_origin_return_path(return_url)) {
                 route.status(http::status::found);
                 route.res.set(http::field::location, return_url);
                 stamp_response_headers(route, "");

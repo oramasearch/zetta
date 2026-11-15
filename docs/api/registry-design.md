@@ -173,6 +173,10 @@ reaps the child before joining clients so a regression cannot strand the suite.
 
 ## Auth, governance, audit — nothing new
 
+- **A web run's return path is one this origin only (#1435, LSR-262).** `/run` redirects to its
+  `_return` only when it is a path a browser cannot read as another origin: one leading `/`, no
+  `\`, no control character or space, and no `//` or `:` before any `?` or `#`
+  (`same_origin_return_path`). Any other `_return` gets the result page instead of a redirect.
 - **Browser origin binding (#1415, LSR-242).** Every browser POST route
   (`/login`, `/session`, both logout routes, `/run`, `/assist`, `/shell`,
   `/graph-save`, `/blob`, `/blob/delete`) requires exactly one `Origin` matching
