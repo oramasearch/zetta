@@ -1,12 +1,12 @@
 # studio-design-sync — reference
 
 Repo maps and translation tables. Paths on the design side are relative to the
-`oramasearch/orama-design` root; zetta paths are relative to this repo root.
+design repository's root; zetta paths are relative to this repo root.
 
-## Where things live — design repo (`oramasearch/orama-design`)
+## Where things live — design repo
 
-**Front door: the Orama Project Hub** at `/workspace/` on
-`orama-website-snowy.vercel.app` — "one place to review the work and decide
+**Front door: the Orama Project Hub** at `/workspace/` of the design repo's
+deployed preview — "one place to review the work and decide
 what comes next." Its overview organizes the repo's four major destinations
 and shows the review status rail (current focus · next review · sequence —
 currently "Web first, desktop parity next", which is also why the web import
@@ -22,7 +22,7 @@ outranks the desktop import):
    (`src/workspace/`, `/workspace/documentation/<section>/`).
 
 Start a sync by loading the Hub overview — it tells you what changed and what
-Daniel considers current before you read a single file.
+the design's maintainer considers current before you read a single file.
 
 | What | Where |
 |---|---|
@@ -42,9 +42,6 @@ Daniel considers current before you read a single file.
 | Planning surface (flows, journeys, 14-screen plan, decisions) | `src/workspace/workspaceData.js` (all content), rendered at `/workspace/documentation/…` |
 | Frozen archives — **never touch** | `public/studio-2026-07-22/`, the `/zetta/` baseline build |
 | Licensed vendored source — **never copy** | `packages/design-system/vendor/motion-plus/` |
-
-Cross-reference inventory: `docs/projects/orama-studio-marketplace/design-index.md`
-and `ui-structure.md` in https://github.com/oramasearch/orama-bridge.
 
 ## Where things live — zetta
 

@@ -19,21 +19,20 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   forced by `stop()`.
 - **Reconcile/`materialize_*`/`apply_value` paths never emit audit events** — a
   peer's action arrives already-audited through per-origin segment ranges.
-  Audit is the durable-log exception to catalog replication (#1164): startup
+  Audit is the durable-log exception to catalog replication: startup
   retires all legacy `audit:` history; the adapter refuses future audit keys.
 - **Removal is a tombstone, never a key delete.** `ReplicationManager::remove`
   writes `{"_removed": true}`; `snapshot()` omits tombstoned keys (so reconcile
   still reads a removal as plain absence) and removal **wins** over a concurrent
   write. Never reintroduce a CRDT map delete: it names only the predecessor
   writes the deleting node had already merged, so an unseen write resurrects the
-  key on every node including the remover's (#838). A caller that must see
+  key on every node including the remover's. A caller that must see
   through the tombstone — `migrate_to_replication`, which would otherwise
   re-capture a dropped entity from a stale disk projection — asks `knows_key()`.
   `row:` keeps its own `{tbl, deleted:true}` shape, because reconcile has to see
   that entry to route the delete to a table. Identity keys under an identity
-  root are removed with a **sealed** tombstone instead (`Node::remove_identity`,
-  #1341): the CRDT's tombstone carries no seal, so any member could write one.
-- **Read the replicated catalogue in place, never by copying it** (#1227).
+  root are removed with a **sealed** tombstone instead (`Node::remove_identity`): the CRDT's tombstone carries no seal, so any member could write one.
+- **Read the replicated catalogue in place, never by copying it**.
   `ReplicationManager::snapshot()` deep-copies every key under the replication
   mutex; a read path takes `shared_snapshot()` and does a direct `find(<key>)`
   or walks one key range with `catalog::for_each_with_prefix`. Release the view
@@ -82,17 +81,17 @@ zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
   `src/core/cluster/cluster.cpp` for listener/dialer traffic,
   `src/core/api/native_http_transport.cpp` for outbound
   client traffic (the native coroutine HTTPS client behind
-  `connect::HttpTransport`, #827; it lives in the `zetta-api` target because it
+  `connect::HttpTransport`; it lives in the `zetta-api` target because it
   also needs Boost.HTTP, which zetta-core must never link), and
   `src/core/api/mysql_protocol.cpp` (also `zetta-api`) for the MySQL connector's
-  TCP/TLS driver (#895) — the MySQL protocol itself is the sans-I/O
+  TCP/TLS driver — the MySQL protocol itself is the sans-I/O
   `connect::MysqlClientSession` in zetta-core and names no socket. The shared TLS 1.3
   context and framed stream live outside zetta-core in `src/transport/` and the
-  independent `zetta_transport` target (#1283).
+  independent `zetta_transport` target.
   Within `src/core`, OpenSSL libcrypto is named by exactly two
   TUs — `src/core/cluster/security.cpp` (join-token/CA/cert minting) and
   `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/PBKDF2/constant-time
-  compare, #744); only `src/core/cluster/replication.cpp` names automerge-cpp.
+  compare); only `src/core/cluster/replication.cpp` names automerge-cpp.
   Everything else goes through `zetta::runtime` / the public interfaces — never
   `boost::capy`/`boost::corosio`/`openssl/*`.
 - **Pub/sub (`src/core/pubsub/`)** keeps its dependencies injected: `Authorizer`

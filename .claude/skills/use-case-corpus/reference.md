@@ -95,7 +95,7 @@ execute, and `TemporalValidationCheck` fails a forecast that calibrates. A templ
 its core will be refused before it deploys.
 
 **`holdout` is the one most often missed and it matters most.** Without it the only metric is
-in-sample, measured on the rows the model was fit on. An in-sample AUC of 0.868 reached a client
+in-sample, measured on the rows the model was fit on. An in-sample AUC of 0.868 reached a
 report as the headline once; the held-out figure for the same run was 0.726.
 
 ## 4. The authoring recipe (C++ today)

@@ -6,8 +6,8 @@ description: Work with GitHub issues, PRs, and CI for the oramasearch/zetta repo
 # GitHub Ops (oramasearch/zetta)
 
 Manage GitHub issues, pull requests, and CI for the **`oramasearch/zetta`** repo using
-the `gh` CLI. **Issues are the source of truth for the backlog.** It's a private
-repo in the `oramasearch` org; cross-repo references use full URLs.
+the `gh` CLI. **Issues are the source of truth for the backlog.** Cross-repo references use
+full URLs.
 
 `--repo oramasearch/zetta` (or `-R oramasearch/zetta`) on every command, or rely on the cwd
 git remote when inside the checkout.
@@ -15,7 +15,7 @@ git remote when inside the checkout.
 ## Prerequisites
 
 `gh >= 2.82.1` (older fails with "Projects (classic) is being deprecated"; fix:
-`brew upgrade gh`). Authenticated as `homer6` (`gh auth status`).
+`brew upgrade gh`). Authenticated (`gh auth status`).
 
 ## Conventions (MUST follow)
 
@@ -25,7 +25,7 @@ These mirror `CLAUDE.md` — treat that file as the bar; this is the GitHub slic
 
 Explicit project policy: no "Claude", "AI", "Codex", "Generated with…",
 `Co-Authored-By: Claude`, or similar — in commits, PR titles/bodies, issue text,
-or comments. The author is always the user (`homer6`).
+or comments. The author is always the human contributor.
 
 ### Feature branch + PR targeting `dev` (never push directly to `main`/`dev`)
 
@@ -42,12 +42,6 @@ git checkout -b <type>/<short-slug> origin/dev
 git push -u origin <type>/<short-slug>
 gh pr create -R oramasearch/zetta --base dev --assignee @me
 ```
-
-### Merges shift state — refresh the reload map
-
-Merging a PR, closing a wave issue, or reshaping a worktree plan changes
-project state: update `docs/full-context.md` (Current state section) in the
-same commit or immediately after the merge.
 
 ### Commit messages — Conventional Commits
 
@@ -150,13 +144,7 @@ gh issue list -R oramasearch/zetta --state open --json number,title,labels \
   --jq '.[] | {n:.number, t:.title, pri:([.labels[].name|select(startswith("p"))][0]//"unranked")}'
 ```
 
-### Maintainer
-
-| Name | GitHub | Role |
-|------|--------|------|
-| Steve Sperandeo | `homer6` | Owner / sole maintainer |
-
-Assign issues you create to `homer6` (or `@me`) so the backlog isn't orphaned.
+Assign issues you create (`--assignee @me`) so the backlog isn't orphaned.
 
 ## Issues
 
@@ -199,7 +187,7 @@ language**, each with an observable outcome → one unambiguous pass criterion �
 ```bash
 gh issue create -R oramasearch/zetta \
   --title "Short title under ~70 chars" \
-  --assignee homer6 \
+  --assignee @me \
   --label p3 --label replication \
   --body "$(cat <<'EOF'
 ## Problem / goal
@@ -258,7 +246,7 @@ gh pr view <N> -R oramasearch/zetta --comments    # full read (see rule above)
 gh pr diff <N> -R oramasearch/zetta
 gh pr checks <N> -R oramasearch/zetta
 gh pr review <N> -R oramasearch/zetta --comment --body "..."   # never approve/merge unless asked
-gh pr merge <N> -R oramasearch/zetta --squash
+gh pr merge <N> -R oramasearch/zetta --merge   # merge commits only, never squash
 ```
 
 If the user pastes a PR URL or says `review <N>`, treat it as a review request:

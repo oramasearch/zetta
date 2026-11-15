@@ -1,19 +1,15 @@
 ---
 name: chaos-experiment
-description: Design and run a chaos experiment against a zetta cluster — inject one fault, assert a recovery invariant with a bounded deadline. Use when the user says "chaos test", "chaos experiment", "fault injection", "partition a node", "kill a node and see what happens", "make #835 reproducible", "why does convergence stall", "the cluster looked healthy but the answer was short", or wants a silent convergence stall provoked on demand instead of caught at 1-in-N. Enforces the hypothesis format (fault · invariant · deadline · blast radius), the safety rules for a live cluster, and the rule that a green chaos run proves nothing unless the fault is proven to have landed.
+description: Design and run a chaos experiment against a zetta cluster — inject one fault, assert a recovery invariant with a bounded deadline. Use when the user says "chaos test", "chaos experiment", "fault injection", "partition a node", "kill a node and see what happens", "make a convergence stall reproducible", "why does convergence stall", "the cluster looked healthy but the answer was short", or wants a silent convergence stall provoked on demand instead of caught at 1-in-N. Enforces the hypothesis format (fault · invariant · deadline · blast radius), the safety rules for a live cluster, and the rule that a green chaos run proves nothing unless the fault is proven to have landed.
 ---
 
 # chaos-experiment — torment the cluster, assert it heals
 
 zetta's suite has ~1,242 unit cases plus the in-app catalog, and **every one of the
 three convergence bugs found so far was found by accident**: the `tick()` watermark
-([#837](https://github.com/oramasearch/zetta/issues/837)) survived 1,491 in-process
-tests, a node silently ceasing to apply inbound `SYNC`
-([#835](https://github.com/oramasearch/zetta/issues/835)) was filed as "flakiness",
-and the same defect on the live AKS cluster
-([#841](https://github.com/oramasearch/zetta/issues/841)) was confirmed pre-existing
-only by an A/B across two digests. The motivating issue is
-[#842](https://github.com/oramasearch/zetta/issues/842).
+bug survived 1,491 in-process tests, a node silently ceasing to apply inbound `SYNC`
+was filed as "flakiness", and the same defect on a live Kubernetes cluster was
+confirmed pre-existing only by an A/B across two digests.
 
 A chaos experiment closes that gap: it **injects one fault and asserts a recovery
 invariant with a bounded deadline**, so a silent convergence stall becomes
@@ -67,12 +63,12 @@ Rules that make the block worth writing:
 ## The fault catalogue
 
 Ordered by how likely each is to catch the known bugs. **Every one of these runs
-under sustained concurrent write load** — the [#835](https://github.com/oramasearch/zetta/issues/835)
+under sustained concurrent write load** — the stopped-applying-`SYNC`
 repro needs load; an idle cluster hides the defect.
 
 **Network**
 - partition a node — **one-way and symmetric are different faults**; a one-way
-  partition is closer to what #835 looks like (still sending, not applying)
+  partition is closer to what the stopped-applying-`SYNC` bug looks like (still sending, not applying)
 - heal the partition and start the deadline clock at the heal
 - delay / jitter on the peer link; drop a fraction of packets
 - sever the link **mid-`SYNC`**, not between syncs
@@ -96,7 +92,7 @@ repro needs load; an idle cluster hides the defect.
 
 ## The invariants to assert after the fault clears
 
-Each one gets a deadline. Assert them on **every node**, not on the initiator — #837
+Each one gets a deadline. Assert them on **every node**, not on the initiator — the watermark bug
 was found only when one assertion was forced to run from a peer instead of the node
 that issued the write.
 
@@ -107,12 +103,11 @@ that issued the write.
    `part:` entries permanently. Asserting only the version is how that bug survives.
 2. **No key lost.** Every key written during the fault window is readable afterwards.
 3. **No removed key resurrected** — a peer's gossip merge must not bring a dropped
-   key back ([#838](https://github.com/oramasearch/zetta/issues/838)).
+   key back.
 4. **A partitioned dataset stays readable exactly once** — no chunk double-counted,
    none dropped.
 5. **A scatter-gather `SELECT` is complete or loudly failed, never short**
-   ([#837](https://github.com/oramasearch/zetta/issues/837),
-   [`docs/data/scatter-gather-select.md`](../../../docs/data/scatter-gather-select.md)).
+   ([`docs/data/scatter-gather-select.md`](../../../docs/data/scatter-gather-select.md)).
    A short answer reported as complete is the worst outcome in the engine.
 6. **Membership converges to the true roster** — the count and the identities, on
    every node.
@@ -126,7 +121,7 @@ can express the fault, and say in the runbook why the others were not used.
 |---|---|---|
 | **In-process `testkit::LoopbackCluster`** (`include/zetta/testkit/harness.hpp`), or the **L1 chaos harness** (`tests/cluster/chaos_harness.hpp`, [`docs/testing/chaos-experiments.md`](../../../docs/testing/chaos-experiments.md)) | fast, seeded, real TCP + mTLS, full read access to every node's document; the harness adds frame drop / delay / duplicate / reorder, partitions, abrupt stop + restart, and a lag-based timing skew | no process kill (`kill -9` is modelled as an abrupt networking stop), no real wall-clock skew, no slow disk |
 | **The in-app `zetta::testkit` catalog** ([`docs/testing/test-suite.md`](../../../docs/testing/test-suite.md)) | runs *inside a deployed binary*, reachable over `testsuite_run` / the Operations → Test suite panel, so the fault is exercised against the shipped build | a panel run must **never** leave a node wedged — scoped, self-healing faults only |
-| **A live k8s cluster via the operator e2e** ([`docs/testing/e2e-integration.md`](../../../docs/testing/e2e-integration.md), driven by the operator's `ZettaClusterE2ETest` CRD) | real network, real mTLS, real pod lifecycle — **the only place #841 has reproduced** | slow, sandbox-only, and destructive faults need explicit approval |
+| **A live k8s cluster via the operator e2e** ([`docs/testing/e2e-integration.md`](../../../docs/testing/e2e-integration.md), driven by the operator's `ZettaClusterE2ETest` CRD) | real network, real mTLS, real pod lifecycle — **the only place the live-cluster stall has reproduced** | slow, sandbox-only, and destructive faults need explicit approval |
 
 **Do not wedge the host process's node.** A `LoopbackCluster` stands up its own nodes
 in their own temp directories and tears every one down on destruction; the desktop
@@ -232,7 +227,7 @@ never a silent pass.
 ```
 src/core/testkit/cases_*.cpp                     in-app chaos cases (catalog in zetta-core)
 include/zetta/testkit/harness.hpp                LoopbackCluster / LoopbackOptions / ScratchDir
-tests/cluster/chaos_harness.hpp                  the L1 chaos harness: seeded schedule, ChaosCluster, run_step (#842)
+tests/cluster/chaos_harness.hpp                  the L1 chaos harness: seeded schedule, ChaosCluster, run_step
 tests/cluster/test_chaos.cpp                     L1 chaos tests, ctest label `chaos` (real mTLS, in-process)
 include/zetta/cluster/frame_faults.hpp           FrameFaultInjector — drop/delay/duplicate/reorder inbound frames
 tests/e2e/zetta-e2e.sh                           live-cluster level-3 checks
@@ -248,10 +243,10 @@ undefined-symbol link error, not a compile error.
 ## Pitfalls
 
 - **Asserting only the document version.** The projection can lag the version
-  forever; that gap *is* #837. Assert both, on every node.
+  forever; that gap *is* the watermark bug. Assert both, on every node.
 - **Asserting from the initiator.** The node that issued the write is the one most
   likely to look correct. Read back from a peer.
-- **No load.** #835 does not reproduce on an idle cluster. Writes must flow during
+- **No load.** The stopped-applying-`SYNC` bug does not reproduce on an idle cluster. Writes must flow during
   the fault window.
 - **A fixed iteration count instead of a wall-clock deadline.** Turns a real stall
   into a flake and a slow machine into a false failure.

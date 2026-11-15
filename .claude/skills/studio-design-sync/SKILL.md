@@ -1,30 +1,26 @@
 ---
 name: studio-design-sync
-description: Sync the Orama Studio design between Daniel's design repo (oramasearch/orama-design) and zetta's two Studio surfaces — the server-rendered web app (src/core/api/web_ui.cpp) and the desktop GUI (src/gui). Forward = import the design's tokens, IA, copy, and states into zetta; reverse = backport new engine features into the design as definition updates. Use when asked to "import the design", "sync the studio design", "update the web app style from the design", "apply Daniel's design", "backport this feature into the design", or when a new design version drops.
+description: Sync the Orama Studio design between the Studio design repository and zetta's two Studio surfaces — the server-rendered web app (src/core/api/web_ui.cpp) and the desktop GUI (src/gui). Forward = import the design's tokens, IA, copy, and states into zetta; reverse = backport new engine features into the design as definition updates. Use when asked to "import the design", "sync the studio design", "update the web app style from the design", "apply the new design", "backport this feature into the design", or when a new design version drops.
 ---
 
 # studio-design-sync
 
-Move the Orama Studio design between `oramasearch/orama-design` (Daniel's design
-repo — the design source of truth) and this repo's two Studio surfaces:
+Move the Orama Studio design between the Studio design repository (the design
+source of truth, maintained separately from this repo) and this repo's two
+Studio surfaces:
 
-- **Web app** — `src/core/api/web_ui.cpp` + `include/zetta/api/web_ui.hpp`
-  ([#647](https://github.com/oramasearch/zetta/issues/647)): server-rendered,
+- **Web app** — `src/core/api/web_ui.cpp` + `include/zetta/api/web_ui.hpp`:
+  server-rendered,
   no-framework HTML; one cacheable stylesheet from `web_ui_stylesheet()`
   (`GET /style.css`); inline SVG icons from `web_ui_icon()`.
-- **Desktop GUI** — `src/gui/` ([#627](https://github.com/oramasearch/zetta/issues/627)):
-  SDL3 + Dear ImGui; theme rules in `docs/gui/design-system.md`.
+- **Desktop GUI** — `src/gui/`: SDL3 + Dear ImGui; theme rules in `docs/gui/design-system.md`.
 
-Both surfaces **are Orama Studio** (epic
-[#854](https://github.com/oramasearch/zetta/issues/854)). Zetta is the platform;
+Both surfaces **are Orama Studio**. Zetta is the platform;
 Studio is what the user sees — see "Orama Studio — the product surface this
 engine wears" in the repo `CLAUDE.md`.
 
-**The reference inventory of the design repo** (screens, flows, state machines,
-components, tokens, decisions) is `docs/projects/orama-studio-marketplace/design-index.md`
-in https://github.com/oramasearch/orama-bridge — read it before either
-direction. [reference.md](reference.md) in this skill maps both repos
-file-by-file and carries the token/icon translation tables.
+[reference.md](reference.md) in this skill maps both repos file-by-file and
+carries the token/icon translation tables; read it before either direction.
 
 ## The transfer contract (both directions)
 
@@ -41,10 +37,11 @@ reduced-motion, impact previews).
   port components.
 - **Vendored licensed source** — the design repo's `vendor/motion-plus/` is
   licensed Motion+ code; never copy it here.
-- **A365 / Renesas client IP** (design-repo rule; it binds us too).
-- **Marketing-clone content** (`src/clone/` over there is verbatim orama.com
-  copy — canonical there, irrelevant here).
-- **Fake data as fact.** Design fixtures (Maya Chen, seeded Opportunities) are
+- **Third-party or client material** the design repo holds under its own
+  rules; it binds us too.
+- **Marketing-site content** (`src/clone/` over there — canonical there,
+  irrelevant here).
+- **Fake data as fact.** Design fixtures (named demo people, seeded Opportunities) are
   demo scaffolding; zetta surfaces render the real read model.
 
 **Hard rules that bind every import:**
@@ -59,7 +56,7 @@ reduced-motion, impact previews).
 - The web app's **self-contained page rule** (`web_ui.hpp` header comment): no
   external assets, no framework — fonts are embedded/served by the node or
   fall back to the system stack.
-- **Rendering philosophy** (revised 2026-07-24). Web: **the React Studio app
+- **Rendering philosophy.** Web: **the React Studio app
   from the design repo is the real web UI** — wired to /v1 JSON, bundle built
   in the design repo, served by the node; the C++ SSR pages are the zero-JS
   fallback until parity, then retire. Desktop: **SDL3-first** — Dear ImGui is
@@ -70,11 +67,11 @@ reduced-motion, impact previews).
   system (IBM Plex + Carbon Blue 60 `#0f62fe`) differs from zetta's current
   web palette (Geist + `#2563EB`) and from the GUI rules (Geist + coral). An
   import issue states which token source wins for which surface; don't
-  silently mix them. When in doubt, ask Steve.
+  silently mix them. When in doubt, ask the maintainers.
 
 ## Forward sync: design → zetta
 
-1. **Pin the source.** Record the `orama-design` commit/tag being imported
+1. **Pin the source.** Record the design repository commit/tag being imported
    (e.g. `main` @ `<sha>`, live version `2026-07-23`). Every artifact of the
    sync cites this ref.
 2. **Read the delta** since the last sync (ledger:
@@ -82,8 +79,7 @@ reduced-motion, impact previews).
    (`/workspace/` — current focus · next review · sequence; the four
    destinations, see [reference.md](reference.md)), `git log` in the design
    repo, `packages/design-system/CHANGELOG.md`, new specs in
-   `docs/superpowers/specs/`, `src/studio/studioVersions.js`, and the
-   design-index for orientation.
+   `docs/superpowers/specs/`, and `src/studio/studioVersions.js`.
 3. **Extract the transferables** (paths + translation tables in
    [reference.md](reference.md)): DTCG semantic tokens → CSS custom properties
    / ImGui theme constants; the shell IA (nav groups, topbar utilities, the
@@ -113,8 +109,8 @@ reduced-motion, impact previews).
 ## Reverse sync: zetta → design (backport a feature)
 
 The design repo has its own workflow — respect it: **one integrator** at a time
-(currently Codex) owns implementation on its production branch; frozen dated
-archives are immutable; one live version (its decision 0005). We land
+owns implementation on its production branch; frozen dated archives are
+immutable; there is one live version. We land
 **definitions and evidence, not screens**:
 
 1. Identify the engine feature (issue/PR refs, the capability entries, what it
@@ -128,18 +124,18 @@ archives are immutable; one live version (its decision 0005). We land
    value transfer.
 4. Update the design repo's `HANDOFF.md` "what moved" note; never touch
    `public/studio-*/` archives or rewrite prototype code yourself unless
-   Daniel names you the integrator.
-5. Commit there per its `CLAUDE.md` (no AI attribution — org policy applies).
+   the design repo's maintainer names you the integrator.
+5. Commit there per its `CLAUDE.md` (no AI attribution).
 6. Record the backport in the ledger here too.
 
 ## Filing sync issues
 
 One issue per surface per sync wave on `oramasearch/zetta`: priority label
-(`p1`–`p4`), area label if present, body cites the pinned design ref, the
-design-index URL, and the scope table (tokens / IA / copy / states / icons).
+(`p1`–`p4`), area label if present, body cites the pinned design ref and the
+scope table (tokens / IA / copy / states / icons).
 Never `fixes #N` — issues stay open through validation.
 
-## Conflicts stop the line — ask Steve
+## Conflicts stop the line — ask the maintainers
 
 Wiring a designed screen to the live engine (or building a designed view) will
 hit mismatches. A mismatch is a **decision, not an implementation detail**. A
@@ -152,7 +148,7 @@ conflict is any of:
 
 Never silently pick a side: don't quietly build backend support, don't quietly
 cut design scope, don't ship a mock to paper over the gap. Surface the
-conflict to Steve with the concrete options — typically **build the backend
+conflict to the maintainers with the concrete options — typically **build the backend
 support** (file the zetta issue), **rescope the design** (file the design-repo
 issue), or **an honest degraded state** in the meantime — plus a
 recommendation. Batch related conflicts into one ask; record the ruling in the

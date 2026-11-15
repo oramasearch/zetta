@@ -69,6 +69,8 @@ sensitivity; lead with a short executive summary, then sections and tables.
 ```
 
 ## Best practices
+- Research prompts cover the public landscape only: never put confidential, customer or
+  unpublished material into a query sent to an external service.
 - Name real systems and real subsystems — vague prompts get vague answers.
 - Tie the "decision framework" to the user's actual project/constraints.
 - Keep it to one prompt; don't fragment a deep dive into many small questions.
