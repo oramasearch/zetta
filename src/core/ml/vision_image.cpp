@@ -556,6 +556,11 @@ ImageDecodeResult decode_jpeg(std::string_view bytes) {
     if (marker == 0xC4 && !parse_huffman(body, state)) {
       return {{}, "JPEG: invalid Huffman table"};
     }
+    // One frame per image (LSR-245, #1418): a second SOF0 would clear the decoded planes while
+    // the scan stays marked complete, and the colour conversion would then index empty planes.
+    if (marker == 0xC0 && !state.components.empty()) {
+      return {{}, "JPEG: more than one frame"};
+    }
     if (marker == 0xC0 && !parse_frame(body, state)) {
       return {{}, "JPEG: invalid baseline frame"};
     }
