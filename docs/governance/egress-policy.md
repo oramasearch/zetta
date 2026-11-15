@@ -81,7 +81,7 @@ gets one `egress_denied` event per refused connection:
 | Field | Value |
 | --- | --- |
 | `action` | `egress_denied` |
-| `actor` | who the connection was for (#1323): the run's principal for a graph step, the caller for a capability, `local` for the trusted session, `node` only for the node's own work |
+| `actor` | who the connection was for (#1323): the run's principal for a graph step, the caller for a capability, `local` for the trusted session, `node:<node id>` only for the node's own work (#1327) |
 | `target` | `egress:<host>:<port>` |
 | `allowed` | `false` |
 | `detail` | the reason above, and `(run <id>)` when a graph step made the connection |
@@ -93,7 +93,7 @@ run's principal and the run (`pipeline/executor.cpp`); a capability call already
 request on the caller's thread (`HttpRequest::on_behalf_of`, `on_behalf_of_run`; never sent to the
 destination) and the dialler reports it with any refusal. Work a step hands to another thread
 (a compute job's worker, the distributed fetch on a peer) carries no scope yet and is attributed to
-`node`.
+`node:<node id>`.
 
 A name refused by the allowlist is never resolved, so the refusal sends no DNS query either: a DNS
 lookup can carry data out on its own.

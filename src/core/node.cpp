@@ -994,6 +994,13 @@ void Node::tick() {
     drain_owner_work();
     if (!running_) return;
     ++ticks_;
+    // Everything below is work the node starts itself (#1327): the control
+    // plane's runs and self-heals, retention, study trials. It is on the trail
+    // as `node:<node id>` through `internal`, unless the work declares its own
+    // caller (a study trial runs as its principal; owner work drained above
+    // reinstated the origin it was queued with).
+    const zetta::governance::AuditOriginScope node_work{
+        zetta::governance::AuditOrigin{"node:" + node_id_, std::string("internal")}};
     // 1. Pull: the CRDT is the source of truth; when it has advanced (a local
     //    capture or a peer's gossip merged in on the network thread), reconcile
     //    the on-disk projection to match it. Reconcile only materializes (never
@@ -5285,9 +5292,13 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     // An event recorded without an actor inside a call names the caller (#847):
     // the entry point declared who is acting (AuditActorScope), so a deploy, a
     // queued job or a created project is attributed instead of left blank.
+    // No entry point declared one: the row is the node's own work, named
+    // `node:<node id>` (#1327), never left blank.
     if (value.actor.empty()) {
         if (auto actor = zetta::governance::current_audit_actor()) {
             value.actor = std::move(*actor);
+        } else {
+            value.actor = "node:" + node_id_;
         }
     }
     // ...and the surface it came through (#1328), declared the same way. Every

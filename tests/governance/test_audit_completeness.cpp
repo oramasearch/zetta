@@ -25,6 +25,7 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -511,5 +512,57 @@ TEST(AuditBackgroundWork, RunOnOwnerWithAnExplicitOriginNamesIt) {
     ASSERT_EQ(found.size(), 1u);
     EXPECT_EQ(found.front()->actor(), "user-eve");
     EXPECT_EQ(found.front()->value().surface, "rest");
+    node.stop();
+}
+
+// ---- work the node starts itself (#1327) ---------------------------------------
+
+// A row recorded where no entry point declared a caller is the node's own work:
+// `node:<node id>` through `internal`, never blank.
+TEST(AuditNodeWork, ARowWithNoDeclaredCallerNamesTheNode) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    ASSERT_FALSE(current_audit_actor());
+    ASSERT_TRUE(node.create_database("by_the_node"));
+    const auto found = rows(node, AuditAction::DataChanged, "database:by_the_node");
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found.front()->actor(), "node:" + node.node_id());
+    EXPECT_EQ(found.front()->value().surface, "internal");
+    node.stop();
+}
+
+// The deployment controller's start (and self-heal) of a deployment's run, from
+// Node::tick, is recorded as the node's own work, whoever deployed the graph.
+TEST(AuditNodeWork, TheControllersRunStartFromTickNamesTheNode) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    std::shared_ptr<zetta::pipeline::Deployment> deployment;
+    {
+        const AuditActorScope caller{std::string("user-gus")};
+        const zetta::governance::AuditSurfaceScope surface{std::string("rest")};
+        deployment = node.deploy_graph(sample_graph(), DeploymentTarget::local(), "churn");
+    }
+    ASSERT_TRUE(deployment);
+    expect_one(node, AuditAction::GraphDeployed, "churn", "user-gus");
+
+    {
+        // The desktop frame ticks inside its own scope; the tick's work is
+        // still the node's.
+        const AuditActorScope desk{std::string("local")};
+        node.tick();
+    }
+    std::shared_ptr<zetta::pipeline::Run> started;
+    for (const auto& run : node.runs()) {
+        if (run->deployment() == deployment->id()) started = run;
+    }
+    ASSERT_TRUE(started);
+    const auto found = rows(node, AuditAction::DataChanged, "run:" + started->id());
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found.front()->actor(), "node:" + node.node_id());
+    EXPECT_EQ(found.front()->value().surface, "internal");
+    EXPECT_NE(found.front()->detail().find("deployment-controller"), std::string::npos);
+    EXPECT_FALSE(current_audit_actor());  // the tick's scope closed with it
     node.stop();
 }

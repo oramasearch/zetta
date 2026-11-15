@@ -11,5 +11,9 @@ most one per second; the Node's tick and stop write the last one (#1217).
 when one is set, through `step_authority.cpp` (deny-by-default, audited as
 `data_access`; [step authority](../../../docs/governance/step-authority.md), #843).
 
+`deployment_controller.cpp` records each run it starts or self-heals as
+`data_changed` on `run:<id>`; from `Node::tick` it is the node's own work,
+`node:<node id>` through `internal` (#1327).
+
 See [Run metrics](../../../docs/ml/run-metrics.md) and
 [pipeline documentation](../../../docs/pipeline/README.md).

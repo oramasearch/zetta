@@ -83,8 +83,9 @@ public:
                 zetta::governance::AuditEventValue event;
                 event.action = zetta::governance::AuditAction::EgressDenied;
                 // The principal the connection was for (#1323): the run's, or
-                // the capability caller's; "node" only for the node's own work.
-                event.actor = denial.principal.empty() ? "node" : denial.principal;
+                // the capability caller's. None is the node's own work, which
+                // the sink names `node:<node id>` (#1327).
+                event.actor = denial.principal;
                 event.target = "egress:" + denial.host + ":" +
                                std::to_string(denial.port);
                 event.allowed = false;

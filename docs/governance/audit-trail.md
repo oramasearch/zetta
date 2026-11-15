@@ -137,10 +137,27 @@ launched and reinstated where it runs:
 A scope is never held across a `co_await`: the coroutine may resume on another
 thread, and the scope would restore that thread's actor to the wrong value.
 
-Not covered yet: the deployment controller's self-heal runs (started from
-`Node::tick`) and any other work the node starts on its own name no automated
-principal; the engine has no scheduler that fires retrains today
-(`set_training_schedule` only records the schedule). Both stay open on #1327.
+### Work the node starts itself (#1327)
+
+Work no entry point started is the node's own, and is on the trail as actor
+`node:<node id>` through surface `internal`. Decided under Steve's 2026-11-14
+delegation (the recommendation on #1327). Two places make it so:
+
+- `Node::tick` opens an `AuditOriginScope` of `node:<node id>` / `internal` for
+  everything after it drains the owner queue: the deployment controller's runs
+  and self-heals, study trials, retention, the co-launches peers fanned out.
+  Work inside it that declares its own caller keeps it (a study trial runs as
+  its principal, #1322), and owner work drained before it reinstated the origin
+  it was queued with. The tick's scope replaces the desktop frame's, so a
+  self-heal on a headed node is not recorded as the person at the desk.
+- `Node::record_audit_event` names `node:<node id>` on any row recorded with no
+  actor and no declared one (an `egress_denied` row for the node's own
+  connection, a row from a thread no launcher covered), so no row is blank.
+
+The deployment controller now records each run it starts or restarts as
+`data_changed` on `run:<id>`, with the log line as detail. The engine has no
+scheduler that fires retrains today (`set_training_schedule` only records the
+schedule), so there is nothing scheduled to attribute yet.
 
 Pub/sub administrative changes use `pubsub_topic_updated`,
 `pubsub_event_updated`, and `pubsub_event_deleted`. Their details contain

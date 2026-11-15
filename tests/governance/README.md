@@ -52,7 +52,10 @@ user, an authorized call that then failed recorded as a failure, and a SQL
 statement's effects attributed to its session. Its #1328 cases cover the
 surface: scopes, the schema, MCP versus REST, `run_on_owner`, `internal` on a
 row no entry point declared, and the refused row an `invalid_input` call to a
-mutating capability leaves (none for a read).
+mutating capability leaves (none for a read). Its #1327 `AuditNodeWork` cases
+cover the node's own work: a row with no declared caller names `node:<node id>`,
+and the deployment controller's run start from `Node::tick` does too, whoever
+deployed the graph.
 `test_system_catalog_access.cpp` covers who may read each `system.*` table
 (#766): admin-only governance and node tables, public metadata, datasets and
 partitions narrowed to the caller's tables, each person's own audit rows, and
