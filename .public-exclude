@@ -1,7 +1,0 @@
-# Paths kept out of the public export of this repository (gitignore syntax).
-# Everything not listed here is published as it stands at the tip of the release branch.
-# The agent files (CLAUDE.md, AGENTS.md, .claude/, .codex/, .cursor/) are never listed here:
-# they ship with the public repository and are written to be public.
-
-# The maintainers' own reload map: private repositories, systems of record and workflow
-docs/full-context.md
