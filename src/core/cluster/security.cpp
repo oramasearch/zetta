@@ -624,6 +624,25 @@ const nlohmann::json& node_pins_schema() {
     return schema;
 }
 
+const nlohmann::json& node_revocation_record_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "zetta.NodeRevocation",
+      "type": "object",
+      "properties": {
+        "node_id":     { "type": "string", "minLength": 1, "maxLength": 128 },
+        "serial":      { "type": "string", "maxLength": 16 },
+        "revoked_by":  { "type": "string", "maxLength": 256 },
+        "revoked_at":  { "type": "string" },
+        "reason":      { "type": "string", "maxLength": 1024 },
+        "allow_rekey": { "type": "boolean" }
+      },
+      "required": ["node_id", "serial", "revoked_by", "revoked_at", "reason", "allow_rekey"],
+      "additionalProperties": false
+    })JSONSCHEMA");
+    return schema;
+}
+
 const nlohmann::json& node_cert_record_schema() {
     static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
       "$schema": "http://json-schema.org/draft-07/schema#",

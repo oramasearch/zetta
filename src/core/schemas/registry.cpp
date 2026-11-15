@@ -262,6 +262,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"cluster_ca", "cluster_ca.schema.json", &zetta::cluster::cluster_ca_schema},
         {"node_pins", "node_pins.schema.json", &zetta::cluster::node_pins_schema},
         {"node_cert", "node_cert.schema.json", &zetta::cluster::node_cert_record_schema},
+        {"node_revocation", "node_revocation.schema.json",
+         &zetta::cluster::node_revocation_record_schema},
         {"collective_message", "collective_message.schema.json",
          &zetta::cluster::collective_message_schema},
         {"signal_envelope", "signal_envelope.schema.json",

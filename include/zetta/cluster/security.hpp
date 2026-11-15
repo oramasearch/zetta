@@ -187,6 +187,10 @@ const nlohmann::json& node_pins_schema();
 // {certificate, ca_certificate, public_key_sha256, serial, issued_by, not_after}.
 const nlohmann::json& node_cert_record_schema();
 inline constexpr std::string_view kNodeCertPrefix = "node_cert:";
+// The `node_revocation:<key sha256>` record (#1320), sealed by the identity root:
+// {node_id, serial, revoked_by, revoked_at, reason, allow_rekey} (with the seal's
+// `_v` and `_seal`, which the seal adds and removes).
+const nlohmann::json& node_revocation_record_schema();
 
 // The draft-07 schema for the persisted secret file — the code-owned source of
 // truth; `schemas/cluster_secret.schema.json` is generated from it and

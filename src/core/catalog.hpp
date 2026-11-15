@@ -110,6 +110,10 @@
 //                          Postgres-style RLS: a USING read filter + a WITH CHECK
 //                          write filter, evaluated by the SQL WHERE engine against
 //                          the acting identity; see governance/policy.hpp / #748)
+//   node_revocation:<key sha256> -> { node_id, serial, revoked_by, revoked_at,
+//                          reason, allow_rekey }  (a revoked node key, sealed by
+//                          the identity root; every node refuses that key at the
+//                          handshake and closes a live link presenting it — #1320)
 //   node_cert:<node id> -> { certificate, ca_certificate, public_key_sha256,
 //                          serial, issued_by, not_after }  (a node's enrollment
 //                          certificate from the cluster's enrollment CA: every
@@ -217,6 +221,9 @@ inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
 inline constexpr std::string_view kUserRolePrefix = "user_role:";
 inline constexpr std::string_view kPolicyPrefix = "policy:";
+// A revoked node key (#1320): node_revocation:<SHA-256 of the key>, sealed by the
+// identity root like every identity record.
+inline constexpr std::string_view kNodeRevocationPrefix = "node_revocation:";
 inline constexpr std::string_view kDecisionPolicyPrefix = "decision_policy:";
 inline constexpr std::string_view kDecisionPrefix = "decision:";
 inline constexpr std::string_view kVirtualTablePrefix = "vtable:";

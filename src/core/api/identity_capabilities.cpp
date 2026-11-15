@@ -4,6 +4,8 @@
 //   rotate_identity_root  action  hand identity to the root a new admin token
 //                                 derives (#1342)
 //   get_identity_epoch    read    the identity epoch this node holds (#1360)
+//   revoke_node           action  revoke a node's enrolled key, remove it (#1320)
+//   list_node_revocations read    every node revocation this node trusts (#1320)
 //
 // Every capability here needs cluster:admin (api:cluster_admin) and is audited
 // per call by the registry.
@@ -95,6 +97,83 @@ ApiResult handle_get_identity_epoch(const nlohmann::json& /*input*/, ApiContext&
                                {"floor_met", status.floor_met}});
 }
 
+const nlohmann::json& revoke_node_schema() {
+    static const nlohmann::json schema = object_schema(
+        {{"node_id", {{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
+         {"reason", {{"type", "string"}, {"maxLength", 1024}}},
+         {"allow_rekey",
+          {{"type", "boolean"},
+           {"description",
+            "let the node id enroll a NEW key afterwards (re-keying a node); "
+            "default false, which keeps the id out for good"}}},
+         {"public_key_sha256",
+          {{"type", "string"},
+           {"pattern", "^[0-9a-f]{64}$"},
+           {"description",
+            "the key to revoke; defaults to the one the node id's node_cert "
+            "record names"}}}},
+        {"node_id"});
+    return schema;
+}
+
+nlohmann::json revocation_schema() {
+    return object_schema({{"public_key_sha256", {{"type", "string"}}},
+                          {"node_id", {{"type", "string"}}},
+                          {"serial", {{"type", "string"}}},
+                          {"revoked_by", {{"type", "string"}}},
+                          {"revoked_at", {{"type", "string"}}},
+                          {"reason", {{"type", "string"}}},
+                          {"allow_rekey", {{"type", "boolean"}}}},
+                         {"public_key_sha256", "node_id", "serial", "revoked_by",
+                          "revoked_at", "reason", "allow_rekey"});
+}
+
+nlohmann::json revocation_json(const Node::NodeRevocationEntry& entry) {
+    return {{"public_key_sha256", entry.public_key_sha256},
+            {"node_id", entry.node_id},
+            {"serial", entry.serial},
+            {"revoked_by", entry.revoked_by},
+            {"revoked_at", entry.revoked_at},
+            {"reason", entry.reason},
+            {"allow_rekey", entry.allow_rekey}};
+}
+
+const nlohmann::json& revoke_node_output_schema() {
+    static const nlohmann::json schema = revocation_schema();
+    return schema;
+}
+
+const nlohmann::json& list_node_revocations_schema() {
+    static const nlohmann::json schema = {{"type", "object"},
+                                          {"additionalProperties", false},
+                                          {"properties", nlohmann::json::object()}};
+    return schema;
+}
+
+const nlohmann::json& list_node_revocations_output_schema() {
+    static const nlohmann::json schema = object_schema(
+        {{"revocations", {{"type", "array"}, {"items", revocation_schema()}}}},
+        {"revocations"});
+    return schema;
+}
+
+ApiResult handle_revoke_node(const nlohmann::json& input, ApiContext& context) {
+    const Node::NodeRevocationResult revocation = context.node.revoke_node(
+        input.at("node_id").get<std::string>(), input.value("reason", std::string{}),
+        input.value("allow_rekey", false), context.acting_key,
+        input.value("public_key_sha256", std::string{}));
+    if (!revocation.ok) return ApiResult::failure("conflict", revocation.error);
+    return ApiResult::success(revocation_json(revocation.revocation));
+}
+
+ApiResult handle_list_node_revocations(const nlohmann::json& /*input*/, ApiContext& context) {
+    nlohmann::json revocations = nlohmann::json::array();
+    for (const Node::NodeRevocationEntry& entry : context.node.node_revocations()) {
+        revocations.push_back(revocation_json(entry));
+    }
+    return ApiResult::success({{"revocations", std::move(revocations)}});
+}
+
 }  // namespace
 
 void register_identity_capabilities(Registry& registry) {
@@ -130,6 +209,37 @@ void register_identity_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_identity_epoch});
+
+    registry.add(Capability{
+        "revoke_node",
+        "Revoke a cluster node",
+        "Revoke one node's enrolled key and remove it from membership (#1320). "
+        "The revocation is sealed by the identity root, so only a node holding "
+        "the root can write it. Every node then refuses that key at the "
+        "handshake and closes a live link presenting it; without allow_rekey the "
+        "node id cannot come back under any key. Requires cluster:admin. "
+        "Mutates replicated governance state.",
+        revoke_node_schema(),
+        revoke_node_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Api, "cluster_admin"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_revoke_node});
+
+    registry.add(Capability{
+        "list_node_revocations",
+        "List node revocations",
+        "Read every node revocation this node trusts (#1320): the revoked key, "
+        "the node id, the certificate serial, who revoked it and when, and "
+        "whether the id may re-key. Requires cluster:admin. No side effects.",
+        list_node_revocations_schema(),
+        list_node_revocations_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "cluster_admin"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_node_revocations});
 }
 
 }  // namespace zetta::api

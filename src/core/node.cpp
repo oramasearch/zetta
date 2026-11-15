@@ -123,6 +123,7 @@ struct ReplicationReconcileBatches {
     ReconcileBatch policies;
     ReconcileBatch ledger_entries;
     ReconcileBatch nodes;
+    ReconcileBatch node_revocations;  // #1320
 };
 
 ReconcileBatch* batch_for_replication_key(
@@ -202,6 +203,9 @@ ReconcileBatch* batch_for_replication_key(
     }
     if (key.starts_with(catalog::kLedgerPrefix)) {
         return &batches.ledger_entries;
+    }
+    if (key.starts_with(catalog::kNodeRevocationPrefix)) {
+        return &batches.node_revocations;
     }
     if (key.starts_with(catalog::kNodePrefix)) {
         return &batches.nodes;
@@ -1331,6 +1335,7 @@ void Node::request_stop_study_work(const std::string& study_id,
 void Node::attach_cluster(zetta::cluster::Cluster& cluster, unsigned worker_count) {
     cluster_ = &cluster;
     compute_workers_ = worker_count;
+    push_node_revocations();  // the revocations reconciled before the cluster existed (#1320)
     // If the node is already running (the normal path — main attaches right after
     // cluster.start()), bring the coordinator up now; otherwise start() will.
     if (running_) {
@@ -5182,6 +5187,129 @@ Node::IdentityEpochStatus Node::identity_epoch_status() const {
     return status;
 }
 
+// ----- per-node revocation (#1320) ----------------------------------------------
+
+namespace {
+
+bool is_key_hash(std::string_view text) {
+    return text.size() == 64 && std::ranges::all_of(text, [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+}
+
+}  // namespace
+
+void Node::reconcile_node_revocations(const nlohmann::json& snapshot,
+                                      const std::vector<std::string>* changed_keys) {
+    std::map<std::string, NodeRevocationEntry> desired;
+    for (const auto& [key, value] : snapshot.items()) {
+        const std::string hash = catalog::id_after(key, catalog::kNodeRevocationPrefix);
+        if (!is_key_hash(hash) || !value.is_object()) continue;
+        const std::string node_id = value.value("node_id", std::string{});
+        if (node_id.empty()) continue;  // boundary
+        NodeRevocationEntry entry;
+        entry.public_key_sha256 = hash;
+        entry.node_id = node_id;
+        entry.serial = value.value("serial", std::string{});
+        entry.revoked_by = value.value("revoked_by", std::string{});
+        entry.revoked_at = value.value("revoked_at", std::string{});
+        entry.reason = value.value("reason", std::string{});
+        entry.allow_rekey = value.value("allow_rekey", false);
+        desired.emplace(hash, std::move(entry));
+    }
+    if (changed_keys) {
+        // A batch: only the keys that changed move.
+        for (const std::string& key : *changed_keys) {
+            const std::string hash = catalog::id_after(key, catalog::kNodeRevocationPrefix);
+            if (hash.empty()) continue;
+            if (auto found = desired.find(hash); found != desired.end()) {
+                node_revocations_[hash] = std::move(found->second);
+            } else {
+                node_revocations_.erase(hash);
+            }
+        }
+    } else {
+        node_revocations_ = std::move(desired);
+    }
+    push_node_revocations();
+}
+
+void Node::push_node_revocations() {
+    if (!cluster_) return;
+    std::map<std::string, zetta::cluster::NodeRevocation> revoked;
+    for (const auto& [hash, entry] : node_revocations_) {
+        revoked.emplace(hash, zetta::cluster::NodeRevocation{entry.node_id, entry.allow_rekey});
+    }
+    cluster_->set_revoked_keys(std::move(revoked));
+}
+
+Node::NodeRevocationResult Node::revoke_node(const std::string& node_id,
+                                             const std::string& reason, bool allow_rekey,
+                                             const std::string& revoked_by,
+                                             const std::string& public_key_sha256) {
+    NodeRevocationResult result;
+    if (!replication_) {
+        result.error = "this node is not part of a cluster";
+        return result;
+    }
+    if (!identity_writable()) {
+        result.error = "this node does not hold the cluster's identity root";
+        return result;
+    }
+    // The key to revoke: the one the node enrolled, from its node_cert record,
+    // unless the caller names one.
+    std::string hash = public_key_sha256;
+    std::string serial;
+    if (const auto view = replication_->shared_snapshot()) {
+        const auto record =
+            view->find(std::string(zetta::cluster::kNodeCertPrefix) + node_id);
+        if (record != view->end() && record->is_object()) {
+            // Only a certificate its CA signed, for this id: a member that
+            // rewrote the record cannot point the revocation at another key.
+            const auto enrolled = zetta::cluster::verify_enrolled_certificate(
+                record->value("certificate", std::string{}),
+                record->value("ca_certificate", std::string{}));
+            if (enrolled && enrolled->node_id == node_id) {
+                if (hash.empty()) hash = enrolled->public_key_sha256;
+                if (enrolled->public_key_sha256 == hash) serial = enrolled->serial;
+            }
+        }
+    }
+    if (!is_key_hash(hash)) {
+        result.error = "no enrolled key is recorded for this node id; pass public_key_sha256";
+        return result;
+    }
+    NodeRevocationEntry entry;
+    entry.public_key_sha256 = hash;
+    entry.node_id = node_id;
+    entry.serial = serial;
+    entry.revoked_by = revoked_by.empty() ? "local" : revoked_by;
+    entry.revoked_at = zetta::util::now_iso8601();
+    entry.reason = reason;
+    entry.allow_rekey = allow_rekey;
+    replicate_identity(std::string(catalog::kNodeRevocationPrefix) + hash,
+                       nlohmann::json{{"node_id", entry.node_id},
+                                      {"serial", entry.serial},
+                                      {"revoked_by", entry.revoked_by},
+                                      {"revoked_at", entry.revoked_at},
+                                      {"reason", entry.reason},
+                                      {"allow_rekey", entry.allow_rekey}});
+    node_revocations_[hash] = entry;
+    push_node_revocations();
+    // Removal means removed: the node leaves the membership list too.
+    replication_->remove(catalog::node_key(node_id));
+    result.ok = true;
+    result.revocation = std::move(entry);
+    return result;
+}
+
+std::vector<Node::NodeRevocationEntry> Node::node_revocations() const {
+    std::vector<NodeRevocationEntry> entries;
+    entries.reserve(node_revocations_.size());
+    for (const auto& [hash, entry] : node_revocations_) entries.push_back(entry);
+    return entries;
+}
+
 // ----- rotating the identity root (#1342) ------------------------------------
 
 std::optional<governance::OpenedIdentityRecord> Node::open_held_identity(
@@ -6408,6 +6536,7 @@ void Node::reconcile_identity(const nlohmann::json& snapshot) {
     reconcile_tokens(identity);
     reconcile_user_roles(identity);
     reconcile_policies(identity);
+    reconcile_node_revocations(identity);
 }
 
 void Node::reconcile_replication_changes(
@@ -6508,6 +6637,11 @@ void Node::reconcile_replication_changes(
     if (!batches.ledger_entries.keys.empty()) {
         reconcile_ledger_entries(batches.ledger_entries.values,
                                  &batches.ledger_entries.keys);
+    }
+    if (!batches.node_revocations.keys.empty()) {
+        reconcile_node_revocations(
+            trusted_identity(batches.node_revocations.values, &batches.node_revocations.keys),
+            &batches.node_revocations.keys);
     }
     if (!batches.nodes.keys.empty()) {
         rebalance_partitions_on_membership_change(snapshot,

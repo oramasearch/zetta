@@ -93,6 +93,8 @@ void register_network_capabilities(Registry& registry);
 //
 //   rotate_identity_root  action  hand identity to a new owner admin token's root (#1342)
 //   get_identity_epoch    read    the identity epoch this node holds (#1360)
+//   revoke_node           action  revoke a node's enrolled key and remove it (#1320)
+//   list_node_revocations read    every node revocation this node trusts (#1320)
 void register_identity_capabilities(Registry& registry);
 
 // Safe mode per database (#1373, docs/api/safe-mode.md):

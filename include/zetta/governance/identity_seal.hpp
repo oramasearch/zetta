@@ -96,7 +96,8 @@ bool identity_record_supersedes(const OpenedIdentityRecord& a,
                                 const OpenedIdentityRecord& b);
 
 // True when `key` is an identity record's catalogue key (user:, role:,
-// token:, user_role:, policy:, principal:, key:) — the records a seal guards.
+// token:, user_role:, policy:, principal:, key:, node_revocation: (#1320), and
+// the identity epoch (#1360)) — the records a seal guards.
 bool is_identity_key(std::string_view key);
 
 // The identity epoch's one catalogue key (#1360). is_identity_key is true for

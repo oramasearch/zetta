@@ -12,3 +12,5 @@ key derived from an old token still opens and re-seals (#1230). See
 `enrollment_proof` and the pin store are CTL-2 V2 enrollment (#1319);
 `ClusterSecurity::enroll` turns it on (every zetta process), and
 `kNodeCertPrefix` names the replicated enrollment record.
+`Cluster::set_revoked_keys` and `NodeRevocation` enforce per-node revocation
+(#1320); `node_revocation_record_schema` is its sealed record.

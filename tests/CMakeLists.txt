@@ -306,6 +306,7 @@ add_executable(zetta-tests
   cluster/test_cluster_routing.cpp
   cluster/test_cluster_security.cpp
   cluster/test_cluster_enrollment.cpp
+  cluster/test_cluster_revocation.cpp
   cluster/test_gossip_bandwidth.cpp
   cluster/test_cluster_join_authority.cpp
   cluster/test_peer_gateway.cpp

@@ -18,6 +18,9 @@ the token), signs and verifies enrollment certificates and keeps the pins;
 `cluster.cpp` pins every enrolled node id to its key at the handshake, answers
 `ENROLL` with a certificate and the CA, and runs the enrollment upkeep loop. A
 token change keeps the node's key, so its id stays pinned to it.
+Revocation (#1320): `Cluster::set_revoked_keys` takes the revoked keys the Node
+trusts; the handshake refuses them, the link writer closes a live link
+presenting one, and `ENROLL` refuses them.
 
 `ReplicationManager::update` is an atomic read-check-write under the replication
 mutex. `Cluster::request_each` sends one request to several peers in one round

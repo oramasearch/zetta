@@ -91,7 +91,7 @@ token-derived CA is refused.
   `ZETTA/1 ENROLLED` with the certificate and the CA's seed. A node holding the CA signs its own.
 - **The record.** `node_cert:<node id>` = `{certificate, ca_certificate, public_key_sha256, serial,
   issued_by, not_after}` (schema `node_cert_record_schema()`, generated
-  `schemas/node_cert.schema.json`). It is the input to per-node revocation (#1320). Each node renews
+  `schemas/node_cert.schema.json`). It is the input to per-node revocation ([Revocation](#revocation-1320)). Each node renews
   its own certificate when fewer than ten days are left, and puts its record back if it is overwritten.
 - **Pins: one id, one key.** Every node keeps node id -> SHA-256 of the enrolled key in
   `node-pins.json`. It pins an id when it signs its enrollment, and when the document shows a
@@ -113,6 +113,31 @@ closed in the next release, which refuses token-derived certificates, presents e
 certificates on the transport, and lets a new node enroll over a link where only the server
 authenticates, with the enrollment CA's public key as its join material. Only from then does
 "removal means removed" hold against a holder of the token.
+
+## Revocation (#1320)
+
+**Decided under Steve's 2026-11-14 delegation:** revocation records **and** short-lived certificates,
+because the 30-day enrollment certificates keep the list from growing without bound, while an explicit
+record makes a removal take effect at once rather than when the certificate ends.
+
+- **The record.** `node_revocation:<SHA-256 of the revoked key>` = `{node_id, serial, revoked_by,
+  revoked_at, reason, allow_rekey}` (schema `node_revocation_record_schema()`, generated
+  `schemas/node_revocation.schema.json`). It is an **identity record**: sealed by the identity root,
+  versioned, held, written back and committed by the identity epoch like any other
+  ([identity-seal.md](../governance/identity-seal.md)), so a member cannot revoke a peer on its own
+  authority, nor remove a revocation by writing an older value or a tombstone.
+- **The surface.** `revoke_node {node_id, reason?, allow_rekey?, public_key_sha256?}` and
+  `list_node_revocations`, MCP and REST, both needing `cluster:admin`, audited per call by the
+  registry. `Node::revoke_node` runs only on a node holding the identity root. It revokes the key the
+  id's `node_cert` record names (only a record whose certificate its CA signed for that id), or the
+  key passed, and removes `node:<id>` from membership.
+- **The check, on every node.** The Node reconciles the sealed revocations it trusts and hands them
+  to the cluster (`Cluster::set_revoked_keys`). After the TLS handshake, the `HELLO` pin and the
+  enrollment pin, a peer whose certificate's key is revoked is refused. A live link presenting a key
+  that becomes revoked is closed by its writer on its next tick. `ENROLL` refuses a revoked key.
+- **The id.** Without `allow_rekey`, the id stays pinned to the revoked key, so it cannot come back
+  under any key. With `allow_rekey` (re-keying a node), the revocation releases the pin and the id
+  may enroll a new key.
 
 ## Joining a cluster
 
@@ -273,6 +298,11 @@ previous one; its next start re-seals those entries under the current token. See
   `src/core/cluster/security.cpp`; the handshake pin (`pin_allows`), `ENROLL` /
   `ENROLLED` and `run_enrollment_round` in `src/core/cluster/cluster.cpp`;
   `tests/cluster/test_cluster_enrollment.cpp`.
+- Revocation (#1320): `Node::revoke_node`, `reconcile_node_revocations` and
+  `push_node_revocations` in `src/core/node.cpp`; `Cluster::set_revoked_keys` and
+  the handshake and link-writer checks in `src/core/cluster/cluster.cpp`; the
+  capabilities in `src/core/api/identity_capabilities.cpp`;
+  `tests/cluster/test_cluster_revocation.cpp`.
 - `tests/cluster/test_cluster_security.cpp` — token/derivation/persistence
   units + real-TCP mTLS convergence, wrong-token rejection, plaintext
   rejection, and the `HELLO`-to-certificate pin
@@ -303,12 +333,16 @@ no link. The enrollment CA is not derivable from the token.
   token-derived CA (see [Enrollment](#enrollment-1319)). A member is trusted to
   sign enrollments, so a member that turns hostile can enroll new ids too; it
   cannot move an id other nodes have already pinned.
-- **No revocation.** Removing a node's trust today means rotating the token
-  (re-key every node). Token rotation is manual (`--join-token` on each node);
-  each node re-seals the saved connector credentials on its first start under
-  the new token. A per-node revocation list checked at every handshake (#1320)
-  is only meaningful once the token no longer mints certificates (the item
-  above).
+- **A revoked node that keeps the token** can still join under a **new** node id
+  until the next release refuses the token-derived CA (the item above). Its
+  revoked key, and (without `allow_rekey`) its old id, stay out. Until then,
+  removing a node completely also means rotating the token (`--join-token` on
+  each node).
+
+**Closed by #1320 (revocation):** removing a node. `revoke_node` writes a sealed
+revocation of its key; every node refuses that key at the handshake and closes a
+live link presenting it, so a removed node that returns with its old key and
+certificate is refused by every node (#848 step 6).
 **Closed by #670:** burst nodes now receive the join token too — the provisioner
 interface injects `ZETTA_CLUSTER_TOKEN` alongside `ZETTA_SEED_PEER`, so a provisioned
 node maps it with `ZETTA_SEED_PEER` to the CLI defaults, derives the cluster CA

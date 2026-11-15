@@ -106,7 +106,9 @@ specific tools. See [scoped app access](../../../docs/network/scoped-app-access.
 `identity_capabilities.cpp` is cluster identity administration, every entry
 needing `cluster:admin`: `rotate_identity_root` hands identity to the root a new
 owner admin token derives (`Node::rotate_identity_root`, #1342), and
-`get_identity_epoch` reads the identity epoch a node holds (#1360). See
+`get_identity_epoch` reads the identity epoch a node holds (#1360);
+`revoke_node` and `list_node_revocations` are per-node revocation (#1320, see
+[transport security](../../../docs/cluster/security.md)). See
 [identity seal](../../../docs/governance/identity-seal.md).
 
 The object capability (`object_capabilities.cpp`, #1005) registers the bucket and

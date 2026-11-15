@@ -60,6 +60,9 @@ struct GossipLink {
     bool alive = true;
     bool initiate = false;  // did we dial this link (true) or accept it (false)?
     std::chrono::steady_clock::time_point last_activity{};  // last line received
+    // Set (any thread) when the peer's certificate is revoked (#1320); the
+    // link's writer closes the link on its next tick.
+    std::atomic<bool> revoked{false};
 };
 
 struct Cluster::State {
@@ -197,6 +200,9 @@ struct Cluster::State {
         std::chrono::steady_clock::time_point asked_at{};
         std::chrono::steady_clock::time_point started{};
         std::string scanned_version;  // the document version last scanned for records
+        // Revoked keys (#1320): key hash -> the node id it belonged to. Set by
+        // the Node from the sealed node_revocation records it trusts.
+        std::map<std::string, std::string> revoked;
     } enrollment;
 
     // --- Signal plane -------------------------------------------------------
@@ -845,6 +851,8 @@ void handle_enroll(Cluster::State* self, const std::string& peer_node_id,
             const auto pinned = enrollment.pins.find(peer_node_id);
             if (!enrollment_proof_matches(enrollment.join_token, peer_node_id, key, proof)) {
                 answer = {{"error", "bad-proof"}};
+            } else if (enrollment.revoked.contains(key)) {
+                answer = {{"error", "revoked"}};  // #1320
             } else if (pinned != enrollment.pins.end() && pinned->second != key) {
                 // One id, one key: re-keying an enrolled id needs its certificate
                 // revoked first (#1320).
@@ -1177,6 +1185,13 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
     std::string sent_clock;
     Clock::time_point last_sync_sent{};
     while (link->alive) {
+        // A revocation that arrived while the link was up (#1320): close it.
+        if (link->revoked.load(std::memory_order_acquire)) {
+            std::fprintf(stderr, "zetta: closed the link to %s: its certificate was revoked\n",
+                         peer_node_id.c_str());
+            link->stream->close();
+            break;
+        }
         // Keepalive: a healthy peer gossips/PINGs us every ~0.5s, so prolonged
         // silence means the link died (e.g. a silent TCP drop). Close it —
         // that unblocks the read pump, which removes the peer.
@@ -1404,6 +1419,21 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
             std::fprintf(stderr,
                 "zetta: refused a cluster peer (%s%s): its certificate's key is not the "
                 "one its node id enrolled\n",
+                initiate ? "dialed " : "accepted",
+                initiate ? dialed_endpoint.c_str() : "");
+            std::fflush(stderr);
+            link->stream->close();
+            co_return;
+        }
+        // A revoked certificate is refused at the handshake on every node (#1320).
+        bool revoked = false;
+        {
+            const std::lock_guard lock(self->enrollment.mutex);
+            revoked = self->enrollment.revoked.contains(certificate_public_key_sha256(presented));
+        }
+        if (revoked) {
+            std::fprintf(stderr,
+                "zetta: refused a cluster peer (%s%s): its certificate's key is revoked\n",
                 initiate ? "dialed " : "accepted",
                 initiate ? dialed_endpoint.c_str() : "");
             std::fflush(stderr);
@@ -2372,6 +2402,41 @@ void Cluster::set_signal_handler(SignalHandler* handler) {
     if (std::this_thread::get_id() == state_->network_thread_id.load()) return;
     while (state_->dispatching.load(std::memory_order_seq_cst) != 0) {
         std::this_thread::yield();
+    }
+}
+
+void Cluster::set_revoked_keys(std::map<std::string, NodeRevocation> revoked) {
+    State::Enrollment& enrollment = state_->enrollment;
+    std::vector<std::string> to_close;
+    {
+        const std::lock_guard lock(enrollment.mutex);
+        enrollment.revoked.clear();
+        bool unpinned = false;
+        for (const auto& [key, revocation] : revoked) {
+            enrollment.revoked.emplace(key, revocation.node_id);
+            // Re-keying: the id may enroll a new key once the old one is revoked.
+            if (revocation.allow_rekey) {
+                const auto pinned = enrollment.pins.find(revocation.node_id);
+                if (pinned != enrollment.pins.end() && pinned->second == key) {
+                    enrollment.pins.erase(pinned);
+                    unpinned = true;
+                }
+            }
+        }
+        if (unpinned) persist_pins_locked(enrollment);
+        for (const auto& [node_id, certificate] : enrollment.presented) {
+            if (enrollment.revoked.contains(certificate_public_key_sha256(certificate))) {
+                to_close.push_back(node_id);
+            }
+        }
+    }
+    // Live links presenting a revoked key close on their writer's next tick.
+    const std::lock_guard lock(state_->mutex);
+    for (const std::string& node_id : to_close) {
+        if (const auto link = state_->active_links.find(node_id);
+            link != state_->active_links.end() && link->second) {
+            link->second->revoked.store(true, std::memory_order_release);
+        }
     }
 }
 

@@ -80,8 +80,8 @@ So it is an admin's tool, like `system.nodes` (#766):
 - **Reserved families are never projected**, by anyone, admin and local
   included: `row:`, `tbl:`, `db:`, `cols:`, `part:`, `mfst:` (table data and
   structure), `lo:` (large objects), `user:`, `role:`, `token:`, `user_role:`,
-  `key:`, `principal:`, `policy:`, `audit:` (identities, credentials and the
-  access-control registry), `record_collection:`, `object_bucket:`,
+  `key:`, `principal:`, `policy:`, `audit:`, `node_revocation:` (identities,
+  credentials and the access-control registry; `node_revocation:` since #1320), `record_collection:`, `object_bucket:`,
   `object_lease:`, `metric:` (families with their own scoped grants) and
   `vtable:`. A prefix reaches a family when either starts with the other, so
   `'r'` and `'row:abc'` are refused as well as `'row:'`. Those families are read

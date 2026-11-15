@@ -39,8 +39,10 @@ credential, `cluster_secret` gains the optional `retired_join_tokens`, and
 regenerated into OpenAPI. See
 [connector query](../docs/data/connector-query.md#saved-connections).
 `identity_root` gains the optional `previous` list of the roots a rotation left behind;
-`cluster_ca`, `node_pins` and `node_cert` are enrollment's files and record (#1319);
-`rotate_identity_root` and `get_identity_epoch` are generated into OpenAPI (#1342, #1360,
+`cluster_ca`, `node_pins` and `node_cert` are enrollment's files and record (#1319), and
+`node_revocation` the sealed revocation record (#1320);
+`rotate_identity_root`, `get_identity_epoch`, `revoke_node` and `list_node_revocations` are
+generated into OpenAPI (#1342, #1360, #1320,
 [identity seal](../docs/governance/identity-seal.md)).
 `egress_denied` joins the audit-event action enum for connections the egress
 policy refused (#75, [egress policy](../docs/governance/egress-policy.md)).

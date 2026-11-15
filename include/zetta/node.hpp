@@ -1239,6 +1239,34 @@ public:
     // How often, at most, a node holding the root seals a new epoch (#1360).
     static constexpr std::chrono::milliseconds kIdentityEpochInterval{1000};
 
+    // Per-node revocation (#1320, docs/cluster/security.md). A revocation is a
+    // sealed identity record, node_revocation:<key hash>, so only a node holding
+    // the identity root writes one and no member can remove it by replay.
+    struct NodeRevocationEntry {
+        std::string public_key_sha256;
+        std::string node_id;
+        std::string serial;
+        std::string revoked_by;
+        std::string revoked_at;
+        std::string reason;
+        bool allow_rekey = false;
+    };
+    struct NodeRevocationResult {
+        bool ok = false;
+        std::string error;  // why it was refused, when !ok
+        NodeRevocationEntry revocation;
+    };
+    // Revoke `node_id`'s enrolled key (from its node_cert record, or
+    // `public_key_sha256` when given) and remove the node from membership. Every
+    // node then refuses that key at the handshake and closes a live link
+    // presenting it; without `allow_rekey` the id stays pinned to the revoked
+    // key, so it cannot come back under any key.
+    NodeRevocationResult revoke_node(const std::string& node_id, const std::string& reason,
+                                     bool allow_rekey, const std::string& revoked_by,
+                                     const std::string& public_key_sha256 = {});
+    // Every revocation this node trusts, by key hash.
+    std::vector<NodeRevocationEntry> node_revocations() const;
+
     // The control plane that reconciles local deployments desired → actual and
     // self-heals their runs (see deployment_controller.hpp). Driven each tick();
     // exposed so tests/UI can introspect its counters or run a pass directly.
@@ -1537,6 +1565,10 @@ private:
         const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_policies(const nlohmann::json& snapshot,
                             const std::vector<std::string>* changed_keys = nullptr);
+    // The trusted node_revocation records (#1320), handed to the cluster.
+    void reconcile_node_revocations(const nlohmann::json& snapshot,
+                                    const std::vector<std::string>* changed_keys = nullptr);
+    void push_node_revocations();
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<zetta::data::Database> materialize_database(
         std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
@@ -1627,6 +1659,8 @@ private:
     // An identity write (or a newer view than the held epoch) since the last
     // epoch this node sealed (#1360), and when it sealed one.
     bool identity_epoch_dirty_ = false;
+    // The node revocations this node trusts (#1320), by key hash.
+    std::map<std::string, NodeRevocationEntry> node_revocations_;
     Clock::time_point last_identity_epoch_write_{};
     std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
     std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
