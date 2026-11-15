@@ -379,3 +379,74 @@ TEST(AuditSurface, RunOnOwnerCarriesTheSurface) {
     EXPECT_EQ(found.front()->value().surface, "rest");
     node.stop();
 }
+
+// ---- work that finishes later, on another thread (#1327) -----------------------
+
+// A job queued by user X and finished on a worker with no entry point open names
+// X (and the surface it was queued through) on its job_finished row.
+TEST(AuditBackgroundWork, AJobFinishedOnAWorkerNamesWhoQueuedIt) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    std::shared_ptr<zetta::compute::ComputeJob> job;
+    {
+        const AuditActorScope caller{std::string("user-dee")};
+        const zetta::governance::AuditSurfaceScope surface{std::string("mcp")};
+        job = node.create_job(zetta::compute::JobKind::Train);
+    }
+    ASSERT_TRUE(job);
+    EXPECT_EQ(job->value().submitted_by, "user-dee");
+    EXPECT_EQ(job->value().submitted_via, "mcp");
+
+    std::thread worker([&] {
+        EXPECT_FALSE(current_audit_actor());
+        job->set_status(zetta::compute::JobStatus::Succeeded);
+    });
+    worker.join();
+
+    expect_one(node, AuditAction::JobCreated, job->id(), "user-dee");
+    const auto finished = rows(node, AuditAction::JobFinished, job->id());
+    ASSERT_EQ(finished.size(), 1u);
+    EXPECT_EQ(finished.front()->actor(), "user-dee");
+    EXPECT_EQ(finished.front()->value().surface, "mcp");
+
+    // The submitter survives the job's JSON boundary (disk, replication).
+    const auto parsed =
+        zetta::compute::parse_compute_job_value(zetta::compute::to_json(job->value()));
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed->submitted_by, "user-dee");
+    EXPECT_EQ(parsed->submitted_via, "mcp");
+    node.stop();
+}
+
+// A coroutine worker resumes on pool threads that carry no scope; it hands the
+// origin it captured at launch to run_on_owner explicitly.
+TEST(AuditBackgroundWork, RunOnOwnerWithAnExplicitOriginNamesIt) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    ASSERT_TRUE(node.start());
+    node.tick();  // adopt this thread as the owner
+
+    zetta::governance::AuditOrigin origin;
+    {
+        const AuditActorScope caller{std::string("user-eve")};
+        const zetta::governance::AuditSurfaceScope surface{std::string("rest")};
+        origin = zetta::governance::capture_audit_origin();
+    }
+    std::atomic<bool> done{false};
+    std::thread pool_thread([&] {
+        // No scope here, as on a pool worker after a resumption.
+        node.run_on_owner(origin, [&] { node.create_database("from_coroutine"); });
+        done = true;
+    });
+    while (!done) {
+        node.drain_owner_work();
+        std::this_thread::yield();
+    }
+    pool_thread.join();
+    const auto found = rows(node, AuditAction::DataChanged, "database:from_coroutine");
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found.front()->actor(), "user-eve");
+    EXPECT_EQ(found.front()->value().surface, "rest");
+    node.stop();
+}

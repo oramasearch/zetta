@@ -14163,6 +14163,21 @@
                           ],
                           "type": "string"
                         },
+                        "submitted_by": {
+                          "type": "string"
+                        },
+                        "submitted_via": {
+                          "enum": [
+                            "mcp",
+                            "rest",
+                            "web",
+                            "desktop",
+                            "pgwire",
+                            "console",
+                            "internal"
+                          ],
+                          "type": "string"
+                        },
                         "trace_id": {
                           "type": "string"
                         },

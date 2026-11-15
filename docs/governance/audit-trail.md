@@ -122,9 +122,25 @@ caller's actor to the owner thread with the work it hands over, so work queued
 from a background worker is attributed to whoever queued it, not to what the
 owner thread was doing.
 
-Work that runs later on a thread no entry point started (a background job
-finishing, a scheduled retrain) has no declared caller, and its rows keep an
-empty actor; that is tracked in [#1327](https://github.com/oramasearch/zetta/issues/1327).
+### Work that finishes later, on another thread (#1327)
+
+Work handed off by an entry point keeps its caller, and the surface it came
+through, as a `zetta::governance::AuditOrigin` captured where the work is
+launched and reinstated where it runs:
+
+| Launcher | How the origin travels |
+|---|---|
+| `Node::create_job` | stored on the job as `submitted_by` / `submitted_via` (replicated, optional); `ComputeJob::set_status` puts them on `job_finished`, whichever thread finishes the job |
+| `kind: job` workers on their own thread (`AsyncChurnRun`, rank, survival, document extraction, label efficiency, streaming, testkit cases, the cloud actions) | captured in the thread's lambda when it is started, inside the handler, and opened as an `AuditOriginScope` at the top of the thread |
+| `kind: job` coroutine workers (solution runs, anomaly, segmentation, forecast, next best action) | captured in the work's state at launch and passed to `Node::run_on_owner(origin, work)` for every owner hop; each synchronous engine call between hops runs under an `AuditOriginScope` that closes before the next suspension |
+
+A scope is never held across a `co_await`: the coroutine may resume on another
+thread, and the scope would restore that thread's actor to the wrong value.
+
+Not covered yet: the deployment controller's self-heal runs (started from
+`Node::tick`) and any other work the node starts on its own name no automated
+principal; the engine has no scheduler that fires retrains today
+(`set_training_schedule` only records the schedule). Both stay open on #1327.
 
 Pub/sub administrative changes use `pubsub_topic_updated`,
 `pubsub_event_updated`, and `pubsub_event_deleted`. Their details contain

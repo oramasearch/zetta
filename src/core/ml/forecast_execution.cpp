@@ -1,4 +1,5 @@
 #include "zetta/ml/forecast_methodology.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
@@ -85,6 +86,10 @@ data::ResolvedDataset resolve_history(Node &node, ForecastPipeline &pipeline) {
 }
 
 struct ForecastWork {
+  // Who launched the work and through which surface, captured on the
+  // handler's thread: the coroutine resumes on pool threads, so its owner
+  // hops and engine calls name this origin explicitly (#1327).
+  zetta::governance::AuditOrigin audit_origin = zetta::governance::capture_audit_origin();
   Node *node = nullptr;
   data::ResolvedDataset dataset;
   ForecastRunParams params;
@@ -115,9 +120,12 @@ runtime::task<> execute_forecast(std::shared_ptr<ForecastWork> work) {
                                  "methodology:M-4:run");
   span.set_attribute("dataset", work->params.dataset_facts);
   compute::CpuDevice device;
-  const ForecastRunResult result =
-      run_forecast_table(*work->node, device, work->dataset, work->params);
-  work->node->run_on_owner([&] {
+  // Synchronous between owner hops, so the scope never spans a suspension.
+  const ForecastRunResult result = [&] {
+    const zetta::governance::AuditOriginScope audit_scope{work->audit_origin};
+    return run_forecast_table(*work->node, device, work->dataset, work->params);
+  }();
+  work->node->run_on_owner(work->audit_origin, [&] {
     if (result.ok()) {
       auto outputs = result.outputs;
       outputs.push_back({"report", "forecast report", work->run->id()});

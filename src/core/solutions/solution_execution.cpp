@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/api/background.hpp"
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/solution.hpp"
@@ -47,6 +48,10 @@ struct SolutionState {
     nlohmann::json binding;
     std::vector<SolutionStage> stages;
     std::atomic<bool> done = false;
+    // Who launched the work and through which surface, captured on the
+    // handler's thread: the coroutine resumes on pool threads, so its owner
+    // hops and engine calls name this origin explicitly (#1327).
+    zetta::governance::AuditOrigin audit_origin = zetta::governance::capture_audit_origin();
 };
 
 std::shared_ptr<zetta::pipeline::Project>
@@ -87,7 +92,7 @@ std::vector<zetta::pipeline::TableRead> solution_snapshot_reads(Node& node,
 
 void update_master(const std::shared_ptr<SolutionState>& state,
                    const std::function<void(zetta::pipeline::Run&)>& update) {
-    state->node->run_on_owner([&] {
+    state->node->run_on_owner(state->audit_origin, [&] {
         if (auto run = state->node->find_run(state->master_run_id)) {
             update(*run);
         }
@@ -97,7 +102,7 @@ void update_master(const std::shared_ptr<SolutionState>& state,
 ApiResult call_stage(const std::shared_ptr<SolutionState>& state,
                      const SolutionStage& stage, int stage_number) {
     ApiResult result;
-    state->node->run_on_owner([&] {
+    state->node->run_on_owner(state->audit_origin, [&] {
         const std::shared_ptr<zetta::pipeline::Project> project =
             resolve_project(*state->node, state->project_name);
         if (!project) {
@@ -162,7 +167,7 @@ struct RunSnapshot {
 RunSnapshot read_run(const std::shared_ptr<SolutionState>& state,
                      const std::string& run_id) {
     RunSnapshot snapshot;
-    state->node->run_on_owner([&] {
+    state->node->run_on_owner(state->audit_origin, [&] {
         if (const auto run = state->node->find_run(run_id)) {
             snapshot.found = true;
             snapshot.status = run->status();
@@ -204,7 +209,7 @@ zetta::runtime::task<std::string> deliver_report(
             co_await send_report_request(request);
         std::optional<ReportPublication> recorded;
         std::string error;
-        state->node->run_on_owner([&] {
+        state->node->run_on_owner(state->audit_origin, [&] {
             ActionRuntime runtime(*state->node);
             recorded = runtime.record_report_attempt(publication, response, &error);
         });
@@ -238,7 +243,7 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
     std::vector<zetta::pipeline::RunOutput> scored_outputs;
     std::vector<zetta::pipeline::RunOutput> supporting_outputs;
     ApiResult prepared;
-    state->node->run_on_owner([&] {
+    state->node->run_on_owner(state->audit_origin, [&] {
         prepared = prepare_solution_snapshot(*state->node, state->binding);
     });
     if (!prepared.ok) {
@@ -390,7 +395,7 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                           supporting_outputs.end());
     ApiResult finished;
     DeferredReportDelivery delivery;
-    state->node->run_on_owner([&] {
+    state->node->run_on_owner(state->audit_origin, [&] {
         finished = finish_solution_run(*state->node, state->binding,
                                       state->master_run_id, scored_outputs,
                                       state->actor.empty() ? "local" : state->actor,

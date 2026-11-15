@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/api/background.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cloud/add_nodes.hpp"
@@ -51,7 +52,9 @@ using zetta::governance::Operation;
 class AsyncCloudAction {
 public:
     explicit AsyncCloudAction(std::function<nlohmann::json()> work) {
-        worker_ = std::thread([this, work = std::move(work)] {
+        worker_ = std::thread([this, work = std::move(work), audit_origin = zetta::governance::capture_audit_origin()] {
+            // The worker's audit rows name whoever launched it (#1327).
+            const zetta::governance::AuditOriginScope audit_scope{audit_origin};
             nlohmann::json output = work();
             {
                 std::lock_guard<std::mutex> hold(mutex_);

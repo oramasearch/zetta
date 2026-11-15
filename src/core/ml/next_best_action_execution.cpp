@@ -1,4 +1,5 @@
 #include "zetta/ml/next_best_action_methodology.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
@@ -154,6 +155,10 @@ data::ResolvedDataset resolve_input(
 }
 
 struct RecommendationWork {
+  // Who launched the work and through which surface, captured on the
+  // handler's thread: the coroutine resumes on pool threads, so its owner
+  // hops and engine calls name this origin explicitly (#1327).
+  zetta::governance::AuditOrigin audit_origin = zetta::governance::capture_audit_origin();
   Node *node = nullptr;
   data::ResolvedDataset dataset;
   NextBestActionTableParams params;
@@ -181,9 +186,13 @@ execute_recommendation(std::shared_ptr<RecommendationWork> work) {
   observability::ScopedSpan span(&work->node->span_recorder(), work->trace,
                                  "methodology:M-8:run");
   span.set_attribute("dataset", work->params.dataset_facts);
-  const NextBestActionTableResult result = run_next_best_action_on_table(
-      *work->node, work->dataset, work->params, *work->run);
-  work->node->run_on_owner([&] {
+  // Synchronous between owner hops, so the scope never spans a suspension.
+  const NextBestActionTableResult result = [&] {
+    const zetta::governance::AuditOriginScope audit_scope{work->audit_origin};
+    return run_next_best_action_on_table(*work->node, work->dataset, work->params,
+                                         *work->run);
+  }();
+  work->node->run_on_owner(work->audit_origin, [&] {
     if (result.ok()) {
       work->run->add_log({util::now_iso8601(), "info",
                           "next-best-action read " +

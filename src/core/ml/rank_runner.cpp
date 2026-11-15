@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/compute/compute_device.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
@@ -268,7 +269,10 @@ std::shared_ptr<AsyncRankRun> AsyncRankRun::start(Node& node, ir::ExecutionGraph
     state->node = &node;
     state->worker = std::thread([state, graph = std::move(graph), dataset = std::move(dataset),
                                  params = std::move(params),
-                                 options = std::move(options)]() mutable {
+                                 options = std::move(options),
+                                 audit_origin = zetta::governance::capture_audit_origin()]() mutable {
+        // The worker's audit rows name whoever launched it (#1327).
+        const zetta::governance::AuditOriginScope audit_scope{audit_origin};
         compute::CpuDevice device;
         state->result = run_rank_on_table(*state->node, device, graph, dataset, params, options);
         state->done.store(true, std::memory_order_release);

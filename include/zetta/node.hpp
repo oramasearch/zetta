@@ -230,6 +230,13 @@ public:
     // rides the runtime interface (async_event + block_on) — no caller-facing
     // condition variables.
     void run_on_owner(const std::function<void()>& work);
+    // The same, with the work attributed to `origin` (who started it and
+    // through which surface) instead of whatever the calling thread declares:
+    // for a coroutine worker that resumes on pool threads, which carry no
+    // AuditActorScope, so it hands over the origin it captured at launch
+    // (#1327).
+    void run_on_owner(const zetta::governance::AuditOrigin& origin,
+                      const std::function<void()>& work);
     // How run_on_owner wakes an idle owner loop so the queued work runs now,
     // not after the loop's idle wait (#1063: every offloaded API call's gate
     // and the pub/sub authorizer queue here). Called under the queue's lock, so

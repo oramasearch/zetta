@@ -12,6 +12,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/job_coordinator.hpp"
@@ -910,7 +911,9 @@ AsyncSurvivalRun::AsyncSurvivalRun(Node& node, ir::ExecutionGraph graph,
     : state_(std::make_unique<State>(node, std::move(graph),
                                      std::move(dataset), std::move(params))) {
     State* state = state_.get();
-    state->worker = std::thread([state] {
+    state->worker = std::thread([state, audit_origin = zetta::governance::capture_audit_origin()] {
+        // The worker's audit rows name whoever launched it (#1327).
+        const zetta::governance::AuditOriginScope audit_scope{audit_origin};
         state->result = run_survival_on_dataset(
             state->node, *state->device, state->graph, state->dataset,
             state->params);
