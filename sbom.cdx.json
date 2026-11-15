@@ -1,0 +1,397 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.7",
+  "serialNumber": "urn:uuid:6f944ea2-2ddf-55a8-9cb6-acfac1da9823",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-15T17:24:03Z",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "name": "tools/sbom.py"
+        },
+        {
+          "type": "application",
+          "name": "syft"
+        }
+      ]
+    },
+    "supplier": {
+      "name": "OramaSearch, Inc."
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:github/homer6/automerge-cpp@4dd795513510ae2c58bacd384c3d8fd98f523123?package-id=Component-automerge-cpp-ecbb1ebb01949fc1",
+      "type": "library",
+      "name": "automerge-cpp",
+      "version": "4dd795513510ae2c58bacd384c3d8fd98f523123",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/homer6/automerge-cpp@4dd795513510ae2c58bacd384c3d8fd98f523123",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/cppalliance/beast2@fb0a9c8dc860590bd13cb2d7afd3e2232291ff19?package-id=Component-beast2-56975ea75034a82d",
+      "type": "library",
+      "name": "beast2",
+      "version": "fb0a9c8dc860590bd13cb2d7afd3e2232291ff19",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSL-1.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/cppalliance/beast2@fb0a9c8dc860590bd13cb2d7afd3e2232291ff19",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/boostorg/boost@1.91.0?package-id=Component-Boost-104d102be3d8897c",
+      "type": "library",
+      "name": "Boost",
+      "version": "1.91.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSL-1.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/boostorg/boost@1.91.0",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/cppalliance/capy@ce1c7d710c4baaeeddb57fa101707c610f6eb975?package-id=Component-capy-f065864a31964254",
+      "type": "library",
+      "name": "capy",
+      "version": "ce1c7d710c4baaeeddb57fa101707c610f6eb975",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSL-1.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/cppalliance/capy@ce1c7d710c4baaeeddb57fa101707c610f6eb975",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/oramasearch/corosio@be51422484784a35eef412934e4d8fd3511e5918?package-id=Component-corosio-e77df9d384251afc",
+      "type": "library",
+      "name": "corosio",
+      "version": "be51422484784a35eef412934e4d8fd3511e5918",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSL-1.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/oramasearch/corosio@be51422484784a35eef412934e4d8fd3511e5918",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/ocornut/imgui@v1.91.5?package-id=Component-Dear-ImGui-7597987723e4d3fe",
+      "type": "library",
+      "name": "Dear ImGui",
+      "version": "v1.91.5",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/ocornut/imgui@v1.91.5",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/vercel/geist-font@as%20vendored?package-id=Component-Geist-and-Geist-Mono-8b01034c9fab7620",
+      "type": "library",
+      "name": "Geist and Geist Mono",
+      "version": "as vendored",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "purl": "pkg:github/vercel/geist-font@as%20vendored",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/google/googletest@v1.15.2?package-id=Component-GoogleTest-64b5499d1e845e32",
+      "type": "library",
+      "name": "GoogleTest",
+      "version": "v1.15.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:github/google/googletest@v1.15.2",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/oramasearch/http@af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4?package-id=Component-http-358a9beabd5949fb",
+      "type": "library",
+      "name": "http",
+      "version": "af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSL-1.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/oramasearch/http@af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/ibm/plex@as%20vendored?package-id=Component-IBM-Plex-Sans-and-IBM-Plex-Mono-9836f46bf5669da7",
+      "type": "library",
+      "name": "IBM Plex Sans and IBM Plex Mono",
+      "version": "as vendored",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "purl": "pkg:github/ibm/plex@as%20vendored",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/pboettch/json-schema-validator@2.4.0?package-id=Component-json-schema-validator-4136c15d3cbf1269",
+      "type": "library",
+      "name": "json-schema-validator",
+      "version": "2.4.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/pboettch/json-schema-validator@2.4.0",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/jtv/libpqxx@853bc0a48f0327d8670c1c0855f7abf731046319?package-id=Component-libpqxx-1a092f5d5ca86d6b",
+      "type": "library",
+      "name": "libpqxx",
+      "version": "853bc0a48f0327d8670c1c0855f7abf731046319",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:github/jtv/libpqxx@853bc0a48f0327d8670c1c0855f7abf731046319",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/nlohmann/json@8167d2f64122c3ef7e5a0d9cab239fdba37aa54c?package-id=Component-nlohmann-json-f8323928c60a9e33",
+      "type": "library",
+      "name": "nlohmann/json",
+      "version": "8167d2f64122c3ef7e5a0d9cab239fdba37aa54c",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/nlohmann/json@8167d2f64122c3ef7e5a0d9cab239fdba37aa54c",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "Component-Orama-Studio-web-app-c58f27d2bda7bf7c",
+      "type": "library",
+      "name": "Orama Studio web app",
+      "version": "fc2cc41",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/oramasearch/oramacore-cpp@f612ea8f6170d051eca55122c1cc2956649e0c66?package-id=Component-oramacore-cpp-956bcf2be0cc72dc",
+      "type": "library",
+      "name": "oramacore-cpp",
+      "version": "f612ea8f6170d051eca55122c1cc2956649e0c66",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/oramasearch/oramacore-cpp@f612ea8f6170d051eca55122c1cc2956649e0c66",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/libsdl-org/sdl@release-3.2.0?package-id=Component-SDL-20bbedde24a83d4f",
+      "type": "library",
+      "name": "SDL",
+      "version": "release-3.2.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Zlib"
+          }
+        }
+      ],
+      "purl": "pkg:github/libsdl-org/sdl@release-3.2.0",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/floriankarsten/space-grotesk@as%20vendored?package-id=Component-Space-Grotesk-871de9e868d49d36",
+      "type": "library",
+      "name": "Space Grotesk",
+      "version": "as vendored",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "purl": "pkg:github/floriankarsten/space-grotesk@as%20vendored",
+      "properties": [
+        {
+          "name": "syft:package:type",
+          "value": "UnknownPackage"
+        }
+      ]
+    },
+    {
+      "bom-ref": "DocumentRoot",
+      "type": "library",
+      "name": "zetta",
+      "version": "598694dec1bb",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "DocumentRoot",
+      "dependsOn": [
+        "Component-Orama-Studio-web-app-c58f27d2bda7bf7c",
+        "pkg:github/boostorg/boost@1.91.0?package-id=Component-Boost-104d102be3d8897c",
+        "pkg:github/cppalliance/beast2@fb0a9c8dc860590bd13cb2d7afd3e2232291ff19?package-id=Component-beast2-56975ea75034a82d",
+        "pkg:github/cppalliance/capy@ce1c7d710c4baaeeddb57fa101707c610f6eb975?package-id=Component-capy-f065864a31964254",
+        "pkg:github/floriankarsten/space-grotesk@as%20vendored?package-id=Component-Space-Grotesk-871de9e868d49d36",
+        "pkg:github/google/googletest@v1.15.2?package-id=Component-GoogleTest-64b5499d1e845e32",
+        "pkg:github/homer6/automerge-cpp@4dd795513510ae2c58bacd384c3d8fd98f523123?package-id=Component-automerge-cpp-ecbb1ebb01949fc1",
+        "pkg:github/ibm/plex@as%20vendored?package-id=Component-IBM-Plex-Sans-and-IBM-Plex-Mono-9836f46bf5669da7",
+        "pkg:github/jtv/libpqxx@853bc0a48f0327d8670c1c0855f7abf731046319?package-id=Component-libpqxx-1a092f5d5ca86d6b",
+        "pkg:github/libsdl-org/sdl@release-3.2.0?package-id=Component-SDL-20bbedde24a83d4f",
+        "pkg:github/nlohmann/json@8167d2f64122c3ef7e5a0d9cab239fdba37aa54c?package-id=Component-nlohmann-json-f8323928c60a9e33",
+        "pkg:github/ocornut/imgui@v1.91.5?package-id=Component-Dear-ImGui-7597987723e4d3fe",
+        "pkg:github/oramasearch/corosio@be51422484784a35eef412934e4d8fd3511e5918?package-id=Component-corosio-e77df9d384251afc",
+        "pkg:github/oramasearch/http@af0353a5b2868d5b8db7fb01ffb5c464f9deb8a4?package-id=Component-http-358a9beabd5949fb",
+        "pkg:github/oramasearch/oramacore-cpp@f612ea8f6170d051eca55122c1cc2956649e0c66?package-id=Component-oramacore-cpp-956bcf2be0cc72dc",
+        "pkg:github/pboettch/json-schema-validator@2.4.0?package-id=Component-json-schema-validator-4136c15d3cbf1269",
+        "pkg:github/vercel/geist-font@as%20vendored?package-id=Component-Geist-and-Geist-Mono-8b01034c9fab7620"
+      ]
+    }
+  ]
+}
