@@ -184,6 +184,14 @@ struct ApiContext {
     // after the pipeline was exposed is not what its callers get. Null
     // everywhere else.
     std::shared_ptr<zetta::pipeline::ProjectGraph> served_graph;
+
+    // The surface this call came through, for the audit trail (#1328): "mcp"
+    // (tools/call), "rest" (/v1/<name> with a bearer), "web" (the Studio web app
+    // or dashboard, authenticated by the session cookie). Registry::call opens an
+    // AuditSurfaceScope with it, so every row the call records says how it
+    // arrived. Empty leaves the caller's surface in place (an in-process call:
+    // the headed app's frame declares "desktop" itself).
+    std::string surface;
 };
 
 using CapabilityHandler =

@@ -270,6 +270,40 @@ TEST(GovernedConsole, InjectedGraphRunnerNotCalledWhenGateBlocks) {
     node.stop();
 }
 
+// #1322: an injected runner builds its own executor, so a key session's steps
+// are authorized before the runner is called. A key that may start a run but
+// not train a model never reaches the runner.
+TEST(GovernedConsole, InjectedGraphRunnerRefusesAStepTheKeyLacks) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    zetta::query::QueryService service{node};
+    GovernedConsole console{node, service};
+
+    int runner_calls = 0;
+    console.set_graph_runner([&](const zetta::ir::ExecutionGraph& graph) {
+        ++runner_calls;
+        return node.run_graph(graph);
+    });
+
+    auto principal = node.create_principal("starter", PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    CapabilitySet caps;
+    caps.grant(CapabilityDomain::Api, "query")
+        .grant(CapabilityDomain::Orchestration, "start_run")
+        .grant(CapabilityDomain::Data, "read");  // no train_model
+    auto key = principal->create_key(Scope{}, caps);
+    ASSERT_TRUE(key);
+    console.set_session_key(key->id());
+
+    const Result result = console.run(Frontend::SimPython, kPython);
+    EXPECT_FALSE(result.ok());
+    EXPECT_NE(result.error.find("step authority"), std::string::npos) << result.error;
+    EXPECT_EQ(runner_calls, 0) << "a refused step must never reach the runner";
+    EXPECT_EQ(node.run_count(), 0u);
+    node.stop();
+}
+
 // ----- capability scoping ----------------------------------------------------
 
 TEST(GovernedConsole, CapabilityDenyBlocksAndAudits) {

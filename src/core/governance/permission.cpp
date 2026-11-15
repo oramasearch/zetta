@@ -32,6 +32,9 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"roles:manage", {{CapabilityDomain::Api, "manage_roles"}}},
         {"tokens:manage", {{CapabilityDomain::Api, "manage_tokens"}}},
         {"cluster:admin", {{CapabilityDomain::Api, "cluster_admin"}}},
+        // Writing a feedback bundle to a file on the node (#1455): its own right,
+        // not mcp:call, because it writes the node's disk.
+        {"feedback:export", {{CapabilityDomain::Api, "export_feedback"}}},
         {"audit:purge", {{CapabilityDomain::Orchestration, "purge_audit"}}},
         // Pub/sub (#1029): publish and subscribe are data rights, creating and
         // managing topics orchestration; sending to a wildcard is its own right.

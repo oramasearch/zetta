@@ -58,11 +58,12 @@ std::optional<std::string> startup_script(const GcpConfig& config,
                                           std::string* reason) {
     NodeBootstrapScriptOptions options;
     options.seed_peer = config.seed_peer;
+    options.identity_root = config.identity_root;
     if (!config.join_token.empty()) {
         options.token.store = ClusterTokenStore::gcp_secret_manager;
         options.token.secret_name = cluster_token_secret_name(config.pool_name);
         options.token.container = config.project_id;
-    } else if (config.seed_peer.empty()) {
+    } else if (config.seed_peer.empty() && config.identity_root.empty()) {
         return std::string{};
     }
     return render_node_bootstrap_script(options, reason);

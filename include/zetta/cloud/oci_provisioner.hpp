@@ -36,6 +36,7 @@ struct OciConfig {
     bool spot = false;                        // burst preemptible (cheaper, evictable) capacity
     std::string seed_peer;                    // cluster seed host:port injected into node cloud-init to auto-join
     std::string join_token;                   // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst node joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
+    std::string identity_root;                // the cluster's identity root PUBLIC key (hex, not a secret) injected as ZETTA_IDENTITY_ROOT so a burst node honors the cluster's accounts, roles and tokens (#1343); set at wire time from this node's pinned root, never serialized
     std::string vault_id;                     // OCI Vault OCID the join token is stored in (secret `<pool>-cluster-token`); required on a secure cluster (#1316)
     std::string key_id;                       // the vault's master encryption key OCID that encrypts that secret; required on a secure cluster (#1316)
 

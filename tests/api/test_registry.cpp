@@ -2215,6 +2215,76 @@ TEST_F(TraceAccessFixture, FeedbackBuilderOmitsDiagnosticsByDefault) {
     EXPECT_EQ(rejected.error.code, "invalid_input");
 }
 
+// #1455: a caller without the diagnostic grant attaches its OWN traces and the
+// errors in them, never another actor's trace (even one it joined or named),
+// and never a crash report.
+TEST_F(TraceAccessFixture, OrdinaryFeedbackAttachesOnlyTheCallersOwnTraces) {
+    const auto reader = user_with_role("reader");
+    // The reader's own work, in a trace of its own.
+    const zetta::observability::TraceContext own = zetta::observability::make_root_trace();
+    {
+        ApiContext context{node, nullptr, reader, own, &node.span_recorder()};
+        context.acting_is_user = true;
+        registry.call("server_info", nlohmann::json::object(), context);
+        // A refused call is an error span in the reader's own trace.
+        registry.call("list_traces", {{"limit", 1}}, context);
+    }
+    ApiContext context{node, nullptr, reader, own, &node.span_recorder()};
+    context.acting_is_user = true;
+    const auto submitted = registry.call(
+        "submit_feedback",
+        {{"description", "mine only"}, {"trace_ids", {own.trace_id, trace.trace_id}}},
+        context);
+    ASSERT_TRUE(submitted.ok) << submitted.error.message;
+    const auto bundle = stored_bundle(submitted);
+    ASSERT_EQ(bundle.at("traces").size(), 1u);
+    EXPECT_EQ(bundle.at("traces").at(0).at("trace_id"), own.trace_id);
+    EXPECT_FALSE(bundle.at("recent_errors").empty());
+    for (const auto& span : bundle.at("recent_errors")) {
+        EXPECT_EQ(span.at("trace_id"), own.trace_id);
+    }
+    EXPECT_TRUE(bundle.at("crashes").empty());
+    EXPECT_EQ(bundle.dump().find("confidential"), std::string::npos);
+
+    // With no trace ids, the most recent traces are filtered the same way.
+    const auto recent = registry.call("submit_feedback", {{"description", "recent"}}, context);
+    ASSERT_TRUE(recent.ok) << recent.error.message;
+    const auto recent_bundle = stored_bundle(recent);
+    for (const auto& attached : recent_bundle.at("traces")) {
+        EXPECT_EQ(attached.at("trace_id"), own.trace_id);
+    }
+    EXPECT_EQ(recent_bundle.dump().find("confidential"), std::string::npos);
+
+    // The ownership rule itself: one foreign actor makes the trace not owned.
+    zetta::observability::Span mine;
+    mine.attributes = {{"actor", reader}};
+    zetta::observability::Span theirs;
+    theirs.attributes = {{"actor", "another-user"}};
+    zetta::observability::Span unnamed;
+    EXPECT_TRUE(zetta::observability::trace_is_owned_by({mine, unnamed}, reader));
+    EXPECT_FALSE(zetta::observability::trace_is_owned_by({mine, theirs}, reader));
+    EXPECT_FALSE(zetta::observability::trace_is_owned_by({unnamed}, reader));
+}
+
+// #1455: export_path writes a file on the node, so it needs feedback:export,
+// not api:query. A reader is refused before anything is stored; admin may.
+TEST_F(TraceAccessFixture, FeedbackExportNeedsItsOwnRight) {
+    const auto reader = user_with_role("reader");
+    const auto refused = call_as(reader, true, "submit_feedback",
+                                 {{"description", "export me"},
+                                  {"export_path", "reader-bundle.json"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "unauthorized");
+    EXPECT_FALSE(std::filesystem::exists(dir.path() / "exports" / "reader-bundle.json"));
+
+    const auto admin = user_with_role("admin");
+    const auto exported = call_as(admin, true, "submit_feedback",
+                                  {{"description", "export me"},
+                                   {"export_path", "admin-bundle.json"}});
+    ASSERT_TRUE(exported.ok) << exported.error.message;
+    EXPECT_TRUE(exported.value.contains("exported_to"));
+}
+
 // Coroutine-first bridge: a runtime coroutine awaits run_on_owner and resumes
 // after the owning loop drains — no caller-facing blocking primitives.
 // (A free coroutine, not a lambda coroutine: parameters are copied into the

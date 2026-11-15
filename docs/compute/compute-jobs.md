@@ -47,6 +47,7 @@ parent. Its value:
 | `updated` | `std::string` | ISO-8601 UTC stamp; bumped on every change. |
 | `detail` | `std::string` | Human-readable note / failure reason. Optional. |
 | `trace_id` | `std::string` | The job's trace (32-hex W3C id, #640) — stamped by the first coordinator to run it; replicated, so every node's spans join ONE trace. Optional. |
+| `submitted_by` / `submitted_via` | `std::string` | Who queued the job and through which surface (mcp / rest / web / desktop / pgwire / console / internal), from the caller's scopes at creation; `job_finished` names them (#1327). Optional; serialized only when set. |
 
 `status` is grounded in the job events: a job starts `Queued`, moves to `Running`
 when it is scheduled onto compute, and ends `Succeeded` or `Failed` (`detail`
@@ -130,7 +131,14 @@ actions extend the audit taxonomy:
 - **`job_finished`** — emitted by `ComputeJob::set_status` on the **first**
   transition into a terminal state (`Succeeded` / `Failed`), once and only once.
   `target` is the job id; `allowed` mirrors success (`true` for `Succeeded`,
-  `false` for `Failed`); `detail` carries the note.
+  `false` for `Failed`); `detail` carries the note. Its `actor` and `surface`
+  are the job's `submitted_by` / `submitted_via` (#1327): the finish usually
+  runs on a worker or the coordinator, where no entry point is open.
+
+`Node::create_job` records who queued the job, from the caller's
+`AuditActorScope` / `AuditSurfaceScope`, as `submitted_by` and `submitted_via`.
+Both are optional fields of the value (serialized only when set), so a job no
+caller queued keeps its earlier shape.
 
 The reconcile paths (`materialize_job` / `apply_value`) **never** emit — a peer's
 create/finish arrives already-audited through the replicated segment log, the

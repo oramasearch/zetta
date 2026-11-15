@@ -450,3 +450,79 @@ TEST(ExecutionGraph, WalksTheCanonicalPipelineStageByStage) {
         }
     }
 }
+
+// ---- size bounds and the edge index (#1426, LSR-253) -------------------------
+
+TEST(ExecutionGraphBounds, AddNodeAndAddEdgeRefusePastTheCaps) {
+    ExecutionGraph graph;
+    for (std::size_t index = 0; index < zetta::ir::kMaxGraphNodes; ++index) {
+        ASSERT_TRUE(graph.add_node(StepKind::Clean, "step", {}, "n" + std::to_string(index)));
+    }
+    EXPECT_FALSE(graph.over_limit());
+    EXPECT_FALSE(graph.add_node(StepKind::Clean, "one too many"));
+    EXPECT_TRUE(graph.over_limit());
+    EXPECT_EQ(graph.node_count(), zetta::ir::kMaxGraphNodes);
+
+    ExecutionGraph edges;
+    for (std::size_t index = 0; index < 200; ++index) {
+        edges.add_node(StepKind::Clean, "step", {}, "e" + std::to_string(index));
+    }
+    std::size_t added = 0;
+    for (std::size_t from = 0; from < 200 && added < zetta::ir::kMaxGraphEdges; ++from) {
+        for (std::size_t to = 0; to < 200 && added < zetta::ir::kMaxGraphEdges; ++to) {
+            ASSERT_TRUE(edges.add_edge("e" + std::to_string(from), "e" + std::to_string(to)));
+            ++added;
+        }
+    }
+    EXPECT_FALSE(edges.over_limit());
+    EXPECT_FALSE(edges.add_edge("e199", "e198", EdgeKind::Control));
+    EXPECT_TRUE(edges.over_limit());
+    EXPECT_EQ(edges.edge_count(), zetta::ir::kMaxGraphEdges);
+}
+
+TEST(ExecutionGraphBounds, FromJsonRejectsAnOversizedDocumentBeforeBuildingIt) {
+    nlohmann::json nodes = nlohmann::json::array();
+    for (std::size_t index = 0; index <= zetta::ir::kMaxGraphNodes; ++index) {
+        nodes.push_back({{"id", "n" + std::to_string(index)}, {"kind", "clean"}, {"name", "s"}});
+    }
+    std::string error;
+    EXPECT_FALSE(zetta::ir::from_json({{"nodes", nodes}, {"edges", nlohmann::json::array()}},
+                                      &error));
+    EXPECT_NE(error.find("at most"), std::string::npos) << error;
+
+    nlohmann::json edges = nlohmann::json::array();
+    for (std::size_t index = 0; index <= zetta::ir::kMaxGraphEdges; ++index) {
+        edges.push_back({{"from", "a"}, {"to", "b"}});
+    }
+    error.clear();
+    EXPECT_FALSE(zetta::ir::from_json(
+        {{"nodes", nlohmann::json::array()}, {"edges", edges}}, &error));
+    EXPECT_NE(error.find("at most"), std::string::npos) << error;
+}
+
+TEST(ExecutionGraphBounds, TheEdgeIndexStaysInStepWithEdits) {
+    ExecutionGraph graph;
+    for (const char* id : {"a", "b", "c"}) graph.add_node(StepKind::Clean, id, {}, id);
+    ASSERT_TRUE(graph.add_edge("a", "b"));
+    ASSERT_TRUE(graph.add_edge("a", "c"));
+    ASSERT_TRUE(graph.add_edge("b", "c"));
+    ASSERT_TRUE(graph.add_edge("a", "b", EdgeKind::Control));
+    EXPECT_FALSE(graph.add_edge("a", "b"));  // duplicate, found by the index
+
+    ASSERT_EQ(graph.edges_from("a").size(), 3u);
+    EXPECT_EQ(graph.edges_from("a")[0].to, "b");  // insertion order kept
+    EXPECT_EQ(graph.edges_from("a")[1].to, "c");
+    EXPECT_EQ(graph.edges_into("c").size(), 2u);
+    EXPECT_EQ(graph.predecessors("c").size(), 2u);
+
+    ASSERT_TRUE(graph.remove_edge("a", "b"));
+    EXPECT_EQ(graph.edges_from("a").size(), 2u);
+    EXPECT_TRUE(graph.add_edge("a", "b"));  // removable, then addable again
+
+    ASSERT_TRUE(graph.remove_node("b"));
+    EXPECT_EQ(graph.edges_from("a").size(), 1u);
+    EXPECT_EQ(graph.edges_from("a")[0].to, "c");
+    EXPECT_EQ(graph.edges_into("c").size(), 1u);
+    EXPECT_TRUE(graph.edges_from("b").empty());
+    EXPECT_EQ(graph.edge_count(), 1u);
+}

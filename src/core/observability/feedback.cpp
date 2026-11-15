@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -81,27 +82,55 @@ public:
 
 const nlohmann::json& feedback_bundle_schema() { return schema_document(); }
 
+bool trace_is_owned_by(const std::vector<Span>& spans, const std::string& actor) {
+    bool named = false;
+    for (const Span& span : spans) {
+        const auto found = span.attributes.find("actor");
+        if (found == span.attributes.end() || !found->is_string()) continue;
+        if (found->get<std::string>() != actor) return false;
+        named = true;
+    }
+    return named;
+}
+
 std::optional<nlohmann::json> build_feedback_bundle(
     const Node& node, const FeedbackBundleOptions& options,
     std::string* error) {
     nlohmann::json traces = nlohmann::json::array();
     nlohmann::json recent_errors = nlohmann::json::array();
     nlohmann::json crashes = nlohmann::json::array();
-    if (options.include_diagnostics) {
+    if (options.diagnostics != FeedbackDiagnostics::none) {
         const SpanRecorder& recorder = node.span_recorder();
+        const bool everything = options.diagnostics == FeedbackDiagnostics::all;
+
+        // Under `own` (#1455) a trace is attached only when it is the caller's:
+        // trace ids are client-controlled, so naming one proves nothing. The
+        // answer is cached per trace, since error spans are filtered the same way.
+        std::unordered_map<std::string, bool> owned;
+        const auto may_attach = [&](const std::string& trace_id) {
+            if (everything) return true;
+            const auto cached = owned.find(trace_id);
+            if (cached != owned.end()) return cached->second;
+            const bool mine = trace_is_owned_by(recorder.trace(trace_id), options.actor);
+            owned.emplace(trace_id, mine);
+            return mine;
+        };
 
         // Which traces to attach: the caller's, or the most recent ones observed.
-        std::vector<std::string> trace_ids = options.trace_ids;
-        if (trace_ids.empty()) {
+        std::vector<std::string> trace_ids;
+        if (options.trace_ids.empty()) {
             std::unordered_set<std::string> seen;
             for (const Span& span : recorder.recent(200)) {
-                if (seen.insert(span.trace_id).second) {
+                if (seen.insert(span.trace_id).second && may_attach(span.trace_id)) {
                     trace_ids.push_back(span.trace_id);
                 }
                 if (trace_ids.size() >= kMaxAttachedTraces) break;
             }
-        } else if (trace_ids.size() > kMaxAttachedTraces) {
-            trace_ids.resize(kMaxAttachedTraces);
+        } else {
+            for (const std::string& trace_id : options.trace_ids) {
+                if (trace_ids.size() >= kMaxAttachedTraces) break;
+                if (may_attach(trace_id)) trace_ids.push_back(trace_id);
+            }
         }
 
         for (const std::string& trace_id : trace_ids) {
@@ -114,11 +143,15 @@ std::optional<nlohmann::json> build_feedback_bundle(
         }
 
         for (const Span& span : recorder.recent(500)) {
-            if (span.ok) continue;
+            if (span.ok || !may_attach(span.trace_id)) continue;
             recent_errors.push_back(to_json(span));
             if (recent_errors.size() >= kMaxErrorSpans) break;
         }
+    }
 
+    // Crash reports carry every thread's recent spans: whole-node state, so
+    // only the diagnostic grant attaches them.
+    if (options.diagnostics == FeedbackDiagnostics::all) {
         const std::string crashes_dir =
             (std::filesystem::path(node.config().data_dir) / "crashes").string();
         for (const LoadedCrashReport& loaded : load_crash_reports(crashes_dir)) {

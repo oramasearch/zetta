@@ -50,11 +50,29 @@ public:
         std::vector<nlohmann::json> rows;    // rows of the last SELECT
         std::string error;                   // first parse/execution error
         std::chrono::nanoseconds elapsed{};  // wall-clock for parse + execute
+        // The request itself was refused before anything ran (a read_only run
+        // whose text is not exactly one read statement, #1501): the caller's
+        // input is wrong, not the engine. `error` says why.
+        bool refused = false;
 
         bool ok() const { return error.empty(); }
     };
 
-    Outcome run(std::string_view sql, const std::string& current_database);
+    // How one run is constrained. `read_only` (#1501): the engine parses the text
+    // with its own parser and refuses, before executing anything, unless it is
+    // exactly one read statement (a SELECT). A second statement, DDL, DML, user,
+    // token, role and policy statements are all refused. A caller that forwards
+    // someone else's SQL under a broader credential (lake's workspace_sql) sets it
+    // so the engine, not a second parser in front of it, decides what is a read.
+    struct RunOptions {
+        bool read_only = false;
+    };
+
+    Outcome run(std::string_view sql, const std::string& current_database) {
+        return run(sql, current_database, RunOptions{});
+    }
+    Outcome run(std::string_view sql, const std::string& current_database,
+                const RunOptions& options);
 
 private:
     Node& node_;

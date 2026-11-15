@@ -58,6 +58,18 @@ std::optional<ExecutionGraph> from_json(const nlohmann::json& document,
     if (!document.contains("edges") || !document["edges"].is_array()) {
         return reject(error, "graph must have an \"edges\" array");
     }
+    // Bounded before anything is built (#1426): every check, compile and run
+    // walks the graph on the owner loop.
+    if (document["nodes"].size() > kMaxGraphNodes) {
+        return reject(error, "graph has " + std::to_string(document["nodes"].size()) +
+                                 " nodes; at most " + std::to_string(kMaxGraphNodes) +
+                                 " are allowed");
+    }
+    if (document["edges"].size() > kMaxGraphEdges) {
+        return reject(error, "graph has " + std::to_string(document["edges"].size()) +
+                                 " edges; at most " + std::to_string(kMaxGraphEdges) +
+                                 " are allowed");
+    }
 
     ExecutionGraph graph;
 

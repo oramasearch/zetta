@@ -62,9 +62,17 @@ public:
     // reported skipped. Never throws — a malformed detected config is simply
     // skipped, matching the seam's no-throw contract. `default_cluster_token` is
     // empty for a plaintext cluster, in which case no token is injected.
+    //
+    // `identity_root` is this cluster's identity root public key (hex, #764): it
+    // is injected into every config (ZETTA_IDENTITY_ROOT beside ZETTA_SEED_PEER),
+    // so a burst node pins the cluster's root and honors its accounts, roles and
+    // tokens instead of making a root of its own (#1343). It is public, not a
+    // secret, and like the token it is set only here from the live node, never
+    // from a detected config. A value that is not 64 hex digits is not injected.
     std::vector<Wiring> wire(const std::vector<ProvisionerConfig>& configs,
                              const std::string& default_seed_peer,
-                             const std::string& default_cluster_token = {});
+                             const std::string& default_cluster_token = {},
+                             const std::string& identity_root = {});
 
     // The wired Provisioner for a catalog target id, or nullptr when that
     // target has no detected context here. Non-owning; valid for the fleet's

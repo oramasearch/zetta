@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/util/timestamp.hpp"
@@ -61,7 +62,9 @@ AsyncCaseRun::AsyncCaseRun(Node& node, const TestCase& test_case,
                    "testkit case '" + test_case_.id + "' started"});
     run_->set_status(zetta::pipeline::RunStatus::Running);
 
-    worker_ = std::thread([this] {
+    worker_ = std::thread([this, audit_origin = zetta::governance::capture_audit_origin()] {
+        // The worker's audit rows name whoever launched it (#1327).
+        const zetta::governance::AuditOriginScope audit_scope{audit_origin};
         // The case body stands up its own ephemeral nodes/clusters and never
         // touches the live node (test_suite.hpp), so it runs freely here; the
         // log lines buffer locally and flush with the one gated write below.

@@ -1068,7 +1068,7 @@ TEST(AuditTrail, LegacyPeerIsRefusedForAuditButStillReplicatesCatalog) {
     ASSERT_EQ(rows.rows.size(), 2u);
     for (const auto& row : rows.rows) {
         const bool local = row.at("node_id") == modern_id;
-        EXPECT_EQ(row.at("audit_protocol_version"), local ? 2 : 0);
+        EXPECT_EQ(row.at("audit_protocol_version"), local ? zetta::governance::kAuditProtocolVersion : 0u);
         EXPECT_EQ(row.at("audit_compatible"), local);
     }
     modern.stop();

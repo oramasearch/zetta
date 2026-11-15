@@ -1660,3 +1660,18 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
     EXPECT_EQ(std::find(implemented.begin(), implemented.end(), "unregistered_model_kind"),
               implemented.end());
 }
+
+// #1426: the schema check walks every requiring node's ancestors; the walks
+// together are bounded, and running out fails closed instead of passing.
+TEST(SchemaTypeCheck, ALongRequiringChainFailsClosedPastTheVisitBudget) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "source", json{{"schema", {{"id", "int"}}}}, "n0");
+    for (std::size_t index = 1; index < zetta::ir::kMaxGraphNodes; ++index) {
+        graph.add_node(StepKind::Clean, "step", json{{"requires", {{"id", "int"}}}},
+                       "n" + std::to_string(index));
+        graph.add_edge("n" + std::to_string(index - 1), "n" + std::to_string(index));
+    }
+    const CheckResult result = SchemaTypeCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("too large to verify"), std::string::npos) << result.reason;
+}

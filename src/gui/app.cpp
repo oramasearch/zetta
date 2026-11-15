@@ -829,6 +829,8 @@ void App::render_frame() {
     // Node's audit rows name them as the local operator, the same "local" every
     // other surface uses for the unauthenticated local session (#847).
     const zetta::governance::AuditActorScope audit_actor{std::string("local")};
+    // ...through the desktop app (#1328).
+    const zetta::governance::AuditSurfaceScope audit_surface{std::string("desktop")};
     g_mono_font = mono_font_;  // ambient fonts for the shared render helpers
     g_heading_font = heading_font_;
 

@@ -263,6 +263,12 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     // Node records deep inside the handler (a deploy, a created project, a
     // queued job) — is attributed to the caller (#847).
     const zetta::governance::AuditActorScope audit_actor{context.acting_key};
+    // ...and names the surface the call came through (#1328), when the server
+    // layer declared one; an in-process call keeps its caller's.
+    const zetta::governance::AuditSurfaceScope audit_surface{
+        context.surface.empty() ? zetta::governance::current_audit_surface()
+                                : std::optional<std::string>{context.surface}};
+    if (!context.surface.empty()) span.set_attribute("surface", context.surface);
 
     auto finish = [&](ApiResult result) {
         result.trace_id = context.trace.trace_id;
@@ -753,6 +759,9 @@ ApiResult Registry::decide_consent(const std::string& challenge_id,
                "consent-approved execution of challenge " + challenge_id);
 
     const zetta::governance::AuditActorScope audit_actor{challenge->requested_by};
+    const zetta::governance::AuditSurfaceScope audit_surface{
+        context.surface.empty() ? zetta::governance::current_audit_surface()
+                                : std::optional<std::string>{context.surface}};
     ApiResult result = entry->handler(challenge->input, execution);
     action_span.finish(result.ok, result.ok ? std::string{}
                                             : result.error.code + ": " +

@@ -26,6 +26,7 @@ with no manual flags** (issue #749 acceptance).
 | `ZETTA_CLUSTER_TOKEN_FILE` | `--join-token` | **Preferred.** Path of a file holding the join token (a Kubernetes Secret volume, a mode-0400 file). Its trimmed contents set the token, so the value never sits in the process environment. |
 | `ZETTA_CLUSTER_TOKEN` | `--join-token` | Sets the cluster join token (same path as `--join-token` → `load_or_create_cluster_security`), so the node derives the cluster CA + its mTLS identity and joins the secure cluster. Used when no token file is named. |
 | `ZETTA_DATA_DIR` | `--data-dir` | Sets the on-disk database directory. |
+| `ZETTA_IDENTITY_ROOT` | `--identity-root` | The cluster's identity root public key (not a secret), read by `main.cpp` when no `--identity-root` was given. Every burst control plane passes it beside `ZETTA_SEED_PEER`, so the node pins the cluster's root and honors its accounts (#1343). |
 
 ## Precedence — explicit flag > env > default
 

@@ -105,7 +105,9 @@ one-tick checks for all added catalog families and existing table-backed state.
   action outbox, webhook and CRM connector plugins, bounded retries,
   acknowledgements, dead letters, holdout suppression, and kill-switch guarded
   closed-loop execution (#1109); a solution run's report delivered off the
-  owner loop, each attempt bounded by its timeout (lake#801); keys bound to the
+  owner loop, each attempt bounded by its timeout (lake#801); `deliver_action_task`
+  and `execute_closed_loop` sending from the blocking pool with their bookkeeping on the
+  owner (#1406); keys bound to the
   actor and complete non-secret specification before using credentials (#1410).
 
 - [roi-readout.md](roi-readout.md) — versioned correctness, aggregate

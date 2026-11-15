@@ -121,6 +121,12 @@ struct StudyValue {
     // The tables the study's trials read (zetta#1258), recorded at creation:
     // delete_dataset refuses them while the study runs.
     std::vector<pipeline::TableRead> reads;
+    // Who created the study (#1322): every trial runs as this principal, its
+    // steps and its reads authorized before the trial runs (step authority,
+    // #843), including trials the node retries later. Empty = the trusted
+    // local session. Serialized only when set.
+    std::string principal;
+    bool principal_is_user = false;
 };
 
 struct StudyDeleteResult {

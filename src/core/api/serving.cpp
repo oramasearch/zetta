@@ -323,6 +323,8 @@ std::string index_endpoint_path(const std::string& index_id) {
 
 ApiResult serve_predict(Node& node, const ServeRequest& request) {
     ServeSpan serve(request, "serve:predict");
+    // The governed serving routes are REST (#1328).
+    const zetta::governance::AuditSurfaceScope audit_surface{std::string("rest")};
 
     // Endpoint access is deny-by-default. Under the default-deny gate (#745) a
     // token-resolved user must hold data:predict through one of its roles;
@@ -532,6 +534,8 @@ ApiResult serve_predict(Node& node, const ServeRequest& request) {
 
 ApiResult serve_search(Node& node, const ServeRequest& request) {
     ServeSpan serve(request, "serve:search");
+    // The governed serving routes are REST (#1328).
+    const zetta::governance::AuditSurfaceScope audit_surface{std::string("rest")};
 
     const zetta::governance::Operation search_op{
         zetta::governance::CapabilityDomain::Data, "search"};
@@ -826,6 +830,8 @@ ApiResult resolve_published_pipeline(Node& node, const std::string& target,
 
 ApiResult serve_pipeline_run(Node& node, const ServeRequest& request) {
     ServeSpan serve(request, "serve:run_pipeline");
+    // The governed serving routes are REST (#1328).
+    const zetta::governance::AuditSurfaceScope audit_surface{std::string("rest")};
     PublishedPipeline published;
     if (ApiResult resolved = resolve_published_pipeline(node, request.target, published);
         !resolved.ok) {
@@ -930,6 +936,7 @@ ApiResult serve_pipeline_run(Node& node, const ServeRequest& request) {
                        request.background};
     context.acting_is_user = request.acting_is_user;
     context.registry = request.registry;
+    context.surface = "rest";
     context.served_graph = std::make_shared<zetta::pipeline::ProjectGraph>(
         pipeline_id, published.project->id(), graph.name(), std::move(*pinned),
         std::filesystem::path{});
@@ -961,6 +968,8 @@ ApiResult serve_pipeline_run(Node& node, const ServeRequest& request) {
 
 ApiResult serve_pipeline_run_status(Node& node, const ServeRequest& request) {
     ServeSpan serve(request, "serve:pipeline_run_status");
+    // The governed serving routes are REST (#1328).
+    const zetta::governance::AuditSurfaceScope audit_surface{std::string("rest")};
     PublishedPipeline published;
     if (ApiResult resolved = resolve_published_pipeline(node, request.target, published);
         !resolved.ok) {

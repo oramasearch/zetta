@@ -630,6 +630,9 @@ struct StringBodySink {
 struct RequestIdentity {
     std::string acting_key;
     bool is_user = false;
+    // The bearer came from the zetta_session cookie: a browser, the Studio web
+    // app or dashboard, so the audit surface is "web", not "rest" (#1328).
+    bool session_cookie = false;
 };
 
 // The identity the gate stashed for this request, or an empty
@@ -1010,6 +1013,7 @@ struct ApiServer::Impl {
                                    provisioners};
                 context.acting_is_user = acting_is_user;
                 context.wait_event = wait_event;
+                context.surface = "mcp";  // the audit surface (#1328)
                 call_result =
                     capability_registry.call(tool_name, arguments, context);
             };
@@ -1227,6 +1231,8 @@ struct ApiServer::Impl {
                                &node.span_recorder(), &background};
             context.acting_is_user = identity.is_user;
             context.wait_event = wait_event;
+            // The audit surface (#1328): the session cookie means a browser.
+            context.surface = identity.session_cookie ? "web" : "rest";
             return capability_registry.call(capability->name, input, context);
         };
         ApiResult result;
@@ -3850,6 +3856,7 @@ struct ApiServer::Impl {
                                    zetta::observability::make_root_trace(), &node.span_recorder(),
                                    &background};
                 context.acting_is_user = true;
+                context.surface = "web";  // cookie-session web routes (#1328)
                 ApiResult info =
                     capability_registry.call("server_info", nlohmann::json::object(), context);
                 if (info.ok) {
@@ -4025,6 +4032,7 @@ struct ApiServer::Impl {
                                    zetta::observability::make_root_trace(), &node.span_recorder(),
                                    &background};
                 context.acting_is_user = true;
+                context.surface = "web";  // cookie-session web routes (#1328)
                 ApiResult result = capability_registry.call(cap_name, input, context);
                 succeeded = result.ok;
                 std::string result_html;
@@ -4110,6 +4118,7 @@ struct ApiServer::Impl {
                                        zetta::observability::make_root_trace(),
                                        &node.span_recorder(), &background};
                     context.acting_is_user = true;
+                    context.surface = "web";  // cookie-session web routes (#1328)
                     ApiResult result = capability_registry.call("chat", input, context);
                     json_body = result.ok
                                     ? nlohmann::json{{"ok", true}, {"value", result.value}}.dump()
@@ -4159,6 +4168,7 @@ struct ApiServer::Impl {
                                        zetta::observability::make_root_trace(),
                                        &node.span_recorder(), &background};
                     context.acting_is_user = true;
+                    context.surface = "web";  // cookie-session web routes (#1328)
                     ApiResult result =
                         capability_registry.call("save_graph", input, context);
                     json_body = result.ok
@@ -4208,6 +4218,7 @@ struct ApiServer::Impl {
                                        zetta::observability::make_root_trace(),
                                        &node.span_recorder(), &background};
                     context.acting_is_user = true;
+                    context.surface = "web";  // cookie-session web routes (#1328)
                     ApiResult result = capability_registry.call(
                         "sql", nlohmann::json{{"statement", route_decision.source}}, context);
                     json_body = result.ok ? result.value.dump()
@@ -4234,6 +4245,9 @@ struct ApiServer::Impl {
                     }
                     zetta::query::QueryService query_service(node, cluster);
                     zetta::repl::GovernedConsole console(node, query_service);
+                    // The web console's rows say they came through the web (#1328).
+                    const zetta::governance::AuditSurfaceScope audit_surface{
+                        std::string("web")};
                     // Enforcement is done above by authorize_user; the console runs unkeyed
                     // (audited as the local web session) but still gates + audits every run.
                     const zetta::repl::Result result =
@@ -4810,8 +4824,10 @@ bool ApiServer::start() {
         // web app authenticates its /v1 calls with the session cookie set by
         // POST /session, the token never touching the page's JavaScript.
         std::string bearer = bearer_of(route);
+        bool from_session_cookie = false;
         if (bearer.empty()) {
             bearer = cookie_value(route, "zetta_session");
+            from_session_cookie = !bearer.empty();
             // Check every cookie-authenticated API method: a GET capability can
             // have effects too (SQL and consuming reads). Explicit bearers retain
             // the programmatic contract and never fall back after auth failure.
@@ -4850,6 +4866,7 @@ bool ApiServer::start() {
             authorized = true;
             identity.acting_key = std::move(resolved_user_id);
             identity.is_user = true;
+            identity.session_cookie = from_session_cookie;
         }
 
         if (!authorized) {

@@ -22,6 +22,7 @@
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/work_stealing_scheduler.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/ddf/local_partitions.hpp"
 #include "zetta/ddf/ops.hpp"
 #include "zetta/ir/serialization.hpp"
@@ -33,6 +34,7 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/pipeline/step_authority.hpp"
 #include "zetta/pubsub/pubsub.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/util/timestamp.hpp"
@@ -220,6 +222,15 @@ const nlohmann::json& schema_document() {
         "stop_reason":{"type":"string"},
         "failure_reason":{"type":"string"},
         "promoted_model":{"type":"string"},
+        "principal":{
+          "type":"object",
+          "required":["id","is_user"],
+          "additionalProperties":false,
+          "properties":{
+            "id":{"type":"string","minLength":1},
+            "is_user":{"type":"boolean"}
+          }
+        },
         "reads":{"type":"array","items":{
           "type":"object",
           "required":["database","table"],
@@ -629,6 +640,10 @@ nlohmann::json to_json(const StudyValue& value) {
                           {"promoted_model", value.promoted_model}};
     // Only when there is one, so the shape stays what an older peer accepts.
     if (!value.reads.empty()) output["reads"] = pipeline::to_json(value.reads);
+    if (!value.principal.empty()) {
+        output["principal"] = {{"id", value.principal},
+                               {"is_user", value.principal_is_user}};
+    }
     return output;
 }
 
@@ -723,6 +738,10 @@ std::optional<StudyValue> parse_study_value(const nlohmann::json& value,
     parsed.promoted_model = value.at("promoted_model").get<std::string>();
     if (const auto reads = value.find("reads"); reads != value.end()) {
         parsed.reads = pipeline::table_reads_from_json(*reads);
+    }
+    if (const auto principal = value.find("principal"); principal != value.end()) {
+        parsed.principal = principal->at("id").get<std::string>();
+        parsed.principal_is_user = principal->at("is_user").get<bool>();
     }
     for (const nlohmann::json& item : value.at("trials")) {
         StudyTrial trial;
@@ -2185,10 +2204,18 @@ StudyDriver::State::TrialResult StudyDriver::State::execute_trial(
     result.run = trial.run;
     StudySpec spec;
     std::string study_id;
+    pipeline::RunPrincipal principal;
+    std::vector<pipeline::TableRead> reads;
     node.run_on_owner([&] {
         spec = study->spec();
         study_id = study->id();
+        principal = {study->value().principal, study->value().principal_is_user};
+        reads = study->value().reads;
     });
+    // The trial's audit rows name the study's principal (#1322, #1327): this
+    // runs on the driver's thread, where no entry point declared anyone.
+    std::optional<zetta::governance::AuditActorScope> trial_actor;
+    if (!principal.local()) trial_actor.emplace(principal.acting_id);
     const auto trial_cancel = std::make_shared<std::atomic<bool>>(false);
     node.run_on_owner([&] {
         if (ActiveStudy* found = find_active(study_id)) {
@@ -2216,6 +2243,36 @@ StudyDriver::State::TrialResult StudyDriver::State::execute_trial(
     plan = prepare_real_trial(node, spec, trial.params, trial.run,
                               trial_model_name(spec.name, study_id, trial.number),
                               trial_cancel.get(), result.error);
+    // Step authority (#1322): the trial runs as the study's principal, never as
+    // the node. Every step of its graph and every table it reads is authorized
+    // (and audited) before anything runs; a denial fails the trial, so a study
+    // created by someone who may not read its table runs no trial step.
+    if (plan && !principal.local()) {
+        std::string denied;
+        node.run_on_owner([&] {
+            const pipeline::GraphAuthorization steps =
+                pipeline::authorize_graph_steps(node, principal, plan->graph, trial.run);
+            if (!steps) {
+                denied = "step " + steps.step_id + ": " + steps.reason;
+                return;
+            }
+            for (const pipeline::TableRead& read : reads) {
+                const ir::Node step{"study-read", ir::StepKind::Connect,
+                                    "read " + read.database + "." + read.table,
+                                    {{"source", read.database}, {"table", read.table}}};
+                const auto access = pipeline::authorize_step(node, principal, step, trial.run);
+                if (!access.allowed) {
+                    denied = "reading " + read.database + "." + read.table + ": " +
+                             access.reason;
+                    return;
+                }
+            }
+        });
+        if (!denied.empty()) {
+            result.error = "step authority: " + denied;
+            plan.reset();
+        }
+    }
     if (plan) {
         plan->options.training_progress =
             [&](int step, const std::map<std::string, double>& values) {

@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/api/background.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/run_features.hpp"
@@ -242,7 +243,9 @@ private:
           params_(std::move(params)),
           options_(std::move(options)),
           cluster_(cluster),
-          worker_([this] {
+          worker_([this, audit_origin = zetta::governance::capture_audit_origin()] {
+              // The worker's audit rows name whoever launched it (#1327).
+              const zetta::governance::AuditOriginScope audit_scope{audit_origin};
               result_ = run_streaming(node_, dataset_, params_, options_,
                                       cluster_);
               done_.store(true, std::memory_order_release);

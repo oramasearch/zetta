@@ -11,7 +11,7 @@ views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) 
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine interface (`zetta::storage::StorageEngine`).
 - [lazy-rows.md](lazy-rows.md) — the row handle `StorageEngine::at()` returns: refcounted pages that survive a reap, a borrowed (allocation-free) state for in-memory engines, and a failed read that reports a reason instead of null (`zetta::storage::ParquetLazyPtr`, #833).
 - [large-objects.md](large-objects.md) — storing files as large objects (metadata in the CRDT, bodies peer-to-peer) and importing JSON/JSONL records.
-- [query.md](query.md) — the dialect-agnostic query layer (SELECT row policies also govern [search](../indexing/node-search.md#caller-authorization-1403), #1403): the Postgres subset
+- [query.md](query.md) — the dialect-agnostic query layer (`read_only` runs refuse anything but exactly one SELECT on the engine's own parse, #1501; SELECT row policies also govern [search](../indexing/node-search.md#caller-authorization-1403), #1403): the Postgres subset
   (`LIMIT` / `OFFSET` / `FETCH FIRST`, pushed down to the partitions, #1021),
   `WHERE` with `AND` / `OR` / `NOT` and three-valued logic (#912), aggregates with or without `GROUP BY` on any key type (dense numeric through the
   [DDF engine](../ddf/ddf.md), the rest over rows), unknown columns as errors,

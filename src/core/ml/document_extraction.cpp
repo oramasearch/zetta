@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/autograd/safetensors.hpp"
 #include "zetta/autograd/tensor.hpp"
 #include "zetta/compute/compute_job.hpp"
@@ -1490,7 +1491,9 @@ AsyncDocumentExtractionRun::AsyncDocumentExtractionRun(
         run_->add_log({zetta::util::now_iso8601(), "info",
                        "document extraction started"});
     }
-    worker_ = std::thread([this] {
+    worker_ = std::thread([this, audit_origin = zetta::governance::capture_audit_origin()] {
+        // The worker's audit rows name whoever launched it (#1327).
+        const zetta::governance::AuditOriginScope audit_scope{audit_origin};
         result_ = run_document_extraction(node_, dataset_, params_, run_);
         done_.store(true, std::memory_order_release);
     });
