@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/add_dataset.hpp"
 
 #include <algorithm>

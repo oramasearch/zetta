@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/storage_census.hpp"
 
 #include <system_error>

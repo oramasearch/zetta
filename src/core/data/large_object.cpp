@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/large_object.hpp"
 
 #include <algorithm>

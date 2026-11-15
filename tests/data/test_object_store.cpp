@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The object capability (#1005, docs/data/object-store.md): every operation's
 // contract, conditional create under a race, fencing, crash safety of appends and
 // puts, compaction and restart, quota, and placement on rf owners of a real

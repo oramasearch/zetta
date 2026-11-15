@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // zetta — entry point.
 //
 // Parses arguments, builds a zetta::Node + a zetta::cluster::Cluster, and dispatches to

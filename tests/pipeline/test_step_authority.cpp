@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Step authority (#843): a graph step runs as the run's principal, deny-by-default,
 // checked when the step is reached, with every decision on the audit trail. These
 // tests assert that a step the principal may not run is refused and never

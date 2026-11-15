@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The capability registry + main-thread bridge (docs/api/registry-design.md,
 // #615). Also home of the first layer-1 MCP journeys
 // (docs/testing/mcp-journeys.md): ordered capability calls with read-back

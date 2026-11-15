@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/partition_scheduler.hpp"
 
 #include <algorithm>

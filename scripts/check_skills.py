@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Validate every SKILL.md in .claude/skills/ so a skill cannot ship unloadable.
 
 A skill whose YAML frontmatter does not parse is silently absent: no error, no

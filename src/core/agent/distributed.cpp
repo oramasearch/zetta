@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/distributed.hpp"
 
 #include <algorithm>

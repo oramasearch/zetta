@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Native Parquet writer tests (#833).
 //
 // The bar is the round trip: `write_parquet_rows(rows)` → `read_parquet_rows`

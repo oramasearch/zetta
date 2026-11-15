@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // A short-lived file that hands a secret to a vendor CLI without putting it on

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/governance/identity_seal.hpp"
 
 #include <fcntl.h>

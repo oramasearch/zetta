@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Pub/sub inside a zetta node (#1029, #1031, #1032, #1034).
 #include <gtest/gtest.h>
 

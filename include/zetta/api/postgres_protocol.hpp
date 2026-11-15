@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Install the libpqxx Postgres connector (#892) into the connector runner seam

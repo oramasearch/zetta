@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/api/capabilities.hpp"
 #include "object_routes.hpp"
 #include <sstream>

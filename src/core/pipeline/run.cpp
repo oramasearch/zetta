@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pipeline/run.hpp"
 
 #include "zetta/cluster/replication.hpp"

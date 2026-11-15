@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The llms.txt progressive-disclosure endpoints (#645,
 // docs/api/llms-endpoints.md). Two layers: the zetta-core renderers (content
 // is generated from the registry without workspace state), and

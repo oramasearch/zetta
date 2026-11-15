@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <algorithm>  // std::shuffle, std::min

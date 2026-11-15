@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/compute/device_registry.hpp"
 
 #include <array>

@@ -1,0 +1,3 @@
+# A vendored, minified build of the Studio web app (see webapp/README.md and THIRD_PARTY_LICENSES);
+# it is regenerated from its source, never edited here.
+webapp/assets/

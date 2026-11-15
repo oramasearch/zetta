@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The activity feed (#622): activity_entries composes ONE chronological view
 // from the node's existing sources — the audit trail + runs — with the surface
 // (local / console / api) and outcome derived per entry, newest first, and no

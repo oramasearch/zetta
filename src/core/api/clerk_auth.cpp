@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 /*
  * Clerk JWT verification (#889). RS256 over the issuer's JWKS, via OpenSSL. See
  * clerk_auth.hpp for the contract. Non-throwing: every failure path returns

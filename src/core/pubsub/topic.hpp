@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Internal: one topic (or inbox) of the pub/sub facade. Not part of the public

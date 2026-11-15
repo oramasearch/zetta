@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/goal.hpp"
 
 #include "zetta/agent/action.hpp"

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Postgres source connector — the libpqxx adapter (#892).
 //
 // This is the ONE translation unit that names libpqxx / libpq (the module-split

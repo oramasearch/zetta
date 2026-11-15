@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/corpus_training.hpp"
 
 #include <cstddef>

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Generate a 500-account UC-1 churn dataset DIRECTORY (dataset.json + accounts.jsonl
 + events.jsonl) for the churn demo. Learnable-but-noisy signal so
 the trained model has a CREDIBLE AUC (not the 1.0 of the 10-row fixture):

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/speech_train_job.hpp"
 
 #include <string>

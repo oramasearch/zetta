@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Regenerate tests/fixtures/model_import/ (lake#681), offline.
 
 The engine reads models trained elsewhere (ONNX tree ensembles, XGBoost JSON and

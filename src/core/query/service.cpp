@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/query/service.hpp"
 
 #include <chrono>

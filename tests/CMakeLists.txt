@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # Unit tests — GoogleTest, fetched like the rest of the deps.
 
 include(FetchContent)

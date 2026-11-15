@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/transport/security.hpp"
 
 #include <openssl/bio.h>

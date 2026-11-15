@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/governance/safe_mode.hpp"
 
 #include <utility>

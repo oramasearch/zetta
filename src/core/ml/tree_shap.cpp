@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/tree_shap.hpp"
 
 #include <cmath>

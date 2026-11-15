@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/featurize_plan.hpp"
 
 #include <algorithm>

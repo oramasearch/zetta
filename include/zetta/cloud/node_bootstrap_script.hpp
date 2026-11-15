@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The boot script a burst VM runs to join the cluster (#1316).

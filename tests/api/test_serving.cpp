@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Governed HTTP serving of models and indexes (#648, docs/api/serving.md):
 // the layer-1 journeys — expose -> serve -> un-expose kills the route — with
 // allow AND deny coverage, read-back through get_model/get_index and the

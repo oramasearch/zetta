@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.28)
 
 # zetta is C++26 and its coroutine stack (Capy/Corosio) needs Clang 17+ — older

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The default-deny auth gate (#745, epic #743): the ONE router-seam middleware
 // that resolves a bearer -> user on EVERY path under --require-auth, and the
 // per-user effective-permission check it feeds. Two layers here:

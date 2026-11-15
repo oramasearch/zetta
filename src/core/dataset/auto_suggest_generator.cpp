@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/dataset/auto_suggest_generator.hpp"
 
 #include <optional>

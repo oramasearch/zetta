@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Activity view (#622, docs/gui/activity-feed.md): ONE chronological feed
 // of everything the cluster was asked to do — who asked (actor + surface),
 // what for, and how it went — with click-through to the owning panel. A thin

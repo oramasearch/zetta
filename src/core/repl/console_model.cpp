@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/repl/console_model.hpp"
 
 #include <algorithm>

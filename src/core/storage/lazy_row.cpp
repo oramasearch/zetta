@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/storage/lazy_row.hpp"
 
 #include <utility>

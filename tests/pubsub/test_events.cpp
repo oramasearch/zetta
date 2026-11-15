@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Pub/sub addresses, envelope and events (#1025).
 #include <gtest/gtest.h>
 

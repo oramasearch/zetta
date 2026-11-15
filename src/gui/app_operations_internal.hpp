@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Helpers shared by the per-view operations TUs (app_cluster.cpp,

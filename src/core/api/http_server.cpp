@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The ONE Beast2 adapter TU (docs/api/registry-design.md → Placement + build;
 // docs/research/beast2-http.md). No beast2 / cppalliance-http / Boost.JSON
 // name may appear outside this file; Boost.JSON <-> nlohmann conversion

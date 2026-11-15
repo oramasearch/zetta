@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/compute/job_autoscaler.hpp"
 
 #include <algorithm>

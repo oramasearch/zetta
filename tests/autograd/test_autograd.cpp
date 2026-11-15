@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <cmath>  // std::log -- libc++ provides it transitively, libstdc++ does not

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/util/sha1.hpp"
 
 #include <array>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Audit completeness and attribution (#847): every change made through the
 // Node's own API is on the trail, and every row names who did it — the caller
 // the entry point declared (AuditActorScope), carried across to the owner

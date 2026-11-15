@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // #1216: the /docs Getting started path — upload a churn CSV, describe it,
 // approve, check and run — trains end to end, and a Study trial over the same
 // table selects the same features as the run.

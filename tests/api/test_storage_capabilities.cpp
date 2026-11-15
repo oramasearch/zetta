@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // storage_usage on the control surface (docs/data/storage-census.md, lake#658): a node answers
 // its disk by kind, through the registry like every capability, and a byte added to a bucket
 // shows in that bucket.

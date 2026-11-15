@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Experiments over a workspace methodology's parameters (lake#689) through the
 // registry, against a replicated node: list_methodologies publishes the
 // declared parameters as a study search space once the methodology passed

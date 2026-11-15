@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/compute/compute_job.hpp"
 
 #include "zetta/cluster/replication.hpp"

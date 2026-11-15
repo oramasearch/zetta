@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/autograd/safetensors.hpp"
 
 #include <cstdint>

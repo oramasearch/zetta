@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Published pipelines on the control surface (zetta#1289, docs/api/serving.md):
 // expose_pipeline pins a pipeline and publishes its served route on every node,
 // unexpose_pipeline withdraws it, and run_published_pipeline /

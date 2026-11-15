@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/dataset/dataset_generator_factory.hpp"
 
 #include <memory>

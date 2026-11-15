@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // SecretFile (#770): the private file a control plane hands a vendor CLI instead
 // of putting the cluster join token on its argv.
 

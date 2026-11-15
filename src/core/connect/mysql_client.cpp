@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/connect/mysql_client.hpp"
 
 #include "write_words.hpp"

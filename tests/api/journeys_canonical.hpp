@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The three canonical MCP journeys of #619 as DATA tables (the journey shape
 // of docs/testing/mcp-journeys.md), shared verbatim by layer 1
 // (test_action_journeys.cpp — in-process registry) and layer 2

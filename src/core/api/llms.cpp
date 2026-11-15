@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The llms.txt renderers (#645, docs/api/llms-endpoints.md). Every page is
 // generated at request time from the capability registry's own descriptions
 // and build version — the no-drift rule: this file adds structure (headings,

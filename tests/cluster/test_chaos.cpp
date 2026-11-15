@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Chaos experiments (#842): torment a live in-process mutual-TLS cluster on a
 // seeded schedule and assert it HEALS — not merely that it works undisturbed. The
 // harness is tests/cluster/chaos_harness.hpp; the experiment format, the venues and

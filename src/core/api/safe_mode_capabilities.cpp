@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Safe mode per database on the control surface (#1373, docs/api/safe-mode.md):
 // read and change the level of a Zetta database or a saved source connection.
 // The check itself runs in Registry::call, for every capability that carries a

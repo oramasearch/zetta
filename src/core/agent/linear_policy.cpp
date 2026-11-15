@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/linear_policy.hpp"
 
 #include <span>

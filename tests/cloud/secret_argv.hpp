@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Helpers for the #770 provisioner tests: a cluster join token must never be an

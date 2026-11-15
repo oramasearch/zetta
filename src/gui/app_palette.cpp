@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Cmd+K command palette (#625, docs/gui/command-palette.md): keyboard-first
 // navigation and actions. One overlay, three entry sources, all live:
 //

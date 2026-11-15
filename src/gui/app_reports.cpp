@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Reports view (#960 item 4) — what a finished run FOUND, in the desktop
 // Studio surface. The information architecture and copy come from the design's
 // Reports screens (the design repository's Reports surface); the numbers

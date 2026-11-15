@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ddf/join.hpp"
 
 #include <algorithm>

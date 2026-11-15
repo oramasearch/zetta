@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/connect/http_transport.hpp"
 
 #include <mutex>

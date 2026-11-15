@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pipeline/project_input.hpp"
 
 #include <fstream>

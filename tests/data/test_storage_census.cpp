@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The storage census (docs/data/storage-census.md): every file under a node's data directory is
 // counted once, in the kind its top-level entry is, and each object bucket on its own.
 #include <gtest/gtest.h>

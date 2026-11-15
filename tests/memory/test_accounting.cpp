@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/memory/accounting.hpp"
 
 #include <gtest/gtest.h>

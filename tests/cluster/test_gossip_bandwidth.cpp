@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // What a replication gossip round costs on the wire, and how fast a mesh
 // converges under sustained writes (#794).
 //

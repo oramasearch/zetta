@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/usecases/churn/churn_step_executor.hpp"
 
 #include <algorithm>

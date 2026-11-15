@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The authorization regression harness (#780): one group of tests per finding of
 // the auth review, #759 through #769, run in-process against the headless core so
 // the full ctest proves them on every build. The black-box half is §3.13 of

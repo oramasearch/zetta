@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Node bootstrap from provisioning env (#749): the env->flag mapping a
 // burst/provisioned node relies on to auto-join a secure cluster with no manual
 // flags. Exercised through a fake EnvReader so the process environment is never

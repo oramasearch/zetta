@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The governed-action journeys (#617/#619, docs/testing/mcp-journeys.md) as
 // DATA: Journey{JourneyStep{tool, input, expect}} tables (journey.hpp /
 // journeys_canonical.hpp) run by the shared driver against the capability

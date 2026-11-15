@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>

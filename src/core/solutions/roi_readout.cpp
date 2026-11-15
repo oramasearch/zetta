@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/solutions/roi_readout.hpp"
 
 #include <algorithm>

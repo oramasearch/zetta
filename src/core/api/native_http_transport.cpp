@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/api/native_http_transport.hpp"
 
 #include <algorithm>

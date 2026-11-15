@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The text entity-key table (#1255, docs/data/entity-key-table.md).

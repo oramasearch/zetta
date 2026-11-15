@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The object log's prefix guarantee under power loss and its fsync discipline
 // (#1235, docs/data/object-store.md → "Durability"): whatever pages the disk
 // had not made durable when the power went, what replays is the state after

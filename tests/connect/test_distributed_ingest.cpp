@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // #833 section 7 — the **cross-node connector ingest**. Not "the tiling is
 // correct" (tests/connect/test_distributed_fetch.cpp already pins that on the
 // algorithm) but the properties of the thing actually running over a real

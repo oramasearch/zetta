@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The native SHA-1 behind MySQL's mysql_native_password (#895), checked against
 // the FIPS 180-4 / RFC 3174 test vectors.
 #include <gtest/gtest.h>

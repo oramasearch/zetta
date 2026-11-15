@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // A native transformer built on MLX (#555; docs/agent/README.md). This is the real

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The Qwen inference injection point (#555 serving) — how the agent's chat/respond

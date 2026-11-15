@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ir/serialization.hpp"
 
 #include <cstddef>

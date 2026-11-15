@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/testkit/test_suite.hpp"
 
 #include <chrono>

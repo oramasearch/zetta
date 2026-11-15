@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/temporal_split.hpp"
 
 #include <algorithm>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The object-store soak (#1005): a liquid-shaped load on a running node — packs
 // written as appends and sealed with a barrier, index runs put whole, the oldest
 // packs removed so the live set stays fixed — with a reader beside it, while the

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Generate the committed Parquet test fixtures + goldens (DEV-TIME ONLY).
 
 zetta's native Parquet reader (ADR-32, issues #505–#508) is verified against

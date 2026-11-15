@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "system_trust_store.hpp"
 
 #include <cstdlib>

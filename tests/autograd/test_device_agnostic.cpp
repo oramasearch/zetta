@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 // The autograd model is device-agnostic: the same graph runs on CpuDevice or

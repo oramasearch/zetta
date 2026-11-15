@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // "Unauthorized node cannot join or orchestrate" (#848), the parts that are
 // about authority rather than transport: a node that legitimately joins a
 // cluster gets membership and nothing else. It mints no owner (#763), and what

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Pub/sub on the control surface (#1033): exposure is off by default.
 #include <gtest/gtest.h>
 

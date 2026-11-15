@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The boundary-schema registry (#646) — the one table naming every
 // schema-as-code boundary schema. Entries are grouped by owning domain;
 // each accessor lives beside its entity (the crash_report_schema pattern)

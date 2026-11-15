@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // walk_facts — grading a THREAD rather than a reply.
 //
 // The controls that matter are the real transcripts. v16 passed the old walk and was plainly bad;

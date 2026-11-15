@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/index/oramacore_fulltext_index.hpp"
 
 #include <algorithm>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/compute/safetensors.hpp"
 
 #if defined(ZETTA_WITH_MLX)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include "zetta/ml/next_best_action_methodology.hpp"

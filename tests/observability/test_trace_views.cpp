@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The system.traces / system.spans read views over the node's span ring
 // (docs/architecture/observability.md, #640): RULE-7 — the SQL surface, the
 // list_traces/get_trace capabilities, and the GUI trace pane all read the ONE

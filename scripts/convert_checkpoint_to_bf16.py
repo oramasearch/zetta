@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Convert a checkpoint's model.safetensors from F32 to BF16, halving the
 on-disk weight bytes so the agent's cold load reads half as much.
 

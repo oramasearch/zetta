@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Check that every number in a run report traces back to the facts artifact.
 
     python3 verify_report_numbers.py <report.md> <run-report.json>

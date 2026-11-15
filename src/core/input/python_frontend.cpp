@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/input/python_frontend.hpp"
 
 #include <cctype>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Install the fast Metal-GPU Qwen decode (MlxQwenInference, #555) as the agent's
 // serving-inference runner. This is the ONE bridge from the MLX kernel (zetta-compute)
 // to the agent's injection point (zetta-core), so chat()/respond() run on the GPU

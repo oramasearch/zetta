@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Install the native MySQL connector's TCP/TLS driver (#895) into the connector

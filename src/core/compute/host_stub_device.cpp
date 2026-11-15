@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/compute/host_stub_device.hpp"
 
 #include <cstddef>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Protocol-layer coverage of the native coroutine HTTP client that fills the
 // connector transport interface (#827, docs/api/native-http-transport.md).
 //

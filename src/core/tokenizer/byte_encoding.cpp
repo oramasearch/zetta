@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/tokenizer/byte_encoding.hpp"
 
 #include <array>

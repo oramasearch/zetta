@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/workspace/workspace_profile.hpp"
 
 #include "zetta/cluster/replication.hpp"
