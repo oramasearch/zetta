@@ -153,6 +153,23 @@ The startup log names the gateway:
 zetta: egress gateway zetta-tunnel-egress.ws-1.svc.cluster.local:7445 for api.example.com:443
 ```
 
+**Re-read from files, without a restart** ([#1517](https://github.com/oramasearch/zetta/issues/1517)).
+When `ZETTA_EGRESS_ALLOW_FILE` names the allowlist file (#1332) and no `--egress-gateway` flag is
+given, the node also reads `gateway` and `gatewayRoutes` in that file's directory: the keys the
+operator writes into the cluster's egress ConfigMap. `gateway` holds the address, `gatewayRoutes`
+the routes (one per line or comma separated; `#` starts a comment). They are re-read every 2
+seconds, so a name rule added or removed reaches the running node without a restart.
+
+- While **neither** file exists, `ZETTA_EGRESS_GATEWAY` / `ZETTA_EGRESS_GATEWAY_ROUTES` apply.
+- A replacement that is malformed or unreadable, or routes without a gateway, is refused and
+  logged once; the last good gateway stays. Malformed at startup stops the node.
+- The `--egress-gateway` / `--egress-gateway-route` flags pin the gateway and turn the files off.
+
+```
+zetta: egress gateway re-reading /etc/zetta/egress/{gateway,gatewayRoutes}
+zetta: egress gateway reloaded from /etc/zetta/egress: zetta-tunnel-egress.ws-1.svc.cluster.local:7445 for api.example.com:443
+```
+
 **Under the operator** the gateway variables are the operator's to render, next to
 `ZETTA_EGRESS_ALLOW`: `ZETTA_EGRESS_GATEWAY=zetta-tunnel-egress.<namespace>.svc.cluster.local:7445`
 and `ZETTA_EGRESS_GATEWAY_ROUTES` set to the name rules' `<dnsName>:<port>` entries, on the workspace
@@ -185,7 +202,10 @@ directly.
 - `include/zetta/connect/egress_gateway.hpp`, `src/core/connect/egress_gateway.cpp`: the gateway
   address and routes, which destinations are routed, the `ZTEG1` preface, the installed gateway.
 - `tests/connect/test_egress_gateway.cpp`: the address and route parser, names-only routes, what is
-  never routed, the preface.
+  never routed, the preface, and the gateway files: the environment while they are absent, a change
+  applied on the next read, a malformed replacement refused once with the last good gateway kept,
+  and a malformed file at startup refused.
+- `src/main.cpp` (`EgressGatewayFilesReloader`): the 2-second re-read of the gateway files (#1517).
 - `tests/connect/test_native_http_transport.cpp`: an outside address refused by default, an unlisted
   name refused before DNS, an allowlisted name dialled, loopback allowed, and a redirect from an
   allowed host to an outside one refused; through a stand-in gateway, a routed name reached with the

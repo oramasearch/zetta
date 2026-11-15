@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "zetta/connect/egress_policy.hpp"
 
@@ -100,6 +102,79 @@ std::string egress_gateway_preface(std::string_view host, std::uint16_t port);
 // True when `host:port` over `secure` is announced by SNI alone (HTTPS on the
 // gateway's SNI port); false when the preface is sent first.
 bool egress_gateway_uses_sni(bool secure, std::uint16_t port);
+
+// The gateway and its routes from **files** the node re-reads while it runs
+// (#1517), so a name-rule change does not restart the node. Under the operator
+// they are the keys `gateway` and `gatewayRoutes` of the cluster's egress
+// ConfigMap, mounted in the same directory as the allowlist file
+// (`ZETTA_EGRESS_ALLOW_FILE`, #1332); kubelet replaces them atomically through a
+// symlink, and every read opens the paths afresh.
+//
+//   * `<dir>/gateway` holds the gateway address, `<dir>/gatewayRoutes` the
+//     routes, in the syntax of `--egress-gateway` / `--egress-gateway-route`
+//     (`#` starts a comment that runs to the end of its line).
+//   * While **neither** file exists, `fallback` applies: the gateway from
+//     `ZETTA_EGRESS_GATEWAY` / `ZETTA_EGRESS_GATEWAY_ROUTES`.
+//   * A replacement that is malformed or unreadable never changes the gateway
+//     in force: the last good one stays, and the refusal is reported once per
+//     distinct state of the files. Malformed or unreadable at startup stops the
+//     node, like a malformed `--egress-gateway`.
+//
+// Not thread-safe: one owner calls `load` once, then `check` repeatedly.
+// Neither installs the gateway; the caller passes it to `set_egress_gateway`.
+class EgressGatewayFiles {
+public:
+    static constexpr std::string_view kGatewayFile = "gateway";
+    static constexpr std::string_view kRoutesFile = "gatewayRoutes";
+    // The largest file read; a bigger one is refused.
+    static constexpr std::size_t kMaxFileBytes = std::size_t{1} << 20;
+
+    EgressGatewayFiles(std::string directory, EgressGateway fallback);
+
+    // The directory of an allowlist file path (`/etc/zetta/egress/allow` ->
+    // `/etc/zetta/egress`); `.` for a bare name.
+    static std::string directory_of(std::string_view allow_file);
+
+    enum class Outcome {
+        Unchanged,  // the files read as they did last time
+        Applied,    // a new, well-formed state: `gateway` is the one now in force
+        Refused,    // a replacement was refused: `gateway` is the last good one
+    };
+
+    struct Result {
+        Outcome outcome = Outcome::Unchanged;
+        EgressGateway gateway;    // in force after this read
+        bool from_files = false;  // false: the environment fallback
+        std::string error;        // Refused: why
+    };
+
+    // The first read, at startup. nullopt (and `error`) when a file exists but
+    // is malformed or unreadable.
+    std::optional<Result> load(std::string* error = nullptr);
+
+    // A later read: Unchanged, Applied or Refused. Never throws.
+    Result check();
+
+    const std::string& directory() const { return directory_; }
+
+private:
+    struct FileState {
+        bool present = false;
+        std::string text;  // contents, comments kept (compared, then stripped)
+        std::string error;  // unreadable / too large
+        bool operator==(const FileState&) const = default;
+    };
+    FileState read(std::string_view name) const;
+    // Parse a state; nullopt with `error` when it is refused.
+    std::optional<Result> decide(const FileState& gateway, const FileState& routes,
+                                 std::string& error) const;
+
+    std::string directory_;
+    EgressGateway fallback_;
+    EgressGateway gateway_;
+    bool from_files_ = false;
+    std::optional<std::pair<FileState, FileState>> last_seen_;
+};
 
 // The process-wide gateway the native HTTP client consults. Starts as "no
 // gateway". `src/main.cpp` installs the configured one at startup. Safe to call
