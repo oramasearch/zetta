@@ -112,3 +112,8 @@ check counts the object paths.
 (`not_approved`, no Run started, the plan still proposed) and runs one after
 `approve_plan`, without a model checkpoint; the checkpoint-guarded test proves the
 plan it builds is stored proposed, refused, and runs once approved (#913).
+
+`test_study_driver.cpp`'s `AStudyByAUserWithoutSqlReadRunsNoTrialStep` is #1322's
+end-to-end case: a user who may create studies but holds no `sql:read` on the
+table gets the study, every trial fails on step authority, no model is trained,
+and the refusal is audited under that user.

@@ -19,6 +19,7 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
@@ -1010,3 +1011,60 @@ TEST_F(StudyDriverJourney, MetricLoggingFailureFailsTheTrialAtOnceWithItsReason)
 }
 
 }  // namespace
+
+// #1322: a study runs as the user who created it. A user who may create
+// studies (pipelines:manage) but holds no sql:read on the study's table gets
+// the study, and no trial step runs on their behalf: every trial fails with
+// "step authority", trains no model, logs no training round, and the refusal
+// is on the audit trail under that user.
+TEST_F(StudyDriverJourney, AStudyByAUserWithoutSqlReadRunsNoTrialStep) {
+    node.ensure_builtin_roles();
+    ASSERT_TRUE(node.create_role("study_only"));
+    ASSERT_TRUE(node.grant_permissions("study_only", {"mcp:call", "pipelines:manage"}));
+    auto user = node.create_user("tess");
+    ASSERT_TRUE(user);
+    ASSERT_TRUE(node.assign_role(user->id(), node.find_role("study_only")->id()));
+
+    land_table("tiny_churn", tiny_churn_rows());
+    Json input = study_input("unreadable study", 2, 200, 200);
+    input["dataset"] = "study_data.tiny_churn";
+    input["budgets"]["max_wall_time_ms"] = 600000;
+    ApiContext context{node, &cluster, user->id(), {}, &node.span_recorder(),
+                       &background};
+    context.acting_is_user = true;
+    const ApiResult created = registry.call("create_study", input, context);
+    ASSERT_TRUE(created.ok) << created.error.code << ": " << created.error.message;
+    const std::string study_id = created.value.at("id");
+    ASSERT_EQ(node.find_study(study_id)->value().principal, user->id());
+
+    ASSERT_TRUE(pump_until([&] {
+        const auto study = node.find_study(study_id);
+        return study && study->status() != zetta::ml::StudyStatus::Running;
+    }));
+    const auto study = node.find_study(study_id);
+    ASSERT_TRUE(study);
+    EXPECT_NE(study->status(), zetta::ml::StudyStatus::Complete);
+    ASSERT_FALSE(study->value().trials.empty());
+    for (const zetta::ml::StudyTrial& trial : study->value().trials) {
+        EXPECT_EQ(trial.state, zetta::ml::TrialState::Failed);
+        EXPECT_NE(trial.reason.find("step authority"), std::string::npos) << trial.reason;
+        EXPECT_TRUE(trial.intermediate.empty()) << "no training round ran";
+        const auto run = node.find_run(trial.run);
+        ASSERT_TRUE(run);
+        // The trial's Run records who it runs as.
+        ASSERT_TRUE(run->principal());
+        EXPECT_EQ(run->principal()->id, user->id());
+        for (const auto& model : node.models()) {
+            EXPECT_TRUE(model->run() != trial.run && model->run_id() != trial.run)
+                << "a refused trial trained a model";
+        }
+    }
+    bool refusal_audited = false;
+    for (const auto& event : node.audit_events()) {
+        if (event->actor() == user->id() && !event->allowed() &&
+            event->action() == zetta::governance::AuditAction::DataAccess) {
+            refusal_audited = true;
+        }
+    }
+    EXPECT_TRUE(refusal_audited);
+}
