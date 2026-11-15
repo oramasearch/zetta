@@ -113,6 +113,11 @@ struct ChurnSolutionOptions {
     std::string project;                     // labels the Run + every ComputeJob
     std::string graph;                       // graph id label
     std::string run_id;                      // reuse this Run for a study trial
+    // Who the run's steps run as (#1322): a host-injected runner passes the
+    // console session's principal here, so the churn engine authorizes each
+    // step for it. Empty is the trusted local session, unless the reused Run
+    // records a principal, which is then used.
+    pipeline::RunPrincipal principal;
     ml::TrainProgressCallback training_progress;
     std::string result_database = "churn_results";
     std::string result_table_prefix = "at_risk_";

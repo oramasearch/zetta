@@ -263,7 +263,7 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
                 }
             }
             const zetta::pipeline::ExecutionResult exec =
-                graph_runner_ ? graph_runner_(lowered.graph)
+                graph_runner_ ? graph_runner_(lowered.graph, principal)
                               : node_.run_graph(lowered.graph, {}, {}, principal);
             Result result = sim_python_result(lowered.graph, exec);
             record(true, "console sim-python · " + summary + " · run " +

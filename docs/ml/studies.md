@@ -549,7 +549,9 @@ created: its `dataset`, or its Pipeline's connect steps. Each trial Run adds the
 to its own `reads`, and [`delete_dataset`](../api/deletes.md#refusals) refuses a
 dataset a running Study reads, even between trials. A Study also records who
 created it as `principal` (`{id, is_user}`, #1322; absent for the trusted local
-session): every trial runs as that principal under step authority. Before a trial
+session): every trial runs as that principal under step authority, and each
+trial's Run records it as its own `principal`, so a retried or resumed trial Run
+keeps it. Before a trial
 runs, each step of its graph and each table in `reads` is authorized for the
 principal and audited, and a denial fails the trial with `step authority: ...`, so
 a creator who may not read the table gets no trial step run on their behalf. The

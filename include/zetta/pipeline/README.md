@@ -23,4 +23,6 @@ caller values retain strict validation. See
 run's principal may run it: deny-by-default, from the principal's roles or
 AccessKey capabilities, each decision a `data_access` audit event.
 `GraphExecutor::run_as` applies it to a walk. See
-[step authority](../../../docs/governance/step-authority.md) (#843).
+[step authority](../../../docs/governance/step-authority.md) (#843). The Run
+records the principal (`RunValue::principal`), and a continued Run executed
+without `run_as` runs as it (#1322).

@@ -411,6 +411,16 @@ const nlohmann::json& schema_document() {
           "required": ["version", "caller"],
           "additionalProperties": false
         },
+        "principal": {
+          "description": "Who the run runs as (#1322): the user or access-key id its steps are authorized for. Absent for the trusted local session.",
+          "type": "object",
+          "properties": {
+            "id":      { "type": "string", "minLength": 1 },
+            "is_user": { "type": "boolean" }
+          },
+          "required": ["id", "is_user"],
+          "additionalProperties": false
+        },
         "reads": {
           "type": "array",
           "items": {
@@ -531,6 +541,11 @@ nlohmann::json to_json(const RunValue& value) {
         output["published"] = {{"version", value.published->version},
                                {"caller", value.published->caller}};
     }
+    // Only when set, so a local run keeps the shape an older peer accepts.
+    if (value.principal) {
+        output["principal"] = {{"id", value.principal->id},
+                               {"is_user", value.principal->is_user}};
+    }
     return output;
 }
 
@@ -642,6 +657,11 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
         parsed.published = RunPublication{published->value("version", std::uint64_t{0}),
                                           published->value("caller", std::string{})};
     }
+    if (const auto principal = value.find("principal");
+        principal != value.end() && principal->is_object()) {
+        parsed.principal = RunPrincipalRecord{principal->value("id", std::string{}),
+                                              principal->value("is_user", false)};
+    }
     if (const auto lineage = value.find("lineage"); lineage != value.end()) {
         parsed.lineage.sources =
             lineage->value("sources", std::vector<std::string>{});
@@ -692,6 +712,12 @@ void Run::add_reads(const std::vector<TableRead>& reads) {
 
 void Run::set_published(RunPublication published) {
     value_.published = std::move(published);
+    capture_and_persist();
+}
+
+void Run::set_principal(RunPrincipalRecord principal) {
+    if (value_.principal == principal) return;
+    value_.principal = std::move(principal);
     capture_and_persist();
 }
 

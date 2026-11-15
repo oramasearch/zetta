@@ -209,12 +209,17 @@ App::App(Node& node, zetta::cluster::Cluster& cluster)
     // capability check, correctness gate, and audit record (in GovernedConsole) wrap
     // this identically either way, so the run stays gated + governed.
     governed_console_->set_graph_runner(
-        [this](const ir::ExecutionGraph& graph) -> zetta::pipeline::ExecutionResult {
-            if (!zetta::usecases::churn::is_churn_graph(graph)) return node_.run_graph(graph);
+        [this](const ir::ExecutionGraph& graph,
+               const zetta::pipeline::RunPrincipal& principal) -> zetta::pipeline::ExecutionResult {
+            // Every step runs as the console session's principal (#1322).
+            if (!zetta::usecases::churn::is_churn_graph(graph)) {
+                return node_.run_graph(graph, {}, {}, principal);
+            }
             compute::CpuDevice device;
             zetta::usecases::churn::ChurnSolutionOptions options;
             options.project = "console";
             options.graph = "console-churn";
+            options.principal = principal;
             return run_churn_solution_on_node(node_, device, graph,
                                               zetta::usecases::churn::demo_churn_dataset(), options)
                 .execution;

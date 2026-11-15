@@ -17703,6 +17703,24 @@
                         "pipeline_name": {
                           "type": "string"
                         },
+                        "principal": {
+                          "additionalProperties": false,
+                          "description": "Who the run runs as (#1322): the user or access-key id its steps are authorized for. Absent for the trusted local session.",
+                          "properties": {
+                            "id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "is_user": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "is_user"
+                          ],
+                          "type": "object"
+                        },
                         "project": {
                           "type": "string"
                         },

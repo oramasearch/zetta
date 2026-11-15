@@ -183,6 +183,47 @@ TEST_F(StepAuthorityNode, UngrantedStepIsRefusedAndNeverExecutes) {
     EXPECT_NE(events[1]->value().detail.find("denied"), std::string::npos);
 }
 
+// #1322: the principal goes on the Run, and a run executed again without run_as
+// (a study trial, a reused Run the node retries) runs as the principal it
+// records, never as the trusted local session.
+TEST_F(StepAuthorityNode, ARunKeepsItsPrincipalWhenExecutedAgain) {
+    const std::string reader = user_with_role("rhea", "reader");
+    GraphExecutor first{std::make_shared<RecordingStepExecutor>()};
+    first.run_as({reader, /*acting_is_user=*/true});
+    const auto started = first.execute(node, connect_then_model());
+    ASSERT_TRUE(started.run);
+    ASSERT_TRUE(started.run->principal());
+    EXPECT_EQ(started.run->principal()->id, reader);
+    EXPECT_TRUE(started.run->principal()->is_user);
+
+    // The retry has no run_as: it still runs as the reader and is refused at
+    // the model step, which the reader may not run.
+    auto steps = std::make_shared<RecordingStepExecutor>();
+    GraphExecutor retry{steps};
+    const auto again = retry.execute(node, connect_then_model(), {}, {}, nullptr, started.run);
+    EXPECT_FALSE(again.ok);
+    EXPECT_NE(again.error.find("orchestration:train_model"), std::string::npos) << again.error;
+    EXPECT_EQ(steps->executed, std::vector<std::string>{"load"});
+    EXPECT_EQ(step_events(node).back()->actor(), reader);
+}
+
+TEST(RunPrincipalRecord, RoundTripsAndIsAbsentForALocalRun) {
+    zetta::pipeline::RunValue value;
+    EXPECT_FALSE(zetta::pipeline::to_json(value).contains("principal"));
+    value.principal = zetta::pipeline::RunPrincipalRecord{"user-ada", true};
+    const nlohmann::json json = zetta::pipeline::to_json(value);
+    ASSERT_TRUE(json.contains("principal"));
+    const auto parsed = zetta::pipeline::parse_run_value(json);
+    ASSERT_TRUE(parsed);
+    ASSERT_TRUE(parsed->principal);
+    EXPECT_EQ(parsed->principal->id, "user-ada");
+    EXPECT_TRUE(parsed->principal->is_user);
+
+    nlohmann::json empty_id = json;
+    empty_id["principal"]["id"] = "";
+    EXPECT_FALSE(zetta::pipeline::parse_run_value(empty_id));
+}
+
 TEST_F(StepAuthorityNode, UnknownPrincipalIsDeniedAtTheFirstStep) {
     auto steps = std::make_shared<RecordingStepExecutor>();
     GraphExecutor executor{steps};

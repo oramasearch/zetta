@@ -423,3 +423,42 @@ TEST(Study, RecordsItsCreatorAsThePrincipalItsTrialsRunAs) {
     EXPECT_EQ(study->value().principal, "user-ada");
     reloaded.stop();
 }
+
+// #1322: every trial's Run records the study's principal, so the trial's steps
+// run as it whenever the Run is executed or retried. A local study's trials
+// record none.
+TEST(Study, ATrialsRunRecordsTheStudysPrincipal) {
+    zetta::test::TempDir directory;
+    zetta::Node node{{directory.path().string(), false}};
+    ASSERT_TRUE(node.start());
+    zetta::compute::WorkStealingScheduler scheduler(1);
+    const auto trial = [](const nlohmann::json&, std::uint64_t, const std::string&,
+                          const zetta::ml::TrialReporter&, const std::atomic<bool>&) {
+        return zetta::ml::TrialOutcome{.objective = 0.5};
+    };
+    const auto user_study = node.create_study(
+        synthetic_spec("principal-trials", zetta::ml::SamplerKind::Random,
+                       zetta::ml::PrunerKind::None, 2),
+        nullptr, zetta::pipeline::RunPrincipal{"user-ada", true});
+    ASSERT_TRUE(user_study);
+    zetta::ml::run_study(node, *user_study, scheduler, trial);
+    ASSERT_FALSE(user_study->value().trials.empty());
+    for (const zetta::ml::StudyTrial& recorded : user_study->value().trials) {
+        const auto run = node.find_run(recorded.run);
+        ASSERT_TRUE(run);
+        ASSERT_TRUE(run->principal());
+        EXPECT_EQ(run->principal()->id, "user-ada");
+        EXPECT_TRUE(run->principal()->is_user);
+    }
+
+    const auto local_study = node.create_study(synthetic_spec(
+        "local-trials", zetta::ml::SamplerKind::Random, zetta::ml::PrunerKind::None, 1));
+    ASSERT_TRUE(local_study);
+    zetta::ml::run_study(node, *local_study, scheduler, trial);
+    for (const zetta::ml::StudyTrial& recorded : local_study->value().trials) {
+        const auto run = node.find_run(recorded.run);
+        ASSERT_TRUE(run);
+        EXPECT_FALSE(run->principal());
+    }
+    node.stop();
+}

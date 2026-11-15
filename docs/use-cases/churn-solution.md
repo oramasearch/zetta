@@ -66,7 +66,7 @@ Two things also had to line up for *the catalog blueprint* specifically:
 | `churn_events_schema()` / `churn_accounts_schema()` | The DDF schema of those encoded shards — the encoder's output contract (events: `entity`/`ts`/`value`/`type`; accounts: `entity`/`mrr`/`seats`/`tenure_days`/`churned`). |
 | `churn_featurize_spec(as_of)` | The standard leakage-free [featurization](../ddf/ddf-featurize.md) graph over the encoded shards (the `churn_features.sql` shape): windowed `failed_payments` / `support_severity` / `total_events` at or before `as_of`, the carried static account features, the `churned` label. |
 | `default_churn_gbdt_params()` | The proven, fast [GBDT](../ml/gbdt.md) config (30 trees / depth 3 / 16 bins / lr 0.3) — light enough to run on a click. |
-| `run_churn_solution_on_node(node, device, graph, dataset, options)` | THE runner: resolve `node.job_coordinator()` → encode → build the pipeline config → inject a `ChurnStepExecutor` into a `GraphExecutor` → execute `graph`. Returns the Run plus the real artifacts. |
+| `run_churn_solution_on_node(node, device, graph, dataset, options)` | THE runner: resolve `node.job_coordinator()` → encode → build the pipeline config → inject a `ChurnStepExecutor` into a `GraphExecutor` run as `options.principal` (#1322; a coordinated launch carries it to every participant) → execute `graph`. Returns the Run plus the real artifacts. |
 | `demo_churn_dataset()` | A small, deterministic, in-memory churn dataset (no files) with a clean failed-payments churn signal — the data the headed "Run over the cluster" action trains on. |
 
 `ChurnSolutionOptions` retains the churn result defaults but can name the

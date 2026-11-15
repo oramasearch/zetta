@@ -10,6 +10,8 @@ most one per second; the Node's tick and stop write the last one (#1217).
 `executor.cpp` authorizes each step for the run's principal before it executes
 when one is set, through `step_authority.cpp` (deny-by-default, audited as
 `data_access`; [step authority](../../../docs/governance/step-authority.md), #843).
+It records that principal on the Run, and a Run executed again without one runs
+as the principal it records (#1322).
 
 `deployment_controller.cpp` records each run it starts or self-heals as
 `data_changed` on `run:<id>`; from `Node::tick` it is the node's own work,

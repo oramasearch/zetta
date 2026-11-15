@@ -157,6 +157,19 @@ ExecutionResult GraphExecutor::execute(Node& node,
     node.run_on_owner([&] { result.run->add_reads(node.tables_read(graph)); });
     Run& run = *result.run;
 
+    // Who the steps run as (#1322). An explicit run_as wins, and is recorded on
+    // the run so a later resume or retry keeps it. Without one, a run that
+    // already records a principal (a study trial, a reused Run) runs as that
+    // principal, never as the trusted local session.
+    RunPrincipal principal = principal_;
+    node.run_on_owner([&] {
+        if (!principal.local()) {
+            run.set_principal({principal.acting_id, principal.acting_is_user});
+        } else if (const auto& recorded = run.principal(); recorded && !recorded->id.empty()) {
+            principal = {recorded->id, recorded->is_user};
+        }
+    });
+
     // One trace per run (#640): the id lives on the replicated run record, so
     // spans recorded anywhere for this run join it. The run root span + the
     // per-step child spans below land in this node's ring (system.spans).
@@ -245,9 +258,9 @@ ExecutionResult GraphExecutor::execute(Node& node,
         // step exercises before it executes. A denial fails the step like any
         // other failure (fail-fast), so nothing past it runs.
         zetta::governance::AccessDecision authority{true, {}};
-        if (!principal_.local()) {
+        if (!principal.local()) {
             node.run_on_owner(
-                [&] { authority = authorize_step(node, principal_, *step, run_id); });
+                [&] { authority = authorize_step(node, principal, *step, run_id); });
         }
         StepOutcome outcome;
         if (authority) {
@@ -255,11 +268,11 @@ ExecutionResult GraphExecutor::execute(Node& node,
             // principal and this run (#1323): an egress denial names them,
             // not the node.
             const zetta::connect::OutboundCallerScope outbound{
-                {principal_.local() ? std::string("local") : principal_.acting_id, run_id}};
+                {principal.local() ? std::string("local") : principal.acting_id, run_id}};
             outcome = step_executor_->run_step(*step);
         } else {
             outcome.ok = false;
-            outcome.error = "not authorized: " + principal_.acting_id + " lacks " +
+            outcome.error = "not authorized: " + principal.acting_id + " lacks " +
                             std::string(zetta::governance::to_string(
                                 step_operation(step->kind).domain)) +
                             ":" + step_operation(step->kind).action + " (" +

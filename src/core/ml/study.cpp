@@ -557,6 +557,14 @@ bool trial_cost_fits(const StudyValue& value,
     return value.spent_cost + reserved <= value.spec.budgets.cost_cap;
 }
 
+// A trial's Run records the study's principal (#1322), so its steps run as
+// that principal whenever the Run is executed or retried, never as the node.
+// A study the local session created records none.
+void record_trial_principal(pipeline::Run& run, const StudyValue& value) {
+    if (value.principal.empty()) return;
+    run.set_principal({value.principal, value.principal_is_user});
+}
+
 }  // namespace
 
 std::string_view to_string(StudyDirection value) {
@@ -1162,6 +1170,7 @@ StudyRunResult run_study(Node& node, Study& study,
                 break;
             }
             run->add_reads(study.value().reads);  // zetta#1258
+            record_trial_principal(*run, study.value());  // #1322
             run->set_status(zetta::pipeline::RunStatus::Running);
             nlohmann::json recorded_params = params;
             recorded_params["study.id"] = study.id();
@@ -2014,6 +2023,7 @@ std::size_t advance_workspace_study(Node& node, Study& study) {
             return admitted;
         }
         run->add_reads(study.value().reads);  // zetta#1272
+        record_trial_principal(*run, study.value());  // #1322
         run->set_status(pipeline::RunStatus::Running);
         run->add_log({util::now_iso8601(), "info",
                       "trial " + std::to_string(number) + " of the experiment " + spec.name +
@@ -2173,6 +2183,7 @@ std::vector<StudyTrial> StudyDriver::State::prepare_batch(
                 break;
             }
             run->add_reads(study->value().reads);  // zetta#1258
+            record_trial_principal(*run, study->value());  // #1322
             run->set_status(pipeline::RunStatus::Running);
             StudyTrial trial;
             trial.number = number;
@@ -2274,6 +2285,10 @@ StudyDriver::State::TrialResult StudyDriver::State::execute_trial(
         }
     }
     if (plan) {
+        // The churn engine executes each step as the principal (#1322); its
+        // Run records it too, and a coordinated launch carries it to every
+        // participant's copy.
+        plan->options.principal = principal;
         plan->options.training_progress =
             [&](int step, const std::map<std::string, double>& values) {
                 if (trial_cancel->load(std::memory_order_acquire)) return false;
