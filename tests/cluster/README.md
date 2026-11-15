@@ -40,6 +40,14 @@ to have landed and then asserted to heal. They build as their own executable,
 peer's `HELLO` node id to the common name of the certificate mutual TLS verified
 (#669): a valid member certificate naming another node is refused, while a
 matching peer joins the same node in the same window.
+`test_cluster_enrollment.cpp` is CTL-2 V2 enrollment (#1319): the enrollment CA
+comes from its own seed and never from the token, an enrollment certificate
+carries the key the node presented, the proof binds token, id and key, the
+founder generates the CA and a joiner is handed it, a token change keeps the
+node's key, the pins persist, a joiner enrolls over a real mutual-TLS link and
+is recorded as `node_cert:<id>`, and a token holder that mints a certificate for
+an enrolled id with another key is refused.
+
 `test_cluster_join_authority.cpp` is #848's authority half: two nodes over mutual
 TLS with real `Node`s and identity roots, in `main.cpp`'s order (join, sync,
 then seed). A joiner with its own `--admin-token` mints no owner the cluster

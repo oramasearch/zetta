@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "seed": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "version": {
+      "const": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "seed"
+  ],
+  "title": "zetta.ClusterCa",
+  "type": "object"
+}

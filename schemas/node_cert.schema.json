@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "ca_certificate": {
+      "maxLength": 8192,
+      "type": "string"
+    },
+    "certificate": {
+      "maxLength": 8192,
+      "type": "string"
+    },
+    "issued_by": {
+      "maxLength": 128,
+      "type": "string"
+    },
+    "not_after": {
+      "type": "integer"
+    },
+    "public_key_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "serial": {
+      "pattern": "^[0-9a-f]{16}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "certificate",
+    "ca_certificate",
+    "public_key_sha256",
+    "serial",
+    "issued_by",
+    "not_after"
+  ],
+  "title": "zetta.NodeCert",
+  "type": "object"
+}

@@ -13,6 +13,11 @@ Explicit audit purge propagates through the same range exchange (#1169). See
 The secret file keeps up to four retired join tokens when `--join-token`
 re-keys a node, so the connector-credential key derived from an earlier token
 still opens (#1230). See [transport security](../../../docs/cluster/security.md).
+Enrollment (#1319): `security.cpp` holds the enrollment CA (random, never from
+the token), signs and verifies enrollment certificates and keeps the pins;
+`cluster.cpp` pins every enrolled node id to its key at the handshake, answers
+`ENROLL` with a certificate and the CA, and runs the enrollment upkeep loop. A
+token change keeps the node's key, so its id stays pinned to it.
 
 `ReplicationManager::update` is an atomic read-check-write under the replication
 mutex. `Cluster::request_each` sends one request to several peers in one round

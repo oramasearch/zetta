@@ -18,9 +18,9 @@ characters. Everything else derives from it:
    private key *is* a 32-byte seed, so `SHA256(token-bytes ‖ "zetta-cluster-ca-v1")`
    gives every token holder the **same CA keypair** — and, with all certificate
    fields fixed (subject `CN=zetta-cluster-ca`, a fixed 2026→2076 validity
-   window, serial from the subject hash), the same CA certificate. No CA ever
-   travels over the network and no enrollment RPC exists: **possession of the
-   token is the ability to mint a cluster-trusted identity**, which matches the
+   window, serial from the subject hash), the same CA certificate. This CA never
+   travels over the network: **possession of the token is the ability to mint a
+   token-CA-trusted identity**, which matches the
    equal-peer, no-leader architecture (any member could enroll others anyway).
 2. **Each node mints its own identity**: a fresh random Ed25519 keypair in a
    CA-signed certificate whose `CN` is the node id, persisted next to the token
@@ -57,9 +57,62 @@ characters. Everything else derives from it:
    reader under the lock waiting for the other, and the link froze silently
    (#835). See [transport-library.md](transport-library.md).
 
+6. **Enrollment pins each node id to its key** (#1319, CTL-2 V2). See
+   [Enrollment](#enrollment-1319) below.
+
 Mixed modes fail cleanly in both directions: a TLS node treats a plaintext
 `HELLO` as a failed handshake; a plaintext node treats a TLS `ClientHello` as a
 malformed line. Either way the connection drops and nothing joins.
+
+## Enrollment (#1319)
+
+The token-derived CA lets every token holder mint a certificate for **any** node id. Enrollment adds
+a second CA that the token does not give, and binds every node id to one key.
+
+**Decided under Steve's 2026-11-14 delegation:** any member signs (not a quorum), and the migration
+takes two releases, because a quorum would make every join depend on a majority being up while the
+token already limits who can enroll at all, and two releases let a rolling upgrade finish before the
+token-derived CA is refused.
+
+- **The enrollment CA.** A random Ed25519 key (`generate_enrollment_ca`), never derived from the
+  token, with a self-signed certificate (`CN=zetta-cluster-enrollment-ca`, fixed fields, so one seed
+  gives one certificate). The node that **generates the join token** creates it with the cluster
+  (`load_or_create_cluster_security`) and stores its seed in `cluster-ca.json` (0600). Every other
+  node is handed the seed when it enrolls, inside the mutually authenticated link; it never enters
+  the replicated catalogue. A cluster that predates enrollment has no CA: once every connected peer
+  has answered that it holds none (or not answered: an older node) for ten seconds, the node with the
+  lowest id among them generates it.
+- **Enrolling.** A node without an enrollment certificate sends `ZETTA/1 ENROLL <proof>` on a live
+  link. Its CSR is the certificate it presented in that link's handshake: the handshake proved it
+  holds the key, and the `HELLO` pin proved the id. The proof is `HMAC-SHA256(join token,
+  "zetta-enroll-v1\n" + node id + "\n" + SHA-256 of the key)`, checked in constant time. The member
+  refuses an id already pinned to another key (`enrolled-to-another-key`), then signs a certificate
+  for that id and key, valid for 30 days with a random serial, records it, pins it, and answers
+  `ZETTA/1 ENROLLED` with the certificate and the CA's seed. A node holding the CA signs its own.
+- **The record.** `node_cert:<node id>` = `{certificate, ca_certificate, public_key_sha256, serial,
+  issued_by, not_after}` (schema `node_cert_record_schema()`, generated
+  `schemas/node_cert.schema.json`). It is the input to per-node revocation (#1320). Each node renews
+  its own certificate when fewer than ten days are left, and puts its record back if it is overwritten.
+- **Pins: one id, one key.** Every node keeps node id -> SHA-256 of the enrolled key in
+  `node-pins.json`. It pins an id when it signs its enrollment, and when the document shows a
+  certificate its own CA signed for that id. **The first key wins**: a later record for a pinned id
+  changes nothing. At every handshake, after the `HELLO` pin, a peer presenting a certificate whose
+  key is not the one its id is pinned to is refused (whatever CA signed it), before it is registered.
+- **Converging on one CA.** Two nodes may each generate a CA (a partition when the cluster first
+  upgrades). While the token-derived CA is still accepted, a node that sees a node enrolled under a
+  CA with a smaller public key asks that node to enroll it and moves to that CA. Pins do not change,
+  since they name keys, not CAs.
+- **A token change keeps the key.** Passing a new `--join-token` re-signs the node's token-derived
+  certificate over the key it already has, so its id stays pinned to the same key.
+
+**The migration, two releases.** In this release a peer's transport certificate is still the
+token-derived one, and the token-derived CA is still trusted, so nodes of the previous release keep
+joining and every node enrolls itself at start (it already holds the token). The pin closes the
+impersonation of an **enrolled** id now. A token holder can still join under a **new** id; that is
+closed in the next release, which refuses token-derived certificates, presents enrollment
+certificates on the transport, and lets a new node enroll over a link where only the server
+authenticates, with the enrollment CA's public key as its join material. Only from then does
+"removal means removed" hold against a holder of the token.
 
 ## Joining a cluster
 
@@ -94,8 +147,8 @@ no flag. See [identity-seal.md](../governance/identity-seal.md) (#763, #764).
 
 `--join-token` is persisted in the joiner's own data dir on first use, so it is
 needed only once. Passing a *different* token to a node that already has one
-**re-keys** it: the new token wins, is persisted, and the node's identity is
-re-minted under the new CA. Inter-node mTLS is **always on** — there is **no
+**re-keys** it: the new token wins, is persisted, and the node's certificate is
+re-minted under the new CA over the key it already has (#1319). Inter-node mTLS is **always on** — there is **no
 plaintext peer mode**. The old `--cluster-plaintext` opt-out was **removed**
 (#799): it disabled the whole subsystem and was a silent-downgrade security
 hole. The only way to run an unsecured `Cluster` now is to embed a bare
@@ -175,13 +228,17 @@ cannot revoke secret bytes an earlier reader already obtained.
 | `cluster-secret.json` | `{"version": 1, "join_token": "<64 hex>", "retired_join_tokens"?: ["<64 hex>", …]}` — schema-validated on load (`cluster_secret_schema()`, generated `schemas/cluster_secret.schema.json`); a malformed file **fails the start with a reason**, it is never silently clobbered. A `--join-token` that replaces the stored token moves it to `retired_join_tokens` (newest first, at most four) | 0600 |
 | `connection-root-secret` | only on a node embedded **without** a join token (the library, a test): the 64-hex root secret its saved connector credentials are sealed under (#1230) | 0600 |
 | `node-cert.pem` | this node's CA-signed identity certificate (`CN` = node id) | 0600 |
-| `node-key.pem` | this node's Ed25519 private key | 0600 |
+| `node-key.pem` | this node's Ed25519 private key (kept across a token change, #1319) | 0600 |
+| `cluster-ca.json` | the enrollment CA's seed, `{"version": 1, "seed": "<64 hex>"}` (schema `cluster_ca_schema()`); on the founder from the first start, on every other node once it enrolls (#1319) | 0600 |
+| `node-cert-enrolled.pem` | this node's enrollment certificate (`CN` = node id, 30 days, from the enrollment CA) | 0600 |
+| `node-pins.json` | node id -> SHA-256 of the key it enrolled, `{"version": 1, "pins": {...}}` (schema `node_pins_schema()`); the first key wins (#1319) | 0600 |
 | `identity-root.json` | the pinned identity root: `{"version": 1, "public_key": "<64 hex>", "seed"?: "<64 hex>", "previous"?: ["<64 hex>", …]}`; `seed` for a root this node can seal with; `previous`, the roots it trusted before a rotation moved the pin (oldest first, at most eight, #1342). Schema `identity_root_schema()`. See [identity-seal.md](../governance/identity-seal.md) | 0600 with a seed, else 0644 |
 | `identity-sealed` | marker: the one-time sealing of identity records held before the root ran | — |
 | `identity-held.json` | the newest sealed record this node accepted for each identity key: `{"version": 1, "records": {"<key>": <sealed value>}}`, so a restart still refuses an older one. Each record is verified again on load; a file that does not parse refuses the start. It also holds the identity epoch (`identity_epoch:cluster`), the root's sealed commitment to every record's version. See [identity-seal.md](../governance/identity-seal.md#versions-and-removals-1341) (#1341, #1360) | 0644 |
 
 The stored identity is reused while it still verifies against the derived CA
-and carries this node's id; a token change or a node-id mismatch re-mints it.
+and carries this node's id; a token change or a node-id mismatch re-mints the
+certificate over the same key (#1319).
 
 The join token is also the root secret of the **connector-credential sealing
 key** (#1230): `main` passes it as `NodeConfig::connection_root_secret`, and saved
@@ -211,6 +268,11 @@ previous one; its next start re-seals those entries under the current token. See
 - `src/core/util/private_directory.{hpp,cpp}` — shared owner-only directory
   creation, checked reads and private file replacement for cluster and
   connector secret persistence; no JSON or wire-format changes (#1413).
+- Enrollment (#1319): `EnrollmentCa`, `sign_enrollment_certificate`,
+  `verify_enrolled_certificate`, `enrollment_proof`, the pin and CA files in
+  `src/core/cluster/security.cpp`; the handshake pin (`pin_allows`), `ENROLL` /
+  `ENROLLED` and `run_enrollment_round` in `src/core/cluster/cluster.cpp`;
+  `tests/cluster/test_cluster_enrollment.cpp`.
 - `tests/cluster/test_cluster_security.cpp` — token/derivation/persistence
   units + real-TCP mTLS convergence, wrong-token rejection, plaintext
   rejection, and the `HELLO`-to-certificate pin
@@ -230,14 +292,17 @@ join token, can no longer claim another node's id in its `HELLO`, and a link is
 never recorded under an id its certificate does not name. This is the check the
 two items below depend on.
 
+**Closed by #1319 (enrollment):** taking an **enrolled** node id. A token holder
+can still mint a token-derived certificate for any `CN`, but every node pins an
+enrolled id to its key and refuses any other key for it, so the certificate gets
+no link. The enrollment CA is not derivable from the token.
+
 **Still open:**
 
-- **Member-vs-member node-id impersonation by a token holder.** The CA key is
-  derivable from the join token, so any member (anyone holding the token) can
-  mint a certificate whose `CN` is another node's id, and pinning accepts it.
-  Closing this means CSR-based enrollment (#1319): a joining node generates its
-  key locally and an existing member signs it, so the CA key lives with members
-  rather than inside the token.
+- **Joining under a new id with the token**, until the next release refuses the
+  token-derived CA (see [Enrollment](#enrollment-1319)). A member is trusted to
+  sign enrollments, so a member that turns hostile can enroll new ids too; it
+  cannot move an id other nodes have already pinned.
 - **No revocation.** Removing a node's trust today means rotating the token
   (re-key every node). Token rotation is manual (`--join-token` on each node);
   each node re-seals the saved connector credentials on its first start under

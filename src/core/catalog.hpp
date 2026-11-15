@@ -110,6 +110,11 @@
 //                          Postgres-style RLS: a USING read filter + a WITH CHECK
 //                          write filter, evaluated by the SQL WHERE engine against
 //                          the acting identity; see governance/policy.hpp / #748)
+//   node_cert:<node id> -> { certificate, ca_certificate, public_key_sha256,
+//                          serial, issued_by, not_after }  (a node's enrollment
+//                          certificate from the cluster's enrollment CA: every
+//                          node pins the id to that key — #1319; see
+//                          cluster/security.hpp)
 //   identity_root_succession:<root> -> { old, new, issued_at, _seal }  (the old
 //                          identity root handing identity to <root>, sealed by
 //                          the old root — #1342; see governance/identity_seal.hpp)

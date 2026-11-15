@@ -172,6 +172,33 @@ struct Cluster::State {
     std::map<std::string, std::string> seed_node;  // seed string -> resolved node id
     std::set<std::string> dialing;                 // seeds with a dial in flight
 
+    // --- Enrollment (#1319, docs/cluster/security.md) -------------------------
+    //
+    // The enrollment CA (when this node holds it), this node's enrollment
+    // certificate, and the pins: node id -> the SHA-256 of the key it enrolled.
+    // Touched by the network thread (handshakes, ENROLL/ENROLLED, the
+    // enrollment loop) and read by callers, so it has its own lock.
+    struct Enrollment {
+        mutable std::mutex mutex;
+        bool enabled = false;
+        std::string self_id;
+        std::string join_token;
+        std::string directory;
+        std::vector<unsigned char> own_der;  // the certificate this node presents: its CSR
+        std::string own_key;                 // SHA-256 of its key
+        std::optional<EnrollmentCa> ca;
+        std::string certificate_pem;         // this node's enrollment certificate
+        std::map<std::string, std::string> pins;
+        // The certificate each live peer presented, so ENROLL signs that key.
+        std::map<std::string, std::vector<unsigned char>> presented;
+        // Peers that answered "no CA", or did not answer (an older node).
+        std::set<std::string> without_ca;
+        std::string asked;  // the peer an ENROLL is waiting on
+        std::chrono::steady_clock::time_point asked_at{};
+        std::chrono::steady_clock::time_point started{};
+        std::string scanned_version;  // the document version last scanned for records
+    } enrollment;
+
     // --- Signal plane -------------------------------------------------------
     //
     // The application's handler for incoming signals. Set on any thread, read on
@@ -695,6 +722,212 @@ std::string signal_line(const Signal& signal) {
     return std::string(kProtocol) + " SIGNAL " + encode_signal(signal);
 }
 
+// --- Enrollment (#1319, docs/cluster/security.md) ---------------------------
+//
+//   ZETTA/1 ENROLL <proof>          — enroll the key this link presents, for the
+//                                     node id its certificate names
+//   ZETTA/1 ENROLLED <base64 json>  — {"certificate", "ca_seed"} or {"error"}
+//
+// The CSR is the certificate the requester presented in this link's handshake:
+// the handshake proved it holds that key, and the HELLO pin proved the id. The
+// proof (HMAC of the join token over the id and the key's hash) binds the
+// request to the token, so the step stays the same once the token-derived CA is
+// no longer accepted. The answer carries the enrollment CA's seed: it travels
+// only inside this mutually authenticated link, never in the catalogue.
+
+using Enrollment = Cluster::State::Enrollment;
+
+constexpr std::chrono::seconds kEnrollAnswerWait{5};
+// How long a node with no CA waits for a peer to hand it one before the
+// lowest node id among those that answered "no CA" generates it.
+constexpr std::chrono::seconds kEnrollmentCaGrace{10};
+
+void persist_pins_locked(const Enrollment& enrollment) {
+    std::string reason;
+    if (!store_node_pins(enrollment.directory, enrollment.pins, &reason)) {
+        std::fprintf(stderr, "zetta: WARNING: node pins not stored: %s\n", reason.c_str());
+    }
+}
+
+// The verified enrollment record of `node_id` in the document, under `ca`.
+std::optional<EnrolledCertificate> recorded_enrollment(const Cluster::State* self,
+                                                       const std::string& node_id,
+                                                       const EnrollmentCa& ca) {
+    if (!self->replication) return std::nullopt;
+    const auto view = self->replication->shared_snapshot();
+    if (!view) return std::nullopt;
+    const auto found = view->find(std::string(kNodeCertPrefix) + node_id);
+    if (found == view->end() || !found->is_object()) return std::nullopt;
+    const std::string certificate = found->value("certificate", std::string{});
+    auto verified = verify_enrolled_certificate(certificate, ca.certificate_pem);
+    if (!verified || verified->node_id != node_id) return std::nullopt;
+    return verified;
+}
+
+// Whether `node_id` may present the key `key` (#1319): refused when the id is
+// pinned to another key. An id this node has not pinned is pinned from its
+// enrollment record, when the document holds one this node's CA signed.
+bool pin_allows(Cluster::State* self, const std::string& node_id, const std::string& key) {
+    Enrollment& enrollment = self->enrollment;
+    const std::lock_guard lock(enrollment.mutex);
+    if (!enrollment.enabled || key.empty()) return true;
+    if (const auto pinned = enrollment.pins.find(node_id); pinned != enrollment.pins.end()) {
+        return pinned->second == key;
+    }
+    if (enrollment.ca) {
+        if (const auto recorded = recorded_enrollment(self, node_id, *enrollment.ca)) {
+            enrollment.pins[node_id] = recorded->public_key_sha256;
+            persist_pins_locked(enrollment);
+            return recorded->public_key_sha256 == key;
+        }
+    }
+    return true;  // not enrolled anywhere this node can see: the token-derived CA admits it
+}
+
+// The replicated record of an enrollment certificate.
+nlohmann::json node_cert_record(const std::string& certificate, const EnrollmentCa& ca,
+                                const EnrolledCertificate& enrolled,
+                                const std::string& issued_by) {
+    return nlohmann::json{{"certificate", certificate},
+                          {"ca_certificate", ca.certificate_pem},
+                          {"public_key_sha256", enrolled.public_key_sha256},
+                          {"serial", enrolled.serial},
+                          {"issued_by", issued_by},
+                          {"not_after", enrolled.not_after}};
+}
+
+// Sign this node's own enrollment certificate under the CA it holds and record
+// it. Caller holds the enrollment lock.
+void self_enroll_locked(Cluster::State* self, Enrollment& enrollment) {
+    if (!enrollment.ca) return;
+    const std::string certificate =
+        sign_enrollment_certificate(*enrollment.ca, enrollment.self_id, enrollment.own_der);
+    const auto verified = verify_enrolled_certificate(certificate, enrollment.ca->certificate_pem);
+    if (certificate.empty() || !verified) {
+        std::fprintf(stderr, "zetta: WARNING: could not sign this node's enrollment certificate\n");
+        return;
+    }
+    enrollment.certificate_pem = certificate;
+    std::string reason;
+    if (!store_enrollment(enrollment.directory, *enrollment.ca, certificate, &reason)) {
+        std::fprintf(stderr, "zetta: WARNING: enrollment not stored: %s\n", reason.c_str());
+    }
+    if (self->replication) {
+        self->replication->set(std::string(kNodeCertPrefix) + enrollment.self_id,
+                               node_cert_record(certificate, *enrollment.ca, *verified,
+                                                enrollment.self_id));
+    }
+}
+
+std::string enroll_line(const std::string& proof) {
+    return std::string(kProtocol) + " ENROLL " + proof;
+}
+
+std::string enrolled_line(const nlohmann::json& answer) {
+    return std::string(kProtocol) + " ENROLLED " + base64_encode_bytes(answer.dump());
+}
+
+// A member answers ENROLL from `peer_node_id` (network thread).
+void handle_enroll(Cluster::State* self, const std::string& peer_node_id,
+                   const std::string& proof) {
+    Enrollment& enrollment = self->enrollment;
+    nlohmann::json answer;
+    {
+        const std::lock_guard lock(enrollment.mutex);
+        if (!enrollment.enabled) return;
+        const auto presented = enrollment.presented.find(peer_node_id);
+        if (!enrollment.ca) {
+            answer = {{"error", "no-ca"}};
+        } else if (presented == enrollment.presented.end()) {
+            answer = {{"error", "unknown-link"}};
+        } else {
+            const std::string key = certificate_public_key_sha256(presented->second);
+            const auto pinned = enrollment.pins.find(peer_node_id);
+            if (!enrollment_proof_matches(enrollment.join_token, peer_node_id, key, proof)) {
+                answer = {{"error", "bad-proof"}};
+            } else if (pinned != enrollment.pins.end() && pinned->second != key) {
+                // One id, one key: re-keying an enrolled id needs its certificate
+                // revoked first (#1320).
+                answer = {{"error", "enrolled-to-another-key"}};
+            } else {
+                const std::string certificate =
+                    sign_enrollment_certificate(*enrollment.ca, peer_node_id, presented->second);
+                const auto verified =
+                    verify_enrolled_certificate(certificate, enrollment.ca->certificate_pem);
+                if (certificate.empty() || !verified) {
+                    answer = {{"error", "signing-failed"}};
+                } else {
+                    enrollment.pins[peer_node_id] = key;
+                    persist_pins_locked(enrollment);
+                    if (self->replication) {
+                        self->replication->set(
+                            std::string(kNodeCertPrefix) + peer_node_id,
+                            node_cert_record(certificate, *enrollment.ca, *verified,
+                                             enrollment.self_id));
+                    }
+                    answer = {{"certificate", certificate}, {"ca_seed", enrollment.ca->seed}};
+                    std::fprintf(stderr,
+                                 "zetta: enrolled cluster node %s (key %s, serial %s)\n",
+                                 peer_node_id.c_str(), key.substr(0, 16).c_str(),
+                                 verified->serial.c_str());
+                }
+            }
+        }
+    }
+    if (answer.contains("error")) {
+        log_event(self, "refused ENROLL from " + short_id(peer_node_id) + ": " +
+                            answer["error"].get<std::string>());
+    }
+    self->queue_outbound(peer_node_id, enrolled_line(answer));
+}
+
+// The answer to this node's ENROLL (network thread). It adopts the CA and its
+// certificate when it holds no CA yet, or when the answer's CA is the one the
+// cluster converges on (the smaller public key) while the token-derived CA is
+// still accepted.
+void handle_enrolled(Cluster::State* self, const std::string& peer_node_id,
+                     const std::string& encoded) {
+    Enrollment& enrollment = self->enrollment;
+    const nlohmann::json answer =
+        nlohmann::json::parse(base64_decode_to_string(encoded), nullptr, false);
+    const std::lock_guard lock(enrollment.mutex);
+    if (!enrollment.enabled) return;
+    if (enrollment.asked == peer_node_id) enrollment.asked.clear();
+    if (!answer.is_object() || answer.contains("error")) {
+        enrollment.without_ca.insert(peer_node_id);
+        return;
+    }
+    const std::optional<EnrollmentCa> ca =
+        enrollment_ca_from_seed(answer.value("ca_seed", std::string{}));
+    const std::string certificate = answer.value("certificate", std::string{});
+    if (!ca) return;
+    const auto verified = verify_enrolled_certificate(certificate, ca->certificate_pem);
+    if (!verified || verified->node_id != enrollment.self_id ||
+        verified->public_key_sha256 != enrollment.own_key) {
+        return;  // not a certificate for this node and its key
+    }
+    if (enrollment.ca && !(ca->public_key < enrollment.ca->public_key)) return;
+    enrollment.ca = ca;
+    enrollment.certificate_pem = certificate;
+    enrollment.without_ca.clear();
+    std::string reason;
+    if (!store_enrollment(enrollment.directory, *ca, certificate, &reason)) {
+        std::fprintf(stderr, "zetta: WARNING: enrollment not stored: %s\n", reason.c_str());
+    }
+    std::fprintf(stderr, "zetta: enrolled with the cluster through %s (CA %s)\n",
+                 peer_node_id.c_str(), ca->public_key.substr(0, 16).c_str());
+}
+
+// Send ENROLL to `peer` (caller holds the enrollment lock).
+void ask_to_enroll_locked(Cluster::State* self, Enrollment& enrollment,
+                          const std::string& peer) {
+    enrollment.asked = peer;
+    enrollment.asked_at = std::chrono::steady_clock::now();
+    self->queue_outbound(
+        peer, enroll_line(enrollment_proof(enrollment.join_token, enrollment.self_id,
+                                           enrollment.own_key)));
+}
+
 // Per-connection state. Both the read pump and the per-link writer run on the
 // single io_context thread (cooperative, never truly concurrent). Cross-thread
 // outbound goes through Cluster::State::outbox (keyed by peer node id), not this
@@ -886,6 +1119,14 @@ void apply_gossip(Cluster::State* self, const std::string& line,
         }
         self->audit_message_bytes += message.batch.frames.size();
         self->audit_messages.push_back(std::move(message));
+    } else if (verb == "ENROLL") {
+        std::string proof;
+        parser >> proof;
+        if (proof.size() <= 128) handle_enroll(self, peer_node_id, proof);
+    } else if (verb == "ENROLLED") {
+        std::string encoded;
+        parser >> encoded;
+        if (encoded.size() <= 64 * 1024) handle_enrolled(self, peer_node_id, encoded);
     } else if (verb == "SIGNAL") {
         // The envelope is the remainder of the line: compact JSON, but it may
         // contain spaces inside string values, so take the rest rather than a
@@ -1152,6 +1393,24 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         link->stream->close();
         co_return;
     }
+    // Pin the id to its enrolled key (#1319): a certificate for an enrolled id
+    // is refused unless it carries the key that id enrolled, whichever CA signed
+    // it. So a token holder that mints a token-derived certificate for another
+    // node's id, with its own key, gets nowhere.
+    std::vector<unsigned char> presented;
+    if (link->stream->secure()) {
+        presented = link->stream->peer_certificate_der();
+        if (!pin_allows(self, peer.node_id, certificate_public_key_sha256(presented))) {
+            std::fprintf(stderr,
+                "zetta: refused a cluster peer (%s%s): its certificate's key is not the "
+                "one its node id enrolled\n",
+                initiate ? "dialed " : "accepted",
+                initiate ? dialed_endpoint.c_str() : "");
+            std::fflush(stderr);
+            link->stream->close();
+            co_return;
+        }
+    }
     link->stream->set_maximum_frame_bytes(
         zetta::transport::FramedStreamOptions{}.maximum_frame_bytes);
     pending_setup.reset();  // setup succeeded; release admission before holding the link
@@ -1170,6 +1429,10 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         co_return;
     }
     if (superseded) superseded->stream->close();  // displaced a stale link
+    if (!presented.empty()) {
+        const std::lock_guard lock(self->enrollment.mutex);
+        self->enrollment.presented[peer.node_id] = presented;  // what ENROLL signs
+    }
     self->live_connections.fetch_add(1, std::memory_order_relaxed);
     // The endpoint we reached this peer on, from THIS vantage point: the address we
     // dialed (the reachable candidate) or, when we accepted, its advertised front.
@@ -1232,6 +1495,10 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         // doesn't flap it out of nodes(). Outbox + pending RPCs go now regardless —
         // nothing can be sent over a dead link.
         self->mark_peer_disconnected(peer.node_id);
+        {
+            const std::lock_guard lock(self->enrollment.mutex);
+            self->enrollment.presented.erase(peer.node_id);
+        }
         self->clear_outbound(peer.node_id);        // drop any lines queued for it
         self->fail_pending_for_peer(peer.node_id);  // fail RPCs awaiting it
         log_event(self, std::string("- peer ") + short_id(peer.node_id) +
@@ -1418,6 +1685,124 @@ capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds
 // Age peers out of the membership view once their link has been gone past the grace
 // window (the down side of membership hysteresis, #739). A short cadence is enough —
 // nodes() also applies the grace on read, so this is just cleanup. Runs for life.
+// One round of enrollment upkeep (#1319), every second on the network thread:
+// ask a peer to enroll this node while it holds no CA; generate the CA when no
+// peer has one (the lowest node id among them, after kEnrollmentCaGrace); keep
+// this node's own certificate current and recorded; pin every node id the
+// document shows enrolled under this node's CA; and move to the CA the cluster
+// converges on (the smaller public key) when a connected peer holds it.
+void run_enrollment_round(Cluster::State* self) {
+    Enrollment& enrollment = self->enrollment;
+    std::vector<std::string> connected;
+    {
+        const std::lock_guard lock(self->mutex);
+        for (const auto& [id, link] : self->active_links) connected.push_back(id);
+    }
+    const auto is_connected = [&](const std::string& id) {
+        return std::ranges::find(connected, id) != connected.end();
+    };
+    const auto now = std::chrono::steady_clock::now();
+    const std::lock_guard lock(enrollment.mutex);
+    if (!enrollment.enabled || enrollment.own_key.empty()) return;
+    if (enrollment.started == std::chrono::steady_clock::time_point{}) enrollment.started = now;
+    if (!enrollment.asked.empty() && now - enrollment.asked_at > kEnrollAnswerWait) {
+        enrollment.without_ca.insert(enrollment.asked);  // no answer: an older node
+        enrollment.asked.clear();
+    }
+    // A peer that left may come back upgraded: ask it again then.
+    std::erase_if(enrollment.without_ca, [&](const std::string& id) { return !is_connected(id); });
+
+    if (!enrollment.ca) {
+        if (!enrollment.asked.empty()) return;
+        for (const std::string& peer : connected) {
+            if (!enrollment.without_ca.contains(peer)) {
+                ask_to_enroll_locked(self, enrollment, peer);
+                return;
+            }
+        }
+        if (now - enrollment.started < kEnrollmentCaGrace) return;
+        if (std::ranges::any_of(connected,
+                                [&](const std::string& id) { return id < enrollment.self_id; })) {
+            return;  // a lower id generates it; this node enrolls from it then
+        }
+        enrollment.ca = generate_enrollment_ca();
+        if (!enrollment.ca) return;
+        std::fprintf(stderr, "zetta: generated the cluster's enrollment CA (%s)\n",
+                     enrollment.ca->public_key.substr(0, 16).c_str());
+        self_enroll_locked(self, enrollment);
+        return;
+    }
+
+    // This node's own certificate: signed by its CA, for its id and key, and
+    // further than kEnrollmentRenewDays from its end; otherwise re-signed.
+    const auto own = verify_enrolled_certificate(enrollment.certificate_pem,
+                                                 enrollment.ca->certificate_pem);
+    const auto renew_before = std::chrono::duration_cast<std::chrono::seconds>(
+        (std::chrono::system_clock::now() + std::chrono::days(kEnrollmentRenewDays))
+            .time_since_epoch()).count();
+    if (!own || own->node_id != enrollment.self_id ||
+        own->public_key_sha256 != enrollment.own_key || own->not_after < renew_before) {
+        self_enroll_locked(self, enrollment);
+    }
+    if (!self->replication) return;
+    const auto view = self->replication->shared_snapshot();
+    if (!view || !view->is_object()) return;
+    const std::string own_key_name = std::string(kNodeCertPrefix) + enrollment.self_id;
+    if (const auto recorded = view->find(own_key_name);
+        recorded == view->end() || !recorded->is_object() ||
+        recorded->value("certificate", std::string{}) != enrollment.certificate_pem) {
+        // Overwritten or lost: put this node's record back.
+        if (const auto mine = verify_enrolled_certificate(enrollment.certificate_pem,
+                                                          enrollment.ca->certificate_pem)) {
+            self->replication->set(own_key_name,
+                                   node_cert_record(enrollment.certificate_pem, *enrollment.ca,
+                                                    *mine, enrollment.self_id));
+        }
+    }
+    const std::string version = self->replication->version();
+    if (version == enrollment.scanned_version) return;
+    enrollment.scanned_version = version;
+    bool pinned = false;
+    std::string smaller_ca;
+    std::string holder;
+    const auto& entries = view->get_ref<const nlohmann::json::object_t&>();
+    for (auto it = entries.lower_bound(std::string(kNodeCertPrefix));
+         it != entries.end() && std::string_view(it->first).starts_with(kNodeCertPrefix); ++it) {
+        if (!it->second.is_object()) continue;
+        const std::string id = it->first.substr(kNodeCertPrefix.size());
+        const std::string certificate = it->second.value("certificate", std::string{});
+        if (const auto ours = verify_enrolled_certificate(certificate,
+                                                          enrollment.ca->certificate_pem)) {
+            // First key wins: a later record for a pinned id changes nothing.
+            if (ours->node_id == id && enrollment.pins.emplace(id, ours->public_key_sha256).second) {
+                pinned = true;
+            }
+            continue;
+        }
+        const auto other = verify_enrolled_certificate(
+            certificate, it->second.value("ca_certificate", std::string{}));
+        if (other && other->node_id == id && other->ca_public_key < enrollment.ca->public_key &&
+            (smaller_ca.empty() || other->ca_public_key < smaller_ca) && is_connected(id)) {
+            smaller_ca = other->ca_public_key;
+            holder = id;
+        }
+    }
+    if (pinned) persist_pins_locked(enrollment);
+    if (!holder.empty() && enrollment.asked.empty()) {
+        ask_to_enroll_locked(self, enrollment, holder);
+    }
+}
+
+capy::task<> enrollment_loop(Cluster::State* self) {
+    using namespace std::chrono_literals;
+    net::timer timer(self->io_context);
+    for (;;) {
+        timer.expires_after(1s);
+        [[maybe_unused]] const auto wait_result = co_await timer.wait();
+        run_enrollment_round(self);
+    }
+}
+
 capy::task<> membership_loop(Cluster::State* self) {
     using namespace std::chrono_literals;
     net::timer timer(self->io_context);
@@ -1501,6 +1886,28 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
     state_->log_events = config_.log_events;
     state_->dial_out_only = config_.dial_out_only;
     state_->frame_faults = config_.frame_faults;
+    // Enrollment (#1319): only on a secured cluster that runs it.
+    if (config_.security.enabled() && config_.security.enroll) {
+        State::Enrollment& enrollment = state_->enrollment;
+        enrollment.enabled = true;
+        enrollment.self_id = node_id_;
+        enrollment.join_token = config_.security.join_token;
+        enrollment.directory = config_.security.directory;
+        enrollment.own_der = certificate_pem_to_der(config_.security.certificate_pem);
+        enrollment.own_key = certificate_public_key_sha256(enrollment.own_der);
+        if (!config_.security.enrollment_ca_seed.empty()) {
+            enrollment.ca = enrollment_ca_from_seed(config_.security.enrollment_ca_seed);
+        }
+        enrollment.certificate_pem = config_.security.enrolled_certificate_pem;
+        std::string reason;
+        if (!load_node_pins(enrollment.directory, enrollment.pins, &reason)) {
+            // A pin file that does not parse is not dropped silently: the node
+            // keeps running, pinning again from the enrollment records.
+            std::fprintf(stderr, "zetta: WARNING: node pins not loaded: %s\n", reason.c_str());
+            enrollment.pins.clear();
+        }
+        if (!enrollment.own_key.empty()) enrollment.pins[node_id_] = enrollment.own_key;
+    }
 }
 
 Cluster::~Cluster() { stop(); }
@@ -1580,6 +1987,11 @@ void Cluster::start() {
     // Age peers out of membership only after the hysteresis grace window (#739).
     capy::run_async(state_->io_context.get_executor())(
         membership_loop(state_.get()));
+    // Enrollment upkeep (#1319): only on a cluster that runs enrollment.
+    if (state_->tls && state_->enrollment.enabled) {
+        capy::run_async(state_->io_context.get_executor())(
+            enrollment_loop(state_.get()));
+    }
 
     state_->network_thread = std::thread([this] {
         state_->network_thread_id.store(std::this_thread::get_id());
