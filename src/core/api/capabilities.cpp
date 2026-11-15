@@ -459,6 +459,37 @@ std::vector<zetta::governance::SafeModeStatements> describe_sql_safe_mode(
     return described;
 }
 
+// What a SQL input reads, for a dataset-scoped call (#1515,
+// docs/governance/dataset-scope.md): each statement must be a SELECT, and its
+// table (with the `database` default applied) is the dataset it reads. Any other
+// statement changes something or names no dataset; a `system.*` view, the
+// connection store and the safe-mode store are not datasets; a table with no
+// database at all cannot be placed. Each of those makes the whole input refused
+// under a scope. An input that does not parse is refused too (it would run
+// nothing, but the scope does not answer for it).
+std::optional<std::vector<DatasetName>> sql_dataset_reads(const nlohmann::json& input) {
+    const std::string statement = input.at("statement").get<std::string>();
+    const std::string current_database = input.value("database", "");
+    zetta::query::PostgresDialect dialect;
+    const zetta::query::ParseResult parsed = dialect.parse(statement);
+    if (!parsed.ok() || parsed.statements.empty()) return std::nullopt;
+    std::vector<DatasetName> reads;
+    for (const zetta::query::Statement& parsed_statement : parsed.statements) {
+        const auto* select = std::get_if<zetta::query::SelectStmt>(&parsed_statement);
+        if (select == nullptr) return std::nullopt;
+        const std::string database =
+            select->table.database.empty() ? current_database : select->table.database;
+        if (database.empty() || select->table.table.empty() || database == "system" ||
+            database == zetta::connect::kConnectionDatabase ||
+            database == zetta::governance::kSafeModeDatabase) {
+            return std::nullopt;
+        }
+        DatasetName name{database, select->table.table};
+        if (std::ranges::find(reads, name) == reads.end()) reads.push_back(std::move(name));
+    }
+    return reads;
+}
+
 // --- search --------------------------------------------------------------------
 
 const nlohmann::json& search_schema() {
@@ -11919,6 +11950,8 @@ void register_core_capabilities(Registry& registry) {
     // Safe mode per database (#1373): a statement against a database whose level
     // warns on it is refused with safe_mode_warning until it is confirmed.
     sql.describe_safe_mode = describe_sql_safe_mode;
+    // Under a dataset scope (#1515) a SELECT runs when its table is in scope.
+    sql.dataset_reads = sql_dataset_reads;
     // A statement of any length travels as a JSON body (#1231): the GET form
     // carries it in the request line, which the parser caps near 4 KiB.
     sql.post_alias = true;

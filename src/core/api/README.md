@@ -123,3 +123,11 @@ thread. Every write, lease and barrier answer carries the bucket's
 travels in `ObjectWrite::incarnation` and the barrier's input, and the store
 checks it in the same step as the write. See
 [the object capability](../../../docs/data/object-store.md).
+
+`dataset_scope.cpp` parses the `Zetta-Dataset-Scope` header (#1515,
+[dataset scope](../../../docs/governance/dataset-scope.md)). The auth gate in
+`http_server.cpp` reads it after authentication and lets a scoped request reach
+only a `/v1/<capability>` route; `Registry::call` then runs the capability only
+when its `dataset_reads` names every dataset the input reads and each is in the
+scope. `sql` declares its reads (`sql_dataset_reads`: a `SELECT` of a scoped
+table); every other capability is refused under a scope.

@@ -540,6 +540,7 @@ add_library(zetta-core STATIC
   src/core/api/mcp_docs.cpp
   src/core/api/mcp_prompts.cpp
   src/core/api/registry.cpp
+  src/core/api/dataset_scope.cpp
   src/core/api/rest.cpp
   src/core/api/serving.cpp
   src/core/api/pipeline_serving_capabilities.cpp

@@ -48,6 +48,7 @@
 
 #include "zetta/api/background.hpp"
 #include "zetta/api/clerk_auth.hpp"
+#include "zetta/api/dataset_scope.hpp"
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
@@ -630,6 +631,8 @@ struct StringBodySink {
 struct RequestIdentity {
     std::string acting_key;
     bool is_user = false;
+    // The `Zetta-Dataset-Scope` the request carried (#1515); unset = none.
+    std::optional<DatasetScope> dataset_scope;
 };
 
 // The identity the gate stashed for this request, or an empty
@@ -1227,6 +1230,7 @@ struct ApiServer::Impl {
                                &node.span_recorder(), &background};
             context.acting_is_user = identity.is_user;
             context.wait_event = wait_event;
+            context.dataset_scope = identity.dataset_scope;  // #1515
             return capability_registry.call(capability->name, input, context);
         };
         ApiResult result;
@@ -4850,6 +4854,48 @@ bool ApiServer::start() {
             authorized = true;
             identity.acting_key = std::move(resolved_user_id);
             identity.is_user = true;
+        }
+
+        // The per-call dataset scope (#1515, docs/governance/dataset-scope.md).
+        // Read only for an authenticated request, so an unauthenticated one
+        // still gets its 401. Under a scope only a registry capability route
+        // answers: every other path (/mcp, the object byte routes, serving)
+        // does not say what it reads, so it is refused here.
+        if (authorized && route.req.count(kDatasetScopeHeader) != 0) {
+            std::string scope_error;
+            std::optional<DatasetScope> scope;
+            http::status scope_status = http::status::bad_request;
+            const char* scope_code = "invalid_input";
+            if (route.req.count(kDatasetScopeHeader) == 1) {
+                scope = DatasetScope::parse(route.req.at(kDatasetScopeHeader), &scope_error);
+            } else {
+                scope_error = "send one Zetta-Dataset-Scope header";
+            }
+            if (scope) {
+                const std::string path(route.url.path());
+                const std::string_view name = path.starts_with("/v1/")
+                                                  ? std::string_view(path).substr(4)
+                                                  : std::string_view{};
+                if (name.empty() || name.find('/') != std::string_view::npos ||
+                    !impl.capability_registry.find(std::string(name))) {
+                    scope.reset();
+                    scope_status = http::status::forbidden;
+                    scope_code = "unauthorized";
+                    scope_error = "a dataset-scoped request may only call a capability route "
+                                  "(/v1/<capability>); " + path +
+                                  " does not declare what it reads";
+                }
+            }
+            if (!scope) {
+                route.status(scope_status);
+                const std::string body = transport_error_body(scope_code, scope_error);
+                route.res.set(http::field::content_type, "application/json");
+                stamp_response_headers(route, body);
+                auto [send_error] = co_await route.send(body);
+                (void)send_error;
+                co_return http::route_done;
+            }
+            identity.dataset_scope = std::move(scope);
         }
 
         if (!authorized) {

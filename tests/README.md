@@ -65,3 +65,10 @@ exact approved `host:port`, never reaching metadata or link-local addresses, and
 re-validating a saved connection whose type changed (#1414). The MySQL driver
 tests approve their loopback fake server's exact `host:port`; `RegistryFixture.ConnectorDiscoveryRequiresApprovalForInlineDestinations`
 covers saved discovery and privileged inline discovery for both identity systems.
+
+`api/test_dataset_scope.cpp` covers the per-call dataset scope (#1515): the
+header parser, the registry decision (a `SELECT` inside and outside the scope, an
+empty scope, every non-`SELECT` statement, a capability that declares no reads,
+the audited refusal), and over REST the header confining `/v1/sql`, a malformed
+or repeated header (400), only capability routes answering (403 for `/mcp`, the
+object routes and `/v1/specs`), and a 401 that stays a 401.

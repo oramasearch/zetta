@@ -34,6 +34,7 @@ add_executable(zetta-tests
   api/test_mcp_prompts.cpp
   api/test_consent.cpp
   api/test_safe_mode.cpp
+  api/test_dataset_scope.cpp
   api/test_auth_gate.cpp
   api/test_mcp_server.cpp
   api/test_rest_server.cpp
