@@ -1868,7 +1868,8 @@ struct ApiServer::Impl {
         handles.bodies =
             std::make_unique<zetta::data::ReplicatedBlobStore>(node.config().data_dir, *replication);
         handles.stores = std::make_unique<zetta::data::BackupStores>(zetta::data::BackupStores{
-            *replication, *records, *objects, *handles.bodies, replication->node_id()});
+            *replication, *records, *objects, *handles.bodies, replication->node_id(),
+            records->cluster()});
         return handles;
     }
 
@@ -1926,35 +1927,47 @@ struct ApiServer::Impl {
         [[maybe_unused]] const std::size_t expired =
             co_await on_pool([&] { return snapshots.expire(std::chrono::system_clock::now()); });
 
-        std::optional<zetta::data::BackupFreeze> freeze =
-            zetta::data::BackupFreeze::begin(stores.records, stores.objects);
-        if (!freeze) {
-            const zetta::data::BackupOutcome busy{zetta::data::BackupStatus::Busy,
-                                                  "another backup snapshot is being captured on "
-                                                  "this node; retry"};
-            co_await audit_backup(identity, kRoute, false, busy, "snapshot");
-            co_return co_await send_backup_result(route, backup_result(busy));
-        }
-        // Writes that passed the gates before the freeze finish first.
+        // Pause the record and object writes of this node and of every member,
+        // bounded by BackupFreeze::kLease; any failure releases every gate.
+        const std::string snapshot_id = zetta::util::new_uuid();
+        std::optional<zetta::data::BackupFreeze> freeze;
+        zetta::data::BackupOutcome paused = co_await on_pool([&] {
+            return zetta::data::BackupFreeze::begin(stores.records, stores.objects, stores.cluster,
+                                                    snapshot_id, freeze);
+        });
+        // Writes that passed the gates before the freeze finish first, here and
+        // on every member.
         const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!freeze->drained() && std::chrono::steady_clock::now() < drain_deadline) {
-            co_await runtime::delay(std::chrono::milliseconds(2));
+        bool drained = false;
+        while (paused.ok() && !drained) {
+            if (freeze->drained()) {
+                bool members = true;
+                paused = co_await on_pool([&] { return freeze->members_drained(members); });
+                drained = paused.ok() && members;
+            }
+            if (drained || !paused.ok()) break;
+            if (std::chrono::steady_clock::now() >= drain_deadline) {
+                paused = zetta::data::BackupOutcome{
+                    zetta::data::BackupStatus::Busy,
+                    "writes in flight did not finish within 10 seconds; retry the snapshot"};
+                break;
+            }
+            co_await runtime::delay(std::chrono::milliseconds(freeze->members().empty() ? 2 : 20));
         }
-        if (!freeze->drained()) {
-            freeze.reset();
-            const zetta::data::BackupOutcome busy{
-                zetta::data::BackupStatus::Busy,
-                "writes in flight did not finish within 10 seconds; retry the snapshot"};
-            co_await audit_backup(identity, kRoute, false, busy, "snapshot");
-            co_return co_await send_backup_result(route, backup_result(busy));
+        if (!paused.ok()) {
+            freeze.reset();  // thaws every gate frozen so far
+            co_await audit_backup(identity, kRoute, false, paused, "snapshot");
+            co_return co_await send_backup_result(route, backup_result(paused));
         }
-        auto writer = std::make_unique<zetta::data::SnapshotWriter>(stores, backups_directory(),
-                                                                    zetta::util::new_uuid());
+        auto writer =
+            std::make_unique<zetta::data::SnapshotWriter>(stores, backups_directory(), snapshot_id);
         // The catalogue between two owner tasks, so no statement is half applied.
         std::shared_ptr<const nlohmann::json> catalogue;
         co_await bridge.run_on_owner([&] { catalogue = stores.replication.shared_snapshot(); });
         zetta::data::BackupOutcome outcome =
             co_await on_pool([&] { return writer->capture(catalogue); });
+        // Still one cut only if no gate's pause lapsed during the capture.
+        if (outcome.ok()) outcome = co_await on_pool([&] { return freeze->held(); });
         freeze.reset();  // thaw: writes resume while the bytes are copied
         if (outcome.ok()) outcome = co_await on_pool([&] { return writer->finish(); });
         writer.reset();

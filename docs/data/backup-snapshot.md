@@ -34,7 +34,9 @@ The archive is written whole when the snapshot is taken, so a snapshot needs fre
 the size of the data it copies.
 
 These routes move raw archives, so the HTTP adapter serves them rather than the registry,
-like the object byte routes. They are not in the OpenAPI document yet.
+like the object byte routes. Their OpenAPI rendering is `backup_route_paths()`
+(`src/core/api/backup_routes.cpp`), merged into the document beside the object routes
+(zetta#1520).
 
 ## What a snapshot holds
 
@@ -58,7 +60,8 @@ ledger and the node's security files are not in a snapshot.
 ## Consistency
 
 While it captures, the snapshot freezes the record store's and the object store's write
-gates (`WriteGate`, `include/zetta/data/write_gate.hpp`). A record write or an object
+gates (`WriteGate`, `include/zetta/data/write_gate.hpp`) on this node and on every other
+member of the cluster (`BackupFreeze`, zetta#1520). A record write or an object
 mutation decided on this node then answers `Unavailable` ("a backup snapshot is being
 captured; retry"), and a replica install is refused (anti-entropy brings it later). The gate
 never blocks a writer, so a freeze can never hold a pool thread or the owner loop. The
@@ -78,12 +81,46 @@ Engine-internal rows (`put_internal`, metric folds) are not gated: an entity-key
 written once, before the run or model that names it, so a captured reference always finds
 its rows.
 
-**A multi-node cluster.** The answering node assembles the cluster's data: the catalogue is
-replicated to every node, records are on every live node, and an object it does not hold is
-read from its owner. A partition body held only by other members is not: the snapshot is
-refused with 409 `conflict` naming the body and its owners, never written short. Writes
-entering other members are refused only where they reach this node's gates (records and
-the objects this node owns); the freeze is not cluster-wide.
+### The pause across the cluster (zetta#1520)
+
+The pause covers every member. The answering node freezes its own gates, then sends
+`backup.gate` `freeze` to every member it knows (`BackupPeer`, on every node's signal plane
+after the object store). Each member freezes its two gates for the snapshot's id and answers
+whether its writes in flight have drained. The answering node polls `status` (every 20 ms,
+from a coroutine timer) until every member has drained, for at most 10 seconds.
+
+- **Refused, never blocked.** On every member a write that meets the pause answers
+  `Unavailable` at once, exactly as on the answering node.
+- **Bounded.** Every gate is frozen for a lease of 120 seconds (`BackupFreeze::kLease`); a
+  member never takes a longer one than it is asked for. After it the gate lapses by itself,
+  so a dead coordinator or a lost thaw cannot leave a member refusing writes.
+- **Released on any failure.** If any member refuses (it holds another snapshot's pause) or
+  does not answer (it is unreachable, or runs an engine without `backup.gate`), every gate
+  already frozen is released at once and the snapshot answers 503 `busy`. The thaw goes to
+  each member as a fire-and-forget event, so releasing never waits on a member; one lost is
+  covered by the lease.
+- **Still one cut.** After the capture, the answering node checks that every gate, its own
+  and each member's, is still held by this snapshot (`BackupFreeze::held`). If a lease lapsed
+  during a long capture, the snapshot is refused (503) rather than written as something that
+  is not one moment.
+
+A gate holds one snapshot at a time: a second snapshot anywhere in the cluster is refused
+while the first holds any member.
+
+### Assembling the cluster's data
+
+The answering node assembles the whole cluster's data:
+
+- the catalogue is replicated to every node;
+- records are on every live node;
+- an object it does not hold is read from its owner;
+- **a body it lacks is fetched** over `backup.body` (zetta#1520). That is a partition's body
+  from the partition's owners, or any other body from any member. It is fetched a 4 MiB
+  slice at a time and verified against its catalogue entry's size and SHA-256 before it
+  enters the archive.
+
+A partition body that none of its owners gives whole refuses the snapshot with 409
+`conflict`, naming the body and its owners. The archive is never written short.
 
 ## The archive (`zetta-backup/1`)
 
@@ -169,15 +206,20 @@ Tests (written; not yet run, they run at review and release time):
   `ADamagedOrTruncatedArchiveIsRefused`; `DiscardEmptiesOnlyARestoredRestoreTargetLeftAsRestored`;
   `ABodyHeldOnlyByAnotherMemberRefusesTheSnapshot`; `SnapshotsAreKeptUntilReleasedOrExpired`;
   `TheSummaryNamesWhatItCounts`.
+- `tests/data/test_backup_cluster.cpp` (two real loopback members, zetta#1520):
+  - `ThePauseCoversEveryMembersWritesAndIsReleased`: writes on both members are refused
+    within moments, never blocked, and succeed after the thaw;
+  - `AMemberHoldingAnotherSnapshotRefusesAndNothingStaysFrozen`;
+  - `APauseThatLapsedDuringTheCaptureRefusesTheCut`;
+  - `APartitionBodyHeldOnlyByAnotherMemberIsFetched`: a body past one slice, then refused
+    once no member holds it;
+  - `TheGateLapsesByItself`.
 - `tests/api/test_backup_routes.cpp`: the operator's calls over loopback HTTP,
   `TheOperatorsCallsBackUpAndRestoreIntoAFreshNode`, `EveryRouteNeedsClusterAdmin`,
   `DiscardEmptiesOnlyARestoreTarget`, `ATruncatedArchiveIsRefused`.
 
 ## Not yet
 
-- A freeze across every member of a multi-node cluster, and assembling partition bodies held
-  only by other members ([zetta#1520](https://github.com/oramasearch/zetta/issues/1520)).
-- The routes in the OpenAPI document.
 - A rehearsal on the nonprod cluster: a scheduled `Backup` landing in the bucket and a
   `RestoreRehearsal` restoring it into a scratch `OramaZettaCluster`, which must be started
   with `ZETTA_RESTORE_TARGET=1` for the operator to empty it.

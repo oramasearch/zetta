@@ -42,4 +42,8 @@ void audit_backup_outcome(Node& node, const std::string& acting_key, std::string
 // (when there is one) and `summary`; a refusal its code, message and details.
 ApiResult backup_result(const zetta::data::BackupOutcome& outcome);
 
+// The OpenAPI rendering of the backup routes (zetta#1520), merged into the
+// document beside the object routes (rest.cpp).
+nlohmann::json backup_route_paths();
+
 }  // namespace zetta::api

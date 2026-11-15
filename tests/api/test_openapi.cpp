@@ -189,9 +189,16 @@ TEST(OpenApi, DocumentMatchesTheRegistry) {
     const nlohmann::json& paths = document.at("paths");
     // One path per registry entry, plus the two path-templated serving routes
     // (#648), the two published-pipeline routes (#1289) and the object
-    // capability's seven (#1005: the byte routes and the bucket aliases) that
-    // the registry rendering cannot express.
-    EXPECT_EQ(paths.size(), registry.size() + 2 + 2 + 7);
+    // capability's seven (#1005: the byte routes and the bucket aliases) and
+    // the backup routes' four (zetta#1520) that the registry rendering cannot
+    // express.
+    EXPECT_EQ(paths.size(), registry.size() + 2 + 2 + 7 + 4);
+    for (const char* path : {"/v1/backup_snapshot", "/v1/backup_snapshot/{id}",
+                             "/v1/restore_snapshot", "/v1/restore_snapshot:discard"}) {
+        EXPECT_TRUE(paths.contains(path)) << path;
+    }
+    EXPECT_TRUE(paths.at("/v1/backup_snapshot/{id}").contains("get"));
+    EXPECT_TRUE(paths.at("/v1/backup_snapshot/{id}").contains("delete"));
     EXPECT_TRUE(paths.contains("/v1/pipelines/{name}/run"));
     EXPECT_TRUE(paths.contains("/v1/pipelines/{name}/runs/{run_id}"));
     for (const char* path : {"/v1/objects/{bucket}/{key}", "/v1/objects/{bucket}",

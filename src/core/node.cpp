@@ -737,6 +737,7 @@ bool Node::start() {
             return false;
         }
         // The record log (#1231): node-local, beside the catalogue, never in it.
+        backup_peer_.reset();  // it refers to the stores replaced below
         metric_store_.reset();
         record_store_ = std::make_unique<zetta::data::RecordStore>(
             *replication_, replication_->node_id(),
@@ -770,6 +771,9 @@ bool Node::start() {
             running_ = false;
             return false;
         }
+        backup_peer_ = std::make_unique<zetta::data::BackupPeer>(
+            *record_store_, *object_store_, *replication_,
+            std::filesystem::path(config_.data_dir));
         // The newest sealed identity records this node accepted before it
         // stopped, so a replay in the persisted document is refused (#1341).
         if (!load_identity_held()) {
@@ -1406,6 +1410,9 @@ void Node::start_coordinator() {
     // The object store (#1005) chains over the record store: `object.*` is served
     // here, everything else routes on.
     if (object_store_) object_store_->attach(*cluster_);
+    // The backup snapshot's gate and body signals (zetta#1520) chain over the
+    // object store: `backup.*` is served here, everything else routes on.
+    if (backup_peer_) backup_peer_->attach(*cluster_);
 }
 
 void Node::stop_coordinator() {
@@ -1413,6 +1420,7 @@ void Node::stop_coordinator() {
     // store's handler, the record store the SELECT plane's, the SELECT plane the
     // search plane's, the search plane the compute plane's, then the coordinator
     // restores its own fallback.
+    if (backup_peer_) backup_peer_->detach();
     if (object_store_) object_store_->detach();
     if (record_store_) record_store_->detach();
     distributed_select_.reset();

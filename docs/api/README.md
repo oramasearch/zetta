@@ -128,8 +128,8 @@ archive, `DELETE` releases it, `POST /v1/restore_snapshot` restores an archive (
 node holding no user data and answers its `summary` (409 otherwise, 422 `verification_failed`
 when the counts differ from the manifest's), and `POST /v1/restore_snapshot:discard` empties a
 restored node started with `--restore-target`. Every one needs `cluster:admin` and is audited
-(`api:<route>`). They move raw archives, so the HTTP adapter serves them; they are not in the
-OpenAPI document yet.
+(`api:<route>`). They move raw archives, so the HTTP adapter serves them; the OpenAPI
+document carries them from `backup_route_paths()` (zetta#1520).
 
 ## Connect a client
 

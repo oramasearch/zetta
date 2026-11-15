@@ -88,6 +88,7 @@ add_executable(zetta-tests
   data/test_record_soak.cpp
   data/test_object_store.cpp
   data/test_backup_snapshot.cpp
+  data/test_backup_cluster.cpp
   data/test_storage_census.cpp
   data/test_object_log_crash.cpp
   data/test_object_soak.cpp

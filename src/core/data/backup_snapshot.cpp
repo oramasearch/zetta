@@ -9,12 +9,14 @@
 #include <unordered_set>
 #include <utility>
 
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/data/blob_store.hpp"
 #include "zetta/data/entity_key_table.hpp"
 #include "zetta/data/object_store.hpp"
 #include "zetta/data/record_store.hpp"
 #include "zetta/util/sha256.hpp"
+#include "zetta/util/uuid.hpp"
 
 #include "../catalog.hpp"
 
@@ -134,6 +136,22 @@ std::vector<std::string> bucket_names(const json& catalogue) {
                                           catalog::id_after(key, catalog::kObjectBucketPrefix));
                                   });
     return names;
+}
+
+// The size and SHA-256 the catalogue records for a body (a large object's, or a
+// model's weights).
+std::pair<std::uint64_t, std::string> body_descriptor(const json& catalogue,
+                                                      const std::string& id) {
+    if (const auto found = catalogue.find(std::string(catalog::kLargeObjectPrefix) + id);
+        found != catalogue.end()) {
+        return {unsigned_field(*found, "size"), string_field(*found, "sha256")};
+    }
+    if (const auto found = catalogue.find(std::string(catalog::kModelPrefix) + id);
+        found != catalogue.end() && found->is_object() && found->contains("weights")) {
+        const json& weights = (*found)["weights"];
+        return {unsigned_field(weights, "size"), string_field(weights, "sha256")};
+    }
+    return {0, {}};
 }
 
 // Which nodes own each partition body: blob id -> owner_nodes.
@@ -398,30 +416,296 @@ json summary_differences(const BackupSummary& expected, const BackupSummary& obs
 
 // ---- the freeze ---------------------------------------------------------------
 
-BackupFreeze::BackupFreeze(RecordStore& records, ObjectStore& objects)
-    : records_(&records), objects_(&objects) {}
+namespace {
+
+constexpr std::chrono::milliseconds kGateTimeout{5000};
+constexpr std::chrono::milliseconds kBodyTimeout{30000};
+
+std::chrono::milliseconds lease_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(BackupFreeze::kLease);
+}
+
+// Freeze both gates for `owner`, or neither.
+bool freeze_both(RecordStore& records, ObjectStore& objects, std::string_view owner,
+                 std::chrono::milliseconds lease) {
+    const auto until = WriteGate::Clock::now() + lease;
+    if (!records.write_gate().freeze(owner, until)) return false;
+    if (!objects.write_gate().freeze(owner, until)) {
+        records.write_gate().thaw(owner);
+        return false;
+    }
+    return true;
+}
+
+void thaw_both(RecordStore& records, ObjectStore& objects, std::string_view owner) {
+    objects.write_gate().thaw(owner);
+    records.write_gate().thaw(owner);
+}
+
+std::string gate_payload(std::string_view op, std::string_view owner) {
+    return json{{"op", std::string(op)},
+                {"owner", std::string(owner)},
+                {"lease_ms", lease_ms().count()}}
+        .dump();
+}
+
+}  // namespace
+
+BackupFreeze::BackupFreeze(RecordStore& records, ObjectStore& objects, std::string owner)
+    : records_(&records), objects_(&objects), owner_(std::move(owner)) {}
 
 BackupFreeze::BackupFreeze(BackupFreeze&& other) noexcept
     : records_(std::exchange(other.records_, nullptr)),
-      objects_(std::exchange(other.objects_, nullptr)) {}
+      objects_(std::exchange(other.objects_, nullptr)),
+      cluster_(std::exchange(other.cluster_, nullptr)),
+      owner_(std::move(other.owner_)),
+      members_(std::move(other.members_)) {}
 
 BackupFreeze::~BackupFreeze() {
-    if (objects_) objects_->write_gate().thaw();
-    if (records_) records_->write_gate().thaw();
+    if (records_ && objects_) thaw_both(*records_, *objects_, owner_);
+    // Fire and forget: never wait on a member here. A thaw that is lost lapses
+    // with its lease.
+    if (cluster_) {
+        const std::string payload = gate_payload("thaw", owner_);
+        for (const std::string& member : members_) {
+            cluster_->send_event(member, std::string(BackupPeer::kGateMethod), payload);
+        }
+    }
 }
 
 std::optional<BackupFreeze> BackupFreeze::begin(RecordStore& records, ObjectStore& objects) {
-    if (!records.write_gate().try_freeze()) return std::nullopt;
-    if (!objects.write_gate().try_freeze()) {
-        records.write_gate().thaw();
-        return std::nullopt;
+    std::string owner = "local:" + zetta::util::new_uuid();
+    if (!freeze_both(records, objects, owner, lease_ms())) return std::nullopt;
+    return BackupFreeze(records, objects, std::move(owner));
+}
+
+BackupOutcome BackupFreeze::begin(RecordStore& records, ObjectStore& objects,
+                                  zetta::cluster::Cluster* cluster, std::string owner,
+                                  std::optional<BackupFreeze>& out) {
+    out.reset();
+    if (!freeze_both(records, objects, owner, lease_ms())) {
+        return refusal(BackupStatus::Busy,
+                       "another backup snapshot is being captured on this node; retry");
     }
-    return BackupFreeze(records, objects);
+    BackupFreeze freeze(records, objects, std::move(owner));
+    if (cluster) {
+        std::vector<std::string> members;
+        for (const zetta::cluster::ClusterPeer& peer : cluster->peers()) {
+            if (peer.node_id != cluster->node_id()) members.push_back(peer.node_id);
+        }
+        freeze.cluster_ = cluster;
+        if (!members.empty()) {
+            const std::vector<zetta::cluster::SignalResponse> answers = cluster->request_each(
+                members, std::string(BackupPeer::kGateMethod), gate_payload("freeze", freeze.owner_),
+                kGateTimeout);
+            for (std::size_t index = 0; index < members.size(); ++index) {
+                // Thawed on every path: the members that froze are in members_.
+                if (index < answers.size() && answers[index].ok) {
+                    freeze.members_.push_back(members[index]);
+                }
+            }
+            for (std::size_t index = 0; index < members.size(); ++index) {
+                if (index < answers.size() && answers[index].ok) continue;
+                BackupOutcome refused = refusal(
+                    BackupStatus::Busy,
+                    "member " + members[index] + " did not pause its writes for the snapshot (" +
+                        (index < answers.size() ? answers[index].error : std::string("no answer")) +
+                        "); every member must run an engine with backup.gate and hold no other "
+                        "snapshot; retry");
+                refused.details = {{"member", members[index]}};
+                return refused;  // `freeze` thaws itself and every member that froze
+            }
+        }
+    }
+    out.emplace(std::move(freeze));
+    return {};
 }
 
 bool BackupFreeze::drained() const {
     return records_ && objects_ && records_->write_gate().drained() &&
            objects_->write_gate().drained();
+}
+
+BackupOutcome BackupFreeze::ask_members(std::string_view op, bool& all_drained, bool& all_held) {
+    all_drained = true;
+    all_held = true;
+    if (!cluster_ || members_.empty()) return {};
+    const std::vector<zetta::cluster::SignalResponse> answers = cluster_->request_each(
+        members_, std::string(BackupPeer::kGateMethod), gate_payload(op, owner_), kGateTimeout);
+    for (std::size_t index = 0; index < members_.size(); ++index) {
+        if (index >= answers.size() || !answers[index].ok) {
+            BackupOutcome lost = refusal(
+                BackupStatus::Busy, "member " + members_[index] +
+                                        " stopped answering during the snapshot; retry");
+            lost.details = {{"member", members_[index]}};
+            return lost;
+        }
+        const json answer = json::parse(answers[index].payload, nullptr, false);
+        all_drained = all_drained && bool_field(answer, "drained");
+        all_held = all_held && bool_field(answer, "held");
+    }
+    return {};
+}
+
+BackupOutcome BackupFreeze::members_drained(bool& all) {
+    bool held_all = true;
+    BackupOutcome asked = ask_members("status", all, held_all);
+    if (!asked.ok()) return asked;
+    if (!held_all) {
+        all = false;
+        return refusal(BackupStatus::Busy,
+                       "a member's pause lapsed before its writes drained; retry");
+    }
+    return {};
+}
+
+BackupOutcome BackupFreeze::held() {
+    if (!records_ || !objects_ || !records_->write_gate().held(owner_) ||
+        !objects_->write_gate().held(owner_)) {
+        return refusal(BackupStatus::Busy,
+                       "this node's pause lapsed during the capture (" +
+                           std::to_string(kLease.count()) +
+                           " s): the snapshot would not be one cut; retry");
+    }
+    bool drained_all = true;
+    bool held_all = true;
+    BackupOutcome asked = ask_members("status", drained_all, held_all);
+    if (!asked.ok()) return asked;
+    if (!held_all) {
+        return refusal(BackupStatus::Busy,
+                       "a member's pause lapsed during the capture: the snapshot would not be "
+                       "one cut; retry");
+    }
+    return {};
+}
+
+// ---- the peer side of the signal plane ---------------------------------------------
+
+BackupPeer::BackupPeer(RecordStore& records, ObjectStore& objects,
+                       zetta::cluster::ReplicationManager& replication, fs::path data_dir)
+    : records_(records), objects_(objects), bodies_(std::move(data_dir), replication) {}
+
+BackupPeer::~BackupPeer() { detach(); }
+
+void BackupPeer::attach(zetta::cluster::Cluster& cluster) {
+    detach();
+    delegate_.store(cluster.signal_handler());
+    cluster_.store(&cluster);
+    cluster.set_signal_handler(this);
+}
+
+void BackupPeer::detach() {
+    zetta::cluster::Cluster* cluster = cluster_.exchange(nullptr);
+    if (!cluster) return;
+    if (cluster->signal_handler() == this) cluster->set_signal_handler(delegate_.load());
+    delegate_.store(nullptr);
+}
+
+zetta::cluster::SignalResponse BackupPeer::gate(const json& request) {
+    const std::string op = string_field(request, "op");
+    const std::string owner = string_field(request, "owner");
+    if (owner.empty()) return {.ok = false, .payload = {}, .error = "backup.gate: no owner"};
+    if (op == "thaw") {
+        thaw_both(records_, objects_, owner);
+    } else if (op == "freeze" || op == "status") {
+        if (op == "freeze") {
+            // Bounded by the coordinator's lease, never longer than ours.
+            const std::uint64_t asked = unsigned_field(request, "lease_ms");
+            const auto lease = std::chrono::milliseconds(
+                std::min<std::uint64_t>(asked == 0 ? lease_ms().count() : asked,
+                                        static_cast<std::uint64_t>(lease_ms().count())));
+            if (!freeze_both(records_, objects_, owner, lease)) {
+                return {.ok = false,
+                        .payload = {},
+                        .error = "backup.gate: another snapshot holds this node's writes"};
+            }
+        }
+    } else {
+        return {.ok = false, .payload = {}, .error = "backup.gate: unknown op '" + op + "'"};
+    }
+    const bool held =
+        records_.write_gate().held(owner) && objects_.write_gate().held(owner);
+    const bool drained = records_.write_gate().drained() && objects_.write_gate().drained();
+    return {.ok = true, .payload = json{{"drained", drained}, {"held", held}}.dump(), .error = {}};
+}
+
+zetta::cluster::SignalResponse BackupPeer::body(const json& request) {
+    const std::string id = string_field(request, "id");
+    const std::uint64_t offset = unsigned_field(request, "offset");
+    const std::uint64_t length = std::min(unsigned_field(request, "length"), kMaxSliceBytes);
+    std::string bytes;
+    std::uint64_t size = 0;
+    if (id.empty() || !bodies_.read_blob_range(id, offset, length, bytes, size)) {
+        return {.ok = false, .payload = {}, .error = "backup.body: this node does not hold " + id};
+    }
+    std::string payload = json{{"size", size}}.dump();
+    payload.push_back('\n');
+    payload.append(bytes);
+    return {.ok = true, .payload = std::move(payload), .error = {}};
+}
+
+zetta::cluster::SignalResponse BackupPeer::on_request(const zetta::cluster::Signal& request) {
+    if (request.method != kGateMethod && request.method != kBodyMethod) {
+        if (auto* delegate = delegate_.load()) return delegate->on_request(request);
+        return {.ok = false, .payload = {}, .error = "no handler"};
+    }
+    const json payload = json::parse(request.payload, nullptr, /*allow_exceptions=*/false);
+    if (payload.is_discarded() || !payload.is_object()) {
+        return {.ok = false, .payload = {}, .error = std::string(request.method) + ": not JSON"};
+    }
+    return request.method == kGateMethod ? gate(payload) : body(payload);
+}
+
+void BackupPeer::on_event(const zetta::cluster::Signal& event) {
+    if (event.method == kGateMethod) {
+        const json payload = json::parse(event.payload, nullptr, /*allow_exceptions=*/false);
+        if (payload.is_object() && string_field(payload, "op") == "thaw") gate(payload);
+        return;
+    }
+    if (auto* delegate = delegate_.load()) delegate->on_event(event);
+}
+
+void BackupPeer::on_task(const zetta::cluster::Signal& task) {
+    if (auto* delegate = delegate_.load()) delegate->on_task(task);
+}
+
+std::optional<std::string> fetch_body(zetta::cluster::Cluster& cluster,
+                                      const std::vector<std::string>& owners,
+                                      const std::string& id, std::uint64_t size,
+                                      const std::string& sha256) {
+    for (const std::string& owner : owners) {
+        if (owner == cluster.node_id()) continue;
+        std::string body;
+        body.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(size, 64u << 20)));
+        bool whole = true;
+        do {
+            const json request{{"id", id},
+                               {"offset", static_cast<std::uint64_t>(body.size())},
+                               {"length", BackupPeer::kMaxSliceBytes}};
+            const zetta::cluster::SignalResponse answer = cluster.request(
+                owner, std::string(BackupPeer::kBodyMethod), request.dump(), kBodyTimeout);
+            const std::size_t newline = answer.ok ? answer.payload.find('\n') : std::string::npos;
+            if (newline == std::string::npos) {
+                whole = false;
+                break;
+            }
+            const json header = json::parse(answer.payload.substr(0, newline), nullptr, false);
+            if (unsigned_field(header, "size") != size) {
+                whole = false;
+                break;
+            }
+            const std::string_view slice = std::string_view(answer.payload).substr(newline + 1);
+            if (slice.empty() && body.size() < size) {
+                whole = false;
+                break;
+            }
+            body.append(slice);
+        } while (body.size() < size);
+        if (!whole || body.size() != size) continue;
+        if (!sha256.empty() && zetta::util::sha256_hex(body) != sha256) continue;
+        return body;
+    }
+    return std::nullopt;
 }
 
 // ---- writing a snapshot --------------------------------------------------------
@@ -619,16 +903,33 @@ BackupOutcome SnapshotWriter::finish() {
     std::unordered_set<std::string> present;
     std::vector<std::string> missing;
     for (const std::string& id : body_ids(catalogue_)) {
-        const std::optional<std::string> body = stores_.bodies.read_blob(id);
+        std::optional<std::string> body = stores_.bodies.read_blob(id);
+        const auto owned = owners.find(id);
+        const bool owned_elsewhere =
+            owned != owners.end() && !owned->second.empty() &&
+            std::ranges::find(owned->second, stores_.node_id) == owned->second.end();
+        if (!body && stores_.cluster) {
+            // A body this node lacks: fetched from its owners (a partition's), or
+            // from any member (a body every node should hold, not here yet), a
+            // slice at a time and verified against its catalogue entry (zetta#1520).
+            std::vector<std::string> sources;
+            if (owned != owners.end() && !owned->second.empty()) {
+                sources = owned->second;
+            } else {
+                for (const zetta::cluster::ClusterPeer& peer : stores_.cluster->peers()) {
+                    sources.push_back(peer.node_id);
+                }
+            }
+            const auto [size, sha256] = body_descriptor(catalogue_, id);
+            body = fetch_body(*stores_.cluster, sources, id, size, sha256);
+        }
         if (!body) {
-            const auto owned = owners.find(id);
-            if (owned != owners.end() && !owned->second.empty() &&
-                std::ranges::find(owned->second, stores_.node_id) == owned->second.end()) {
+            if (owned_elsewhere) {
                 BackupOutcome outcome = refusal(
                     BackupStatus::Conflict,
                     "the body of partition blob " + id +
-                        " is held by other members of the cluster, not by this node; a "
-                        "snapshot is taken on a node that holds every body");
+                        " is held only by other members of the cluster, and none of them gave "
+                        "it whole; retry once they are reachable");
                 outcome.details = {{"body", id}, {"owners", owned->second}};
                 return outcome;
             }

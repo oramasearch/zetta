@@ -10,6 +10,7 @@
 #include <charconv>
 #include <string_view>
 
+#include "backup_routes.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/version.hpp"
@@ -500,6 +501,9 @@ nlohmann::json openapi_document(const Registry& registry,
     // path-templated with raw bodies, declared beside the capabilities they
     // render (object_capabilities.cpp).
     for (auto& [path, item] : object_route_paths().items()) paths[path] = std::move(item);
+    // The backup routes (zetta#1518, zetta#1520): raw archives, served by the
+    // HTTP adapter (backup_routes.cpp).
+    for (auto& [path, item] : backup_route_paths().items()) paths[path] = std::move(item);
 
     document["paths"] = std::move(paths);
     return document;

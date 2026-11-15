@@ -33,6 +33,7 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/metric_store.hpp"
+#include "zetta/data/backup_snapshot.hpp"
 #include "zetta/data/object_store.hpp"
 #include "zetta/data/record_store.hpp"
 #include "zetta/data/virtual_table.hpp"
@@ -1555,6 +1556,10 @@ private:
     std::unique_ptr<zetta::data::RecordStore> record_store_;  // null when standalone
     std::unique_ptr<zetta::data::MetricStore> metric_store_;  // null when standalone
     std::unique_ptr<zetta::data::ObjectStore> object_store_;  // null when standalone
+    // The backup snapshot's signal-plane part (zetta#1520): pauses this node's
+    // writes for a snapshot another member takes, and serves body slices.
+    // Declared after the stores it refers to, so it is destroyed first.
+    std::unique_ptr<zetta::data::BackupPeer> backup_peer_;  // null when standalone
     // The object store's upkeep (maintenance, and anti-entropy every five
     // seconds) runs on the pool, one round at a time (#1005).
     struct ObjectUpkeepRound;

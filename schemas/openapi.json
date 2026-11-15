@@ -2159,6 +2159,229 @@
         ]
       }
     },
+    "/v1/backup_snapshot": {
+      "post": {
+        "description": "Pause record and object writes on every member, capture one consistent snapshot, and write it as one archive kept for 6 hours. Requires api:cluster_admin (cluster:admin).",
+        "operationId": "backup_snapshot",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "snapshot": {
+                      "type": "string"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "counts by stable name: table:<db>.<table> (rows), bucket:<name> (objects), collection:<name> (records), catalogue:<family> (entries), bodies, bodies:missing",
+                      "type": "object"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "summary"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the snapshot's id and what it counted"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "a body is held only by other members and none gave it whole"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the authorization is at fault"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "another snapshot holds the writes, a member did not pause, or writes did not drain (`busy`): retry"
+          }
+        },
+        "summary": "Take a backup snapshot",
+        "tags": [
+          "backups"
+        ]
+      }
+    },
+    "/v1/backup_snapshot/{id}": {
+      "delete": {
+        "description": "Remove the snapshot's archive. Requires api:cluster_admin.",
+        "operationId": "release_backup_snapshot",
+        "parameters": [
+          {
+            "description": "the snapshot's id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "snapshot": {
+                      "type": "string"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "counts by stable name: table:<db>.<table> (rows), bucket:<name> (objects), collection:<name> (records), catalogue:<family> (entries), bodies, bodies:missing",
+                      "type": "object"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "summary"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "released"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "released or expired"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the authorization is at fault"
+          }
+        },
+        "summary": "Release a backup snapshot",
+        "tags": [
+          "backups"
+        ]
+      },
+      "get": {
+        "description": "The zetta-backup/1 archive, streamed. Requires api:cluster_admin.",
+        "operationId": "get_backup_snapshot",
+        "parameters": [
+          {
+            "description": "the snapshot's id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "the archive"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "released or expired"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the authorization is at fault"
+          }
+        },
+        "summary": "Stream a backup snapshot's archive",
+        "tags": [
+          "backups"
+        ]
+      }
+    },
     "/v1/browse_topic": {
       "get": {
         "description": "Browse held events without creating or advancing a subscription; wait_ms is bounded on REST and MCP. Requires data:topics_read.",
@@ -37713,6 +37936,199 @@
         "summary": "Renew a bucket's owner lease",
         "tags": [
           "action"
+        ]
+      }
+    },
+    "/v1/restore_snapshot": {
+      "post": {
+        "description": "Restore the archive in the body into this node, which must hold no user data, and verify it against the archive's manifest. Requires api:cluster_admin.",
+        "operationId": "restore_snapshot",
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "snapshot": {
+                      "type": "string"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "counts by stable name: table:<db>.<table> (rows), bucket:<name> (objects), collection:<name> (records), catalogue:<family> (entries), bodies, bodies:missing",
+                      "type": "object"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "summary"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "what the node holds now, equal to the manifest's counts"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the node holds user data"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the restored counts are not the manifest's (`verification_failed`: details.differences)"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the archive is truncated or damaged, or the authorization is at fault"
+          }
+        },
+        "summary": "Restore a backup snapshot",
+        "tags": [
+          "backups"
+        ]
+      }
+    },
+    "/v1/restore_snapshot:discard": {
+      "post": {
+        "description": "Remove what a restore wrote. Refused unless the node was started with --restore-target, holds a restore record, the body names it and its snapshot, and nothing was written since. Requires api:cluster_admin.",
+        "operationId": "discard_restored_snapshot",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "node_id": {
+                    "type": "string"
+                  },
+                  "snapshot": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "node_id",
+                  "snapshot"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "snapshot": {
+                      "type": "string"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "counts by stable name: table:<db>.<table> (rows), bucket:<name> (objects), collection:<name> (records), catalogue:<family> (entries), bodies, bodies:missing",
+                      "type": "object"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "summary"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "emptied"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "not a restore target, not restored, or changed since"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the body or the authorization is at fault"
+          }
+        },
+        "summary": "Empty a restored scratch target",
+        "tags": [
+          "backups"
         ]
       }
     },
