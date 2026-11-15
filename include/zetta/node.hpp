@@ -417,6 +417,16 @@ public:
     std::shared_ptr<zetta::pipeline::Deployment> deploy_graph(const ir::ExecutionGraph& graph,
                                              zetta::pipeline::DeploymentTarget target,
                                              std::string graph_name);
+    // The same, deployed by `principal` (#1315): a target's credentials_ref is
+    // resolved through the saved-connection store for that principal before
+    // anything is placed (pipeline/deployment_credentials.hpp), failing
+    // closed; a refusal is a denied `graph_deployed` row and `error` says why.
+    // A Local target takes no credentials_ref. The overload above is the
+    // trusted local session.
+    std::shared_ptr<zetta::pipeline::Deployment> deploy_graph(
+        const ir::ExecutionGraph& graph, zetta::pipeline::DeploymentTarget target,
+        std::string graph_name, const zetta::pipeline::RunPrincipal& principal,
+        std::string* error = nullptr);
     std::shared_ptr<zetta::pipeline::Deployment> find_deployment(const std::string& id) const;
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments() const {
         return deployments_;

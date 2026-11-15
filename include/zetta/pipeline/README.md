@@ -19,6 +19,9 @@ on the owner thread. Only automatic samples advance past a conflicting step;
 caller values retain strict validation. See
 [Run metrics](../../../docs/ml/run-metrics.md) (#1205).
 
+`deployment_credentials.hpp` resolves a target's `credentials_ref` through the
+saved-connection store for the deploying principal, failing closed (#1315).
+
 `step_authority.hpp` decides, per step and when the step is reached, whether the
 run's principal may run it: deny-by-default, from the principal's roles or
 AccessKey capabilities, each decision a `data_access` audit event.

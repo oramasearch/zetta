@@ -13,6 +13,10 @@ when one is set, through `step_authority.cpp` (deny-by-default, audited as
 It records that principal on the Run, and a Run executed again without one runs
 as the principal it records (#1322).
 
+`deployment_target.cpp` refuses a `credentials_ref` that is not a saved-connection
+name and resolves one for the deploying principal
+(`resolve_deployment_credentials`, failing closed, #1315).
+
 `deployment_controller.cpp` records each run it starts or self-heals as
 `data_changed` on `run:<id>`; from `Node::tick` it is the node's own work,
 `node:<node id>` through `internal` (#1327).

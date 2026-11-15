@@ -6592,9 +6592,12 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
     // the engine interface — this handler cannot bypass it by construction).
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
+    // Deployed as the caller (#1315): a target's credentials_ref, when one is
+    // carried, resolves only for a principal that may use that connection.
     auto deployment = context.node.deploy_graph(
         graph->graph(), zetta::pipeline::DeploymentTarget{*kind, {}, {}},
-        graph->name());
+        graph->name(),
+        zetta::pipeline::RunPrincipal{context.acting_key, context.acting_is_user});
     if (!deployment) {
         if (report.block_deploy) {
             return ApiResult::failure("engine_error",

@@ -19,6 +19,7 @@
 #include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/ml/anomaly_methodology.hpp"
 #include "zetta/ml/forecast_methodology.hpp"
+#include "zetta/pipeline/deployment_credentials.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
@@ -2067,8 +2068,40 @@ std::vector<std::string> Node::project_names() const {
 std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
                                                zetta::pipeline::DeploymentTarget target,
                                                std::string graph_name) {
+    return deploy_graph(graph, std::move(target), std::move(graph_name),
+                        zetta::pipeline::RunPrincipal{});
+}
+
+std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(
+    const ir::ExecutionGraph& graph, zetta::pipeline::DeploymentTarget target,
+    std::string graph_name, const zetta::pipeline::RunPrincipal& principal,
+    std::string* error) {
+    const auto refuse = [&](std::string reason) -> std::shared_ptr<zetta::pipeline::Deployment> {
+        record_audit_event(
+            {zetta::governance::AuditAction::GraphDeployed, {}, graph_name, false, reason, {}});
+        if (error != nullptr) *error = std::move(reason);
+        return nullptr;
+    };
+    // The target's credential reference (#1315): a saved connection's name,
+    // resolved in memory for the deploying principal, failing closed. A Local
+    // target takes none. No remote kind consumes the opened credential yet,
+    // so it is dropped here once it has resolved.
+    if (!target.credentials_ref.empty()) {
+        if (target.is_local()) {
+            return refuse("a local target takes no credentials_ref");
+        }
+        const zetta::pipeline::DeploymentCredentials credentials =
+            zetta::pipeline::resolve_deployment_credentials(*this, target, principal);
+        if (!credentials.ok()) return refuse(credentials.error);
+    }
     // R1 places onto the local node only; k8s/cloud targets are deferred.
-    if (!target.is_local()) return nullptr;
+    if (!target.is_local()) {
+        if (error != nullptr) {
+            *error = "the '" + zetta::pipeline::to_string(target.kind) +
+                     "' target is planned but not functional yet; use 'local'";
+        }
+        return nullptr;
+    }
     // A deployable graph must have something to place.
     if (graph.empty()) return nullptr;
 

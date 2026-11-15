@@ -22,7 +22,7 @@ governance of who may run what is [../governance/](../governance/access-control.
 - [validation.md](validation.md) — the `ValidationReport` correctness-gate result type: per-check results, verdict, block-deploy.
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::pipeline::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).
 - [gate-checks.md](gate-checks.md) — shared schema/type, leakage and snapshot-lineage checks, plus every runnable methodology's correctness profile, including uncertainty, gold isolation and privacy budgets and streaming event/label order.
-- [deployments.md](deployments.md) — placing a validated graph onto a `DeploymentTarget` (R1 local), recorded + queryable.
+- [deployments.md](deployments.md) — placing a validated graph onto a `DeploymentTarget` (R1 local), recorded + queryable; `credentials_ref` names a saved connection, validated at the boundary and resolved on deploy for the deploying principal (#1315).
 - [deployment-controller.md](deployment-controller.md) — the control plane: reconcile a local deployment desired→actual and self-heal a killed/failed run (FEAT-4 / TC-3); each start is audited as the node's own work, `node:<node id>` (#1327).
 - [solution-catalog.md](solution-catalog.md) — the AI Solution Library (`zetta::pipeline::SolutionCatalog`) + the headed Deploy panel: pick a blueprint, gate, deploy (FEAT-4 / SCR-5).
 - [execution.md](execution.md) — executing a graph on a node (`zetta::pipeline::GraphExecutor`): walk steps in dependency order, create or continue a caller-supplied Run, and drive it to a terminal state.
