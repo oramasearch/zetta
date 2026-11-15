@@ -41,6 +41,35 @@ std::string random_hex(std::size_t count) {
 
 std::string generate_token_secret() { return random_hex(32); }
 
+std::string format_token_bearer(std::string_view token_id, std::string_view secret) {
+    std::string bearer(kTokenLookupPrefix);
+    bearer.append(token_id);
+    bearer.push_back('_');
+    bearer.append(secret);
+    return bearer;
+}
+
+std::optional<std::string_view> token_lookup_id(std::string_view bearer) {
+    constexpr std::size_t kIdLength = 36;
+    constexpr std::size_t kSecretLength = 64;
+    if (!bearer.starts_with(kTokenLookupPrefix)) return std::nullopt;
+    const std::string_view rest = bearer.substr(kTokenLookupPrefix.size());
+    if (rest.size() != kIdLength + 1 + kSecretLength || rest[kIdLength] != '_') {
+        return std::nullopt;
+    }
+    const auto lower_hex = [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    };
+    const std::string_view id = rest.substr(0, kIdLength);
+    for (const char c : id) {
+        if (!lower_hex(c) && c != '-') return std::nullopt;
+    }
+    for (const char c : rest.substr(kIdLength + 1)) {
+        if (!lower_hex(c)) return std::nullopt;
+    }
+    return id;
+}
+
 std::string generate_token_salt() { return random_hex(16); }
 
 std::string hash_token_secret(std::string_view salt, std::string_view secret) {

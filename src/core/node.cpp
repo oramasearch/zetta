@@ -4232,10 +4232,15 @@ Node::TokenIssue Node::create_token(const std::string& user_id,
                                     std::string expires_at) {
     if (!identity_writable()) return {};
     if (!find_user_by_id(user_id)) return {};  // unknown user
-    const std::string secret = governance::generate_token_secret();
+    // The bearer names its token (#1417): `zt1_<id>_<random>`, hashed whole,
+    // so authentication verifies only the token it names.
+    const std::string id = zetta::util::new_uuid();
+    const std::string random = governance::generate_token_secret();
+    if (random.empty()) return {};  // RNG failure
+    const std::string secret = governance::format_token_bearer(id, random);
     const std::string salt = governance::generate_token_salt();
     const std::string hash = governance::hash_token_secret(salt, secret);
-    if (secret.empty() || salt.empty() || hash.empty()) return {};  // RNG failure
+    if (salt.empty() || hash.empty()) return {};  // RNG failure
     governance::TokenValue value;
     value.user_id = user_id;
     value.type = type;
@@ -4244,7 +4249,6 @@ Node::TokenIssue Node::create_token(const std::string& user_id,
     value.created = zetta::util::now_iso8601();
     value.expires_at = std::move(expires_at);
     value.revoked = false;
-    const std::string id = zetta::util::new_uuid();
     if (replication_) {
         nlohmann::json crdt = value.expires_at.empty()
             ? nlohmann::json{{"user", value.user_id},
@@ -4339,9 +4343,39 @@ void Node::reconcile_tokens(
 }
 
 std::shared_ptr<zetta::governance::User> Node::authenticate_token(
-    std::string_view secret) const {
+    std::string_view secret, bool allow_scan) const {
     if (secret.empty()) return nullptr;
     const std::string now = zetta::util::now_iso8601();
+    // A bearer in the issued format names its token (#1417): verify that one
+    // token and stop. A wrong or unknown one costs one digest, never a scan.
+    if (const std::optional<std::string_view> named = governance::token_lookup_id(secret)) {
+        const auto token = find_token_by_id(std::string(*named));
+        if (!token || !token->validates(secret, now, /*allow_kdf=*/false)) return nullptr;
+        auto user = find_user_by_id(token->user_id());
+        return user && user->active() ? user : nullptr;
+    }
+    // A bearer without the prefix: an operator-chosen admin token, or a token
+    // issued before the format. One this process already verified is found by
+    // its digest; anything else scans, only when `allow_scan` (the HTTP gate
+    // withholds it from a source past its failed-authentication budget).
+    const std::string digest = governance::hash_token_secret(kLegacyTokenLookupSalt, secret);
+    if (const auto cached = legacy_token_lookup_.find(digest);
+        cached != legacy_token_lookup_.end()) {
+        const auto token = find_token_by_id(cached->second);
+        if (token && token->validates(secret, now, /*allow_kdf=*/false)) {
+            auto user = find_user_by_id(token->user_id());
+            if (user && user->active()) return user;
+        }
+        legacy_token_lookup_.erase(cached);
+    }
+    if (!allow_scan) return nullptr;
+    const auto remember = [&](const governance::Token& token) {
+        if (digest.empty()) return;
+        if (legacy_token_lookup_.size() >= kLegacyTokenLookupCapacity) {
+            legacy_token_lookup_.clear();
+        }
+        legacy_token_lookup_.emplace(digest, token.id());
+    };
     bool unverified_kdf_token = false;
     for (const auto& token : tokens_) {
         // validates() is constant-time on the hash compare and rejects revoked /
@@ -4351,7 +4385,10 @@ std::shared_ptr<zetta::governance::User> Node::authenticate_token(
         if (token->uses_kdf() && !token->kdf_verified()) unverified_kdf_token = true;
         if (!token->validates(secret, now, /*allow_kdf=*/false)) continue;
         auto user = find_user_by_id(token->user_id());
-        if (user && user->active()) return user;
+        if (user && user->active()) {
+            remember(*token);
+            return user;
+        }
     }
     if (!unverified_kdf_token) return nullptr;
     // The slow pass (#769), budgeted: refill one check per kColdKdfRefill up to
@@ -4372,7 +4409,10 @@ std::shared_ptr<zetta::governance::User> Node::authenticate_token(
         if (!token->uses_kdf() || token->kdf_verified()) continue;
         if (!token->validates(secret, now)) continue;
         auto user = find_user_by_id(token->user_id());
-        if (user && user->active()) return user;
+        if (user && user->active()) {
+            remember(*token);
+            return user;
+        }
     }
     return nullptr;
 }

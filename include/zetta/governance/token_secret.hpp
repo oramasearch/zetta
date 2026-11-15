@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -21,6 +22,23 @@ namespace zetta::governance {
 // A fresh token secret: 32 bytes from the OS CSPRNG, lowercase hex (64 chars).
 // This is the PLAINTEXT returned once at token creation — never stored.
 std::string generate_token_secret();
+
+// The bearer format of an issued token (#1417): `zt1_<token id>_<64 hex>`. The
+// token id is not secret (system.tokens lists it); it lets the node find the one
+// stored token a bearer names and verify only that one, so an invalid bearer
+// costs one digest however many tokens the node holds. The whole string is the
+// secret that is hashed, so the id cannot be swapped onto another token's
+// secret. A bearer without the prefix (an operator-chosen admin token, or a
+// token issued before this format) takes the scanning path.
+inline constexpr std::string_view kTokenLookupPrefix = "zt1_";
+
+// `zt1_<token_id>_<secret>`.
+std::string format_token_bearer(std::string_view token_id, std::string_view secret);
+
+// The token id a bearer in the `zt1_` format names, or nullopt when the bearer is
+// not in that format (an id of 36 lowercase hex digits and hyphens, then `_` and
+// 64 lowercase hex digits).
+std::optional<std::string_view> token_lookup_id(std::string_view bearer);
 
 // A fresh per-token salt: 16 bytes from the OS CSPRNG, lowercase hex (32 chars).
 // Stored alongside the hash so two tokens with the same secret hash differently.

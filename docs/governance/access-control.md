@@ -314,6 +314,30 @@ A peer on a release before #769 reads the PBKDF2 form as an ordinary hash and
 never matches it: during a rolling upgrade the owner token authenticates only on
 upgraded nodes.
 
+### Bounded token lookup (#1417)
+
+An invalid bearer used to be compared against every stored token on the owning
+loop, so a flood of random bearers against a large token store delayed every
+other owner-loop operation (LSR-244). Two changes bound that work:
+
+- **Issued bearers name their token.** `create_token` returns
+  `zt1_<token id>_<64 hex>` (`format_token_bearer`, `token_lookup_id` in
+  `token_secret.hpp`). The token id is not secret (`system.tokens` lists it); the
+  whole string is the hashed secret, so an id cannot be moved onto another
+  token's random part. `Node::authenticate_token` verifies only the token the
+  bearer names: one SHA-256 for any bearer in this format, right or wrong, however
+  many tokens the node holds. An unknown id resolves nothing and never falls back
+  to a scan.
+- **Unprefixed bearers** (the operator-chosen owner secret, and every token issued
+  before the format) take the two-pass scan above. A bearer that passes is
+  remembered by a domain-separated SHA-256 in a memory-only map of at most 4,096
+  entries (`legacy_token_lookup_`), so its next request costs two digests; a hit is
+  verified against the token again, so revocation or expiry is never skipped. A
+  wrong unprefixed bearer still scans, until its source spends the gate's
+  failed-authentication budget below; after that it is refused without a scan.
+
+Existing tokens keep working; rotate long-lived tokens to get the new format.
+
 ### Built-in roles
 
 `builtin_role_permissions(name)` seeds three roles, all unrestricted in scope
@@ -472,6 +496,21 @@ their own. The gate is **always on** (#799) — there is no mode switch:
 
 The CORS preflight (`OPTIONS`) is answered by the `cors()` middleware **before**
 the gate, so a credential-less browser preflight is never blocked.
+
+**Unauthenticated work is bounded (#1417).** A request with no credential (no
+bearer, no session cookie) is answered 401 by the gate without a hop to the owning
+loop. Every failed authentication (a native bearer that does not resolve, or a
+Clerk JWT that does not verify) spends one unit of a per-source budget
+(`governance::FailedAuthLimiter`): 20 failures, refilled at one per second, keyed
+by the connection's remote address (never a forwarded-for header). Past it, the
+source's bearers get only the bounded lookups (`authenticate_token(bearer,
+/*allow_scan=*/false)`): an issued `zt1_` bearer's one token, or an unprefixed
+bearer this process already verified. A never-seen unprefixed bearer is not
+scanned, and every failure is answered **429 `rate_limited`** with `Retry-After`
+and its connection closes. A valid issued token from that source keeps working,
+and a success does not refill the budget, so a valid token cannot buy more scans.
+At most 4,096 sources are tracked (the oldest is forgotten). Behind a proxy every
+caller shares the proxy's address, so the budget is that proxy's.
 
 ### Clerk key caching (#1416)
 

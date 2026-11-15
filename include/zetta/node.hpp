@@ -1165,7 +1165,15 @@ public:
     // bounds both the CPU an unauthenticated caller can burn and the rate of
     // online guesses against the owner's secret. bootstrap_owner verifies the
     // operator's secret at start, so the owner normally never takes the slow pass.
-    std::shared_ptr<zetta::governance::User> authenticate_token(std::string_view secret) const;
+    //
+    // Bounded lookup (#1417): a bearer in the issued `zt1_<id>_…` format is
+    // checked against the one token it names, never a scan. An unprefixed
+    // bearer this process already verified is found by its digest. Only an
+    // unprefixed bearer seen for the first time scans, and only when
+    // `allow_scan`: the HTTP gate passes false for a source that has spent its
+    // failed-authentication budget, so its work stays one or two digests.
+    std::shared_ptr<zetta::governance::User> authenticate_token(std::string_view secret,
+                                                                bool allow_scan = true) const;
     static constexpr int kColdKdfBurst = 4;
     static constexpr std::chrono::milliseconds kColdKdfRefill{1000};
 
@@ -1650,6 +1658,13 @@ private:
     // and when it was last refilled.
     mutable int cold_kdf_budget_ = kColdKdfBurst;
     mutable std::chrono::steady_clock::time_point cold_kdf_refilled_{};
+    // Unprefixed bearers this process verified (#1417): a domain-separated
+    // SHA-256 of the bearer -> its token id, memory only, cleared when full. A
+    // hit is verified against the token again, so a revoked or changed token
+    // never passes on a stale entry.
+    mutable std::unordered_map<std::string, std::string> legacy_token_lookup_;
+    static constexpr std::size_t kLegacyTokenLookupCapacity = 4096;
+    static constexpr std::string_view kLegacyTokenLookupSalt = "zetta-token-lookup-v1";
     std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles_; // user↔role assignments
     std::vector<std::shared_ptr<zetta::governance::Policy>> policies_;      // row-level security policies (#748)
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)

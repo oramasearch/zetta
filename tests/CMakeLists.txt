@@ -174,6 +174,7 @@ add_executable(zetta-tests
   pubsub/test_node_pubsub.cpp
   pubsub/test_pubsub_capabilities.cpp
   governance/test_users_roles_tokens.cpp
+  governance/test_failed_auth_limiter.cpp
   governance/test_roles.cpp
   governance/test_authz_regressions.cpp
   governance/test_identity_seal.cpp

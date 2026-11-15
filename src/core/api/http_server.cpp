@@ -69,6 +69,7 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/failed_auth_limiter.hpp"
 #include "zetta/governance/scope.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/node.hpp"
@@ -753,6 +754,83 @@ struct ApiServer::Impl {
     // Each connection's socket, by the same key, so a long poll can notice its
     // client leave (#1174). Touched only on the IO thread, like `parsers`.
     std::map<const boost::http::route_params*, boost::corosio::tcp_socket*> sockets;
+    // The failed-authentication budget per remote address (#1417): a source
+    // that spent it is refused before its credential is checked, so an
+    // invalid-token flood cannot queue token-store work on the owner loop.
+    // Touched only on the IO thread, like `parsers`.
+    zetta::governance::FailedAuthLimiter auth_limiter;
+
+    // The remote address a request arrived from: the limiter's key. The peer's
+    // socket address, never a forwarded-for header a client could set.
+    std::string request_source(const boost::http::route_params& route) const {
+        const auto found = sockets.find(&route);
+        if (found == sockets.end()) return "unknown";
+        const boost::corosio::endpoint remote = found->second->remote_endpoint();
+        return remote.is_v4() ? remote.v4_address().to_string()
+                              : remote.v6_address().to_string();
+    }
+
+    // Resolve a credential to its user id; empty when it does not resolve.
+    // Native token store first (cheap, local): authenticate_token touches the
+    // Node, main-thread only, so it is marshaled onto the owning loop. Then the
+    // Clerk fallback (#889): if the native token missed AND a Clerk issuer is
+    // configured AND the bearer is JWT-shaped, verify it against the issuer's
+    // JWKS and map the subject to a principal named clerk:<sub> (provisioned
+    // on first sight). No issuer configured: this never runs (bearer-only).
+    // `allow_scan` false (a source past its failed-authentication budget,
+    // #1417) keeps the native check to the bounded lookups.
+    runtime::task<std::string> resolve_credential(std::string bearer, bool allow_scan) {
+        std::string resolved_user_id;
+        co_await bridge.run_on_owner([&] {
+            if (auto user = node.authenticate_token(bearer, allow_scan)) {
+                resolved_user_id = user->id();
+            }
+        });
+        if (resolved_user_id.empty() && !options.clerk_issuer.empty() &&
+            looks_like_jwt(bearer)) {
+            if (auto claims = co_await verify_clerk_jwt_async(options.clerk_issuer, bearer)) {
+                const std::string principal_name = "clerk:" + claims->subject;
+                co_await bridge.run_on_owner([&] {
+                    auto user = node.find_user(principal_name);
+                    if (!user) user = node.create_user(principal_name);
+                    if (user) resolved_user_id = user->id();
+                });
+            }
+        }
+        co_return resolved_user_id;
+    }
+
+    // The gate's 401: no credential, or one that did not resolve to a user.
+    boost::http::route_task refuse_unauthenticated(boost::http::route_params& route) {
+        namespace http = boost::http;
+        route.status(http::status::unauthorized);
+        const std::string body =
+            transport_error_body("unauthorized", "missing or invalid bearer token");
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        (void)send_error;
+        co_return http::route_done;
+    }
+
+    // The gate's 429 (#1417): this source failed authentication too often.
+    // The body was left unread, so the connection ends with the reply.
+    boost::http::route_task refuse_rate_limited(boost::http::route_params& route,
+                                                std::uint32_t retry_after_seconds) {
+        namespace http = boost::http;
+        route.status(http::status::too_many_requests);
+        route.res.set_keep_alive(false);
+        const std::string body = transport_error_body(
+            "rate_limited",
+            "too many failed authentications from this address; retry in " +
+                std::to_string(retry_after_seconds) + " s");
+        route.res.set(http::field::content_type, "application/json");
+        route.res.set(http::field::retry_after, std::to_string(retry_after_seconds));
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        (void)send_error;
+        co_return http::route_done;
+    }
 
     struct Connection : boost::beast2::http_worker {
         Impl& owner;
@@ -4835,30 +4913,17 @@ bool ApiServer::start() {
         RequestIdentity identity;
         bool authorized = false;
 
-        std::string resolved_user_id;
-        // Native token store first (cheap, local): authenticate_token touches the
-        // Node — main-thread only, so marshal it onto the owning loop.
-        co_await impl.bridge.run_on_owner([&] {
-            if (auto user = impl.node.authenticate_token(bearer)) {
-                resolved_user_id = user->id();
-            }
-        });
+        // #1417: no credential is refused here, with no owner-loop hop. A
+        // source that has spent its failed-authentication budget gets only
+        // the bounded lookups (an issued bearer's one token, an already
+        // verified bearer's digest), never a token-store scan, and its
+        // failures answer 429.
+        const std::string source = impl.request_source(route);
+        if (bearer.empty()) co_return co_await impl.refuse_unauthenticated(route);
+        const auto budget = impl.auth_limiter.admit(source);
 
-        // Clerk fallback (#889): if the native token missed AND a Clerk issuer is
-        // configured AND the bearer is JWT-shaped, verify it against the issuer's
-        // JWKS and map the subject to a principal named clerk:<sub> (provisioned
-        // on first sight). No issuer configured → this never runs (bearer-only).
-        if (resolved_user_id.empty() && !impl.options.clerk_issuer.empty() &&
-            looks_like_jwt(bearer)) {
-            if (auto claims = co_await verify_clerk_jwt_async(impl.options.clerk_issuer, bearer)) {
-                const std::string principal_name = "clerk:" + claims->subject;
-                co_await impl.bridge.run_on_owner([&] {
-                    auto user = impl.node.find_user(principal_name);
-                    if (!user) user = impl.node.create_user(principal_name);
-                    if (user) resolved_user_id = user->id();
-                });
-            }
-        }
+        std::string resolved_user_id =
+            co_await impl.resolve_credential(bearer, budget.admitted);
 
         if (!resolved_user_id.empty()) {
             authorized = true;
@@ -4867,14 +4932,11 @@ bool ApiServer::start() {
         }
 
         if (!authorized) {
-            route.status(http::status::unauthorized);
-            const std::string body = transport_error_body(
-                "unauthorized", "missing or invalid bearer token");
-            route.res.set(http::field::content_type, "application/json");
-            stamp_response_headers(route, body);
-            auto [send_error] = co_await route.send(body);
-            (void)send_error;
-            co_return http::route_done;
+            impl.auth_limiter.record_failure(source);
+            if (!budget.admitted) {
+                co_return co_await impl.refuse_rate_limited(route, budget.retry_after_seconds);
+            }
+            co_return co_await impl.refuse_unauthenticated(route);
         }
 
         // Hand the resolved identity to the matched handler. route_data is

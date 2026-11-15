@@ -26,6 +26,7 @@
 #include "zetta/api/server.hpp"
 #include "zetta/api/clerk_auth.hpp"
 #include "zetta/connect/http_transport.hpp"
+#include "zetta/governance/failed_auth_limiter.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/token.hpp"
 #include "zetta/governance/user.hpp"
@@ -200,6 +201,39 @@ TEST_F(RequireAuthFixture, EveryRouteDeniesWithoutToken) {
     // A wrong token is no better than none.
     EXPECT_EQ(drive(*server, "GET", "/v1/server_info", {}, "not-the-secret").status,
               401);
+}
+
+// #1417 (LSR-244): invalid bearers from one address spend a failed-
+// authentication budget. Once it is spent, the address's bearers get only the
+// bounded lookups and a failure answers 429: a never-seen unprefixed bearer is
+// not scanned, while an issued token and the already verified owner secret
+// keep working. A request with no credential never touches the budget.
+TEST_F(RequireAuthFixture, RepeatedInvalidBearersFromOneAddressAreRateLimited) {
+    // The owner's secret is unprefixed: its first check scans, after which it
+    // is found by its digest.
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info", {}, owner_secret).status, 200);
+    for (int request = 0; request < 30; ++request) {
+        EXPECT_EQ(drive(*server, "GET", "/v1/server_info").status, 401) << request;
+    }
+    for (std::uint32_t failure = 0; failure < zetta::governance::FailedAuthLimiter::kBurst;
+         ++failure) {
+        EXPECT_EQ(drive(*server, "GET", "/v1/server_info", {},
+                        "wrong-" + std::to_string(failure))
+                      .status,
+                  401)
+            << failure;
+    }
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info", {}, "wrong-again").status, 429);
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info", {}, owner_secret).status, 200);
+    auto reader = node.create_user("limited-reader");
+    ASSERT_TRUE(reader);
+    const auto issued = node.create_token(reader->id(), zetta::governance::TokenType::Api);
+    ASSERT_TRUE(issued.token);
+    // Authenticated (the gate passes) and denied the capability: 403, not 429.
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info", {}, issued.secret).status, 403);
+    std::this_thread::sleep_for(zetta::governance::FailedAuthLimiter::kRefill +
+                                std::chrono::milliseconds(200));
+    EXPECT_EQ(drive(*server, "GET", "/v1/server_info", {}, "wrong-after-refill").status, 401);
 }
 
 // Acceptance: the bootstrap owner's token opens every route (the gate passes).
