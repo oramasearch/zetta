@@ -337,3 +337,93 @@ TEST_F(ConnectionStoreFixture, SavingANewCredentialReseals) {
 }
 
 }  // namespace
+
+namespace {
+
+// A node configured the way main configures it (#1314): the root secret is
+// required, and given (or not) from outside data_dir.
+zetta::NodeConfig main_style_config(const std::filesystem::path& data_dir, std::string secret,
+                                    std::vector<std::string> retired = {}) {
+    zetta::NodeConfig config{data_dir.string(), /*preflight=*/false};
+    config.connection_root_secret = std::move(secret);
+    config.retired_connection_root_secrets = std::move(retired);
+    config.connection_root_secret_required = true;
+    return config;
+}
+
+}  // namespace
+
+// #1314: a copy of a node's whole data_dir does not open a stored credential
+// without the external secret. A node started the way main starts it, with no
+// secret, refuses connector credential work rather than falling back to one
+// kept in data_dir, and the same copy opens once the secret is supplied.
+TEST(ConnectionStoreSealed, ACopiedDataDirectoryDoesNotOpenWithoutTheExternalSecret) {
+    zetta::test::TempDir dir;
+    const auto original = dir.path() / "original";
+    const auto stolen = dir.path() / "stolen";
+    const std::string external(64, 'e');
+    {
+        zetta::Node node{main_style_config(original, external)};
+        ASSERT_TRUE(node.start());
+        ASSERT_TRUE(
+            zetta::connect::save_connection(node, "warehouse", snowflake_config()).empty());
+        node.stop();
+    }
+    std::filesystem::copy(original, stolen, std::filesystem::copy_options::recursive);
+    {
+        zetta::Node node{main_style_config(stolen, "")};
+        ASSERT_TRUE(node.start());
+        const auto found = zetta::connect::find_connection(node, "warehouse");
+        ASSERT_TRUE(found);
+        EXPECT_EQ(found->credential, zetta::connect::CredentialState::Unreadable);
+        EXPECT_TRUE(found->config.token.empty());
+        std::string reason;
+        EXPECT_EQ(node.connection_keyring(&reason), nullptr);
+        EXPECT_NE(reason.find("--connection-root-secret-file"), std::string::npos) << reason;
+        // Fail closed: nothing new is sealed either, and no secret is created.
+        EXPECT_FALSE(
+            zetta::connect::save_connection(node, "other", snowflake_config()).empty());
+        EXPECT_FALSE(std::filesystem::exists(stolen / "security" / "connection-root-secret"));
+        node.stop();
+    }
+    {
+        zetta::Node node{main_style_config(stolen, std::string(64, 'x'))};
+        ASSERT_TRUE(node.start());
+        EXPECT_EQ(zetta::connect::find_connection(node, "warehouse")->credential,
+                  zetta::connect::CredentialState::Unreadable);
+        node.stop();
+    }
+    zetta::Node node{main_style_config(stolen, external)};
+    ASSERT_TRUE(node.start());
+    EXPECT_EQ(zetta::connect::find_connection(node, "warehouse")->config.token, kSecret);
+    node.stop();
+}
+
+// #1314 migration: rows sealed under the join token (the pre-#1314 root) re-seal
+// under the external secret at the first start that has it, with the join token
+// as a retired secret; afterwards the join token alone opens nothing.
+TEST(ConnectionStoreSealed, RowsSealedUnderTheJoinTokenMigrateToTheExternalSecret) {
+    zetta::test::TempDir dir;
+    const std::string join_token = "the-cluster-join-token-before-1314";
+    const std::string external(64, 'e');
+    {
+        zetta::Node node{config_with_secret(dir, join_token)};
+        ASSERT_TRUE(node.start());
+        ASSERT_TRUE(
+            zetta::connect::save_connection(node, "warehouse", snowflake_config()).empty());
+        node.stop();
+    }
+    {
+        zetta::Node node{main_style_config(dir.path(), external, {join_token})};
+        ASSERT_TRUE(node.start());
+        EXPECT_EQ(zetta::connect::sealed_key_id(stored_row(node).at("credential")),
+                  node.connection_keyring()->current()->id);
+        EXPECT_EQ(zetta::connect::find_connection(node, "warehouse")->config.token, kSecret);
+        node.stop();
+    }
+    zetta::Node node{main_style_config(dir.path(), join_token)};
+    ASSERT_TRUE(node.start());
+    EXPECT_EQ(zetta::connect::find_connection(node, "warehouse")->credential,
+              zetta::connect::CredentialState::Unreadable);
+    node.stop();
+}

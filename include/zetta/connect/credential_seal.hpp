@@ -17,14 +17,20 @@
 // **sealed**: AES-256-GCM under a key that is never in the replicated catalogue.
 //
 // **Where the key comes from.** The sealing key is derived (HKDF-SHA256) from a
-// root secret every member already holds outside the catalogue:
-//   - a node started by `main` uses the cluster **join token** — the 0600 file
-//     under `<data_dir>/security/` that every member of one cluster shares, so
-//     every member derives the same key and can unseal what any other sealed;
+// root secret held outside the catalogue:
+//   - a node started by `main` reads it from a file OUTSIDE `data_dir` named at
+//     start (`--connection-root-secret-file` / ZETTA_CONNECTION_ROOT_SECRET_FILE,
+//     e.g. a mounted Kubernetes Secret; #1314), so a copy of `data_dir` alone
+//     does not open a stored credential. Every member is given the same file, so
+//     each opens what another sealed. Started without one, `main` gives the node
+//     no keyring at all: connector credentials are neither saved nor opened, and
+//     every other capability runs. (Before #1314 `main` used the cluster join
+//     token, which lives in `<data_dir>/security/`; it is now only a retired
+//     secret, so rows sealed under it re-seal under the external one.)
 //   - a node embedded without one (the library, a test) creates a random root
 //     secret in `<data_dir>/security/connection-root-secret` (0600) on first
-//     use. That key is local to the one node, which is all a node without a
-//     cluster needs.
+//     use. That key is local to the one node and sits beside the data, so it
+//     defeats a reader of the table files but not a copy of `data_dir`.
 //
 // **Rotation.** A key carries an id (a short hash of the key). A sealed value
 // names the id it was sealed under. The keyring holds the current key plus the
@@ -70,6 +76,26 @@ private:
 // `<data_dir>/security/connection-root-secret`, created 0600 on first use.
 std::optional<CredentialKeyring> load_or_create_local_keyring(
     const std::string& data_dir, std::string* reason = nullptr);
+
+// The root secret supplied from outside data_dir (#1314): the file's first
+// non-empty line is the current secret, any later ones are retired secrets it
+// can still open (rotation). Lines starting with `#` are comments.
+struct ExternalRootSecret {
+    std::string current;
+    std::vector<std::string> retired;
+};
+
+// The shortest root secret accepted: 32 characters (128 bits as hex, more as
+// random text). `openssl rand -hex 32` makes a suitable one.
+inline constexpr std::size_t kMinimumRootSecretLength = 32;
+
+// Read the external root secret at `path`. Refused (empty optional with a
+// reason) when the file, after following symbolic links (a Kubernetes Secret
+// mount is links), lies inside `data_dir`; when it is not a regular file, is
+// larger than 64 KiB, is writable by group or others, or holds no secret; or
+// when a secret is shorter than kMinimumRootSecretLength.
+std::optional<ExternalRootSecret> load_external_root_secret(
+    const std::string& path, const std::string& data_dir, std::string* reason = nullptr);
 
 // Seal `plaintext`, bound to `context` (the connection name). The sealed value:
 //   {"v":1, "alg":"AES-256-GCM", "kid", "nonce", "ciphertext", "tag"}

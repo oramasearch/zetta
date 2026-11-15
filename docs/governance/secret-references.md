@@ -24,7 +24,9 @@ full page is [connector query → saved connections](../data/connector-query.md#
 | **A record names the credential; the store resolves it.** | `create_connection {name, connector}` stores it; `create_dataset_from_query` and `list_source_tables` take `connection: "<name>"` and `find_connection` resolves the bytes in memory for the query that presents them. A co-launched distributed fetch carries only the name: each node resolves the credential from its own copy, so no credential travels in the launch (`connect/distributed_ingest.hpp`). | `tests/connect/test_connection_store.cpp` `SavesAndResolvesAConnectionWithItsToken` |
 | **Replayable, not hashed.** | The credential is **sealed**: AES-256-GCM under a key derived (HKDF-SHA256) from a root secret held outside the replicated catalogue, bound to the connection name as associated data (`connect/credential_seal.hpp`, [#1230](https://github.com/oramasearch/zetta/issues/1230)). | `tests/connect/test_credential_seal.cpp` (fresh nonces, wrong key, wrong connection, tampering) |
 | **Not plaintext at rest.** | The replicated row holds the settings without the token plus the sealed value; a legacy plaintext row is re-sealed on start; a node with no sealing key refuses to save (fail closed). | `ConnectionStoreSealed.TheStoredRowAndTheCatalogueHoldOnlyTheSealedCredential`, `ALegacyPlaintextRowIsResealedOnStart` |
-| **Rotation.** | Saving under the same name seals the new credential afresh; rotating the join token re-seals the store on each node's next start. | `RotationResealsUnderTheNewRootSecret`, `SavingANewCredentialReseals` |
+| **The root secret is outside `data_dir` (#1314).** | A node started by `main` reads it from `--connection-root-secret-file PATH` / `ZETTA_CONNECTION_ROOT_SECRET_FILE`, a file outside the data directory such as a mounted Kubernetes Secret, held in memory only. A file that resolves inside `data_dir` (links followed), is writable by group or others, or holds a secret shorter than 32 characters is refused and the node does not start. Without the file the node holds **no keyring**: `create_connection` is refused and saved connections are `unreadable`; every other capability runs, and start logs why. It never falls back to a secret kept in `data_dir`. | `ConnectionStoreSealed.ACopiedDataDirectoryDoesNotOpenWithoutTheExternalSecret`, `CredentialSeal.TheExternalRootSecretMustLiveOutsideTheDataDirectory` |
+| **Rotation.** | Saving under the same name seals the new credential afresh. The secret file's first line is the current secret and later lines are retired ones that still open; each node re-seals the store at its next start. | `RotationResealsUnderTheNewRootSecret`, `SavingANewCredentialReseals` |
+| **Migration from the join-token key.** | Before #1314 the key derived from the cluster join token, persisted in `<data_dir>/security/cluster-secret.json`. With the file supplied, `main` keeps the join tokens as retired secrets, so the first start re-seals every row under the external secret; after that the join token opens nothing. Roll every member together. The operator wiring is [orama-operator#1166](https://github.com/oramasearch/orama-operator/issues/1166). | `ConnectionStoreSealed.RowsSealedUnderTheJoinTokenMigrateToTheExternalSecret` |
 | **No read surface carries it.** | `system.connections`, `list_connections`, `create_connection`'s output and the web form render through `SavedConnection::to_redacted_json()`, which says only `credential: set / none / unreadable / plaintext`. SQL cannot reach the store's database. | `NoReadSurfaceEverCarriesTheToken`, `ReadSurfacesSayOnlyThatACredentialIsSet`, the in-app `cluster.connections` case |
 | **No log line carries it.** | `HttpRequest::secret_headers` names the headers whose values never reach a reason string, log line or span (`connect/http_transport.hpp`). | `tests/connect/` transport tests |
 
@@ -63,13 +65,11 @@ Proof: `tests/governance/test_consent.cpp` `AnInlineCredentialIsHeldToExecuteBut
 
 ## What is not met yet
 
-- **A stolen disk is still sufficient.** The sealing key derives from the cluster join token, which
-  a node persists in `<data_dir>/security/cluster-secret.json`, beside the sealed rows. Sealing
-  defeats a reader of the table files, a support bundle or a backup of the data alone, but not a copy
-  of the whole `data_dir`. Holding the root secret outside `data_dir` (an operator-supplied secret
-  held in memory) changes the operator contract and needs a decision:
-  [#1314](https://github.com/oramasearch/zetta/issues/1314) (follows
-  [#830](https://github.com/oramasearch/zetta/issues/830)).
+- **An embedded node keeps its root secret beside the data.** A library or test node built
+  without `connection_root_secret_required` creates a node-local secret in
+  `<data_dir>/security/connection-root-secret`, which a copy of `data_dir` carries. `main` never
+  does this since [#1314](https://github.com/oramasearch/zetta/issues/1314); an embedding that
+  stores real credentials must pass a secret it holds elsewhere.
 - **`DeploymentTarget::credentials_ref`** (`pipeline/deployment_target.hpp`) is declared as a
   reference but nothing resolves it: only `Local` targets are functional and they take no
   credential. When a remote placement kind is built, its `credentials_ref` resolves through the

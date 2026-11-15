@@ -121,14 +121,21 @@ struct NodeConfig {
     // uncapped, and the HTTP routes take no body past the request cap for it.
     std::uint64_t object_default_quota_bytes = zetta::data::ObjectStore::kDefaultQuotaBytes;
     // The root secret saved connector credentials are sealed under (#1230). main
-    // passes the cluster join token, so every member of one cluster derives the
-    // same sealing key and can open what another sealed — and the key is never
-    // in the replicated catalogue. Empty (a library / test node): the node
-    // creates a node-local root secret under <data_dir>/security/ on first use.
+    // passes the one read from a file outside data_dir (#1314,
+    // --connection-root-secret-file / ZETTA_CONNECTION_ROOT_SECRET_FILE), the
+    // same on every member, so each opens what another sealed and a copy of
+    // data_dir alone opens nothing. Empty: see connection_root_secret_required.
     std::string connection_root_secret;
-    // Root secrets of earlier join tokens. Credentials sealed under them still
-    // open, and start() re-seals them under the current secret.
+    // Root secrets it replaced (rotation, and the join tokens main used before
+    // #1314). Credentials sealed under them still open, and start() re-seals
+    // them under the current secret.
     std::vector<std::string> retired_connection_root_secrets;
+    // Set by main (#1314): with no connection_root_secret the node holds no
+    // keyring, so connector credentials are neither saved nor opened, and
+    // every other capability runs. Unset (a library / test node) and no secret:
+    // the node creates a node-local root secret under <data_dir>/security/ on
+    // first use, which does not survive a copy of data_dir being stolen.
+    bool connection_root_secret_required = false;
     // The cluster's identity root (#763, #764, docs/governance/identity-seal.md).
     // Set, every identity record this node replicates (user, role, token, role
     // assignment, row-security policy, principal, access key) is sealed by it,

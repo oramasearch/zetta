@@ -849,8 +849,16 @@ bool Node::start() {
     {
         const zetta::connect::ResealReport resealed =
             zetta::connect::reseal_connections(*this);
-        if (resealed.resealed > 0 || !resealed.unreadable.empty() ||
-            !resealed.error.empty()) {
+        if (!resealed.error.empty() && config_.connection_root_secret_required &&
+            config_.connection_root_secret.empty()) {
+            // Saved connections exist and nothing can open them (#1314): say so
+            // once, plainly; connector work refuses until a secret is supplied.
+            std::fprintf(stderr,
+                         "zetta: saved connections exist but their credentials cannot be "
+                         "opened: %s\n",
+                         resealed.error.c_str());
+        } else if (resealed.resealed > 0 || !resealed.unreadable.empty() ||
+                   !resealed.error.empty()) {
             std::printf(
                 "zetta: connection credentials: %zu re-sealed, %zu not openable "
                 "on this node%s%s\n",
@@ -4769,12 +4777,21 @@ const zetta::connect::CredentialKeyring* Node::connection_keyring(
     std::string* reason) const {
     if (!connection_keyring_ && connection_keyring_error_.empty()) {
         std::string why;
-        std::optional<zetta::connect::CredentialKeyring> keyring =
-            config_.connection_root_secret.empty()
-                ? zetta::connect::load_or_create_local_keyring(config_.data_dir, &why)
-                : zetta::connect::CredentialKeyring::from_root_secrets(
-                      config_.connection_root_secret,
-                      config_.retired_connection_root_secrets, &why);
+        std::optional<zetta::connect::CredentialKeyring> keyring;
+        if (!config_.connection_root_secret.empty()) {
+            keyring = zetta::connect::CredentialKeyring::from_root_secrets(
+                config_.connection_root_secret, config_.retired_connection_root_secrets,
+                &why);
+        } else if (config_.connection_root_secret_required) {
+            // Fail closed (#1314): never fall back to a secret kept in data_dir.
+            why = "no connector-credential root secret: start the node with "
+                  "--connection-root-secret-file PATH (or "
+                  "ZETTA_CONNECTION_ROOT_SECRET_FILE), a file outside the data "
+                  "directory such as a mounted Secret "
+                  "(docs/governance/secret-references.md)";
+        } else {
+            keyring = zetta::connect::load_or_create_local_keyring(config_.data_dir, &why);
+        }
         if (keyring) {
             connection_keyring_ = std::move(*keyring);
         } else {

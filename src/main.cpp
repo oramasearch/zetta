@@ -12,6 +12,7 @@
 #include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/compute/mlx_serving.hpp"
+#include "zetta/connect/credential_seal.hpp"
 #include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/connect/connector_destinations.hpp"
@@ -154,6 +155,7 @@ struct Options {
     std::optional<std::string> connector_allow_destinations;  // exact host:port entries (#1414)
     std::optional<std::string> action_allow_destinations;  // --action-allow-destinations LIST (#1394)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
+    std::string connection_root_secret_file;  // --connection-root-secret-file (#1314)
     std::string join_token;         // --join-token (join an existing cluster)
     std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
     std::string identity_root;      // --identity-root (the cluster's identity root, #764)
@@ -208,6 +210,12 @@ void print_usage(const char* argv0) {
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
         "  --webapp-dir PATH   Serve the built Studio web app at /app from PATH\n"
+        "  --connection-root-secret-file PATH\n"
+        "                      The secret saved connector credentials are\n"
+        "                      sealed under, from a file outside --data-dir\n"
+        "                      (e.g. a mounted Secret): line 1 current, later\n"
+        "                      lines retired. Without it no credential is\n"
+        "                      saved or opened (#1314)\n"
         "  --admin-token T     Seed the owner user's access token from this\n"
         "                      secret on first boot (or ZETTA_ADMIN_TOKEN);\n"
         "                      hashed at rest, never logged. If omitted on a\n"
@@ -281,6 +289,7 @@ void print_usage(const char* argv0) {
         "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
         "  ZETTA_CLUSTER_TOKEN_FILE File holding the join token (preferred)\n"
+        "  ZETTA_CONNECTION_ROOT_SECRET_FILE -> --connection-root-secret-file\n"
         "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
         "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n"
         "  ZETTA_PUBSUB_DISPATCH_MODE -> --pubsub-dispatch-mode\n"
@@ -334,6 +343,9 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--admin-token") {
             const char* v = take_value(argc, argv, i, o, "--admin-token");
             if (v) o.admin_token = v;
+        } else if (arg == "--connection-root-secret-file") {
+            const char* v = take_value(argc, argv, i, o, "--connection-root-secret-file");
+            if (v) o.connection_root_secret_file = v;
         } else if (arg == "--headless") {
             o.mode = Mode::Headless;
         } else if (arg == "--headed") {
@@ -886,12 +898,44 @@ int main(int argc, char** argv) {
                          reason.c_str());
             return 1;
         }
-        // Saved connector credentials are sealed under a key derived from the
-        // join token (#1230): every member holds the token outside the
-        // replicated catalogue, so every member opens what another sealed.
-        // The retired tokens let a rotated node re-seal what the old one sealed.
-        opts.node.connection_root_secret = security->join_token;
-        opts.node.retired_connection_root_secrets = security->retired_join_tokens;
+        // Saved connector credentials are sealed under a root secret read from
+        // a file OUTSIDE data_dir (#1314): the join token lives in
+        // <data_dir>/security/, so a copy of data_dir opened everything sealed
+        // under it. Every member is given the same file. The join tokens stay
+        // as retired secrets only, so rows sealed under them before #1314
+        // re-seal under the external secret at start. With no file the node
+        // holds no keyring: connector credentials are refused, nothing else.
+        if (opts.connection_root_secret_file.empty()) {
+            if (const char* environment = std::getenv("ZETTA_CONNECTION_ROOT_SECRET_FILE")) {
+                opts.connection_root_secret_file = environment;
+            }
+        }
+        opts.node.connection_root_secret_required = true;
+        if (!opts.connection_root_secret_file.empty()) {
+            std::string secret_reason;
+            const std::optional<zetta::connect::ExternalRootSecret> external =
+                zetta::connect::load_external_root_secret(opts.connection_root_secret_file,
+                                                          opts.node.data_dir, &secret_reason);
+            if (!external) {
+                std::fprintf(stderr, "zetta: %s\n", secret_reason.c_str());
+                return 1;
+            }
+            opts.node.connection_root_secret = external->current;
+            opts.node.retired_connection_root_secrets = external->retired;
+            opts.node.retired_connection_root_secrets.push_back(security->join_token);
+            for (const std::string& retired : security->retired_join_tokens) {
+                opts.node.retired_connection_root_secrets.push_back(retired);
+            }
+            std::fprintf(stderr,
+                         "zetta: connector credentials sealed under the root secret in %s "
+                         "(%zu retired secrets kept for re-sealing)\n",
+                         opts.connection_root_secret_file.c_str(),
+                         opts.node.retired_connection_root_secrets.size());
+        } else {
+            std::fprintf(stderr,
+                         "zetta: no --connection-root-secret-file: saved connector "
+                         "credentials are refused on this node (#1314)\n");
+        }
         opts.cluster.security = std::move(*security);
     }
 
