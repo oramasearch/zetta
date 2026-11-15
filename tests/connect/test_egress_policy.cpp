@@ -5,8 +5,12 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <vector>
 
+#include "zetta/api/native_http_transport.hpp"
 #include "zetta/connect/egress_policy.hpp"
+#include "zetta/connect/http_transport.hpp"
+#include "zetta/governance/audit_event.hpp"
 
 namespace {
 
@@ -167,6 +171,44 @@ TEST(EgressPolicy, TheObserverHearsEachDenial) {
     ASSERT_EQ(heard.size(), 1U);
     EXPECT_EQ(heard[0].host, "x.example");
     EXPECT_TRUE(heard[0].reason.starts_with("egress denied: x.example:443"));
+}
+
+// #1323: a refused connection names who it was for. A graph step runs inside an
+// OutboundCallerScope (the run's principal and the run); a capability call has
+// its audit actor; the node's own work has neither.
+TEST(EgressPolicy, ADenialNamesThePrincipalAndRunItWasFor) {
+    zetta::connect::set_egress_policy({});  // deny everything but loopback
+    zetta::api::install_native_http_transport();
+    std::vector<zetta::connect::EgressDenial> heard;
+    zetta::connect::set_egress_denial_observer(
+        [&heard](const zetta::connect::EgressDenial& denial) { heard.push_back(denial); });
+    const auto send = [] {
+        zetta::connect::HttpRequest request;
+        request.method = "GET";
+        request.url = "https://denied.example.test/";
+        request.timeout_seconds = 3;
+        return zetta::connect::default_http_transport()(request);
+    };
+    {
+        const zetta::connect::OutboundCallerScope scope{{"principal-alice", "run-7"}};
+        const auto response = send();
+        EXPECT_TRUE(response.error.starts_with("egress denied:")) << response.error;
+    }
+    {
+        const zetta::governance::AuditActorScope actor{std::string("principal-bob")};
+        EXPECT_TRUE(send().error.starts_with("egress denied:"));
+    }
+    EXPECT_TRUE(send().error.starts_with("egress denied:"));
+    zetta::connect::set_egress_denial_observer({});
+    zetta::api::shutdown_native_http_transport();
+
+    ASSERT_EQ(heard.size(), 3U);
+    EXPECT_EQ(heard[0].principal, "principal-alice");
+    EXPECT_EQ(heard[0].run_id, "run-7");
+    EXPECT_EQ(heard[1].principal, "principal-bob");
+    EXPECT_TRUE(heard[1].run_id.empty());
+    EXPECT_TRUE(heard[2].principal.empty());  // the node's own work
+    EXPECT_FALSE(zetta::connect::current_outbound_caller());
 }
 
 }  // namespace

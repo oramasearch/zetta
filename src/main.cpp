@@ -82,11 +82,15 @@ public:
             [&node](const zetta::connect::EgressDenial& denial) {
                 zetta::governance::AuditEventValue event;
                 event.action = zetta::governance::AuditAction::EgressDenied;
-                event.actor = "node";
+                // The principal the connection was for (#1323): the run's, or
+                // the capability caller's; "node" only for the node's own work.
+                event.actor = denial.principal.empty() ? "node" : denial.principal;
                 event.target = "egress:" + denial.host + ":" +
                                std::to_string(denial.port);
                 event.allowed = false;
-                event.detail = denial.reason;
+                event.detail = denial.run_id.empty()
+                                   ? denial.reason
+                                   : denial.reason + " (run " + denial.run_id + ")";
                 node.record_audit_event(std::move(event));
             });
     }

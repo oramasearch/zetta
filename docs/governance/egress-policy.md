@@ -81,10 +81,18 @@ gets one `egress_denied` event per refused connection:
 | Field | Value |
 | --- | --- |
 | `action` | `egress_denied` |
-| `actor` | `node` |
+| `actor` | who the connection was for (#1323): the run's principal for a graph step, the caller for a capability, `local` for the trusted session, `node` only for the node's own work |
 | `target` | `egress:<host>:<port>` |
 | `allowed` | `false` |
-| `detail` | the reason above |
+| `detail` | the reason above, and `(run <id>)` when a graph step made the connection |
+
+**Attribution (#1323).** Each graph step runs inside a `connect::OutboundCallerScope` naming the
+run's principal and the run (`pipeline/executor.cpp`); a capability call already declares its actor
+(`governance::AuditActorScope`). The native HTTP client copies whichever is innermost onto the
+request on the caller's thread (`HttpRequest::on_behalf_of`, `on_behalf_of_run`; never sent to the
+destination) and the dialler reports it with any refusal. Work a step hands to another thread
+(a compute job's worker, the distributed fetch on a peer) carries no scope yet and is attributed to
+`node`.
 
 A name refused by the allowlist is never resolved, so the refusal sends no DNS query either: a DNS
 lookup can carry data out on its own.
@@ -106,10 +114,14 @@ what the workspace allows. A node run any other way (on-prem, a laptop, the desk
 
 ## Limits
 
-- **Per node, not per principal or per run.** The allowlist belongs to the running node. Scoping what
-  one graph step may reach by the principal of its run is the deny-by-default authority over graph
-  execution in [#843](https://github.com/oramasearch/zetta/issues/843). The refusal is audited with
-  actor `node` because the dialler does not know which run asked.
+- **The allowlist is per node; what a principal may reach is narrowed by its grants.** The
+  allowlist belongs to the running node, and a refusal now names the principal and run it was for
+  (above). What one principal may reach is narrowed where its outbound requests come from: a saved
+  connection only by its owner or a `connections:use` grant on it (#1339), an inline connector only
+  with `create_connection`, a delivery's credential only to an administrator-approved origin (#1453),
+  and each graph step only with the right its kind exercises (#843). A per-principal allowlist in the
+  dialler itself is not built: [#1323](https://github.com/oramasearch/zetta/issues/1323) carries the
+  design.
 - **Subprocesses are outside it.** The cloud provisioner's read-only `CommandRunner` calls run a
   provider CLI as a separate process; those calls are consent-gated
   ([../api/consent.md](../api/consent.md)) and permission-gated

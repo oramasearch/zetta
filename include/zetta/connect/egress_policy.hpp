@@ -130,7 +130,37 @@ struct EgressDenial {
     std::string host;
     std::uint16_t port = 0;
     std::string reason;
+    // Who the connection was for (#1323): the run's principal (or the
+    // capability caller), "local" for the trusted session, empty when no entry
+    // point declared one (the node's own background work); and the run, when a
+    // graph step made it.
+    std::string principal;
+    std::string run_id;
 };
+
+// Who an outbound connection is made on behalf of (#1323): a graph step runs
+// inside one of these, naming the run's principal and the run, so the dialler
+// can attribute an egress denial to them rather than to `node`. Thread-local
+// like governance::AuditActorScope (which the dialler falls back to for a
+// capability call); scopes nest, the innermost wins.
+struct OutboundCaller {
+    std::string principal;
+    std::string run_id;
+};
+
+class OutboundCallerScope {
+public:
+    explicit OutboundCallerScope(OutboundCaller caller);
+    ~OutboundCallerScope();
+    OutboundCallerScope(const OutboundCallerScope&) = delete;
+    OutboundCallerScope& operator=(const OutboundCallerScope&) = delete;
+
+private:
+    std::optional<OutboundCaller> previous_;
+};
+
+// The innermost open OutboundCallerScope on this thread, or nullopt.
+std::optional<OutboundCaller> current_outbound_caller();
 
 // Called once for every refused connection, on the dialler's thread. The
 // binary forwards it to `Node::record_audit_event`. Empty means nothing is

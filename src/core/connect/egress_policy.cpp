@@ -347,6 +347,22 @@ void set_egress_denial_observer(EgressDenialObserver observer) {
     state.observer = std::move(observer);
 }
 
+namespace {
+
+std::optional<OutboundCaller>& outbound_caller_slot() {
+    thread_local std::optional<OutboundCaller> caller;
+    return caller;
+}
+
+}  // namespace
+
+OutboundCallerScope::OutboundCallerScope(OutboundCaller caller)
+    : previous_(std::exchange(outbound_caller_slot(), std::move(caller))) {}
+
+OutboundCallerScope::~OutboundCallerScope() { outbound_caller_slot() = std::move(previous_); }
+
+std::optional<OutboundCaller> current_outbound_caller() { return outbound_caller_slot(); }
+
 void report_egress_denial(const EgressDenial& denial) {
     EgressDenialObserver observer;
     {
