@@ -18,8 +18,9 @@ support and the accepted search-space contract (#1158, #1207).
 
 The `node_memory` read and its process/subsystem output schema are generated from
 the registry declaration documented in [memory accounting](../docs/ops/memory.md).
-The `purge_audit` action is generated into OpenAPI, and `audit_purged` is part of
-the generated audit-event action enum; both are documented in
+The `purge_audit` action is generated into OpenAPI, and `audit_purged` and
+`audit_retention_expired` (#1329) are part of the generated audit-event action
+enum; both are documented in
 [audit trail](../docs/governance/audit-trail.md).
 
 Text entity keys and boolean predictors are represented in the generated scoring,

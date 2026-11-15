@@ -70,7 +70,15 @@ enum class AuditAction {
     EgressDenied,  // the egress policy refused an outbound connection (CTL-4, #75)
     SafeModeChanged,    // a database's or connection's safe mode level changed (#1373)
     SafeModeConfirmed,  // a caller confirmed a safe-mode warning and the statement ran (#1373)
+    AuditRetentionExpired,  // the retention pass removed records (#1329)
 };
+
+// A record of a trim (`audit_purged`, `audit_retention_expired`) outlives every
+// later purge and retention pass (#1329): AuditTrail::retain_since never
+// removes one, and a peer keeps one it receives below its low-water mark, so
+// the trail always shows that a trim happened, who made it, the cutoff and
+// the count.
+bool audit_record_outlives_trims(AuditAction action);
 
 // Completeness metadata for an authorised high-frequency read window (#1154).
 // The first read still records a session-start event; subsequent successful

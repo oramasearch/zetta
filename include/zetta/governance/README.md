@@ -6,7 +6,8 @@ payload copies. See [audit trail](../../../docs/governance/audit-trail.md).
 
 `AuditTrail` stores validated events in checksummed gzip segments, keeps a
 bounded recent window, migrates legacy JSON records, and applies independent
-ordinary and summary retention, including explicit purge (#1154, #1169). Its
+ordinary and summary retention, including explicit purge (#1154, #1169), and
+never removes a trim's own record (`audit_record_outlives_trims`, #1329). Its
 bounded `memory_usage()` counters
 separate the indexes, segment cache, recent window, and pending persistence for `system.memory`
 (#1163).

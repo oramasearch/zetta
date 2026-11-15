@@ -5334,6 +5334,27 @@ std::optional<std::size_t> Node::purge_audit_before(
         }
         return std::nullopt;
     }
+    // Never recent history (#1329): the cutoff must be at least the ordinary
+    // retention window in the past, so an administrator cannot remove the
+    // evidence of what they just did. A node that keeps every record has no
+    // window, and refuses every purge.
+    const long long window_seconds = config_.audit_retention.count();
+    if (window_seconds <= 0) {
+        if (error) {
+            *error = "this node keeps every audit record (audit retention is off), "
+                     "so no record may be purged";
+        }
+        return std::nullopt;
+    }
+    if (*cutoff > *now - static_cast<double>(window_seconds)) {
+        if (error) {
+            *error = "before must be at least the audit retention window (" +
+                     std::to_string(window_seconds) +
+                     " seconds) in the past, at or before " +
+                     zetta::util::iso8601_seconds_ago(window_seconds);
+        }
+        return std::nullopt;
+    }
     if (!audit_trail_) {
         if (error) {
             *error = "audit trail is unavailable";
@@ -5359,6 +5380,8 @@ std::optional<std::size_t> Node::purge_audit_before(
     event.detail = "purged audit records before " + before + "; " +
                    std::to_string(removed) + " rows removed";
     event.time = zetta::util::now_iso8601();
+    // The surface it came through, like every other row (#1328).
+    event.surface = zetta::governance::current_audit_surface().value_or("internal");
     const std::string id = zetta::util::new_uuid();
     if (!audit_trail_->append_local(
             node_id_, id, std::move(event), error)) {
@@ -5563,14 +5586,14 @@ void Node::flush_audit_summaries() {
     audit_summary_windows_.clear();
 }
 
-void Node::apply_audit_retention() {
+std::size_t Node::apply_audit_retention() {
     last_audit_retention_ = Clock::now();
     if (!audit_trail_ ||
         (config_.audit_retention.count() <= 0 &&
          config_.audit_summary_retention.count() <= 0)) {
-        return;
+        return 0;
     }
-    const auto cutoff_for = [](std::chrono::hours retention) {
+    const auto cutoff_for = [](std::chrono::seconds retention) {
         if (retention.count() <= 0) {
             return std::string{};
         }
@@ -5582,13 +5605,30 @@ void Node::apply_audit_retention() {
     const std::string summary_cutoff =
         cutoff_for(config_.audit_summary_retention);
     std::string error;
+    std::size_t removed = 0;
     const bool retained = audit_trail_->retain_since(
         cutoff, summary_cutoff,
-        [](const std::string&) {},
+        [&removed](const std::string&) { ++removed; },
         &error);
     if (!retained) {
         std::printf("zetta: audit retention failed (%s)\n", error.c_str());
+        return 0;
     }
+    // A trim is on the trail like a purge (#1329), and the row outlives every
+    // later trim. From the tick it is the node's own work (#1327).
+    if (removed > 0) {
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::AuditRetentionExpired;
+        event.target = "audit";
+        event.allowed = true;
+        event.detail = "retention removed " + std::to_string(removed) +
+                       " records (ordinary before " +
+                       (cutoff.empty() ? std::string("never") : cutoff) +
+                       ", summaries before " +
+                       (summary_cutoff.empty() ? std::string("never") : summary_cutoff) + ")";
+        record_audit_event(std::move(event));
+    }
+    return removed;
 }
 
 // ----- solutions reward ledger (immutable, replicated as ledger:<uuid>) -----

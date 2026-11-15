@@ -8,7 +8,9 @@ constant-time id fingerprint index, batched legacy-file migration, and separate
 ordinary/summary retention windows (#1154, #1169). Checksummed sidecars support
 index-only startup; origin/sequence ranges and durable class watermarks replace
 CRDT audit entries (#1164). `audit:purge` gives only admins the explicit rewrite
-action, which records itself after completion. See [audit replication](../../../docs/governance/audit-trail.md)
+action, which records itself after completion. Records of a trim
+(`audit_purged`, `audit_retention_expired`) are kept by every later
+`retain_since` and by a receiving peer (#1329). See [audit replication](../../../docs/governance/audit-trail.md)
 and [pub/sub CRUD](../../../docs/pubsub/crud.md).
 The projection also reports flat/seek index, segment-cache, recent-window, and pending-persist ownership
 to the node memory registry (#1163).

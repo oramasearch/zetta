@@ -179,9 +179,9 @@ second event for a peer's action. Important emitters include:
 | Access-key and cloud governance | Key, provisioning, consent, inspection, and dataset actions. |
 | Decision policy store | Policy creation/update and decision approval. |
 | Pub/sub administration | Topic setting changes and event edits/deletions. |
-| Audit administration | `audit_purged`, recorded after an explicit purge. |
+| Audit administration | `audit_purged`, recorded after an explicit purge; `audit_retention_expired`, recorded when a retention pass removes records (#1329). Both outlive every later trim. |
 | SQL executor | `data_changed` for every statement that changes data, schema or governance, allowed or refused (#1229); `data_access` with `allowed: false` for a refused `SELECT` (#252). |
-| Outbound HTTP client | `egress_denied` for every connection the egress policy refuses, with target `egress:<host>:<port>` and actor `node` ([egress-policy.md](egress-policy.md), #75). |
+| Outbound HTTP client | `egress_denied` for every connection the egress policy refuses, with target `egress:<host>:<port>` and the principal it was for as actor, `node:<node id>` for the node's own work ([egress-policy.md](egress-policy.md), #75, #1323, #1327). |
 
 `AuditSink::record_audit_event` decouples these emitters from the node-owned
 store. `Node` assigns the id and time and appends the event to its origin log
@@ -307,7 +307,41 @@ return from a peer.
 
 Records from either class that remain above their own low-water mark are still
 included when a new peer pulls a range from zero. No catalog removal is written
-for retention.
+for retention. A pass that removes records appends one `audit_retention_expired`
+row naming the count and both cutoffs (#1329); from the tick its actor is
+`node:<node id>` (#1327). `Node::apply_audit_retention` runs a pass now and
+returns the count.
+
+## The trail cannot be edited, and every trim is recorded (#1329)
+
+Decided under Steve's 2026-11-14 delegation (option 1 on #1329, with the
+hardening recommended there). The trail is tamper-evident, not untrimmable: an
+untrimmable trail grows without bound on every node, and retention enforces our
+own data minimisation. What holds instead, and what #847's step 8 now checks:
+**the trail cannot be edited; any trim is itself recorded, and that record
+outlives every later trim.**
+
+- **No edit.** No API mutates an `AuditEvent`; segments are checksummed; SQL
+  against `system.audit` is read-only for everyone, administrators included.
+- **A trim's record is never removed.** `audit_purged` and
+  `audit_retention_expired` rows are exempt from every later purge and retention
+  pass (`governance::audit_record_outlives_trims`). `AuditTrail::retain_since`
+  keeps them below the low-water mark without advancing or closing its prefix
+  (so a kept row does not make every later pass rewrite the segments), and a
+  peer keeps one it receives below its own mark. The trail therefore always
+  shows that a trim happened, who made it, the cutoff and the count.
+- **Recent history cannot be purged.** A purge needs `audit:purge` and a cutoff
+  at least the ordinary retention window in the past (30 days by default,
+  `--audit-retention-days`). An administrator can never remove the evidence of
+  what they just did. A node that keeps every record (retention `0`) refuses
+  every purge.
+
+Tests: `AuditTrail.ATrimIsRecordedAndItsRecordOutlivesEveryLaterTrim` (as an
+administrator: an edit refused, a recent purge refused, a purge recorded, a
+second purge and a retention pass, and the first `audit_purged` row still there,
+after a restart too) and `AuditTrail.ANodeThatKeepsEveryRecordRefusesEveryPurge`.
+The new action is part of the audit-event schema, so it ships with the
+all-nodes-together upgrade of audit protocol `3` (#1328).
 
 ## Explicit purge
 
@@ -319,7 +353,8 @@ role has it, while `writer` and `reader` do not.
 The action runs the same segment rewrite and replicated low-water-mark path as
 scheduled retention, using `before` for both ordinary rows and summaries.
 Records strictly before the cutoff are removed on the caller and peers trim
-when they receive the new cursors. A future cutoff is refused. On success the
+when they receive the new cursors. A future cutoff is refused, and so is one
+inside the ordinary retention window (#1329, above). On success the
 node appends one `audit_purged` row after the rewrite, naming the actor, cutoff,
 and number of removed rows. Appending after the rewrite guarantees the row for
 the current purge is never one of the records it removes.

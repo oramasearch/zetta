@@ -108,8 +108,11 @@ struct NodeConfig {
     std::optional<std::size_t> pubsub_dispatch_max_threads;
     // Ordinary audit events and window summaries have separate retention
     // windows. A non-positive value disables that class's expiration for a
-    // test or an explicitly archival node (#1154, #1169).
-    std::chrono::hours audit_retention = std::chrono::hours(24 * 30);
+    // test or an explicitly archival node (#1154, #1169). The ordinary window
+    // is also the youngest cutoff an administrator's purge may name (#1329);
+    // a node that keeps every record (0) refuses every purge. In seconds so a
+    // test can use a short window; the flags set whole days.
+    std::chrono::seconds audit_retention = std::chrono::hours(24 * 30);
     std::chrono::hours audit_summary_retention = std::chrono::hours(24 * 365);
     std::chrono::milliseconds audit_summary_window = std::chrono::minutes(5);
     std::size_t audit_recent_events = 2'048;
@@ -915,9 +918,18 @@ public:
     // it stamps a fresh id + time and appends to the local segment log, whose
     // per-origin ranges replicate without entering the CRDT (#1164).
     void record_audit_event(zetta::governance::AuditEventValue value) override;
+    // Remove records strictly before `before`, as `actor` (#1169). Refused
+    // unless `before` is at least the ordinary retention window in the past
+    // (#1329), so recent history, including the evidence of what the
+    // administrator just did, can never be removed. Records of earlier trims
+    // are never removed. Appends one `audit_purged` row.
     std::optional<std::size_t> purge_audit_before(
         const std::string& before, std::string actor,
         std::string* error = nullptr);
+    // The retention pass (the tick runs it hourly; public so a test or an
+    // operator tool can run it now). Returns how many records it removed and,
+    // when that is not zero, appends one `audit_retention_expired` row (#1329).
+    std::size_t apply_audit_retention();
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const;
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> recent_audit_events() const;
     std::size_t audit_event_count() const;
@@ -1350,7 +1362,6 @@ private:
     bool load_audit_events();
     std::filesystem::path audit_dir() const;
     void flush_due_audit_summaries();
-    void apply_audit_retention();
     void register_memory_probes();
     void report_memory(bool force);
     zetta::memory::ProbeSample audit_memory_usage() const;

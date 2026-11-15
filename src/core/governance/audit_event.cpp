@@ -60,7 +60,7 @@ const nlohmann::json& schema_document() {
                               "pubsub_topic_updated", "pubsub_event_updated", "pubsub_event_deleted",
                               "audit_purged", "data_changed",
                               "egress_denied", "safe_mode_changed",
-                              "safe_mode_confirmed"] },
+                              "safe_mode_confirmed", "audit_retention_expired"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -152,6 +152,7 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::EgressDenied: return "egress_denied";
         case AuditAction::SafeModeChanged: return "safe_mode_changed";
         case AuditAction::SafeModeConfirmed: return "safe_mode_confirmed";
+        case AuditAction::AuditRetentionExpired: return "audit_retention_expired";
     }
     return "data_access";
 }
@@ -184,7 +185,13 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "egress_denied") return AuditAction::EgressDenied;
     if (name == "safe_mode_changed") return AuditAction::SafeModeChanged;
     if (name == "safe_mode_confirmed") return AuditAction::SafeModeConfirmed;
+    if (name == "audit_retention_expired") return AuditAction::AuditRetentionExpired;
     return std::nullopt;
+}
+
+bool audit_record_outlives_trims(AuditAction action) {
+    return action == AuditAction::AuditPurged ||
+           action == AuditAction::AuditRetentionExpired;
 }
 
 nlohmann::json to_json(const AuditEventValue& value) {
@@ -1369,9 +1376,11 @@ bool AuditTrail::receive(const AuditLogBatch& batch, std::string* error) {
         const auto decoded = decode_audit_frame(std::string_view(batch.frames).substr(offset));
         const bool summary =
             decoded->value.action == AuditAction::DataAccessSummary;
-        const bool retained = summary
-            ? decoded->sequence > local.summary_low
-            : decoded->sequence > local.low;
+        // A trim's record is kept below the low-water mark too (#1329).
+        const bool retained =
+            audit_record_outlives_trims(decoded->value.action) ||
+            (summary ? decoded->sequence > local.summary_low
+                     : decoded->sequence > local.low);
         if (decoded->sequence > local.high && retained &&
             !impl_->append(decoded->id, decoded->value, error, batch.origin, decoded->sequence)) {
             return false;
@@ -1464,6 +1473,12 @@ bool AuditTrail::retain_since(std::string_view cutoff,
             if (!decoded) {
                 return false;
             }
+            // A trim's own record is never removed (#1329), and it neither
+            // advances nor closes its class's prefix, so a record below the
+            // low-water mark does not make every later pass rewrite.
+            if (audit_record_outlives_trims(decoded->value.action)) {
+                continue;
+            }
             const bool summary =
                 decoded->value.action == AuditAction::DataAccessSummary;
             std::uint64_t& low = summary
@@ -1510,7 +1525,8 @@ bool AuditTrail::retain_since(std::string_view cutoff,
             const std::uint64_t low = summary
                 ? retained_watermarks[origin].summary_low
                 : retained_watermarks[origin].low;
-            const bool keep = position.sequence > low;
+            const bool keep = position.sequence > low ||
+                audit_record_outlives_trims(decoded->value.action);
             return !keep || replacement.impl_->append(decoded->id, decoded->value,
                                                        error, origin, position.sequence);
         });
@@ -1560,7 +1576,8 @@ bool AuditTrail::retain_since(std::string_view cutoff,
         const std::uint64_t low = summary
             ? retained_watermarks[origin].summary_low
             : retained_watermarks[origin].low;
-        if (position.sequence <= low) {
+        if (position.sequence <= low &&
+            !audit_record_outlives_trims(decoded->value.action)) {
             removed(decoded->id);
         }
         return true;

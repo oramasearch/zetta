@@ -21,7 +21,10 @@ The SQL parity path also compares pub/sub dispatch metrics from `system.pubsub_t
 and `system.node_metrics` over REST and MCP.
 Segment-backed `system.audit` rows, the audit protocol metric, admin-only
 `purge_audit` REST/MCP parity, empty-window suppression, and the
-`system.memory` audit row have REST/MCP SQL parity coverage (#1164, #1169).
+`system.memory` audit row have REST/MCP SQL parity coverage (#1164, #1169). The
+REST fixture uses a one-second audit retention window, so the purge parity test
+also proves a recent cutoff is refused and the first purge's row outlives the
+second (#1329).
 The core registry contains 130 capabilities, including the `node_memory` read,
 `purge_audit`, and the separately permissioned `delete_study` action.
 Its parity test validates both REST and MCP values against one output schema and

@@ -12,7 +12,10 @@ matrix. See [governance](../../docs/governance/README.md) and
 Audit tests cover segment migration, index-only membership, independent
 ordinary/summary retention, empty polling windows, single-node and replicated
 purge, schema round trips, and the million-record RAM/disk budgets (#1154,
-#1169).
+#1169). `ATrimIsRecordedAndItsRecordOutlivesEveryLaterTrim` is #847 step 8 as
+decided on #1329: as an administrator an edit is refused, a recent purge is
+refused, and every trim's record survives later purges, a retention pass and a
+restart. Purge tests use a one-second retention window.
 That million-record test also proves the audit probe moves after 100,000 events
 (#1163).
 The native `zetta-audit-proof` worker measures RSS independently on two nodes,

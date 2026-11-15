@@ -11895,7 +11895,9 @@ void register_core_capabilities(Registry& registry) {
         "purge_audit",
         "Purge audit records",
         "Remove audit records strictly before a UTC cutoff, advance replicated "
-        "low-water marks, and append an audit_purged record describing the action.",
+        "low-water marks, and append an audit_purged record describing the action. "
+        "The cutoff must be at least the node's audit retention window in the past, "
+        "and records of earlier purges and retention passes are never removed.",
         purge_audit_schema(),
         purge_audit_output_schema(),
         CapabilityKind::Action,

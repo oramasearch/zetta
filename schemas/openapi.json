@@ -34179,7 +34179,7 @@
     },
     "/v1/purge_audit": {
       "post": {
-        "description": "Remove audit records strictly before a UTC cutoff, advance replicated low-water marks, and append an audit_purged record describing the action. Requires orchestration:purge_audit.",
+        "description": "Remove audit records strictly before a UTC cutoff, advance replicated low-water marks, and append an audit_purged record describing the action. The cutoff must be at least the node's audit retention window in the past, and records of earlier purges and retention passes are never removed. Requires orchestration:purge_audit.",
         "operationId": "purge_audit",
         "requestBody": {
           "content": {

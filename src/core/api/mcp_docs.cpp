@@ -90,7 +90,7 @@ std::string render_cli_md(std::string_view origin) {
         "| `--connector-allow-destinations LIST` | exact host:port entries allowed for "
         "private/loopback source connectors; metadata and link-local are always denied |\n";
     out += "| `--action-allow-destinations LIST` | address classes an action or report delivery endpoint may reach besides public ones: `loopback`, `private`, `link-local`, `metadata` (default none) |\n";
-    out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration |\n";
+    out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration. A `purge_audit` cutoff must be at least N days in the past, and zero refuses every purge (#1329) |\n";
     out += "| `--audit-summary-retention-days N` | keep audit summaries for N days (default 365); zero disables expiration |\n";
     out += "| `--egress-allow LIST` | outside destinations this node may connect to (repeatable): host, `*.domain`, address or CIDR range, each optionally `:port`; `*` allows everything |\n";
     out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
