@@ -81,6 +81,9 @@ std::optional<SavedConnection> connection_from_row(const Node& node,
     if (created != row.end() && created->is_string()) {
         saved.created = created->get<std::string>();
     }
+    if (const auto owner = row.find("owner"); owner != row.end() && owner->is_string()) {
+        saved.owner = owner->get<std::string>();
+    }
     return saved;
 }
 
@@ -90,9 +93,11 @@ std::optional<SavedConnection> connection_from_row(const Node& node,
 std::optional<nlohmann::json> stored_row(const Node& node, const std::string& name,
                                          const ConnectorConfig& config,
                                          const std::string& created,
+                                         const std::string& owner,
                                          std::string* reason) {
     nlohmann::json row;
     row["name"] = name;
+    if (!owner.empty()) row["owner"] = owner;  // #1339
     row["connector"] = config.to_json();  // never carries the token
     if (!config.token.empty()) {
         std::string why;
@@ -168,7 +173,7 @@ std::string connection_name_rejection(const std::string& name) {
 }
 
 std::string save_connection(Node& node, const std::string& name,
-                            const ConnectorConfig& config) {
+                            const ConnectorConfig& config, const std::string& owner) {
     const std::string rejection = connection_name_rejection(name);
     if (!rejection.empty()) return rejection;
     if (config.token.empty()) {
@@ -192,14 +197,22 @@ std::string save_connection(Node& node, const std::string& name,
                std::string(kConnectionTable) + "' table";
     }
 
+    // Replacing a connection keeps its owner (#1339): a manager rotating the
+    // credential does not take the connection over.
+    const std::string existing = row_id_of(*table, name);
+    std::string recorded_owner = owner;
+    if (!existing.empty()) {
+        if (const std::optional<SavedConnection> current = find_connection(node, name)) {
+            recorded_owner = current->owner;
+        }
+    }
     std::string reason;
-    std::optional<nlohmann::json> row =
-        stored_row(node, name, config, zetta::util::now_iso8601(), &reason);
+    std::optional<nlohmann::json> row = stored_row(
+        node, name, config, zetta::util::now_iso8601(), recorded_owner, &reason);
     if (!row) return reason;
 
     // Replace in place when the name already exists, so saving twice does not
     // leave two rows racing to answer the same lookup.
-    const std::string existing = row_id_of(*table, name);
     if (!existing.empty()) {
         table->update_row(existing, std::move(*row));
     } else {
@@ -236,6 +249,20 @@ std::vector<SavedConnection> list_connections(const Node& node) {
     return connections;
 }
 
+bool may_access_connection(const Node& node, const SavedConnection& saved,
+                           const std::string& acting_id, bool acting_is_user,
+                           ConnectionAccess access) {
+    if (acting_id.empty()) return true;  // the trusted local session
+    if (!saved.owner.empty() && saved.owner == acting_id) return true;
+    const governance::Operation operation =
+        access == ConnectionAccess::Use
+            ? governance::Operation{governance::CapabilityDomain::Data, "use_connection"}
+            : governance::Operation{governance::CapabilityDomain::Orchestration,
+                                    "manage_connection"};
+    return node.authorize_object(acting_id, acting_is_user, operation,
+                                 governance::Resource::connection(saved.name));
+}
+
 bool remove_connection(Node& node, const std::string& name) {
     const std::shared_ptr<data::Table> table = find_store_table(node);
     if (!table) return false;
@@ -268,8 +295,8 @@ ResealReport reseal_connections(Node& node) {
         }
         if (saved->credential == CredentialState::None) continue;
         std::string reason;
-        std::optional<nlohmann::json> rewritten =
-            stored_row(node, saved->name, saved->config, saved->created, &reason);
+        std::optional<nlohmann::json> rewritten = stored_row(
+            node, saved->name, saved->config, saved->created, saved->owner, &reason);
         if (!rewritten) {
             report.error = reason;
             continue;

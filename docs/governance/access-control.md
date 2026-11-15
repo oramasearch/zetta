@@ -751,7 +751,9 @@ below it on a `/` segment boundary, never a bare text prefix (#767). `report` co
 `report` and `report/q1.pdf` but not `report-secret-2026`; `2026/01` covers
 `2026/01/payroll.csv` but not `2026/01-executive-comp/…`; `2026/` covers everything
 under `2026/`. An empty blob grant covers nothing (grant a flat `blob:read` for every
-blob). A **tool** grant is exact.
+blob). A **tool** grant is exact. A **connection** grant (`ON CONNECTION <name>`,
+#1339) is exact too: it names one saved source connection for `connections:use` or
+`connections:manage` ([connector-query.md](../data/connector-query.md#who-may-use-a-connection-1339)).
 
 ### The grant model
 

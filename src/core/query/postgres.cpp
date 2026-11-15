@@ -604,6 +604,7 @@ private:
     //   ON BLOB <prefix>                       — a blob id / id prefix
     //   ON COLLECTION <prefix>                 — a record collection name prefix
     //   ON BUCKET <prefix>                     — an object bucket name prefix
+    //   ON CONNECTION <name>                   — one saved source connection
     GrantObject parse_grant_object() {
         GrantObject object;
         if (accept_keyword("tool")) {
@@ -623,6 +624,11 @@ private:
         }
         if (accept_keyword("bucket")) {  // an object bucket name prefix (#1005)
             object.kind = GrantObjectKind::Bucket;
+            object.name = parse_object_name();
+            return object;
+        }
+        if (accept_keyword("connection")) {  // one saved source connection (#1339)
+            object.kind = GrantObjectKind::Connection;
             object.name = parse_object_name();
             return object;
         }

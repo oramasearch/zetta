@@ -8974,9 +8974,49 @@ const nlohmann::json& delete_connection_output_schema() {
     return schema;
 }
 
+// The per-connection check (#1339): the caller must be the connection's owner,
+// or hold connections:use / connections:manage flat or ON CONNECTION <name>.
+// A refusal is audited with the caller and the connection's name, and answers
+// `unauthorized`; nullopt when allowed.
+std::optional<ApiResult> refuse_connection_access(
+    ApiContext& context, const zetta::connect::SavedConnection& saved,
+    zetta::connect::ConnectionAccess access, std::string_view capability,
+    bool audit = true) {
+    if (zetta::connect::may_access_connection(context.node, saved, context.acting_key,
+                                              context.acting_is_user, access)) {
+        return std::nullopt;
+    }
+    const std::string right = access == zetta::connect::ConnectionAccess::Use
+                                  ? "connections:use"
+                                  : "connections:manage";
+    const std::string reason = "connection '" + saved.name + "': no " + right +
+                               " grant on it (GRANT " + right + " ON CONNECTION " +
+                               saved.name + "), and the caller did not create it";
+    if (audit) {
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::DataAccess;
+        event.actor = context.acting_key.empty() ? "local" : context.acting_key;
+        event.target = "connection:" + saved.name;
+        event.allowed = false;
+        event.detail = std::string(capability) + ": " + reason;
+        context.node.record_audit_event(std::move(event));
+    }
+    return ApiResult::failure("unauthorized", reason, "/connection");
+}
+
 ApiResult handle_create_connection(const nlohmann::json& input,
                                    ApiContext& context) {
     const std::string name = input.at("name").get<std::string>();
+    // Replacing a connection repoints whatever runs name it: only its owner or
+    // a manager of it may (#1339).
+    if (const std::optional<zetta::connect::SavedConnection> existing =
+            zetta::connect::find_connection(context.node, name)) {
+        if (auto refused = refuse_connection_access(
+                context, *existing, zetta::connect::ConnectionAccess::Manage,
+                "create_connection")) {
+            return *refused;
+        }
+    }
     const std::optional<zetta::connect::ConnectorConfig> config =
         zetta::connect::ConnectorConfig::from_json(input.at("connector"));
     if (!config) {
@@ -8987,7 +9027,7 @@ ApiResult handle_create_connection(const nlohmann::json& input,
             "role)");
     }
     const std::string rejection =
-        zetta::connect::save_connection(context.node, name, *config);
+        zetta::connect::save_connection(context.node, name, *config, context.acting_key);
     if (!rejection.empty()) {
         return ApiResult::failure("invalid_input", rejection);
     }
@@ -9017,6 +9057,14 @@ ApiResult handle_list_connections(const nlohmann::json& input,
 ApiResult handle_delete_connection(const nlohmann::json& input,
                                    ApiContext& context) {
     const std::string name = input.at("name").get<std::string>();
+    if (const std::optional<zetta::connect::SavedConnection> existing =
+            zetta::connect::find_connection(context.node, name)) {
+        if (auto refused = refuse_connection_access(
+                context, *existing, zetta::connect::ConnectionAccess::Manage,
+                "delete_connection")) {
+            return *refused;
+        }
+    }
     nlohmann::json output;
     output["name"] = name;
     output["removed"] = zetta::connect::remove_connection(context.node, name);
@@ -9141,9 +9189,14 @@ bool is_local_source(const zetta::connect::ConnectorConfig& config) {
 
 // Resolve the connector this call should use: either a saved connection by name
 // (the credential stays on the cluster) or an inline connector object. Exactly
-// one; `reason` explains the rejection.
+// one; `reason` explains the rejection, and `code` is its error code
+// (`invalid_input`, or `unauthorized` when the caller may not use the saved
+// connection, #1339). `audit` false (a consent describer that runs before the
+// handler) leaves the refusal for the handler to record once.
 std::optional<zetta::connect::ConnectorConfig> resolve_query_connector(
-    const nlohmann::json& input, ApiContext& context, std::string& reason) {
+    const nlohmann::json& input, ApiContext& context, std::string& reason,
+    std::string* code = nullptr, bool audit = true) {
+    if (code) *code = "invalid_input";
     const bool has_connection = input.contains("connection");
     const bool has_connector = input.contains("connector");
     if (has_connection == has_connector) {
@@ -9161,6 +9214,15 @@ std::optional<zetta::connect::ConnectorConfig> resolve_query_connector(
         if (!saved) {
             reason = "connection: no saved connection named '" + name +
                      "' (list them with list_connections)";
+            return std::nullopt;
+        }
+        // Knowing a connection's name is not being able to use it (#1339).
+        if (auto refused = refuse_connection_access(
+                context, *saved, zetta::connect::ConnectionAccess::Use,
+                input.contains("query") ? "create_dataset_from_query" : "list_source_tables",
+                audit)) {
+            reason = refused->error.message;
+            if (code) *code = "unauthorized";
             return std::nullopt;
         }
         if (saved->credential == zetta::connect::CredentialState::Unreadable) {
@@ -9347,9 +9409,10 @@ ApiResult handle_list_source_tables(const nlohmann::json& input,
                 "inline discovery requires create_connection permission; use a saved connection");
     }
     std::string reason;
+    std::string code;
     const std::optional<zetta::connect::ConnectorConfig> config =
-        resolve_query_connector(input, context, reason);
-    if (!config) return ApiResult::failure("invalid_input", reason);
+        resolve_query_connector(input, context, reason, &code);
+    if (!config) return ApiResult::failure(code, reason);
 
     // The per-source catalog reads (information_schema, MySQL's aliased
     // variant, SQLite's sqlite_master, Polars' dataset listing) live with the
@@ -9370,10 +9433,11 @@ ApiResult handle_list_source_tables(const nlohmann::json& input,
 ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
                                            ApiContext& context) {
     std::string reason;
+    std::string code;
     const std::optional<zetta::connect::ConnectorConfig> config =
-        resolve_query_connector(input, context, reason);
+        resolve_query_connector(input, context, reason, &code);
     if (!config) {
-        return ApiResult::failure("invalid_input", reason);
+        return ApiResult::failure(code, reason);
     }
 
     zetta::connect::DistributedIngestOptions options;
@@ -9444,7 +9508,7 @@ std::optional<zetta::governance::ConsentAction> describe_create_dataset_from_que
     const nlohmann::json& input, ApiContext& context) {
     std::string reason;
     const std::optional<zetta::connect::ConnectorConfig> config =
-        resolve_query_connector(input, context, reason);
+        resolve_query_connector(input, context, reason, nullptr, /*audit=*/false);
     if (!config) {
         // The input does not resolve to a source. Fail closed: challenge with
         // what we can say, and let the handler return the real rejection.

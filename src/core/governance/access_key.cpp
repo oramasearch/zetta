@@ -110,7 +110,7 @@ const nlohmann::json& access_key_schema() {
         "kind": {
           "description": "The kind of object.",
           "type": "string",
-          "enum": ["database", "project", "table", "column", "blob", "tool", "topic", "collection", "bucket"]
+          "enum": ["database", "project", "table", "column", "blob", "tool", "topic", "collection", "bucket", "connection"]
         },
         "name": {
           "description": "The object's handle: database/project name, table name (table/column), blob id-or-prefix, or MCP tool name.",

@@ -371,6 +371,37 @@ All three are `Orchestration` operations under the `pipelines:manage` permission
 alongside `create_dataset_from_query`. `system.connections` renders the same
 source as a read view.
 
+### Who may use a connection (#1339)
+
+Holding those rights is not enough to use a particular connection: knowing a
+connection's name is not being able to use it. Each saved row records its
+**owner**, the user (or legacy key) that created it. `connect::may_access_connection`
+is the per-connection check:
+
+| Caller | Use the credential (`list_source_tables`, `create_dataset_from_query`) | Replace (`create_connection` on its name), delete, set its safe mode |
+| --- | --- | --- |
+| the connection's owner | yes | yes |
+| `connections:use` flat (admin) or `ON CONNECTION <name>` | yes | no |
+| `connections:manage` flat (admin) or `ON CONNECTION <name>` | only with `connections:use` too | yes |
+| anyone else, including another holder of `pipelines:manage` | **refused**, `unauthorized`, audited | **refused**, `unauthorized`, audited |
+| the trusted local session (no network caller) | yes | yes |
+
+```sql
+GRANT connections:use ON CONNECTION warehouse TO ROLE analysts;
+GRANT connections:manage ON CONNECTION warehouse TO ROLE platform;
+```
+
+A refusal records a `data_access` audit event with `allowed: false`, the caller as
+actor, `connection:<name>` as target, and the capability and missing right as
+detail. Replacing a connection keeps its owner, so a manager rotating the
+credential does not take it over. A connection grant names one connection exactly,
+never a prefix. A row saved before the owner was recorded, or by the trusted local
+session, has no owner: only a holder of the right may use it, so an existing
+non-admin caller needs a grant after upgrading (`GRANT connections:use ON
+CONNECTION <name> TO ROLE …`). The cross-node launch is not re-checked on peers:
+the coordinator checked the caller before launching, and the launch carries only
+the connection's name between mutually authenticated members.
+
 ### The credential is sealed at rest (#1230)
 
 Until [#1230](https://github.com/oramasearch/zetta/issues/1230) the store row held
