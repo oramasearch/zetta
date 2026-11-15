@@ -27,6 +27,7 @@
 #include <boost/http/static_response.hpp>
 
 #include "system_trust_store.hpp"
+#include "zetta/connect/egress_gateway.hpp"
 #include "zetta/connect/egress_policy.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/runtime.hpp"
@@ -480,6 +481,36 @@ private:
                                       ? "connector: expected an HTTP(S) URL with one valid authority"
                                       : "connector: expected an HTTPS URL with one valid authority");
         }
+        // The workspace egress gateway (#1331): a name the allowlist admitted and
+        // a gateway route names is reached through the gateway, never directly
+        // (the network policy only lets the pod reach the gateway). The node does
+        // not resolve the destination; the gateway does, and refuses any answer
+        // that is not public, which is at least as strict as the destination and
+        // connector policies below.
+        const connect::EgressGateway gateway = connect::egress_gateway();
+        if (name_allowed && gateway.routes_destination(parsed.host, port_number)) {
+            net::tcp_socket socket(io_context_);
+            socket.open();
+            if (std::string reason = co_await connect_to_gateway(
+                    socket, gateway, parsed.host, deadline, expires);
+                !reason.empty()) {
+                co_return reason;
+            }
+            if (!connect::egress_gateway_uses_sni(parsed.secure, port_number)) {
+                const std::string preface =
+                    connect::egress_gateway_preface(parsed.host, port_number);
+                auto [write_error, written] = co_await runtime::timeout(
+                    net::write(socket, net::const_buffer(preface.data(), preface.size())),
+                    remaining());
+                if (write_error || written != preface.size()) {
+                    co_return "could not send the egress gateway preface for " + parsed.host +
+                        ": " + (write_error ? write_error.message() : "short write");
+                }
+            }
+            co_return co_await exchange_on(socket, parsed, request, response, redirects_remaining,
+                                           location, expires);
+        }
+
         const auto connector_policy = connect::connector_destinations();
         net::resolver resolver(io_context_);
         auto [resolve_error, results] = co_await runtime::timeout(
@@ -552,6 +583,59 @@ private:
         if (!any_allowed && !refused_reason.empty()) co_return refused_reason;
         if (!connected) co_return connect_reason;
 
+        co_return co_await exchange_on(socket, parsed, request, response, redirects_remaining,
+                                       location, expires);
+    }
+
+    // Resolve and connect the egress gateway (#1331). The gateway address is
+    // configuration, not a caller's destination: it is neither on the allowlist
+    // nor subject to the destination policy (it is an in-cluster Service).
+    runtime::task<std::string> connect_to_gateway(net::tcp_socket& socket,
+                                                  const connect::EgressGateway& gateway,
+                                                  const std::string& destination,
+                                                  std::chrono::seconds deadline,
+                                                  std::chrono::steady_clock::time_point expires) {
+        const auto remaining = [expires] {
+            return std::max(std::chrono::milliseconds(0),
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                expires - std::chrono::steady_clock::now()));
+        };
+        net::resolver resolver(io_context_);
+        auto [resolve_error, results] = co_await runtime::timeout(
+            resolver.resolve(gateway.host(), std::to_string(gateway.port())), remaining());
+        if (resolve_error) {
+            co_return "could not resolve the egress gateway " + gateway.host() + " for " +
+                destination + ": " + resolve_error.message();
+        }
+        std::string reason = "no address resolved for the egress gateway " + gateway.host();
+        for (const auto& entry : results) {
+            auto [connect_error] =
+                co_await runtime::timeout(socket.connect(entry.get_endpoint()), remaining());
+            if (!connect_error) co_return std::string();
+            reason = "could not connect to the egress gateway " + gateway.host() + ":" +
+                     std::to_string(gateway.port()) + " for " + destination + ": " +
+                     connect_error.message();
+            if (remaining() == std::chrono::milliseconds(0)) {
+                reason += " (no answer within " + std::to_string(deadline.count()) + " s)";
+                break;
+            }
+        }
+        co_return reason;
+    }
+
+    // The exchange over a connected socket: plaintext for http://, else a TLS
+    // handshake whose SNI and certificate check name the destination (also when
+    // the socket goes to the egress gateway, so TLS stays end to end).
+    runtime::task<std::string> exchange_on(net::tcp_socket& socket, const RequestTarget& parsed,
+                                           const connect::HttpRequest& request,
+                                           connect::HttpResponse& response,
+                                           int redirects_remaining, std::string& location,
+                                           std::chrono::steady_clock::time_point expires) {
+        const auto remaining = [expires] {
+            return std::max(std::chrono::milliseconds(0),
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                expires - std::chrono::steady_clock::now()));
+        };
         if (!parsed.secure) {
             // Plaintext is only reachable for an explicitly http:// URL — a
             // loopback fixture or a sidecar proxy. Nothing constructs one for a
@@ -568,7 +652,7 @@ private:
             tls_contexts().get(parsed.host, tls_reason);
         if (!tls_context) co_return tls_reason;
 
-        // Reference mode: `socket` outlives `secure` (both live in this frame).
+        // Reference mode: `socket` (the caller's frame) outlives `secure`.
         net::openssl_stream secure(&socket, *tls_context);
         if (auto [handshake_error] = co_await runtime::timeout(
                 secure.handshake(net::tls_stream::client), remaining());

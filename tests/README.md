@@ -44,7 +44,11 @@ redirect hop to the metadata address, before connecting (#1394).
 ports, loopback, ranges, malformed entries), and the egress cases in
 `connect/test_native_http_transport.cpp` prove the dialler refuses an outside
 address by default, an unlisted name before DNS, and a redirect to an outside
-destination (#75).
+destination (#75). `connect/test_egress_gateway.cpp` covers the gateway's address and
+names-only route parser and the `ZTEG1` preface; the gateway cases in
+`connect/test_native_http_transport.cpp` drive a stand-in gateway on loopback:
+the preface, SNI on 443, the allowlist first, unrouted names direct, and redirect
+hops (#1331).
 
 `data/test_object_store.cpp` covers the object capability's contracts, a
 conditional-create race, fencing, torn tails after a kill, compaction and restart,
