@@ -62,6 +62,16 @@ only TLS 1.3 and requires a verified peer certificate in both client and server
 roles. It never adds system trust anchors. Every failure returns an empty
 optional and a field-qualified reason.
 
+`make_tls_context(credentials, PeerCertificate)` is the same with the peer rule
+chosen (#1513): `Required`, or `VerifiedIfSent`, which lets a client that sends
+no certificate complete the handshake (one it sends is still verified). The
+cluster's listener uses it so a node that is not enrolled yet reaches the
+enrollment step and nothing else. `make_anonymous_client_tls_context` is a TLS
+1.3 client context with no certificate and no handshake verification; the caller
+checks the server's certificate itself before sending anything (an enrolling node
+checks it against the enrollment CA's public key). See
+[security.md](security.md#enrollment-1319-1513).
+
 `FramedStream` takes an already connected `boost::corosio::tcp_socket`, with an
 optional context from `make_mutual_tls_context`. Call `handshake(Client)` on the
 dialing side and `handshake(Server)` on the accepting side before reading or

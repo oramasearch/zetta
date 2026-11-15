@@ -190,6 +190,25 @@ std::optional<TlsCredentials> load_tls_credentials(const TlsCredentialFiles& fil
 
 std::optional<boost::corosio::tls_context> make_mutual_tls_context(
     const TlsCredentials& credentials, std::string* reason) {
+    return make_tls_context(credentials, PeerCertificate::Required, reason);
+}
+
+std::optional<boost::corosio::tls_context> make_anonymous_client_tls_context(
+    std::string* reason) {
+    boost::corosio::tls_context context;
+    if (!apply_context_step(context.set_verify_mode(boost::corosio::tls_verify_mode::none),
+                            "verify_mode", reason) ||
+        !apply_context_step(context.set_min_protocol_version(boost::corosio::tls_version::tls_1_3),
+                            "minimum_protocol_version", reason) ||
+        !apply_context_step(context.set_max_protocol_version(boost::corosio::tls_version::tls_1_3),
+                            "maximum_protocol_version", reason)) {
+        return std::nullopt;
+    }
+    return context;
+}
+
+std::optional<boost::corosio::tls_context> make_tls_context(
+    const TlsCredentials& credentials, PeerCertificate peer, std::string* reason) {
     if (!verify_credentials(credentials, reason)) {
         return std::nullopt;
     }
@@ -214,8 +233,10 @@ std::optional<boost::corosio::tls_context> make_mutual_tls_context(
         }
     }
 
-    if (!apply_context_step(context.set_verify_mode(boost::corosio::tls_verify_mode::require_peer),
-                            "verify_mode", reason) ||
+    const boost::corosio::tls_verify_mode verify_mode =
+        peer == PeerCertificate::Required ? boost::corosio::tls_verify_mode::require_peer
+                                          : boost::corosio::tls_verify_mode::peer;
+    if (!apply_context_step(context.set_verify_mode(verify_mode), "verify_mode", reason) ||
         !apply_context_step(context.set_min_protocol_version(boost::corosio::tls_version::tls_1_3),
                             "minimum_protocol_version", reason) ||
         !apply_context_step(context.set_max_protocol_version(boost::corosio::tls_version::tls_1_3),

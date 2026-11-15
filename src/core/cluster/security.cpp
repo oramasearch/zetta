@@ -406,12 +406,178 @@ std::string certificate_pem_public_key_sha256(std::string_view pem) {
     return certificate ? public_key_sha256(certificate.get()) : std::string{};
 }
 
+namespace {
+
+std::string sign_enrollment_for_key(const EnrollmentCa& ca, const std::string& node_id,
+                                    EVP_PKEY* subject_key);
+
+EvpKeyPtr raw_public_key(std::string_view hex) {
+    if (!is_hex_of(hex, 32)) return EvpKeyPtr(nullptr, &EVP_PKEY_free);
+    const auto raw = decode_hex32(hex);
+    return EvpKeyPtr(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr, raw.data(),
+                                                 raw.size()),
+                     &EVP_PKEY_free);
+}
+
+// The node id a node's own certificate names (its CN).
+std::string node_id_of(const ClusterSecurity& security) {
+    X509Ptr certificate = certificate_from_pem(security.certificate_pem);
+    if (!certificate) return {};
+    return only_common_name(certificate.get()).value_or(std::string{});
+}
+
+std::string spki_sha256(EVP_PKEY* key) {
+    unsigned char* spki = nullptr;
+    const int length = key ? i2d_PUBKEY(key, &spki) : 0;
+    if (length <= 0 || !spki) return {};
+    const auto digest = sha256_bytes(
+        std::string_view(reinterpret_cast<const char*>(spki), static_cast<std::size_t>(length)));
+    OPENSSL_free(spki);
+    return to_hex(digest.data(), digest.size());
+}
+
+}  // namespace
+
 std::string sign_enrollment_certificate(const EnrollmentCa& ca, const std::string& node_id,
                                         std::span<const unsigned char> subject_der) {
     X509Ptr subject = certificate_from_der(subject_der);
-    if (!subject || node_id.empty()) return {};
-    EVP_PKEY* subject_key = X509_get0_pubkey(subject.get());
-    if (!is_hex_of(ca.seed, 32) || !subject_key) return {};
+    if (!subject) return {};
+    return sign_enrollment_for_key(ca, node_id, X509_get0_pubkey(subject.get()));
+}
+
+std::string sign_enrollment_certificate_for_key(const EnrollmentCa& ca,
+                                                const std::string& node_id,
+                                                std::string_view raw_public_key_hex) {
+    EvpKeyPtr key = raw_public_key(raw_public_key_hex);
+    return key ? sign_enrollment_for_key(ca, node_id, key.get()) : std::string{};
+}
+
+std::string raw_public_key_sha256(std::string_view raw_public_key_hex) {
+    EvpKeyPtr key = raw_public_key(raw_public_key_hex);
+    return key ? spki_sha256(key.get()) : std::string{};
+}
+
+std::string node_raw_public_key(std::string_view private_key_pem) {
+    EvpKeyPtr key = private_key_from_pem(std::string(private_key_pem));
+    return key ? raw_public_key_hex(key.get()) : std::string{};
+}
+
+std::string sign_with_node_key(std::string_view private_key_pem, std::string_view message) {
+    EvpKeyPtr key = private_key_from_pem(std::string(private_key_pem));
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(),
+                                                                   &EVP_MD_CTX_free);
+    if (!key || !context ||
+        EVP_DigestSignInit(context.get(), nullptr, nullptr, nullptr, key.get()) != 1) {
+        return {};
+    }
+    std::array<unsigned char, 64> signature{};
+    std::size_t length = signature.size();
+    if (EVP_DigestSign(context.get(), signature.data(), &length,
+                       reinterpret_cast<const unsigned char*>(message.data()),
+                       message.size()) != 1 ||
+        length != signature.size()) {
+        return {};
+    }
+    return to_hex(signature.data(), length);
+}
+
+bool verify_with_raw_public_key(std::string_view raw_public_key_hex, std::string_view message,
+                                std::string_view signature_hex) {
+    EvpKeyPtr key = raw_public_key(raw_public_key_hex);
+    if (!key || !is_hex_of(signature_hex, 64)) return false;
+    std::vector<unsigned char> signature(64);
+    for (std::size_t i = 0; i < 64; ++i) {
+        const auto nibble = [](char c) {
+            return static_cast<unsigned char>(c <= '9' ? c - '0' : c - 'a' + 10);
+        };
+        signature[i] = static_cast<unsigned char>((nibble(signature_hex[i * 2]) << 4) |
+                                                  nibble(signature_hex[i * 2 + 1]));
+    }
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(),
+                                                                   &EVP_MD_CTX_free);
+    return context &&
+           EVP_DigestVerifyInit(context.get(), nullptr, nullptr, nullptr, key.get()) == 1 &&
+           EVP_DigestVerify(context.get(), signature.data(), signature.size(),
+                            reinterpret_cast<const unsigned char*>(message.data()),
+                            message.size()) == 1;
+}
+
+bool certificate_signed_by(std::span<const unsigned char> der,
+                           std::string_view ca_public_key_hex) {
+    X509Ptr certificate = certificate_from_der(der);
+    EvpKeyPtr ca_key = raw_public_key(ca_public_key_hex);
+    return certificate && ca_key && X509_verify(certificate.get(), ca_key.get()) == 1 &&
+           X509_cmp_current_time(X509_get0_notBefore(certificate.get())) <= 0 &&
+           X509_cmp_current_time(X509_get0_notAfter(certificate.get())) >= 0;
+}
+
+std::string enrollment_ca_public_key_of(std::string_view ca_certificate_pem) {
+    X509Ptr ca = certificate_from_pem(std::string(ca_certificate_pem));
+    if (!ca) return {};
+    EVP_PKEY* key = X509_get0_pubkey(ca.get());
+    if (!key || X509_verify(ca.get(), key) != 1 ||
+        only_common_name(ca.get()) != std::optional<std::string>(kEnrollmentCaCommonName)) {
+        return {};
+    }
+    return raw_public_key_hex(key);
+}
+
+bool self_enroll(ClusterSecurity& security, std::string* reason) {
+    const std::optional<EnrollmentCa> ca = enrollment_ca_from_seed(security.enrollment_ca_seed);
+    if (!ca) {
+        set_reason(reason, "this node holds no enrollment CA");
+        return false;
+    }
+    const std::string certificate = sign_enrollment_certificate(
+        *ca, node_id_of(security), certificate_pem_to_der(security.certificate_pem));
+    if (certificate.empty() || node_id_of(security).empty()) {
+        set_reason(reason, "failed to sign this node's enrollment certificate");
+        return false;
+    }
+    if (!store_enrollment(security.directory, *ca, certificate, reason)) return false;
+    security.enrolled_certificate_pem = certificate;
+    security.cluster_ca_public_key = ca->public_key;
+    return true;
+}
+
+bool provision_enrollment_ca(ClusterSecurity& security, std::string_view seed_hex,
+                             std::string* reason) {
+    const std::optional<EnrollmentCa> ca = enrollment_ca_from_seed(seed_hex);
+    if (!ca) {
+        set_reason(reason, "the enrollment CA seed must be 64 lowercase hex characters");
+        return false;
+    }
+    if (!security.enrollment_ca_seed.empty() && security.enrollment_ca_seed != ca->seed) {
+        set_reason(reason, "this node already holds another enrollment CA (cluster-ca.json)");
+        return false;
+    }
+    if (!security.cluster_ca_public_key.empty() &&
+        security.cluster_ca_public_key != ca->public_key) {
+        set_reason(reason, "the enrollment CA seed does not match --cluster-ca");
+        return false;
+    }
+    if (security.enrollment_ca_seed == ca->seed && !security.enrolled_certificate_pem.empty()) {
+        return true;  // already provisioned
+    }
+    security.enrollment_ca_seed = ca->seed;
+    return self_enroll(security, reason);
+}
+
+zetta::transport::TlsCredentials enrollment_credentials(const ClusterSecurity& security) {
+    zetta::transport::TlsCredentials credentials;
+    if (const auto ca = enrollment_ca_from_seed(security.enrollment_ca_seed)) {
+        credentials.ca_certificate_pem = ca->certificate_pem;
+    }
+    credentials.certificate_pem = security.enrolled_certificate_pem;
+    credentials.private_key_pem = security.private_key_pem;
+    return credentials;
+}
+
+namespace {
+
+std::string sign_enrollment_for_key(const EnrollmentCa& ca, const std::string& node_id,
+                                    EVP_PKEY* subject_key) {
+    if (node_id.empty() || !is_hex_of(ca.seed, 32) || !subject_key) return {};
     const auto seed = decode_hex32(ca.seed);
     EvpKeyPtr ca_key(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, seed.data(),
                                                   seed.size()),
@@ -446,6 +612,8 @@ std::string sign_enrollment_certificate(const EnrollmentCa& ca, const std::strin
     if (X509_sign(certificate.get(), ca_key.get(), nullptr) == 0) return {};
     return certificate_to_pem(certificate.get());
 }
+
+}  // namespace
 
 std::optional<EnrolledCertificate> verify_enrolled_certificate(
     std::string_view certificate_pem, std::string_view ca_certificate_pem) {
@@ -901,6 +1069,12 @@ std::optional<ClusterSecurity> load_or_create_cluster_security(
                     certificate_pem_public_key_sha256(security->certificate_pem)) {
                 security->enrolled_certificate_pem = *enrolled;
             }
+        }
+        security->cluster_ca_public_key = ca->public_key;
+        // A node holding the CA always has its own enrollment certificate before
+        // the transport starts, since that is the certificate it presents (#1513).
+        if (security->enrolled_certificate_pem.empty() && !self_enroll(*security, reason)) {
+            return std::nullopt;
         }
     }
     // Persist: the secret file (when new or overridden) and the identity.

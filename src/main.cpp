@@ -35,6 +35,7 @@
 
 #include "gui/app.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -158,6 +159,8 @@ struct Options {
     std::vector<std::string> egress_allow;  // --egress-allow (repeatable; CTL-4, #75)
     std::string identity_root;      // --identity-root (the cluster's identity root, #764)
     std::string identity_min_epoch; // --identity-min-epoch (#1360)
+    std::string cluster_ca;          // --cluster-ca (the enrollment CA's public key, #1513)
+    std::string cluster_ca_seed_file;  // --cluster-ca-seed-file (#1513)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool pubsub_dispatch_mode_from_cli = false;
     bool pubsub_topics_per_thread_from_cli = false;
@@ -244,6 +247,12 @@ void print_usage(const char* argv0) {
         "  --identity-min-epoch N  Honor no account, role or token until an identity\n"
         "                      epoch at least N arrives (or ZETTA_IDENTITY_MIN_EPOCH).\n"
         "                      Read N from get_identity_epoch on a live node (#1360)\n"
+        "  --cluster-ca KEY    The cluster's enrollment CA public key (printed in the\n"
+        "                      join command; or ZETTA_CLUSTER_CA). A node that is not\n"
+        "                      enrolled enrolls only through a member it signed (#1513)\n"
+        "  --cluster-ca-seed-file PATH  The enrollment CA's private seed, for a cluster\n"
+        "                      whose nodes all get the join token from outside (or\n"
+        "                      ZETTA_CLUSTER_CA_SEED_FILE); the node holds the CA (#1513)\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
         "  --pubsub-dispatch-mode MODE\n"
@@ -399,6 +408,14 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--identity-root");
             if (!v) break;
             o.identity_root = v;
+        } else if (arg == "--cluster-ca") {
+            const char* v = take_value(argc, argv, i, o, "--cluster-ca");
+            if (!v) break;
+            o.cluster_ca = v;
+        } else if (arg == "--cluster-ca-seed-file") {
+            const char* v = take_value(argc, argv, i, o, "--cluster-ca-seed-file");
+            if (!v) break;
+            o.cluster_ca_seed_file = v;
         } else if (arg == "--identity-min-epoch") {
             const char* v = take_value(argc, argv, i, o, "--identity-min-epoch");
             if (!v) break;
@@ -881,6 +898,51 @@ int main(int argc, char** argv) {
         // join token (#1230): every member holds the token outside the
         // replicated catalogue, so every member opens what another sealed.
         // The retired tokens let a rotated node re-seal what the old one sealed.
+        // The enrollment CA (#1513): its public key, which a node that is not
+        // enrolled trusts, and its seed, for a node that should hold it.
+        if (opts.cluster_ca.empty()) {
+            if (const char* env = std::getenv("ZETTA_CLUSTER_CA")) opts.cluster_ca = env;
+        }
+        if (opts.cluster_ca_seed_file.empty()) {
+            if (const char* env = std::getenv("ZETTA_CLUSTER_CA_SEED_FILE")) {
+                opts.cluster_ca_seed_file = env;
+            }
+        }
+        if (!opts.cluster_ca.empty()) {
+            const bool hex64 =
+                opts.cluster_ca.size() == 64 &&
+                std::ranges::all_of(opts.cluster_ca, [](char c) {
+                    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                });
+            if (!hex64) {
+                std::fprintf(stderr, "zetta: --cluster-ca must be 64 lowercase hex characters\n");
+                return 1;
+            }
+            if (!security->cluster_ca_public_key.empty() &&
+                security->cluster_ca_public_key != opts.cluster_ca) {
+                std::fprintf(stderr,
+                             "zetta: --cluster-ca differs from the enrollment CA this node "
+                             "holds (%s)\n",
+                             security->cluster_ca_public_key.c_str());
+                return 1;
+            }
+            security->cluster_ca_public_key = opts.cluster_ca;
+        }
+        if (!opts.cluster_ca_seed_file.empty()) {
+            std::ifstream in(opts.cluster_ca_seed_file);
+            std::string seed;
+            in >> seed;  // the seed is one token; surrounding whitespace is dropped
+            if (seed.empty()) {
+                std::fprintf(stderr, "zetta: cannot read --cluster-ca-seed-file %s\n",
+                             opts.cluster_ca_seed_file.c_str());
+                return 1;
+            }
+            if (!zetta::cluster::provision_enrollment_ca(*security, seed, &reason)) {
+                // The reason never carries the seed.
+                std::fprintf(stderr, "zetta: enrollment CA setup failed: %s\n", reason.c_str());
+                return 1;
+            }
+        }
         opts.node.connection_root_secret = security->join_token;
         opts.node.retired_connection_root_secrets = security->retired_join_tokens;
         opts.cluster.security = std::move(*security);
