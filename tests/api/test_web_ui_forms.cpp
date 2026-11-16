@@ -340,6 +340,20 @@ TEST_F(WebUiFormsFixture, EveryBrowserActionRefusesSiblingAndMissingOrigins) {
     const auto accepted = request("POST", "/run", "cap=create_project&name=trusted&_return=%2F%3Fview%3Dprojects");
     EXPECT_EQ(accepted.status, 302) << accepted.body;
     EXPECT_TRUE(node.find_project("trusted"));
+
+    // A return path a browser reads as another origin is never a redirect target (zetta#1435):
+    // `/\host`, a tab or newline inside, a scheme, `//` past the first slash.
+    int made = 0;
+    for (const std::string target : {"%2F%5Cevil.example.test", "%2F%09%2Fevil.example.test",
+                                     "%2F%0A%2Fevil.example.test", "%2Fhttps:%2F%2Fevil.example.test",
+                                     "%2F.%2F%2Fevil.example.test"}) {
+        SCOPED_TRACE(target);
+        const std::string name = "returned-" + std::to_string(++made);
+        const auto answer =
+            request("POST", "/run", "cap=create_project&name=" + name + "&_return=" + target);
+        EXPECT_NE(answer.status, 302) << answer.body;
+        EXPECT_EQ(answer.body.find("evil.example.test\r\n"), std::string::npos);
+    }
 }
 
 TEST_F(WebUiFormsFixture, CookieRestAndMcpCannotDispatchCrossOriginActions) {

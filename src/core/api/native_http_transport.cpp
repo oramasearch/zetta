@@ -148,8 +148,8 @@ std::string resolve_location(const std::string& base_url,
     return origin + dir + location;
 }
 
-// Drop the secret headers (and forget they were secret) before a cross-host
-// redirect hop, so a bearer minted for one origin never travels to another.
+// Drop the secret headers (and forget they were secret) before a redirect hop to
+// another origin (scheme, host or port), so a bearer minted for one origin never travels to another.
 void drop_secret_headers(connect::HttpRequest& request) {
     const auto is_secret = [&request](const std::string& name) {
         return std::any_of(
@@ -612,12 +612,22 @@ private:
             if (location.empty() || redirects_remaining <= 0) break;  // final answer
 
             const std::string next = resolve_location(hop.url, location);
+            // The secret headers stay only on the same origin: scheme, host and port (LSR-256,
+            // #1429). A hop to another port, or from https down to http, drops them as a hop
+            // to another host does; a target that does not parse drops them too.
             RequestTarget before, after;
-            const bool cross_host =
-                parse_request_target(hop.url, before) &&
-                parse_request_target(next, after) && before.host != after.host;
+            const auto lower = [](std::string text) {
+                std::ranges::transform(text, text.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                return text;
+            };
+            const bool same_origin =
+                parse_request_target(hop.url, before) && parse_request_target(next, after) &&
+                before.secure == after.secure && lower(before.host) == lower(after.host) &&
+                before.port == after.port;
             hop.url = next;
-            if (cross_host) drop_secret_headers(hop);
+            if (!same_origin) drop_secret_headers(hop);
             response.status = 0;
             response.body.clear();
             --redirects_remaining;

@@ -76,10 +76,20 @@ std::string sign_rs256(EVP_PKEY* pkey, const std::string& signing_input) {
     return sig;
 }
 
+// The Studio origin the test tokens are issued to, this node's only authorized party (#1423).
+const bool studio_party_configured =
+    (zetta::api::set_clerk_authorized_parties({"https://studio.example.test"}), true);
+
 std::string make_jwt(EVP_PKEY* pkey, const std::string& kid, const std::string& iss,
-                     const std::string& sub, long exp) {
+                     const std::string& sub, long exp,
+                     nlohmann::json extra = nlohmann::json::object()) {
     const std::string header = base64url(nlohmann::json{{"alg", "RS256"}, {"typ", "JWT"}, {"kid", kid}}.dump());
-    const std::string payload = base64url(nlohmann::json{{"iss", iss}, {"sub", sub}, {"exp", exp}, {"email", "u@x.com"}}.dump());
+    nlohmann::json claims{{"iss", iss}, {"sub", sub}, {"exp", exp}, {"email", "u@x.com"},
+                          {"azp", "https://studio.example.test"}};
+    for (const auto& [name, value] : extra.items()) {
+        if (value.is_null()) claims.erase(name); else claims[name] = value;
+    }
+    const std::string payload = base64url(claims.dump());
     const std::string signing_input = header + "." + payload;
     return signing_input + "." + base64url(sign_rs256(pkey, signing_input));
 }
@@ -113,6 +123,30 @@ TEST(ClerkAuth, VerifiesAValidToken) {
     ASSERT_TRUE(claims.has_value());
     EXPECT_EQ(claims->subject, "user_abc");
     EXPECT_EQ(claims->email, "u@x.com");
+}
+
+// LSR-250 (#1423): a signed token must also carry an expiry and be issued to one of this node's
+// own origins; a token minted for another product sharing the Clerk instance is refused.
+TEST(ClerkAuth, RequiresAnExpiryAndThisNodesAuthorizedParty) {
+    ASSERT_TRUE(studio_party_configured);
+    TestKey key = make_key();
+    for (const nlohmann::json& changed :
+         {nlohmann::json{{"azp", "https://other-product.example.test"}},
+          nlohmann::json{{"azp", nullptr}},
+          nlohmann::json{{"exp", nullptr}},
+          nlohmann::json{{"exp", "tomorrow"}}}) {
+        zetta::api::clear_clerk_jwks_cache();
+        const std::string jwt =
+            make_jwt(key.pkey, "kid-1", kIssuer, "user_abc", now() + 3600, changed);
+        EXPECT_FALSE(
+            zetta::api::verify_clerk_jwt(kIssuer, jwt, jwks_transport("kid-1", key), now()).has_value())
+            << changed.dump();
+    }
+    zetta::api::clear_clerk_jwks_cache();
+    const std::string trailing_slash = make_jwt(key.pkey, "kid-1", kIssuer, "user_abc", now() + 3600,
+                                                {{"azp", "https://studio.example.test/"}});
+    EXPECT_TRUE(zetta::api::verify_clerk_jwt(kIssuer, trailing_slash, jwks_transport("kid-1", key), now())
+                    .has_value());
 }
 
 TEST(ClerkAuth, RejectsWrongIssuer) {

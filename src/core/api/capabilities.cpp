@@ -3466,15 +3466,35 @@ const nlohmann::json& list_datasets_output_schema() {
 // tool, behind its one right, and list the same datasets.
 ApiResult handle_list_datasets(const nlohmann::json& input, ApiContext& context) {
     const std::string detail = input.value("detail", std::string{"full"});
+    // The datasets the caller may read, the rule system.datasets applies (#1439): an
+    // administrator reads them all; anyone else only the tables it holds sql:read on.
+    const zetta::governance::Operation administer{zetta::governance::CapabilityDomain::Api,
+                                                  "cluster_admin"};
+    const zetta::governance::Operation sql_read{zetta::governance::CapabilityDomain::Data,
+                                                "read"};
+    const auto allowed = [&](const zetta::governance::Operation& operation) {
+        return context.acting_is_user
+                   ? static_cast<bool>(context.node.authorize_user(context.acting_key, operation).allowed)
+                   : static_cast<bool>(context.node.authorize(context.acting_key, operation).allowed);
+    };
+    const bool reads_all = context.acting_key.empty() || allowed(administer);
+    const auto readable = [&](const zetta::data::DatasetSummary& dataset) {
+        if (reads_all) return true;
+        if (!context.acting_is_user) return allowed(sql_read);
+        return context.node
+            .column_scope(context.acting_key, /*acting_is_user=*/true, sql_read,
+                          dataset.database, dataset.name)
+            .table_allowed;
+    };
     nlohmann::json datasets = nlohmann::json::array();
     if (detail == "summary") {
         for (const zetta::data::DatasetSummary& dataset :
              context.node.dataset_list_summaries()) {
-            datasets.push_back(dataset_list_summary_json(dataset));
+            if (readable(dataset)) datasets.push_back(dataset_list_summary_json(dataset));
         }
     } else {
         for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
-            datasets.push_back(dataset_summary_json(dataset));
+            if (readable(dataset)) datasets.push_back(dataset_summary_json(dataset));
         }
     }
     nlohmann::json output;

@@ -473,6 +473,15 @@ their own. The gate is **always on** (#799) — there is no mode switch:
 The CORS preflight (`OPTIONS`) is answered by the `cors()` middleware **before**
 the gate, so a credential-less browser preflight is never blocked.
 
+### Clerk token claims (#1423, LSR-250)
+
+A Clerk token is accepted only when, besides its issuer, RS256 signature and `nbf`, it carries an
+integer **`exp`** still in the future and an **`azp`** that is one of this node's own origins,
+listed in `ZETTA_CLERK_AUTHORIZED_PARTIES` (comma separated, a trailing `/` ignored). With an issuer
+and no authorized parties every Clerk token is refused, because another product sharing the Clerk
+instance can mint a token this node would otherwise accept. Before #1423 `exp` was checked only when
+present, and `azp` not at all.
+
 ### Clerk key caching (#1416)
 
 When `--clerk-issuer` is configured, the gate tries the native token store first,
