@@ -4,6 +4,11 @@ One page per tagged release, newest first. A page states what changed, **what it
 someone upgrading**, and what is knowingly still broken — a release note that lists only
 wins is marketing, and the next reader rediscovers the gap expensively.
 
+- [v0.6.0](v0.6.0.md) — not yet tagged. Open-source readiness (MIT license, SPDX headers,
+  third-party notices, SBOM, CLA, security policy, client and internal material out, the image
+  `Dockerfile` in this repo), the first batch of pre-launch security fixes, and `score`/`explain` on
+  segmentation models. **Clerk needs `ZETTA_CLERK_AUTHORIZED_PARTIES`; an inbox needs an
+  `inbox:<name>` grant; `webapp/` is gone.** Rolling upgrade is fine.
 - [v0.5.0](v0.5.0.md) — 2026-10-23. The security release: the auth review, multi-tenant audit,
   TC-5 and pre-launch review fixes (sealed identity under a cluster root, per-caller catalog and
   search, egress denied by default, approved connector destinations), plus MySQL, TiDB and lake SQL
