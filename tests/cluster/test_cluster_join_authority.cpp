@@ -9,8 +9,8 @@
 //
 // The transport half of #848 (no token, a wrong token, another cluster's token,
 // nothing readable on the wire, an authenticated cluster forms and syncs) is in
-// test_cluster_security.cpp. A removed node staying removed needs per-node
-// revocation (#1320). Coverage map: docs/testing/authz-regressions.md.
+// test_cluster_security.cpp. A removed node staying removed (#848 step 6) is in
+// test_cluster_revocation.cpp (#1320). Coverage map: docs/testing/authz-regressions.md.
 #include <gtest/gtest.h>
 
 #include <chrono>

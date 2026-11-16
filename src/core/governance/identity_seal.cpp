@@ -4,11 +4,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -34,6 +37,23 @@ constexpr std::size_t kSignatureBytes = 64;
 constexpr std::string_view kRootDomain = "zetta-identity-root-v1";
 constexpr std::string_view kSealDomain = "zetta-identity-seal-v2";
 constexpr std::string_view kIdDomain = "zetta-identity-id-v1";
+constexpr std::string_view kSuccessionDomain = "zetta-identity-succession-v1";
+// A succession's seal is not a record seal: its own prefix keeps one from ever
+// passing for the other.
+constexpr std::string_view kSuccessionSealPrefix = "ed25519-succession-v1:";
+
+// The bytes a succession's seal signs (#1342).
+std::string succession_message(std::string_view old_root, std::string_view new_root,
+                               std::uint64_t issued_at) {
+    std::string message(kSuccessionDomain);
+    message += '\n';
+    message += old_root;
+    message += '\n';
+    message += new_root;
+    message += '\n';
+    message += std::to_string(issued_at);
+    return message;
+}
 
 void set_reason(std::string* out, std::string message) {
     if (out) *out = std::move(message);
@@ -152,7 +172,8 @@ nlohmann::json_schema::json_validator& root_validator() {
 
 struct RootFile {
     std::string public_key;
-    std::string seed;  // only for a generated root
+    std::string seed;  // a root this node can seal with
+    std::vector<std::string> previous;  // roots it trusted before, oldest first (#1342)
 };
 
 std::optional<RootFile> parse_root_file(const std::string& contents,
@@ -172,27 +193,34 @@ std::optional<RootFile> parse_root_file(const std::string& contents,
     RootFile file;
     file.public_key = document["public_key"].get<std::string>();
     file.seed = document.value("seed", std::string{});
+    if (const auto previous = document.find("previous"); previous != document.end()) {
+        for (const nlohmann::json& key : *previous) {
+            file.previous.push_back(key.get<std::string>());
+        }
+    }
     return file;
 }
 
 bool write_root_file(const fs::path& path, const IdentityAuthority& root,
-                     bool keep_seed) {
+                     bool keep_seed, const std::vector<std::string>& previous = {}) {
     nlohmann::json document{{"version", 1},
                             {"public_key", root.public_key_hex()}};
     if (keep_seed) document["seed"] = root.seed_hex();
+    if (!previous.empty()) document["previous"] = previous;
     return write_file(path, document.dump(2) + "\n", /*is_private=*/keep_seed);
 }
 
 }  // namespace
 
 bool is_identity_key(std::string_view key) {
-    return key.starts_with(catalog::kUserPrefix) ||
+    return key == kIdentityEpochKey || key.starts_with(catalog::kUserPrefix) ||
            key.starts_with(catalog::kRolePrefix) ||
            key.starts_with(catalog::kTokenPrefix) ||
            key.starts_with(catalog::kUserRolePrefix) ||
            key.starts_with(catalog::kPolicyPrefix) ||
            key.starts_with(catalog::kPrincipalPrefix) ||
-           key.starts_with(catalog::kAccessKeyPrefix);
+           key.starts_with(catalog::kAccessKeyPrefix) ||
+           key.starts_with(catalog::kNodeRevocationPrefix);
 }
 
 std::optional<IdentityAuthority> IdentityAuthority::from_seed(
@@ -258,8 +286,8 @@ std::string IdentityAuthority::seed_hex() const {
     return to_hex(seed_.data(), seed_.size());
 }
 
-std::optional<nlohmann::json> IdentityAuthority::sign(std::string_view key,
-                                                      nlohmann::json value) const {
+std::string IdentityAuthority::sign_message(std::string_view message) const {
+    if (!has_seed_) return {};
     EvpKeyPtr private_key(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
                                                        seed_.data(), seed_.size()),
                           &EVP_PKEY_free);
@@ -267,20 +295,174 @@ std::optional<nlohmann::json> IdentityAuthority::sign(std::string_view key,
     if (!private_key || !context ||
         EVP_DigestSignInit(context.get(), nullptr, nullptr, nullptr,
                            private_key.get()) != 1) {
-        return std::nullopt;
+        return {};
     }
-    const std::string message = seal_message(public_key_hex_, key, value);
     std::array<unsigned char, kSignatureBytes> signature{};
     std::size_t length = signature.size();
     if (EVP_DigestSign(context.get(), signature.data(), &length,
                        reinterpret_cast<const unsigned char*>(message.data()),
                        message.size()) != 1 ||
         length != kSignatureBytes) {
+        return {};
+    }
+    return to_hex(signature.data(), length);
+}
+
+bool IdentityAuthority::verifies(std::string_view message,
+                                 std::string_view signature_hex) const {
+    const auto signature = from_hex<kSignatureBytes>(signature_hex);
+    if (!signature) return false;
+    EvpKeyPtr public_key(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr,
+                                                     public_key_.data(),
+                                                     public_key_.size()),
+                         &EVP_PKEY_free);
+    EvpMdCtxPtr context(EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+    if (!public_key || !context ||
+        EVP_DigestVerifyInit(context.get(), nullptr, nullptr, nullptr,
+                             public_key.get()) != 1) {
+        return false;
+    }
+    return EVP_DigestVerify(context.get(), signature->data(), signature->size(),
+                            reinterpret_cast<const unsigned char*>(message.data()),
+                            message.size()) == 1;
+}
+
+std::optional<nlohmann::json> IdentityAuthority::sign(std::string_view key,
+                                                      nlohmann::json value) const {
+    const std::string signature =
+        sign_message(seal_message(public_key_hex_, key, value));
+    if (signature.empty()) return std::nullopt;
+    value[std::string(kIdentitySealField)] =
+        std::string(kIdentitySealPrefix) + signature;
+    return value;
+}
+
+std::optional<nlohmann::json> IdentityAuthority::seal_succession(
+    const IdentityAuthority& successor, std::uint64_t issued_at) const {
+    if (!has_seed_ || successor.public_key_hex() == public_key_hex_) return std::nullopt;
+    const std::string signature = sign_message(
+        succession_message(public_key_hex_, successor.public_key_hex(), issued_at));
+    if (signature.empty()) return std::nullopt;
+    return nlohmann::json{{"old", public_key_hex_},
+                          {"new", successor.public_key_hex()},
+                          {"issued_at", issued_at},
+                          {std::string(kIdentitySealField),
+                           std::string(kSuccessionSealPrefix) + signature}};
+}
+
+std::optional<IdentityRootSuccession> open_identity_succession(
+    std::string_view key, const nlohmann::json& value) {
+    if (!key.starts_with(kIdentitySuccessionPrefix) || !value.is_object() ||
+        value.size() != 4) {
         return std::nullopt;
     }
-    value[std::string(kIdentitySealField)] =
-        std::string(kIdentitySealPrefix) + to_hex(signature.data(), length);
-    return value;
+    const auto old_root = value.find("old");
+    const auto new_root = value.find("new");
+    const auto issued_at = value.find("issued_at");
+    const auto seal = value.find(std::string(kIdentitySealField));
+    if (old_root == value.end() || !old_root->is_string() || new_root == value.end() ||
+        !new_root->is_string() || issued_at == value.end() ||
+        !issued_at->is_number_unsigned() || seal == value.end() || !seal->is_string()) {
+        return std::nullopt;
+    }
+    IdentityRootSuccession succession;
+    succession.old_root = old_root->get<std::string>();
+    succession.new_root = new_root->get<std::string>();
+    succession.issued_at = issued_at->get<std::uint64_t>();
+    // The key names the new root, so a succession cannot be moved to hand
+    // identity to another one.
+    if (key.substr(kIdentitySuccessionPrefix.size()) != succession.new_root ||
+        succession.old_root == succession.new_root ||
+        !IdentityAuthority::verify_only(succession.new_root)) {
+        return std::nullopt;
+    }
+    const std::string& seal_text = seal->get_ref<const std::string&>();
+    if (!seal_text.starts_with(kSuccessionSealPrefix)) return std::nullopt;
+    const std::optional<IdentityAuthority> old_authority =
+        IdentityAuthority::verify_only(succession.old_root);
+    if (!old_authority ||
+        !old_authority->verifies(
+            succession_message(succession.old_root, succession.new_root,
+                               succession.issued_at),
+            std::string_view(seal_text).substr(kSuccessionSealPrefix.size()))) {
+        return std::nullopt;
+    }
+    return succession;
+}
+
+std::string identity_epoch_digest(const nlohmann::json& entries) {
+    std::string input;
+    if (entries.is_object()) {
+        // nlohmann::json objects iterate in key order.
+        for (const auto& [key, version] : entries.items()) {
+            input += key;
+            input += '\n';
+            input += version.dump();
+            input += '\n';
+        }
+    }
+    const std::array<unsigned char, 32> digest = sha256(input);
+    return to_hex(digest.data(), digest.size());
+}
+
+nlohmann::json identity_epoch_value(nlohmann::json entries, std::uint64_t issued_at) {
+    const std::string digest = identity_epoch_digest(entries);
+    return nlohmann::json{{"entries", std::move(entries)},
+                          {"digest", digest},
+                          {"issued_at", issued_at}};
+}
+
+std::optional<std::map<std::string, std::uint64_t>> identity_epoch_entries(
+    const OpenedIdentityRecord& epoch) {
+    if (epoch.removed || !epoch.value.is_object()) return std::nullopt;
+    const auto entries = epoch.value.find("entries");
+    const auto digest = epoch.value.find("digest");
+    if (entries == epoch.value.end() || !entries->is_object() ||
+        digest == epoch.value.end() || !digest->is_string() ||
+        digest->get<std::string>() != identity_epoch_digest(*entries)) {
+        return std::nullopt;
+    }
+    std::map<std::string, std::uint64_t> committed;
+    for (const auto& [key, version] : entries->items()) {
+        if (key == kIdentityEpochKey || !is_identity_key(key) ||
+            !version.is_number_unsigned() || version.get<std::uint64_t>() == 0) {
+            return std::nullopt;
+        }
+        committed.emplace(key, version.get<std::uint64_t>());
+    }
+    return committed;
+}
+
+std::vector<IdentityRootSuccession> identity_succession_chain(
+    std::string_view pinned, const nlohmann::json& document) {
+    std::vector<IdentityRootSuccession> chain;
+    if (!document.is_object()) return chain;
+    // Every verified succession, by the root it leaves. The catalogue is an
+    // ordered object, so the successions are one contiguous range of keys.
+    std::map<std::string, IdentityRootSuccession> next_of;
+    const auto& entries = document.get_ref<const nlohmann::json::object_t&>();
+    for (auto it = entries.lower_bound(std::string(kIdentitySuccessionPrefix));
+         it != entries.end() && std::string_view(it->first).starts_with(kIdentitySuccessionPrefix);
+         ++it) {
+        std::optional<IdentityRootSuccession> succession =
+            open_identity_succession(it->first, it->second);
+        if (!succession) continue;
+        auto [slot, inserted] = next_of.try_emplace(succession->old_root, *succession);
+        if (!inserted &&
+            (succession->issued_at > slot->second.issued_at ||
+             (succession->issued_at == slot->second.issued_at &&
+              succession->new_root > slot->second.new_root))) {
+            slot->second = *succession;
+        }
+    }
+    std::set<std::string> seen{std::string(pinned)};
+    std::string at(pinned);
+    for (auto found = next_of.find(at); found != next_of.end(); found = next_of.find(at)) {
+        if (!seen.insert(found->second.new_root).second) break;  // a cycle
+        chain.push_back(found->second);
+        at = found->second.new_root;
+    }
+    return chain;
 }
 
 std::optional<nlohmann::json> IdentityAuthority::seal(std::string_view key,
@@ -309,9 +491,6 @@ std::optional<OpenedIdentityRecord> IdentityAuthority::open(
     if (found == value.end() || !found->is_string()) return std::nullopt;
     const std::string& seal_text = found->get_ref<const std::string&>();
     if (!seal_text.starts_with(kIdentitySealPrefix)) return std::nullopt;
-    const auto signature = from_hex<kSignatureBytes>(
-        std::string_view(seal_text).substr(kIdentitySealPrefix.size()));
-    if (!signature) return std::nullopt;
     // The version must be a positive integer: a record with none is from before
     // versions and cannot be ordered against a later one (#1341).
     const auto version = value.find(std::string(kIdentityVersionField));
@@ -321,20 +500,8 @@ std::optional<OpenedIdentityRecord> IdentityAuthority::open(
     }
     nlohmann::json unsealed = value;
     unsealed.erase(std::string(kIdentitySealField));
-    EvpKeyPtr public_key(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr,
-                                                     public_key_.data(),
-                                                     public_key_.size()),
-                         &EVP_PKEY_free);
-    EvpMdCtxPtr context(EVP_MD_CTX_new(), &EVP_MD_CTX_free);
-    if (!public_key || !context ||
-        EVP_DigestVerifyInit(context.get(), nullptr, nullptr, nullptr,
-                             public_key.get()) != 1) {
-        return std::nullopt;
-    }
-    const std::string message = seal_message(public_key_hex_, key, unsealed);
-    if (EVP_DigestVerify(context.get(), signature->data(), signature->size(),
-                         reinterpret_cast<const unsigned char*>(message.data()),
-                         message.size()) != 1) {
+    if (!verifies(seal_message(public_key_hex_, key, unsealed),
+                  std::string_view(seal_text).substr(kIdentitySealPrefix.size()))) {
         return std::nullopt;
     }
     OpenedIdentityRecord record;
@@ -439,6 +606,13 @@ IdentityRootSetup load_or_create_identity_root(const std::string& data_dir,
                            file->public_key + ", in " + path.string() + ")");
             return setup;
         }
+        setup.previous_roots = file->previous;
+        // The admin token's root, when it is not the pinned one: a rotation
+        // (#1342) may have handed identity to it, which the node learns from the
+        // replicated successions once it starts (Node::follow_identity_succession).
+        if (owner_root && owner_root->public_key_hex() != file->public_key) {
+            setup.owner_candidate = owner_root;
+        }
         if (!file->seed.empty()) {
             auto generated = IdentityAuthority::from_seed_hex(file->seed);
             if (!generated || generated->public_key_hex() != file->public_key) {
@@ -452,7 +626,8 @@ IdentityRootSetup load_or_create_identity_root(const std::string& data_dir,
             // now, while the token still derives it, so a later token rotation
             // does not leave this node verify-only.
             setup.authority = std::move(owner_root);
-            if (!write_root_file(path, *setup.authority, /*keep_seed=*/true)) {
+            if (!write_root_file(path, *setup.authority, /*keep_seed=*/true,
+                                 file->previous)) {
                 setup.warning = "cannot store the identity root's seed in " +
                                 path.string() +
                                 ": a later admin-token rotation will leave this node "
@@ -464,7 +639,10 @@ IdentityRootSetup load_or_create_identity_root(const std::string& data_dir,
                 setup.warning =
                     "the admin token does not derive this node's pinned identity "
                     "root " + file->public_key +
-                    ": the node verifies identity but issues none, and seeds no owner";
+                    ": the node verifies identity but issues none, and seeds no owner, "
+                    "until a rotation hands identity to this token's root. To rotate, "
+                    "start one node with the previous admin token and run "
+                    "rotate_identity_root";
             }
         }
         if (!setup.authority) {
@@ -505,6 +683,44 @@ IdentityRootSetup load_or_create_identity_root(const std::string& data_dir,
     return setup;
 }
 
+bool repin_identity_root(const std::string& data_dir, const IdentityAuthority& root,
+                         const std::vector<std::string>& previous_roots,
+                         std::string* reason) {
+    const fs::path path = root_path(data_dir);
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) {
+        set_reason(reason, "cannot create " + path.parent_path().string() + ": " +
+                               ec.message());
+        return false;
+    }
+    std::vector<std::string> previous;
+    for (const std::string& key : previous_roots) {
+        if (key != root.public_key_hex() &&
+            std::find(previous.begin(), previous.end(), key) == previous.end()) {
+            previous.push_back(key);
+        }
+    }
+    if (previous.size() > kMaxPreviousIdentityRoots) {
+        previous.erase(previous.begin(),
+                       previous.end() - static_cast<std::ptrdiff_t>(kMaxPreviousIdentityRoots));
+    }
+    // Written beside the pin and renamed over it: a crash leaves one whole pin.
+    const fs::path staging = path.string() + ".tmp";
+    if (!write_root_file(staging, root, root.can_seal(), previous)) {
+        fs::remove(staging, ec);
+        set_reason(reason, "cannot write " + staging.string());
+        return false;
+    }
+    fs::rename(staging, path, ec);
+    if (ec) {
+        fs::remove(staging, ec);
+        set_reason(reason, "cannot replace " + path.string());
+        return false;
+    }
+    return true;
+}
+
 const nlohmann::json& identity_root_schema() {
     static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -513,7 +729,12 @@ const nlohmann::json& identity_root_schema() {
       "properties": {
         "version":    { "type": "integer", "const": 1 },
         "public_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "seed":       { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        "seed":       { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "previous": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
       },
       "required": ["version", "public_key"],
       "additionalProperties": false

@@ -176,6 +176,8 @@ add_executable(zetta-tests
   governance/test_roles.cpp
   governance/test_authz_regressions.cpp
   governance/test_identity_seal.cpp
+  governance/test_identity_rotation.cpp
+  governance/test_identity_epoch.cpp
   governance/test_scoped_grants.cpp
   governance/test_row_security.cpp
   governance/test_system_catalog_access.cpp
@@ -302,6 +304,8 @@ add_executable(zetta-tests
   cluster/test_cluster_hello_bounds.cpp
   cluster/test_cluster_routing.cpp
   cluster/test_cluster_security.cpp
+  cluster/test_cluster_enrollment.cpp
+  cluster/test_cluster_revocation.cpp
   cluster/test_gossip_bandwidth.cpp
   cluster/test_cluster_join_authority.cpp
   cluster/test_peer_gateway.cpp

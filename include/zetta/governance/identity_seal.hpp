@@ -30,15 +30,35 @@
 // kept an earlier sealed value (a token before its revocation) cannot write it
 // back, and a member cannot delete a record without the root.
 //
+// The identity epoch (#1360). The root also seals one record,
+// `identity_epoch:cluster`, that commits to the version of every identity record
+// it holds (and a SHA-256 digest over them). Its `_v` is the epoch number and
+// only grows. A node accepts a record of key K only at a version at least the
+// one its newest verified epoch commits to for K, so an older record replayed
+// after every node that held the newer one has left is still refused once the
+// epoch reaches the node; and an epoch is itself held and never replaced by an
+// older one. --identity-min-epoch refuses every identity record until an epoch
+// at least that high arrives.
+//
+// Rotation (#1342). The root moves by succession: the current root seals a
+// record naming its successor (`identity_root_succession:<new key>`), the
+// rotating node re-seals every identity record under the successor, and every
+// node that verifies the succession moves its pin. A node trusts a new root only
+// through a chain of verified successions from the root it pinned. Records the
+// old root sealed stay readable on a node that already held them (history), and
+// no node accepts a record the old root seals after the move.
+//
 // What it does not cover, by design: a node that holds the owner token IS the
 // owner, so a compromised node that was handed that token can issue identity.
 // Recorded in the doc page.
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -76,8 +96,52 @@ bool identity_record_supersedes(const OpenedIdentityRecord& a,
                                 const OpenedIdentityRecord& b);
 
 // True when `key` is an identity record's catalogue key (user:, role:,
-// token:, user_role:, policy:, principal:, key:) — the records a seal guards.
+// token:, user_role:, policy:, principal:, key:, node_revocation: (#1320), and
+// the identity epoch (#1360)) — the records a seal guards.
 bool is_identity_key(std::string_view key);
+
+// The identity epoch's one catalogue key (#1360). is_identity_key is true for
+// it, so it is sealed, versioned, held and written back like any identity record.
+inline constexpr std::string_view kIdentityEpochKey = "identity_epoch:cluster";
+
+// The SHA-256 digest an epoch carries (64 hex): over "<key>\n<version>\n" for
+// every entry, in key order. `entries` is {"<key>": <version>, ...}.
+std::string identity_epoch_digest(const nlohmann::json& entries);
+
+// The epoch's value before sealing: {"entries", "digest", "issued_at"}.
+nlohmann::json identity_epoch_value(nlohmann::json entries, std::uint64_t issued_at);
+
+// The versions an opened epoch commits to, by key. Empty optional when the
+// value is not an epoch (no entries object, a version that is not a positive
+// integer, a key that is not an identity key, or a digest that does not match).
+std::optional<std::map<std::string, std::uint64_t>> identity_epoch_entries(
+    const OpenedIdentityRecord& epoch);
+
+// The catalogue prefix of a root succession (#1342):
+// `identity_root_succession:<new root's public key>`.
+inline constexpr std::string_view kIdentitySuccessionPrefix = "identity_root_succession:";
+
+// A verified succession: `old_root` (the root that sealed it) hands identity to
+// `new_root` at `issued_at` (wall clock, milliseconds).
+struct IdentityRootSuccession {
+    std::string old_root;
+    std::string new_root;
+    std::uint64_t issued_at = 0;
+};
+
+// The succession `value` records under `key`, when it is well formed, its key
+// names its new root, and its seal is the OLD root's signature. Empty optional
+// otherwise. The caller decides whether the old root is one it trusts.
+std::optional<IdentityRootSuccession> open_identity_succession(
+    std::string_view key, const nlohmann::json& value);
+
+// The verified successions that lead from `pinned` through the records in
+// `document` (the replicated catalogue, an object), in order; empty when the
+// document holds no succession of `pinned`. Where one root has more than one
+// successor (two rotations raced), the one issued last wins, then the larger
+// key, so every node follows the same chain. A cycle ends the chain.
+std::vector<IdentityRootSuccession> identity_succession_chain(
+    std::string_view pinned, const nlohmann::json& document);
 
 class IdentityAuthority {
 public:
@@ -118,6 +182,18 @@ public:
     // field or version, another key, no version, or a malformed tombstone.
     std::optional<OpenedIdentityRecord> open(std::string_view key,
                                              const nlohmann::json& value) const;
+
+    // The succession record handing identity from this root to `successor`
+    // (#1342), to store under kIdentitySuccessionPrefix + successor's public
+    // key: {"old", "new", "issued_at", "_seal"}, the seal this root's signature
+    // over "zetta-identity-succession-v1", old, new and issued_at. Empty optional
+    // when this root cannot seal or `successor` is this root.
+    std::optional<nlohmann::json> seal_succession(const IdentityAuthority& successor,
+                                                  std::uint64_t issued_at) const;
+    // Whether `signature_hex` (128 hex) is this root's signature over `message`.
+    bool verifies(std::string_view message, std::string_view signature_hex) const;
+    // This root's signature over `message`, 128 hex; empty when it cannot seal.
+    std::string sign_message(std::string_view message) const;
 
     // A UUID-shaped id fixed by this root and `purpose` ("owner-user",
     // "builtin-role:admin", ...). Every node that bootstraps the same root
@@ -161,7 +237,26 @@ struct IdentityRootSetup {
     std::string warning;
     // True when this call pinned a root for the first time.
     bool pinned_now = false;
+    // The root the admin token derives, when it is not the pinned root (#1342):
+    // the node takes it, and issues identity again, once a chain of successions
+    // from the pinned root reaches it.
+    std::optional<IdentityAuthority> owner_candidate;
+    // Roots this node trusted before its pin moved, oldest first: records they
+    // sealed that the node already held stay readable (#1342).
+    std::vector<std::string> previous_roots;
 };
+
+// How many earlier roots identity-root.json keeps.
+inline constexpr std::size_t kMaxPreviousIdentityRoots = 8;
+
+// Rewrite <data_dir>/security/identity-root.json to pin `root` (its seed kept
+// when it can seal, mode 0600), with `previous_roots` (oldest first, at most
+// kMaxPreviousIdentityRoots kept, the newest ones). Written to a temporary file
+// and renamed over the pin, so a crash leaves the old pin or the new one. False
+// with a reason on an I/O failure.
+bool repin_identity_root(const std::string& data_dir, const IdentityAuthority& root,
+                         const std::vector<std::string>& previous_roots,
+                         std::string* reason = nullptr);
 
 // Load this node's identity root from <data_dir>/security/identity-root.json,
 // pinning one on the first start:

@@ -2,10 +2,15 @@
 
 #include <algorithm>
 #include <array>
+#include <ctime>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <span>
 #include <utility>
 
 #include <nlohmann/json-schema.hpp>
@@ -14,7 +19,10 @@
 
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
+#include <openssl/bn.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
@@ -299,6 +307,362 @@ std::optional<SecretFile> parse_secret_file(const std::string& contents,
 
 }  // namespace
 
+// --- Enrollment (#1319) -----------------------------------------------------
+
+namespace {
+
+constexpr const char* kEnrollmentCaCommonName = "zetta-cluster-enrollment-ca";
+
+bool is_hex_of(std::string_view text, std::size_t bytes) {
+    return text.size() == bytes * 2 && std::all_of(text.begin(), text.end(), is_lower_hex);
+}
+
+std::array<unsigned char, 32> decode_hex32(std::string_view hex) {
+    return decode_token(hex);  // the same 32-byte lowercase-hex layout
+}
+
+X509Ptr certificate_from_der(std::span<const unsigned char> der) {
+    if (der.empty() || der.size() > static_cast<std::size_t>(std::numeric_limits<long>::max())) {
+        return X509Ptr(nullptr, &X509_free);
+    }
+    const unsigned char* cursor = der.data();
+    X509Ptr certificate(d2i_X509(nullptr, &cursor, static_cast<long>(der.size())), &X509_free);
+    if (!certificate || cursor != der.data() + der.size()) return X509Ptr(nullptr, &X509_free);
+    return certificate;
+}
+
+std::string public_key_sha256(X509* certificate) {
+    EVP_PKEY* key = X509_get0_pubkey(certificate);
+    if (!key) return {};
+    unsigned char* spki = nullptr;
+    const int length = i2d_PUBKEY(key, &spki);
+    if (length <= 0 || !spki) return {};
+    const auto digest = sha256_bytes(
+        std::string_view(reinterpret_cast<const char*>(spki), static_cast<std::size_t>(length)));
+    OPENSSL_free(spki);
+    return to_hex(digest.data(), digest.size());
+}
+
+std::optional<std::string> only_common_name(X509* certificate) {
+    X509_NAME* subject = X509_get_subject_name(certificate);
+    const int position = X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
+    if (position < 0 || X509_NAME_get_index_by_NID(subject, NID_commonName, position) >= 0) {
+        return std::nullopt;
+    }
+    const ASN1_STRING* value = X509_NAME_ENTRY_get_data(X509_NAME_get_entry(subject, position));
+    unsigned char* utf8 = nullptr;
+    const int length = ASN1_STRING_to_UTF8(&utf8, value);
+    if (length < 0 || !utf8) return std::nullopt;
+    std::string name(reinterpret_cast<const char*>(utf8), static_cast<std::size_t>(length));
+    OPENSSL_free(utf8);
+    if (name.find('\0') != std::string::npos) return std::nullopt;
+    return name;
+}
+
+std::string raw_public_key_hex(EVP_PKEY* key) {
+    std::array<unsigned char, 32> raw{};
+    std::size_t length = raw.size();
+    if (!key || EVP_PKEY_get_raw_public_key(key, raw.data(), &length) != 1 ||
+        length != raw.size()) {
+        return {};
+    }
+    return to_hex(raw.data(), raw.size());
+}
+
+}  // namespace
+
+std::optional<EnrollmentCa> enrollment_ca_from_seed(std::string_view seed_hex) {
+    if (!is_hex_of(seed_hex, 32)) return std::nullopt;
+    const auto seed = decode_hex32(seed_hex);
+    EvpKeyPtr key(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, seed.data(),
+                                               seed.size()),
+                  &EVP_PKEY_free);
+    if (!key) return std::nullopt;
+    X509Ptr certificate = make_certificate(kEnrollmentCaCommonName, key.get(),
+                                           kEnrollmentCaCommonName, key.get(),
+                                           /*is_ca=*/true);
+    if (!certificate) return std::nullopt;
+    EnrollmentCa ca;
+    ca.seed = std::string(seed_hex);
+    ca.certificate_pem = certificate_to_pem(certificate.get());
+    ca.public_key = raw_public_key_hex(key.get());
+    if (ca.certificate_pem.empty() || ca.public_key.empty()) return std::nullopt;
+    return ca;
+}
+
+std::optional<EnrollmentCa> generate_enrollment_ca() {
+    std::array<unsigned char, 32> seed{};
+    if (RAND_bytes(seed.data(), static_cast<int>(seed.size())) != 1) return std::nullopt;
+    return enrollment_ca_from_seed(to_hex(seed.data(), seed.size()));
+}
+
+std::string certificate_public_key_sha256(std::span<const unsigned char> der) {
+    X509Ptr certificate = certificate_from_der(der);
+    return certificate ? public_key_sha256(certificate.get()) : std::string{};
+}
+
+std::string certificate_pem_public_key_sha256(std::string_view pem) {
+    X509Ptr certificate = certificate_from_pem(std::string(pem));
+    return certificate ? public_key_sha256(certificate.get()) : std::string{};
+}
+
+std::string sign_enrollment_certificate(const EnrollmentCa& ca, const std::string& node_id,
+                                        std::span<const unsigned char> subject_der) {
+    X509Ptr subject = certificate_from_der(subject_der);
+    if (!subject || node_id.empty()) return {};
+    EVP_PKEY* subject_key = X509_get0_pubkey(subject.get());
+    if (!is_hex_of(ca.seed, 32) || !subject_key) return {};
+    const auto seed = decode_hex32(ca.seed);
+    EvpKeyPtr ca_key(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, seed.data(),
+                                                  seed.size()),
+                     &EVP_PKEY_free);
+    X509Ptr certificate(X509_new(), &X509_free);
+    if (!ca_key || !certificate || X509_set_version(certificate.get(), 2) != 1) return {};
+    // A random 63-bit serial: every issuance is distinct, so a revocation names
+    // one certificate (#1320).
+    std::array<unsigned char, 8> serial_bytes{};
+    if (RAND_bytes(serial_bytes.data(), static_cast<int>(serial_bytes.size())) != 1) return {};
+    std::uint64_t serial = 0;
+    for (const unsigned char byte : serial_bytes) serial = (serial << 8) | byte;
+    serial &= ~(std::uint64_t{1} << 63);
+    if (serial == 0) serial = 1;
+    ASN1_INTEGER_set_uint64(X509_get_serialNumber(certificate.get()), serial);
+    // Valid from a minute ago (clock skew between members) for the window.
+    if (!X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60) ||
+        !X509_gmtime_adj(X509_getm_notAfter(certificate.get()),
+                         static_cast<long>(kEnrollmentValidityDays) * 24 * 60 * 60)) {
+        return {};
+    }
+    if (!set_common_name(X509_get_subject_name(certificate.get()), node_id) ||
+        !set_common_name(X509_get_issuer_name(certificate.get()), kEnrollmentCaCommonName) ||
+        X509_set_pubkey(certificate.get(), subject_key) != 1) {
+        return {};
+    }
+    if (!add_extension(certificate.get(), nullptr, NID_basic_constraints, "critical,CA:FALSE") ||
+        !add_extension(certificate.get(), nullptr, NID_key_usage, "critical,digitalSignature") ||
+        !add_extension(certificate.get(), nullptr, NID_ext_key_usage, "serverAuth,clientAuth")) {
+        return {};
+    }
+    if (X509_sign(certificate.get(), ca_key.get(), nullptr) == 0) return {};
+    return certificate_to_pem(certificate.get());
+}
+
+std::optional<EnrolledCertificate> verify_enrolled_certificate(
+    std::string_view certificate_pem, std::string_view ca_certificate_pem) {
+    X509Ptr certificate = certificate_from_pem(std::string(certificate_pem));
+    X509Ptr ca = certificate_from_pem(std::string(ca_certificate_pem));
+    if (!certificate || !ca) return std::nullopt;
+    EVP_PKEY* ca_key = X509_get0_pubkey(ca.get());
+    // The CA certificate signs itself and names the enrollment CA; the leaf is
+    // signed by it.
+    if (!ca_key || X509_verify(ca.get(), ca_key) != 1 ||
+        only_common_name(ca.get()) != std::optional<std::string>(kEnrollmentCaCommonName) ||
+        X509_verify(certificate.get(), ca_key) != 1) {
+        return std::nullopt;
+    }
+    if (X509_cmp_current_time(X509_get0_notBefore(certificate.get())) > 0 ||
+        X509_cmp_current_time(X509_get0_notAfter(certificate.get())) < 0) {
+        return std::nullopt;  // not yet valid, or expired
+    }
+    std::optional<std::string> node_id = only_common_name(certificate.get());
+    if (!node_id || node_id->empty()) return std::nullopt;
+    EnrolledCertificate enrolled;
+    enrolled.node_id = std::move(*node_id);
+    enrolled.public_key_sha256 = public_key_sha256(certificate.get());
+    enrolled.ca_public_key = raw_public_key_hex(ca_key);
+    std::uint64_t serial = 0;
+    if (ASN1_INTEGER_get_uint64(&serial, X509_get0_serialNumber(certificate.get())) != 1) {
+        return std::nullopt;
+    }
+    std::array<unsigned char, 8> serial_bytes{};
+    for (int i = 7; i >= 0; --i, serial >>= 8) {
+        serial_bytes[static_cast<std::size_t>(i)] = static_cast<unsigned char>(serial & 0xff);
+    }
+    enrolled.serial = to_hex(serial_bytes.data(), serial_bytes.size());
+    std::tm not_after{};
+    if (ASN1_TIME_to_tm(X509_get0_notAfter(certificate.get()), &not_after) != 1) {
+        return std::nullopt;
+    }
+    enrolled.not_after = static_cast<std::int64_t>(timegm(&not_after));
+    if (enrolled.public_key_sha256.empty() || enrolled.ca_public_key.empty()) return std::nullopt;
+    return enrolled;
+}
+
+std::string enrollment_proof(std::string_view join_token, std::string_view node_id,
+                             std::string_view public_key_sha256) {
+    std::string message = "zetta-enroll-v1\n";
+    message += node_id;
+    message += '\n';
+    message += public_key_sha256;
+    std::array<unsigned char, EVP_MAX_MD_SIZE> mac{};
+    unsigned int length = 0;
+    if (!HMAC(EVP_sha256(), join_token.data(), static_cast<int>(join_token.size()),
+              reinterpret_cast<const unsigned char*>(message.data()), message.size(),
+              mac.data(), &length)) {
+        return {};
+    }
+    return to_hex(mac.data(), length);
+}
+
+bool enrollment_proof_matches(std::string_view join_token, std::string_view node_id,
+                              std::string_view public_key_sha256, std::string_view proof) {
+    const std::string expected = enrollment_proof(join_token, node_id, public_key_sha256);
+    return !expected.empty() && expected.size() == proof.size() &&
+           CRYPTO_memcmp(expected.data(), proof.data(), expected.size()) == 0;
+}
+
+std::vector<unsigned char> certificate_pem_to_der(std::string_view pem) {
+    X509Ptr certificate = certificate_from_pem(std::string(pem));
+    if (!certificate) return {};
+    const int size = i2d_X509(certificate.get(), nullptr);
+    if (size <= 0) return {};
+    std::vector<unsigned char> der(static_cast<std::size_t>(size));
+    unsigned char* cursor = der.data();
+    if (i2d_X509(certificate.get(), &cursor) != size) return {};
+    return der;
+}
+
+namespace {
+
+nlohmann::json_schema::json_validator& validator_for(const nlohmann::json& schema) {
+    // One validator per schema object; the schemas are function statics.
+    static std::mutex mutex;
+    static std::map<const nlohmann::json*, std::unique_ptr<nlohmann::json_schema::json_validator>>
+        validators;
+    const std::lock_guard lock(mutex);
+    auto& slot = validators[&schema];
+    if (!slot) slot = std::make_unique<nlohmann::json_schema::json_validator>(schema);
+    return *slot;
+}
+
+bool validate_document(const nlohmann::json& document, const nlohmann::json& schema,
+                       std::string_view file, std::string* reason) {
+    collecting_error_handler errors;
+    validator_for(schema).validate(document, errors);
+    if (errors.failed) {
+        set_reason(reason, std::string(file) + ": " + errors.reason);
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool load_node_pins(const std::string& directory, std::map<std::string, std::string>& pins,
+                    std::string* reason) {
+    pins.clear();
+    if (directory.empty()) return true;
+    const auto private_directory = util::PrivateDirectory::open(directory, reason);
+    if (!private_directory) return false;
+    std::optional<std::string> stored;
+    if (!private_directory->read("node-pins.json", stored, reason)) return false;
+    if (!stored) return true;
+    const nlohmann::json document = nlohmann::json::parse(*stored, nullptr, false);
+    if (document.is_discarded()) {
+        set_reason(reason, "node-pins.json: not valid JSON");
+        return false;
+    }
+    if (!validate_document(document, node_pins_schema(), "node-pins.json", reason)) return false;
+    for (const auto& [node_id, hash] : document["pins"].items()) {
+        pins.emplace(node_id, hash.get<std::string>());
+    }
+    return true;
+}
+
+bool store_node_pins(const std::string& directory,
+                     const std::map<std::string, std::string>& pins, std::string* reason) {
+    if (directory.empty()) return true;
+    const auto private_directory = util::PrivateDirectory::open(directory, reason);
+    if (!private_directory) return false;
+    nlohmann::json document{{"version", 1}, {"pins", nlohmann::json::object()}};
+    for (const auto& [node_id, hash] : pins) document["pins"][node_id] = hash;
+    return private_directory->write("node-pins.json", document.dump(2) + "\n", reason);
+}
+
+bool store_enrollment(const std::string& directory, const EnrollmentCa& ca,
+                      const std::string& enrolled_certificate_pem, std::string* reason) {
+    if (directory.empty()) return true;
+    const auto private_directory = util::PrivateDirectory::open(directory, reason);
+    if (!private_directory) return false;
+    const nlohmann::json document{{"version", 1}, {"seed", ca.seed}};
+    return private_directory->write("cluster-ca.json", document.dump(2) + "\n", reason) &&
+           (enrolled_certificate_pem.empty() ||
+            private_directory->write("node-cert-enrolled.pem", enrolled_certificate_pem,
+                                     reason));
+}
+
+const nlohmann::json& cluster_ca_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "zetta.ClusterCa",
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "seed":    { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "required": ["version", "seed"],
+      "additionalProperties": false
+    })JSONSCHEMA");
+    return schema;
+}
+
+const nlohmann::json& node_pins_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "zetta.NodePins",
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "pins": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      },
+      "required": ["version", "pins"],
+      "additionalProperties": false
+    })JSONSCHEMA");
+    return schema;
+}
+
+const nlohmann::json& node_revocation_record_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "zetta.NodeRevocation",
+      "type": "object",
+      "properties": {
+        "node_id":     { "type": "string", "minLength": 1, "maxLength": 128 },
+        "serial":      { "type": "string", "maxLength": 16 },
+        "revoked_by":  { "type": "string", "maxLength": 256 },
+        "revoked_at":  { "type": "string" },
+        "reason":      { "type": "string", "maxLength": 1024 },
+        "allow_rekey": { "type": "boolean" }
+      },
+      "required": ["node_id", "serial", "revoked_by", "revoked_at", "reason", "allow_rekey"],
+      "additionalProperties": false
+    })JSONSCHEMA");
+    return schema;
+}
+
+const nlohmann::json& node_cert_record_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "zetta.NodeCert",
+      "type": "object",
+      "properties": {
+        "certificate":       { "type": "string", "maxLength": 8192 },
+        "ca_certificate":    { "type": "string", "maxLength": 8192 },
+        "public_key_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "serial":            { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "issued_by":         { "type": "string", "maxLength": 128 },
+        "not_after":         { "type": "integer" }
+      },
+      "required": ["certificate", "ca_certificate", "public_key_sha256", "serial",
+                   "issued_by", "not_after"],
+      "additionalProperties": false
+    })JSONSCHEMA");
+    return schema;
+}
+
 const nlohmann::json& cluster_secret_schema() {
     static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -335,6 +699,48 @@ bool valid_join_token(std::string_view token) {
     return true;
 }
 
+namespace {
+
+// The token-derived material for `node_id` over an existing key: the node keeps
+// its key across a token change, so the node id stays pinned to it (#1319).
+std::optional<ClusterSecurity> derive_with_node_key(const std::string& join_token,
+                                                    const std::string& node_id,
+                                                    EVP_PKEY* node_key,
+                                                    std::string* reason) {
+    EvpKeyPtr ca_key = derive_ca_key(join_token);
+    if (!ca_key) {
+        set_reason(reason, "failed to derive the cluster CA key");
+        return std::nullopt;
+    }
+    X509Ptr ca_certificate = make_certificate(kCaCommonName, ca_key.get(),
+                                              kCaCommonName, ca_key.get(),
+                                              /*is_ca=*/true);
+    if (!ca_certificate) {
+        set_reason(reason, "failed to build the cluster CA certificate");
+        return std::nullopt;
+    }
+    X509Ptr node_certificate = make_certificate(node_id, node_key,
+                                                kCaCommonName, ca_key.get(),
+                                                /*is_ca=*/false);
+    if (!node_certificate) {
+        set_reason(reason, "failed to sign the node certificate");
+        return std::nullopt;
+    }
+
+    ClusterSecurity security;
+    security.join_token = join_token;
+    security.ca_certificate_pem = certificate_to_pem(ca_certificate.get());
+    security.certificate_pem = certificate_to_pem(node_certificate.get());
+    security.private_key_pem = private_key_to_pem(node_key);
+    if (!security.enabled()) {
+        set_reason(reason, "failed to encode security material as PEM");
+        return std::nullopt;
+    }
+    return security;
+}
+
+}  // namespace
+
 std::optional<ClusterSecurity> derive_cluster_security(
     const std::string& join_token, const std::string& node_id,
     std::string* reason) {
@@ -348,43 +754,14 @@ std::optional<ClusterSecurity> derive_cluster_security(
         return std::nullopt;
     }
 
-    EvpKeyPtr ca_key = derive_ca_key(join_token);
-    if (!ca_key) {
-        set_reason(reason, "failed to derive the cluster CA key");
-        return std::nullopt;
-    }
-    X509Ptr ca_certificate = make_certificate(kCaCommonName, ca_key.get(),
-                                              kCaCommonName, ca_key.get(),
-                                              /*is_ca=*/true);
-    if (!ca_certificate) {
-        set_reason(reason, "failed to build the cluster CA certificate");
-        return std::nullopt;
-    }
-
     EvpKeyPtr node_key = generate_node_key();
     if (!node_key) {
         set_reason(reason, "failed to generate the node keypair");
         return std::nullopt;
     }
-    X509Ptr node_certificate = make_certificate(node_id, node_key.get(),
-                                                kCaCommonName, ca_key.get(),
-                                                /*is_ca=*/false);
-    if (!node_certificate) {
-        set_reason(reason, "failed to sign the node certificate");
-        return std::nullopt;
-    }
-
-    ClusterSecurity security;
-    security.join_token = join_token;
-    security.ca_certificate_pem = certificate_to_pem(ca_certificate.get());
-    security.certificate_pem = certificate_to_pem(node_certificate.get());
-    security.private_key_pem = private_key_to_pem(node_key.get());
-    if (!security.enabled()) {
-        set_reason(reason, "failed to encode security material as PEM");
-        return std::nullopt;
-    }
-    return security;
+    return derive_with_node_key(join_token, node_id, node_key.get(), reason);
 }
+
 
 std::optional<ClusterSecurity> load_or_create_cluster_security(
     const std::string& data_dir, const std::string& node_id,
@@ -430,6 +807,9 @@ std::optional<ClusterSecurity> load_or_create_cluster_security(
             retired.resize(kMaxRetiredJoinTokens);
         }
     }
+    // A node that generates the token founds the cluster, and with it the
+    // enrollment CA (#1319).
+    const bool founding = join_token.empty();
     if (join_token.empty()) {
         join_token = generate_join_token();
         if (join_token.empty()) {
@@ -465,12 +845,64 @@ std::optional<ClusterSecurity> load_or_create_cluster_security(
         security->ca_certificate_pem = certificate_to_pem(ca_certificate.get());
         security->certificate_pem = *stored_certificate;
         security->private_key_pem = *stored_key;
+    } else if (EvpKeyPtr kept = stored_key ? private_key_from_pem(*stored_key)
+                                           : EvpKeyPtr(nullptr, &EVP_PKEY_free)) {
+        // A new token (or node id): a new token-derived certificate over the key
+        // this node already has, so the key its node id is enrolled with stays
+        // the one it presents (#1319).
+        security = derive_with_node_key(join_token, node_id, kept.get(), reason);
+        if (!security) return std::nullopt;
     } else {
         security = derive_cluster_security(join_token, node_id, reason);
         if (!security) return std::nullopt;
     }
 
     security->retired_join_tokens = retired;
+
+    // Enrollment (#1319): the enrollment CA, when this node holds it (the
+    // founder generates it; every other node is handed it when it enrolls), and
+    // this node's enrollment certificate while it still verifies, names this
+    // node and carries the key it presents.
+    security->enroll = true;
+    security->directory = directory.string();
+    std::optional<std::string> stored_ca;
+    if (!private_directory->read("cluster-ca.json", stored_ca, reason)) return std::nullopt;
+    std::optional<EnrollmentCa> ca;
+    if (stored_ca) {
+        const nlohmann::json document = nlohmann::json::parse(*stored_ca, nullptr, false);
+        if (document.is_discarded() ||
+            !validate_document(document, cluster_ca_schema(), "cluster-ca.json", reason)) {
+            if (document.is_discarded()) set_reason(reason, "cluster-ca.json: not valid JSON");
+            return std::nullopt;  // malformed: fail, never clobber
+        }
+        ca = enrollment_ca_from_seed(document["seed"].get<std::string>());
+        if (!ca) {
+            set_reason(reason, "cluster-ca.json: unusable seed");
+            return std::nullopt;
+        }
+    } else if (founding) {
+        ca = generate_enrollment_ca();
+        if (!ca) {
+            set_reason(reason, "failed to generate the enrollment CA");
+            return std::nullopt;
+        }
+        if (!store_enrollment(security->directory, *ca, {}, reason)) return std::nullopt;
+    }
+    if (ca) {
+        security->enrollment_ca_seed = ca->seed;
+        std::optional<std::string> enrolled;
+        if (!private_directory->read("node-cert-enrolled.pem", enrolled, reason)) {
+            return std::nullopt;
+        }
+        if (enrolled) {
+            const auto verified = verify_enrolled_certificate(*enrolled, ca->certificate_pem);
+            if (verified && verified->node_id == node_id &&
+                verified->public_key_sha256 ==
+                    certificate_pem_public_key_sha256(security->certificate_pem)) {
+                security->enrolled_certificate_pem = *enrolled;
+            }
+        }
+    }
     // Persist: the secret file (when new or overridden) and the identity.
     nlohmann::json secret_document = {{"version", 1},
                                       {"join_token", join_token}};

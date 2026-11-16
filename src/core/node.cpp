@@ -123,6 +123,7 @@ struct ReplicationReconcileBatches {
     ReconcileBatch policies;
     ReconcileBatch ledger_entries;
     ReconcileBatch nodes;
+    ReconcileBatch node_revocations;  // #1320
 };
 
 ReconcileBatch* batch_for_replication_key(
@@ -202,6 +203,9 @@ ReconcileBatch* batch_for_replication_key(
     }
     if (key.starts_with(catalog::kLedgerPrefix)) {
         return &batches.ledger_entries;
+    }
+    if (key.starts_with(catalog::kNodeRevocationPrefix)) {
+        return &batches.node_revocations;
     }
     if (key.starts_with(catalog::kNodePrefix)) {
         return &batches.nodes;
@@ -770,11 +774,25 @@ bool Node::start() {
             running_ = false;
             return false;
         }
+        // The roots this node trusted before its pin moved (#1342), so the
+        // records they sealed that it held still open.
+        previous_identity_roots_.clear();
+        for (const std::string& key : config_.identity_previous_roots) {
+            if (auto previous = governance::IdentityAuthority::verify_only(key)) {
+                previous_identity_roots_.push_back(std::move(*previous));
+            }
+        }
         // The newest sealed identity records this node accepted before it
         // stopped, so a replay in the persisted document is refused (#1341).
         if (!load_identity_held()) {
             running_ = false;
             return false;
+        }
+        // A node that holds the root seals an epoch soon after it starts, so a
+        // cluster upgraded from before epochs gets one without a write (#1360).
+        if (const governance::IdentityAuthority* root = identity_authority();
+            root && root->can_seal()) {
+            identity_epoch_dirty_ = true;
         }
         seal_preexisting_identity();  // the first start under a root (#764)
         migrate_to_replication();   // capture any local-only data into it
@@ -1043,6 +1061,9 @@ void Node::tick() {
     //     is answered from the current catalog without touching the Node tree
     //     off the owner thread. Fingerprint-guarded; nothing is captured.
     if (distributed_select_) distributed_select_->refresh();
+    // 2d. The identity epoch (#1360): a node holding the root seals a new one,
+    //     coalesced to once a second, after an identity write.
+    maybe_write_identity_epoch();
     // 3. Persist if the document moved (a peer merge in step 1 or a run started
     //    in step 2), and remember the version we have now reflected on disk —
     //    the one read at the TOP of the tick, never the current one (see step 1).
@@ -1314,6 +1335,7 @@ void Node::request_stop_study_work(const std::string& study_id,
 void Node::attach_cluster(zetta::cluster::Cluster& cluster, unsigned worker_count) {
     cluster_ = &cluster;
     compute_workers_ = worker_count;
+    push_node_revocations();  // the revocations reconciled before the cluster existed (#1320)
     // If the node is already running (the normal path — main attaches right after
     // cluster.start()), bring the coordinator up now; otherwise start() will.
     if (running_) {
@@ -4815,6 +4837,8 @@ void Node::replicate_identity(const std::string& key, nlohmann::json value) {
         }
         replication_->set(key, *sealed);
         hold_identity(key, *sealed, *opened);
+        // The epoch no longer commits to this record's version (#1360).
+        if (key != governance::kIdentityEpochKey) identity_epoch_dirty_ = true;
         return;
     }
     replication_->set(key, value);
@@ -4845,6 +4869,7 @@ void Node::remove_identity(const std::string& key) {
     }
     replication_->set(key, *tombstone);
     hold_identity(key, *tombstone, *opened);
+    if (key != governance::kIdentityEpochKey) identity_epoch_dirty_ = true;  // #1360
 }
 
 void Node::hold_identity(const std::string& key, const nlohmann::json& sealed,
@@ -4882,11 +4907,31 @@ nlohmann::json Node::trusted_identity(const nlohmann::json& values,
     } else {
         for (const auto& [key, held] : identity_held_) candidates.insert(key);
     }
+    // The epoch first (#1360): it decides the lowest version every other key
+    // may take, so it is settled before any of them.
+    const std::string epoch_key(governance::kIdentityEpochKey);
+    std::vector<std::string> order;
+    if (candidates.erase(epoch_key) > 0) order.push_back(epoch_key);
+    order.insert(order.end(), candidates.begin(), candidates.end());
+    std::map<std::string, std::uint64_t> committed = committed_identity_versions();
+    bool floor_met = identity_epoch_floor_met();
     std::vector<std::string> write_back;
-    for (const std::string& key : candidates) {
+    for (const std::string& key : order) {
         const auto found = values.find(key);
         std::optional<governance::OpenedIdentityRecord> opened;
         if (found != values.end()) opened = root->open(key, *found);
+        const auto floor = committed.find(key);
+        const std::uint64_t committed_version = floor == committed.end() ? 0 : floor->second;
+        if (opened && key == epoch_key &&
+            (opened->version < config_.identity_min_epoch ||
+             !governance::identity_epoch_entries(*opened))) {
+            opened.reset();  // below the floor, or its entries do not check
+        } else if (opened && opened->version < committed_version) {
+            // Older than the version the held epoch commits to: a record this
+            // node never saw being replaced, replayed after everyone who held the
+            // newer one left (#1360). Refused like any older record.
+            opened.reset();
+        }
         auto held = identity_held_.find(key);
         if (opened && (held == identity_held_.end() ||
                        !governance::identity_record_supersedes(held->second.opened,
@@ -4894,16 +4939,31 @@ nlohmann::json Node::trusted_identity(const nlohmann::json& values,
             // The document's record opens and is not older than the one held.
             hold_identity(key, *found, *opened);
             held = identity_held_.find(key);
+            if (key == epoch_key) {
+                committed = committed_identity_versions();
+                floor_met = identity_epoch_floor_met();
+            }
+        } else if (held != identity_held_.end() &&
+                   held->second.opened.version < committed_version) {
+            continue;  // what this node holds is outdated too: absent until the newer one arrives
         } else if (held != identity_held_.end()) {
             // The document holds an older sealed record (a replay), a record that
             // does not open (unsealed, another root's, changed), or nothing (an
             // unsealed removal). Keep the newer record, and put it back so a node
             // that never saw it gets it too (#1341). Only an identical sealed
-            // value is ever written, so this settles in one round.
-            write_back.push_back(key);
+            // value is ever written, so this settles in one round. The document
+            // already holding exactly the held record is not a replay: that is a
+            // record an earlier root sealed, kept as history after a rotation
+            // until its re-sealed version arrives (#1342).
+            if (found == values.end() || *found != held->second.sealed) {
+                write_back.push_back(key);
+            }
         } else {
             continue;  // nothing trusted for this key: absent
         }
+        // The epoch is not a record the reconcilers read, and under
+        // --identity-min-epoch nothing is trusted before the epoch arrives.
+        if (key == epoch_key || !floor_met) continue;
         if (!held->second.opened.removed) trusted[key] = held->second.opened.value;
     }
     for (const std::string& key : write_back) {
@@ -4949,7 +5009,7 @@ bool Node::load_identity_held() {
             ++dropped;
             continue;
         }
-        if (auto opened = root->open(key, sealed)) {
+        if (auto opened = open_held_identity(key, sealed)) {
             identity_held_[key] = HeldIdentity{sealed, std::move(*opened)};
         } else {
             ++dropped;
@@ -5029,6 +5089,410 @@ std::string Node::seeded_identity_id(std::string_view purpose) const {
         return root->derived_id(purpose);
     }
     return zetta::util::new_uuid();
+}
+
+// ----- the identity epoch (#1360) ---------------------------------------------
+
+std::map<std::string, std::uint64_t> Node::committed_identity_versions() const {
+    const auto held = identity_held_.find(std::string(governance::kIdentityEpochKey));
+    if (held == identity_held_.end() ||
+        held->second.opened.version < config_.identity_min_epoch) {
+        return {};
+    }
+    auto entries = governance::identity_epoch_entries(held->second.opened);
+    return entries ? std::move(*entries) : std::map<std::string, std::uint64_t>{};
+}
+
+bool Node::identity_epoch_floor_met() const {
+    if (config_.identity_min_epoch == 0) return true;
+    const auto held = identity_held_.find(std::string(governance::kIdentityEpochKey));
+    return held != identity_held_.end() &&
+           held->second.opened.version >= config_.identity_min_epoch;
+}
+
+bool Node::accept_identity_epoch(const nlohmann::json& snapshot) {
+    if (!replication_ || !identity_authority()) return false;
+    const std::string epoch_key(governance::kIdentityEpochKey);
+    const auto version_of_held = [&]() -> std::uint64_t {
+        const auto held = identity_held_.find(epoch_key);
+        return held == identity_held_.end() ? 0 : held->second.opened.version;
+    };
+    const std::uint64_t before = version_of_held();
+    const bool floor_was_met = identity_epoch_floor_met();
+    nlohmann::json values = nlohmann::json::object();
+    if (const auto found = snapshot.find(epoch_key); found != snapshot.end()) {
+        values[epoch_key] = *found;
+    }
+    const std::vector<std::string> keys{epoch_key};
+    (void)trusted_identity(values, &keys);
+    if (version_of_held() == before) return false;
+    // What this node holds against what the new epoch commits to: a record it
+    // holds at a lower version is no longer trusted, so the families are
+    // reconciled again; one it holds at a higher version (or one the epoch
+    // misses) means the epoch's sealer had an older view, so a node holding the
+    // root seals the next epoch over the newer one.
+    const std::map<std::string, std::uint64_t> committed = committed_identity_versions();
+    bool outdated = false;
+    for (const auto& [key, held] : identity_held_) {
+        if (key == epoch_key) continue;
+        const auto floor = committed.find(key);
+        if (floor == committed.end() || held.opened.version > floor->second) {
+            identity_epoch_dirty_ = true;
+        } else if (held.opened.version < floor->second) {
+            outdated = true;
+        }
+    }
+    return outdated || (!floor_was_met && identity_epoch_floor_met());
+}
+
+void Node::maybe_write_identity_epoch() {
+    if (!identity_epoch_dirty_ || !replication_) return;
+    const governance::IdentityAuthority* root = identity_authority();
+    if (!root || !root->can_seal()) {
+        identity_epoch_dirty_ = false;  // only a node holding the root seals one
+        return;
+    }
+    const Clock::time_point now = Clock::now();
+    if (last_identity_epoch_write_ != Clock::time_point{} &&
+        now - last_identity_epoch_write_ < kIdentityEpochInterval) {
+        return;  // coalesced: the next tick past the interval writes it
+    }
+    const std::string epoch_key(governance::kIdentityEpochKey);
+    nlohmann::json entries = nlohmann::json::object();
+    for (const auto& [key, held] : identity_held_) {
+        if (key != epoch_key) entries[key] = held.opened.version;
+    }
+    using namespace std::chrono;
+    const std::uint64_t issued_at = static_cast<std::uint64_t>(
+        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    // Sealed like any identity record, at a version newer than every epoch this
+    // node or the document holds, so the epoch number only grows.
+    replicate_identity(epoch_key, governance::identity_epoch_value(std::move(entries), issued_at));
+    identity_epoch_dirty_ = false;
+    last_identity_epoch_write_ = now;
+    if (identity_held_dirty_) persist_identity_held();
+}
+
+Node::IdentityEpochStatus Node::identity_epoch_status() const {
+    IdentityEpochStatus status;
+    status.min_epoch = config_.identity_min_epoch;
+    status.floor_met = identity_epoch_floor_met();
+    const auto held = identity_held_.find(std::string(governance::kIdentityEpochKey));
+    if (held == identity_held_.end()) return status;
+    status.epoch = held->second.opened.version;
+    status.digest = held->second.opened.value.value("digest", std::string{});
+    if (const auto entries = governance::identity_epoch_entries(held->second.opened)) {
+        status.entries = entries->size();
+    }
+    return status;
+}
+
+// ----- per-node revocation (#1320) ----------------------------------------------
+
+namespace {
+
+bool is_key_hash(std::string_view text) {
+    return text.size() == 64 && std::ranges::all_of(text, [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+}
+
+}  // namespace
+
+void Node::reconcile_node_revocations(const nlohmann::json& snapshot,
+                                      const std::vector<std::string>* changed_keys) {
+    std::map<std::string, NodeRevocationEntry> desired;
+    for (const auto& [key, value] : snapshot.items()) {
+        const std::string hash = catalog::id_after(key, catalog::kNodeRevocationPrefix);
+        if (!is_key_hash(hash) || !value.is_object()) continue;
+        const std::string node_id = value.value("node_id", std::string{});
+        if (node_id.empty()) continue;  // boundary
+        NodeRevocationEntry entry;
+        entry.public_key_sha256 = hash;
+        entry.node_id = node_id;
+        entry.serial = value.value("serial", std::string{});
+        entry.revoked_by = value.value("revoked_by", std::string{});
+        entry.revoked_at = value.value("revoked_at", std::string{});
+        entry.reason = value.value("reason", std::string{});
+        entry.allow_rekey = value.value("allow_rekey", false);
+        desired.emplace(hash, std::move(entry));
+    }
+    if (changed_keys) {
+        // A batch: only the keys that changed move.
+        for (const std::string& key : *changed_keys) {
+            const std::string hash = catalog::id_after(key, catalog::kNodeRevocationPrefix);
+            if (hash.empty()) continue;
+            if (auto found = desired.find(hash); found != desired.end()) {
+                node_revocations_[hash] = std::move(found->second);
+            } else {
+                node_revocations_.erase(hash);
+            }
+        }
+    } else {
+        node_revocations_ = std::move(desired);
+    }
+    push_node_revocations();
+}
+
+void Node::push_node_revocations() {
+    if (!cluster_) return;
+    std::map<std::string, zetta::cluster::NodeRevocation> revoked;
+    for (const auto& [hash, entry] : node_revocations_) {
+        revoked.emplace(hash, zetta::cluster::NodeRevocation{entry.node_id, entry.allow_rekey});
+    }
+    cluster_->set_revoked_keys(std::move(revoked));
+}
+
+Node::NodeRevocationResult Node::revoke_node(const std::string& node_id,
+                                             const std::string& reason, bool allow_rekey,
+                                             const std::string& revoked_by,
+                                             const std::string& public_key_sha256) {
+    NodeRevocationResult result;
+    if (!replication_) {
+        result.error = "this node is not part of a cluster";
+        return result;
+    }
+    if (!identity_writable()) {
+        result.error = "this node does not hold the cluster's identity root";
+        return result;
+    }
+    // The key to revoke: the one the node enrolled, from its node_cert record,
+    // unless the caller names one.
+    std::string hash = public_key_sha256;
+    std::string serial;
+    if (const auto view = replication_->shared_snapshot()) {
+        const auto record =
+            view->find(std::string(zetta::cluster::kNodeCertPrefix) + node_id);
+        if (record != view->end() && record->is_object()) {
+            // Only a certificate its CA signed, for this id: a member that
+            // rewrote the record cannot point the revocation at another key.
+            const auto enrolled = zetta::cluster::verify_enrolled_certificate(
+                record->value("certificate", std::string{}),
+                record->value("ca_certificate", std::string{}));
+            if (enrolled && enrolled->node_id == node_id) {
+                if (hash.empty()) hash = enrolled->public_key_sha256;
+                if (enrolled->public_key_sha256 == hash) serial = enrolled->serial;
+            }
+        }
+    }
+    if (!is_key_hash(hash)) {
+        result.error = "no enrolled key is recorded for this node id; pass public_key_sha256";
+        return result;
+    }
+    NodeRevocationEntry entry;
+    entry.public_key_sha256 = hash;
+    entry.node_id = node_id;
+    entry.serial = serial;
+    entry.revoked_by = revoked_by.empty() ? "local" : revoked_by;
+    entry.revoked_at = zetta::util::now_iso8601();
+    entry.reason = reason;
+    entry.allow_rekey = allow_rekey;
+    replicate_identity(std::string(catalog::kNodeRevocationPrefix) + hash,
+                       nlohmann::json{{"node_id", entry.node_id},
+                                      {"serial", entry.serial},
+                                      {"revoked_by", entry.revoked_by},
+                                      {"revoked_at", entry.revoked_at},
+                                      {"reason", entry.reason},
+                                      {"allow_rekey", entry.allow_rekey}});
+    node_revocations_[hash] = entry;
+    push_node_revocations();
+    // Removal means removed: the node leaves the membership list too.
+    replication_->remove(catalog::node_key(node_id));
+    result.ok = true;
+    result.revocation = std::move(entry);
+    return result;
+}
+
+std::vector<Node::NodeRevocationEntry> Node::node_revocations() const {
+    std::vector<NodeRevocationEntry> entries;
+    entries.reserve(node_revocations_.size());
+    for (const auto& [hash, entry] : node_revocations_) entries.push_back(entry);
+    return entries;
+}
+
+// ----- rotating the identity root (#1342) ------------------------------------
+
+std::optional<governance::OpenedIdentityRecord> Node::open_held_identity(
+    const std::string& key, const nlohmann::json& value) const {
+    const governance::IdentityAuthority* root = identity_authority();
+    if (!root) return std::nullopt;
+    if (auto opened = root->open(key, value)) return opened;
+    // Newest earlier root first: the likeliest to have sealed what was held.
+    for (auto previous = previous_identity_roots_.rbegin();
+         previous != previous_identity_roots_.rend(); ++previous) {
+        if (auto opened = previous->open(key, value)) return opened;
+    }
+    return std::nullopt;
+}
+
+bool Node::follow_identity_succession(const nlohmann::json& snapshot) {
+    if (!replication_ || !config_.identity_authority) return false;
+    const std::vector<governance::IdentityRootSuccession> chain =
+        governance::identity_succession_chain(config_.identity_authority->public_key_hex(),
+                                              snapshot);
+    if (chain.empty()) return false;
+    const std::string& successor = chain.back().new_root;
+    // The admin token's root, when the chain reaches it, gives this node the
+    // private key again; otherwise it verifies only.
+    std::optional<governance::IdentityAuthority> next;
+    if (config_.identity_owner_candidate &&
+        config_.identity_owner_candidate->public_key_hex() == successor) {
+        next = config_.identity_owner_candidate;
+    } else {
+        next = governance::IdentityAuthority::verify_only(successor);
+    }
+    if (!next) return false;
+    for (const governance::IdentityRootSuccession& step : chain) {
+        if (auto left = governance::IdentityAuthority::verify_only(step.old_root)) {
+            previous_identity_roots_.push_back(std::move(*left));
+            config_.identity_previous_roots.push_back(step.old_root);
+        }
+    }
+    const std::string old_root = config_.identity_authority->public_key_hex();
+    // Assigned in place: every component holding identity_authority() keeps a
+    // pointer to this one object, and now sees the new root.
+    *config_.identity_authority = std::move(*next);
+    std::string reason;
+    if (!governance::repin_identity_root(config_.data_dir, *config_.identity_authority,
+                                         config_.identity_previous_roots, &reason)) {
+        std::fprintf(stderr,
+                     "zetta: WARNING: the identity root moved to %s but the pin was not "
+                     "rewritten (%s): the next start follows the succession again\n",
+                     successor.c_str(), reason.c_str());
+    }
+    std::printf("zetta: identity root moved from %s to %s by a verified succession "
+                "(%s)\n",
+                old_root.c_str(), successor.c_str(),
+                config_.identity_authority->can_seal() ? "this node issues identity"
+                                                       : "verify-only");
+    // What the node held stays held (history): the re-sealed versions are newer,
+    // so they replace it as they arrive. Persist so a restart opens it again.
+    identity_held_dirty_ = true;
+    persist_identity_held();
+    return true;
+}
+
+std::string Node::issue_owner_token(const std::string& owner_id, const std::string& secret,
+                                    std::string_view purpose) {
+    const std::string salt = governance::generate_token_salt();
+    const std::string hash =
+        salt.empty() ? std::string{} : governance::kdf_hash_token_secret(salt, secret);
+    if (hash.empty()) return {};
+    governance::TokenValue value;
+    value.user_id = owner_id;
+    value.type = governance::TokenType::Access;
+    value.hash = hash;
+    value.salt = salt;
+    value.created = zetta::util::now_iso8601();
+    value.revoked = false;
+    const std::string token_id = seeded_identity_id(purpose);
+    replicate_identity(catalog::token_key(token_id),
+                       nlohmann::json{{"user", value.user_id},
+                                      {"type", to_string(value.type)},
+                                      {"hash", value.hash},
+                                      {"salt", value.salt},
+                                      {"created", value.created},
+                                      {"revoked", value.revoked}});
+    const auto token = materialize_token(token_id, std::move(value));
+    if (!token) return {};
+    (void)token->validates(secret, zetta::util::now_iso8601());
+    return token_id;
+}
+
+Node::IdentityRotationResult Node::rotate_identity_root(const std::string& new_admin_token,
+                                                        bool revoke_tokens) {
+    IdentityRotationResult result;
+    if (!replication_ || !config_.identity_authority) {
+        result.reason = "this node runs without an identity root";
+        return result;
+    }
+    if (!config_.identity_authority->can_seal()) {
+        result.reason =
+            "this node does not hold the current identity root; run the rotation on a "
+            "node started with the current admin token";
+        return result;
+    }
+    std::optional<governance::IdentityAuthority> successor =
+        governance::IdentityAuthority::from_owner_secret(new_admin_token);
+    if (!successor) {
+        result.reason = "the new admin token is empty or the root cannot be derived";
+        return result;
+    }
+    const governance::IdentityAuthority current = *config_.identity_authority;
+    result.old_root = current.public_key_hex();
+    result.new_root = successor->public_key_hex();
+    if (result.new_root == result.old_root) {
+        result.reason = "the new admin token derives the current root";
+        return result;
+    }
+    // A root this cluster already left is history; handing identity back to it
+    // would make the chain a cycle that nodes pinned at different points read
+    // differently.
+    if (std::ranges::find(config_.identity_previous_roots, result.new_root) !=
+        config_.identity_previous_roots.end()) {
+        result.reason = "the new admin token derives a root this cluster already retired";
+        return result;
+    }
+    // The owner keeps a token: the user named "owner" (bootstrap_owner's).
+    const std::shared_ptr<governance::User> owner = find_user("owner");
+
+    using namespace std::chrono;
+    const std::uint64_t issued_at = static_cast<std::uint64_t>(
+        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    const std::optional<nlohmann::json> succession =
+        current.seal_succession(*successor, issued_at);
+    if (!succession) {
+        result.reason = "failed to seal the succession record";
+        return result;
+    }
+    // 1. The succession, sealed by the current root: every node verifies it with
+    //    the root it pinned and moves its pin.
+    replication_->set(std::string(governance::kIdentitySuccessionPrefix) + result.new_root,
+                      *succession);
+    // 2. This node moves first, so everything below is sealed by the new root.
+    previous_identity_roots_.push_back(
+        *governance::IdentityAuthority::verify_only(result.old_root));
+    config_.identity_previous_roots.push_back(result.old_root);
+    *config_.identity_authority = std::move(*successor);
+    // 3. Every held record, re-sealed under the new root at a newer version (or,
+    //    for a token under revoke_tokens, removed). A removal stays a removal.
+    std::vector<std::pair<std::string, HeldIdentity>> held(identity_held_.begin(),
+                                                            identity_held_.end());
+    for (const auto& [key, record] : held) {
+        if (record.opened.removed) {
+            remove_identity(key);
+            ++result.resealed;
+        } else if (revoke_tokens && key.starts_with(catalog::kTokenPrefix)) {
+            remove_identity(key);
+            ++result.revoked;
+        } else {
+            replicate_identity(key, record.opened.value);
+            ++result.resealed;
+        }
+    }
+    // 4. The owner's token for the new admin token, so a node restarted with it
+    //    authenticates the owner as before.
+    if (owner) {
+        result.owner_token_id = issue_owner_token(owner->id(), new_admin_token,
+                                                  "owner-token");
+    }
+    // 5. The pin, with the seed, so this node keeps issuing after a restart.
+    std::string reason;
+    if (!governance::repin_identity_root(config_.data_dir, *config_.identity_authority,
+                                         config_.identity_previous_roots, &reason)) {
+        std::fprintf(stderr,
+                     "zetta: WARNING: the identity root was rotated but the pin was not "
+                     "rewritten (%s)\n",
+                     reason.c_str());
+    }
+    if (revoke_tokens) {
+        // The tokens just removed: drop them from this node's projection now, as
+        // every other node does when the removals reach it.
+        reconcile_identity(replication_->snapshot());
+    }
+    persist_identity_held();
+    result.ok = true;
+    return result;
 }
 
 // ----- bootstrap owner (#733, #763) -------------------------------------------
@@ -6053,6 +6517,15 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
     reconcile_partitions(snapshot);
+    // A rotation that reached this node moves its pin before any identity
+    // record is opened (#1342).
+    follow_identity_succession(snapshot);
+    accept_identity_epoch(snapshot);  // #1360: before any record it bounds
+    reconcile_identity(snapshot);
+    reconcile_ledger_entries(snapshot);
+}
+
+void Node::reconcile_identity(const nlohmann::json& snapshot) {
     // Identity is read only through trusted_identity: a record whose seal does
     // not verify is absent to every reconciler below (#764).
     const nlohmann::json identity = trusted_identity(snapshot);
@@ -6063,12 +6536,28 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_tokens(identity);
     reconcile_user_roles(identity);
     reconcile_policies(identity);
-    reconcile_ledger_entries(snapshot);
+    reconcile_node_revocations(identity);
 }
 
 void Node::reconcile_replication_changes(
     const nlohmann::json& snapshot,
     const std::vector<std::string>& changed_keys) {
+    // A succession that arrived moves the pin first (#1342). Records the new
+    // root sealed may have come before it and been refused, so every identity
+    // family is reconciled again from the whole document under the new root.
+    if (std::ranges::any_of(changed_keys, [](const std::string& key) {
+            return key.starts_with(governance::kIdentitySuccessionPrefix);
+        }) &&
+        follow_identity_succession(snapshot)) {
+        reconcile_identity(snapshot);
+    }
+    // A newer identity epoch is decided before the identity families (#1360);
+    // one that outdates a record this node already trusts reconciles them all.
+    if (std::ranges::find(changed_keys, std::string(governance::kIdentityEpochKey)) !=
+            changed_keys.end() &&
+        accept_identity_epoch(snapshot)) {
+        reconcile_identity(snapshot);
+    }
     ReplicationReconcileBatches batches =
         make_reconcile_batches(snapshot, changed_keys);
 
@@ -6148,6 +6637,11 @@ void Node::reconcile_replication_changes(
     if (!batches.ledger_entries.keys.empty()) {
         reconcile_ledger_entries(batches.ledger_entries.values,
                                  &batches.ledger_entries.keys);
+    }
+    if (!batches.node_revocations.keys.empty()) {
+        reconcile_node_revocations(
+            trusted_identity(batches.node_revocations.values, &batches.node_revocations.keys),
+            &batches.node_revocations.keys);
     }
     if (!batches.nodes.keys.empty()) {
         rebalance_partitions_on_membership_change(snapshot,

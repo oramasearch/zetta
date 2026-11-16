@@ -232,6 +232,12 @@ struct ClusterConfig {
 // link. `sync_bytes` is the SYNC lines as written to the link (base64 payload plus
 // the verb), before any TLS framing. A round is one gossip tick on one link, so a
 // node with two peers counts two rounds per tick.
+// A revoked node key, as the Cluster enforces it (#1320).
+struct NodeRevocation {
+    std::string node_id;
+    bool allow_rekey = false;  // the id may enroll a new key
+};
+
 struct GossipStats {
     std::uint64_t rounds = 0;             // gossip ticks, per link
     std::uint64_t sync_frames = 0;        // SYNC lines sent
@@ -392,6 +398,15 @@ public:
     // delegate (the DistributedSorter / DistributedFulltextIndex pattern).
     // Thread-safe.
     SignalHandler* signal_handler() const;
+
+    // --- Per-node revocation (#1320, docs/cluster/security.md) ---------------
+    //
+    // The keys revoked by the sealed node_revocation records the Node trusts,
+    // by key hash (the SHA-256 of the certificate's public key). Replaces the
+    // set. Every later handshake presenting one is refused, ENROLL refuses it,
+    // a live link presenting one is closed, and a revocation that allows
+    // re-keying releases the id's pin. Any thread.
+    void set_revoked_keys(std::map<std::string, NodeRevocation> revoked);
 
     // Send an RPC request to a peer (by node id) and block the calling thread
     // until the peer's response arrives, the timeout elapses, or the peer is

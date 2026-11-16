@@ -135,6 +135,10 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_TRUE(registry.find("list_network_records"));
     EXPECT_TRUE(registry.find("issue_app_credential"));
     EXPECT_TRUE(registry.find("revoke_app_credential"));
+    EXPECT_TRUE(registry.find("rotate_identity_root"));
+    EXPECT_TRUE(registry.find("get_identity_epoch"));
+    EXPECT_TRUE(registry.find("revoke_node"));
+    EXPECT_TRUE(registry.find("list_node_revocations"));
     for (const char* name :
          {"create_bucket", "list_objects", "object_usage", "object_barrier", "delete_object",
           "acquire_object_lease", "renew_object_lease", "release_object_lease"}) {

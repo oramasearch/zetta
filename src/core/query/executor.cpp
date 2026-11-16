@@ -447,7 +447,7 @@ constexpr std::array kReservedVirtualTableFamilies = {
     // Identities, credentials and the access-control registry.
     catalog::kUserPrefix, catalog::kRolePrefix, catalog::kTokenPrefix,
     catalog::kUserRolePrefix, catalog::kAccessKeyPrefix, catalog::kPrincipalPrefix,
-    catalog::kPolicyPrefix, catalog::kAuditPrefix,
+    catalog::kPolicyPrefix, catalog::kAuditPrefix, catalog::kNodeRevocationPrefix,
     // Keyed records, objects and metrics: governed by their own scoped grants.
     catalog::kRecordCollectionPrefix, catalog::kObjectBucketPrefix,
     catalog::kObjectLeasePrefix, catalog::kMetricPrefix,

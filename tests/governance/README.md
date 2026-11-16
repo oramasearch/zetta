@@ -32,6 +32,19 @@ order between two records, an older sealed record refused on a node, and the
 held records surviving a restart (`identity-held.json`). See
 [identity-seal.md](../../docs/governance/identity-seal.md).
 
+`test_identity_rotation.cpp` covers rotating the root by succession (#1342): only
+the old root seals a succession, the chain is followed from the pinned root, the
+pin keeps the roots it left, a second node moves its pin and honors the new root,
+a record the old root seals after the move is refused, a forged succession is
+ignored, a node restarted with the new admin token issues identity again, and
+`revoke_tokens` removes every other token.
+
+`test_identity_epoch.cpp` covers the identity epoch (#1360): the digest over the
+committed versions, the root node sealing a growing epoch after a write, a fresh
+node refusing a pre-revocation token record the epoch outdates, an older epoch
+refused and the newer one written back, a forged epoch ignored, and
+`--identity-min-epoch` holding identity back until the epoch arrives.
+
 `test_authz_regressions.cpp` is the authorization regression harness (#780): one
 test per auth review finding, #759 to #769. Fixed findings are plain assertions;
 open ones are `KNOWN_DEFECT` probes that skip with the issue number while the
