@@ -2,17 +2,17 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "zetta-4dfc2a9a7ba8",
-  "documentNamespace": "https://github.com/oramasearch/zetta/sbom/4dfc2a9a7ba88630bb862405d6e6607b86baad72",
+  "name": "zetta-dd6f7dfaf1f1",
+  "documentNamespace": "https://github.com/oramasearch/zetta/sbom/dd6f7dfaf1f1f2bb991f680fd5df00aa07ad7b30",
   "creationInfo": {
-    "created": "2026-11-16T01:55:32Z",
+    "created": "2026-11-16T06:12:08Z",
     "creators": [
       "Organization: OramaSearch, Inc.",
       "Tool: tools/sbom.py",
       "Tool: syft"
     ],
     "licenseListVersion": "3.29",
-    "comment": "Made from source commit 4dfc2a9a7ba88630bb862405d6e6607b86baad72 by tools/sbom.py."
+    "comment": "Made from source commit dd6f7dfaf1f1f2bb991f680fd5df00aa07ad7b30 by tools/sbom.py."
   },
   "documentDescribes": [
     "SPDXRef-DocumentRoot"
@@ -148,7 +148,7 @@
       "copyrightText": "NOASSERTION",
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "OFL-1.1",
-      "comment": "assets/fonts, webapp/fonts. How it is used: vendored font files. Listed in THIRD_PARTY_LICENSES.",
+      "comment": "assets/fonts. How it is used: vendored font files. Listed in THIRD_PARTY_LICENSES.",
       "homepage": "https://github.com/vercel/geist-font",
       "externalRefs": [
         {
@@ -279,18 +279,6 @@
       ]
     },
     {
-      "name": "Orama Studio web app",
-      "SPDXID": "SPDXRef-Component-Orama-Studio-web-app-c58f27d2bda7bf7c",
-      "versionInfo": "fc2cc41",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "supplier": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "MIT",
-      "comment": "webapp/, built from orama-design. How it is used: vendored build, served by the node. Listed in THIRD_PARTY_LICENSES."
-    },
-    {
       "name": "oramacore-cpp",
       "SPDXID": "SPDXRef-Component-oramacore-cpp-956bcf2be0cc72dc",
       "versionInfo": "f612ea8f6170d051eca55122c1cc2956649e0c66",
@@ -331,29 +319,29 @@
       ]
     },
     {
-      "name": "Space Grotesk",
-      "SPDXID": "SPDXRef-Component-Space-Grotesk-871de9e868d49d36",
-      "versionInfo": "as vendored",
-      "downloadLocation": "https://github.com/floriankarsten/space-grotesk",
+      "name": "ubuntu",
+      "SPDXID": "SPDXRef-Image-ubuntu-6698ea6738a5d032",
+      "versionInfo": "24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5",
+      "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "supplier": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "OFL-1.1",
-      "comment": "webapp/fonts. How it is used: vendored font files. Listed in THIRD_PARTY_LICENSES.",
-      "homepage": "https://github.com/floriankarsten/space-grotesk",
+      "licenseDeclared": "NOASSERTION",
+      "primaryPackagePurpose": "CONTAINER",
+      "comment": "Container base image (ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5), FROM in Dockerfile. Its own packages are in the image SBOM of each release image.",
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
-          "referenceLocator": "pkg:github/floriankarsten/space-grotesk@as vendored"
+          "referenceLocator": "pkg:docker/ubuntu@sha256%3A2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5?tag=24.04"
         }
       ]
     },
     {
       "name": "zetta",
       "SPDXID": "SPDXRef-DocumentRoot",
-      "versionInfo": "4dfc2a9a7ba8",
+      "versionInfo": "dd6f7dfaf1f1",
       "downloadLocation": "git+https://github.com/oramasearch/zetta.git",
       "homepage": "https://github.com/oramasearch/zetta",
       "filesAnalyzed": false,
@@ -393,17 +381,7 @@
       "spdxElementId": "SPDXRef-DocumentRoot"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Component-Orama-Studio-web-app-c58f27d2bda7bf7c",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-DocumentRoot"
-    },
-    {
       "relatedSpdxElement": "SPDXRef-Component-SDL-20bbedde24a83d4f",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-DocumentRoot"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Component-Space-Grotesk-871de9e868d49d36",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-DocumentRoot"
     },
@@ -456,6 +434,11 @@
       "relatedSpdxElement": "SPDXRef-DocumentRoot",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Image-ubuntu-6698ea6738a5d032",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-DocumentRoot"
     }
   ]
 }

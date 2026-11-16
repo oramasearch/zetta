@@ -2,10 +2,10 @@
   "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
   "bomFormat": "CycloneDX",
   "specVersion": "1.7",
-  "serialNumber": "urn:uuid:2ce0b69a-00f8-5bd3-a9b3-68f6f9e3ff06",
+  "serialNumber": "urn:uuid:f7793f32-fa2b-5201-9075-90683bdee32c",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-11-16T01:55:32Z",
+    "timestamp": "2026-11-16T06:12:08Z",
     "tools": {
       "components": [
         {
@@ -284,19 +284,6 @@
       ]
     },
     {
-      "bom-ref": "Component-Orama-Studio-web-app-c58f27d2bda7bf7c",
-      "type": "library",
-      "name": "Orama Studio web app",
-      "version": "fc2cc41",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "pkg:github/oramasearch/oramacore-cpp@f612ea8f6170d051eca55122c1cc2956649e0c66?package-id=Component-oramacore-cpp-956bcf2be0cc72dc",
       "type": "library",
       "name": "oramacore-cpp",
@@ -337,18 +324,11 @@
       ]
     },
     {
-      "bom-ref": "pkg:github/floriankarsten/space-grotesk@as%20vendored?package-id=Component-Space-Grotesk-871de9e868d49d36",
+      "bom-ref": "pkg:docker/ubuntu@sha256%3A2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5?package-id=Image-ubuntu-6698ea6738a5d032&tag=24.04",
       "type": "library",
-      "name": "Space Grotesk",
-      "version": "as vendored",
-      "licenses": [
-        {
-          "license": {
-            "id": "OFL-1.1"
-          }
-        }
-      ],
-      "purl": "pkg:github/floriankarsten/space-grotesk@as%20vendored",
+      "name": "ubuntu",
+      "version": "24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5",
+      "purl": "pkg:docker/ubuntu@sha256%3A2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5?tag=24.04",
       "properties": [
         {
           "name": "syft:package:type",
@@ -360,7 +340,7 @@
       "bom-ref": "DocumentRoot",
       "type": "library",
       "name": "zetta",
-      "version": "4dfc2a9a7ba8",
+      "version": "dd6f7dfaf1f1",
       "licenses": [
         {
           "license": {
@@ -374,11 +354,10 @@
     {
       "ref": "DocumentRoot",
       "dependsOn": [
-        "Component-Orama-Studio-web-app-c58f27d2bda7bf7c",
+        "pkg:docker/ubuntu@sha256%3A2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5?package-id=Image-ubuntu-6698ea6738a5d032&tag=24.04",
         "pkg:github/boostorg/boost@1.91.0?package-id=Component-Boost-104d102be3d8897c",
         "pkg:github/cppalliance/beast2@fb0a9c8dc860590bd13cb2d7afd3e2232291ff19?package-id=Component-beast2-56975ea75034a82d",
         "pkg:github/cppalliance/capy@ce1c7d710c4baaeeddb57fa101707c610f6eb975?package-id=Component-capy-f065864a31964254",
-        "pkg:github/floriankarsten/space-grotesk@as%20vendored?package-id=Component-Space-Grotesk-871de9e868d49d36",
         "pkg:github/google/googletest@v1.15.2?package-id=Component-GoogleTest-64b5499d1e845e32",
         "pkg:github/homer6/automerge-cpp@4dd795513510ae2c58bacd384c3d8fd98f523123?package-id=Component-automerge-cpp-ecbb1ebb01949fc1",
         "pkg:github/ibm/plex@as%20vendored?package-id=Component-IBM-Plex-Sans-and-IBM-Plex-Mono-9836f46bf5669da7",
