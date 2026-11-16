@@ -54,7 +54,8 @@ RUN cmake -S . -B build -G Ninja \
       -DCMAKE_C_COMPILER=clang-19 \
       -DCMAKE_CXX_COMPILER=clang++-19 \
  && cmake --build build --target zetta -j "$(nproc)" \
- && { strip build/bin/zetta || true; }
+ && { strip build/bin/zetta || true; } \
+ && mkdir -p /src/webapp
 
 # ---------- runtime stage ----------
 FROM ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5 AS runtime
@@ -70,8 +71,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build /src/build/bin/zetta /usr/local/bin/zetta
 
 # The Studio web app bundle (webapp/), seated via ZETTA_WEBAPP_DIR (an explicit --webapp-dir
-# wins). The node serves it at /studio/; its only data path is /v1.
-COPY --chown=zetta:zetta webapp /opt/zetta/webapp
+# wins). The node serves it at /studio/; its only data path is /v1. A tree without the bundle
+# (the public export leaves it out until it is rebuilt from source) gets an empty directory:
+# with no index.html the node serves its built-in server-rendered UI at / instead.
+COPY --from=build --chown=zetta:zetta /src/webapp /opt/zetta/webapp
 ENV ZETTA_WEBAPP_DIR=/opt/zetta/webapp
 
 USER zetta

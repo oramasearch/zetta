@@ -200,7 +200,8 @@ Two stages on `ubuntu:24.04` (pinned by digest). The build stage uses Clang 19 f
 builds CPU-only with tests off. The runtime stage holds `libssl3`, `libstdc++6`, `libpq5` and
 `ca-certificates`, runs as uid 10001, keeps state in `VOLUME /data`, exposes 7777 (peer, mTLS)
 and 4800 (MCP + REST + Studio), and seats the Studio bundle from `webapp/` via
-`ZETTA_WEBAPP_DIR`.
+`ZETTA_WEBAPP_DIR`. A tree without `webapp/` still builds: the directory is empty, and with
+no `index.html` in it the node serves its built-in server-rendered UI at `/`.
 
 ### `.dockerignore`
 
