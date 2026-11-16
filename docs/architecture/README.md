@@ -21,4 +21,3 @@ in the sibling directories.
 - [schemas.md](schemas.md) — **schema as code**: the embedded C++ draft-07 schema is the source of truth; `schemas/*.json` is generated + drift-checked (#464).
 - [true-hybrid.md](true-hybrid.md) — one equal-peer cluster spanning heterogeneous hardware (CPU/GPU/ASIC, on-prem + cloud) and the interfaces that make it work, with a built-vs-planned matrix.
 - [incremental-reconciliation.md](incremental-reconciliation.md) — changed-key replication reads, prefix-routed projection updates, full-resync fallbacks, and debounced CRDT persistence (#1079).
-- [code-audit.md](code-audit.md) — living codebase health audit: convention drift, redundancies, smells, and reconciliation against the wtm blueprint rules (RULE-* / NFR-*).

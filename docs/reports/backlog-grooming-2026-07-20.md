@@ -27,7 +27,7 @@ than against another document:
   set (#248).
 
 A fourth was a documentation claim that had gone stale under a shipped feature:
-`docs/architecture/code-audit.md:38` asserts *"No inline secrets found… nothing violates the
+the code audit of the time (no longer in the repository) asserted *"No inline secrets found… nothing violates the
 rule"*, written 2026-07-12; the connector store landed 2026-07-19 writing source tokens in
 cleartext to a replicated row (#74, #830).
 
@@ -157,7 +157,7 @@ problem larger rather than staler:
   unauthenticated **by design** now, not merely over-permissive.
 - **#681** — one shared attached-node test fixture. The duplication it exists to remove has
   grown to **12** copies of `struct ComputeNode` across the test suite.
-- **#74 / #830** — secrets at rest. `docs/architecture/code-audit.md:38` still records
+- **#74 / #830** — secrets at rest. The code audit of the time still recorded
   *"✅ No inline secrets found"*, written 2026-07-12; the connector store landed 2026-07-19
   writing source tokens in cleartext into a `ReplicateToAll` row.
 

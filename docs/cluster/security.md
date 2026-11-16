@@ -217,7 +217,7 @@ previous one; its next start re-seals those entries under the current token. See
   (`CertificateCommonNameIsTheNodeId`,
   `PeerWhoseHelloIsNotItsCertificateIsRefused`).
 
-## Threat model + known limitations
+## Threat model
 
 **Closed** (TB-3 vs outsiders): eavesdropping and tampering on inter-node
 traffic (TLS 1.3), uninvited joins (no token → no CA-signed cert → handshake
@@ -227,23 +227,8 @@ fallback path).
 **Closed by #669 (pinning):** a peer's stated node id is bound to its
 certificate. A process holding one node's key and certificate, but not the
 join token, can no longer claim another node's id in its `HELLO`, and a link is
-never recorded under an id its certificate does not name. This is the check the
-two items below depend on.
+never recorded under an id its certificate does not name.
 
-**Still open:**
-
-- **Member-vs-member node-id impersonation by a token holder.** The CA key is
-  derivable from the join token, so any member (anyone holding the token) can
-  mint a certificate whose `CN` is another node's id, and pinning accepts it.
-  Closing this means CSR-based enrollment (#1319): a joining node generates its
-  key locally and an existing member signs it, so the CA key lives with members
-  rather than inside the token.
-- **No revocation.** Removing a node's trust today means rotating the token
-  (re-key every node). Token rotation is manual (`--join-token` on each node);
-  each node re-seals the saved connector credentials on its first start under
-  the new token. A per-node revocation list checked at every handshake (#1320)
-  is only meaningful once the token no longer mints certificates (the item
-  above).
 **Closed by #670:** burst nodes now receive the join token too — the provisioner
 interface injects `ZETTA_CLUSTER_TOKEN` alongside `ZETTA_SEED_PEER`, so a provisioned
 node maps it with `ZETTA_SEED_PEER` to the CLI defaults, derives the cluster CA

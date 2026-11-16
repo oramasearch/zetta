@@ -55,6 +55,9 @@ equal-peer cluster spanning every vendor and architecture; the interfaces are bu
 the breadth of backends is in flight
 ([docs/architecture/true-hybrid.md](docs/architecture/true-hybrid.md)).
 
+The Studio web app (served at `/app` with `--webapp-dir`) is not part of this release; it ships in a
+later release.
+
 What's inside, by domain (each links to that domain's docs):
 
 - **[AI projects + the pipeline](docs/pipeline/README.md)** — the central,

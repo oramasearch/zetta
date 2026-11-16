@@ -744,8 +744,7 @@ git-tracked files: this `CLAUDE.md` (rules), `docs/**` (system behavior),
 
 - **Headed mode doesn't quit on terminal Ctrl-C** (macOS SDL3) — close the
   window or Cmd+Q; only headless installs SIGINT/SIGTERM handlers.
-- More in [`docs/architecture/code-audit.md`](docs/architecture/code-audit.md)
-  (the living health audit) and each domain README's scope notes.
+- More in each domain README's scope notes.
 
 ## Skills
 
