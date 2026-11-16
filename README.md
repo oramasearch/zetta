@@ -1,382 +1,153 @@
-# Orama Zetta
+# zetta
 
-**Orama Zetta turns a question into running, deployed intelligence.** Describe a data
-or AI problem in plain language — or hand over an artifact you already have (an n8n
-workflow, a SQL script, a notebook) — and Orama Zetta architects a correct pipeline,
-deploys it onto infrastructure **you** control (your k8s / cloud / on-prem), runs it,
-and **learns from your data**. *The data engineer, the AI engineer, and the platform
-engineer — in a bottle.* It compresses the path from **intent → deployed, correct
-intelligence** from quarters to hours — **Intelligence Velocity for Big Thinkers.**
+**A replicated C++26 engine for data, search and machine learning, running as equal peers.**
 
-> *Zetta*, as in *zettabyte* — one billion terabytes. We build for the ceiling, so
-> your scale is free headroom: solve very large data problems and the small ones come
-> for free.
+zetta stores data, indexes it, and trains and serves models on it, across a cluster of equal nodes
+with no leader. All state is one CRDT document that every node converges on. Work runs next to the
+data it reads, and the partial results are combined across nodes. It is one statically linked
+binary with no runtime services to provision. It runs headless on a server, or headed with a
+desktop UI.
 
-**This repo's docs:**
-[docs/README.md](docs/README.md) (domain-organized). The product set lives in
-[docs/product/](docs/product/README.md) — [orama-zetta.md](docs/product/orama-zetta.md)
-(read-first framing), [vision](docs/product/vision.md) ·
-[personas](docs/product/personas.md) · [positioning](docs/product/positioning.md) ·
-[catalog](docs/product/catalog.md) · [control surfaces](docs/product/control-surfaces.md),
-and the per-audience [experience contracts](docs/product/experience/README.md)
-(UX · DX · AX · serving).
+Part of Orama Lake, the sovereign AI stack. MIT-licensed.
 
-**Release:** [`v0.5.0`](docs/releases/v0.5.0.md) (2026-10-23), image
-`oramasearch/zetta:v0.5.0`. Every release, with what it changes and what is knowingly
-still broken: [docs/releases/](docs/releases/README.md).
+## What it does
 
-## Under the hood
+- **Replicated storage:** databases, tables and rows, large objects, a keyed record store and an
+  object store. Every write replicates to every node, and large bodies move peer to peer, checked by
+  SHA-256. [Docs](docs/data/README.md)
+- **An equal-peer cluster:** mutual TLS between nodes, joined with a join token, and no leader or
+  election. [Docs](docs/cluster/README.md)
+- **SQL:** a dialect-neutral query engine, with partitioned tables scanned on the nodes that own
+  them, and read-only `system.*` views of live state. [Docs](docs/data/query.md)
+- **Native machine learning:**
+  - histogram gradient-boosted trees trained by gradient-histogram allreduce across nodes, with
+    calibration, scoring and TreeSHAP explanations;
+  - segmentation and the other methodologies behind one registry.
 
-Pub/sub supports [node-local topic and message CRUD](docs/pubsub/crud.md) on
-REST and MCP: non-consuming browse, revision-checked edits, explicit redelivery,
-retention updates and audited deletions. Its default dispatcher is a
-[shared pool sized at one worker per 250 active topics](docs/pubsub/dispatch.md),
-bounded by configurable minimum and maximum worker counts. Authorised polling reads use
-five-minute audit summaries only for windows that returned data, while denied
-reads and mutations remain per-call. Ordinary and summary retention are
-configured independently, and admins can run the audited `purge_audit` action
-over REST or MCP (#1154, #1169). Audit replication uses per-origin segment
-ranges, not in-memory CRDT events; upgrades require all nodes together (#1164).
-Clustered pub/sub remains deferred (D39).
+  No Python or foreign runtime. [Docs](docs/ml/README.md)
+- **Pipelines:** a project's work is an execution graph. A correctness gate checks the graph before
+  it deploys, and every run is recorded. [Docs](docs/pipeline/README.md)
+- **Full-text search:** per-partition indexes searched by scatter-gather. [Docs](docs/indexing/README.md)
+- **Distributed compute:** the `ComputeDevice` interface (CPU always, an accelerator when present),
+  a work-stealing scheduler, and distributed dataframes. [Docs](docs/compute/README.md)
+- **Connectors:** pull rows from Postgres, MySQL, TiDB, Snowflake and others into a partitioned
+  dataset, read-only. [Docs](docs/data/README.md)
+- **Governance:** key-scoped and role-based access, column masking and row security, a sealed
+  identity root, and an audit trail of every call. [Docs](docs/governance/README.md)
+- **One control surface:** every capability is a REST route, an MCP tool and an OpenAPI operation
+  from one registry (190 `/v1` paths). [Docs](docs/api/README.md)
+- **Pub/sub inside a node:** topics, inboxes, delivery options and spilling to disk; clustered
+  pub/sub is not built yet. [Docs](docs/pubsub/README.md)
+- **Observability:** every operation records its intent, plan, timing and result shape as spans,
+  readable back as `system.*` views. [Docs](docs/architecture/observability.md)
 
-Every node now reports [per-subsystem memory ownership](docs/ops/memory.md):
-`system.memory`, `system.node_metrics`, REST/MCP `node_memory`, periodic INFO
-lines, and the node status identify what drives RSS while allocator truth keeps
-unattributed and retained-free bytes visible (#1163).
+What changed in each release, and what is knowingly still broken, is in the
+[release notes](docs/releases/README.md). The latest is [`v0.6.0`](docs/releases/v0.6.0.md).
 
-This repo is Orama Zetta's core: a fast, equal-peer **CRDT-replicated** store
-with clustering, distributed compute, and a native ML pipeline. A *zetta node*
-is one running instance — **headed** (default: an SDL3 + Dear ImGui desktop UI
-styled to the Orama design system; the desktop is itself a cluster member) or
-**headless** (no UI, for servers). C++26, macOS-first, single statically-linked
-binary. (`zetta` is the binary + codename; **Orama Zetta** is the product name —
-the older name *"ZettaDB"* is retired.) It is designed as **true hybrid** — one
-equal-peer cluster spanning every vendor and architecture; the interfaces are built,
-the breadth of backends is in flight
-([docs/architecture/true-hybrid.md](docs/architecture/true-hybrid.md)).
+## Quickstart
 
-The Studio web app (served at `/app` with `--webapp-dir`) is not part of this release; it ships in a
-later release.
+With Docker, using the image built from the release tag:
 
-What's inside, by domain (each links to that domain's docs):
-
-- **[AI projects + the pipeline](docs/pipeline/README.md)** — the central,
-  user-managed **AI project** (`zetta::pipeline::Project`) owns its raw **inputs** (NL
-  intent, imported artifacts such as n8n workflows) and its **execution
-  graphs** (the `zetta::ir::ExecutionGraph` IR: a typed
-  `connect→clean→model→index→serve→act` step graph, persisted + replicated as
-  JSON). Three compilers produce graphs — NL intent, n8n workflow JSON, and a
-  simulated-Python frontend — every graph passes the **correctness gate**
-  (schema/type, data-leakage/point-in-time, optimization-contract,
-  entity-resolution checks) before it
-  can deploy, and a **deployment controller** reconciles desired→actual and
-  self-heals failed runs. Runs record status, logs, outputs, lineage, and
-  live per-step [training metrics](docs/ml/run-metrics.md) with parameters,
-  summaries, and typed chart data. Run, Model, and Study list calls also return
-  stored Project/Pipeline names and page summaries without per-row lookups. The
-  **AI Solution Library** ships ready-to-deploy blueprints behind a one-button
-  Deploy panel.
-- **[Data + storage](docs/data/README.md)** — databases → tables → JSON rows on
-  a pluggable `StorageEngine` (JSONL on disk), large objects with peer-to-peer
-  body transfer, **partitioned tables** (pluggable `Partitioner`, rendezvous
-  placement, sharded blob placement, rebalance-on-join), a **native Parquet
-  reader** (no Arrow), dataset ingest (parquet/jsonl/json/csv), and a
-  Postgres-subset SQL layer that is **dialect-agnostic** with virtual
-  `system.*` observability tables. Dataset contracts accept ordinary text business ids
-  through collision-checked derived keys while all outputs retain the original value;
-  boolean labels and features load as 0/1.
-- **[Cluster + replication](docs/cluster/README.md)** — equal peers over TCP,
-  no leader; **everything replicates** as an Automerge CRDT (the document is
-  the source of truth, disk is its projection); an ephemeral **signal plane**
-  (RPC / events / tasks) carries **collectives** (allreduce / broadcast /
-  barrier / gather) and cluster-wide telemetry.
-- **[Workspace network access](docs/network/README.md)** — one hashed,
-  revocable, table/topic-scoped credential per app connection (#1280), plus
-  retained, schema-validated connection/grant history, tunnel sessions, and
-  zetta-tunnel gateway/mesh decisions. Governed REST/MCP calls stay in that
-  workspace's Zetta (#1281). Zetta nodes with overlapping private address
-  ranges link through named peer-gateway imports while keeping node-to-node
-  mutual TLS end to end (#1282).
-- **[Distributed compute](docs/compute/README.md)** — the `ComputeDevice`
-  accelerator interface (CPU always; CUDA opt-in), a **work-stealing scheduler**
-  (local + cross-node, elastic mid-job), the **job coordinator** (SPMD job
-  spine every algorithm submits through), recorded **compute jobs**, a
-  reward-driven **job autoscaler**, spot-eviction **checkpoint/restart**, and
-  **compute-near-data** execution over owned partitions.
-- **[DDF — distributed dataframes](docs/ddf/README.md)** — typed, chunked,
-  device-backed frames with local ops (scan/filter/project/sort) and
-  distributed ops (sort, equi-join, group-by, as-of/point-in-time windows)
-  composing into **leakage-free featurization**; single-node == multi-node.
-- **[Solution foundations](docs/solutions/README.md)** — replicated
-  point-in-time snapshot tables, row-level as-of joins, and a correctness-gate
-  check that refuses live feature sources, future snapshots, and label windows
-  inside the configured blackout gap.
-- **[Native ML](docs/ml/README.md)** — distributed **histogram GBDT** training
-  (allreduced histograms), probability **calibration**, batch **scoring /
-  rank-at-risk**, **exact TreeSHAP** explanation, label-free **anomaly detection**
-  (distributed isolation forest + causal KPI residuals), and a registered
-  **Model** entity (weights as verified large-object bodies), all proven by a
-  **native correctness oracle** (no Python/XGBoost anywhere).
-  [M-3 segmentation](docs/ml/segmentation.md) runs from customer-table intents,
-  producing entity assignments, descriptive segment profiles and separation metrics.
-  [M-2 entity resolution](docs/ml/entity_resolution.md) uses declared keys for
-  single-source tables and retains distributed fuzzy matching for multi-source
-  identity data.
-  The native [forecast runner](docs/ml/forecast.md) adds temporal backtests,
-  seasonal-naive comparisons, and forecast tables with prediction intervals;
-  M-4 runs on the pipeline's own table through the methodology registry and
-  reports metrics, read/excluded data, and output tables through `get_run_report`.
-  M-8 adds native per-action propensity GBDTs, implicit-feedback ALS,
-  hard eligibility/contact-cap policy selection, recommendation tables, and
-  IPS/DR policy reporting through `get_run_report`.
-  The shared [decision-policy engine](docs/solutions/decision-policy.md) then
-  applies versioned thresholds, tiers, budgets, caps, exclusions, autonomy
-  classes, approvals, and kill-switches between any score and its action; every
-  decision records the exact policy version.
-  Native [graph ML](docs/ml/graph.md) adds time-bounded relationship features
-  and node embeddings over partitioned edges.
-  The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: all 21 run today. Intent compilation and run dispatch use
-  this registry and refuse unsupported model work.
-  [AutoML studies](docs/ml/studies.md) search those native learners with typed
-  conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
-  real background M-1 training Runs over a dataset or stored Pipeline. The
-  methodology registry publishes the accepted study parameters, objectives,
-  splits, defaults and dataset-path rules, and a read-only preflight returns a
-  normalized candidate or a field-specific repair reason before creation. The
-  replicated driver preflights temporal class balance, trains dataset studies
-  over the full point-in-time table, resumes running studies after restart,
-  records per-tree curves and held-out objectives, reserves trial-second cost
-  before admission, and exposes analysis, governed model promotion, and
-  lineage-preserving deletion over REST/MCP.
-  The [solution registry](docs/solutions/README.md) lists 20 runnable catalogue
-  modules. Selected levels execute snapshots,
-  methodology callbacks, typed policy defaults, protected holdouts, action
-  delivery, ledger recording and monitoring, with versioned ROI readouts.
-  S-1 is runnable at all four levels with keyed single-table entity propagation,
-  forward-window labels, censored-negative exclusion, rolling out-of-time
-  validation, measured confirm-time class/coverage refusals, fuzzy-input refusals,
-  top-three reason codes, risk × value × driver cells, governed CRM/journey
-  delivery, tier holdouts, driver reports, uplift no-contact targeting, and ROI
-  readout. S-2 is runnable at all four levels with point-in-time conversion
-  checks, post-qualification leakage refusal, capacity-aware CRM queues and SLA
-  tasks, permanent holdout measurement, and conversion ROI readout.
-  S-3 is runnable with continuous-value regression, tenure censoring,
-  value-band audience and budget policy, protected holdouts, allocation reports,
-  three named domain refusals, and net-value ROI readout.
-  S-4 is runnable at all four levels with regulatory contact-limit,
-  vulnerable-customer, and point-in-time promise-to-pay refusals; digital and
-  dialer delivery; a permanent holdout; and net-recovery readout.
-  B-4 adds runnable document and workflow automation with per-field confidence
-  checks, owned review queues for uncertain fields, validated structured
-  workflow handoff, protected holdouts, and workflow-completion readout.
-  S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
-  SIU paths, A0-only denial, document-confidence and fairness refusals, action
-  tasks, holdout, and ROI readout. S-5 is runnable at all four levels with
-  rolling-origin forecasting, prediction intervals, planner reports, exception
-  queues, protected holdouts, FVA, and hierarchy consistency checks.
-  S-6 is runnable at all four levels with lead-time demand aggregation,
-  constrained replenishment, bounded ERP release, protected holdout
-  measurement, and a service-level ROI readout.
-  B-1 is runnable at all four levels with identifiable price-effect evidence,
-  M-4/M-6/M-16 execution, margin and authority limits, A1 approval above the
-  automatic band, protected experiments, governed price publication, and a
-  net-margin ROI readout.
-  S-7 is runnable at all four levels with seasonal anomaly checks, exact alert
-  budgets, candidate-driver forum reports, decision logs, permanent holdouts,
-  and honest phased readouts. S-8 is runnable at all four levels with
-  censoring-aware failure timing, sensor-drift and post-failure leakage refusals,
-  governed CMMS work orders, permanent holdouts, and failure-avoidance ROI.
-  S-9 is runnable at all four levels with consent and suppression checks,
-  contact limits, positive-uplift targeting, capped journeys, protected
-  holdouts, and response ROI. S-10 adds request-time fraud decisions with graph evidence,
-  case tasks, and delayed-label, selection-bias, and feature-parity refusals.
-  S-11 is runnable at all four levels with M-8 action rankings,
-  M-15 logged exploration, consent/contact enforcement, request-time channel
-  delivery, uplift cells, and a net-value ROI readout. B-2 is runnable at all
-  four levels with aggregate cohort scoring, minimum group size, fairness and
-  legal-approval gates, people-leader-only reports, protected holdouts, and an
-  aggregate attrition readout.
-  B-3 is runnable at all four levels with M-10 ticket confidence, M-19 label
-  efficiency, customer-owned taxonomy routing, explicit abstention,
-  approval-only closure, new-ticket-type drift, and resolution-quality
-  measurement. B-5 is runnable at all
-  four levels with point-in-time external evidence, post-event supplier-record
-  refusal, forecast-backed risk flags, bounded procurement actions, protected
-  holdouts, and disruption-avoidance measurement. B-6 is runnable at all four
-  levels with assistive scheduling and
-  revenue-cycle work queues, equity review, privacy approval, minimum-necessary
-  PHI checks, protected holdouts, and operational-resolution ROI. Snapshot
-  B-8 adds runnable IT and security operations with M-12 dependency context,
-  exact-budget M-7 alerts, graduated A0/A1/A2 authority, a hard kill switch,
-  single-asset containment, permanent holdouts, and incident-avoidance ROI.
-  Snapshot cutoffs, delivery destinations and ROI economics remain caller-supplied.
-  Their projected records participate in the workspace engine's
-  [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
-  policy/decision and ROI stores read directly from replicated state.
-  All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
-  before execution; `get_run_report` lists actual features and exclusions with reasons,
-  including speech, bandits, optimization, grouped posteriors, stacking, labelling rules,
-  private-model inputs, and streaming event windows.
-  M-21 adds event-time streaming learning and prequential reports.
-  M-20 adds evaluated Gaussian-copula tables and DP GBDT models.
-  M-13 runs
-  native PNG/JPEG → ViT transfer learning with source-disjoint evaluation and
-  governed large-object reads.
-- **[Solutions](docs/solutions/README.md)** — replicated foundations for audit,
-  policy, experiments, and solution monitoring, including drift, calibration,
-  cohort performance, guardrails, breach events, retrain requests, and durable
-  score-to-outcome evidence.
-  The action runtime publishes driver reports,
-  places owned SLA tasks in a replicated outbox, delivers webhook and CRM tasks
-  with retry/idempotency/dead-letter handling, and stops held-out or
-  kill-switched closed-loop actions before delivery.
-  Versioned
-  [ROI readouts](docs/solutions/roi-readout.md) combine correctness,
-  treated-minus-holdout effects with confidence intervals, customer-supplied
-  economics, operations, and redacted audit evidence without exposing raw
-  responses.
-- **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
-  the first real backend is **oramacore-cpp full-text (BM25F)**, with
-  per-partition **distributed full-text** answered by scatter-gather.
-- **[Cloud + provisioning](docs/cloud/README.md)** — the `Provisioner` interface
-  with **seven backends** (local, Azure reference, AWS, GCP, OCI, Kubernetes,
-  bare-metal containers) driven through vendor CLIs (no SDKs), bulk **burst
-  identity**, a **cost-cap approval gate**, and a **permission-gated Cloud
-  Inspector** (deny-by-default, ask-every-time consent).
-- **[Governance](docs/governance/README.md)** — V1 **key-scoped access**
-  (deny-by-default scopes + TTL'd capabilities), an immutable, retained
-  **audit trail** with compact polling summaries, and a **governed console** (every statement
-  capability-scoped, gated, and audited).
-- **[Solutions foundation](docs/solutions/README.md)** — the replicated
-  [holdout and experiment manager](docs/solutions/experiments.md) assigns
-  entities deterministically across holdout, treatment, exploration, and
-  below-line cells; protects control populations before model-driven actions;
-  and reports balance, exemption erosion, and uplift-training rows.
-  `get_roi_readout` turns those assignments and the audit ledger into a
-  versioned customer readout, and refuses incrementality when measured holdout
-  outcomes are unavailable.
-- **[The programmatic control surface](docs/api/README.md)** — one **capability
-  registry** where each entry renders three ways at once: an **MCP tool**, a
-  **REST route**, and a palette action. An embedded Beast2 server (both run
-  modes, default `127.0.0.1:4800`) answers **`POST /mcp`** (JSON-RPC 2.0), plain
-  **REST** (`GET/POST /v1/<name>`, `GET /v1/openapi.json`), the
-  **[llms.txt](docs/api/llms-endpoints.md)** progressive-disclosure pages, and a
-  **spec index** (`list_specs`/`get_spec`) — every call key-scoped,
-  consent-gated where it touches cloud, and threaded as an observability span.
-- **[The headed GUI](docs/gui/README.md)** — project-first Home, New Project,
-  Graph Workspace (editable canvas + graph-over-cluster plan view), Deploy,
-  Runs/Models/Jobs, a spatial **Cluster view** with live per-node gauges and a
-  distributed-algorithm-at-work animation, Datasets, Console, Cloud Inspector,
-  Admin, and an in-app **Test suite** panel.
-- **[UC-1 churn](docs/use-cases/README.md)** — the first catalog use case, end
-  to end and at scale: synthetic fixture, division-correct entity resolution,
-  the real `ChurnStepExecutor` (each heavy step a recorded compute job), the
-  retention playbook with a constrained narrator, and the sim-Python
-  **UC-1-at-scale** capstone over a real multi-node cluster.
-
-zetta **vendors its build dependencies** as git submodules under
-[`modules/`](modules/) (`capy`, `corosio`, `automerge-cpp`, and the private
-`oramacore-cpp`).
-
-## Build + run
-
-Full instructions — prerequisites, supported compilers, submodules,
-troubleshooting — are in **[docs/build.md](docs/build.md)**. The short version:
-
-```bash
-# Clone with submodules (or run the submodule step in an existing checkout):
-git clone --recurse-submodules https://github.com/oramasearch/zetta.git
-#   …existing checkout: git submodule update --init --recursive
-
-./scripts/install-deps.sh                # system tools (macOS / Ubuntu)
-
-cmake -S . -B build -G Ninja
-cmake --build build
-
-./build/bin/zetta                       # headed (default)
-./build/bin/zetta --headless            # no UI, Ctrl-C to stop
-./build/bin/zetta --data-dir /path/db   # override the database directory
-./build/bin/zetta --help
+```sh
+docker run --rm -p 4800:4800 -p 7777:7777 -v zetta-data:/data oramasearch/zetta:v0.6.0
 ```
 
-## Clustering
+The node starts headless. It serves REST and MCP on port 4800 and peer replication on port 7777,
+and logs `zetta 0.6.0: node started`. Started without `--admin-token`, it prints a generated owner
+token once: save it, and call the API with `Authorization: Bearer <token>`. See
+[docs/api/README.md](docs/api/README.md).
 
-Run multiple nodes as a cluster of **equal peers**. Each node listens on all
-interfaces by default (`0.0.0.0:7777`) and dials any `--peer` you give it.
-Several nodes can share a host — each binds the first free port in a range
-(default 16). All inter-node traffic runs **mutual TLS**, and joining needs the
-cluster's **join token** (generated by the first node; see
-[docs/cluster/security.md](docs/cluster/security.md)). At startup a node prints
-the address(es) it's reachable at, the file holding the join token, and the
-command to add another node with the token masked (the token is never printed or
-logged).
+### Build from source
 
-The TLS 1.3 context, PEM verification, and newline-framed Corosio stream are
-also available as the independent [`zetta::transport`](docs/cluster/transport-library.md)
-CMake target for other C++26 projects.
+You need CMake 3.28+, Ninja and a C++26 Clang 17+:
+- on macOS, Homebrew LLVM (`brew install llvm`);
+- on Linux, `clang++-NN`.
 
-```bash
-zetta                                          # first node — prints the join command
-zetta --peer 192.168.1.10:7777 \
-      --join-token <64-hex>                    # another machine joins it
-zetta --peer 127.0.0.1:7777 --join-token ...   # second node on this host (auto-binds 7778)
-zetta --listen 127.0.0.1:7777                  # restrict to loopback (not network-reachable)
+Apple's system Clang and Ubuntu's GCC 13 are too old; the build picks a suitable compiler itself.
+
+```sh
+git clone --recurse-submodules https://github.com/oramasearch/zetta.git && cd zetta
+./scripts/install-deps.sh                 # system tools (macOS / Ubuntu)
+cmake -S . -B build -G Ninja && cmake --build build
+cmake --build build --target zetta-tests && ctest --test-dir build --output-on-failure
+
+./build/bin/zetta --headless              # a headless node; Ctrl-C to stop
+./build/bin/zetta                         # headed, with the desktop UI (macOS)
 ```
 
-A **provisioned / burst node** can auto-join with no manual flags: the binary
-reads `ZETTA_SEED_PEER` (→ `--peer`) and `ZETTA_CLUSTER_TOKEN` (→ `--join-token`),
-plus `ZETTA_DATA_DIR` (→ `--data-dir`), from its environment on boot, as defaults
-that any explicit flag overrides. So a node started with those env vars set joins
-the secure cluster automatically. See
-[docs/cloud/node-bootstrap-env.md](docs/cloud/node-bootstrap-env.md).
+`--recurse-submodules` matters: the coroutine, networking, HTTP and CRDT libraries are submodules
+under `modules/`, and every one is public. The first configure also fetches SDL3, Dear ImGui,
+GoogleTest and Boost, each pinned by commit or hash. Full instructions and troubleshooting are in
+[docs/build.md](docs/build.md). The image's `Dockerfile` is at the repository root.
 
-Data replicates between nodes as an Automerge CRDT — databases, tables, rows,
-projects, runs, models, jobs, and principals created on any
-node converge onto every node, in memory and on disk, conflict-free, with no
-leader. Audit events replicate separately through bounded segment-log ranges;
-legacy catalog events migrate locally without per-event CRDT tombstones.
-Large-object bodies transfer peer-to-peer and are SHA-256-verified;
-partitioned tables place their bodies on owner nodes only. See all nodes and
-their replication status in the headed **Cluster** panel, the headless
-heartbeat log, or SQL (`SELECT * FROM system.nodes;`). Detail:
-[docs/cluster/](docs/cluster/README.md).
+### A cluster
 
-The first configure clones SDL3, Dear ImGui, and GoogleTest via CMake
-`FetchContent` (a few minutes); the Capy/Corosio coroutine stack and
-automerge-cpp come from the `modules/` submodules. Subsequent builds are fast
-(ccache-backed when available).
-
-## Tests
-
-```bash
-cmake --build build --target zetta-tests
-ctest --test-dir build --output-on-failure
+```sh
+zetta --headless                                             # the first node prints its join command
+zetta --headless --peer 192.0.2.10:7777 --join-token <hex>  # another machine joins it
 ```
 
-There is also an in-app, headless-runnable test-suite catalog (including the
-distributed UC-1-at-scale capstone) — see [docs/testing/](docs/testing/README.md).
+Data created on any node converges on every node. See the nodes with
+`SELECT * FROM system.nodes;`. Details: [docs/cluster/](docs/cluster/README.md).
 
-## Requirements
+## How it fits the stack
 
-- CMake 3.28+ and Ninja
-- Git submodules initialized recursively (`git clone --recurse-submodules`, or
-  `git submodule update --init --recursive`) — the build needs
-  `modules/{capy,corosio,automerge-cpp}`, and automerge-cpp nests its own
-  submodules (nlohmann/json). The private `modules/oramacore-cpp` is optional —
-  without it the full-text backend degrades gracefully and the build stays
-  green.
-- A C++26 Clang 17+ — Homebrew LLVM on macOS (`brew install llvm`),
-  `clang++-NN` on Linux; Apple's system Clang and Ubuntu's GCC 13 are too old.
-  The build auto-selects a suitable one. `./scripts/install-deps.sh` installs
-  everything.
-- macOS for the headed UI (SDL3 uses a Metal-backed renderer); the headless
-  core is portable (Linux builds and runs).
+zetta is the engine of Orama Lake. The lake workspace stores its data in zetta and runs its
+pipelines, training and search there. The Orama operator runs zetta on Kubernetes and also uses it
+as its own datastore. zetta-tunnel links zetta nodes in different networks.
 
-Full details and troubleshooting: **[docs/build.md](docs/build.md)**.
+| Piece | What it does | Relation to zetta |
+|---|---|---|
+| lake | The AI workspace | uses zetta for data, training, scoring and search |
+| orama-operator | Runs the stack on Kubernetes | deploys zetta clusters and stores its state in one |
+| [zetta-tunnel](https://github.com/oramasearch/zetta-tunnel) | Tunnels, a mutual-TLS mesh and ingress | carries zetta peer links between networks, and links zetta's transport library |
+| [liquid](https://github.com/oramasearch/liquid) | Version control, builds, packages and deploys | builds and ships the stack |
+
+## Known limits
+
+- **Security fixes still in review:** the remaining fixes from the pre-launch security review are in
+  open pull requests and are not in `v0.6.0`
+  ([#1388](https://github.com/oramasearch/zetta/issues/1388)). Read the release's *Known issues*
+  before exposing a node.
+- **The Studio web app is not in this release:** it is being rebuilt from its source
+  ([#1526](https://github.com/oramasearch/zetta/issues/1526)). A node serves its built-in
+  server-rendered UI at `/`.
+- **Pub/sub is node-local:** topics are not replicated across nodes yet.
+- **`score` over a table on a multi-member cluster** scores only the answering member's rows
+  ([#1533](https://github.com/oramasearch/zetta/issues/1533)).
+- **`WHERE NOT (x = 5)`** matches rows where `x` is null
+  ([#1473](https://github.com/oramasearch/zetta/issues/1473)).
+- **A headed node does not quit on Ctrl-C in the terminal** (macOS): close the window or press
+  Cmd+Q.
+
+The full list for each release is in its [release notes](docs/releases/README.md).
+
+## Documentation
+
+- [docs/README.md](docs/README.md): every domain, with its own index.
+- [docs/architecture/code-map.md](docs/architecture/code-map.md): the source tree, file by file.
+- [schemas/openapi.json](schemas/openapi.json): the generated API reference. A running node also
+  serves it at `/v1/openapi.json`.
+- [docs/testing/](docs/testing/README.md): the test suites, including the in-app suite catalog.
+- [docs/releases/](docs/releases/README.md): the release notes.
+
+## Community
+
+- Bugs and requests: [issues](https://github.com/oramasearch/zetta/issues).
+- Security reports: send them privately, as [SECURITY.md](SECURITY.md) describes. Please don't open a
+  public issue.
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and open a pull
+request against `dev`. Contributions come in under the [Contributor License Agreement](CLA.md), which
+you sign once.
+
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Third-party components and their licenses are in
-[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES). To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md)
-(contributions come in under the [Contributor License Agreement](CLA.md)).
+MIT. See [LICENSE](LICENSE). Third-party components keep their own licenses, listed in
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+
+"Orama Lake", "liquid", "lake", "zetta" and their logos are trademarks of OramaSearch, Inc.
