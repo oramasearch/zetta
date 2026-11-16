@@ -4,7 +4,7 @@ One page per tagged release, newest first. A page states what changed, **what it
 someone upgrading**, and what is knowingly still broken — a release note that lists only
 wins is marketing, and the next reader rediscovers the gap expensively.
 
-- [v0.6.0](v0.6.0.md) — not yet tagged. Open-source readiness (MIT license, SPDX headers,
+- [v0.6.0](v0.6.0.md) — 2026-11-16. Open-source readiness (MIT license, SPDX headers,
   third-party notices, SBOM, CLA, security policy, client and internal material out, the image
   `Dockerfile` in this repo), the first batch of pre-launch security fixes, and `score`/`explain` on
   segmentation models. **Clerk needs `ZETTA_CLERK_AUTHORIZED_PARTIES`; an inbox needs an
