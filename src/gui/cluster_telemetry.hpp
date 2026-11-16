@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // GUI-internal animation + sparkline state for the cluster node-box gauges

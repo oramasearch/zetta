@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Labelled time series (#1231, docs/data/time-series.md): counters summed over a
 // range, gauges aggregated, label filters and grouping, steps, and retention.
 // Buckets from several nodes: RecordStoreCluster.ANodeThatJoinsLaterCatchesUpByAntiEntropy.

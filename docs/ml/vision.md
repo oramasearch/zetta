@@ -35,7 +35,7 @@ warning in the run log and counted in `images_excluded`.
 ## Native model path
 
 The decoder supports non-interlaced 8-bit PNG images and baseline sequential
-JPEG images. It converts them to RGB, applies bilinear resize and channel
+JPEG images, with exactly one frame: a JPEG with a second SOF0 is refused (#1418). It converts them to RGB, applies bilinear resize and channel
 normalization, forms non-overlapping patches, and runs class-token ViT
 self-attention and MLP blocks. All frozen tensors are loaded by name from a
 registered `vision_backbone` Model through Zetta's native safetensors reader.

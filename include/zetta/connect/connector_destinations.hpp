@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <cstdint>
@@ -7,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-// Connector destination policy (#1414, LSR-241). See docs/data/connector-query.md.
+// Connector destination policy (#1414). See docs/data/connector-query.md.
 // Public addresses are allowed; private and loopback addresses require an exact
 // operator-approved host:port. Metadata, link-local and reserved addresses never
 // pass, including when the operator approved their hostname.

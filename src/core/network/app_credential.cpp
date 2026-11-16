@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/network/app_credential.hpp"
 
 #include <algorithm>

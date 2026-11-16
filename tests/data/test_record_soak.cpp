@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The record-store soak (#1231): steady puts, conditional updates and retention
 // purges on a running node, reporting what grows and what a read costs while the
 // replicated catalogue is being saved. ZETTA_RECORD_SOAK_PUTS sets the number of

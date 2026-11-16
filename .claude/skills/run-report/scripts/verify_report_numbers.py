@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Check that every number in a run report traces back to the facts artifact.
 
     python3 verify_report_numbers.py <report.md> <run-report.json>
@@ -23,7 +25,7 @@ A number in the report is accepted when, at the precision it was written to, it 
 * a small ordinal or year — rank numbers, "top 3", dates. Those are structure, not claims.
 
 Anything else is reported. A false positive here is cheap (add the figure to the facts);
-a false negative is a fabricated number shipped to a customer.
+a false negative is a fabricated number shipped to a reader.
 
 No third-party imports.
 """

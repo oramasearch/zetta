@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The API-surface half of row-level security (#748): RLS enforced end-to-end
 // through the real `sql` capability (the MCP `tools/call` + REST /v1/sql choke
 // point), driven AS a token-resolved user (the #745 gate identity). Proves the

@@ -1,15 +1,15 @@
 ---
 name: native-ai-dev
-description: Build AI models, layers, autograd ops, tokenizers, and training/RLVR loops NATIVELY in zetta — on zetta::autograd + the ComputeDevice seam + the byte-level BPE tokenizer, with no foreign runtime (no PyTorch / transformers / tokenizers / ONNX / BLAS, ADR-17). Use when adding a differentiable op or layer, assembling a transformer or other model, matching a Hugging Face architecture (RoPE/GQA/QK-norm/SwiGLU/RMSNorm), loading or saving a safetensors/HF checkpoint, building a BPE tokenizer, writing a training or GRPO/RLVR loop, generating text, or making any of these fast (thread pool / ComputeDevice / -march=native / KV cache). Triggers — "add an autograd op", "build a model/layer", "load a Qwen/HF checkpoint", "native tokenizer", "RLVR", "gradient check", "make the model faster".
+description: Build AI models, layers, autograd ops, tokenizers, and training/RLVR loops NATIVELY in zetta — on zetta::autograd + the ComputeDevice interface + the byte-level BPE tokenizer, with no foreign runtime (no PyTorch / transformers / tokenizers / ONNX / BLAS, ADR-17). Use when adding a differentiable op or layer, assembling a transformer or other model, matching a Hugging Face architecture (RoPE/GQA/QK-norm/SwiGLU/RMSNorm), loading or saving a safetensors/HF checkpoint, building a BPE tokenizer, writing a training or GRPO/RLVR loop, generating text, or making any of these fast (thread pool / ComputeDevice / -march=native / KV cache). Triggers — "add an autograd op", "build a model/layer", "load a Qwen/HF checkpoint", "native tokenizer", "RLVR", "gradient check", "make the model faster".
 ---
 
 # native-ai-dev — build AI natively in zetta
 
 zetta builds its own AI: the model is the product, not a dependency. Everything —
 autodiff, the transformer, the tokenizer, training, RLVR, generation, checkpoints —
-is native C++26 on `zetta::autograd` + the `compute::ComputeDevice` seam + the
+is native C++26 on `zetta::autograd` + the `compute::ComputeDevice` interface + the
 `zetta::tokenizer` BPE, with **no foreign runtime** (ADR-17). This was proven by
-building the base agent (#555) and running it against the **real Qwen3-0.6B**
+building the base agent and running it against the **real Qwen3-0.6B**
 checkpoint.
 
 **Read [`docs/autograd/building-ai-primitives.md`](../../../docs/autograd/building-ai-primitives.md)
@@ -75,7 +75,7 @@ Apply them in this order; always measure against a real checkpoint.
 
 **CPU (the always-present path):**
 1. **Build flags** — Release is `-O3 -DNDEBUG`. Add **`-march=native`** on a
-   known-target box (build box / a node) for AVX/NEON on the matmul inner loops —
+   known-target machine (a dedicated build host / a node) for AVX/NEON on the matmul inner loops —
    opt-in, *not* a portable default (breaks on older CPUs).
 2. **Don't transpose weights every forward** — HF weights are `[out,in]`;
    `matmul(x, transpose(W))` re-materializes the transpose each call (the 151936×1024
@@ -125,8 +125,9 @@ cmake --build build --target zetta-tests
 ## Related skills
 - **zetta-dev** — repo-wide C++26 / build / commit / docs conventions (load with this).
 - **new-input** — a new *input language* frontend (different from a model/op).
-- **nibble-dev** (bridge) — the small-atomic-commit discipline this skill assumes.
+- **Nibble-dev** — the small-atomic-commit discipline this skill assumes: one primitive per
+  commit, red → green → refactor, each commit building and passing its own tests.
 
 ## Version History
-- v1.0.0 (2026-07-21): Initial — distilled from building the base agent (#555) and
+- v1.0.0: Initial — distilled from building the base agent and
   validating it on the real Qwen3-0.6B checkpoint.

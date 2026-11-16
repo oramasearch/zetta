@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The distributed connector fetch (#827, docs/data/connector-query.md): the
 // deterministic row-balanced tiling of a result set across nodes, and the
 // concurrent, bounded partition read that each node runs over its own slice.

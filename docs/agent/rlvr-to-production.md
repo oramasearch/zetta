@@ -19,7 +19,7 @@ the **pipeline around the model is wrong** in ways that don't show up until prod
   offline and useless live.
 - **No calibration** — the scores aren't comparable to reality, so nobody can act on them.
 - **The wrong methodology** — LLM pattern-matching over communications instead of a
-  trained model over features (this is exactly Charles's n8n churn system: Gemini
+  trained model over features (a common n8n churn workflow: a language model
   summarizing text, no feature vector, no trained model — which is why its risk numbers
   have no predictive power).
 - **No measurement** — you can't tell whether it beat the previous approach.
@@ -72,7 +72,7 @@ The reward is a **deterministic grader**. To score an agent's attempt, the envir
    *runs*, not a learned reward model and not a human judgment.
 
 Because the referee is a running check, an improvement is **demonstrated, not asserted**.
-The reference churn solution scores 1.0; Charles's LLM-only approach scores 0. That gap is
+The reference churn solution scores 1.0; the LLM-only approach scores 0. That gap is
 the training signal.
 
 ---
@@ -124,7 +124,7 @@ then has to **beat a baseline on your data** — measured, not claimed.
 The base agent is general (trained on Orama's catalog). It becomes **yours** through the
 per-customer fine-tune loop (zetta#853): fork the base checkpoint and continue the *same*
 RLVR loop on **your** verifiable games, near **your** data, in **your** environment. For
-Motive, that means the churn game over your Snowflake/Postgres schema — the agent
+churn, that means the churn game over your Snowflake/Postgres schema — the agent
 specializes to your tables, your tools, your definition of correct — without your data
 ever leaving your network.
 
@@ -133,7 +133,7 @@ ever leaving your network.
 ## 7. The loop that keeps it working
 
 Correctness at deploy time is necessary but not sufficient — the world drifts. The
-**calibration loop** (which Charles already runs as a "batting average") becomes the
+**calibration loop** (a running score-versus-outcome record) becomes the
 reward signal: production runs produce measured outcomes → the measured ROI is fed back as
 training signal → the agent improves the solution over time. The reward the agent
 ultimately chases is **your realized return**.
@@ -157,11 +157,11 @@ verifiable criteria, which is why a trained agent's pipelines are correct by con
 
 ---
 
-## 8. Concretely, for churn (the Motive example)
+## 8. Concretely, for churn
 
 - **Corpus sample #1** is your churn game: required end-state = connect + leakage-free
   features + **gbdt + SHAP** + calibrated serve + calibration loop; negative controls = the
-  LLM-only approach (Charles's current n8n), a leaky pipeline, an uncalibrated one.
+  LLM-only approach (an n8n workflow that asks a model), a leaky pipeline, an uncalibrated one.
 - **Training** teaches the agent that the LLM-only path *fails* and the gbdt+SHAP+calibrated
   path *passes*.
 - **In production**, the agent takes your churn ask (or your pasted n8n) and builds the
@@ -182,7 +182,7 @@ verifiable criteria, which is why a trained agent's pipelines are correct by con
 | The execution graph | `ir/execution_graph.hpp` (the 6 `StepKind`s) |
 | RLVR / GRPO step | `compute::model::MlxQwenModel::grpo_step`, `agent::grpo_step` |
 | Corpus generation (catalog → gated JSONL) | `scripts/build_catalog.py`, `scripts/gen_base_corpus.py` |
-| Method + skill | the **rlvr-training-data** skill; `homer6/blender-rl` (the reference to reproduce) |
+| Method + skill | the **rlvr-training-data** skill; blender-rl (an earlier RLVR prototype, not public) (the reference to reproduce) |
 
 Related: [`training-data-runbook.md`](training-data-runbook.md) (operate the generators) ·
-#866 (corpus) · #863 (base training) · #853 (the fork) · #862 (the Charles demo).
+#866 (corpus) · #863 (base training) · #853 (the fork) · #862 (the churn demo).

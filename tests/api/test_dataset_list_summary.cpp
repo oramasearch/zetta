@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // list_datasets' summary form (#1195): the fields a dataset list shows, from
 // counters the engine keeps, reading no row and no file. Each test compares the
 // summary with the full form, field by field, so the two cannot drift; the

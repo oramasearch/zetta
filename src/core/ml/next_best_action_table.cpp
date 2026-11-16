@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/next_best_action_table.hpp"
 
 #include <cstdint>

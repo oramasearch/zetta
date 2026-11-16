@@ -153,7 +153,7 @@ sample coordination use the root; training rows remain on their owning members.
 Final assignment materialization is single-member: assignments are gathered and,
 for registry runs, broadcast to the initiating writer, which may be off-root.
 Model metadata and Run records use their existing replicated boundaries. The
-weights JSON remains an internal write-only artifact. Config and peer-launch
+weights JSON is read back by `score` and `explain` (below). Config and peer-launch
 payloads have generated, validated schemas; the existing report capability
 declares its additional segmentation fields.
 
@@ -167,6 +167,55 @@ and writer persistence success is allreduced before peers report success. Native
 calls default to a root-created Run; registry calls reuse the Run returned at
 submission. A roster change or missing peer fails with a bounded timeout. The
 peer launch is at-most-once, like the existing coordinated-launch mechanism.
+
+## Scoring and explaining
+
+`score` and `explain` answer for a segmentation model (#1497); before, both read
+the weights as gradient-boosted trees and failed with `required property
+'objective' not found`. `include/zetta/ml/segmentation_score.hpp` loads the weights
+(`SegmentationModel::to_json()`: features with their scaling, centers, and from
+#1497 each segment's profile `labels`) and places a row the way training did:
+
+- a numeric column is `(value - location) / scale` (a boolean is 1 or 0);
+- a categorical column writes one indicator per fitted level, and its last level is
+  the rare bucket, set for any value that is not one of the others;
+- the segment is the nearest center by squared Euclidean distance, ties to the lower
+  id, and `distance` is its square root: the same rule and the same
+  `distance_to_center` the run wrote into its assignment table. Scoring the training
+  table reproduces those assignments exactly.
+
+A row that lacks a column the model reads is refused, never zero-filled: `score: row 1
+has no 'visits'; the model needs spend, visits, plan`.
+
+`score` answers, for a segmentation model:
+
+```json
+{"kind": "segmentation",
+ "assignments": [{"entity": 0, "segment_id": 0, "distance": 0.04, "label": "high visits, low spend"}],
+ "ranked": [], "drivers": [], "feature_columns": ["spend", "visits", "plan"],
+ "rows_scored": 1, "partitions_read": 0}
+```
+
+`entity` follows the ranked list's rule: the caller's `entities[i]` (a text key comes
+back as text), else the row's index; for `dataset_path` the table's entity column.
+`label` is the segment profile's label, from the weights or, for a model trained
+before #1497, from the run's profile table when this member holds it; else `null`.
+`top_k` does not apply. The table path reads the rows this member owns, as training
+does (the designated owner of each partition, or an unpartitioned table).
+
+`explain` answers the row's segment, the runner-up (the next nearest center) and,
+per column, `contribution = (point - runner_up)^2 - (point - segment)^2` summed over
+the column's encoded features. Positive pulls the row toward its own segment,
+negative toward the runner-up; the contributions add up exactly to
+`runner_up.distance^2 - distance^2` (`residual` carries the floating-point
+remainder). Strongest first. Like the profiles, it describes, never causes.
+
+The tree paths (`score_rows`, `score_table`, `explain_row`, `explain_entity`) refuse a
+segmentation model in words instead of reading it as trees. Tests:
+`tests/ml/test_segmentation_score.cpp` (weights round trip, every training row placed
+where training put it, rare bucket, missing column, explain additivity) and
+`tests/api/test_segmentation_score.cpp` (train with `train_model` M-3, then `score`
+rows and the table, matched against the assignment table, and `explain`).
 
 ## Verification
 

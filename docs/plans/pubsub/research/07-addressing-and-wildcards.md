@@ -1,7 +1,7 @@
 # Research: addresses, wildcards, and email-style envelopes
 
 > **Provenance.** One Perplexity (`perplexity_ask`, high context) run,
-> 2026-09-27, after Steve set typed unique names (`topic:abc123`, `agent:405`,
+> 2026-09-27, after the decision to use typed unique names (`topic:abc123`, `agent:405`,
 > `table:logs`) with to/cc/bcc/reply-to lists, wildcards and a correlation id.
 > **Status:** background; describes no zetta code.
 

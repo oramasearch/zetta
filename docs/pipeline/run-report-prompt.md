@@ -1,7 +1,6 @@
 # The run report — the artifact, and the prompt that writes it
 
 **Issue:** [#948](https://github.com/oramasearch/zetta/issues/948) step 4 ·
-**Example output:** [`docs/reports/results/motive-churn-run-report-2026-08-04.md`](../reports/results/motive-churn-run-report-2026-08-04.md) ·
 **Runbook:** [regenerating-the-run-report.md](../runbooks/regenerating-the-run-report.md)
 
 A run produces a **report**: how good the model is, what drives the outcome, and which
@@ -187,8 +186,8 @@ same numbers as one written the moment the run ended.
 curl "$ZETTA/v1/get_run_report?run_id=<uuid>&limit=20"
 ```
 
-`tests/usecases/churn/test_motive_demo_dataset.cpp` still writes its own artifact for the
-Motive demo dataset, which is generated outside any run. For anything the engine actually
+`tests/usecases/churn/test_comms_demo_dataset.cpp` still writes its own artifact for the
+communications demo dataset, which is generated outside any run. For anything the engine actually
 ran, `get_run_report` is the source.
 
 **The held-out figure no longer has to be measured outside the engine.** A run that sets

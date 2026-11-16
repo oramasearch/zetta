@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Pub/sub on the control surface (#1033; decision D22 in
 // docs/plans/pubsub/decisions.md; docs/pubsub/exposure.md).
 //
@@ -53,8 +55,10 @@ void add_pubsub_capability(Registry& registry, Capability capability) {
         if (input.contains("topic")) {
             std::string reason;
             const auto topic = topic_address(input, reason);
+            // An inbox is authorized as `inbox:<name>`, apart from every topic (#1432).
             return topic && context.node.authorize_object(context.acting_key, true, operation,
-                zetta::governance::Resource::topic(topic->name));
+                zetta::governance::Resource::topic(
+                    topic->kind == "inbox" ? "inbox:" + topic->name : topic->name));
         }
         // A listing needs a topic grant, then filters each concrete result.
         for (const auto& role_id : context.node.roles_for_user(context.acting_key)) {

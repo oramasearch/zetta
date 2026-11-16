@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/fetch_affinity_placement.hpp"
 
 #include <algorithm>

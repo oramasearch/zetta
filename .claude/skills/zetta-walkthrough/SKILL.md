@@ -19,7 +19,7 @@ the other, and merges both into a single report. Coverage is the union.
 | Avenue | Driven by | Sees what the other cannot |
 |---|---|---|
 | **MCP** (`POST /mcp`) + REST `/v1` | **Claude Code, directly** | the tool surface an agent or IDE gets: schemas, error text, whether a sequence is awkward, whether a mutation has a read-back |
-| **Browser** | the **Playwright suite** (`orama-web-e2e`, [#970](https://github.com/oramasearch/zetta/issues/970)) | what a person actually looks at: rendering, empty states, light/dark, narrow viewports, console errors, and whether a page **claims something the engine never said** |
+| **Browser** | the **Playwright suite** (`orama-web-e2e`) | what a person actually looks at: rendering, empty states, light/dark, narrow viewports, console errors, and whether a page **claims something the engine never said** |
 
 Neither is sufficient. A capability can be perfect over MCP and unreachable in the
 UI; a page can render beautifully and show a number the engine never computed.
@@ -30,7 +30,6 @@ both. Where they disagree, one of them is wrong — record it.
 ## The rule that makes this worth doing
 
 > **Not done when the pieces pass in the test harness.**
-> — [#960](https://github.com/oramasearch/zetta/issues/960)
 
 Every green suite in this repo has coexisted with a broken product at least once: a
 checkpoint emitting perfect tool calls that measured 0% parse rate, a smoke test
@@ -59,8 +58,7 @@ git rev-parse --short HEAD            # the report cites this
 ```
 
 Headed by default — **run headed unless told otherwise**, so the GUI is there to
-check that externally-initiated actions render live
-([#620](https://github.com/oramasearch/zetta/issues/620)).
+check that externally-initiated actions render live.
 
 ### 2 · Avenue A — walk it yourself over MCP
 
@@ -77,8 +75,7 @@ cd modules/orama-web-e2e && npx playwright test --reporter=list
 ```
 
 Point it at the node you started. Keep the **trace** — it is an artifact you can
-read, which is why the project is Playwright and not Cypress
-([#970](https://github.com/oramasearch/zetta/issues/970)).
+read, which is why the project is Playwright and not Cypress.
 
 **Until that repo exists**, drive the browser directly with the
 `mcp__claude-in-chrome__*` tools and walk the same routes by hand — then say in the
@@ -99,7 +96,7 @@ The findings are the deliverable. Four kinds, all product bugs, not test failure
 | **Missing read-back** | a mutation succeeded and nothing confirms what changed |
 | **Unactionable error** | a reason that does not say what to do, or names an internal cause |
 | **A reply that ignores the turn before it** | "yes" and "what?" get the same sentence — walk every conversational surface for **three** turns, never one |
-| **An unreachable acceptance row** | the spine names a behaviour and no avenue can reach it. **Record it, never delete it** — a row dropped because "that isn't built yet" is how a gap survives to a customer call |
+| **An unreachable acceptance row** | the spine names a behaviour and no avenue can reach it. **Record it, never delete it** — a row dropped because "that isn't built yet" is how a gap survives to a user |
 
 And the fifth, which outranks them all: **anything on screen that is false.** A
 badge claiming provenance it does not have, a metric labeled "quality" that was

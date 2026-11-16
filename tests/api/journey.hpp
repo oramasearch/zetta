@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The shared MCP-journey driver (#619, docs/testing/mcp-journeys.md): a
 // journey is DATA — Journey{JourneyStep{tool, input, expect}} tables run by
 // this one driver — not ad-hoc test code. The same table replays at layer 1

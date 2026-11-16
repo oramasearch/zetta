@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Newline-framed byte streams over Corosio, optionally protected by the shared

@@ -43,7 +43,8 @@ zetta-core). The GoogleTest unit tests build behind `ZETTA_BUILD_TESTS`.
 
 ```
 CMakeLists.txt              build graph: zetta_transport (and ZETTA_TRANSPORT_ONLY consumer mode), imgui lib, zetta-compute lib (+ optional CUDA), zetta-core lib, zetta exe
-.dockerignore               build-context filter for the zetta-bridge image Dockerfiles (COPY . /src); keeps a host build/ + its absolute-path CMakeCache.txt out of the image (#839) — see docs/build.md
+Dockerfile                  the headless Linux image (two-stage, Clang 19, non-root, VOLUME /data, 7777 + 4800) — see docs/build.md
+.dockerignore               build-context filter for the Dockerfile (COPY . /src); keeps a host build/ + its absolute-path CMakeCache.txt out of the image (#839) — see docs/build.md
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + README
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
@@ -144,7 +145,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
   input/
     language_frontend.hpp   zetta::input::LanguageFrontend/FrontendResult — interface: lower a source language to the ExecutionGraph IR (the IR-targeting analogue of query::Dialect); non-throwing (ENT-38/ADR-33; #520)
-    python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the engine-faithful verb table — train→model, score/predict/rank→index, explain→serve, add_nodes→act; refs/receivers→data-flow edges); not a Python runtime (#520/#522)
+    python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the engine-faithful verb table — train→model, score/predict/rank→index, explain→serve, add_nodes→act; refs/receivers→data-flow edges); not a Python runtime (#520/#522); expressions nest at most 200 deep (#1427)
     cluster_bindings.hpp    zetta::input::run_add_nodes_step/add_nodes_count/add_nodes_cost_cap — execute a lowered sim-Python cluster.add_nodes IR node against the permanent-add control action zetta::cloud::add_nodes (provider injected, cloud consent-gated); the Node-aware overload composes the BurstApprovalGate when the script names a cost_cap= and rebalances partitions onto the new members (#522, #502)
     datasets_bindings.hpp   zetta::input::run_load_dataset_step/DatasetStepExecutor/dataset_load_spec/DatasetResolver — the `datasets` library shim: execute a lowered sim-Python load_dataset("<path>", columns=…) IR node by decoding the parquet via the native reader (read_parquet_rows) into a (partitioned) table; file/network IO behind the injectable DatasetResolver interface (offline default = local path); HF datasets is the fidelity reference only (#521)
   pipeline/                 AI projects: inputs → compiled execution graphs → correctness gate → deploy → runs (+ the solution catalog)
@@ -211,6 +212,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     entity_resolution_job.hpp  zetta::ml::run_entity_resolution_job — distributed candidate ownership, iterative statistics allreduce, component merge, bounded pair streaming, and coordinated-launch contract (#1072)
     segmentation.hpp        zetta::ml — segmentation parameters, trainer, metrics and resolved-dataset runner (#1042; docs/ml/segmentation.md)
     segmentation_methodology.hpp M-3 graph/launch contracts, peer runner installation and typed report reader (#1042)
+    segmentation_score.hpp  zetta::ml — load segmentation weights, encode a row as training did, nearest segment for score, runner-up contributions for explain (#1497)
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
     workspace_methodology.hpp  zetta::ml — workspace methodologies (#1261): the replicated `methodology:<W-id>` value schema and rules, WorkspaceMethodologyStore, the listing, the python_methodology shape and graph resolution
     workspace_study.hpp        zetta::ml — experiments over a workspace methodology's declared parameters (lake#689): the published search space, spec normalization, trial admission and Lake's runner work items
@@ -286,7 +288,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   tokenizer/
     byte_encoding.hpp       zetta::tokenizer — UTF-8 codec (utf8_decode/encode, malformed→U+FFFD) + the GPT-2 reversible byte↔unicode map (byte_to_unicode/unicode_to_byte); the byte foundation of the BPE tokenizer (FEAT-12; #555)
     pre_tokenizer.hpp       zetta::tokenizer::pre_tokenize — the Qwen2/Qwen3 pre-tokenization regex as a hand-written code-point scanner (contractions, words w/ optional non-alnum lead, single digits, punctuation runs, whitespace) (FEAT-12; #555)
-    bpe.hpp                 zetta::tokenizer::BpeTokenizer — byte-level BPE encode/decode (from_vocab_and_merges / from_gpt2_files / from_tokenizer_json / from_directory / add_special_tokens); integer-id merge loop with packed-uint64 pair keys (no string alloc in the hot path); all-256-byte base vocab → exact round-trip (FEAT-12; #555)
+    bpe.hpp                 zetta::tokenizer::BpeTokenizer — byte-level BPE encode/decode (from_vocab_and_merges / from_gpt2_files / from_tokenizer_json / from_directory / add_special_tokens); integer-id merge loop with packed-uint64 pair keys (no string alloc in the hot path); all-256-byte base vocab → exact round-trip; a token id beyond the vocabulary's size plus 2^20 (at most 2^24) is refused before the inverse table is sized (#1431) (FEAT-12; #555)
   agent/
     checkpoint.hpp          zetta::agent::checkpoint_directory — operator-registered model selectors and directory validation before serving (#1411)
     end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
@@ -571,6 +573,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     segmentation_job.cpp    owned-partition loader, JobRound adapter, Model and assignment/profile output tables with Run lineage (#1042)
     segmentation_graph.cpp  M-3 config schema and correctness gate: excluded roles, global transforms, K criterion and connected outputs (#1042)
     segmentation_methodology.cpp M-3 shape/owns/run adapter, unlabeled table resolution, coordinated launch and measured report (#1042)
+    segmentation_score.cpp  score/explain for segmentation models: weights loader, row encoding, nearest centre, runner-up contributions (#1497)
     methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
     run_features.cpp        plan_run_features / record_run_features / run_feature_report — common data-first run preflight, existing leakage/causal checks, accepted trainer inputs, and persistent feature/exclusion reasons for all runnable methodologies (#1062); public declarations in include/zetta/ml/run_features.hpp
     graph.cpp               deterministic native graph feature and node2vec-style embedding implementation (#1051)
@@ -854,6 +857,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   ml/test_segmentation.cpp  segmentation recovery, preprocessing, selection, cluster equivalence and persisted output acceptance (#1042)
   ml/test_segmentation_methodology.cpp M-3/S-9/intent shape and graph-gate refusal tests (#1042)
   ml/test_segmentation_launch.cpp off-root registry submission over three owned partitions and single-node metric equivalence (#1042)
+  ml/test_segmentation_score.cpp segmentation weights round trip, training rows placed where training put them, rare bucket, missing column, explain additivity (#1497)
   ml/test_model_bounds.cpp  crafted models refused at every boundary (splits past the feature list, backward children, caller-shortened XGBoost names); predict and TreeSHAP stay in bounds (#1390)
   solutions/test_experiment.cpp deterministic balance and restart stability, protected actions, attributed exemptions, malformed boundaries, and concurrent peer convergence (#1105)
   temp_dir.hpp              per-test isolated data_dir helper
@@ -869,6 +873,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/test_chat_loop.cpp     the #969 loop end to end: chat_loop_happy_path / chat_loop_refusals at layer 1 and over MCP, the chat legs with a scripted model (byte-level tokenizer + installed inference runner), POST /v1/chat == MCP (#975), chat_sandbox live tools, RunProposalStore
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
   api/test_analysis_access.cpp  analyze_dataset / plan_features read as the caller: hidden columns omitted, an unreadable table answers as missing and is never joined, row security applies to the sample (#1300, #1396)
+  api/test_segmentation_score.cpp  score/explain on a train_model M-3 model: rows, the training table against its assignment table, and explain (#1497)
   api/test_study_driver.cpp  server-level real Study journeys: dataset and Pipeline trials, published-space round trips, validation/create agreement, restart recovery, stop propagation, budgets, curves, analysis and actual-model promotion (#1205/#1207)
   api/test_web_ui_studio.cpp  the imported Studio design contract over the pure web renderers (#874, docs/product/experience/design-sync.md): tokens (IBM Plex / Blue 60 / paired dark), the five-group shell, the vocabulary contract, icon semantics
   api/test_web_blob_authz.cpp  the web UI's cookie blob routes check the session user's sql:write / blob:read grants and audit every decision (#1389)

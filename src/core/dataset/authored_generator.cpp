@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/dataset/authored_generator.hpp"
 
 #include <algorithm>

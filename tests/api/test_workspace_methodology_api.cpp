@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Workspace methodologies (zetta#1261, lake#655) end to end through the registry,
 // against a replicated node: the read-only catalogue, register/get/update/delete,
 // list_methodologies marking source/editable/runnable, the pipeline step compiled

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -95,36 +97,36 @@ TEST(ChurnDataset, CarriesABinaryChurnLabel) {
     EXPECT_EQ(churned, 3u);
 
     // A churned account names a churn_date; an active one does not.
-    const ChurnAccount* office = find_account(result.dataset, "acct_fedex_office");
+    const ChurnAccount* office = find_account(result.dataset, "acct_contoso_office");
     ASSERT_NE(office, nullptr);
     EXPECT_TRUE(office->churned);
     EXPECT_FALSE(office->churn_date.empty());
 
-    const ChurnAccount* freight = find_account(result.dataset, "acct_fedex_freight");
+    const ChurnAccount* freight = find_account(result.dataset, "acct_contoso_freight");
     ASSERT_NE(freight, nullptr);
     EXPECT_FALSE(freight->churned);
     EXPECT_TRUE(freight->churn_date.empty());
 }
 
-// ---- the FedEx entity-resolution case (separate accounts) -------------------
+// ---- the Contoso entity-resolution case (separate accounts) -------------------
 
-TEST(ChurnDataset, FedExSiblingsAreSeparateAccounts) {
+TEST(ChurnDataset, ContosoSiblingsAreSeparateAccounts) {
     const auto result = load_churn_dataset(churn_dir());
     ASSERT_TRUE(result.ok()) << result.error;
 
     std::unordered_set<std::string> sibling_accounts;
     std::unordered_set<std::string> sibling_entities;
     for (const ChurnAccount& account : result.dataset.accounts) {
-        if (account.brand == "FedEx") {
+        if (account.brand == "Contoso") {
             sibling_accounts.insert(account.account_id);
             sibling_entities.insert(account.entity);
         }
     }
-    // FedEx Freight + 5 siblings, each its own account and its own entity.
+    // Contoso Freight + 5 siblings, each its own account and its own entity.
     EXPECT_EQ(sibling_accounts.size(), 6u);
     EXPECT_EQ(sibling_entities.size(), 6u);
-    EXPECT_TRUE(sibling_accounts.contains("acct_fedex_freight"));
-    EXPECT_TRUE(sibling_entities.contains("fedex_freight"));
+    EXPECT_TRUE(sibling_accounts.contains("acct_contoso_freight"));
+    EXPECT_TRUE(sibling_entities.contains("contoso_freight"));
 }
 
 // ---- point-in-time: events span the as-of cutoff (the leakage trap) ---------

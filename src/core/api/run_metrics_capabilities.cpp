@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Run metrics on the control surface (#1137; docs/ml/run-metrics.md).
 
 #include <map>

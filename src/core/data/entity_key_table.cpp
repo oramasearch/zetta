@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The text entity-key table (#1255): a run's or a model's derived-id map as rows
 // of the engine-internal record collection `_entity_keys`, referenced from the
 // record. See include/zetta/data/entity_key_table.hpp and

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -47,7 +49,7 @@ constexpr std::uint64_t kGiB = std::uint64_t{1024} * 1024 * 1024;
 
 GcpConfig sample_config() {
     GcpConfig config;
-    config.project_id = "orama-churn";
+    config.project_id = "example-churn";
     config.zone = "us-central1-a";
     return config;
 }
@@ -161,7 +163,7 @@ TEST(GcpConfig, RoundTripsFullConfig) {
     config.image = "debian-12";
     config.network = "default";
     config.subnetwork = "us-central1-sub";
-    config.service_account = "burst@orama-churn.iam.gserviceaccount.com";
+    config.service_account = "burst@example-churn.iam.gserviceaccount.com";
     config.spot = true;
     config.seed_peer = "10.0.0.1:7777";
 
@@ -426,7 +428,7 @@ TEST(GcpCliControlPlane, BringUpEnsuresTemplateCreatesMigThenLists) {
     GcpConfig config = sample_config();
     config.machine_type = "a2-highgpu-1g";
     config.image = "debian-12";
-    config.service_account = "burst@orama-churn.iam.gserviceaccount.com";
+    config.service_account = "burst@example-churn.iam.gserviceaccount.com";
 
     const ProvisionResult result =
         control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
@@ -439,18 +441,18 @@ TEST(GcpCliControlPlane, BringUpEnsuresTemplateCreatesMigThenLists) {
     const std::vector<std::string>* tmpl = call_with(calls, {"instance-templates", "create"});
     ASSERT_NE(tmpl, nullptr);
     EXPECT_TRUE(has_token(*tmpl, "zetta-burst-template"));
-    EXPECT_TRUE(has_flag(*tmpl, "--project", "orama-churn"));
+    EXPECT_TRUE(has_flag(*tmpl, "--project", "example-churn"));
     EXPECT_TRUE(has_flag(*tmpl, "--machine-type", "a2-highgpu-1g"));
     EXPECT_TRUE(has_flag(*tmpl, "--image-family", "debian-12"));
     EXPECT_TRUE(has_flag(*tmpl, "--service-account",
-                         "burst@orama-churn.iam.gserviceaccount.com"));
+                         "burst@example-churn.iam.gserviceaccount.com"));
     EXPECT_FALSE(has_token(*tmpl, "--provisioning-model"));  // not a spot config
 
     // The MIG create carries the pool identity, zone, template, and count.
     const std::vector<std::string>* create = call_with(calls, {"managed", "create"});
     ASSERT_NE(create, nullptr);
     EXPECT_TRUE(has_token(*create, "zetta-burst"));
-    EXPECT_TRUE(has_flag(*create, "--project", "orama-churn"));
+    EXPECT_TRUE(has_flag(*create, "--project", "example-churn"));
     EXPECT_TRUE(has_flag(*create, "--zone", "us-central1-a"));
     EXPECT_TRUE(has_flag(*create, "--template", "zetta-burst-template"));
     EXPECT_TRUE(has_flag(*create, "--size", "2"));
@@ -507,7 +509,7 @@ TEST(GcpCliControlPlane, SpotConfigAddsSpotAndSeedFlagsToTheTemplate) {
     EXPECT_NE(startup_seen.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
     EXPECT_NE(startup_seen.find("TOKEN_STORE=gcp-secret-manager"), std::string::npos);
     EXPECT_NE(startup_seen.find("TOKEN_SECRET=zetta-burst-cluster-token"), std::string::npos);
-    EXPECT_NE(startup_seen.find("TOKEN_CONTAINER=orama-churn"), std::string::npos);
+    EXPECT_NE(startup_seen.find("TOKEN_CONTAINER=example-churn"), std::string::npos);
     EXPECT_EQ(startup_seen.find(config.join_token), std::string::npos);
     EXPECT_TRUE(startup_private);
 }
@@ -542,7 +544,7 @@ TEST(GcpCliControlPlane, StoresTheJoinTokenInSecretManagerFirst) {
     EXPECT_TRUE(has_token(create, "secrets"));
     EXPECT_TRUE(has_token(create, "create"));
     EXPECT_TRUE(has_token(create, "zetta-burst-cluster-token"));
-    EXPECT_TRUE(has_flag(create, "--project", "orama-churn"));
+    EXPECT_TRUE(has_flag(create, "--project", "example-churn"));
     EXPECT_TRUE(has_flag(create, "--replication-policy", "automatic"));
     EXPECT_EQ(data_seen, config.join_token);
     EXPECT_TRUE(data_private);
@@ -573,7 +575,7 @@ TEST(GcpCliControlPlane, AReBurstAddsASecretVersion) {
     const std::vector<std::string>* add = call_with(calls, {"versions", "add"});
     ASSERT_NE(add, nullptr);
     EXPECT_TRUE(has_token(*add, "zetta-burst-cluster-token"));
-    EXPECT_TRUE(has_flag(*add, "--project", "orama-churn"));
+    EXPECT_TRUE(has_flag(*add, "--project", "example-churn"));
     EXPECT_TRUE(has_token(*add, "--data-file"));
 }
 

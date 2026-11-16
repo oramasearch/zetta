@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // lake#654: a model made on its own, not only as one step of a project's
 // pipeline — trained from a dataset, a target and a methodology (train_model),
 // retrained (retrain_model), brought from a file (register_model), moved into a
@@ -439,7 +441,7 @@ TEST_F(StandaloneModels, BringCommonFormatsAndDownloadWeights) {
     EXPECT_EQ(call("export_model", {{"model_id", "no-such-model"}}).error.code, "not_found");
 }
 
-// zetta#1390 (LSR-070): a brought file whose splits read past its own final
+// zetta#1390: a brought file whose splits read past its own final
 // feature list is refused before anything can score or explain it, and leaves
 // nothing behind.
 TEST_F(StandaloneModels, AModelWhoseSplitsReadPastItsFeaturesIsRefused) {

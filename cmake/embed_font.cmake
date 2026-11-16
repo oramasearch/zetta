@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # embed_font.cmake
 #
 # Reads a binary file (intended for a TTF font) and emits a C++ header

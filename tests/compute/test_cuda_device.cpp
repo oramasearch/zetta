@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 // CPU<->CUDA conformance suite — the acceptance test of #361 ("each operator

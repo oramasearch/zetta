@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/base_prompt.hpp"
 
 namespace zetta::agent {

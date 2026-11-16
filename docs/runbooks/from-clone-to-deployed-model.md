@@ -24,7 +24,7 @@ column contract).
 ## 1 · Build
 
 ```sh
-git clone --recurse-submodules git@github.com:oramasearch/zetta.git
+git clone --recurse-submodules https://github.com/oramasearch/zetta.git
 cd zetta && git submodule update --init --recursive
 ```
 
@@ -587,14 +587,12 @@ rather than promising it.
 
 ### 6.1 · The image
 
-The container build lives in **`zetta-bridge`**, not in this repo:
-[`build/images/zetta-headless/Dockerfile`](https://github.com/oramasearch/zetta-bridge/tree/main/build/images/zetta-headless).
+The container build is the [`Dockerfile`](../../Dockerfile) at the repository root (see
+[`docs/build.md`](../build.md#container-image-dockerfile-dockerignore)):
 
 ```sh
-# from the zetta-bridge checkout; the build context is the zetta source tree
-docker buildx build --platform linux/amd64 \
-  -f build/images/zetta-headless/Dockerfile \
-  -t <registry>/zetta:<version> --push modules/zetta
+# from the zetta checkout, submodules checked out; the build context is the repo root
+docker buildx build --platform linux/amd64 -t <registry>/zetta:<version> --push .
 ```
 
 Runtime stage installs **`libssl3`, `libstdc++6`, `libpq5`, `ca-certificates`** and nothing

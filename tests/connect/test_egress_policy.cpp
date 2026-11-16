@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The node's outbound egress policy (CTL-4, #75,
 // docs/governance/egress-policy.md): denied by default, an explicit allowlist,
 // loopback never counted as egress. The dialler-level enforcement is covered in

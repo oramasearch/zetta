@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Native dataset generation (#873): the factory lists + creates generators, and the base-agent
 // generator produces an admission-GATED corpus (blender-rl: reference passes, controls fail)
 // with reference actions attached — the native replacement for the Python generators.

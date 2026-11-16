@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cluster/node_telemetry.hpp"
 
 #include <algorithm>

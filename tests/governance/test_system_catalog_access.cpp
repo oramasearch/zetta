@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Who may read the system.* views (#766, docs/governance/system-catalog-access.md).
 //
 // Before #766 every system table was answered before any identity check, so a
@@ -18,6 +20,8 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/api/registry.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/scope.hpp"
@@ -207,6 +211,30 @@ TEST_F(SystemCatalogAccess, DatasetsAndPartitionsAreNarrowedToWhatTheCallerMayRe
     ASSERT_TRUE(counted.ok()) << counted.error;
     ASSERT_EQ(counted.rows.size(), 1u);
     EXPECT_EQ(counted.rows[0].at("n"), 1);
+}
+
+// #1439: the list_datasets capability lists what system.datasets shows the caller, for both of
+// its detail levels: the analyst sees app.open only, the owner sees both.
+TEST_F(SystemCatalogAccess, ListDatasetsListsOnlyWhatTheCallerMayRead) {
+    const std::string ana = analyst({"list_datasets"});
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    const auto listed = [&](const std::string& user, const char* detail) {
+        zetta::api::ApiContext context{node, nullptr, user};
+        context.acting_is_user = true;
+        const auto result = registry.call("list_datasets", {{"detail", detail}}, context);
+        EXPECT_TRUE(result.ok) << result.error.message;
+        std::set<std::string> names;
+        for (const auto& dataset : result.value.value("datasets", nlohmann::json::array())) {
+            names.insert(dataset.value("name", dataset.value("dataset", std::string())));
+        }
+        return names;
+    };
+    for (const char* detail : {"full", "summary"}) {
+        SCOPED_TRACE(detail);
+        EXPECT_EQ(listed(ana, detail), std::set<std::string>{"open"});
+        EXPECT_EQ(listed(owner, detail), (std::set<std::string>{"hidden", "open"}));
+    }
 }
 
 // #847 step 6: two people asking the trail the same question each get their own

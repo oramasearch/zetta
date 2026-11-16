@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Orama Studio design import into the web app (#874,
 // docs/product/experience/design-sync.md).
 //
@@ -53,7 +55,7 @@ TEST(WebUiStudio, StylesheetCarriesTheStudioTokens) {
 }
 
 TEST(WebUiStudio, ShellRendersTheFiveStudioGroups) {
-    const std::string html = web_ui_shell("overview", "steve", "node-1", "<p>content</p>");
+    const std::string html = web_ui_shell("overview", "riley", "node-1", "<p>content</p>");
     EXPECT_TRUE(contains(html, "Orama Studio"));
     for (const char* group : {">Workspace<", ">Operate<", ">Developer<", ">Documentation<",
                               ">Advanced<"})

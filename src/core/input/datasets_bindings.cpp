@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/input/datasets_bindings.hpp"
 
 #include <cctype>

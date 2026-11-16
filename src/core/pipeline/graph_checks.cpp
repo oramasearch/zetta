@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pipeline/graph_checks.hpp"
 
 #include "zetta/ml/workspace_methodology.hpp"

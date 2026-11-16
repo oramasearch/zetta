@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/bare_metal_provisioner.hpp"
 
 #include "../json_boundary.hpp"

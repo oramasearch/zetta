@@ -27,7 +27,7 @@ model's weights back out. The code is `include/zetta/ml/model_import.hpp` and
 **Sending the file.** `register_model` takes a text file as `weights` and any file as
 `weights_base64`. A binary file (ONNX or UBJSON) must use `weights_base64`.
 
-**Import budgets (#1419, LSR-246).** Every format defaults to at most 1,048,576 features
+**Import budgets (#1419).** Every format defaults to at most 1,048,576 features
 and 1 GiB (1,073,741,824 bytes) of decoded file contents. `import_model` checks bytes before
 format detection or parsing. Each reader checks declared or inferred feature counts before
 generating default names; file names and caller-supplied names share the feature ceiling.

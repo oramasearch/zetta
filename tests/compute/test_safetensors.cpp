@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 // The safetensors reader/writer. Compiles only under ZETTA_WITH_MLX.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Published pipelines (zetta#1289, docs/api/serving.md): expose_pipeline pins
 // an approved pipeline and publishes its served route; a served run is governed
 // by the caller's own grants (data:run_pipeline, and read access to what the

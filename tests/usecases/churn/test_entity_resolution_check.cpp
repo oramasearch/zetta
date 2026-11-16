@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <string>
@@ -46,15 +48,15 @@ ExecutionGraph graph_with_resolution(const std::vector<Record>& records) {
     return graph;
 }
 
-// The FedEx fixture: the make-or-break case. Five sibling subsidiaries, each its
+// The Contoso fixture: the make-or-break case. Five sibling subsidiaries, each its
 // own CRM account; a *division-correct* resolver keeps them apart.
-std::vector<Record> fedex_resolved_correctly() {
+std::vector<Record> contoso_resolved_correctly() {
     return {
-        {"FedEx Freight",    "fedex_freight",   "acct_fedex_freight"},
-        {"FedEx Ground",     "fedex_ground",    "acct_fedex_ground"},
-        {"FedEx Express",    "fedex_express",   "acct_fedex_express"},
-        {"FedEx Office",     "fedex_office",    "acct_fedex_office"},
-        {"FedEx Logistics",  "fedex_logistics", "acct_fedex_logistics"},
+        {"Contoso Freight",    "contoso_freight",   "acct_contoso_freight"},
+        {"Contoso Ground",     "contoso_ground",    "acct_contoso_ground"},
+        {"Contoso Express",    "contoso_express",   "acct_contoso_express"},
+        {"Contoso Office",     "contoso_office",    "acct_contoso_office"},
+        {"Contoso Logistics",  "contoso_logistics", "acct_contoso_logistics"},
     };
 }
 
@@ -73,7 +75,7 @@ TEST(EntityResolutionCheck, ReportsItsStableName) {
 // ---- division-correct resolution passes -------------------------------------
 
 TEST(EntityResolutionCheck, DivisionCorrectFixturePasses) {
-    const CheckResult result = evaluate(graph_with_resolution(fedex_resolved_correctly()));
+    const CheckResult result = evaluate(graph_with_resolution(contoso_resolved_correctly()));
     EXPECT_EQ(result.name, "entity_resolution");
     EXPECT_EQ(result.status, CheckStatus::Pass);
     EXPECT_FALSE(result.reason.empty());
@@ -95,28 +97,28 @@ TEST(EntityResolutionCheck, EmptyRecordSetHasNothingToConflate) {
 // ---- conflation is the make-or-break failure (RULE-1) -----------------------
 
 TEST(EntityResolutionCheck, ConflatingTwoSiblingsFails) {
-    // "FedEx Freight" and "FedEx Ground" are distinct divisions (distinct CRM
+    // "Contoso Freight" and "Contoso Ground" are distinct divisions (distinct CRM
     // accounts), but the step merged both onto one account — the canonical TC-4
     // failure. The gate must fail the graph.
     const CheckResult result = evaluate(graph_with_resolution({
-        {"FedEx Freight", "fedex_freight", "acct_fedex"},
-        {"FedEx Ground",  "fedex_ground",  "acct_fedex"},
+        {"Contoso Freight", "contoso_freight", "acct_contoso"},
+        {"Contoso Ground",  "contoso_ground",  "acct_contoso"},
     }));
     EXPECT_EQ(result.status, CheckStatus::Fail);
     // The reason names the offending account and the entities it merged.
-    EXPECT_NE(result.reason.find("acct_fedex"), std::string::npos);
-    EXPECT_NE(result.reason.find("fedex_freight"), std::string::npos);
-    EXPECT_NE(result.reason.find("fedex_ground"), std::string::npos);
+    EXPECT_NE(result.reason.find("acct_contoso"), std::string::npos);
+    EXPECT_NE(result.reason.find("contoso_freight"), std::string::npos);
+    EXPECT_NE(result.reason.find("contoso_ground"), std::string::npos);
 }
 
 TEST(EntityResolutionCheck, OneConflationAmongCorrectSiblingsStillFails) {
     // Four siblings resolve correctly, but Freight gets folded into Ground's
     // account. A single conflation is enough to fail the whole step.
-    std::vector<Record> records = fedex_resolved_correctly();
-    records[0].resolved = "acct_fedex_ground";  // Freight → Ground's account
+    std::vector<Record> records = contoso_resolved_correctly();
+    records[0].resolved = "acct_contoso_ground";  // Freight → Ground's account
     const CheckResult result = evaluate(graph_with_resolution(records));
     EXPECT_EQ(result.status, CheckStatus::Fail);
-    EXPECT_NE(result.reason.find("acct_fedex_ground"), std::string::npos);
+    EXPECT_NE(result.reason.find("acct_contoso_ground"), std::string::npos);
 }
 
 // ---- fragmentation is the softer, symmetric error (warn, not block) ---------
@@ -125,21 +127,21 @@ TEST(EntityResolutionCheck, FragmentationWarnsButDoesNotFail) {
     // One true division split across two accounts (under-merge). Less dangerous
     // than conflation, so it warns rather than blocking deploy.
     const CheckResult result = evaluate(graph_with_resolution({
-        {"FedEx Freight",   "fedex_freight", "acct_fedex_freight"},
-        {"FedEx Freight, Inc.", "fedex_freight", "acct_fedex_freight_dup"},
+        {"Contoso Freight",   "contoso_freight", "acct_contoso_freight"},
+        {"Contoso Freight, Inc.", "contoso_freight", "acct_contoso_freight_dup"},
     }));
     EXPECT_EQ(result.status, CheckStatus::Warn);
-    EXPECT_NE(result.reason.find("fedex_freight"), std::string::npos);
+    EXPECT_NE(result.reason.find("contoso_freight"), std::string::npos);
 }
 
 TEST(EntityResolutionCheck, ConflationOutranksFragmentation) {
     // A step with both errors fails — conflation (the blocking error) wins over
     // fragmentation (the warning) in the worst-status aggregation.
     const CheckResult result = evaluate(graph_with_resolution({
-        {"FedEx Freight", "fedex_freight", "acct_fedex"},   // conflated…
-        {"FedEx Ground",  "fedex_ground",  "acct_fedex"},   // …with Ground
-        {"FedEx Express", "fedex_express", "acct_express_a"},  // fragmented…
-        {"FedEx Express", "fedex_express", "acct_express_b"},  // …across two
+        {"Contoso Freight", "contoso_freight", "acct_contoso"},   // conflated…
+        {"Contoso Ground",  "contoso_ground",  "acct_contoso"},   // …with Ground
+        {"Contoso Express", "contoso_express", "acct_express_a"},  // fragmented…
+        {"Contoso Express", "contoso_express", "acct_express_b"},  // …across two
     }));
     EXPECT_EQ(result.status, CheckStatus::Fail);
 }
@@ -151,7 +153,7 @@ TEST(EntityResolutionCheck, MalformedPayloadFailsAtTheBoundary) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts",
                    nlohmann::json{{"entity_resolution",
-                                   {{"records", {{{"entity", "fedex_freight"},
+                                   {{"records", {{{"entity", "contoso_freight"},
                                                   {"resolved", ""}}}}}}});
     const CheckResult result = evaluate(graph);
     EXPECT_EQ(result.status, CheckStatus::Fail);
@@ -163,7 +165,7 @@ TEST(EntityResolutionCheck, MissingRequiredFieldFailsAtTheBoundary) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts",
                    nlohmann::json{{"entity_resolution",
-                                   {{"records", {{{"resolved", "acct_fedex"}}}}}}});
+                                   {{"records", {{{"resolved", "acct_contoso"}}}}}}});
     const CheckResult result = evaluate(graph);
     EXPECT_EQ(result.status, CheckStatus::Fail);
 }
@@ -173,11 +175,11 @@ TEST(EntityResolutionCheck, MissingRequiredFieldFailsAtTheBoundary) {
 TEST(EntityResolutionCheck, AggregatesWorstStatusAcrossSteps) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_ok",
-                   resolution_attribute(fedex_resolved_correctly()));
+                   resolution_attribute(contoso_resolved_correctly()));
     graph.add_node(StepKind::Clean, "resolve_bad",
                    resolution_attribute({
-                       {"FedEx Freight", "fedex_freight", "acct_fedex"},
-                       {"FedEx Ground",  "fedex_ground",  "acct_fedex"},
+                       {"Contoso Freight", "contoso_freight", "acct_contoso"},
+                       {"Contoso Ground",  "contoso_ground",  "acct_contoso"},
                    }));
     const CheckResult result = evaluate(graph);
     EXPECT_EQ(result.status, CheckStatus::Fail);
@@ -189,8 +191,8 @@ TEST(EntityResolutionCheck, AggregatesWorstStatusAcrossSteps) {
 TEST(EntityResolutionCheck, DefaultGateBlocksDeployOnConflation) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(graph_with_resolution({
-        {"FedEx Freight", "fedex_freight", "acct_fedex"},
-        {"FedEx Ground",  "fedex_ground",  "acct_fedex"},
+        {"Contoso Freight", "contoso_freight", "acct_contoso"},
+        {"Contoso Ground",  "contoso_ground",  "acct_contoso"},
     }));
 
     EXPECT_FALSE(report.passed());
@@ -209,7 +211,7 @@ TEST(EntityResolutionCheck, DefaultGateBlocksDeployOnConflation) {
 TEST(EntityResolutionCheck, DefaultGateAllowsDivisionCorrectResolution) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report =
-        gate.run(graph_with_resolution(fedex_resolved_correctly()));
+        gate.run(graph_with_resolution(contoso_resolved_correctly()));
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
 }

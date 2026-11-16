@@ -105,7 +105,7 @@ already consumes JSON rows. Before transposing a column it checks the decoded
 shape with `validate_decoded_column` (one dense value per present row, in the
 vector the column's physical type selects), so a crafted file whose row groups
 disagree on a column's physical type fails with a reason instead of reading past
-the values (LSR-167, see [the decoders](parquet-column-decoders.md)).
+the values (see [the decoders](parquet-column-decoders.md)).
 
 That is how the **churn dataset loader** ([churn-dataset.md](../use-cases/churn-dataset.md))
 now reads Parquet: `load_churn_dataset(dir, ChurnDataFormat::Parquet)` reads
@@ -199,3 +199,16 @@ Parquet into the dataset loader path. zstd page decompression is the sibling cod
 to add behind the [Snappy](parquet-snappy.md) per-page seam when a target file
 needs it; driving the reader from a deployed graph / `ddf` `ComputeJob` is a later
 slice.
+
+## Bounds on what a file's counts can allocate (#1425)
+
+A file chooses its own footer and page counts, so none of them is trusted to size an allocation:
+
+- `read_parquet_rows` holds every row as a JSON object, so a footer claiming more than
+  `kMaxParquetRowsInMemory` (10,000,000) rows is refused before anything is allocated. Larger files
+  go through the column decoder.
+- Plain decoding checks that the page holds `count` values without overflowing the multiplication
+  (`n > bytes / width` is refused). A byte-array page must hold at least four bytes per value.
+- RLE/bit-packed decoding reserves no more than the input bytes could plainly encode. A run that
+  really repeats a value grows the vector as it decodes.
+

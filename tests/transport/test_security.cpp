@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Reusable transport security (#1283): PEM loading and fail-closed local
 // credential validation before a socket is allowed to carry application data.
 

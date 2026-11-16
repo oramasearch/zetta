@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "snowflake_protocol.hpp"
 
 #include <cctype>

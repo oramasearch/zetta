@@ -1,20 +1,18 @@
 # Regenerating the churn run report
 
-How to reproduce every number in
-[`docs/reports/results/motive-churn-run-report-2026-08-04.md`](../reports/results/motive-churn-run-report-2026-08-04.md)
-and the summary in
-[`motive-churn-results-2026-08-04.md`](../reports/results/motive-churn-results-2026-08-04.md),
-from a clean checkout.
+How to reproduce every number in a churn run report over the synthetic communications demo
+dataset, and in a summary report written from it, from a clean checkout. Published reports
+go in [`docs/reports/results/`](../reports/results/README.md).
 
 Three steps: generate the data, run the pipeline, write the prose from the facts.
 
 ## 1 · Generate the dataset
 
 ```sh
-python3 scripts/gen_motive_demo_dataset.py --out data/demo/motive --accounts 15000
+python3 scripts/gen_comms_demo_dataset.py --out data/demo/comms --accounts 15000
 ```
 
-~45 s. Writes `communication_events.csv` (838 MB), `accounts.csv`, `account_features.csv`
+Writes `communication_events.csv` (several hundred MB at this size), `accounts.csv`, `account_features.csv`
 and `manifest.json`. Gitignored — reproducible from the generator, so it is not committed.
 
 **Deterministic:** the same `--seed` (default `20260803`) produces byte-identical rows. If a
@@ -25,13 +23,13 @@ before trusting the new figure.
 
 ```sh
 cmake --build build --target zetta-tests
-ZETTA_MOTIVE_DEMO_DIR=data/demo/motive ./build/tests/zetta-tests \
-    --gtest_filter='MotiveDemoDataset.*'
+ZETTA_COMMS_DEMO_DIR=data/demo/comms ./build/tests/zetta-tests \
+    --gtest_filter='CommsDemoDataset.*'
 ```
 
-~30 s. This lands the rows as a partitioned table, resolves the column contract, runs the
+This lands the rows as a partitioned table, resolves the column contract, runs the
 churn pipeline (featurize → train → TreeSHAP → rank), evaluates a **70/30 holdout**, and
-writes `data/demo/motive/run-report.json` — the facts artifact.
+writes `data/demo/comms/run-report.json` — the facts artifact.
 
 It prints the headline figures and asserts them, so a change that breaks a claim fails here
 rather than in a document:
@@ -44,7 +42,7 @@ rather than in a document:
 | recomputed in-sample ≈ engine's own | the holdout arithmetic reproduces the engine's, so the two are comparable |
 | top driver ∈ the four planted channels | the model is not ranking by account size |
 
-The test **skips** when `data/demo/motive/account_features.csv` is absent, so a normal
+The test **skips** when `data/demo/comms/account_features.csv` is absent, so a normal
 checkout and CI are unaffected.
 
 ## 3 · Write the report from the facts
@@ -63,15 +61,15 @@ it was invented.
 
 ## Refreshing the summary report and diagrams
 
-The client-facing summary quotes the same figures plus per-feature AUCs. Those come from a
+A summary report quotes the same figures plus per-feature AUCs. Those come from a
 separate pass over `account_features.csv`:
 
 ```sh
 python3 - <<'PY'
 import csv, bisect
-rows = list(csv.DictReader(open('data/demo/motive/account_features.csv')))
+rows = list(csv.DictReader(open('data/demo/comms/account_features.csv')))
 y = [int(r["churned"]) for r in rows]
-skip = {"account_index", "sfdc_account_id", "finance_segment", "finance_sub_segment", "churned"}
+skip = {"account_index", "crm_account_id", "segment", "sub_segment", "churned"}
 def auc(v):
     pos = sorted(x for x, l in zip(v, y) if l == 1)
     neg = sorted(x for x, l in zip(v, y) if l == 0)
@@ -88,18 +86,15 @@ PY
 Diagrams are generated, never hand-edited:
 
 ```sh
-dot -Tsvg docs/reports/results/diagrams/motive-churn-flow.dot \
-        -o docs/reports/results/diagrams/motive-churn-flow.svg
-dot -Tsvg docs/reports/results/diagrams/motive-dataset-signal.dot \
-        -o docs/reports/results/diagrams/motive-dataset-signal.svg
+dot -Tsvg docs/reports/results/diagrams/<name>.dot \
+        -o docs/reports/results/diagrams/<name>.svg
 ```
 
 ## When the numbers change
 
-**Regenerate everything together.** The two reports, both diagrams, and the folder index all
-quote the same figures, and a mixed set is worse than a stale one — a reader cannot tell
-which numbers are current. The driver table has already been stale once against a rerun at a
-different account count.
+**Regenerate everything together.** The run report, the summary, their diagrams and the
+folder index all quote the same figures, and a mixed set is worse than a stale one — a
+reader cannot tell which numbers are current.
 
-Sizes are a knob, not a constant: at `--accounts 1500` the same pipeline gives 0.619 held out
-against 0.919 in sample. **State the account count wherever a figure appears.**
+Sizes are a knob, not a constant: at a small `--accounts` the held-out AUC falls well below
+the in-sample one. **State the account count wherever a figure appears.**

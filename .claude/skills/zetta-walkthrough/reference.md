@@ -28,10 +28,9 @@ grep -A1 "SAVE THIS" "$SCRATCH/node.log" | tail -1 | tr -d ' \t\n' > "$SCRATCH/t
 
 - **`--listen` is the peer port.** Setting it does not move the API. The symptom is
   an empty response on the port you chose, which reads as a hung or dead node.
-  ([#954](https://github.com/oramasearch/zetta/issues/954) was filed on a
-  near-identical misreading.)
+  (A bug report has already been filed on a near-identical misreading.)
 - **Read capabilities are `GET`; actions are `POST`.** Probing a read with POST
-  answers 405 naming the method it takes, and an unknown capability 404 (#1007).
+  answers 405 naming the method it takes, and an unknown capability 404.
   A node built before that fix returns NO reply for either, which looks exactly
   like a hang — against a deployed image, suspect the image is older than the
   capability before suspecting the capability.
@@ -68,10 +67,10 @@ the gap.
 | Ask what the data cannot support | `chat` declines | Chat view |
 | **A follow-up that depends on the turn before it** | `chat` with `history` | **Ask Orama rail · three turns** |
 
-**Every row below is an acceptance criterion of [#983](https://github.com/oramasearch/zetta/issues/983).**
+**Every row below is an acceptance criterion of the agent's conversational spine.**
 Several name capabilities that do not exist yet. **Walk them anyway** — a row that cannot be
 reached is the single most valuable finding this suite produces, and a row quietly dropped
-because "that isn't built" is how a gap survives to a customer call. Record it as *unreachable*
+because "that isn't built" is how a gap survives to a user. Record it as *unreachable*
 with what was missing; never delete the row.
 
 | Step | A (MCP) | B (browser) |
@@ -81,19 +80,19 @@ with what was missing; never delete the row.
 | **A `model_kind` the engine cannot execute fails with a clear reason** | `run` a graph naming an unimplemented methodology | error surface |
 | **The same ask under A1 and A2 differs** — A1 returns an approval request, A2 executes | `chat` with the autonomy class set | Chat · approval affordance |
 | **Monitor: drift, calibration over time, per-segment performance, holdout integrity** — answered from a real tool call, not prose about monitoring | the Monitor read capabilities | Reports · monitoring panel |
-| **Improve: a proposal carries its predicted ROI effect**, grounded | the proposal verb | Chat · proposal card |
-| **The agent calls a tool it was asked to use**, rather than describing it (#976) | `chat` "list the models" → asserts `called_list_models` | Chat |
+| **Improve: a proposal carries its predicted effect**, grounded | the proposal verb | Chat · proposal card |
+| **The agent calls a tool it was asked to use**, rather than describing it | `chat` "list the models" → asserts `called_list_models` | Chat |
 | **A trajectory is conditioned on observations** — the schema decides the pipeline; perturb the dataset and the proposal changes | `agent_run` over two datasets | Chat |
 | **Propose-and-approve in the thread** — the agent proposes a run, `"yes"` in the next turn executes it | `chat` → `chat` | Chat, not a button |
-| **The agent's stated capabilities are TRUE** — ask "can you run Python in a Pipeline step?" and the answer matches the engine (simulated Python), not the marketing line | `chat` vs `product-claims.md` | Chat |
+| **The agent's stated capabilities are TRUE** — ask "can you run Python in a Pipeline step?" and the answer matches the engine (simulated Python), not the marketing line | `chat` vs the engine's source | Chat |
 | **The agent names which version is answering** | `versions` | Ask Orama rail header |
 
 ### Every methodology, walked — the full-system matrix
 
 **A methodology absent from this table is a methodology nobody is checking.** The catalogue
-(`03-methodology-portfolio.md` §4) specifies **M-1…M-21**; the engine ships **M-1** and part of
-**M-10** ([#984](https://github.com/oramasearch/zetta/issues/984)). Walk **all twenty-one** every
-run. The unreachable ones are the standing gap list, and it should shrink visibly as #984 lands.
+specifies **M-1…M-21** (`docs/agent/training-coverage-checklist.md`); the engine ships **M-1** and part of
+**M-10**. Walk **all twenty-one** every
+run. The unreachable ones are the standing gap list, and it should shrink visibly as methodologies land.
 
 For each: ask in plain language, then assert **the shape it must produce** and **the shape it must
 not be confused with**. The second column is the whole point — a methodology that produces a
@@ -141,7 +140,7 @@ refusal is honest; a plausible wrong pipeline is the product lying fluently.
 Every other row is **one ask, one reply**, and a conversation that repeats itself
 passes all of them. It did: the rail answered three different asks —
 `"yes"`, `"what?"`, `"no… start a new project"` — with the *identical* sentence, and
-the whole matrix was green (#942).
+the whole matrix was green.
 
 So walk it as **at least three turns**, where turn 2 and turn 3 are meaningless on
 their own:
@@ -181,7 +180,7 @@ A single-turn suite cannot see either. That is why this row exists.
 
 The report step has one assertion that matters more than the others: the held-out
 figure is present, **or** `missing` names `held_out_auc` with a reason. A report that
-silently omits it is the failure #953 exists to prevent.
+silently omits it is the failure this assertion exists to prevent.
 
 ### Everything else
 
@@ -209,7 +208,7 @@ Things avenue A structurally cannot see, so the suite owns them outright:
   has no egress;
 - light and dark, desktop and 375px;
 - empty states say what produces the thing, not "no data";
-- **the design-parity diff** against the deployed Studio (#970).
+- **the design-parity diff** against the deployed Studio.
 
 ### The desktop GUI — neither avenue reaches it
 
@@ -217,7 +216,7 @@ Playwright drives browsers; the desktop app is SDL3 and needs a person looking a
 So the GUI is **not** avenue B and must not be reported as covered by it.
 
 What it is for during a walk: the headed app is open beside you, and an action taken
-over MCP should appear in it **live** ([#620](https://github.com/oramasearch/zetta/issues/620)).
+over MCP should appear in it **live**.
 A stale panel is a bug. Check that much, and record the GUI's coverage as "observed",
 not "walked", unless someone actually walked it.
 
@@ -237,7 +236,7 @@ prints. Then know this before diagnosing anything:
 
 > `ChurnCoordinatedLaunch.MultiNodeCoordinatedRunMatchesSingleNodeOracle` is flaky
 > at roughly 20% on `main`
-> ([#963](https://github.com/oramasearch/zetta/issues/963)).
+>.
 
 If a model does not appear on every member, check that issue **before** concluding
 anything about the pipeline. Sequential runs lie in both directions here — one
@@ -276,7 +275,4 @@ Every figure, with where the engine produced it. Nothing computed while writing.
 - **mcp-journeys** — layers 1 and 2, and the promotion rule this skill feeds.
 - **run-report** — the same numbers discipline, for a run's report artifact.
 - [`docs/testing/mcp-journeys.md`](../../../docs/testing/mcp-journeys.md) — the paradigm.
-- [#948](https://github.com/oramasearch/zetta/issues/948) — the goal and its
-  eight-step script · [#960](https://github.com/oramasearch/zetta/issues/960) — the
-  bar this skill exists to meet · [#969](https://github.com/oramasearch/zetta/issues/969)
-  — the conversational spine.
+

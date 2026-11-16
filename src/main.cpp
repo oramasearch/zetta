@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // zetta — entry point.
 //
 // Parses arguments, builds a zetta::Node + a zetta::cluster::Cluster, and dispatches to
@@ -6,6 +8,7 @@
 // display. All the real work lives behind zetta::Node / zetta::cluster::Cluster — main
 // only picks how to drive them.
 
+#include "zetta/api/clerk_auth.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/api/native_http_transport.hpp"
 #include "zetta/api/mysql_protocol.hpp"
@@ -757,6 +760,21 @@ int main(int argc, char** argv) {
     }
     if (opts.clerk_issuer.empty()) {
         if (const char* env = std::getenv("ZETTA_CLERK_ISSUER")) opts.clerk_issuer = env;
+    }
+    // The origins a Clerk token may be issued to (#1423): this node's Studio origins, comma
+    // separated. With an issuer and none, every Clerk token is refused.
+    if (const char* env = std::getenv("ZETTA_CLERK_AUTHORIZED_PARTIES")) {
+        std::vector<std::string> parties;
+        std::string_view rest(env);
+        while (!rest.empty()) {
+            const auto comma = rest.find(',');
+            std::string party(rest.substr(0, comma));
+            std::erase_if(party, [](unsigned char c) { return std::isspace(c) != 0; });
+            if (!party.empty()) parties.push_back(std::move(party));
+            if (comma == std::string_view::npos) break;
+            rest.remove_prefix(comma + 1);
+        }
+        zetta::api::set_clerk_authorized_parties(std::move(parties));
     }
     // Consent enforcement is off unless asked for, by flag or by environment —
     // a provisioned node has no argv to edit (#995). An explicit --governance

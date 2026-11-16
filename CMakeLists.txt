@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.28)
 
 # zetta is C++26 and its coroutine stack (Capy/Corosio) needs Clang 17+ — older
@@ -37,7 +39,7 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT ZETTA_USE_SYSTEM_COMPILER)
 endif()
 
 project(zetta
-  VERSION 0.5.0
+  VERSION 0.6.0
   DESCRIPTION "A database; runs headless or with an SDL3 + Dear ImGui UI"
   LANGUAGES C CXX
 )
@@ -159,6 +161,9 @@ find_package(ZLIB REQUIRED)
 include(FetchContent)
 
 # --- SDL3 -------------------------------------------------------------------
+# Every fetched dependency is pinned to its content (lake#1003): a tag or a URL alone can be moved
+# or replaced upstream. A git source names the commit its tag named when it was pinned (GIT_SHALLOW
+# is dropped, since a shallow fetch takes only a branch or tag); a tarball carries its SHA-256.
 # Window + input + GPU/renderer on macOS (Metal-backed by default in SDL3).
 # Static so we ship a single binary; no .dylib next to the executable.
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
@@ -169,8 +174,7 @@ set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   SDL3
   GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-  GIT_TAG        release-3.2.0
-  GIT_SHALLOW    TRUE
+  GIT_TAG        535d80badefc83c5c527ec5748f2a20d6a9310fe # release-3.2.0
 )
 FetchContent_MakeAvailable(SDL3)
 
@@ -183,8 +187,7 @@ FetchContent_MakeAvailable(SDL3)
 FetchContent_Declare(
   imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
-  GIT_TAG        v1.91.5
-  GIT_SHALLOW    TRUE
+  GIT_TAG        f401021d5a5d56fe2304056c391e78f81c8d4b8f # v1.91.5
 )
 FetchContent_MakeAvailable(imgui)
 
@@ -249,7 +252,7 @@ set(BOOST_ENABLE_CMAKE ON)
 FetchContent_Declare(
   boost_core_libs
   URL https://github.com/boostorg/boost/releases/download/boost-1.91.0-1/boost-1.91.0-1-cmake.tar.xz
-  URL_HASH ""
+  URL_HASH SHA256=cc5dc5006ecbdf0051f90979be31b4eee5987d9ae14ae9fb9c03cfa43fa3cdad
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   EXCLUDE_FROM_ALL
 )
@@ -289,8 +292,7 @@ set(JSON_VALIDATOR_INSTALL        OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   json_schema_validator
   GIT_REPOSITORY https://github.com/pboettch/json-schema-validator.git
-  GIT_TAG        2.4.0
-  GIT_SHALLOW    TRUE
+  GIT_TAG        c780404a84dd9ba978ba26bc58d17cb43fa7bc80 # 2.4.0
 )
 FetchContent_MakeAvailable(json_schema_validator)
 
@@ -823,6 +825,7 @@ add_library(zetta-core STATIC
   src/core/ml/segmentation_job.cpp
   src/core/ml/segmentation_graph.cpp
   src/core/ml/segmentation_methodology.cpp
+  src/core/ml/segmentation_score.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp
   src/core/ml/local_featurize_train_job.cpp

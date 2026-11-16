@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/dataset/interaction_families.hpp"
 
 #include "zetta/dataset/plan_templates.hpp"

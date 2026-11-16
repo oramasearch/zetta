@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The keyed record store and labelled time series on the control surface (#1231;
 // docs/data/record-store.md, docs/data/time-series.md). Each entry is one
 // registry capability: the REST route, the MCP tool and the OpenAPI operation.

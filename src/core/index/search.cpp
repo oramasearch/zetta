@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/index/search.hpp"
 
 #include <algorithm>

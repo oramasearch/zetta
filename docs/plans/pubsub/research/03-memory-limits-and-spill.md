@@ -1,7 +1,7 @@
 # Research: memory limits, overflow policies, spilling to disk
 
 > **Provenance.** One Perplexity (`perplexity_ask`, high context) run,
-> 2026-09-27, after Steve asked for configurable overflow including spilling to
+> 2026-09-27, after a request for configurable overflow including spilling to
 > disk. **Status:** background; describes no zetta code.
 
 ## What brokers do when a queue or stream is full

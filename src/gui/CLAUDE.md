@@ -17,10 +17,10 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   that would read provider config/credentials or run a provider CLI is
   deny-by-default, ask-every-time, never-remembered consent, naming exactly
   what would be read/called before anything happens (the Cloud Inspector /
-  Add-nodes consent grammar). This binds Claude while building, too.
+  Add-nodes consent grammar). This binds coding agents while building, too.
   **The GUI's own gates are unaffected by `--governance`.** That flag switches
   the *remote* consent challenge for API/MCP callers, which is off by default
-  (#995). The in-app gates are the human clicking in front of the machine —
+ . The in-app gates are the human clicking in front of the machine —
   they stay on, always, and none of them may be made conditional.
 - **Heavy headers stay in `app.cpp`.** `app.hpp` forward-declares SDL/ImGui
   types; only `app.cpp` includes them. Panels are `App` member TUs split
@@ -31,7 +31,7 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   operations-view helpers shared across TUs live in
   `app_operations_internal.hpp`; the view registry + sidebar + navigation
   live in `app_views.cpp`; the Cmd+K command palette lives in
-  `app_palette.cpp` (#625 — fuzzy matching itself is
+  `app_palette.cpp` (fuzzy matching itself is
   `zetta::util::fuzzy_score` in zetta-core, tested headless).
 - **Navigation goes through the registry.** A view exists as one `ViewInfo`
   row in `App::view_registry()` (app_views.cpp); `navigate_to(view, entity)`
@@ -54,37 +54,37 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   canvases colour ONLY from the shared canvas palette (`kCanvasBox*` etc.) in
   `app_internal.hpp`. No local colors,
   paddings, or one-off buttons — a new visual becomes a grammar widget first.
-  **Status colors come ONLY from `tone_of(...)` in `tones.hpp`** (#636); a new
+  **Status colors come ONLY from `tone_of(...)` in `tones.hpp`**; a new
   status-bearing enum adds one overload there, never a panel-local switch. A
   status renders via `status_label(tone, text)` (rows: dot + word),
   `status_pill(tone, text)` (detail-pane headlines — `detail_header` renders
   one), or `status_dot(tone)`; booleans pick a `Tone` at the call site
   (`ok ? Tone::Ok : Tone::Error`).
   **Enum/kind labels come ONLY from `label_of(...)` / `humanize_kind` in
-  `labels.hpp`** (#635) — no raw wire name ("ddf", "near_data",
+  `labels.hpp`** — no raw wire name ("ddf", "near_data",
   "graph_deployed") as primary text; raw values live in labelled mono
   metadata lines only, SQL/`system.*` output stays raw by design, and
   unavoidable technical terms get a `term_hint("…")` hover. Rules + the
   per-view sign-off: docs/gui/copy-audit.md.
   See [docs/gui/architecture.md](../../docs/gui/architecture.md) and
   [docs/gui/status-tones.md](../../docs/gui/status-tones.md).
-- **Action outcomes render through the feedback grammar (#632)** — every
+- **Action outcomes render through the feedback grammar** — every
   mutating affordance surfaces its outcome as the panel's `banner(tone,
   message)` (errors carry the engine's reason **verbatim**, never "operation
   failed"), inline field validation banners at the form, and long work follows
-  the job pattern (#624: progress in flight, banner on completion). No modal
+  the job pattern (progress in flight, banner on completion). No modal
   alerts; no silent failures — check a mutating call's returned status and
   surface it. Success belongs in the panel where the action was taken, not
   another view's status line. See
   [docs/gui/feedback-grammar.md](../../docs/gui/feedback-grammar.md).
-- **List+detail panels render through `master_detail(...)`** (#634) — never a
+- **List+detail panels render through `master_detail(...)`** — never a
   hand-rolled split. The panel builds `MasterRow`s from its live source each
   frame, passes its `take_pending_selection(View::…)` result and its
   selection member, and draws only the detail body (opened with
   `detail_header`). See [docs/gui/master-detail.md](../../docs/gui/master-detail.md).
 - **Text fields bind `std::string`** via the `imgui_stdlib` overloads — never
   `char[]` buffers.
-- **Long actions never block the frame (#624).** A slow engine action runs off
+- **Long actions never block the frame.** A slow engine action runs off
   the UI thread behind an op handle polled by `App::poll_background_ops()`
   each frame — pure work (a CLI, a file decode) via `runtime::spawn`
   (`CloudInspectOp`), engine runs whose node writes gate through

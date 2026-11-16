@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The remote consent challenge protocol (#621; docs/api/consent.md): a
 // consent-gated cloud capability NEVER executes on first call — it issues a
 // one-time challenge naming exactly what would be read/run — and only a
@@ -401,9 +403,9 @@ TEST_F(ConsentFixture, ALoopbackPostgresSourceIsNotACloudAndRunsUngated) {
                        {{"type", "postgres"},
                         {"host", "127.0.0.1"},
                         {"port", "5433"},
-                        {"user", "motive"},
-                        {"token", "motive"},
-                        {"database", "motive"},
+                        {"user", "analyst"},
+                        {"token", "analyst"},
+                        {"database", "analytics"},
                         {"sslmode", "disable"}}}})
                     .ok);
 
@@ -426,7 +428,7 @@ TEST_F(ConsentFixture, ARemoteSourceChallengesAndTheSummaryNamesItsRealType) {
                         {"port", "5432"},
                         {"user", "readonly"},
                         {"token", "secret"},
-                        {"database", "motive"}}}})
+                        {"database", "analytics"}}}})
                     .ok);
 
     auto result = call("create_dataset_from_query",
@@ -436,7 +438,7 @@ TEST_F(ConsentFixture, ARemoteSourceChallengesAndTheSummaryNamesItsRealType) {
     ASSERT_EQ(result.error.code, "consent_required");
     const std::string summary =
         result.error.details.at("action").value("summary", "");
-    EXPECT_NE(summary.find("postgres db.example.com:5432/motive"),
+    EXPECT_NE(summary.find("postgres db.example.com:5432/analytics"),
               std::string::npos)
         << summary;
     EXPECT_EQ(summary.find("Snowflake"), std::string::npos)

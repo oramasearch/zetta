@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The API-surface half of fine-grained scoped grants (#747): the per-tool
 // `mcp:call` scope enforced by Registry::call (deny -> unauthorized, no side
 // effect) and the tools/list filter predicate, plus the blob serve path's

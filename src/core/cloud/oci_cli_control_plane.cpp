@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/oci_cli_control_plane.hpp"
 
 #include <memory>

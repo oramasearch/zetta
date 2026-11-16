@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/data/import_path.hpp"
 
 #include <cerrno>

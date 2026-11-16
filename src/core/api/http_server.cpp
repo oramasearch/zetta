@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The ONE Beast2 adapter TU (docs/api/registry-design.md → Placement + build;
 // docs/research/beast2-http.md). No beast2 / cppalliance-http / Boost.JSON
 // name may appear outside this file; Boost.JSON <-> nlohmann conversion
@@ -82,6 +84,24 @@ namespace zetta::api {
 
 namespace {
 
+// A path on this origin a browser will not read as another origin (zetta#1435): it starts
+// with one `/`, and holds no `\` (browsers read `/\host` as `//host`), no control character or
+// space (stripped or rewritten before parsing), and no scheme or authority. Only then is it
+// a redirect target.
+bool same_origin_return_path(std::string_view path) {
+    if (path.size() < 2 || path.size() > 2048 || path[0] != '/' || path[1] == '/') {
+        return false;
+    }
+    for (const unsigned char c : path) {
+        if (c == '\\' || c < 0x21 || c == 0x7F) {
+            return false;
+        }
+    }
+    const std::size_t end = path.find_first_of("?#");
+    const std::string_view route = path.substr(0, end);
+    return route.find("//") == std::string_view::npos && route.find(':') == std::string_view::npos;
+}
+
 constexpr std::string_view kProtocolVersion = "2025-06-18";
 
 // The largest request body the server reads (#1008). The HTTP parser's server
@@ -93,6 +113,12 @@ constexpr std::string_view kProtocolVersion = "2025-06-18";
 // node buffer.
 constexpr std::uint64_t kMaxRequestBodyBytes =
     2 * zetta::data::kMaxDatasetContentBytes + 1024 * 1024;
+
+// The largest body the web UI's login routes (POST /login, POST /session) and its
+// body-less POST /blob/delete read (#1395). Those carry one token, or nothing,
+// and they are reachable without a session, so they get a small budget instead
+// of kMaxRequestBodyBytes.
+constexpr std::uint64_t kMaxSessionBodyBytes = 64 * 1024;
 
 // Boost.JSON -> nlohmann, via serialization (the one sanctioned crossing).
 nlohmann::json to_nlohmann(const boost::json::value& value) {
@@ -1394,6 +1420,76 @@ struct ApiServer::Impl {
         clear_object_headers(route);
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
+    }
+
+    // ----- the cookie routes' bodies (#1395) -----
+    // The web UI's routes are registered before the main gate and resolve their own
+    // `zetta_session` cookie. Each one settles who is asking (and, for a blob
+    // upload, whether they may write there) BEFORE it reads the body, and reads at
+    // most its own budget: kMaxSessionBodyBytes for the login routes and
+    // /blob/delete, kMaxRequestBodyBytes (the /v1 limit) for the signed-in ones.
+    // Before, every route read the whole body first, so an unauthenticated client
+    // could make the node buffer about 33 MiB per connection and then be refused.
+
+    enum class CookieBodyRead { Read, Refused, Failed };
+
+    // Answer without reading the request body, and close the connection after the
+    // response, so the unread bytes are never parsed as a next request.
+    runtime::task<boost::system::error_code> refuse_unread_body(
+        boost::http::route_params& route, boost::http::status status,
+        std::string_view content_type, std::string body) {
+        namespace http = boost::http;
+        route.status(status);
+        route.res.set(http::field::content_type, content_type);
+        route.res.set(http::field::cache_control, "no-store");
+        route.res.set_keep_alive(false);
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        co_return send_error;
+    }
+
+    // Read the request body into `sink`, at most `limit` bytes. A declared
+    // Content-Length over the limit is refused before a byte is read, and the
+    // parser's limit stops a chunked or under-declared body at `limit`. A body
+    // over the limit is answered 413 with `too_large` (Refused); a stream failure
+    // returns Failed with `error`.
+    runtime::task<CookieBodyRead> read_cookie_body(boost::http::route_params& route,
+                                                   StringBodySink& sink, std::uint64_t limit,
+                                                   std::string_view content_type,
+                                                   std::string too_large,
+                                                   boost::system::error_code& error) {
+        namespace http = boost::http;
+        bool over = false;
+        if (route.req.count(http::field::content_length) != 0) {
+            const std::optional<std::uint64_t> declared =
+                parse_unsigned(route.req.at(http::field::content_length));
+            over = !declared || *declared > limit;
+        }
+        if (!over) {
+            if (const auto parser = parsers.find(&route); parser != parsers.end()) {
+                parser->second->set_body_limit(limit);
+            }
+            auto [read_error, bytes_read] = co_await boost::capy::push_to(route.req_body, sink);
+            (void)bytes_read;
+            if (read_error == http::error::body_too_large) {
+                over = true;
+            } else if (read_error) {
+                error = read_error;
+                co_return CookieBodyRead::Failed;
+            }
+        }
+        if (over) {
+            sink.data.clear();
+            sink.data.shrink_to_fit();
+            if (const auto send_error = co_await refuse_unread_body(
+                    route, http::status::payload_too_large, content_type, std::move(too_large));
+                send_error) {
+                error = send_error;
+                co_return CookieBodyRead::Failed;
+            }
+            co_return CookieBodyRead::Refused;
+        }
+        co_return CookieBodyRead::Read;
     }
 
     // Append up to `limit` bytes of the request body to `out`. `eof` is set once
@@ -3414,7 +3510,7 @@ struct ApiServer::Impl {
             out += render_data_explorer(context, route);
         } else if (view == "reports") {
             // Reports (#960 item 4): the IA and copy of the design's Reports screens
-            // (oramasearch/orama-design, feat/reports-surface), rendering the ENGINE's
+            // (the design repository's Reports surface), rendering the ENGINE's
             // numbers through `get_run_report` rather than the design's fixtures.
             const std::string run_id = query_param(route, "run", "");
             if (run_id.empty()) {
@@ -3882,10 +3978,15 @@ struct ApiServer::Impl {
         // A body-stream failure is a real route error, not a silently
         // empty form: reading zero bytes because the peer went away must
         // not fall through and be handled as "no fields supplied" (#992).
-        auto [read_error, bytes_read] =
-            co_await boost::capy::push_to(route.req_body, sink);
-        (void)bytes_read;
-        if (read_error) co_return http::route_error(read_error);
+        // The read is capped at this route's budget (#1395).
+        boost::system::error_code read_error;
+        switch (co_await read_cookie_body(
+            route, sink, kMaxSessionBodyBytes, "text/html; charset=utf-8",
+            web_ui_login("The request was too large."), read_error)) {
+            case CookieBodyRead::Refused: co_return http::route_done;
+            case CookieBodyRead::Failed: co_return http::route_error(read_error);
+            case CookieBodyRead::Read: break;
+        }
         const std::string token = form_field(parse_form(sink.data), "token");
         bool ok = false;
         if (!token.empty())
@@ -3934,10 +4035,16 @@ struct ApiServer::Impl {
         // A body-stream failure is a real route error, not a silently
         // empty form: reading zero bytes because the peer went away must
         // not fall through and be handled as "no fields supplied" (#992).
-        auto [read_error, bytes_read] =
-            co_await boost::capy::push_to(route.req_body, sink);
-        (void)bytes_read;
-        if (read_error) co_return http::route_error(read_error);
+        // The read is capped at this route's budget (#1395).
+        boost::system::error_code read_error;
+        switch (co_await read_cookie_body(
+            route, sink, kMaxSessionBodyBytes, "application/json",
+            R"({"ok":false,"error":"the request body is larger than this route accepts"})",
+            read_error)) {
+            case CookieBodyRead::Refused: co_return http::route_done;
+            case CookieBodyRead::Failed: co_return http::route_error(read_error);
+            case CookieBodyRead::Read: break;
+        }
         std::string token;
         if (nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
             input.is_object() && input.contains("token") && input["token"].is_string())
@@ -3995,18 +4102,31 @@ struct ApiServer::Impl {
         if (!token.empty())
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        // No session, no body (#1395): answer before reading a byte of it.
+        if (user_id.empty()) {
+            if (const auto error = co_await refuse_unread_body(
+                    route, http::status::ok, "text/html; charset=utf-8",
+                    web_ui_login(""));
+                error) {
+                co_return http::route_error(error);
+            }
+            co_return http::route_done;
+        }
         StringBodySink sink;
         // A body-stream failure is a real route error, not a silently
         // empty form: reading zero bytes because the peer went away must
         // not fall through and be handled as "no fields supplied" (#992).
-        auto [read_error, bytes_read] =
-            co_await boost::capy::push_to(route.req_body, sink);
-        (void)bytes_read;
-        if (read_error) co_return http::route_error(read_error);
+        // The read is capped at this route's budget (#1395).
+        boost::system::error_code read_error;
+        switch (co_await read_cookie_body(
+            route, sink, kMaxRequestBodyBytes, "text/html; charset=utf-8",
+            web_ui_login("The request was too large."), read_error)) {
+            case CookieBodyRead::Refused: co_return http::route_done;
+            case CookieBodyRead::Failed: co_return http::route_error(read_error);
+            case CookieBodyRead::Read: break;
+        }
         std::string body;
-        if (user_id.empty()) {
-            body = web_ui_login("");
-        } else {
+        {
             const auto fields = parse_form(sink.data);
             const std::string cap_name = form_field(fields, "cap");
             const std::string return_url = form_field(fields, "_return");
@@ -4043,8 +4163,7 @@ struct ApiServer::Impl {
             // A dialog-launched mutation returns to the view it came from so the
             // page reflects the new state, instead of a standalone result page
             // (relative same-origin targets only — never an open redirect).
-            if (succeeded && return_url.size() > 1 && return_url[0] == '/' &&
-                return_url[1] != '/') {
+            if (succeeded && same_origin_return_path(return_url)) {
                 route.status(http::status::found);
                 route.res.set(http::field::location, return_url);
                 stamp_response_headers(route, "");
@@ -4089,18 +4208,32 @@ struct ApiServer::Impl {
         if (!token.empty())
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        // No session, no body (#1395): answer before reading a byte of it.
+        if (user_id.empty()) {
+            if (const auto error = co_await refuse_unread_body(
+                    route, http::status::ok, "application/json",
+                    R"({"ok":false,"error":"unauthorized"})");
+                error) {
+                co_return http::route_error(error);
+            }
+            co_return http::route_done;
+        }
         StringBodySink sink;
         // A body-stream failure is a real route error, not a silently
         // empty form: reading zero bytes because the peer went away must
         // not fall through and be handled as "no fields supplied" (#992).
-        auto [read_error, bytes_read] =
-            co_await boost::capy::push_to(route.req_body, sink);
-        (void)bytes_read;
-        if (read_error) co_return http::route_error(read_error);
+        // The read is capped at this route's budget (#1395).
+        boost::system::error_code read_error;
+        switch (co_await read_cookie_body(
+            route, sink, kMaxRequestBodyBytes, "application/json",
+            R"({"ok":false,"error":"the request body is larger than this route accepts"})",
+            read_error)) {
+            case CookieBodyRead::Refused: co_return http::route_done;
+            case CookieBodyRead::Failed: co_return http::route_error(read_error);
+            case CookieBodyRead::Read: break;
+        }
         std::string json_body;
-        if (user_id.empty()) {
-            json_body = R"({"ok":false,"error":"unauthorized"})";
-        } else {
+        {
             nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
             if (input.is_discarded() || !input.is_object()) {
                 json_body = R"({"ok":false,"error":"malformed json"})";
@@ -4138,18 +4271,32 @@ struct ApiServer::Impl {
         if (!token.empty())
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        // No session, no body (#1395): answer before reading a byte of it.
+        if (user_id.empty()) {
+            if (const auto error = co_await refuse_unread_body(
+                    route, http::status::ok, "application/json",
+                    R"({"ok":false,"error":"unauthorized"})");
+                error) {
+                co_return http::route_error(error);
+            }
+            co_return http::route_done;
+        }
         StringBodySink sink;
         // A body-stream failure is a real route error, not a silently
         // empty form: reading zero bytes because the peer went away must
         // not fall through and be handled as "no fields supplied" (#992).
-        auto [read_error, bytes_read] =
-            co_await boost::capy::push_to(route.req_body, sink);
-        (void)bytes_read;
-        if (read_error) co_return http::route_error(read_error);
+        // The read is capped at this route's budget (#1395).
+        boost::system::error_code read_error;
+        switch (co_await read_cookie_body(
+            route, sink, kMaxRequestBodyBytes, "application/json",
+            R"({"ok":false,"error":"the request body is larger than this route accepts"})",
+            read_error)) {
+            case CookieBodyRead::Refused: co_return http::route_done;
+            case CookieBodyRead::Failed: co_return http::route_error(read_error);
+            case CookieBodyRead::Read: break;
+        }
         std::string json_body;
-        if (user_id.empty()) {
-            json_body = R"({"ok":false,"error":"unauthorized"})";
-        } else {
+        {
             nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
             if (input.is_discarded()) {
                 json_body = R"({"ok":false,"error":"malformed json"})";
@@ -4184,18 +4331,31 @@ struct ApiServer::Impl {
         if (!token.empty())
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        // No session, no body (#1395): answer before reading a byte of it.
+        if (user_id.empty()) {
+            if (const auto error = co_await refuse_unread_body(
+                    route, http::status::ok, "application/json",
+                    R"({"error":"unauthorized"})");
+                error) {
+                co_return http::route_error(error);
+            }
+            co_return http::route_done;
+        }
         StringBodySink sink;
         // A body-stream failure is a real route error, not a silently
         // empty form: reading zero bytes because the peer went away must
         // not fall through and be handled as "no fields supplied" (#992).
-        auto [read_error, bytes_read] =
-            co_await boost::capy::push_to(route.req_body, sink);
-        (void)bytes_read;
-        if (read_error) co_return http::route_error(read_error);
+        // The read is capped at this route's budget (#1395).
+        boost::system::error_code read_error;
+        switch (co_await read_cookie_body(
+            route, sink, kMaxRequestBodyBytes, "application/json",
+            R"({"error":"the request body is larger than this route accepts"})", read_error)) {
+            case CookieBodyRead::Refused: co_return http::route_done;
+            case CookieBodyRead::Failed: co_return http::route_error(read_error);
+            case CookieBodyRead::Read: break;
+        }
         std::string json_body;
-        if (user_id.empty()) {
-            json_body = R"({"error":"unauthorized"})";
-        } else {
+        {
             const ConsoleRoute route_decision =
                 route_console_input(form_field(parse_form(sink.data), "q"));
             if (route_decision.kind == ConsoleRoute::Kind::Immediate) {
@@ -4234,8 +4394,9 @@ struct ApiServer::Impl {
                     }
                     zetta::query::QueryService query_service(node, cluster);
                     zetta::repl::GovernedConsole console(node, query_service);
-                    // Enforcement is done above by authorize_user; the console runs unkeyed
-                    // (audited as the local web session) but still gates + audits every run.
+                    // The run is the signed-in user's (#1434): authorized, executed and audited
+                    // as that user, not as the trusted local session.
+                    console.set_session_user(user_id);
                     const zetta::repl::Result result =
                         console.run(zetta::repl::Frontend::SimPython, route_decision.source);
                     nlohmann::json body;
@@ -4318,30 +4479,48 @@ struct ApiServer::Impl {
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         const std::string db = query_param(route, "db", "");
         const std::string name = query_param(route, "name", "");
-        StringBodySink sink;
-        // A body-stream failure is a real route error, not a silently
-        // empty form: reading zero bytes because the peer went away must
-        // not fall through and be handled as "no fields supplied" (#992).
-        auto [read_error, bytes_read] =
-            co_await boost::capy::push_to(route.req_body, sink);
-        (void)bytes_read;
-        if (read_error) co_return http::route_error(read_error);
-        std::string json_body;
+        // Who is asking, and whether they may write here, is settled before a byte
+        // of the file is read (#1395): no session, no parameters or no sql:write is
+        // answered at once and the connection closed, so an unauthorized client
+        // cannot make the node buffer a body it will refuse.
+        std::string refusal;
         if (user_id.empty()) {
-            json_body = R"({"error":"unauthorized"})";
+            refusal = R"({"error":"unauthorized"})";
         } else if (db.empty() || name.empty()) {
-            json_body = R"({"error":"db and name query params are required"})";
-        } else if (sink.data.empty()) {
+            refusal = R"({"error":"db and name query params are required"})";
+        } else {
+            co_await bridge.run_on_owner([&] {
+                const std::string denied = blob_write_refusal(user_id, db);
+                if (denied.empty()) return;
+                audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id, "upload",
+                                 db + "/" + name, /*allowed=*/false, denied);
+                refusal = nlohmann::json{{"error", denied}}.dump();
+            });
+        }
+        if (!refusal.empty()) {
+            if (const auto error = co_await refuse_unread_body(route, http::status::ok,
+                                                               "application/json", refusal);
+                error) {
+                co_return http::route_error(error);
+            }
+            co_return http::route_done;
+        }
+        StringBodySink sink;
+        // A body-stream failure is a real route error (#992). The file may be as
+        // large as the node's request limit, the same as /v1.
+        boost::system::error_code read_error;
+        switch (co_await read_cookie_body(
+            route, sink, kMaxRequestBodyBytes, "application/json",
+            R"({"error":"the file is larger than this node accepts"})", read_error)) {
+            case CookieBodyRead::Refused: co_return http::route_done;
+            case CookieBodyRead::Failed: co_return http::route_error(read_error);
+            case CookieBodyRead::Read: break;
+        }
+        std::string json_body;
+        if (sink.data.empty()) {
             json_body = R"({"error":"empty file"})";
         } else {
             co_await bridge.run_on_owner([&] {
-                const std::string refusal = blob_write_refusal(user_id, db);
-                if (!refusal.empty()) {
-                    audit_blob_route(zetta::governance::AuditAction::DataChanged, user_id,
-                                     "upload", db + "/" + name, /*allowed=*/false, refusal);
-                    json_body = nlohmann::json{{"error", refusal}}.dump();
-                    return;
-                }
                 const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
                 if (!database) {
                     json_body = nlohmann::json{{"error", "no such database '" + db + "'"}}.dump();
@@ -4379,18 +4558,31 @@ struct ApiServer::Impl {
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         const std::string db = query_param(route, "db", "");
         const std::string id = query_param(route, "id", "");
+        // No session, no body (#1395): answer before reading a byte of it.
+        if (user_id.empty()) {
+            if (const auto error = co_await refuse_unread_body(
+                    route, http::status::ok, "application/json",
+                    R"({"error":"unauthorized"})");
+                error) {
+                co_return http::route_error(error);
+            }
+            co_return http::route_done;
+        }
         StringBodySink sink;
         // A body-stream failure is a real route error, not a silently
         // empty form: reading zero bytes because the peer went away must
         // not fall through and be handled as "no fields supplied" (#992).
-        auto [read_error, bytes_read] =
-            co_await boost::capy::push_to(route.req_body, sink);
-        (void)bytes_read;
-        if (read_error) co_return http::route_error(read_error);
+        // The read is capped at this route's budget (#1395).
+        boost::system::error_code read_error;
+        switch (co_await read_cookie_body(
+            route, sink, kMaxSessionBodyBytes, "application/json",
+            R"({"error":"the request body is larger than this route accepts"})", read_error)) {
+            case CookieBodyRead::Refused: co_return http::route_done;
+            case CookieBodyRead::Failed: co_return http::route_error(read_error);
+            case CookieBodyRead::Read: break;
+        }
         std::string json_body;
-        if (user_id.empty()) {
-            json_body = R"({"error":"unauthorized"})";
-        } else {
+        {
             co_await bridge.run_on_owner([&] {
                 const std::string refusal = blob_write_refusal(user_id, db);
                 if (!refusal.empty()) {

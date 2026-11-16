@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The record store and time series on the control surface (#1231): the registry
 // journey, conflict details, collection-scoped grants, and the latency budget.
 #include <gtest/gtest.h>

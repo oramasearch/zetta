@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/connect/model_fetch.hpp"
 
 #include <algorithm>

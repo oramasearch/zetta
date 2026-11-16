@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The identity root (#763, #764): sealing identity records, opening them, and
 // pinning the root in the data dir. Versions, sealed removals and refusing an
 // older record (#1341) are here too. The cluster-level proofs (a joining node

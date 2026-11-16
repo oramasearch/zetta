@@ -4,17 +4,17 @@
 	branch = develop
 [submodule "modules/corosio"]
 	path = modules/corosio
-	url = git@github.com:oramasearch/corosio.git
+	url = https://github.com/oramasearch/corosio.git
 	branch = orama-main
 [submodule "modules/automerge-cpp"]
 	path = modules/automerge-cpp
-	url = git@github.com:homer6/automerge-cpp.git
+	url = https://github.com/homer6/automerge-cpp.git
 [submodule "modules/oramacore-cpp"]
 	path = modules/oramacore-cpp
-	url = git@github.com:oramasearch/oramacore-cpp.git
+	url = https://github.com/oramasearch/oramacore-cpp.git
 [submodule "modules/http"]
 	path = modules/http
-	url = git@github.com:oramasearch/http.git
+	url = https://github.com/oramasearch/http.git
 	branch = zetta-patches
 [submodule "modules/beast2"]
 	path = modules/beast2

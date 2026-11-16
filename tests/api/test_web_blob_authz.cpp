@@ -1,4 +1,6 @@
-// zetta#1389 (LSR-069): the web UI's cookie blob routes check what the session
+// SPDX-License-Identifier: MIT
+
+// zetta#1389: the web UI's cookie blob routes check what the session
 // user may do, not only that the cookie resolves to a user.
 //
 // POST /blob, POST /blob/delete and GET /blob/download are registered before the

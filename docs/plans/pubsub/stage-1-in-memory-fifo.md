@@ -55,7 +55,7 @@ the dead letters (D32). No rate limits in stage 1.
 
 | Field | Meaning |
 |---|---|
-| `from` | the principal the event is for (`user:steve`); stamped by the node from authenticated principals, never trusted from the caller (D33) |
+| `from` | the principal the event is for (`user:riley`); stamped by the node from authenticated principals, never trusted from the caller (D33) |
 | `sender` | who actually sent it when acting for `from`: a **stack** of every agent in the delegation chain (`agent:ask-orama`, then `agent:security-scan`, …); governance checks every link back to `from`; the audit records the stack; at most 10,000 deep, beyond which the event is dropped with an error logged (D33, D34) |
 | `to` | primary recipients |
 | `cc` | also receive it |

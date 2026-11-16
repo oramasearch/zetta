@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ddf/featurize_job.hpp"
 
 #include "zetta/cluster/collectives.hpp"

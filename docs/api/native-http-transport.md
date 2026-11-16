@@ -144,14 +144,15 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
 - **Large downloads (opt-in on `HttpRequest`)** — for pulling model weights
   natively ([`connect/model_fetch.hpp`](../../include/zetta/connect/model_fetch.hpp)):
   `max_redirects` follows up to N `Location` hops (dropping the secret headers on a
-  cross-host hop, so a bearer never reaches a different origin — a HuggingFace LFS
+  hop to another origin: another scheme, host or port, compared case-insensitively for the
+  host, #1429; so a bearer never reaches a different origin — a HuggingFace LFS
   URL 302-redirects to a CDN); `download_sink` streams the 2xx body to a
   caller-owned destination, taking precedence over `download_to_path` (the
   legacy path-based option). A sink returning false fails the exchange.
   Neither option buffers a multi-GB shard on the heap (`HttpResponse::body` stays empty);
   `max_response_bytes` raises the 512 MiB connector body cap. All default to off, so a
   connector is unchanged.
-- **Confined model downloads (#1412, LSR-239)** — the complete `weight_map` is
+- **Confined model downloads (#1412)** — the complete `weight_map` is
   validated before any shard request. Each value must be an ASCII basename
   using only letters, digits, `.`, `_`, or `-`, at most 255 bytes, ending in
   `.safetensors`. Empty names, non-string values, separators, traversal,

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/workspace_methodology.hpp"
 #include "zetta/ml/workspace_study.hpp"
 

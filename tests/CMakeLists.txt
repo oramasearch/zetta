@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # Unit tests — GoogleTest, fetched like the rest of the deps.
 
 include(FetchContent)
@@ -8,8 +10,7 @@ set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   googletest
   GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG        v1.15.2
-  GIT_SHALLOW    TRUE
+  GIT_TAG        b514bdc898e2951020cbdca1304b75f5950d1f59 # v1.15.2 (pinned by commit, lake#1003)
 )
 FetchContent_MakeAvailable(googletest)
 
@@ -47,6 +48,7 @@ add_executable(zetta-tests
   api/test_study_driver.cpp
   api/test_getting_started_churn.cpp
   api/test_standalone_models.cpp
+  api/test_segmentation_score.cpp
   api/test_serving.cpp
   api/test_pipeline_serving.cpp
   api/test_scoped_grants_api.cpp
@@ -189,7 +191,7 @@ add_executable(zetta-tests
   usecases/churn/test_churn_step_executor.cpp
   usecases/churn/test_churn_solution.cpp
   usecases/churn/test_churn_table_run.cpp
-  usecases/churn/test_motive_demo_dataset.cpp
+  usecases/churn/test_comms_demo_dataset.cpp
   usecases/churn/test_churn_coordinated_launch.cpp
   usecases/churn/test_uc1_end_to_end.cpp
   testkit/test_testkit.cpp
@@ -247,6 +249,7 @@ add_executable(zetta-tests
   ml/test_tree_shap.cpp
   ml/test_native_oracle.cpp
   ml/test_gbdt_score.cpp
+  ml/test_segmentation_score.cpp
   ml/test_segmentation.cpp
   ml/test_segmentation_methodology.cpp
   ml/test_segmentation_launch.cpp

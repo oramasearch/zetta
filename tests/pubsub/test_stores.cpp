@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Pub/sub stores: RingBuffer, TopicRingStack, QueueStore (#1026).
 #include <gtest/gtest.h>
 

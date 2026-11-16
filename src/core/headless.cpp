@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/headless.hpp"
 
 #include "zetta/cluster/cluster.hpp"

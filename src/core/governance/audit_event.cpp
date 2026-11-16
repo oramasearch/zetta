@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/governance/audit_event.hpp"
 
 #if defined(__APPLE__)

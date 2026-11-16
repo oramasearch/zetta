@@ -1,5 +1,5 @@
 {
-  "$id": "https://zetta.orama.com/schemas/partition_scan_request.schema.json",
+  "$id": "https://oramasearch.github.io/zetta/schemas/partition_scan_request.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {

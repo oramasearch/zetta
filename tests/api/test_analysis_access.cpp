@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // analyze_dataset and plan_features read AS their caller (#1300, #1396): the same
 // table grants, column grants and row security a SELECT of the caller's would get,
 // never the trusted local session. A column the caller may not read is omitted; a

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/gbdt_score.hpp"
 
 #include <algorithm>

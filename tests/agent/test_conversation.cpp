@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The conversation primitive: an ordered, multi-party thread that an agent's history is READ from
 // rather than supplied. The properties under test are the ones that make multiplayer work and that
 // a two-party model would have hidden.
@@ -35,9 +37,9 @@ Turn agent(std::string id, std::string which, std::string text) {
 TEST(Conversation, HistoryPairsAsksWithThisAgentsReplies) {
     Conversation thread;
     thread.id = "c1";
-    thread.turns = {person("t1", "steve", "What can I build?"),
+    thread.turns = {person("t1", "riley", "What can I build?"),
                     agent("t2", "a1", "Churn, lead scoring, or forecasting."),
-                    person("t3", "steve", "List all of those options.")};
+                    person("t3", "riley", "List all of those options.")};
 
     const auto history = zetta::agent::history_for(thread, "a1");
     ASSERT_EQ(history.size(), 2U);
@@ -56,10 +58,10 @@ TEST(Conversation, AnAgentsHistoryExcludesAnotherAgentsReplies) {
     Conversation thread;
     thread.id = "c2";
     thread.agents = {"analyst", "builder"};
-    thread.turns = {person("t1", "steve", "What's driving churn?"),
+    thread.turns = {person("t1", "riley", "What's driving churn?"),
                     agent("t2", "analyst", "Failed payments, mostly."),
                     agent("t3", "builder", "I can build a Pipeline for that."),
-                    person("t4", "steve", "Do it.")};
+                    person("t4", "riley", "Do it.")};
 
     const auto for_builder = zetta::agent::history_for(thread, "builder");
     bool saw_analyst = false;
@@ -80,8 +82,8 @@ TEST(Conversation, AnAgentsHistoryExcludesAnotherAgentsReplies) {
 TEST(Conversation, SeveralPeopleShareOneThread) {
     Conversation thread;
     thread.id = "c3";
-    thread.participants = {"steve", "dana"};
-    thread.turns = {person("t1", "steve", "Build churn."),
+    thread.participants = {"riley", "dana"};
+    thread.turns = {person("t1", "riley", "Build churn."),
                     agent("t2", "a1", "Building it."),
                     person("t3", "dana", "Add calibration.")};
 
@@ -98,8 +100,8 @@ TEST(Conversation, ToolOutcomesRideWithTheAgentTurn) {
     thread.id = "c4";
     Turn reply = agent("t2", "a1", "Started the run.");
     reply.tool_outcomes = {{"run", "failed", "the source connection timed out"}};
-    thread.turns = {person("t1", "steve", "Run it."), reply,
-                    person("t3", "steve", "Why did that fail?")};
+    thread.turns = {person("t1", "riley", "Run it."), reply,
+                    person("t3", "riley", "Why did that fail?")};
 
     const auto history = zetta::agent::history_for(thread, "a1");
     ASSERT_GE(history.size(), 1U);
@@ -115,7 +117,7 @@ TEST(Conversation, LimitKeepsTheMostRecentExchanges) {
     Conversation thread;
     thread.id = "c5";
     for (int i = 0; i < 10; ++i) {
-        thread.turns.push_back(person("p" + std::to_string(i), "steve", "ask " + std::to_string(i)));
+        thread.turns.push_back(person("p" + std::to_string(i), "riley", "ask " + std::to_string(i)));
         thread.turns.push_back(agent("a" + std::to_string(i), "a1", "reply " + std::to_string(i)));
     }
     const auto history = zetta::agent::history_for(thread, "a1", /*limit=*/3);
@@ -127,7 +129,7 @@ TEST(Conversation, RoundTripsThroughJson) {
     Conversation thread;
     thread.id = "c6";
     thread.title = "Churn work";
-    thread.participants = {"steve"};
+    thread.participants = {"riley"};
     thread.agents = {"a1"};
     Turn reply = agent("t2", "a1", "Building it.");
     reply.kind = "action";
@@ -135,7 +137,7 @@ TEST(Conversation, RoundTripsThroughJson) {
     reply.tool_calls.emplace_back("connect", nlohmann::json{{"name", "source"}});
     reply.tool_outcomes = {{"connect", "ok", ""}};
     reply.outcome = "accepted";
-    thread.turns = {person("t1", "steve", "Build churn."), reply};
+    thread.turns = {person("t1", "riley", "Build churn."), reply};
 
     std::string error;
     const auto restored =

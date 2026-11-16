@@ -67,7 +67,7 @@ anecdotes. (Bundles are
 explicit, user-initiated exports — nothing leaves the cluster on its own; the
 no-egress posture is untouched.)
 
-## Diagnostic access (#1408 / LSR-175)
+## Diagnostic access (#1408)
 
 Trace ids correlate work; they do not prove ownership. An inbound
 `traceparent` can join an existing trace, and child spans do not carry trusted

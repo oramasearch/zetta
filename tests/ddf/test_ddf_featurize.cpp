@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -618,9 +620,9 @@ TEST(DdfFeaturize, ChurnFixturePointInTimeNoLeakage) {
     EXPECT_LT(windowed_events, all_events);
     EXPECT_TRUE(saw_dropped_event);
 
-    // Concretely: fedex_office's third payment_failed (2026-04-05) and globex's second
+    // Concretely: contoso_office's third payment_failed (2026-04-05) and globex's second
     // support ticket (2026-03-20) are both after t0 (2026-03-01) and must be dropped.
-    const std::int64_t office = numeric.entity_index.at("acct_fedex_office");
+    const std::int64_t office = numeric.entity_index.at("acct_contoso_office");
     const std::int64_t globex = numeric.entity_index.at("acct_globex");
     EXPECT_DOUBLE_EQ(truth.leaky_failed_payments[office], 3.0);  // 3 in the raw data
     EXPECT_DOUBLE_EQ(truth.failed_payments[office], 2.0);        // 2 before t0

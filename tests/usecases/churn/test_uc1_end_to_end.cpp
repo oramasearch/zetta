@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -44,7 +46,7 @@
 //
 //   (1) a CALIBRATED RANKED at-risk list (highest risk first, every risk a
 //       probability in [0, 1]) + per-entity churn drivers;
-//   (2) DIVISION-CORRECT entity resolution — "FedEx Freight" and its 5 sibling
+//   (2) DIVISION-CORRECT entity resolution — "Contoso Freight" and its 5 sibling
 //       subsidiaries stay separate accounts — verified through the correctness
 //       gate's EntityResolutionCheck (RULE-1), and a coarse (conflating) resolver
 //       is shown to BLOCK the gate;
@@ -156,7 +158,7 @@ struct ComputeNode {
 // dataset's resolved-from-the-mentions entity_resolution annotation attached to
 // the clean / feature-build step, so the gate's EntityResolutionCheck verifies the
 // resolution. `strategy` picks the resolver: FullName is division-correct (passes
-// the gate); Brand conflates the FedEx siblings (the TC-4 trap that fails it).
+// the gate); Brand conflates the Contoso siblings (the TC-4 trap that fails it).
 zetta::ir::ExecutionGraph churn_graph_with_resolution(const ChurnDataset& dataset,
                                                       ResolutionStrategy strategy) {
     auto compiled = zetta::pipeline::compile_intent("reduce churn and improve retention");
@@ -207,7 +209,7 @@ TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
     const ValidationReport report = gate.run(graph);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
-    // The make-or-break eval ran and PASSED — the FedEx siblings were resolved
+    // The make-or-break eval ran and PASSED — the Contoso siblings were resolved
     // division-correct (no conflation), so the run is allowed to proceed.
     EXPECT_TRUE(check_has_status(report, "entity_resolution", CheckStatus::Pass));
 
@@ -358,7 +360,7 @@ TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
     EXPECT_EQ(job_finished, 4);  // each reached a terminal (Succeeded) state
 }
 
-// The make-or-break negative: a coarse (Brand) resolver conflates the FedEx
+// The make-or-break negative: a coarse (Brand) resolver conflates the Contoso
 // siblings onto one account — the canonical TC-4 failure — so the correctness gate
 // FAILS and blocks deploy (RULE-1). The run never happens: no model is trained, no
 // compute is placed. This is the teeth behind "division-correct resolution".

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Inter-node transport security (CTL-2, #466): the join token, the derived

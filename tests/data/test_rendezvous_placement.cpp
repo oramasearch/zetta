@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -76,7 +78,7 @@ TEST(RendezvousPlacement, AssignSpreadsAcrossPartitions) {
 
 TEST(RendezvousPlacement, AssignIsDeterministic) {
     RendezvousPlacement placement{32};
-    const nlohmann::json record{{"customer", "acct_fedex_freight"}, {"value", 42}};
+    const nlohmann::json record{{"customer", "acct_contoso_freight"}, {"value", 42}};
     EXPECT_EQ(placement.assign_partition(record),
               placement.assign_partition(record));
 }

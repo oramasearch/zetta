@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/testkit/harness.hpp"
 
 #include <atomic>
@@ -223,20 +225,20 @@ zetta::usecases::churn::ChurnDataset sample_churn_dataset() {
     dataset.churn_horizon_days = 90;
     dataset.label_definition = "churned within the horizon after t0";
 
-    // The FedEx entity-resolution case (TC-4): six sibling subsidiaries, each its
+    // The Contoso entity-resolution case (TC-4): six sibling subsidiaries, each its
     // own account. Office churned (it has the most payment failures).
     dataset.accounts = {
-        account("acct_fedex_freight", "FedEx Freight", "FedEx", "fedex_freight",
+        account("acct_contoso_freight", "Contoso Freight", "Contoso", "contoso_freight",
                 "enterprise", 14000, 320, 1180, false),
-        account("acct_fedex_ground", "FedEx Ground", "FedEx", "fedex_ground",
+        account("acct_contoso_ground", "Contoso Ground", "Contoso", "contoso_ground",
                 "enterprise", 16000, 410, 1500, false),
-        account("acct_fedex_express", "FedEx Express", "FedEx", "fedex_express",
+        account("acct_contoso_express", "Contoso Express", "Contoso", "contoso_express",
                 "enterprise", 22000, 600, 2100, false),
-        account("acct_fedex_office", "FedEx Office", "FedEx", "fedex_office",
+        account("acct_contoso_office", "Contoso Office", "Contoso", "contoso_office",
                 "business", 4200, 60, 540, true),
-        account("acct_fedex_logistics", "FedEx Logistics", "FedEx",
-                "fedex_logistics", "enterprise", 9000, 150, 800, false),
-        account("acct_fedex_services", "FedEx Services", "FedEx", "fedex_services",
+        account("acct_contoso_logistics", "Contoso Logistics", "Contoso",
+                "contoso_logistics", "enterprise", 9000, 150, 800, false),
+        account("acct_contoso_services", "Contoso Services", "Contoso", "contoso_services",
                 "business", 3000, 40, 300, false),
         // A few standalone accounts; two churned with payment failures.
         account("acct_acme", "Acme Corp", "", "acme", "business", 5200, 80, 640, true),
@@ -254,15 +256,15 @@ zetta::usecases::churn::ChurnDataset sample_churn_dataset() {
     auto id = [&next] { return "evt_" + std::to_string(next++); };
     std::vector<zetta::usecases::churn::ChurnEvent> events;
 
-    // Comms mentions for every FedEx sibling (drives the resolution case), incl. a
+    // Comms mentions for every Contoso sibling (drives the resolution case), incl. a
     // spelling variant the FullName resolver still matches.
-    events.push_back(event(id(), "acct_fedex_freight", "2026-02-12T15:04:00Z", "comms", 0, "FedEx Freight"));
-    events.push_back(event(id(), "acct_fedex_freight", "2026-01-28T09:30:00Z", "comms", 0, "Fedex Freight"));
-    events.push_back(event(id(), "acct_fedex_ground", "2026-02-20T11:00:00Z", "comms", 0, "FedEx Ground"));
-    events.push_back(event(id(), "acct_fedex_express", "2026-02-05T16:45:00Z", "comms", 0, "FedEx Express"));
-    events.push_back(event(id(), "acct_fedex_office", "2026-01-15T10:10:00Z", "comms", 0, "FedEx Office"));
-    events.push_back(event(id(), "acct_fedex_logistics", "2026-02-18T13:20:00Z", "comms", 0, "FedEx Logistics"));
-    events.push_back(event(id(), "acct_fedex_services", "2026-02-22T08:05:00Z", "comms", 0, "FedEx Services"));
+    events.push_back(event(id(), "acct_contoso_freight", "2026-02-12T15:04:00Z", "comms", 0, "Contoso Freight"));
+    events.push_back(event(id(), "acct_contoso_freight", "2026-01-28T09:30:00Z", "comms", 0, "contoso Freight"));
+    events.push_back(event(id(), "acct_contoso_ground", "2026-02-20T11:00:00Z", "comms", 0, "Contoso Ground"));
+    events.push_back(event(id(), "acct_contoso_express", "2026-02-05T16:45:00Z", "comms", 0, "Contoso Express"));
+    events.push_back(event(id(), "acct_contoso_office", "2026-01-15T10:10:00Z", "comms", 0, "Contoso Office"));
+    events.push_back(event(id(), "acct_contoso_logistics", "2026-02-18T13:20:00Z", "comms", 0, "Contoso Logistics"));
+    events.push_back(event(id(), "acct_contoso_services", "2026-02-22T08:05:00Z", "comms", 0, "Contoso Services"));
 
     // Payment failures: heavy on churned accounts, light/none on healthy ones.
     auto payment_failures = [&](const std::string& acct, int count) {
@@ -273,14 +275,14 @@ zetta::usecases::churn::ChurnDataset sample_churn_dataset() {
                                    "payment_failed", 1));
         }
     };
-    payment_failures("acct_fedex_office", 4);  // churned
+    payment_failures("acct_contoso_office", 4);  // churned
     payment_failures("acct_acme", 3);          // churned
     payment_failures("acct_initech", 3);       // churned
-    payment_failures("acct_fedex_freight", 1);
+    payment_failures("acct_contoso_freight", 1);
     payment_failures("acct_globex", 1);
 
     // Support tickets with a severity (the support_severity feature).
-    events.push_back(event(id(), "acct_fedex_office", "2026-02-01T09:00:00Z", "support_ticket", 3));
+    events.push_back(event(id(), "acct_contoso_office", "2026-02-01T09:00:00Z", "support_ticket", 3));
     events.push_back(event(id(), "acct_acme", "2026-02-09T09:00:00Z", "support_ticket", 2));
     events.push_back(event(id(), "acct_globex", "2026-02-14T09:00:00Z", "support_ticket", 1));
 
@@ -291,7 +293,7 @@ zetta::usecases::churn::ChurnDataset sample_churn_dataset() {
     }
 
     // The leakage trap: events AFTER t0 (2026-03-01) — must never enter a feature.
-    events.push_back(event(id(), "acct_fedex_office", "2026-03-15T12:00:00Z", "payment_failed", 1));
+    events.push_back(event(id(), "acct_contoso_office", "2026-03-15T12:00:00Z", "payment_failed", 1));
     events.push_back(event(id(), "acct_globex", "2026-03-20T09:00:00Z", "support_ticket", 2));
 
     dataset.events = std::move(events);

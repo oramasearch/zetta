@@ -167,7 +167,7 @@ A page is decoded with `decode_column_chunk`, which refuses a chunk whose
 physical type disagrees with its schema leaf, and `decode_page` checks
 `validate_decoded_column` before transposing the column into rows. A body from
 a peer whose chunk lies about its type is a failed handle with a reason, never
-a read past the decoded values (LSR-167,
+a read past the decoded values (see
 [the decoders](parquet-column-decoders.md)).
 
 ## Where it fits

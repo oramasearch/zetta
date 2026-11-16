@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/compute/scaling_policy.hpp"
 
 #include <algorithm>

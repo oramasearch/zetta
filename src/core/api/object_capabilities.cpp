@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The object capability on the control surface (#1005, docs/data/object-store.md).
 //
 // The bucket and lease operations are registry capabilities: REST route, MCP tool

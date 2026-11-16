@@ -110,8 +110,7 @@ cluster. Realizes [../product/experience/serving.md](../product/experience/servi
 
 ## Published pipelines (zetta#1289)
 
-Steve, 2026-10-14: *"I need some way to call a pipeline externally (if I publish
-it)"*. A **pipeline** is published the way a model is, through a replicated
+A published pipeline must be callable from outside the cluster. A **pipeline** is published the way a model is, through a replicated
 exposure on the pipeline itself, and served at:
 
 - `POST /v1/pipelines/{name}/run` — run it with the caller's input (the JSON

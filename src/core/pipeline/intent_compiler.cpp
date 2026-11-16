@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pipeline/intent_compiler.hpp"
 
 #include <algorithm>

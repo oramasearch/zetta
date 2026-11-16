@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cluster/cluster.hpp"
 
 #include <arpa/inet.h>

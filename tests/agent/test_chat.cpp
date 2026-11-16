@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/chat.hpp"
 
 #include <gtest/gtest.h>

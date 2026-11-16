@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <string>
@@ -18,12 +20,12 @@
 // is trusted. This header exposes the native seed cases the corpus is grown from.
 namespace zetta::agent {
 
-// Sample #1 — Charles's churn game (Motive UC-1): the improvement over his current
-// LLM-pattern-matching n8n. The required end-state is a *correct* churn solution —
-// connect the source, engineer leakage-free features, train a gradient-boosted model
-// with SHAP explanations, and serve calibrated risk scores with a score-vs-outcome
-// calibration loop. The reference satisfies all of that; the negative controls (an
-// LLM-only pipeline like his, a leaky one, a no-calibration one) each fail.
+// Sample #1 — the churn game (UC-1): the improvement over a churn workflow that has a
+// language model pattern-match account communications. The required end-state is a
+// *correct* churn solution — connect the source, engineer leakage-free features, train
+// a gradient-boosted model with SHAP explanations, and serve calibrated risk scores
+// with a score-vs-outcome calibration loop. The reference satisfies all of that; the negative controls (an
+// LLM-only pipeline, a leaky one, a no-calibration one) each fail.
 AdmissionCase churn_solution_case();
 
 // Build a churn execution graph parametrically — the reference solution expressed as a

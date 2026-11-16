@@ -1,8 +1,8 @@
 # Safe mode, per database
 
 A level set on each database that says which statements need the caller's
-confirmation before they run. Modelled on Bobby Tables' safe mode. Decided by
-Steve on 2026-10-23, in place of turning the consent gate on by default
+confirmation before they run. Modelled on Bobby Tables' safe mode. Chosen in
+place of turning the consent gate on by default
 ([#1373](https://github.com/oramasearch/zetta/pull/1373),
 [lake#906](https://github.com/oramasearch/lake/issues/906)):
 
@@ -33,8 +33,8 @@ plane (`ZettaControlClient`) and the Orama operator write their own tables
 through `/v1/sql` (`orama_control`, `orama_data`). A default that refused every
 write until a person confirmed it would stop both the moment a node upgraded. A
 database is moved to `warn_writes` or `warn_all` with `set_safe_mode`. This is a
-deliberate difference from the decision's text, recorded on #1373 for Steve to
-confirm or reverse.
+deliberate difference from the decision's text, recorded on #1373 to be
+confirmed or reversed.
 
 ## The warning
 

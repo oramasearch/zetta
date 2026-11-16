@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/add_nodes.hpp"
 
 #include <cstdint>

@@ -2,7 +2,7 @@
 
 This folder is the **use-case catalog** for Orama Zetta and the guide for adding to it. A **use case** is a *generic AI-project type* — any team instantiates it on **its own data** → an **AI project** (the central, user-managed item). **Churn ([`uc1.md`](uc1.md))** is the worked exemplar — the simplest version of the whole loop; **copy its structure** for a new use case.
 
-> The process tooling lives in **`amaro-bridge`**: the [`add-use-case` skill](https://github.com/oramasearch/amaro-bridge/blob/main/.claude/skills/add-use-case/SKILL.md) (generates the Perplexity prompt), the [canonical runbook this mirrors](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md), [`zetta-sync`](https://github.com/oramasearch/amaro-bridge/blob/main/.claude/skills/zetta-sync/SKILL.md), [`prune-backlog`](https://github.com/oramasearch/amaro-bridge/blob/main/.claude/skills/prune-backlog/SKILL.md), and the wtm worktree-plan tools. The blueprint (source of truth) is the wtm `ORAMA-ZETTA` project → [issues on `oramasearch/zetta`](https://github.com/oramasearch/zetta/issues).
+> The blueprint (source of truth) is projected to [issues on `oramasearch/zetta`](https://github.com/oramasearch/zetta/issues). The research prompt, the blueprint sync and the backlog pruning are run with the maintainers' own tooling; the steps below say what each one produces.
 
 ## Catalog
 
@@ -18,9 +18,9 @@ the slices in pipeline order (data → resolution → execution → train-at-sca
 end-to-end proofs):
 
 - [uc1.md](uc1.md) — **the worked exemplar**: the full UC-1 churn solution end to end — what it is, the pipeline, the business case, what's deferred, the blueprint mapping, the build plan.
-- [churn-dataset.md](churn-dataset.md) — the synthetic UC-1 churn fixture + loader: committed accounts + events, the FedEx entity-resolution case, schema-validated, no foreign runtime (#402).
+- [churn-dataset.md](churn-dataset.md) — the synthetic UC-1 churn fixture + loader: committed accounts + events, the Contoso entity-resolution case, schema-validated, no foreign runtime (#402).
 - [entity-resolution.md](entity-resolution.md) — entity resolution in featurization: resolve raw comms mentions to CRM accounts division-correct; resolver produces, gate verifies (`EntityResolver`, TC-4 / #394).
-- [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval: fails the gate when a graph conflates separate accounts (the FedEx-Freight case) (`EntityResolutionCheck`, TC-4).
+- [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval: fails the gate when a graph conflates separate accounts (the Contoso-Freight case) (`EntityResolutionCheck`, TC-4).
 - [churn-step-executor.md](churn-step-executor.md) — the real churn `StepExecutor`: each pipeline stage as actual distributed compute behind the same seam, each heavy step a recorded `ComputeJob` (#396).
 - [churn-solution.md](churn-solution.md) — wiring the catalog churn blueprint to the real engine via the ONE public runner over the node's live `JobCoordinator` (`run_churn_solution_on_node`, #398/#580/#637).
 - [uc1-train-over-partitions.md](uc1-train-over-partitions.md) — train GBDT(outcome) compute-near-data over a partitioned feature table: train → explain → rank, near-data instrumented (`run_near_data_train_job`, #533).
@@ -77,7 +77,7 @@ Capture this sentence verbatim — it becomes the `UC-N` summary and the opening
 
 You don't invent the feature set or the model from memory — you research how the problem is actually solved, then adapt.
 
-- Run the [`add-use-case`](https://github.com/oramasearch/amaro-bridge/blob/main/.claude/skills/add-use-case/SKILL.md) skill (in `amaro-bridge`). It takes your one-sentence frame and emits a **tailored Perplexity Deep Research prompt** — a long, structured query covering label definitions, canonical point-in-time features, model families, explanation methods, evaluation metrics, data sources, and known pitfalls for *this* domain.
+- Write a research prompt from your one-sentence frame: a a **tailored Perplexity Deep Research prompt** — a long, structured query covering label definitions, canonical point-in-time features, model families, explanation methods, evaluation metrics, data sources, and known pitfalls for *this* domain.
 - Run that prompt in **Perplexity Deep Research / Reasoning** mode (not a quick search — you want the multi-source dossier).
 - Save the result to **`docs/use-cases/<slug>/research.md`** in this repo (e.g. `docs/use-cases/fraud/research.md`) with a provenance header (source + date + "research dossier"). This is the evidence base everything downstream cites.
 
@@ -91,7 +91,7 @@ From the dossier, write down the concrete shape, and **tag every piece as reused
 - **Explanation** *(engine)* — native **TreeSHAP** → per-entity drivers; reused as-is.
 - **Driver → action → owner map** *(skin)* — the deterministic mapping from a dominant driver to a recommended action and its owner. This and the label are the *only* genuinely use-case-specific logic.
 - **Evaluation bar** *(skin)* — the metric + threshold the model must clear to be worth shipping.
-- **Data sources + pitfalls** *(skin)* — the systems the data comes from and the domain-specific leakage / identity traps (e.g. the FedEx-Freight **entity-resolution** trap in churn — does this domain have an analogue? If so, it's a make-or-break eval, like [TC-4](https://github.com/oramasearch/zetta/issues/251)).
+- **Data sources + pitfalls** *(skin)* — the systems the data comes from and the domain-specific leakage / identity traps (e.g. the Contoso-Freight **entity-resolution** trap in churn — does this domain have an analogue? If so, it's a make-or-break eval, like [TC-4](https://github.com/oramasearch/zetta/issues/251)).
 
 Litmus test: if you're specifying more than the label + features + action-map, ask whether you're rebuilding something the engine already provides.
 
@@ -111,11 +111,11 @@ The blueprint — not the issues, not the docs — is authoritative; everything 
 
 ### 6. Sync the blueprint → docs + issues
 
-Re-run [`zetta-sync`](https://github.com/oramasearch/amaro-bridge/blob/main/.claude/skills/zetta-sync/SKILL.md). It projects the blueprint to the [zetta-docs](https://github.com/oramasearch/zetta-docs) site and to GitHub issue **titles and bodies**. After this, the three surfaces — blueprint, docs site, issues — must read the same. **Never hand-edit a generated issue body or doc page;** edit the artifact and re-sync.
+Re-run the blueprint sync. It projects the blueprint to the docs site and to GitHub issue **titles and bodies**. After this, the three surfaces — blueprint, docs site, issues — must read the same. **Never hand-edit a generated issue body or doc page;** edit the artifact and re-sync.
 
 ### 7. Prune + prioritize the backlog
 
-- Close any **non-artifact** tracking issues (kept + linked, never deleted) — a tracking issue that produces no software / doc / report is noise. See [`prune-backlog`](https://github.com/oramasearch/amaro-bridge/blob/main/.claude/skills/prune-backlog/SKILL.md).
+- Close any **non-artifact** tracking issues (kept + linked, never deleted) — a tracking issue that produces no software / doc / report is noise.
 - Set `p1`–`p4` by the use case's **dependency order**, not abstract release order — priorities trace from `UC-N`'s closure (decision 3 in [`../orama-zetta.md`](../product/orama-zetta.md)).
 
 ### 8. Build it via a worktree plan — *you* build the graph, not the LLM
@@ -127,7 +127,7 @@ This is where the use case actually gets built: as an **execution graph over its
 3. **Build the graph by hand.** Decide what *actually* blocks what — a **hard** blocker only (B must be substantially done before A can start) — and write the whole edge set yourself with **`set_plan_dependencies`** (`from` *depends on* `to`). **Maximize parallelism:** leave independent work unlinked so it runs concurrently; avoid long chains. Do **not** use `generate_worktree_plan` / `expand_worktree_plan` / `analyze_worktree_plan` — those delegate the reasoning to the blind LLM and exist only for the GUI's no-agent button.
 4. **Set dependencies LAST.** Adding a node (`create_issue --plan_id`, and likely `add_plan_nodes`) **re-triggers the LLM generation**, which clobbers your edges. So finish adding *every* node first, then make `set_plan_dependencies` the final write. If you must add a node afterwards, immediately re-assert the full edge set.
 5. **Review the computed layers** with `get_worktree_plan`: layer 0 should be the foundational interfaces / entities (no deps), the use case's end-to-end test should sit near the last layer, and the critical path should be the genuine data dependency — nothing artificial.
-6. **Run → review → resume.** Drive the layer-by-layer loop (`launch_plan_layer (layer 0)` → each task lands in its own worktree + opens a PR → the plan **pauses for PR review** → resume → next layer), per [`homer6/worktree-manager#10`](https://github.com/homer6/worktree-manager/issues/10). The PR-review gate is the deliberate stop/resume point. The churn plans are the reference: **#11** (the platform skeleton) and **#14** (the native distributed-compute full pass).
+6. **Run → review → resume.** Drive the layer-by-layer loop (`launch_plan_layer (layer 0)` → each task lands in its own worktree + opens a PR → the plan **pauses for PR review** → resume → next layer). The PR-review gate is the deliberate stop/resume point. The churn plans are the reference: **#11** (the platform skeleton) and **#14** (the native distributed-compute full pass).
 
 ## Verify
 

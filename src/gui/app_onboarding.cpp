@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // First-run onboarding (#623): the guided UC-1 churn demo grown out of Home's
 // guided-start card. Five steps walk a fresh node to an explained churn result
 // with no prior knowledge and no file dialogs — load the built-in demo dataset,

@@ -27,7 +27,7 @@ than against another document:
   set (#248).
 
 A fourth was a documentation claim that had gone stale under a shipped feature:
-`docs/architecture/code-audit.md:38` asserts *"No inline secrets found… nothing violates the
+the code audit of the time (no longer in the repository) asserted *"No inline secrets found… nothing violates the
 rule"*, written 2026-07-12; the connector store landed 2026-07-19 writing source tokens in
 cleartext to a replicated row (#74, #830).
 
@@ -130,7 +130,7 @@ warning for the corosio accessor)
 - **The agent programme.** #555 is the main feature and where the work lands; #193 keeps the
   programme context and verifies the data and linkage integrate. Shape: #554 curriculum (p2)
   → #555 training (p1) → #849 the interface (p1) → #556 personalization (p4). The reference
-  implementation is `homer6/blender-rl`, to be **re-implemented in canonical C++26**
+  implementation is blender-rl (an earlier RLVR prototype, not public), to be **re-implemented in canonical C++26**
   (distributed, coroutines) rather than embedded — the same "re-implement, don't run"
   principle already governing input languages.
 - **Vocabulary: "agent".** An *agent* is something we create; the RLVR agent is the default
@@ -157,7 +157,7 @@ problem larger rather than staler:
   unauthenticated **by design** now, not merely over-permissive.
 - **#681** — one shared attached-node test fixture. The duplication it exists to remove has
   grown to **12** copies of `struct ComputeNode` across the test suite.
-- **#74 / #830** — secrets at rest. `docs/architecture/code-audit.md:38` still records
+- **#74 / #830** — secrets at rest. The code audit of the time still recorded
   *"✅ No inline secrets found"*, written 2026-07-12; the connector store landed 2026-07-19
   writing source tokens in cleartext into a `ReplicateToAll` row.
 

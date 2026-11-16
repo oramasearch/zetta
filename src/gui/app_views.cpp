@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The view registry + navigation + sidebar (#628, docs/gui/architecture.md).
 // Each view is declared exactly once in the registry table below; the sidebar,
 // navigation, and the command palette (#625) all consume the same rows.
@@ -38,7 +40,7 @@ std::span<const App::ViewInfo> App::view_registry() {
         {View::Datasets, "Data library", "Datasets", &App::draw_datasets, nullptr},
         {View::Search, "Data library", "Search", &App::draw_search, nullptr},
         // Reports sits under Data library as ONE item, matching the design's
-        // Studio nav (oramasearch/orama-design, feat/reports-surface) — not a
+        // Studio nav (the design repository's Reports surface) — not a
         // group of its own. What a run found is read where the data lives.
         {View::Reports, "Data library", "Reports", &App::draw_reports, nullptr},
         // Activity leads Operate: the feed is the first thing an operator

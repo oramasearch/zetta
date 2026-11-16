@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pipeline/n8n_compile.hpp"
 
 #include <cstddef>

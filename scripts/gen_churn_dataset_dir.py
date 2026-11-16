@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Generate a 500-account UC-1 churn dataset DIRECTORY (dataset.json + accounts.jsonl
-+ events.jsonl) for the Charles/Motive demo (#862). Learnable-but-noisy signal so
++ events.jsonl) for the churn demo. Learnable-but-noisy signal so
 the trained model has a CREDIBLE AUC (not the 1.0 of the 10-row fixture):
 payment_failed is the dominant driver (matching the engine featurizer), with Poisson
-count noise + logistic label noise creating class overlap. Includes the FedEx TC-4
+count noise + logistic label noise creating class overlap. Includes the Contoso TC-4
 entity-resolution siblings. Stdlib only, seeded, reproducible."""
 import json, os, math, random, statistics
 from collections import defaultdict
@@ -12,7 +14,7 @@ from datetime import date, timedelta
 random.seed(42)
 AS_OF = date(2026, 3, 1)
 HORIZON = 90
-N_GENERAL = 494  # + 6 FedEx siblings = 500
+N_GENERAL = 494  # + 6 Contoso siblings = 500
 
 PLAN_TIERS = ["starter", "business", "enterprise"]
 INDUSTRIES = ["logistics", "fleet", "transportation", "manufacturing", "retail", "construction", "field-services"]
@@ -69,22 +71,22 @@ def make_account(account_id, name, brand, entity, latent, forced_churn=None, men
                      "churned": churned, "churn_date": churn_date})
     emit_events(account_id, latent, mention_name)
 
-# FedEx TC-4 siblings — share brand, distinct entities, one churned; comms carry the mention
-for ent, nm, ch in [("fedex_freight", "FedEx Freight", False), ("fedex_ground", "FedEx Ground", False),
-                    ("fedex_express", "FedEx Express", False), ("fedex_office", "FedEx Office", True),
-                    ("fedex_logistics", "FedEx Logistics", False), ("fedex_services", "FedEx Services", False)]:
-    make_account(f"acct_{ent}", nm, "FedEx", ent, 0.75 if ch else random.uniform(0.1, 0.4), forced_churn=ch, mention_name=nm)
+# Contoso TC-4 siblings — share brand, distinct entities, one churned; comms carry the mention
+for ent, nm, ch in [("contoso_freight", "Contoso Freight", False), ("contoso_ground", "Contoso Ground", False),
+                    ("contoso_express", "Contoso Express", False), ("contoso_office", "Contoso Office", True),
+                    ("contoso_logistics", "Contoso Logistics", False), ("contoso_services", "Contoso Services", False)]:
+    make_account(f"acct_{ent}", nm, "Contoso", ent, 0.75 if ch else random.uniform(0.1, 0.4), forced_churn=ch, mention_name=nm)
 
 for i in range(N_GENERAL):
     make_account(f"acct_{i:04d}", f"Account {i:04d}", "", f"entity_{i:04d}", random.random())
 
-manifest = {"name": "motive-churn-500",
-            "description": "500-account synthetic UC-1 churn dataset for the Charles/Motive demo (#862). Learnable-but-noisy signal (payment_failed dominant) plus the FedEx TC-4 entity-resolution siblings. No real customer data.",
+manifest = {"name": "churn-demo-500",
+            "description": "500-account synthetic UC-1 churn dataset for the churn demo. Learnable-but-noisy signal (payment_failed dominant) plus the Contoso TC-4 entity-resolution siblings. No real customer data.",
             "entity_field": "account_id", "time_field": "event_ts", "label_field": "churned",
             "as_of_date": AS_OF.isoformat(), "churn_horizon_days": HORIZON,
             "label_definition": "churned == true iff the account canceled / did not renew within churn_horizon_days after as_of_date."}
 
-OUT = os.environ.get("OUT", os.path.expanduser("~/.zetta-local/datasets/motive-churn-500"))
+OUT = os.environ.get("OUT", os.path.expanduser("~/.zetta-local/datasets/churn-demo-500"))
 os.makedirs(OUT, exist_ok=True)
 json.dump(manifest, open(f"{OUT}/dataset.json", "w"), indent=2)
 with open(f"{OUT}/accounts.jsonl", "w") as f:

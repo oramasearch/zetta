@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/study.hpp"
 #include "zetta/ml/score_table.hpp"
 

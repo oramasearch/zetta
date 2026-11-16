@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/util/timestamp.hpp"
 
 #include <charconv>

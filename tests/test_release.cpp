@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The version a node reports is one number, held in four places: kVersion in
 // include/zetta/version.hpp (what server_info, MCP and the logs say), project(VERSION)
 // in CMakeLists.txt, info.version in the committed schemas/openapi.json, and the

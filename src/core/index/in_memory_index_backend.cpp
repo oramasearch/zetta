@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/index/in_memory_index_backend.hpp"
 
 #include <algorithm>

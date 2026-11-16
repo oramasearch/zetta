@@ -12,7 +12,7 @@ Long-poll tests exercise both transports while owner work continues and assert
 that their reads share an audit session instead of creating one row per return.
 `test_web_ui_forms.cpp` covers origin binding for login, logout, every browser
 POST, cookie REST/MCP and object writes, read metadata, cookie GET SQL batches,
-and bearer compatibility (#1415, LSR-242). Forged requests leave no project,
+and bearer compatibility (#1415). Forged requests leave no project,
 database or session cookie behind. GET after login/logout cannot replay cached
 cookies or redirects; origin refusals close connections with unread bodies.
 Blob authorization fixtures send a trusted

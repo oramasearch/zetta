@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Agent GOALS — the reward an agent is trained against, made data instead of code.
 //
 // The property under test is the one that keeps this RLVR rather than a learned preference: a goal

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Internal (not a public header): the shared JSON-boundary field readers the

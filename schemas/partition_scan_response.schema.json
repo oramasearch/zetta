@@ -1,5 +1,5 @@
 {
-  "$id": "https://zetta.orama.com/schemas/partition_scan_response.schema.json",
+  "$id": "https://oramasearch.github.io/zetta/schemas/partition_scan_response.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "description": "One partition owner's answer to a scatter-gather SELECT: the surviving rows per partition, or per-group aggregate PARTIALS carrying the row counts the merge weights them by (#833).",

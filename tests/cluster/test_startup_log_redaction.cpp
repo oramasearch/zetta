@@ -1,4 +1,6 @@
-// Process-level regression for #1393 (LSR-073): a headless start prints how to
+// SPDX-License-Identifier: MIT
+
+// Process-level regression for #1393: a headless start prints how to
 // add another node, and that line lands in pod logs and log pipelines. The join
 // token is the cluster root secret (it derives the CA key and seals saved
 // connector credentials), so no line the process writes may contain it — whether

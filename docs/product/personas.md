@@ -1,13 +1,12 @@
 # Personas
 
 Four personas from the blueprint (PER-1..4); every surface decision should
-name which of them it serves. Full research: the
-[amaro-bridge personas doc](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/personas.md).
+name which of them it serves.
 
 ## PER-1 — the bottlenecked platform/AI lead (primary)
 
-Owns the path from prototype to production; has heard "you're too slow" for
-years while every team's asks queue behind theirs. Needs: **governed
+Owns the path from prototype to production; every team's data and AI requests
+queue behind theirs, so they are the bottleneck however hard they work. Needs: **governed
 self-service** their developers run without them (the golden path), speed
 they can defend, and infrastructure that lives inside their walls. Buys the
 substrate; judges us on the correctness gate and the audit trail. Surfaces:

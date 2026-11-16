@@ -20,7 +20,7 @@ when no surface a refused caller was sent to could decide a challenge. #999
 built those surfaces (below) and briefly proposed turning the gate back on by
 default, which would have made every read from a remote source (Snowflake,
 Postgres, MySQL…) wait for a second person — including Lake's Connections
-pages. **Steve decided against that on 2026-10-23**
+pages. **That was decided against**
 ([#1373](https://github.com/oramasearch/zetta/pull/1373),
 [lake#906](https://github.com/oramasearch/lake/issues/906)). What guards a
 remote source by default is **safe mode**, set per database: at the default

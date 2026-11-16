@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The distributed search journey (#642, docs/testing/mcp-journeys.md): on a
 // real 3-node loopback cluster holding a partitioned table, an agent drives
 // the capability registry exactly as it would over MCP — list_indexes to

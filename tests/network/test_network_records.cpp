@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Workspace network records (#1281): fixed collection retention, producer
 // schema validation, session lifecycle updates, and egress-decision reads.
 #include <gtest/gtest.h>

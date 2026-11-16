@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -267,4 +269,16 @@ TEST(ViT, RealCheckpointLoadsWhenExplicitlyConfigured) {
       zetta::autograd::serialize_safetensors(*tensors);
   EXPECT_TRUE(zetta::ml::load_vit_backbone(*config, serialized, &error))
       << error;
+}
+
+// #1418: a second frame after the scan would clear the decoded planes while the scan stays
+// complete; the decoder refuses the image instead of converting empty planes.
+TEST(ImageDecode, ASecondJpegFrameIsRefused) {
+  std::string bytes = constant_gray_jpeg();
+  bytes.resize(bytes.size() - 2); // drop the EOI
+  append_marker(bytes, 0xC0, {8, 0, 16, 0, 16, 1, 1, 0x11, 0});
+  bytes.append("\xFF\xD9", 2);
+  const zetta::ml::ImageDecodeResult decoded = zetta::ml::decode_image(bytes);
+  EXPECT_FALSE(decoded.ok());
+  EXPECT_NE(decoded.error.find("more than one frame"), std::string::npos) << decoded.error;
 }

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -147,7 +149,7 @@ struct ImportPathApi : ::testing::Test {
     }
 };
 
-// LSR-071 (#1391): the security file is not importable by any spelling.
+// #1391: the security file is not importable by any spelling.
 TEST_F(ImportPathApi, AddDatasetCannotImportTheClusterSecret) {
     write_file(zetta::data::import_root(node) / "placeholder.jsonl", "{\"id\":1}\n");
     fs::create_symlink(secret, zetta::data::import_root(node) / "secret.json");

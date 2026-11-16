@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/connect/source_catalog.hpp"
 
 #include "lake_sql_protocol.hpp"

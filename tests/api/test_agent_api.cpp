@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The agent CRUD capabilities (#849) end to end through the registry, against a
 // REPLICATED node (agents live in the CRDT). Mirrors the MCP/REST surface: the same
 // registry.call() the servers dispatch to.

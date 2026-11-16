@@ -63,9 +63,9 @@ cmake --build build -j 6 --target zetta-tests
 The suite used a fresh local PostgreSQL database created for this run:
 
 ```sh
-createdb -h 127.0.0.1 -U stevesperandeo zetta_issue1122_pass3_20260928_1f90d1c4
+createdb -h 127.0.0.1 -U "$USER" zetta_issue1122_pass3_20260928_1f90d1c4
 ZETTA_PG_TEST_HOST=127.0.0.1 \
-ZETTA_PG_TEST_USER=stevesperandeo \
+ZETTA_PG_TEST_USER="$USER" \
 ZETTA_PG_TEST_DB=zetta_issue1122_pass3_20260928_1f90d1c4 \
 ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_brief=1 \
   --gtest_output=xml:build/pass3-static.xml
@@ -88,7 +88,7 @@ ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_brief=1 \
 
 Neither #959 nor #1124 required a waiver. The 16 skips are explicit optional
 test conditions: ten need local model checkpoints, three need an opt-in corpus
-or corpus-output path, one needs the generated Motive demo dataset, one needs
+or corpus-output path, one needs the generated communications demo dataset, one needs
 CUDA, and the no-engine fallback case does not apply when the full-text engine
 is compiled in. Schema regeneration, including `schemas/openapi.json`, is
 unchanged. The temporary PostgreSQL database is removed after the proof.
@@ -100,9 +100,9 @@ synchronized, and the same Release static configuration and six-job build
 passed. The final fetch still points `dev` at `a920271b`.
 
 ```sh
-createdb -h 127.0.0.1 -U stevesperandeo zetta_issue1122_pass3_20260928_a920271b
+createdb -h 127.0.0.1 -U "$USER" zetta_issue1122_pass3_20260928_a920271b
 ZETTA_PG_TEST_HOST=127.0.0.1 \
-ZETTA_PG_TEST_USER=stevesperandeo \
+ZETTA_PG_TEST_USER="$USER" \
 ZETTA_PG_TEST_DB=zetta_issue1122_pass3_20260928_a920271b \
 ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_brief=1 \
   --gtest_output=xml:build/pass3-static.xml

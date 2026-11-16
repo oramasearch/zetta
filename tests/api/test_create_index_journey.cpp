@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The create_index journey (https://github.com/oramasearch/zetta/issues/825): an
 // agent loads a table, then drives the create_index capability exactly as it
 // would over MCP — records a Search index over the table, discovers it via

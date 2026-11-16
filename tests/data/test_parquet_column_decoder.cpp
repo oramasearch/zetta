@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -57,7 +59,7 @@ nlohmann::json read_json(const fs::path& path) {
 // A file whose one REQUIRED int64 column `x` is split into row groups of two
 // rows, with the physical type of the LAST row group's chunk rewritten to
 // boolean in the footer. The schema still says int64, so the file declares two
-// physical types for one leaf (LSR-167). The patch is the compact-protocol
+// physical types for one leaf. The patch is the compact-protocol
 // field header for ColumnMetaData.type (0x15) followed by the zigzag code
 // (int64 = 0x04 becomes boolean = 0x00); the caller checks it landed by parsing
 // the footer back.
@@ -357,7 +359,7 @@ TEST(ParquetColumnDecoder, RejectsOutOfRangeIndices) {
     EXPECT_FALSE(zetta::parquet::decode_column_chunk(bytes, meta.metadata, 0, 99).ok());
 }
 
-// LSR-167: a chunk whose physical type disagrees with the schema leaf is refused.
+// a chunk whose physical type disagrees with the schema leaf is refused.
 // Merging the row groups used to keep the first group's type, append each
 // group's values to a different typed vector, and count every row — so the row
 // transpose indexed past the end of the int64 vector.
@@ -530,5 +532,30 @@ TEST(ParquetColumnDecoder, CompactVarintsRejectOverflowAndKeepUint64Range) {
         std::uint64_t decoded = 123;
         EXPECT_FALSE(reader.read_uvarint(decoded));
         EXPECT_EQ(decoded, 123u);
+    }
+}
+
+// #1424: skipping an unknown field nests at most kMaxSkipDepth lists, maps and structs, so
+// a footer of a million nested one-element lists is refused instead of exhausting the stack.
+TEST(ParquetColumnDecoder, CompactSkipRefusesDeepNestingAndSkipsShallowNesting) {
+    using zetta::parquet::detail::CompactReader;
+    using zetta::parquet::detail::CompactType;
+    // 0x19: a list of one element whose type is list; the innermost 0x09 is an empty list.
+    const auto nested = [](std::size_t levels) { return std::string(levels, '\x19') + '\x09'; };
+    {
+        const std::string shallow = nested(10);
+        CompactReader reader(shallow);
+        EXPECT_TRUE(reader.skip_value(CompactType::List, false));
+        EXPECT_EQ(reader.position(), shallow.size());
+    }
+    {
+        const std::string deep = nested(1'000'000);
+        CompactReader reader(deep);
+        EXPECT_FALSE(reader.skip_value(CompactType::List, false));
+    }
+    {
+        const std::string limit = nested(CompactReader::kMaxSkipDepth - 1);
+        CompactReader reader(limit);
+        EXPECT_TRUE(reader.skip_value(CompactType::List, false));
     }
 }

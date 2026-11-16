@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The native model-weights fetch (connect/model_fetch.hpp) driven against a FAKE
 // transport — no network. The fake honors the transport contract the real client
 // implements: a 2xx with a download sink or path writes the body there and

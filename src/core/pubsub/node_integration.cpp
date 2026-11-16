@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/pubsub/node_integration.hpp"
 
 #include <chrono>
@@ -49,6 +51,10 @@ public:
             // Global grants cover every topic; scoped-only grants cover their prefix.
             std::string name = target.name;
             if (!name.empty() && name.back() == '*') name.pop_back();
+            // An inbox is its own resource (#1432): `inbox:<name>`, which no topic
+            // prefix covers (an address name never holds ':'), so a grant on a topic namespace
+            // never reaches an inbox in it. An inbox is granted explicitly, on `inbox:<name>`.
+            if (target.kind == "inbox") name = "inbox:" + name;
             allowed = node_.authorize_object(user->id(), true, op, zetta::governance::Resource::topic(name));
         });
         return allowed;

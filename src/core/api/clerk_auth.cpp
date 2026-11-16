@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: MIT
+
 /*
  * Clerk JWT verification (#889). RS256 over the issuer's JWKS, via OpenSSL. See
  * clerk_auth.hpp for the contract. Non-throwing: every failure path returns
  * nullopt, so the auth gate never unwinds.
  */
 
+#include <algorithm>
 #include "zetta/api/clerk_auth.hpp"
 
 #include <openssl/bn.h>
@@ -24,6 +27,27 @@
 #include <nlohmann/json.hpp>
 
 namespace zetta::api {
+
+namespace {
+std::mutex clerk_parties_mutex;
+std::vector<std::string> clerk_parties;
+
+bool clerk_party_allowed(std::string party) {
+    while (!party.empty() && party.back() == '/') party.pop_back();
+    const std::lock_guard lock(clerk_parties_mutex);
+    return std::ranges::find(clerk_parties, party) != clerk_parties.end();
+}
+}  // namespace
+
+void set_clerk_authorized_parties(std::vector<std::string> parties) {
+    for (auto& party : parties) {
+        while (!party.empty() && party.back() == '/') party.pop_back();
+    }
+    std::erase_if(parties, [](const std::string& party) { return party.empty(); });
+    const std::lock_guard lock(clerk_parties_mutex);
+    clerk_parties = std::move(parties);
+}
+
 
 namespace {
 
@@ -325,6 +349,14 @@ runtime::task<std::optional<ClerkClaims>> ClerkJwksCache::State::verify(
         }
         if (!match) co_return std::nullopt;
         if (!rs256_verify(*match, signed_input, *signature)) co_return std::nullopt;
+
+        // Required claims, checked once the signature holds (#1423): an expiry, and an
+        // authorized party that is one of this node's own origins.
+        if (!payload.contains("exp") || !payload["exp"].is_number_integer()) co_return std::nullopt;
+        if (!payload.contains("azp") || !payload["azp"].is_string() ||
+            !clerk_party_allowed(payload["azp"].get<std::string>())) {
+            co_return std::nullopt;
+        }
 
         ClerkClaims claims;
         claims.subject = payload.value("sub", "");

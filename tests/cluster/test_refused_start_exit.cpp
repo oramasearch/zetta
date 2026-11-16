@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Regression test for #1078: when the requested cluster port is already held,
 // the zetta process must refuse startup with exit code 1 instead of aborting
 // during process-wide cleanup.

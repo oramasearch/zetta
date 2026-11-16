@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
 #include "gui/app_operations_internal.hpp"

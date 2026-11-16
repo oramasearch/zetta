@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/azure_cli_control_plane.hpp"
 
 #include <algorithm>

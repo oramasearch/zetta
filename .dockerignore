@@ -1,7 +1,7 @@
 # Docker build context excludes for the zetta source tree.
 #
-# The image Dockerfiles (zetta-bridge build/images/zetta-headless, .../zetta-e2e) use this
-# repository root as the build context and do `COPY . /src`. Without this file a host build
+# The image Dockerfile (./Dockerfile; the e2e image's Dockerfile still lives outside this repo)
+# uses this repository root as the build context and does `COPY . /src`. Without this file a host build
 # directory is copied in, and its CMakeCache.txt records absolute *host* paths, so the in-image
 # `cmake -S . -B build` aborts with "The current CMakeCache.txt directory ... is different than
 # the directory ... where CMakeCache.txt was created" (#839).
@@ -63,3 +63,10 @@
 # ---- not needed to compile the binary ----
 # Kept deliberately short: docs and schemas are small, and schemas/ is drift-checked by the
 # test build, so only the genuinely large non-build inputs are listed here.
+
+# Local checkpoints, training corpora and generated demo data (gitignored; tens of GB on a
+# training host). The binary needs none of them.
+/data/checkpoints/
+/data/corpora/
+/data/sft-logs/
+/data/demo/

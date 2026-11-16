@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // TC-5 (#252): a low-privilege caller cannot get out of its capability scope, and
 // every attempt is refused AND recorded. The persona is the one in
 // docs/testing/test-scripts/tc-5-jailbreak-attempt.md: an analyst who may read one

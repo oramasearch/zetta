@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <chrono>
@@ -70,5 +72,11 @@ bool looks_like_jwt(std::string_view token);
 
 // Clear the process-wide JWKS cache (tests; also a manual rotation hook).
 void clear_clerk_jwks_cache();
+
+// The origins a Clerk token may be issued to (its `azp`), process-wide (#1423): the node's
+// own Studio origins, from ZETTA_CLERK_AUTHORIZED_PARTIES. A verified token must also carry `exp`.
+// Empty, every Clerk token is refused: another product sharing the Clerk instance could otherwise
+// mint one this node would accept.
+void set_clerk_authorized_parties(std::vector<std::string> parties);
 
 }  // namespace zetta::api

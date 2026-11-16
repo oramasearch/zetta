@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // storage_usage (docs/data/storage-census.md): what this node holds on its disk, by kind, for a
 // host that bills storage by kind (lake#658), or with `scope: "cluster"` every member's, summed
 // from the telemetry exchange (zetta#1259). A `blocks` entry: the registry authorizes and
@@ -5,6 +7,7 @@
 // reads only the node's immutable configuration and the filesystem.
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
@@ -124,9 +127,50 @@ nlohmann::json buckets_json(const std::map<std::string, std::uint64_t>& buckets)
     return out;
 }
 
+// What of a census the caller may see (#1430). An administrator (or the local session)
+// sees the node's whole disk; anyone else only the buckets it holds objects:read on, as the bucket
+// listing applies, and none of the per-kind totals, which describe the whole node.
+struct CensusView {
+    bool whole = true;
+    std::function<bool(const std::string&)> readable_bucket;
+
+    void narrow(zetta::data::StorageCensus& census) const {
+        if (whole) return;
+        std::erase_if(census.buckets, [&](const auto& entry) { return !readable_bucket(entry.first); });
+        for (auto& [kind, bytes] : census.kinds) bytes = 0;  // every kind stays listed, at 0
+        census.total_bytes = 0;
+        for (const auto& [bucket, bytes] : census.buckets) census.total_bytes += bytes;
+    }
+};
+
+CensusView census_view(ApiContext& context) {
+    CensusView view;
+    if (context.acting_key.empty()) return view;
+    const zetta::governance::Operation administer{zetta::governance::CapabilityDomain::Api,
+                                                  "cluster_admin"};
+    const bool admin = context.acting_is_user
+                           ? static_cast<bool>(context.node.authorize_user(context.acting_key, administer).allowed)
+                           : static_cast<bool>(context.node.authorize(context.acting_key, administer));
+    if (admin) return view;
+    view.whole = false;
+    const zetta::governance::Operation read_objects{zetta::governance::CapabilityDomain::Data,
+                                                    "objects_read"};
+    view.readable_bucket = [&context, read_objects](const std::string& bucket) {
+        if (context.acting_is_user) {
+            return context.node.authorize_object(context.acting_key, /*acting_is_user=*/true,
+                                                 read_objects,
+                                                 zetta::governance::Resource::bucket(bucket));
+        }
+        return static_cast<bool>(context.node.authorize(context.acting_key, read_objects));
+    };
+    return view;
+}
+
 ApiResult handle_storage_usage(const nlohmann::json& input, ApiContext& context) {
+    const CensusView view = census_view(context);
     zetta::data::StorageCensus census =
         zetta::data::measure_storage(context.node.config().data_dir);
+    view.narrow(census);
     if (input.value("scope", std::string("node")) != "cluster") {
         return ApiResult::success({{"node_id", context.node.node_id()},
                                    {"scope", "node"},
@@ -149,7 +193,8 @@ ApiResult handle_storage_usage(const nlohmann::json& input, ApiContext& context)
         context.node.cluster_member_ids(), samples, zetta::Node::kStorageCensusStaleAfter);
 
     nlohmann::json nodes = nlohmann::json::array();
-    for (const zetta::cluster::MemberStorageCensus& member : folded.nodes) {
+    for (zetta::cluster::MemberStorageCensus member : folded.nodes) {
+        view.narrow(member.census);
         nodes.push_back({{"node_id", member.node_id},
                          {"local", member.is_local},
                          {"measured_at", member.measured_at},
@@ -163,12 +208,14 @@ ApiResult handle_storage_usage(const nlohmann::json& input, ApiContext& context)
     for (const zetta::cluster::MissingStorageCensus& member : folded.missing) {
         missing.push_back({{"node_id", member.node_id}, {"reason", member.reason}});
     }
+    zetta::data::StorageCensus total = folded.total;
+    view.narrow(total);
     return ApiResult::success({{"node_id", context.node.node_id()},
                                {"scope", "cluster"},
                                {"bytes", "physical"},
-                               {"total_bytes", folded.total.total_bytes},
-                               {"kinds", kinds_json(folded.total.kinds)},
-                               {"buckets", buckets_json(folded.total.buckets)},
+                               {"total_bytes", total.total_bytes},
+                               {"kinds", kinds_json(total.kinds)},
+                               {"buckets", buckets_json(total.buckets)},
                                {"nodes", std::move(nodes)},
                                {"missing", std::move(missing)}});
 }

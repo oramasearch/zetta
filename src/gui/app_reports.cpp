@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: MIT
+
 // The Reports view (#960 item 4) — what a finished run FOUND, in the desktop
 // Studio surface. The information architecture and copy come from the design's
-// Reports screens (oramasearch/orama-design, feat/reports-surface); the numbers
+// Reports screens (the design repository's Reports surface); the numbers
 // come from the engine's own `get_run_report`.
 //
 // **One behavior path.** This calls the capability registry rather than reading

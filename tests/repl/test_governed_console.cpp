@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -303,6 +305,30 @@ TEST(GovernedConsole, CapabilityDenyBlocksAndAudits) {
         EXPECT_EQ(event->actor(), key->id());
     }
 
+    node.stop();
+}
+
+// #1434: the web shell's console runs as the signed-in user. A user without the right is
+// blocked, and the statement is audited under the user's id, never as the local session.
+TEST(GovernedConsole, ASessionUserIsEnforcedAndAudited) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    zetta::query::QueryService service{node};
+    GovernedConsole console{node, service};
+    auto user = node.create_user("web-shell-user");
+    ASSERT_TRUE(user);
+    console.set_session_user(user->id());
+
+    const Result py = console.run(Frontend::SimPython, kPython);
+    EXPECT_FALSE(py.ok());
+    EXPECT_NE(py.error.find("user"), std::string::npos) << py.error;
+    EXPECT_EQ(node.run_count(), 0u);
+    ASSERT_EQ(node.audit_event_count(), 1u);
+    for (const auto& event : node.audit_events()) {
+        EXPECT_FALSE(event->allowed());
+        EXPECT_EQ(event->actor(), user->id());
+    }
     node.stop();
 }
 

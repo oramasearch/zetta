@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Every data-changing SQL statement checks its right (#1229). INSERT has always
 // checked sql:write; UPDATE, DELETE, TRUNCATE and the DDL did not, so a
 // principal allowed only to read could change or destroy data. These tests pin:

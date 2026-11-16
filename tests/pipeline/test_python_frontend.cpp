@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <optional>
@@ -284,4 +286,18 @@ TEST(PythonFrontend, RejectsSyntaxErrors) {
     EXPECT_FALSE(result.ok());
     EXPECT_NE(result.error.find("invalid number"), std::string::npos)
         << result.error;
+}
+
+// #1427: nesting is bounded, so a hostile script of a million brackets is a parse error
+// instead of a stack overflow, and ordinary nesting still compiles.
+TEST(PythonFrontend, DeeplyNestedExpressionsAreAParseError) {
+    const std::string deep = "x = " + std::string(1'000'000, '[') + std::string(1'000'000, ']') + "\n";
+    const FrontendResult refused = compile_python(deep);
+    EXPECT_FALSE(refused.ok());
+    EXPECT_NE(refused.error.find("nested more than"), std::string::npos) << refused.error;
+    const FrontendResult calls = compile_python("x = " + std::string(300, '[') + std::string(300, ']') + "\n");
+    EXPECT_FALSE(calls.ok());
+    const FrontendResult ordinary =
+        compile_python("ds = load_dataset('saas-churn')\nm = train(ds, target='outcome')\n");
+    EXPECT_TRUE(ordinary.ok()) << ordinary.error;
 }

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // One SQL statement from any client must never take a node down (#793, #819).
 //
 // A malformed statement used to reach a `throw ParseError` inside the SQL parser

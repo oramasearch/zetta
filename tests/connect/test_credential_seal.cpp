@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Sealed connector credentials (#1230, connect/credential_seal.hpp): AES-256-GCM
 // under a key derived from a root secret held outside the replicated catalogue.
 #include <gtest/gtest.h>

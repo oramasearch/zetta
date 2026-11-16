@@ -23,7 +23,7 @@ construction:
   forward horizon — a few events are deliberately **after** `t0` (the **leakage
   trap** a correct featurizer must drop);
 - a per-account **churn label** (`churned` + a forward `churn_date`);
-- the make-or-break **FedEx entity-resolution case** (TC-4): *FedEx Freight* + 5
+- the make-or-break **Contoso entity-resolution case** (TC-4): *Contoso Freight* + 5
   sibling subsidiaries (Ground, Express, Office, Logistics, Services) as
   **separate accounts** that must not be conflated.
 
@@ -67,7 +67,7 @@ data — the entity to score, the time column, the label, `t0`, and the horizon:
 `plan_tier` (`starter`|`business`|`enterprise`), `industry`, `region`, `mrr`,
 `seats`, `tenure_days`, `renewal_date`, `churned`, `churn_date`. `entity` is the
 TC-4 ground-truth division; `account_id` is its correct resolution target;
-`brand` groups siblings (e.g. `"FedEx"`) that share a brand but are distinct
+`brand` groups siblings (e.g. `"Contoso"`) that share a brand but are distinct
 accounts.
 
 **Event** (`zetta::usecases::churn::ChurnEvent`): `event_id`, `account_id`, `event_ts`,
@@ -76,13 +76,13 @@ accounts.
 `event_ts`; `mention` is non-empty only on `comms` rows — the raw account-name
 string a resolver must map to the right account (the entity-resolution case).
 
-## The FedEx entity-resolution case (TC-4)
+## The Contoso entity-resolution case (TC-4)
 
-Six accounts share `brand = "FedEx"` — `acct_fedex_freight`, `…_ground`,
+Six accounts share `brand = "Contoso"` — `acct_contoso_freight`, `…_ground`,
 `…_express`, `…_office`, `…_logistics`, `…_services` — each a **distinct
-account** with a **distinct `entity`** (`fedex_freight`, …). The `comms` events
-carry mention variants (`"FedEx Freight"`, `"Fedex Freight"`, …), plus a
-near-collision (`"Umbrella Logistics"` → `acct_umbrella`, *not* FedEx Logistics)
+account** with a **distinct `entity`** (`contoso_freight`, …). The `comms` events
+carry mention variants (`"Contoso Freight"`, `"contoso Freight"`, …), plus a
+near-collision (`"Umbrella Logistics"` → `acct_umbrella`, *not* Contoso Logistics)
 to keep resolution non-trivial.
 
 `zetta::usecases::churn::entity_resolution_attribute(dataset, strategy = FullName)` builds the
@@ -91,11 +91,11 @@ the account directory with [`zetta::usecases::churn::EntityResolver`](entity-res
 resolver sees only the raw `mention` string and matches it to an account, while the
 ground-truth `entity` is held out and recorded so the gate can check the resolver's
 choice. With the default `FullName` strategy the resolution is division-correct —
-`"FedEx Freight"` and the variant `"Fedex Freight"` both land on
-`acct_fedex_freight` while `"FedEx Ground"` stays separate — so the payload passes
+`"Contoso Freight"` and the variant `"contoso Freight"` both land on
+`acct_contoso_freight` while `"Contoso Ground"` stays separate — so the payload passes
 `zetta::usecases::churn::EntityResolutionCheck` (and `default_gate()`) because it *resolved
 correctly*, not by construction. Passing `ResolutionStrategy::Brand` collapses every
-`"FedEx …"` mention onto one brand bucket, so the gate **fails and blocks deploy**
+`"Contoso …"` mention onto one brand bucket, so the gate **fails and blocks deploy**
 (RULE-1) — the real-resolver way to drive the conflation failure. See
 [entity-resolution.md](entity-resolution.md) and
 [entity-resolution-check.md](entity-resolution-check.md).
@@ -181,7 +181,7 @@ re-run the parquet generator, and re-run the tests (`JsonlAndCsvLoadIdentically`
 ## How the tests consume it
 
 `tests/usecases/churn/test_churn_dataset.cpp` exercises the acceptance bar: the fixture loads
-and schema-validates; JSONL == CSV; the six FedEx siblings are separate accounts;
+and schema-validates; JSONL == CSV; the six Contoso siblings are separate accounts;
 events straddle `as_of_date`; accounts import into a zetta `Table`; the
 division-correct resolution passes the gate while a conflation blocks deploy; and
 malformed records (JSONL and CSV) fail at the boundary. Tests find the fixture

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/observability/activity.hpp"
 
 #include <algorithm>

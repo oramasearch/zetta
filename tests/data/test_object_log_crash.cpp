@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The object log's prefix guarantee under power loss and its fsync discipline
 // (#1235, docs/data/object-store.md → "Durability"): whatever pages the disk
 // had not made durable when the power went, what replays is the state after
@@ -374,8 +376,8 @@ void expect_barrier_waits(ObjectLog& log, Gate& gate, Synced& synced,
 TEST(ObjectLogCrash, APowerLossKeepsAPrefixAcrossSegmentRolls) {
     const TempDir dir;
     const std::filesystem::path live = dir.path() / "bucket";
+    Synced synced;  // its hook outlives the log, whose destructor flushes through it
     ObjectLog log(live, kGraceMs, kSegmentBytes);
-    Synced synced;
     synced.observe(log);
     std::string reason;
     ASSERT_TRUE(log.open(&reason)) << reason;
@@ -403,8 +405,8 @@ TEST(ObjectLogCrash, APowerLossKeepsAPrefixAcrossSegmentRolls) {
 TEST(ObjectLogCrash, ConcurrentBarriersKeepWhatTheyCovered) {
     const TempDir dir;
     const std::filesystem::path live = dir.path() / "bucket";
+    Synced synced;  // its hook outlives the log, whose destructor flushes through it
     ObjectLog log(live, kGraceMs, kSegmentBytes);
-    Synced synced;
     synced.observe(log);
     std::string reason;
     ASSERT_TRUE(log.open(&reason)) << reason;
@@ -532,8 +534,8 @@ TEST(ObjectLogCrash, ALogFromBeforeTheFixEndsAtItsFirstTornFrame) {
 TEST(ObjectLogCrash, ADeadSegmentIsDeletedOnlyAfterWhatReplacedItIsDurable) {
     const TempDir dir;
     const std::filesystem::path live = dir.path() / "bucket";
+    Synced synced;  // its hook outlives the log, whose destructor flushes through it
     ObjectLog log(live, kGraceMs, kSegmentBytes);
-    Synced synced;
     synced.observe(log);
     std::vector<bool> directory_syncs;  // per directory fsync: was the first segment gone?
     std::mutex syncs_mutex;
@@ -605,9 +607,11 @@ TEST(ObjectLogCrash, ABarrierWaitsForAnFsyncAlreadyRunning) {
         SCOPED_TRACE("a durable write");
         const TempDir dir;
         const std::filesystem::path live = dir.path() / "bucket";
-        ObjectLog log(live, kGraceMs, kSegmentBytes);
+        // The hooks capture `synced` and `gate`, and the log's destructor flushes
+        // through them, so both are declared before the log and outlive it.
         Synced synced;
         Gate gate;
+        ObjectLog log(live, kGraceMs, kSegmentBytes);
         synced.observe(log);
         gate.install(log);
         std::string reason;
@@ -622,9 +626,11 @@ TEST(ObjectLogCrash, ABarrierWaitsForAnFsyncAlreadyRunning) {
         SCOPED_TRACE("compaction deleting a dead segment");
         const TempDir dir;
         const std::filesystem::path live = dir.path() / "bucket";
-        ObjectLog log(live, kGraceMs, kSegmentBytes);
+        // The hooks capture `synced` and `gate`, and the log's destructor flushes
+        // through them, so both are declared before the log and outlive it.
         Synced synced;
         Gate gate;
+        ObjectLog log(live, kGraceMs, kSegmentBytes);
         synced.observe(log);
         gate.install(log);
         std::string reason;
@@ -643,9 +649,11 @@ TEST(ObjectLogCrash, ABarrierWaitsForAnFsyncAlreadyRunning) {
         SCOPED_TRACE("a roll");
         const TempDir dir;
         const std::filesystem::path live = dir.path() / "bucket";
-        ObjectLog log(live, kGraceMs, kSegmentBytes);
+        // The hooks capture `synced` and `gate`, and the log's destructor flushes
+        // through them, so both are declared before the log and outlive it.
         Synced synced;
         Gate gate;
+        ObjectLog log(live, kGraceMs, kSegmentBytes);
         synced.observe(log);
         gate.install(log);
         std::string reason;
@@ -794,8 +802,8 @@ TEST(ObjectLogCrash, AMarkedLogWithATornSegmentBeforeTheLastRefusesToOpen) {
 TEST(ObjectLogCrash, AReopenCutsTheFailedSegmentBackToItsLastFsync) {
     const TempDir dir;
     const std::filesystem::path live = dir.path() / "bucket";
+    Synced synced;  // its hook outlives the log, whose destructor flushes through it
     ObjectLog log(live, kGraceMs, kSegmentBytes);
-    Synced synced;
     synced.observe(log);
     Faults faults;
     faults.install(log);

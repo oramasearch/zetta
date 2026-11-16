@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cluster/replication.hpp"
 
 #include <algorithm>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/query/postgres.hpp"
 
 #include <cctype>

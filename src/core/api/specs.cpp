@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The spec index (#646, docs/api/specs-index.md): the OpenAPI document, every
 // capability input/output schema, and every boundary schema rendered as one
 // navigable object index. Derived mechanically from the capability registry +

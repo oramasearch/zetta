@@ -29,13 +29,13 @@ ds = load_dataset("DeepMostInnovations/saas-sales-conversations")
 - **Meaning:** load a named dataset.
 - **zetta effect:** create a table named for the dataset and populate it with
   the dataset's examples as JSON rows — re-implemented in C++ (we fetch/parse
-  the data ourselves through a clear IO seam; we do not import the Python
+  the data ourselves through a clear, injected IO interface; we do not import the Python
   library).
-- **Status: built** (#521) — `load_dataset(...)` lowers to an IR connect/load
+- **Status: built** — `load_dataset(...)` lowers to an IR connect/load
   step (the [Python frontend](../../../docs/pipeline/python-frontend.md)) and
   `zetta::input::run_load_dataset_step` executes it by decoding the parquet via
   zetta's native reader into a (partitioned) table, with file/network IO behind
-  the injectable `DatasetResolver` seam. This *is* the canonical worked example of
+  the injectable `DatasetResolver` interface. This *is* the canonical worked example of
   this skill — see [docs/pipeline/datasets-shim.md](../../../docs/pipeline/datasets-shim.md).
 
 ## Follow the dialect-agnostic pattern
@@ -73,7 +73,7 @@ input text → detect language → Frontend.parse() → generic ops → Executor
    `node.create_database`, `db->create_table`, `table->add_row`,
    `import_records`, `db->large_objects().import_file`, etc. Re-implement only
    the behavior you actually need, in C++. Put any network/file IO behind a
-   clear, swappable seam.
+   clear, swappable interface (an injected dependency).
 6. **Route** — extend the top-level input dispatch so detection picks the right
    frontend (SQL vs Python vs …). The UI query box can then accept any supported
    input; report what zetta did (e.g. "loaded 1,024 rows into
@@ -87,9 +87,9 @@ input text → detect language → Frontend.parse() → generic ops → Executor
 
 - Keep the generic representation dialect/language-neutral; keep execution
   Node-facing and in one place. **Never special-case the executor per
-  language** — that's what the frontend seam is for.
+  language** — that's what the frontend interface is for.
 - No external runtimes or libraries from the source ecosystem. If data must be
-  fetched or decoded, implement the minimal reader in C++ behind an IO seam.
+  fetched or decoded, implement the minimal reader in C++ behind an injected IO interface.
 - All zetta C++ conventions apply — see the **zetta-dev** skill.
 
 ## Where things go

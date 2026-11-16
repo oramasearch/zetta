@@ -5,7 +5,7 @@ is also carried into the page it governs.
 
 ## Round 1 — 2026-09-27
 
-Steve answered in one message, which settled [D1–D4](decisions.md) and moved the
+One answer, which settled [D1–D4](decisions.md) and moved the
 design past several of these questions. Still open from round 1:
 
 1. **What is the first thing that will publish, and the first thing that will
@@ -24,7 +24,7 @@ design past several of these questions. Still open from round 1:
 
 ## Round 2 — 2026-09-27
 
-10. ~~**How do coroutine subscribers wait?**~~ → *Answered 2026-09-27 (Steve):
+10. ~~**How do coroutine subscribers wait?**~~ → *Answered 2026-09-27:
     don't use coroutines for this; subscribers wait on condition variables, with
     a mutex per queue, deque or consumer queue* ([D5](decisions.md)). Original
     question: A coroutine that blocks on a
@@ -34,14 +34,14 @@ design past several of these questions. Still open from round 1:
     only, and coroutine code calls it through `run_blocking` on a pool thread;
     (c) condition variable only, and we accept the blocked thread.
 11. ~~**Where are delivery semantics chosen?**~~ → *Answered 2026-09-27
-    (Steve): at any level, or several* ([D6](decisions.md)). Original question:
+   : at any level, or several* ([D6](decisions.md)). Original question:
     per topic, per subscription, or per message? E.g. is "deliver to one" a property of a subscriber group (like
     NATS queue groups), or can a single publish say "this one goes to 3
     recipients"?
 12. **`std::queue` can't do broadcast.** It only has `front`/`pop`, so it can
     feed one reader. Is the `std::queue` store meant for work-queue topics only,
     or should the alternative store be a `std::deque` used by index?
-13. ~~**Is growth ever capped?**~~ → *Answered 2026-09-27 (Steve): yes,
+13. ~~**Is growth ever capped?**~~ → *Answered 2026-09-27: yes,
     configurable at all levels with sane defaults, potentially overflowing to
     disk* ([D10](decisions.md)). Original question: **Is growth ever capped?** A slow or dead subscriber pins every ring after
     its cursor. Options: no cap; a per-topic memory limit after which the
@@ -53,7 +53,7 @@ design past several of these questions. Still open from round 1:
     segment?
 15. **Which encodings in stage 1, and is the MIME type interned** to a small id
     in the header, or stored as a string per event?
-16. ~~**What does QoS mean?**~~ → *Answered 2026-09-27 (Steve): both priority
+16. ~~**What does QoS mean?**~~ → *Answered 2026-09-27: both priority
     and the delivery guarantee, configurable at all levels* ([D9](decisions.md)).
     Original question: **What does QoS mean for you: priority (who goes first), or a delivery
     guarantee** (at-most-once vs at-least-once with acknowledgement and
@@ -61,7 +61,7 @@ design past several of these questions. Still open from round 1:
 
 ## Round 3 — 2026-09-27
 
-17. ~~**When levels disagree, which wins?**~~ → *Answered 2026-09-27 (Steve):
+17. ~~**When levels disagree, which wins?**~~ → *Answered 2026-09-27:
     the security/governance rules defined on the topic, user and subscriber,
     through the central governance model of users, roles, grants, rules and
     permissions* ([D7](decisions.md), [`governance.md`](governance.md)).
@@ -75,7 +75,7 @@ design past several of these questions. Still open from round 1:
 ## Round 4 — 2026-09-27
 
 18. ~~**Over-bound requests: reject or clamp?**~~ → *Answered 2026-09-27
-    (Steve): configurable per topic, clamp by default* ([D8](decisions.md)).
+   : configurable per topic, clamp by default* ([D8](decisions.md)).
     Original question: **When a publish or subscription asks for more than governance allows** (e.g.
     priority 9 where the role's bound is 5, or "deliver to everyone" where it may
     only use "one"), do we (a) **reject** it with an error naming the rule, and
@@ -84,7 +84,7 @@ design past several of these questions. Still open from round 1:
 
 ## Round 5 — 2026-09-27
 
-19. **Are these the right defaults?** → *Steve, 2026-09-27: too small; a
+19. **Are these the right defaults?** → *Answered 2026-09-27: too small; a
     partition can see more than 10k events per second.* Revised in the stage 1
     page (limits in bytes, sized from a throughput target); the target itself
     is Q20. Original proposal: Proposed in
@@ -99,7 +99,7 @@ design past several of these questions. Still open from round 1:
 ## Round 6 — 2026-09-27
 
 20. ~~**What throughput should the defaults be sized for?**~~ → *Answered
-    2026-09-27 (Steve): don't guess; auto-select from the environment (pod
+    2026-09-27: don't guess; auto-select from the environment (pod
     requests/limits, system memory total/used, …), overridable by configuration,
     and log what was detected* ([D11](decisions.md)). Q19 is closed by the same
     answer. Original question: Proposed target: **100k
@@ -111,7 +111,7 @@ design past several of these questions. Still open from round 1:
 
 ## Round 7 — 2026-09-27
 
-21. ~~**Partitions.**~~ → *Answered 2026-09-27 (Steve): we might implement
+21. ~~**Partitions.**~~ → *Answered 2026-09-27: we might implement
     partitions in the future, but not now* ([D13](decisions.md)). Original
     question: **Partitions.** You said "per partition": is a topic partitioned, like a
     Kafka topic, with each partition its own ordered ring? If so, what picks an
@@ -121,7 +121,7 @@ design past several of these questions. Still open from round 1:
 ## Round 8 — 2026-09-27
 
 22. ~~**Are topics named at runtime and listed like tables?**~~ → *Answered
-    2026-09-27 (Steve): yes, and persisted to disk and reloaded after any
+    2026-09-27: yes, and persisted to disk and reloaded after any
     shutdown, graceful or not; persistent topics can be defined; topics can also
     be auto-created implicitly from configuration, like Kafka* ([D14–D16](decisions.md)).
     Original question: **Are topics named at runtime and listed like tables?** E.g. `CREATE TOPIC
@@ -133,7 +133,7 @@ design past several of these questions. Still open from round 1:
 ## Round 9 — 2026-09-27
 
 23. ~~**Default fsync policy for a persistent topic?**~~ → *Answered 2026-09-27
-    (Steve): by default events persist to disk on shutdown too; only a
+   : by default events persist to disk on shutdown too; only a
     non-default setting makes a topic discard on shutdown (never using disk);
     more persistent topics come later; for now topics are memory-only except for
     restarts, crashes and overflow* ([D17](decisions.md)). Original question:
@@ -149,7 +149,7 @@ design past several of these questions. Still open from round 1:
 ## Round 10 — 2026-09-27
 
 24. ~~**Which crash must a default topic survive?**~~ → *Answered 2026-09-27
-    (Steve): don't worry about persistence now; best effort, and log the
+   : don't worry about persistence now; best effort, and log the
     outcome; persistent topics are designed later* ([D18](decisions.md)).
     Original question: **Which crash must a default topic survive?** Proposal (research/06): keep
     ring segments in **memory-mapped files** in the data directory. Writes stay
@@ -164,7 +164,7 @@ design past several of these questions. Still open from round 1:
 ## Round 11 — 2026-09-27
 
 7. ~~*(reopened from round 1)* **Where does a new subscriber start?**~~ →
-   *Answered 2026-09-27 (Steve): configurable at all levels; by default it joins
+   *Answered 2026-09-27: configurable at all levels; by default it joins
    the subscriber list and receives events as its rules define*
    ([D19](decisions.md)). Original: Proposal:
    at the **next** event published (default), configurable to the **oldest
@@ -173,15 +173,15 @@ design past several of these questions. Still open from round 1:
 ## Round 12 — 2026-09-27
 
 8. ~~*(reopened from round 1)* **Is stage 1 exposed on MCP/REST**~~ →
-   *Answered 2026-09-27 (Steve): optionally; not exposed externally by default*
+   *Answered 2026-09-27: optionally; not exposed externally by default*
    ([D22](decisions.md)). Original: **Is stage 1 exposed on MCP/REST**, or engine-internal
    first? Proposal: both in the same change, per zetta's rule that a capability
    ships on the API and MCP with the engine work: `create_topic`, `drop_topic`,
    `publish`, and `subscribe` streaming events over SSE (the MCP transport
    already uses it), with the in-process C++ API underneath for engine code.
 
-Settled without asking, under the standing rule (Steve may overrule):
-Q12 ~~the second store is an indexable `std::deque`~~ — *corrected by Steve
+Settled without asking, under the standing rule (open to being overruled):
+Q12 ~~the second store is an indexable `std::deque`~~ — *corrected
 (D21): the deque is the holder of ring buffers inside the `TopicRingStack`, not
 a second store*; Q14 heap events are immutable and refcounted, and the inline threshold
 is a per-topic setting defaulting to 256 bytes; Q15 stage 1 encodings are
@@ -191,7 +191,7 @@ id per node.
 ## Round 13 — 2026-09-27
 
 25. ~~**Inside the `TopicRingStack`, which lock guards an append or a read?**~~
-    → *Answered 2026-09-27 (Steve): the queue has its own lock and condition
+    → *Answered 2026-09-27: the queue has its own lock and condition
     variables; a topic might have a few queues (producer, internal, consumer) to
     simplify locking, by configuration* ([D23](decisions.md)). Original: (a)
     the **stack's mutex** for everything: one lock per topic, simplest, but every
@@ -204,7 +204,7 @@ id per node.
 ## Round 14 — 2026-09-27
 
 26. ~~**What moves events along the chain**~~ → *Answered 2026-09-27 and revised
-    2026-09-28 (Steve): configurable; the default is a shared pool beginning at
+    2026-09-28: configurable; the default is a shared pool beginning at
     one worker and growing at one worker per 250 active topics; dedicated and
     inline dispatch remain explicit options* ([D24](decisions.md)). Original:
     **What moves events along the chain** (producer queue → internal queue →
@@ -217,7 +217,7 @@ id per node.
 ## Round 15 — 2026-09-27
 
 1. ~~*(reopened from round 1)* **What will publish first, and what will subscribe
-   first?**~~ → *Answered 2026-09-27 (Steve): anything can, especially agents;
+   first?**~~ → *Answered 2026-09-27: anything can, especially agents;
    agent tasks will use pub/sub too, designed elsewhere* ([D25](decisions.md)).
    Original: **What will publish first, and what will subscribe first?** The design is now general enough that the first real use decides
    what stage 1 builds first and what its tests look like. Candidates seen in
@@ -226,7 +226,7 @@ id per node.
 
 ## Round 16 — 2026-09-27
 
-27. ~~**Request/reply.**~~ → *Answered 2026-09-27 (Steve): every topic and
+27. ~~**Request/reply.**~~ → *Answered 2026-09-27: every topic and
     agent has a unique name (`topic:abc123`, `agent:405`, `table:logs`);
     reply-to is a list of those, with a correlation id; addresses can be
     wildcards (`agent:*`, `agent:security-*`); events also have to, cc and bcc*
@@ -240,7 +240,7 @@ id per node.
 ## Round 17 — 2026-09-27
 
 28. ~~**What does delivering to a non-topic address mean?**~~ → *Answered
-    2026-09-27 (Steve): yes, an inbox per entity* ([D28](decisions.md)); plus
+    2026-09-27: yes, an inbox per entity* ([D28](decisions.md)); plus
     `from`, `topics-chain`, cached wildcards and inbox retention ([D29–D31](decisions.md)).
     Original: **What does delivering to a non-topic address mean?** Proposal: every
     addressable entity has an **inbox**, a queue of its own. `to: agent:405` puts
@@ -252,7 +252,7 @@ id per node.
 
 ## Round 18 — 2026-09-27
 
-29. ~~**Where do undeliverable events go?**~~ → *Answered 2026-09-27 (Steve):
+29. ~~**Where do undeliverable events go?**~~ → *Answered 2026-09-27:
     the dead-letter proposal, configurable at all levels* ([D32](decisions.md)).
     Original: **Where do undeliverable events go?** Several cases now produce them: an
     inbox whose retention expired with events still in it (D31), an event whose
@@ -264,21 +264,21 @@ id per node.
 ## Round 19 — 2026-09-27
 
 30. ~~**What does `from` say when an agent acts for a person?**~~ → *Answered
-    2026-09-27 (Steve): both, `from` (the person) and `sender` (the agent),
+    2026-09-27: both, `from` (the person) and `sender` (the agent),
     configurable at all levels* ([D33](decisions.md)).
 
-31. ~~**Delegation chains.**~~ → *Answered 2026-09-27 (Steve): check the full
+31. ~~**Delegation chains.**~~ → *Answered 2026-09-27: check the full
     stack; 10,000 is the maximum, and at that point drop with an error in the
     log* ([D34](decisions.md)). Original: **Delegation chains.** Ask Orama can delegate to a subagent, which can
     delegate again. When `agent:security-scan` sends on behalf of
-    `agent:ask-orama`, which acted for `user:steve`: is `sender` just the last
+    `agent:ask-orama`, which acted for `user:riley`: is `sender` just the last
     agent, or a **stack** of every agent in the chain (like `topics-chain`), each
     link checked by governance and recorded in the audit? And is there a maximum
     delegation depth?
 
 ## Round 20 — 2026-09-27
 
-32. ~~**What drains a table's inbox?**~~ → *Answered 2026-09-27 (Steve): insert
+32. ~~**What drains a table's inbox?**~~ → *Answered 2026-09-27: insert
     as a row by default; a Postgres function or stored procedure is another
     target (its own address, not `table:`); also services, model inference, etc.*
     ([D35](decisions.md)). Original: **What drains a table's inbox?** `to: table:logs` puts an event in the
@@ -289,7 +289,7 @@ id per node.
 
 ## Round 21 — 2026-09-27
 
-33. ~~**Where does a drain's result go?**~~ → *Answered 2026-09-27 (Steve):
+33. ~~**Where does a drain's result go?**~~ → *Answered 2026-09-27:
     configurable; defaults to nothing; case by case by what is most logical (a
     SQL query might reply all, an insert might not); per-recipient error topics,
     created only when there are errors; no rate limits by default, later*
@@ -302,7 +302,7 @@ id per node.
 
 ## Round 22 — 2026-09-27
 
-34. ~~**What does "reply all" mean here?**~~ → *Answered 2026-09-27 (Steve):
+34. ~~**What does "reply all" mean here?**~~ → *Answered 2026-09-27:
     "I meant reply-to by default"* ([D36](decisions.md), corrected); reply-all
     stays available as an option. Original: **What does "reply all" mean here?** Email's reply-all goes to the original
     sender and every `to` and `cc` recipient (never `bcc`). Proposal for us:
@@ -312,7 +312,7 @@ id per node.
 
 ## Round 23 — 2026-09-27
 
-35. ~~**Stage 2: the cluster.**~~ → *Answered 2026-09-27 (Steve): design stage 2
+35. ~~**Stage 2: the cluster.**~~ → *Answered 2026-09-27: design stage 2
     later* ([D39](decisions.md)). Original: **Stage 2: the cluster.** Zetta's first principle says a single-node design
     ships only with its distributed path designed behind the same API. Today a
     topic's definition is replicated but its events live on one node. When

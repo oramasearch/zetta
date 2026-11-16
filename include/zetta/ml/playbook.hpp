@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <cstdint>
@@ -146,7 +148,7 @@ struct DriverContribution {
 // dimension.
 struct PlaybookAccount {
     std::int64_t entity = 0;        // the entity key (CRM account index)
-    std::string account_id;         // human account id (e.g. "acct_fedex_office"); may be empty
+    std::string account_id;         // human account id (e.g. "acct_contoso_office"); may be empty
     std::string account_name;       // display name; may be empty
     double risk = 0.0;              // P(churn) — the calibrated risk (predict_proba), [0, 1]
     double arr = 0.0;               // ARR proxy (e.g. mrr x 12)

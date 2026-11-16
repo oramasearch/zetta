@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // Reusable mutual-TLS transport security (#1283): PEM credential loading,

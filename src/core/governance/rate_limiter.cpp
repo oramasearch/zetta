@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/governance/rate_limiter.hpp"
 
 #include <algorithm>

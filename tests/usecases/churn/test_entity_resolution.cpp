@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -39,17 +41,17 @@ namespace {
 
 fs::path churn_dir() { return fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn"; }
 
-// The six FedEx siblings plus a near-collision (Umbrella Logistics shares the
-// "logistics" token with FedEx Logistics) — a candidate directory shaped like the
+// The six Contoso siblings plus a near-collision (Umbrella Logistics shares the
+// "logistics" token with Contoso Logistics) — a candidate directory shaped like the
 // fixture's accounts.
-std::vector<ResolutionCandidate> fedex_directory() {
+std::vector<ResolutionCandidate> contoso_directory() {
     return {
-        {"acct_fedex_freight",   "FedEx Freight",      "FedEx",    "fedex_freight"},
-        {"acct_fedex_ground",    "FedEx Ground",       "FedEx",    "fedex_ground"},
-        {"acct_fedex_express",   "FedEx Express",      "FedEx",    "fedex_express"},
-        {"acct_fedex_office",    "FedEx Office",       "FedEx",    "fedex_office"},
-        {"acct_fedex_logistics", "FedEx Logistics",    "FedEx",    "fedex_logistics"},
-        {"acct_fedex_services",  "FedEx Services",     "FedEx",    "fedex_services"},
+        {"acct_contoso_freight",   "Contoso Freight",      "Contoso",    "contoso_freight"},
+        {"acct_contoso_ground",    "Contoso Ground",       "Contoso",    "contoso_ground"},
+        {"acct_contoso_express",   "Contoso Express",      "Contoso",    "contoso_express"},
+        {"acct_contoso_office",    "Contoso Office",       "Contoso",    "contoso_office"},
+        {"acct_contoso_logistics", "Contoso Logistics",    "Contoso",    "contoso_logistics"},
+        {"acct_contoso_services",  "Contoso Services",     "Contoso",    "contoso_services"},
         {"acct_umbrella",        "Umbrella Logistics", "Umbrella", "umbrella"},
     };
 }
@@ -59,10 +61,10 @@ std::vector<ResolutionCandidate> fedex_directory() {
 // ---- normalization ----------------------------------------------------------
 
 TEST(EntityResolver, NormalizationFoldsCaseAndPunctuation) {
-    EXPECT_EQ(normalize_entity_name("FedEx Freight"), "fedex freight");
-    EXPECT_EQ(normalize_entity_name("Fedex  Freight,"), "fedex freight");
-    EXPECT_EQ(normalize_entity_name("  FedEx-Freight  "), "fedex freight");
-    EXPECT_EQ(normalize_entity_name("FedEx Freight, Inc."), "fedex freight inc");
+    EXPECT_EQ(normalize_entity_name("Contoso Freight"), "contoso freight");
+    EXPECT_EQ(normalize_entity_name("contoso  Freight,"), "contoso freight");
+    EXPECT_EQ(normalize_entity_name("  Contoso-Freight  "), "contoso freight");
+    EXPECT_EQ(normalize_entity_name("Contoso Freight, Inc."), "contoso freight inc");
     EXPECT_EQ(normalize_entity_name(""), "");
     EXPECT_EQ(normalize_entity_name("!!!"), "");
 }
@@ -70,46 +72,46 @@ TEST(EntityResolver, NormalizationFoldsCaseAndPunctuation) {
 // ---- division-correct full-name resolution (the make-or-break) --------------
 
 TEST(EntityResolver, FullNameKeepsSiblingsApart) {
-    const EntityResolver resolver(fedex_directory());
-    EXPECT_EQ(resolver.resolve("FedEx Freight").account_id, "acct_fedex_freight");
-    EXPECT_EQ(resolver.resolve("FedEx Ground").account_id, "acct_fedex_ground");
-    EXPECT_EQ(resolver.resolve("FedEx Express").account_id, "acct_fedex_express");
-    EXPECT_EQ(resolver.resolve("FedEx Office").account_id, "acct_fedex_office");
-    EXPECT_EQ(resolver.resolve("FedEx Logistics").account_id, "acct_fedex_logistics");
-    EXPECT_EQ(resolver.resolve("FedEx Services").account_id, "acct_fedex_services");
+    const EntityResolver resolver(contoso_directory());
+    EXPECT_EQ(resolver.resolve("Contoso Freight").account_id, "acct_contoso_freight");
+    EXPECT_EQ(resolver.resolve("Contoso Ground").account_id, "acct_contoso_ground");
+    EXPECT_EQ(resolver.resolve("Contoso Express").account_id, "acct_contoso_express");
+    EXPECT_EQ(resolver.resolve("Contoso Office").account_id, "acct_contoso_office");
+    EXPECT_EQ(resolver.resolve("Contoso Logistics").account_id, "acct_contoso_logistics");
+    EXPECT_EQ(resolver.resolve("Contoso Services").account_id, "acct_contoso_services");
 }
 
 TEST(EntityResolver, ResolvesACaseVariantSpelling) {
-    const EntityResolver resolver(fedex_directory());
-    // "Fedex Freight" (lowercase 'e') must still land on FedEx Freight's account.
-    EXPECT_EQ(resolver.resolve("Fedex Freight").account_id, "acct_fedex_freight");
+    const EntityResolver resolver(contoso_directory());
+    // "contoso Freight" (lowercase 'c') must still land on Contoso Freight's account.
+    EXPECT_EQ(resolver.resolve("contoso Freight").account_id, "acct_contoso_freight");
 }
 
 TEST(EntityResolver, ResolvesTheNearCollisionToTheRightAccount) {
-    const EntityResolver resolver(fedex_directory());
-    // "Umbrella Logistics" shares the "logistics" token with "FedEx Logistics" but is
+    const EntityResolver resolver(contoso_directory());
+    // "Umbrella Logistics" shares the "logistics" token with "Contoso Logistics" but is
     // a different account; a full-name match must not be fooled.
     EXPECT_EQ(resolver.resolve("Umbrella Logistics").account_id, "acct_umbrella");
-    EXPECT_EQ(resolver.resolve("FedEx Logistics").account_id, "acct_fedex_logistics");
+    EXPECT_EQ(resolver.resolve("Contoso Logistics").account_id, "acct_contoso_logistics");
 }
 
 TEST(EntityResolver, LeavesAnUnmatchableMentionUnresolved) {
-    const EntityResolver resolver(fedex_directory());
+    const EntityResolver resolver(contoso_directory());
     // A bare brand or a typo is genuinely ambiguous — the conservative resolver
     // declines rather than guess (and risk conflation).
-    EXPECT_FALSE(resolver.resolve("FedEx").resolved());
-    EXPECT_FALSE(resolver.resolve("FedEx Frieght").resolved());  // typo
+    EXPECT_FALSE(resolver.resolve("Contoso").resolved());
+    EXPECT_FALSE(resolver.resolve("Contoso Frieght").resolved());  // typo
 }
 
 // ---- the Brand strategy is the conflation trap ------------------------------
 
 TEST(EntityResolver, BrandCollapsesSiblingsToOneBucket) {
-    const EntityResolver resolver(fedex_directory(), ResolutionStrategy::Brand);
-    // Every FedEx mention collapses onto one brand bucket — the wrong way.
-    const std::string bucket = resolver.resolve("FedEx Freight").account_id;
-    EXPECT_EQ(bucket, "acct_brand_fedex");
-    EXPECT_EQ(resolver.resolve("FedEx Ground").account_id, "acct_brand_fedex");
-    EXPECT_EQ(resolver.resolve("FedEx Logistics").account_id, "acct_brand_fedex");
+    const EntityResolver resolver(contoso_directory(), ResolutionStrategy::Brand);
+    // Every Contoso mention collapses onto one brand bucket — the wrong way.
+    const std::string bucket = resolver.resolve("Contoso Freight").account_id;
+    EXPECT_EQ(bucket, "acct_brand_contoso");
+    EXPECT_EQ(resolver.resolve("Contoso Ground").account_id, "acct_brand_contoso");
+    EXPECT_EQ(resolver.resolve("Contoso Logistics").account_id, "acct_brand_contoso");
     // A different brand gets its own bucket.
     EXPECT_EQ(resolver.resolve("Umbrella Logistics").account_id, "acct_brand_umbrella");
 }
@@ -118,13 +120,13 @@ TEST(EntityResolver, BrandCollapsesSiblingsToOneBucket) {
 
 TEST(EntityResolver, AnnotationFromCorrectResolutionPassesTheGate) {
     const std::vector<LabeledMention> mentions = {
-        {"FedEx Freight",   "fedex_freight"},
-        {"Fedex Freight",   "fedex_freight"},
-        {"FedEx Ground",    "fedex_ground"},
-        {"FedEx Logistics", "fedex_logistics"},
+        {"Contoso Freight",   "contoso_freight"},
+        {"contoso Freight",   "contoso_freight"},
+        {"Contoso Ground",    "contoso_ground"},
+        {"Contoso Logistics", "contoso_logistics"},
         {"Umbrella Logistics", "umbrella"},
     };
-    const nlohmann::json attribute = entity_resolution_annotation(fedex_directory(), mentions);
+    const nlohmann::json attribute = entity_resolution_annotation(contoso_directory(), mentions);
 
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts", attribute);
@@ -136,17 +138,17 @@ TEST(EntityResolver, AnnotationFromCorrectResolutionPassesTheGate) {
 
 TEST(EntityResolver, AnnotationFromBrandResolutionFailsTheGate) {
     const std::vector<LabeledMention> mentions = {
-        {"FedEx Freight", "fedex_freight"},
-        {"FedEx Ground",  "fedex_ground"},
+        {"Contoso Freight", "contoso_freight"},
+        {"Contoso Ground",  "contoso_ground"},
     };
     const nlohmann::json attribute =
-        entity_resolution_annotation(fedex_directory(), mentions, ResolutionStrategy::Brand);
+        entity_resolution_annotation(contoso_directory(), mentions, ResolutionStrategy::Brand);
 
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts", attribute);
     const CheckResult result = EntityResolutionCheck{}.evaluate(graph);
     EXPECT_EQ(result.status, CheckStatus::Fail);
-    EXPECT_NE(result.reason.find("acct_brand_fedex"), std::string::npos);
+    EXPECT_NE(result.reason.find("acct_brand_contoso"), std::string::npos);
 }
 
 TEST(EntityResolver, UnresolvedMentionGetsADistinctSentinel) {
@@ -154,7 +156,7 @@ TEST(EntityResolver, UnresolvedMentionGetsADistinctSentinel) {
         {"Acme Co", "acme"},        // unmatched
         {"Globex Inc", "globex"},   // unmatched, distinct entity
     };
-    const nlohmann::json attribute = entity_resolution_annotation(fedex_directory(), mentions);
+    const nlohmann::json attribute = entity_resolution_annotation(contoso_directory(), mentions);
     const auto& records = attribute.at("entity_resolution").at("records");
     ASSERT_EQ(records.size(), 2u);
     // Two distinct unresolved mentions get distinct sentinels, so they do not falsely
@@ -208,8 +210,8 @@ TEST(EntityResolver, FixtureBrandResolutionBlocksDeploy) {
     const auto result = load_churn_dataset(churn_dir());
     ASSERT_TRUE(result.ok()) << result.error;
 
-    // The conflated fixture: resolve with the coarse Brand strategy. The six FedEx
-    // siblings collapse onto acct_brand_fedex — the canonical TC-4 conflation.
+    // The conflated fixture: resolve with the coarse Brand strategy. The six Contoso
+    // siblings collapse onto acct_brand_contoso — the canonical TC-4 conflation.
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts",
                    entity_resolution_attribute(result.dataset, ResolutionStrategy::Brand));
@@ -220,5 +222,5 @@ TEST(EntityResolver, FixtureBrandResolutionBlocksDeploy) {
 
     const CheckResult check = EntityResolutionCheck{}.evaluate(graph);
     EXPECT_EQ(check.status, CheckStatus::Fail);
-    EXPECT_NE(check.reason.find("acct_brand_fedex"), std::string::npos);
+    EXPECT_NE(check.reason.find("acct_brand_contoso"), std::string::npos);
 }

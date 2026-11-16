@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/index/index_step_executor.hpp"
 
 #include <algorithm>

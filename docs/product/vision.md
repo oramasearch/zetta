@@ -41,7 +41,4 @@ cluster across any vendor, architecture, and cloud.
 *Zetta* — a zettabyte is one billion terabytes. Build for the ceiling and the
 everyday problems come for free.
 
-Sources of record (business context lives in amaro-bridge):
-[one-pager](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/one-pager.md) ·
-[vision-and-strategy](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/vision-and-strategy.md) ·
-blueprint VIS-1/GOAL-1..4/KPI-1..4.
+Source of record: blueprint VIS-1/GOAL-1..4/KPI-1..4.

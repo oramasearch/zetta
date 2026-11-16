@@ -9,20 +9,16 @@ description: "Author the base agent's multi-turn, tool-calling training corpus a
 the fact vocabulary, the tool surface, the C++ recipe, the commands — are in
 [reference.md](reference.md). Load it before authoring.
 
-Epic: [#983](https://github.com/oramasearch/zetta/issues/983) ·
-generator: [#982](https://github.com/oramasearch/zetta/issues/982) ·
-method: **rlvr-training-data** (load first).
+Method: **rlvr-training-data** (load first).
 
 ---
 
 ## 0 · Two things to be honest about before starting
 
-**This is the bootstrap.** *(Decision, Steve, 2026-08-06: bootstrap with SFT now, add RLVR
-later.)* What you produce here is hand-anticipated supervised data. It is **not** the coverage
+**This is the bootstrap:** supervised fine-tuning now, RLVR later. What you produce here is hand-anticipated supervised data. It is **not** the coverage
 strategy — `run_rollout` + `Sandbox::apply` (`agent/rollout.cpp`) already implement the loop
 that generates observation-conditioned trajectories at whatever variety a policy explores;
-wiring the neural Qwen policy to it is [#859](https://github.com/oramasearch/zetta/issues/859).
-So: **size this as a bootstrap.** Make the policy good enough to explore usefully. Do not try to
+wiring the neural Qwen policy to it is the next step. So: **size this as a bootstrap.** Make the policy good enough to explore usefully. Do not try to
 hand-cover the variety of ways humans talk — attempting that is how the corpus reached 14,889
 cases while missing the word `"yes"`.
 
@@ -40,8 +36,8 @@ This skill runs the **admission gate**, never the correctness gate.
 ## 1 · Scope: the WHOLE catalogue, swept
 
 **Author across every solution in the catalogue — not one at a time.** `S-2`…`S-12`,
-`M-10`…`M-21`, `UC-13`…`UC-24` (`plan_templates.cpp`), specified in
-`modules/solutions-designs/docs/plan/04-solutions-catalog.md` (⚠️ internal-confidential).
+`M-10`…`M-21`, `UC-13`…`UC-24` (`plan_templates.cpp`); the coverage checklist is
+`docs/agent/training-coverage-checklist.md`.
 
 **Breadth is not a cost here — it is where the training signal comes from.** The single
 strongest negative control for any case is **the neighbouring solution's pipeline on this ask**:
@@ -73,7 +69,7 @@ breadth-first in three passes:
 2. **Pass 2 — verbs and autonomy.** Every solution gets **Monitor** and **Improve** (absent
    today), and every acting verb gets its **A1/A2 pair**.
 3. **Pass 3 — arcs, personas, register.** Depth on the solutions that will be demoed or
-   deployed — churn first (#969, Charles) — then outward.
+   deployed — churn first — then outward.
 
 Log what each pass skipped. A silent gap reads as coverage.
 
@@ -83,12 +79,12 @@ Answer these **per solution**, and record them in `docs/agent/cards/datasets/`. 
 catalogue this is reading the spec, not investigating — the catalogue did the work already.
 **Research nobody recorded gets redone.**
 
-1. **What is this module?** The twelve-field spec (`04-solutions-catalog.md` §2.6): methodology
+1. **What is this module?** The twelve-field spec: methodology
    composition · correctness adaptations · business wiring (actions, systems of action, people
-   and cadence) · ROI contract · agent operating definition · data plan · capability levels ·
+   and cadence) · outcome contract · agent operating definition · data plan · capability levels ·
    deployment shapes · governance and failure modes. **A module is not a model.** *"Who acts on
    this score, and in which system?"* is a first-class ask.
-2. **What makes it CORRECT here?** (`03-methodology-portfolio.md`.) This is what separates
+2. **What makes it CORRECT here?** This is what separates
    use cases that look alike: churn is point-in-time, leakage-free, **calibrated**; forecasting
    is **backtested, not calibrated**; retrieval is indexed with no supervised label at all. Get
    this wrong and you train the agent to build the neighbouring solution, fluently.
@@ -96,9 +92,9 @@ catalogue this is reading the spec, not investigating — the catalogue did the 
    contracts, and the pipeline verbs **from source** ([reference.md](reference.md) §2–3). Never
    retype a tool list — it is wrong the day someone adds a tool.
 4. **What does this domain's data actually look like?** Real table and column names, real null
-   rates, real leakage traps, real systems of action. Use the **perplexity** skill, or better,
-   the customer's own docs — the Motive churn slice is grounded in real columns from their
-   schema (`docs/projects/motive-fde-engagement/`), which is why its cases are accurate.
+   rates, real leakage traps, real systems of action. Use the **perplexity** skill (public
+   landscape only), or better, the documentation of a real schema you are allowed to use —
+   cases grounded in real columns are the accurate ones.
 
 ## 3 · Enumerate the scenario space — do not imagine it
 
@@ -106,15 +102,15 @@ catalogue this is reading the spec, not investigating — the catalogue did the 
 interact?"** You do not brainstorm. You take the cross-product of six axes, each read off the
 product, and you author the cells.
 
-### Axis A — the five verbs (`04-solutions-catalog.md` §2.4)
+### Axis A — the five verbs
 
 **Build** · **Run** · **Monitor** · **Explain** · **Improve**.
 
 Today's corpus is almost entirely **Build** and **Explain**. **Monitor** (drift/PSI,
 calibration over time, per-segment realized performance, holdout integrity, connector and
 schema health) and **Improve** (retrain on trigger, propose a threshold change *with its
-predicted ROI effect*, run a designed experiment) are **absent** — and they are where a
-deployed customer spends most of their turns. A slice that adds only more Build is not progress.
+predicted effect*, run a designed experiment) are **absent** — and they are where a
+deployed agent spends most of its turns. A slice that adds only more Build is not progress.
 
 ### Axis B — the four autonomy classes
 
@@ -123,7 +119,7 @@ deployed customer spends most of their turns. A slice that adds only more Build 
 **The class changes the correct reply to an identical ask.** Under A1, *"rerun it with the new
 threshold"* must produce an approval request; under A2 it must run. Every acting verb needs at
 least the A1/A2 pair, or the agent learns one behaviour and acts when it should ask — which
-makes governed self-serve unsellable.
+makes governed self-serve unsafe.
 
 ### Axis C — five personas, because the same question wants a different answer
 
@@ -132,12 +128,12 @@ makes governed self-serve unsellable.
 | **Analyst** | *"can you tell me who's likely to leave"* | the answer, not the method |
 | **ML engineer** | *"what's the cutoff column and is this leakage-free?"* | the mechanism, and will check it |
 | **Ops owner** | *"it flagged 400 accounts, who's supposed to call them?"* | the business wiring |
-| **Executive** | *"is this actually working?"* | the ROI readout, one number, no jargon |
+| **Executive** | *"is this actually working?"* | the outcome readout, one number, no jargon |
 | **Skeptic** | *"how do I know that number isn't overfit?"* | the held-out figure and its caveat |
 
 The skeptic is the most valuable and the least represented. An agent that answers *"how do I
 know this isn't overfit"* by quoting the held-out figure **and naming the in-sample gap** is the
-difference between a demo and a sale.
+difference between a demo and a system someone trusts.
 
 ### Axis D — seven conversation arcs (the shape of a whole thread)
 
@@ -162,10 +158,10 @@ and typos (`"can u build me a chrun model"`) · frustration (`"that's not what I
 aloud (`"hmm"`, `"ok so"`) · pasted artifacts (a SQL snippet, an n8n node, a stack trace, with
 no sentence around it).
 
-**Mine real register rather than inventing it** — `docs/meetings/*charles*` is verbatim from a
-real technical buyer. **Known limit:** those are pre-sales and contain **no deployed-operator
-register**, so Monitor and Improve register must be *designed* from the solution spec until
-someone is deployed and generating it (then #943 captures it).
+**Mine real register rather than inventing it** — verbatim conversations with real users are
+better than anything imagined. **Known limit:** conversations before deployment contain **no
+deployed-operator register**, so Monitor and Improve register must be *designed* from the
+solution spec until someone is deployed and generating it.
 
 ### Axis F — the failure library (this is where the negative controls come from)
 
@@ -202,27 +198,27 @@ observation, so it cannot teach building.
 USER  "predict which accounts are likely to churn"
 
   → list_datasets                      # what is even here?
-     ← motive.accounts (48 cols, 1.2M rows), motive.comm_events (31 cols, 84M rows)
+     ← crm.accounts (48 cols, 1.2M rows), crm.comm_events (31 cols, 84M rows)
 
-  → get_dataset motive.accounts        # what does it support?
-     ← sfdc_account_id (string, 11.4% null), churn_date (date, 8% non-null),
-       last_churn_reason (string), mrr (float), event_updated_datetime_pt (timestamp)
+  → get_dataset crm.accounts           # what does it support?
+     ← crm_account_id (string, 11.4% null), churn_date (date, 8% non-null),
+       last_churn_reason (string), mrr (float), loaded_at (timestamp)
 
-AGENT "`churn_date` gives us a label and `event_updated_datetime_pt` gives us a cutoff, so
-       this can be point-in-time. Two things first: `sfdc_account_id` is null on 11.4% of
-       rows, and `event_updated_datetime_pt` is the pipeline load date rather than the
-       source change date — joining on it would leak the future. Restrict to completed
-       rows and drop the null-id rows, or impute them?"
+AGENT "`churn_date` gives us a label and `loaded_at` gives us a cutoff, so this can be
+       point-in-time. Two things first: `crm_account_id` is null on 11.4% of rows, and
+       `loaded_at` is the pipeline load date rather than the source change date — joining
+       on it would leak the future. Restrict to completed rows and drop the null-id rows,
+       or impute them?"
 
 USER  "drop them"
 
-  → connect(motive.accounts)           # the pipeline is shaped by what was READ
-  → clean(drop_null: sfdc_account_id, as_of: event_updated_datetime_pt, completed_only)
+  → connect(crm.accounts)              # the pipeline is shaped by what was READ
+  → clean(drop_null: crm_account_id, as_of: loaded_at, completed_only)
   → model(gbdt, label: churn_date IS NOT NULL, calibrate: true, holdout: 0.3)
   → index(shap)
   → serve
 
-AGENT "Built. Point-in-time on `event_updated_datetime_pt`, calibrated, 30% held out so the
+AGENT "Built. Point-in-time on `loaded_at`, calibrated, 30% held out so the
        quality figure is measured on accounts it never saw. Run it?"
 
 USER  "yes"                            # a bare turn, resolvable only against the proposal
@@ -245,8 +241,7 @@ hold the question fixed and vary the context.
 Every case carries `history` (`AdmissionCase::history`), including prior **tool outcomes**
 (`PriorTurn::tools`) — so *"why did that fail?"* is answerable from the call that ran, not from
 prose. Include bare turns against specific antecedents, and make the same word train toward
-different behaviour depending on what precedes it
-([#942](https://github.com/oramasearch/zetta/issues/942)).
+different behaviour depending on what precedes it.
 
 ---
 
@@ -271,11 +266,9 @@ from the real confusions:
   already (`tool_called`, `abandoned_prior_proposal`).
 - **Never assert an unshipped capability.** The corpus is a **claim surface**:
   `product_knowledge_family` states what the product can do, in our voice, in the weights, to
-  every customer, forever. Check every assertion against
-  `docs/projects/motive-fde-engagement/product-claims.md`. The corpus currently says *"You can
-  run Python in a Pipeline step"* while the engine has `PythonFrontend` — **simulated** Python —
-  and the customer meeting said "simulated Python". **The meeting was more honest than the
-  training data.** Do not add to that.
+  every user, forever. Check every assertion against what the engine actually ships (the
+  source and `docs/`). The corpus once said *"You can run Python in a Pipeline step"* while the
+  engine has `PythonFrontend` — **simulated** Python. Do not add to that.
 - **Never generate the graders.** A model proposing its own success criterion is how a corpus
   quietly stops measuring anything. Criteria stay in C++.
 - **Vocabulary contract** in every user-facing string: **Pipeline** (never "execution graph"),
@@ -336,7 +329,7 @@ Not "cases were generated".
 - ❌ A trajectory whose pipeline is derivable from the ask alone.
 - ❌ A tool call not conditioned on what the previous call returned.
 - ❌ A bare turn with no `history`.
-- ❌ Asserting a capability the claims register does not carry as shipped.
+- ❌ Asserting a capability the engine does not ship.
 - ❌ Bare "gate" — say **admission gate** or **correctness gate**.
 
 ## Related
@@ -353,7 +346,7 @@ Not "cases were generated".
   unconstructible from a single use case. Breadth is where the discrimination signal comes from —
   every case gets 32 neighbours. Adds the three-pass sweep (shape → verbs/autonomy → depth) and
   the correctness-profile confusion table.
-- **v2.0.0 (2026-08-06)** — Rewritten as the roadmap Claude Code follows, not a checklist that
+- **v2.0.0 (2026-08-06)** — Rewritten as the roadmap a coding agent follows, not a checklist that
   points elsewhere. Adds the six-axis enumeration strategy (verbs × autonomy × personas × arcs ×
   register × failures) as the systematic answer to "anticipate the variety", the priority order
   for working the matrix, the trajectory anatomy with the perturbation test as its quality bar,

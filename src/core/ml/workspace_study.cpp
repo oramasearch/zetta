@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Experiments over a workspace methodology's parameters (lake#689;
 // docs/ml/workspace-methodologies.md#experiments).
 

@@ -1,10 +1,8 @@
 # Product docs
 
 What Orama Zetta *is* — the framing, audiences, positioning, and working
-decisions that shape every engineering choice in this repo. Business context
-(one-pager, strategy, design-partner research, meetings) lives in
-amaro-bridge; these pages are the repo-side source of truth engineers and
-agents build against. Read here before any work that touches product scope,
+decisions that shape every engineering choice in this repo. These pages are the
+source of truth engineers and agents build against. Read here before any work that touches product scope,
 naming, surfaces, or the catalog.
 
 - [orama-zetta.md](orama-zetta.md) — **read first**: what Orama Zetta is + the

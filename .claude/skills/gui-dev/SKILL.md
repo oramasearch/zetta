@@ -35,7 +35,7 @@ gotchas). The experience contract this work serves is
 4. **Navigation**: change views only via `App::navigate_to(view, entity_id)`;
    consume the per-view pending selection in master-detail panels.
 5. **Never block the frame**: long work → worker thread or a recorded job
-   polled from its `system` view (the shipped #624 pattern —
+   polled from its `system` view (the shipped pattern —
    [docs/gui/long-running-actions.md](../../../docs/gui/long-running-actions.md):
    op handles + `App::poll_background_ops`, node writes via the owner gate).
    Cloud consent gates are
@@ -45,17 +45,17 @@ gotchas). The experience contract this work serves is
 
 - Design-system self-check passes; sentence case; no em-dashes (`·` is the
   empty-cell placeholder); coral only on the active/you-are-here accent.
-- Product language (#635): enums/kinds render via `label_of(...)` /
+- Product language: enums/kinds render via `label_of(...)` /
   `humanize_kind` in `labels.hpp`, never a raw wire name as primary text; raw
   values only in labelled mono metadata lines; `term_hint` for unavoidable
   technical terms — [docs/gui/copy-audit.md](../../../docs/gui/copy-audit.md).
 - No local colors/paddings/one-off buttons outside the grammar.
 - Screenshot before/after in the PR for visual changes.
 - Docs same commit: the view's page in `docs/gui/`, gui README index,
-  code-map for new files. New TU ≤ ~40 KB (split by view, #638 precedent).
+  code-map for new files. New TU ≤ ~40 KB (split by view).
 - Build headed + run the affected flow; `ctest` (GUI-adjacent core logic).
 
-## Conflicts stop the line — ask Steve
+## Conflicts stop the line — ask the maintainers
 
 Wiring a designed screen to the live engine (or building a designed view) will
 hit mismatches. A mismatch is a **decision, not an implementation detail**. A
@@ -68,7 +68,7 @@ conflict is any of:
 
 Never silently pick a side: don't quietly build backend support, don't quietly
 cut design scope, don't ship a mock to paper over the gap. Surface the
-conflict to Steve with the concrete options — typically **build the backend
+conflict to the maintainers with the concrete options — typically **build the backend
 support** (file the zetta issue), **rescope the design** (file the design-repo
 issue), or **an honest degraded state** in the meantime — plus a
 recommendation. Batch related conflicts into one ask; record the ruling in the

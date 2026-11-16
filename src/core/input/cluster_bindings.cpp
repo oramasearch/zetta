@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/input/cluster_bindings.hpp"
 
 #include <optional>

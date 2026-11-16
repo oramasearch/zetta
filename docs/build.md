@@ -45,6 +45,20 @@ automerge-cpp's vendored copy (a submodule), not FetchContent; the validator
 reuses that same nlohmann/json target. ccache is used as the compiler launcher
 when present.
 
+Every `FetchContent` source is pinned to its content (lake#1003), because a tag or
+a URL alone can be moved or replaced upstream. A git source names the commit its
+tag named when it was pinned (SDL `release-3.2.0` is `535d80ba`, Dear ImGui
+`v1.91.5` is `f401021d`, json-schema-validator `2.4.0` is `c780404a`, the peeled
+tag, GoogleTest `v1.15.2` is `b514bdc8`), with the tag kept in a comment. The Boost
+archive carries the `URL_HASH` Boost publishes beside it, so a changed archive
+fails configure. To move one, read the new value without building and change it in
+a reviewed commit:
+
+```sh
+git ls-remote https://github.com/<owner>/<repo>.git 'refs/tags/<tag>*'   # the ^{} line for an annotated tag
+curl -sL https://github.com/boostorg/boost/releases/download/<release>/<archive>.txt
+```
+
 ## Submodules
 
 The coroutine stack (Capy, Corosio) and the replication library (automerge-cpp,
@@ -54,7 +68,7 @@ automerge-cpp nests submodules — or the build fails at
 `add_subdirectory(modules/capy)` / a missing `upstream/json`:
 
 ```bash
-git clone --recurse-submodules git@github.com:homer6/zetta.git
+git clone --recurse-submodules https://github.com/oramasearch/zetta.git
 # existing checkout:
 git submodule update --init --recursive
 ```
@@ -183,12 +197,29 @@ ctest --test-dir build --output-on-failure
 Tests (GoogleTest) live in `tests/`, link `zetta-core`, and cover the headless
 core only. Disable building them with `-DZETTA_BUILD_TESTS=OFF`.
 
-## Container builds (`.dockerignore`)
+## Container image (`Dockerfile`, `.dockerignore`)
 
-The image Dockerfiles live outside this repo — `build/images/zetta-headless/` and
-`build/images/zetta-e2e/` in `zetta-bridge` — but they use **this repository root as the
-build context** and do `COPY . /src`, so the context is filtered by the `.dockerignore`
-here.
+The headless image is built from the [`Dockerfile`](../Dockerfile) at the repository root,
+with the repository root as the build context. Check the submodules out first; the build
+runs no git:
+
+```bash
+git clone --recurse-submodules https://github.com/oramasearch/zetta.git && cd zetta
+docker buildx build --platform linux/amd64 -t <registry>/zetta:<version> .
+docker run --rm -p 4800:4800 -p 7777:7777 -v zetta-data:/data <registry>/zetta:<version>
+```
+
+Two stages on `ubuntu:24.04` (pinned by digest). The build stage uses Clang 19 from
+`apt.llvm.org` and CMake 3.31.5 (Ubuntu's 3.28 does not know `cxx_std_26` for Clang 19), and
+builds CPU-only with tests off. The runtime stage holds `libssl3`, `libstdc++6`, `libpq5` and
+`ca-certificates`, runs as uid 10001, keeps state in `VOLUME /data`, exposes 7777 (peer, mTLS)
+and 4800 (MCP + REST + Studio), and seats the Studio bundle from `webapp/` via
+`ZETTA_WEBAPP_DIR`. A tree without `webapp/` still builds: the directory is empty, and with
+no `index.html` in it the node serves its built-in server-rendered UI at `/`.
+
+### `.dockerignore`
+
+The Dockerfile does `COPY . /src`, so the context is filtered by the `.dockerignore` here.
 
 It exists for a specific failure. Without it, a host `build/` directory is copied into
 the image, and its `CMakeCache.txt` records absolute *host* paths, so the in-image

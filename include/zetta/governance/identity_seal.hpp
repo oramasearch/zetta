@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The identity root (#763, #764): who may write the accounts, roles, tokens,

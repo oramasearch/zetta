@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 // The ONE place an engine status maps to a visual tone (#636). Panels never

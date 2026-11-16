@@ -39,7 +39,7 @@ UC-1 only makes sense inside Orama Zetta's product thesis. Five framing decision
 
 5. **Correct by construction.** Generating a workflow is easy; generating a *correct* one is the product. Every execution graph is validated (schema, leakage, point-in-time) and must pass a **correctness gate** before it can deploy. That gate is the line between Orama Zetta and "n8n with an LLM bolted on." (Blueprint: [FEAT-3 / #134](https://github.com/oramasearch/zetta/issues/134).)
 
-Product framing in depth: [`docs/projects/orama-platform-2/one-pager.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/one-pager.md) and [`vision-and-strategy.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/vision-and-strategy.md).
+Product framing in depth: [`../product/vision.md`](../product/vision.md).
 
 ---
 
@@ -152,7 +152,7 @@ This is the shape every use case shares. To turn it into a *generic* engine, the
 
 ## 6. Genericity — how any team instantiates it
 
-UC-1 is not "Charles's churn model." It is a **type** any team instantiates by declaring a small contract:
+UC-1 is not one customer's churn model. It is a **type** any team instantiates by declaring a small contract:
 
 - **Entity** — the unit to score (account, customer, subscription, …).
 - **Label** — the churn definition + **horizon** (e.g. "no renewal / cancellation within 90 days") + censoring rule.
@@ -176,19 +176,18 @@ This is **explicitly out of scope for the first cut.** It is the same churn envi
 
 ---
 
-## 8. Business context — Motive / Charles (the first instance)
+## 8. The correctness bar — entity resolution
 
-The first customer-shaped instance of UC-1 is **Motive** (a large fleet-management SaaS), via **Charles** (RevOps/Data lead). He is the bottleneck every data/AI request funnels through — "you're too slow," for two years.
+The gate a churn result has to pass before anyone trusts it is the **entity-resolution
+test** ([TC-4 / #251](https://github.com/oramasearch/zetta/issues/251)). One parent brand
+appears as several subsidiaries, each a separate CRM account (the fixture uses the invented
+Contoso Freight and its five siblings). A query or a communication that names "Contoso
+Freight" must resolve to that account and never conflate the siblings: a churn score
+attached to the wrong division is worse than none.
 
-- **The status quo:** Charles runs churn today as **n8n + a local sidecar + Gemini** — LLM pattern-matching that compares active-account conversations against churned-cohort patterns and emits 0–100 risk scores, then files Jira tickets. It works, but it has **no real predictive power** (no trained model, no feature engineering, no calibrated probabilities), and it isn't fast, governed, or self-serve. He is the single point of failure.
-- **What he is paying for:** a **fast, governed, downloadable substrate** his developers can run themselves — *"discover my data sources, let me use them, configure them, apply a security model on top… it doesn't have to be jazzy."* Orama Zetta's differentiation on top of that substrate is the **real trained model** (the "learns from your data" thesis).
-- **The make-or-break gate:** the **FedEx Freight entity-resolution test** ([TC-4 / #251](https://github.com/oramasearch/zetta/issues/251)) — FedEx appears as 5–6 subsidiaries as separate CRM accounts; a query for "FedEx Freight" must resolve to the right account and not conflate them. This is the concrete correctness bar Charles will judge us on.
-- **Data + governance:** Snowflake (communications), Salesforce (accounts), Postgres (working store); access is **key-scoped** ([RULE-3 / #211](https://github.com/oramasearch/zetta/issues/211)); production eventually runs in Motive's own AWS/Kubernetes behind Okta. Data access during the PoC is via a contractor engagement (NDA signed; SOC 2 observation complete).
-- **The deal:** ~$40K contingent proof-of-concept (free if it fails the eval gates) → ~$20K/month → earned annual. A **~2–3 week downloadable churn beta** is the evaluation, run head-to-head against the internal Retool churn app.
-
-Detail: [`motive-problem-definition`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-problem-definition/) · [`motive-delivery`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-delivery/) · [`motive-one-proposal`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-one-proposal/). Source meetings: [2026-06-24](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-24-casey-issac-steve/) · [2026-06-10 (Charles)](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-10-casey-charles-issac-matt-steve/) · [2026-06-03 (the n8n workflows)](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-03-casey-charles-issac-juan-matt-nathanael-steve/).
-
-**Important framing:** Charles is the *first instance*, not the spec. UC-1 is the generic churn type; Motive is where we prove it. Don't let Motive-specific detail collapse the use case into a bespoke build.
+Access to the source data is **key-scoped** ([RULE-3 / #211](https://github.com/oramasearch/zetta/issues/211)),
+and the pipeline runs where the data is, so the customer's rows never leave their
+environment.
 
 ---
 
@@ -214,7 +213,7 @@ Plus `relates_to` [RULE-3 / #211](https://github.com/oramasearch/zetta/issues/21
 
 - **Correctness gate (release-blocking):** every generated graph compiles AND runs AND produces correct results; validation covers schema, data leakage, and point-in-time integrity.
 - **Model quality:** PR-AUC / AUC, **calibration**, and **lift@k** (does the top decile actually contain the churners?) — not raw accuracy. Backtest **out-of-time** (train on earlier `t0`s, evaluate on later ones).
-- **The entity-resolution gate:** the FedEx Freight test (TC-4) must pass — correct account scoping, no conflation.
+- **The entity-resolution gate:** the Contoso Freight test (TC-4) must pass — correct account scoping, no conflation.
 - **The product bar:** a user points at data and gets a working, explained churn model **within ~an hour**, deployed and governed.
 - **The compounding bar (later):** the outcome log lets us measure realized save-rate-by-driver and improve the priors → uplift.
 
@@ -234,13 +233,13 @@ layer 2   FEAT-3 correctness gate · FEAT-5 run + monitor   (← FEAT-2)
 layer 3   UC-1 churn                        (← FEAT-3, FEAT-4, FEAT-5, FEAT-6, FEAT-9)
 ```
 
-The **run loop** (being polished in [`homer6/worktree-manager#10`](https://github.com/homer6/worktree-manager/issues/10)): launch a layer → each task runs in its own worktree and opens a PR → **the plan pauses for PR review** → after review/merge, resume → launch the next ready layer → … → UC-1 ships. The **PR-review gate** is the deliberate stop/resume point: a human reviews each completed task before its dependents proceed.
+The **run loop**: launch a layer → each task runs in its own worktree and opens a PR → **the plan pauses for PR review** → after review/merge, resume → launch the next ready layer → … → UC-1 ships. The **PR-review gate** is the deliberate stop/resume point: a human reviews each completed task before its dependents proceed.
 
 ---
 
 ## 12. UC-1 as the catalog exemplar
 
-Churn is the template for the entire catalog. The next use case — fraud/anomaly, demand forecasting, lead scoring, ticket triage, credit risk, predictive maintenance, next-best-action — is the **same generic shape** (featurize → train → explain → rank + optional action/playbook) with a different label and driver→action map. Add one with the **`add-use-case`** skill + the [`adding-a-use-case` runbook](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md): it generates a tailored **Perplexity Deep Research prompt** to gather the domain knowledge, which lands a new `UC-N` artifact in the blueprint and gets its own worktree plan. Each addition reuses the engine and grows the menu.
+Churn is the template for the entire catalog. The next use case — fraud/anomaly, demand forecasting, lead scoring, ticket triage, credit risk, predictive maintenance, next-best-action — is the **same generic shape** (featurize → train → explain → rank + optional action/playbook) with a different label and driver→action map. Add one by the steps in [`README.md`](README.md): they start from a tailored **Perplexity Deep Research prompt** to gather the domain knowledge, which lands a new `UC-N` artifact in the blueprint and gets its own worktree plan. Each addition reuses the engine and grows the menu.
 
 ---
 
@@ -248,7 +247,7 @@ Churn is the template for the entire catalog. The next use case — fraud/anomal
 
 - **Blueprint / issue:** [`oramasearch/zetta#264`](https://github.com/oramasearch/zetta/issues/264) (UC-1) · grooming epic [#279](https://github.com/oramasearch/zetta/issues/279) · the consolidated context comment on #264.
 - **Framing decisions:** [ADR-23 use-case-driven](https://github.com/oramasearch/zetta/issues/290) · [ADR-25 AI-projects-central / data-project-management](https://github.com/oramasearch/zetta/issues/292) · [ADR-26 generic AI-project types](https://github.com/oramasearch/zetta/issues/293) · [GLO-14 AI project](https://github.com/oramasearch/zetta/issues/294).
-- **Product docs:** [`projects/orama-platform-2/`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/orama-platform-2/) (one-pager, vision-and-strategy) · the zetta module conventions [`modules/zetta/docs/product/orama-zetta.md`](https://github.com/oramasearch/zetta/blob/main/docs/product/orama-zetta.md).
-- **Catalog growth:** [`runbooks/adding-a-use-case.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md) + the `add-use-case` skill.
-- **Build infra:** worktree plan #11 · the run-loop ticket [`homer6/worktree-manager#10`](https://github.com/homer6/worktree-manager/issues/10).
+- **Product docs:** [`../product/orama-zetta.md`](../product/orama-zetta.md) · [`../product/vision.md`](../product/vision.md).
+- **Catalog growth:** [`README.md`](README.md).
+- **Build infra:** worktree plan #11.
 - **Reference implementation:** `churn_features.sql`, `train_churn_xgb.py`, `churn_playbook.py`, `churn_env_design.md` (incl. §8 the deferred Retention Investigation Agent) — to be committed into the build.

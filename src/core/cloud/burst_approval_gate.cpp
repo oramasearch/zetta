@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/cloud/burst_approval_gate.hpp"
 
 #include <cstdint>

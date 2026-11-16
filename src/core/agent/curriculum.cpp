@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/agent/curriculum.hpp"
 
 #include <memory>
@@ -17,10 +19,11 @@
 namespace zetta::agent {
 namespace {
 
-// The facts a correct churn solution must produce. This is the improvement over
-// Charles's n8n (Gemini summarizing communications into qualitative signatures, then an
-// LLM matching accounts against them — no trained model, no feature vector): a
-// leakage-free, gradient-boosted, SHAP-explained, calibrated pipeline.
+// The facts a correct churn solution must produce. This is the improvement over an
+// LLM-only n8n workflow (a language model summarizing communications into qualitative
+// signatures, then an LLM matching accounts against them — no trained model, no
+// feature vector): a leakage-free, gradient-boosted, SHAP-explained, calibrated
+// pipeline.
 EndState churn_required() {
     EndState required;
     required.set("connect", true);           // pulls the account events + communications

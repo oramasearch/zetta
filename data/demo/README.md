@@ -3,47 +3,45 @@
 Generated, not committed. The rows are reproducible from their generator, so this folder
 is gitignored and only the generators + this note are tracked.
 
-## `motive/` — the churn demo dataset
+## `comms/` — the churn demo dataset
 
-    python3 scripts/gen_motive_demo_dataset.py --out data/demo/motive --accounts 1500
+    python3 scripts/gen_comms_demo_dataset.py --out data/demo/comms --accounts 1500
 
 Three CSVs plus a `manifest.json`:
 
 | File | Shape |
 |---|---|
-| `communication_events.csv` | the long event log — one row per communication, 14 sources |
+| `communication_events.csv` | the long event log — one row per communication, 11 sources |
 | `accounts.csv` | the account dimension, carrying the churn label |
 | `account_features.csv` | the flat rollup a warehouse query would return |
 
 ### Why it exists
 
-Motive's own communications extract (~12 GB) could not be obtained; Motive BI's
-**documentation** of the table was. The generator reproduces that table's shape
-faithfully — column names, the fourteen event sources, the two event-structure types,
-the segment vocabulary, and the join characteristics — so a query written against this
-runs unchanged against theirs. **The synthetic part is the content, never the shape.**
-
-Source documentation: `orama-bridge` →
-`docs/meetings/2026-07-27-casey-charles-issac-steve/source-materials/`.
+A churn demo is only convincing against data with the problems real communications data
+has. The generator invents a B2B subscription business whose event log mixes CRM tasks
+and cases, email, contact-center and sales-call transcripts, chat and an NPS survey, each
+source with its own join quality and timestamp semantics. **Every source, rate, segment,
+company and line of text is invented.**
 
 ### What it is honest about
 
-- **`sfdc_account_id` is null at the documented per-source rates** (0.05% on cases to
-  59% on sales-call transcripts). An account-level aggregate is therefore over a biased
+- **`crm_account_id` is null at a per-source rate** (0.1% on cases to 50% on sales-call
+  transcripts). An account-level aggregate is therefore over a biased
   sample of the conversation, and the bias differs by channel. `--clean-join` removes
   this and should be a deliberate choice.
 - **`current`-structured rows carry today's state under a creation-date timestamp**, and
-  `event_updated_datetime_pt` is the pipeline load date rather than the source change
+  `event_updated_datetime` is the pipeline load date rather than the source change
   date. Featurizing one as-of a past cutoff reads the future.
 - **Volume tracks account size, not risk.** `seats` is emitted so a model can control for
   size rather than learn that big accounts churn.
 
 ### The signal, measured
 
-Four independent latent troubles — device reliability, billing friction, buyer
+Four independent latent troubles — product reliability, billing friction, buyer
 disengagement, support backlog — each read by a *different* channel, with the label drawn
-from a logistic on their weighted sum. Measured on the 1500-account default
-(`account_features.csv`, 70/30 split, plain logistic regression):
+from a logistic on their weighted sum. As last measured on the 1500-account default
+(`account_features.csv`, 70/30 split, plain logistic regression), before the per-source
+rates were set to their current values; re-measure after any change to the generator:
 
 | | |
 |---|---|
@@ -67,6 +65,5 @@ until measured:
    the label stayed high. A weighted categorical draw fixed it.
 
 A third bar is volume: at a dozen events per account the 90-day counts were mostly
-Poisson noise and no combination could recover the latent. Real accounts in the modelled
-table average hundreds of communications over eighteen months, and the generator matches
-that.
+Poisson noise and no combination could recover the latent. Accounts in a table like this
+average hundreds of communications over eighteen months, and the generator matches that.

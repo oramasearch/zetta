@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Inter-node transport security (CTL-2, #466): the join token / derived
 // cluster CA / per-node identity material, its persistence, and the cluster
 // transport actually enforcing it — same-token nodes converge over mTLS,

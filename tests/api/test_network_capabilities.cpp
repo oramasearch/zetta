@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Lake and zetta-tunnel's network-record REST/MCP contract (#1281): typed
 // write/read parity, least-privilege roles, and one-workspace-per-Zetta
 // isolation.

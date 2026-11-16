@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/connect/connector_destinations.hpp"
 
 #include <arpa/inet.h>

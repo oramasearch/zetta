@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // FramedStream over mutual TLS keeps both directions moving at once (#835).
 //
 // The cluster runs one read pump and one write pump per link. Both peers write

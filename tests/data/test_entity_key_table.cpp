@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The text entity-key table (#1255, docs/data/entity-key-table.md): a Run or
 // Model references its derived-id map, stored as rows of the engine-internal
 // `_entity_keys` record collection, instead of carrying every id in the

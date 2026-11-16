@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "zetta/ml/segmentation.hpp"
 
 #include <algorithm>
@@ -1371,11 +1373,14 @@ nlohmann::json SegmentationModel::to_json() const {
             {"rare_bucket", feature.rare_bucket},
         });
     }
-    return {{"kind", "segmentation"},
-            {"seed", seed},
-            {"features", std::move(encoded_features)},
-            {"centers", centers},
-            {"excluded_columns", excluded_columns}};
+    nlohmann::json body = {{"kind", "segmentation"},
+                           {"seed", seed},
+                           {"features", std::move(encoded_features)},
+                           {"centers", centers},
+                           {"excluded_columns", excluded_columns}};
+    if (!labels.empty())
+        body["labels"] = labels;
+    return body;
 }
 
 double adjusted_rand_index(const std::vector<int> &left,
@@ -1509,6 +1514,8 @@ train_segmentation(const std::vector<SegmentationRow> &local_rows,
     }
     result.profiles =
         build_profiles(result.model, chosen->fit.counts, overall_mean);
+    for (const SegmentProfile &profile : result.profiles)
+        result.model.labels.push_back(profile.label);
     for (std::size_t row = 0; row < prepared.points.size(); ++row) {
         double squared = 0.0;
         const int cluster = nearest_center(prepared.points[row],

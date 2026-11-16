@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The object capability over the wire (#1005, docs/data/object-store.md): the raw
 // byte routes and their statuses, the bucket aliases, fencing and the waiting
 // acquire, the ON BUCKET grant, the quota, the registry renderings (MCP and

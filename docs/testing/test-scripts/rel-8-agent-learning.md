@@ -86,7 +86,7 @@ inspect, never sent anything outside their network, and could roll back.
 
 ## Related
 
-- Reference implementation, RLVR against a deterministic grader: `homer6/blender-rl` —
+- Reference implementation, RLVR against a deterministic grader: blender-rl (an earlier RLVR prototype, not public) —
   agent emits code, a headless subprocess runs it, exported state is scored `[0,1]` by a
   layered rubric, with an admission gate carrying negative controls.
 - #843 — deny-by-default authority over execution. Practising with the customer's real tools

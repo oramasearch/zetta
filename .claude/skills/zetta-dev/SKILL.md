@@ -1,6 +1,6 @@
 ---
 name: zetta-dev
-description: zetta's project coding conventions and architecture. Use whenever writing, reviewing, or committing code for the zetta database — C++/CMake, storage, the query layer, the cluster, replication/CRDT, large objects, the SDL3+ImGui GUI, tests, or docs. Covers C++ style (C++26, Core Guidelines, smart pointers, std::string, full-word names), the bridge/modules layout (Capy/Corosio/automerge-cpp), the zetta-core/no-SDL rule, the data model, the "EVERYTHING is replicated" CRDT rule (document = source of truth, disk = projection), the equal-peer self-healing cluster, the runtime/net seams, build/test commands, the feature-branch+PR flow, the no-memory rule, and the docs-after-change rule. Pairs with reference.md (a codebase map + how-to recipes).
+description: zetta's project coding conventions and architecture. Use whenever writing, reviewing, or committing code for the zetta database — C++/CMake, storage, the query layer, the cluster, replication/CRDT, large objects, the SDL3+ImGui GUI, tests, or docs. Covers C++ style (C++26, Core Guidelines, smart pointers, std::string, full-word names), the modules/ submodule layout (Capy/Corosio/automerge-cpp), the zetta-core/no-SDL rule, the data model, the "EVERYTHING is replicated" CRDT rule (document = source of truth, disk = projection), the equal-peer self-healing cluster, the runtime/net boundaries, build/test commands, the feature-branch+PR flow, the no-memory rule, and the docs-after-change rule. Pairs with reference.md (a codebase map + how-to recipes).
 ---
 
 # zetta-dev — coding conventions & architecture checklist
@@ -49,7 +49,7 @@ the working checklist. For the annotated file-by-file codebase map see
   on-disk store + in-memory `Node` tree are a **projection** of it. Never keep a
   parallel copy synced by hand. New shared state = a new key/shape in the
   document; new *kind* of agreement = a new `ReplicationPolicy` — never a bespoke
-  sync path. Audit history is the approved durable-log exception (#1164):
+  sync path. Audit history is the approved durable-log exception:
   per-origin segment ranges, never per-event catalog entries. Its migration
   removes legacy `audit:` history and preserves ordinary catalog actor clocks.
   (See `docs/cluster/replication.md` and `docs/governance/audit-trail.md`.)
@@ -68,7 +68,7 @@ the working checklist. For the annotated file-by-file codebase map see
   or election (equal peers). Per-(node, resource) leadership for *exclusive*
   structures (locks) is **documented design only**, not built. Don't add a global
   leader. (See `docs/cluster/replication.md` → Consistency model.)
-- **Pluggable seams — extend, don't special-case:** storage formats implement
+- **Pluggable interfaces — extend, don't special-case:** storage formats implement
   `StorageEngine`; query inputs are dialect-agnostic (parse to the generic
   `zetta::query` AST; the `Executor` is dialect-neutral — the virtual read-only
   `system` database, e.g. `system.nodes`, is resolved there, not in a
@@ -83,14 +83,14 @@ the working checklist. For the annotated file-by-file codebase map see
   view's source; ephemeral/observed state (a live cloud inspect) is a read view
   with no CRDT backing. Cloud-derived tables stay permission-gated. (See
   `CLAUDE.md` → Conventions → *System tables*.)
-- **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
+- **Async/networking boundaries:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking goes through `zetta::runtime::net`
   (`include/zetta/runtime/net.hpp`, including its TLS surface), included
   **only** by the adapter `src/core/cluster/cluster.cpp`. **Never name
-  `boost::capy` / `boost::corosio` directly** outside those seams — the beta
+  `boost::capy` / `boost::corosio` directly** outside those boundaries — the beta
   backend must stay swappable. Likewise OpenSSL libcrypto is named **only** by
-  `src/core/cluster/security.cpp` (join-token/CA/identity minting, #466).
-- **Bridge/modules:** pinned third-party deps are git submodules under `modules/`
+  `src/core/cluster/security.cpp` (join-token/CA/identity minting).
+- **Submodules:** pinned third-party deps are git submodules under `modules/`
   — **capy** (coroutines), **corosio** (networking), **automerge-cpp** (CRDT;
   also provides nlohmann/json and has nested submodules). Built via
   `add_subdirectory`, not FetchContent. Clone with `--recurse-submodules`
@@ -119,7 +119,7 @@ loops **patient** (poll seconds, not a fixed tiny count) — they're timing-boun
 - **Conventional Commits** (`feat:`/`fix:`/`refactor:`/`docs:`/`test:`…),
   imperative, subject ≤72 chars; body explains *why*. Long bodies via a
   `-F <file>` message file (shell quoting mangles inline multi-line messages).
-- **Never mention Claude/AI** and **never add Claude as author or co-author**
+- **Never mention an AI or coding assistant** and **never add one as author or co-author**
   (no `Co-Authored-By`, no "Generated with…" footer). The author is the user.
 - **All work goes on a feature branch and lands via a PR targeting `dev`**
   (`<type>/<short-slug>`, e.g. `docs/domain-restructure`) — never push directly
@@ -131,10 +131,6 @@ loops **patient** (poll seconds, not a fixed tiny count) — they're timing-boun
   `docs/architecture/code-map.md` (on file adds/moves/renames), CLAUDE.md
   (rules/layout only), README.md, `modules/README.md`, and the affected skill.
   Grep for stale terms before committing. Not just `docs/`.
-- **`docs/full-context.md` is the reload map** ("let's reload the full
-  project context") — refresh its Current state section in the same commit
-  when project state shifts (PR merges, plan changes, waves/foundations
-  shipping).
 - **Do NOT use the agent memory store.** It's outside git and not reproducible.
   Durable knowledge goes in git-tracked files (CLAUDE.md, docs, README, skills).
 
@@ -142,10 +138,10 @@ loops **patient** (poll seconds, not a fixed tiny count) — they're timing-boun
 
 ```
 include/zetta/   public core API (no SDL/ImGui)
-  runtime.hpp / runtime/net.hpp   async + networking seams (Capy/Corosio)
+  runtime.hpp / runtime/net.hpp   async + networking boundary (Capy/Corosio)
   node/database/table/storage/    the data model + StorageEngine
   cluster.hpp replication.hpp     equal-peer cluster + Automerge CRDT
-  blob_store.hpp + replicated_*   large-object body transfer seam
+  blob_store.hpp + replicated_*   large-object body transfer interface
   query/                          dialect-agnostic query layer
 src/core/        zetta-core impl  (catalog.hpp = internal CRDT key scheme)
 src/gui/         App — links SDL3 + ImGui

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The Studio auto-AI agent's action {message, tool_calls, execution_graph} (#873) round-trips
 // through JSON and rejects malformed documents at the boundary.
 #include <gtest/gtest.h>

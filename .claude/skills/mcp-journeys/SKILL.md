@@ -26,7 +26,7 @@ Distillation:
   schema-rejected input, unapproved consent challenge — assert the engine's
   reason text, not just failure.
 - Real engine state only (temp data_dir / loopback cluster); fakes only at
-  the outer CommandRunner-style seams. Multi-node: patient convergence
+  the outer CommandRunner-style injection points. Multi-node: patient convergence
   (deadline polls, never fixed counts).
 - Keep layer 2 (real JSON-RPC over loopback HTTP) for protocol behavior:
   auth, error mapping, consent challenge shape. Everything else lives in
@@ -42,10 +42,10 @@ Distillation:
    `POST /mcp` on loopback (bearer token = an AccessKey id when non-local).
 2. Play a user, not a test: pursue an outcome ("score my accounts for churn"),
    note every point where the tool sequence is awkward, a read-back is
-   missing, or an error is unactionable — those are product bugs (#619's whole
+   missing, or an error is unactionable — those are product bugs (the whole
    point).
 3. Watch the headed app while driving — externally-initiated actions should
-   render live; a stale panel is a bug (#620).
+   render live; a stale panel is a bug.
 
 ## The promotion rule (non-negotiable)
 

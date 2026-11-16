@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // When an agent should retrain, and what it was trained for.
 //
 // The property that matters: staleness is a COMPARISON, not a judgement. An agent is stale exactly

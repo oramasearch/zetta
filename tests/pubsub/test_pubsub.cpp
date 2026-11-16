@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // The pub/sub facade end to end (#1027, #1028, #1029, #1030, #1031, #1032).
 #include <gtest/gtest.h>
 
@@ -35,7 +37,7 @@ struct CapturedLog {
     }
 };
 
-const Identity kSteve{address("user:steve"), {}};
+const Identity kRiley{address("user:riley"), {}};
 
 PubSubConfig test_config(const std::filesystem::path& directory,
                          std::uint64_t memory = std::uint64_t{64} << 20) {
@@ -76,31 +78,31 @@ TEST(PubSubCrud, BrowseDoesNotConsumeAndEditsRespectDeliveryAndRevision) {
     settings.exposed = true;
     settings.max_events = 100;
     settings.delivery.guarantee = Guarantee::ExactlyOnce;
-    ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
-    auto early = pubsub.subscribe(kSteve, address("agent:early"), topic);
-    auto pending = pubsub.subscribe(kSteve, address("agent:pending"), topic);
+    ASSERT_TRUE(pubsub.create_topic(kRiley, topic, settings));
+    auto early = pubsub.subscribe(kRiley, address("agent:early"), topic);
+    auto pending = pubsub.subscribe(kRiley, address("agent:pending"), topic);
     ASSERT_TRUE(early && pending);
-    ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, "original")).accepted);
-    const auto before = pubsub.get_topic(kSteve, topic);
+    ASSERT_TRUE(pubsub.publish(kRiley, text_to({topic}, "original")).accepted);
+    const auto before = pubsub.get_topic(kRiley, topic);
     ASSERT_TRUE(before);
-    auto browsed = pubsub.browse_topic(kSteve, topic, {}, 10, false);
+    auto browsed = pubsub.browse_topic(kRiley, topic, {}, 10, false);
     ASSERT_TRUE(browsed);
     EXPECT_EQ((*browsed)["events"][0]["revision"], 1);
-    EXPECT_EQ(pubsub.get_topic(kSteve, topic), before);
+    EXPECT_EQ(pubsub.get_topic(kRiley, topic), before);
     auto received = early->receive(0ms);
     ASSERT_TRUE(received);
     EXPECT_EQ(received->event.payload.bytes(), "original");
     ASSERT_TRUE(early->ack(received->sequence));
-    auto edited = pubsub.update_event(kSteve, topic, 1, "edited", 1, false);
+    auto edited = pubsub.update_event(kRiley, topic, 1, "edited", 1, false);
     ASSERT_TRUE(edited.ok) << edited.reason;
-    EXPECT_FALSE(pubsub.update_event(kSteve, topic, 1, "stale", 1, false).ok);
+    EXPECT_FALSE(pubsub.update_event(kRiley, topic, 1, "stale", 1, false).ok);
     EXPECT_FALSE(early->receive(0ms));
     received = pending->receive(0ms);
     ASSERT_TRUE(received);
     EXPECT_EQ(received->event.payload.bytes(), "edited");
     EXPECT_EQ(received->event.revision, 2u);
     ASSERT_TRUE(pending->ack(1));
-    ASSERT_TRUE(pubsub.update_event(kSteve, topic, 1, "explicit", 2, true).ok);
+    ASSERT_TRUE(pubsub.update_event(kRiley, topic, 1, "explicit", 2, true).ok);
     for (auto* subscriber : {early.get(), pending.get()}) {
         auto redelivery = subscriber->receive(0ms);
         ASSERT_TRUE(redelivery);
@@ -121,29 +123,29 @@ TEST(PubSubCrud, DeletionsLeaveHolesAndCancelInflightAndExplicitRedelivery) {
     settings.exposed = true;
     settings.max_events = 100;
     settings.delivery.guarantee = Guarantee::AtLeastOnce;
-    ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
-    auto early = pubsub.subscribe(kSteve, address("agent:early"), topic);
-    auto pending = pubsub.subscribe(kSteve, address("agent:pending"), topic);
+    ASSERT_TRUE(pubsub.create_topic(kRiley, topic, settings));
+    auto early = pubsub.subscribe(kRiley, address("agent:early"), topic);
+    auto pending = pubsub.subscribe(kRiley, address("agent:pending"), topic);
     for (int index = 1; index <= 5; ++index) {
-        ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, std::to_string(index))).accepted);
+        ASSERT_TRUE(pubsub.publish(kRiley, text_to({topic}, std::to_string(index))).accepted);
     }
     ASSERT_TRUE(early->receive(0ms));
-    ASSERT_TRUE(pubsub.update_event(kSteve, topic, 1, "queued", 1, true).ok);
-    auto removed = pubsub.delete_events(kSteve, topic, {1, 3, 99}, {});
+    ASSERT_TRUE(pubsub.update_event(kRiley, topic, 1, "queued", 1, true).ok);
+    auto removed = pubsub.delete_events(kRiley, topic, {1, 3, 99}, {});
     ASSERT_TRUE(removed.ok);
     EXPECT_EQ(removed.changes.size(), 2u);
     EXPECT_EQ(text_of(early->receive(0ms)), "2");
     EXPECT_EQ(text_of(pending->receive(0ms)), "2");
     EXPECT_EQ(text_of(pending->receive(0ms)), "4");
     EXPECT_FALSE(early->ack(1));
-    auto backwards = pubsub.browse_topic(kSteve, topic, 4, 2, true);
+    auto backwards = pubsub.browse_topic(kRiley, topic, 4, 2, true);
     ASSERT_TRUE(backwards);
     ASSERT_EQ((*backwards)["events"].size(), 2u);
     EXPECT_EQ((*backwards)["events"][0]["sequence"], 4);
     EXPECT_EQ((*backwards)["events"][1]["sequence"], 2);
     EXPECT_EQ((*backwards)["earliest_sequence"], 2);
     EXPECT_EQ((*backwards)["next_sequence"], 6);
-    removed = pubsub.delete_events(kSteve, topic, {}, 5);
+    removed = pubsub.delete_events(kRiley, topic, {}, 5);
     EXPECT_EQ(removed.changes.size(), 2u);
     EXPECT_EQ(text_of(pending->receive(0ms)), "5");
 }
@@ -157,33 +159,33 @@ TEST(PubSubCrud, SettingsTrimAndRefuseImmutableFieldsAndSurviveRestart) {
         TopicSettings settings;
         settings.exposed = true;
         settings.max_events = 100;
-        ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
+        ASSERT_TRUE(pubsub.create_topic(kRiley, topic, settings));
         for (int index = 1; index <= 4; ++index) {
-            ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, std::to_string(index))).accepted);
+            ASSERT_TRUE(pubsub.publish(kRiley, text_to({topic}, std::to_string(index))).accepted);
         }
-        auto changed = pubsub.update_topic(kSteve, topic, {{"max_events", 2}});
+        auto changed = pubsub.update_topic(kRiley, topic, {{"max_events", 2}});
         ASSERT_TRUE(changed.ok);
         EXPECT_EQ(changed.changes.size(), 2u);
-        changed = pubsub.update_topic(kSteve, topic, {{"store", "queue"}});
+        changed = pubsub.update_topic(kRiley, topic, {{"store", "queue"}});
         EXPECT_FALSE(changed.ok);
         EXPECT_NE(changed.reason.find("store is immutable"), std::string::npos);
-        ASSERT_TRUE(pubsub.update_event(kSteve, topic, 3, "persisted edit", 1, false).ok);
-        ASSERT_TRUE(pubsub.delete_events(kSteve, topic, {4}, {}).ok);
+        ASSERT_TRUE(pubsub.update_event(kRiley, topic, 3, "persisted edit", 1, false).ok);
+        ASSERT_TRUE(pubsub.delete_events(kRiley, topic, {4}, {}).ok);
         pubsub.shutdown();
     }
     PubSub restored(test_config(directory.path()));
     restored.start();
-    auto browsed = restored.browse_topic(kSteve, topic, {}, 10, false);
+    auto browsed = restored.browse_topic(kRiley, topic, {}, 10, false);
     ASSERT_TRUE(browsed);
     ASSERT_EQ((*browsed)["events"].size(), 1u);
     EXPECT_EQ((*browsed)["events"][0]["sequence"], 3);
     EXPECT_EQ((*browsed)["events"][0]["payload"], "persisted edit");
     EXPECT_EQ((*browsed)["events"][0]["revision"], 2);
-    EXPECT_EQ((*browsed)["events"][0]["edited_by"], "user:steve");
+    EXPECT_EQ((*browsed)["events"][0]["edited_by"], "user:riley");
     EXPECT_EQ((*browsed)["next_sequence"], 5);
     EXPECT_EQ(restored.topic_settings(topic)->max_events, 2u);
-    ASSERT_TRUE(restored.update_topic(kSteve, topic, {{"retention_ms", 0}}).ok);
-    EXPECT_EQ((*restored.get_topic(kSteve, topic))["held_events"], 0);
+    ASSERT_TRUE(restored.update_topic(kRiley, topic, {{"retention_ms", 0}}).ok);
+    EXPECT_EQ((*restored.get_topic(kRiley, topic))["held_events"], 0);
 }
 
 TEST(PubSubCrud, ConcurrentEditorsHaveOneRevisionWinner) {
@@ -193,18 +195,18 @@ TEST(PubSubCrud, ConcurrentEditorsHaveOneRevisionWinner) {
     const auto topic = address("topic:edit-race");
     TopicSettings settings;
     settings.exposed = true;
-    ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
-    ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, "original")).accepted);
+    ASSERT_TRUE(pubsub.create_topic(kRiley, topic, settings));
+    ASSERT_TRUE(pubsub.publish(kRiley, text_to({topic}, "original")).accepted);
     std::atomic<int> succeeded{0};
     std::vector<std::thread> editors;
     for (int index = 0; index < 8; ++index) {
         editors.emplace_back([&, index] {
-            if (pubsub.update_event(kSteve, topic, 1, std::to_string(index), 1, false).ok) ++succeeded;
+            if (pubsub.update_event(kRiley, topic, 1, std::to_string(index), 1, false).ok) ++succeeded;
         });
     }
     for (auto& editor : editors) editor.join();
     EXPECT_EQ(succeeded.load(), 1);
-    const auto result = pubsub.browse_topic(kSteve, topic, {}, 1, false);
+    const auto result = pubsub.browse_topic(kRiley, topic, {}, 1, false);
     ASSERT_TRUE(result);
     EXPECT_EQ((*result)["events"][0]["revision"], 2);
     EXPECT_EQ((*result)["next_sequence"], 2);
@@ -218,15 +220,15 @@ TEST(PubSubCrud, ExplicitRedeliveryOnlyTargetsTheGroupMemberThatReceived) {
     TopicSettings settings;
     settings.exposed = true;
     settings.max_events = 10;
-    ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
+    ASSERT_TRUE(pubsub.create_topic(kRiley, topic, settings));
     SubscribeOptions options;
     options.group = "workers";
-    auto first = pubsub.subscribe(kSteve, address("agent:first"), topic, options);
-    auto second = pubsub.subscribe(kSteve, address("agent:second"), topic, options);
+    auto first = pubsub.subscribe(kRiley, address("agent:first"), topic, options);
+    auto second = pubsub.subscribe(kRiley, address("agent:second"), topic, options);
     ASSERT_TRUE(first && second);
-    ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, "one")).accepted);
+    ASSERT_TRUE(pubsub.publish(kRiley, text_to({topic}, "one")).accepted);
     ASSERT_TRUE(first->receive(0ms));
-    ASSERT_TRUE(pubsub.update_event(kSteve, topic, 1, "two", 1, true).ok);
+    ASSERT_TRUE(pubsub.update_event(kRiley, topic, 1, "two", 1, true).ok);
     EXPECT_FALSE(second->receive(0ms));
     const auto redelivery = first->receive(0ms);
     ASSERT_TRUE(redelivery);
@@ -239,12 +241,12 @@ TEST(PubSub, BroadcastsToEverySubscriberInOrder) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    ASSERT_TRUE(pubsub.create_topic(kSteve, address("topic:orders"), {}));
-    auto first = pubsub.subscribe(kSteve, address("agent:1"), address("topic:orders"));
-    auto second = pubsub.subscribe(kSteve, address("agent:2"), address("topic:orders"));
+    ASSERT_TRUE(pubsub.create_topic(kRiley, address("topic:orders"), {}));
+    auto first = pubsub.subscribe(kRiley, address("agent:1"), address("topic:orders"));
+    auto second = pubsub.subscribe(kRiley, address("agent:2"), address("topic:orders"));
     ASSERT_TRUE(first && second);
     for (int index = 0; index < 3; ++index) {
-        auto result = pubsub.publish(kSteve, text_to({address("topic:orders")}, std::to_string(index)));
+        auto result = pubsub.publish(kRiley, text_to({address("topic:orders")}, std::to_string(index)));
         ASSERT_TRUE(result.accepted) << result.error;
     }
     for (auto* subscription : {first.get(), second.get()}) {
@@ -257,9 +259,9 @@ TEST(PubSub, EnvelopeIsStampedFromTheIdentityNotTheRequest) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:t"), {});
-    auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:t"));
-    const Identity acting{address("user:steve"), {address("agent:ask-orama"), address("agent:security-scan")}};
+    pubsub.create_topic(kRiley, address("topic:t"), {});
+    auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:t"));
+    const Identity acting{address("user:riley"), {address("agent:ask-orama"), address("agent:security-scan")}};
     auto request = text_to({address("topic:t")}, "x");
     request.correlation_id = "req-1";
     request.reply_to = {address("agent:ask-orama")};
@@ -267,7 +269,7 @@ TEST(PubSub, EnvelopeIsStampedFromTheIdentityNotTheRequest) {
     auto delivery = subscription->receive(1s);
     ASSERT_TRUE(delivery);
     const auto& envelope = delivery->event.envelope;
-    EXPECT_EQ(envelope.from, address("user:steve"));
+    EXPECT_EQ(envelope.from, address("user:riley"));
     ASSERT_EQ(envelope.sender.size(), 2u);
     EXPECT_EQ(envelope.sender[1], address("agent:security-scan"));
     EXPECT_EQ(envelope.correlation_id, "req-1");
@@ -279,13 +281,13 @@ TEST(PubSub, NewSubscribersStartAtTheNextEventByDefault) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:t"), {});
-    pubsub.publish(kSteve, text_to({address("topic:t")}, "before"));
-    auto late = pubsub.subscribe(kSteve, address("agent:1"), address("topic:t"));
+    pubsub.create_topic(kRiley, address("topic:t"), {});
+    pubsub.publish(kRiley, text_to({address("topic:t")}, "before"));
+    auto late = pubsub.subscribe(kRiley, address("agent:1"), address("topic:t"));
     SubscribeOptions oldest;
     oldest.start = StartPosition::Oldest;
-    auto replaying = pubsub.subscribe(kSteve, address("agent:2"), address("topic:t"), oldest);
-    pubsub.publish(kSteve, text_to({address("topic:t")}, "after"));
+    auto replaying = pubsub.subscribe(kRiley, address("agent:2"), address("topic:t"), oldest);
+    pubsub.publish(kRiley, text_to({address("topic:t")}, "after"));
     EXPECT_EQ(text_of(late->receive(1s)), "after");
     EXPECT_EQ(text_of(replaying->receive(1s)), "before");
     EXPECT_EQ(text_of(replaying->receive(1s)), "after");
@@ -297,12 +299,12 @@ TEST(PubSub, AGroupSharesEachEventOnce) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:tasks"), {});
+    pubsub.create_topic(kRiley, address("topic:tasks"), {});
     SubscribeOptions workers;
     workers.group = "workers";
-    auto first = pubsub.subscribe(kSteve, address("agent:1"), address("topic:tasks"), workers);
-    auto second = pubsub.subscribe(kSteve, address("agent:2"), address("topic:tasks"), workers);
-    for (int index = 0; index < 10; ++index) pubsub.publish(kSteve, text_to({address("topic:tasks")}, std::to_string(index)));
+    auto first = pubsub.subscribe(kRiley, address("agent:1"), address("topic:tasks"), workers);
+    auto second = pubsub.subscribe(kRiley, address("agent:2"), address("topic:tasks"), workers);
+    for (int index = 0; index < 10; ++index) pubsub.publish(kRiley, text_to({address("topic:tasks")}, std::to_string(index)));
     std::set<std::string> seen;
     for (auto* subscription : {first.get(), second.get()}) {
         while (auto delivery = subscription->receive(20ms)) {
@@ -316,14 +318,14 @@ TEST(PubSub, AMessageCanAskForNRecipients) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:t"), {});
+    pubsub.create_topic(kRiley, address("topic:t"), {});
     std::vector<std::unique_ptr<Subscription>> subscriptions;
     for (int index = 0; index < 5; ++index) {
-        subscriptions.push_back(pubsub.subscribe(kSteve, address("agent:" + std::to_string(index)), address("topic:t")));
+        subscriptions.push_back(pubsub.subscribe(kRiley, address("agent:" + std::to_string(index)), address("topic:t")));
     }
     auto request = text_to({address("topic:t")}, "two of you");
     request.delivery.recipients = Recipients{Recipients::Mode::Count, 2};
-    ASSERT_TRUE(pubsub.publish(kSteve, request).accepted);
+    ASSERT_TRUE(pubsub.publish(kRiley, request).accepted);
     int received = 0;
     for (auto& subscription : subscriptions) received += subscription->receive(30ms) ? 1 : 0;
     EXPECT_EQ(received, 2);
@@ -338,12 +340,12 @@ TEST(PubSub, PriorityTopicsDeliverHigherFirstAndAgeTheWaiting) {
     TopicSettings settings;
     settings.priority_levels = 4;
     settings.priority_aging = 100ms;
-    pubsub.create_topic(kSteve, address("topic:p"), settings);
-    auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:p"));
+    pubsub.create_topic(kRiley, address("topic:p"), settings);
+    auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:p"));
     auto send = [&](std::string text, std::uint8_t priority) {
         auto request = text_to({address("topic:p")}, std::move(text));
         request.delivery.priority = priority;
-        pubsub.publish(kSteve, request);
+        pubsub.publish(kRiley, request);
     };
     send("low", 0);
     send("high", 250);
@@ -368,9 +370,9 @@ TEST(PubSub, AtLeastOnceRedeliversUntilAcknowledged) {
     TopicSettings settings;
     settings.delivery.guarantee = Guarantee::AtLeastOnce;
     settings.delivery.ack_deadline = 50ms;
-    pubsub.create_topic(kSteve, address("topic:t"), settings);
-    auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:t"));
-    pubsub.publish(kSteve, text_to({address("topic:t")}, "task"));
+    pubsub.create_topic(kRiley, address("topic:t"), settings);
+    auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:t"));
+    pubsub.publish(kRiley, text_to({address("topic:t")}, "task"));
     auto first = subscription->receive(1s);
     ASSERT_TRUE(first);
     EXPECT_FALSE(first->redelivery);
@@ -388,15 +390,15 @@ TEST(PubSub, ExactlyOnceDropsARepublishedDuplicate) {
     pubsub.start();
     TopicSettings settings;
     settings.delivery.guarantee = Guarantee::ExactlyOnce;
-    pubsub.create_topic(kSteve, address("topic:t"), settings);
-    auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:t"));
+    pubsub.create_topic(kRiley, address("topic:t"), settings);
+    auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:t"));
     auto request = text_to({address("topic:t")}, "once");
     request.id = "fixed-id";
-    pubsub.publish(kSteve, request);
+    pubsub.publish(kRiley, request);
     auto delivery = subscription->receive(1s);
     ASSERT_TRUE(delivery);
     subscription->ack(delivery->sequence);
-    pubsub.publish(kSteve, request);  // a retry with the same id
+    pubsub.publish(kRiley, request);  // a retry with the same id
     EXPECT_FALSE(subscription->receive(50ms));
 }
 
@@ -408,7 +410,7 @@ TEST(PubSub, AgentsGetAnInboxAndBccIsHidden) {
     pubsub.start();
     auto request = text_to({address("agent:405")}, "hello");
     request.bcc = {address("agent:audit")};
-    ASSERT_TRUE(pubsub.publish(kSteve, request).accepted);  // agent:405 has not connected yet
+    ASSERT_TRUE(pubsub.publish(kRiley, request).accepted);  // agent:405 has not connected yet
     auto inbox = pubsub.open_inbox(Identity{address("agent:405"), {}}, address("agent:405"));
     auto delivery = inbox->receive(1s);
     ASSERT_TRUE(delivery);
@@ -427,14 +429,14 @@ TEST(PubSub, WildcardsResolveThroughACacheThatFollowsTheSubscriberList) {
     pubsub.start();
     auto scan = pubsub.open_inbox(Identity{address("agent:security-scan"), {}}, address("agent:security-scan"));
     auto billing = pubsub.open_inbox(Identity{address("agent:billing"), {}}, address("agent:billing"));
-    auto result = pubsub.publish(kSteve, text_to({address("agent:security-*")}, "alert"));
+    auto result = pubsub.publish(kRiley, text_to({address("agent:security-*")}, "alert"));
     ASSERT_TRUE(result.accepted);
     ASSERT_EQ(result.delivered_to.size(), 1u);
     EXPECT_EQ(text_of(scan->receive(1s)), "alert");
     EXPECT_FALSE(billing->receive(20ms));
     // A new matching agent joins: the cached resolution is refreshed.
     auto triage = pubsub.open_inbox(Identity{address("agent:security-triage"), {}}, address("agent:security-triage"));
-    result = pubsub.publish(kSteve, text_to({address("agent:security-*")}, "alert 2"));
+    result = pubsub.publish(kRiley, text_to({address("agent:security-*")}, "alert 2"));
     EXPECT_EQ(result.delivered_to.size(), 2u);
     EXPECT_EQ(text_of(triage->receive(1s)), "alert 2");
 }
@@ -461,11 +463,11 @@ TEST(PubSub, TableDrainInsertsRowsAndQueriesReplyToReplyTo) {
 
     auto insert = text_to({address("table:logs")}, R"({"line":"x"})");
     insert.reply_to = {address("agent:caller")};
-    ASSERT_TRUE(pubsub.publish(kSteve, insert).accepted);
+    ASSERT_TRUE(pubsub.publish(kRiley, insert).accepted);
     auto query = text_to({address("function:answer")}, "{}");
     query.reply_to = {address("agent:caller")};
     query.correlation_id = "q-7";
-    ASSERT_TRUE(pubsub.publish(kSteve, query).accepted);
+    ASSERT_TRUE(pubsub.publish(kRiley, query).accepted);
     pubsub.drain_dispatch();
 
     {
@@ -493,10 +495,10 @@ TEST(PubSub, DrainFailuresGoToALazilyCreatedErrorTopic) {
     EXPECT_FALSE(pubsub.topic_settings(error_topic));  // not created up front
     auto request = text_to({address("model:churn")}, "{}");
     request.correlation_id = "c-1";
-    pubsub.publish(kSteve, request);
+    pubsub.publish(kRiley, request);
     pubsub.drain_dispatch();
     ASSERT_TRUE(pubsub.topic_settings(error_topic));
-    auto errors = pubsub.subscribe(kSteve, address("agent:ops"), error_topic, {.start = StartPosition::Oldest});
+    auto errors = pubsub.subscribe(kRiley, address("agent:ops"), error_topic, {.start = StartPosition::Oldest});
     auto failure = errors->receive(1s);
     ASSERT_TRUE(failure);
     EXPECT_EQ(failure->event.headers.at("error"), "inference failed: bad input");
@@ -508,10 +510,10 @@ TEST(PubSub, UndeliverableEventsAreDeadLetteredWithAReason) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    auto result = pubsub.publish(kSteve, text_to({address("widget:nothing")}, "lost"));
+    auto result = pubsub.publish(kRiley, text_to({address("widget:nothing")}, "lost"));
     EXPECT_FALSE(result.accepted);
-    pubsub.publish(kSteve, text_to({address("agent:nobody-*")}, "no match"));
-    auto letters = pubsub.subscribe(kSteve, address("agent:ops"), PubSub::dead_letter_address(),
+    pubsub.publish(kRiley, text_to({address("agent:nobody-*")}, "no match"));
+    auto letters = pubsub.subscribe(kRiley, address("agent:ops"), PubSub::dead_letter_address(),
                                     {.start = StartPosition::Oldest});
     auto first = letters->receive(1s);
     ASSERT_TRUE(first);
@@ -525,14 +527,14 @@ TEST(PubSub, ExpiredEventsAreDeadLetteredNotDelivered) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:t"), {});
-    auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:t"));
+    pubsub.create_topic(kRiley, address("topic:t"), {});
+    auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:t"));
     auto request = text_to({address("topic:t")}, "stale");
     request.ttl = 10ms;
-    pubsub.publish(kSteve, request);
+    pubsub.publish(kRiley, request);
     std::this_thread::sleep_for(30ms);
     EXPECT_FALSE(subscription->receive(30ms));
-    auto letters = pubsub.subscribe(kSteve, address("agent:ops"), PubSub::dead_letter_address(),
+    auto letters = pubsub.subscribe(kRiley, address("agent:ops"), PubSub::dead_letter_address(),
                                     {.start = StartPosition::Oldest});
     auto letter = letters->receive(1s);
     ASSERT_TRUE(letter);
@@ -543,10 +545,10 @@ TEST(PubSub, TopicLoopsAreStopped) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:a"), {});
+    pubsub.create_topic(kRiley, address("topic:a"), {});
     auto request = text_to({address("topic:a")}, "looping");
     request.topics_chain = {address("topic:a")};  // it has already been through topic:a
-    auto result = pubsub.publish(kSteve, request);
+    auto result = pubsub.publish(kRiley, request);
     EXPECT_FALSE(result.accepted);
     ASSERT_FALSE(result.refused.empty());
     EXPECT_EQ(result.refused[0].second, "topic loop");
@@ -558,7 +560,7 @@ class TestAuthorizer final : public Authorizer {
 public:
     bool authorize(const Address& principal, PubSubOperation operation, const Address& target) override {
         if (principal == Address{"user", "mallory"}) return false;
-        if (operation == PubSubOperation::SendWildcard) return principal == Address{"user", "steve"};
+        if (operation == PubSubOperation::SendWildcard) return principal == Address{"user", "riley"};
         (void)target;
         return true;
     }
@@ -582,15 +584,15 @@ TEST(PubSub, GovernanceClampsByDefaultAndRejectsWhenTheTopicSaysSo) {
         audits.push_back(record);
     });
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:bounded"), {});
+    pubsub.create_topic(kRiley, address("topic:bounded"), {});
     TopicSettings strict;
     strict.over_bound = OverBoundPolicy::Reject;
-    pubsub.create_topic(kSteve, address("topic:strict"), strict);
-    auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:bounded"));
+    pubsub.create_topic(kRiley, address("topic:strict"), strict);
+    auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:bounded"));
 
     auto request = text_to({address("topic:bounded")}, "urgent");
     request.delivery.priority = 9;
-    auto result = pubsub.publish(kSteve, request);
+    auto result = pubsub.publish(kRiley, request);
     ASSERT_TRUE(result.accepted);
     ASSERT_EQ(result.clamped.size(), 1u);
     EXPECT_EQ(result.clamped[0], "topic:bounded.priority");
@@ -599,7 +601,7 @@ TEST(PubSub, GovernanceClampsByDefaultAndRejectsWhenTheTopicSaysSo) {
     EXPECT_EQ(delivery->event.delivery.priority, 5);
 
     request.to = {address("topic:strict")};
-    result = pubsub.publish(kSteve, request);
+    result = pubsub.publish(kRiley, request);
     EXPECT_FALSE(result.accepted);
     EXPECT_NE(result.error.find("priority 9 exceeds the bound 5"), std::string::npos);
 
@@ -621,12 +623,12 @@ TEST(PubSub, EveryDelegationLinkIsCheckedAndTheChainIsCapped) {
     config.max_sender_chain = 3;
     PubSub pubsub(config, std::make_shared<TestAuthorizer>(), log.sink());
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:t"), {});
-    auto result = pubsub.publish(Identity{address("user:steve"), {address("agent:rogue")}},
+    pubsub.create_topic(kRiley, address("topic:t"), {});
+    auto result = pubsub.publish(Identity{address("user:riley"), {address("agent:rogue")}},
                                  text_to({address("topic:t")}, "x"));
     EXPECT_FALSE(result.accepted);
-    EXPECT_EQ(result.error, "agent:rogue may not act for user:steve");
-    result = pubsub.publish(Identity{address("user:steve"),
+    EXPECT_EQ(result.error, "agent:rogue may not act for user:riley");
+    result = pubsub.publish(Identity{address("user:riley"),
                                      {address("agent:a"), address("agent:b"), address("agent:c"), address("agent:d")}},
                             text_to({address("topic:t")}, "x"));
     EXPECT_FALSE(result.accepted);
@@ -643,10 +645,10 @@ TEST(PubSub, AutoCreationFollowsConfiguredPrefixesAndIsLogged) {
     config.auto_create_prefixes = {"dev."};
     PubSub pubsub(config, nullptr, log.sink());
     pubsub.start();
-    EXPECT_TRUE(pubsub.publish(kSteve, text_to({address("topic:dev.scratch")}, "x")).accepted);
+    EXPECT_TRUE(pubsub.publish(kRiley, text_to({address("topic:dev.scratch")}, "x")).accepted);
     EXPECT_TRUE(pubsub.topic_settings(address("topic:dev.scratch")));
     EXPECT_TRUE(log.contains("auto-created topic:dev.scratch"));
-    EXPECT_FALSE(pubsub.publish(kSteve, text_to({address("topic:prod.orders")}, "x")).accepted);
+    EXPECT_FALSE(pubsub.publish(kRiley, text_to({address("topic:prod.orders")}, "x")).accepted);
     EXPECT_FALSE(pubsub.topic_settings(address("topic:prod.orders")));
 }
 
@@ -660,10 +662,10 @@ TEST(PubSub, SkipAheadGivesTheSlowSubscriberAGapNotice) {
     settings.ring_capacity = 4;
     settings.memory_cap_bytes = 8 * 1024;
     settings.overflow = OverflowPolicy::SkipAhead;
-    pubsub.create_topic(kSteve, address("topic:t"), settings);
-    auto slow = pubsub.subscribe(kSteve, address("agent:slow"), address("topic:t"));
+    pubsub.create_topic(kRiley, address("topic:t"), settings);
+    auto slow = pubsub.subscribe(kRiley, address("agent:slow"), address("topic:t"));
     for (int index = 0; index < 200; ++index) {
-        ASSERT_TRUE(pubsub.publish(kSteve, text_to({address("topic:t")}, std::string(200, 'x'))).accepted);
+        ASSERT_TRUE(pubsub.publish(kRiley, text_to({address("topic:t")}, std::string(200, 'x'))).accepted);
     }
     auto delivery = slow->receive(1s);
     ASSERT_TRUE(delivery);
@@ -678,11 +680,11 @@ TEST(PubSub, RejectNewFailsThePublishWhenFull) {
     TopicSettings settings;
     settings.memory_cap_bytes = 4 * 1024;
     settings.overflow = OverflowPolicy::RejectNew;
-    pubsub.create_topic(kSteve, address("topic:t"), settings);
-    auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:t"));
+    pubsub.create_topic(kRiley, address("topic:t"), settings);
+    auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:t"));
     bool refused = false;
     for (int index = 0; index < 100 && !refused; ++index) {
-        refused = !pubsub.publish(kSteve, text_to({address("topic:t")}, std::string(200, 'x'))).accepted;
+        refused = !pubsub.publish(kRiley, text_to({address("topic:t")}, std::string(200, 'x'))).accepted;
     }
     EXPECT_TRUE(refused);
 }
@@ -698,10 +700,10 @@ TEST(PubSub, SpillsToDiskAndLogsItThenReadsBack) {
     settings.ring_capacity = 8;
     settings.memory_cap_bytes = 16 * 1024;
     settings.delivery.guarantee = Guarantee::AtLeastOnce;  // default overflow: spill
-    pubsub.create_topic(kSteve, address("topic:big"), settings);
-    auto subscription = pubsub.subscribe(kSteve, address("agent:reader"), address("topic:big"));
+    pubsub.create_topic(kRiley, address("topic:big"), settings);
+    auto subscription = pubsub.subscribe(kRiley, address("agent:reader"), address("topic:big"));
     for (int index = 0; index < 200; ++index) {
-        ASSERT_TRUE(pubsub.publish(kSteve, text_to({address("topic:big")}, std::to_string(index) + std::string(300, '.')))
+        ASSERT_TRUE(pubsub.publish(kRiley, text_to({address("topic:big")}, std::to_string(index) + std::string(300, '.')))
                         .accepted);
     }
     EXPECT_TRUE(log.contains("WARN topic:big spilling to disk"));
@@ -732,11 +734,11 @@ TEST(PubSub, EphemeralTopicsNeverSpill) {
     settings.ring_capacity = 4;
     settings.memory_cap_bytes = 4 * 1024;
     settings.overflow = OverflowPolicy::SpillToDisk;
-    pubsub.create_topic(kSteve, address("topic:e"), settings);
-    auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:e"));
+    pubsub.create_topic(kRiley, address("topic:e"), settings);
+    auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:e"));
     bool refused = false;
     for (int index = 0; index < 100 && !refused; ++index) {
-        refused = !pubsub.publish(kSteve, text_to({address("topic:e")}, std::string(200, 'x'))).accepted;
+        refused = !pubsub.publish(kRiley, text_to({address("topic:e")}, std::string(200, 'x'))).accepted;
     }
     EXPECT_TRUE(refused);  // spill not allowed: held, then failed
     const auto stats = pubsub.topic_stats();
@@ -753,14 +755,14 @@ TEST(PubSub, ShutdownFlushesAndStartReloadsDefaultTopicsNotEphemeral) {
     {
         PubSub pubsub(test_config(directory.path()), nullptr, log.sink());
         pubsub.start();
-        pubsub.create_topic(kSteve, address("topic:keep"), {});
+        pubsub.create_topic(kRiley, address("topic:keep"), {});
         TopicSettings ephemeral;
         ephemeral.lifecycle = TopicLifecycle::Ephemeral;
-        pubsub.create_topic(kSteve, address("topic:scratch"), ephemeral);
+        pubsub.create_topic(kRiley, address("topic:scratch"), ephemeral);
         for (int index = 0; index < 5; ++index) {
-            pubsub.publish(kSteve, text_to({address("topic:keep"), address("topic:scratch")}, std::to_string(index)));
+            pubsub.publish(kRiley, text_to({address("topic:keep"), address("topic:scratch")}, std::to_string(index)));
         }
-        pubsub.publish(kSteve, text_to({address("agent:away")}, "waiting for you"));
+        pubsub.publish(kRiley, text_to({address("agent:away")}, "waiting for you"));
         pubsub.shutdown();
     }
     EXPECT_TRUE(log.contains("shutdown: flushing"));
@@ -770,14 +772,14 @@ TEST(PubSub, ShutdownFlushesAndStartReloadsDefaultTopicsNotEphemeral) {
     restarted.start();
     EXPECT_TRUE(log.contains("topic:keep recovered 5 events"));
     ASSERT_TRUE(restarted.topic_settings(address("topic:scratch")));  // the definition survives
-    auto keep = restarted.subscribe(kSteve, address("agent:1"), address("topic:keep"), {.start = StartPosition::Oldest});
+    auto keep = restarted.subscribe(kRiley, address("agent:1"), address("topic:keep"), {.start = StartPosition::Oldest});
     for (int index = 0; index < 5; ++index) EXPECT_EQ(text_of(keep->receive(1s)), std::to_string(index));
-    auto scratch = restarted.subscribe(kSteve, address("agent:1"), address("topic:scratch"), {.start = StartPosition::Oldest});
+    auto scratch = restarted.subscribe(kRiley, address("agent:1"), address("topic:scratch"), {.start = StartPosition::Oldest});
     EXPECT_FALSE(scratch->receive(20ms));  // ephemeral events were discarded
     auto inbox = restarted.open_inbox(Identity{address("agent:away"), {}}, address("agent:away"));
     EXPECT_EQ(text_of(inbox->receive(1s)), "waiting for you");
     // Sequences continue after a restart.
-    restarted.publish(kSteve, text_to({address("topic:keep")}, "after"));
+    restarted.publish(kRiley, text_to({address("topic:keep")}, "after"));
     auto after = keep->receive(1s);
     ASSERT_TRUE(after);
     EXPECT_GT(after->sequence, 5u);
@@ -792,10 +794,10 @@ TEST(PubSub, RestartAfterACrashRecoversSpilledRingsBestEffort) {
         settings.ring_capacity = 4;
         settings.memory_cap_bytes = 8 * 1024;
         settings.overflow = OverflowPolicy::SpillToDisk;
-        pubsub.create_topic(kSteve, address("topic:c"), settings);
-        auto holder = pubsub.subscribe(kSteve, address("agent:1"), address("topic:c"));
+        pubsub.create_topic(kRiley, address("topic:c"), settings);
+        auto holder = pubsub.subscribe(kRiley, address("agent:1"), address("topic:c"));
         for (int index = 0; index < 100; ++index) {
-            pubsub.publish(kSteve, text_to({address("topic:c")}, std::to_string(index) + std::string(200, '.')));
+            pubsub.publish(kRiley, text_to({address("topic:c")}, std::to_string(index) + std::string(200, '.')));
         }
         // Simulate a crash: no shutdown flush. (The destructor's zero budget
         // flushes nothing when the budget is already spent.)
@@ -805,7 +807,7 @@ TEST(PubSub, RestartAfterACrashRecoversSpilledRingsBestEffort) {
     PubSub restarted(test_config(directory.path()), nullptr, log.sink());
     restarted.start();
     EXPECT_TRUE(log.contains("topic:c recovered"));
-    auto reader = restarted.subscribe(kSteve, address("agent:1"), address("topic:c"), {.start = StartPosition::Oldest});
+    auto reader = restarted.subscribe(kRiley, address("agent:1"), address("topic:c"), {.start = StartPosition::Oldest});
     auto first = reader->receive(1s);
     ASSERT_TRUE(first);
     EXPECT_TRUE(std::string(first->event.payload.bytes()).starts_with("0."));
@@ -817,9 +819,9 @@ TEST(PubSub, SubscriptionsWithoutRetentionAreRemovedOnDisconnect) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:t"), {});
+    pubsub.create_topic(kRiley, address("topic:t"), {});
     {
-        auto subscription = pubsub.subscribe(kSteve, address("service:x"), address("topic:t"));
+        auto subscription = pubsub.subscribe(kRiley, address("service:x"), address("topic:t"));
         EXPECT_EQ(pubsub.topic_stats().front().subscribers, 1u);
     }
     for (const auto& stats : pubsub.topic_stats()) {
@@ -831,11 +833,11 @@ TEST(PubSub, AgentSubscriptionsOutliveADisconnectForTheirRetention) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:t"), {});
+    pubsub.create_topic(kRiley, address("topic:t"), {});
     SubscribeOptions options;
     options.retention = 50ms;
     {
-        auto subscription = pubsub.subscribe(kSteve, address("agent:1"), address("topic:t"), options);
+        auto subscription = pubsub.subscribe(kRiley, address("agent:1"), address("topic:t"), options);
     }
     auto count = [&] {
         for (const auto& stats : pubsub.topic_stats()) {
@@ -853,12 +855,12 @@ TEST(PubSub, ConcurrentPublishersAndSubscribersLoseNothing) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));
     pubsub.start();
-    pubsub.create_topic(kSteve, address("topic:busy"), {});
+    pubsub.create_topic(kRiley, address("topic:busy"), {});
     constexpr int kPublishers = 4;
     constexpr int kEach = 500;
     std::vector<std::unique_ptr<Subscription>> subscriptions;
     for (int index = 0; index < 3; ++index) {
-        subscriptions.push_back(pubsub.subscribe(kSteve, address("agent:" + std::to_string(index)), address("topic:busy")));
+        subscriptions.push_back(pubsub.subscribe(kRiley, address("agent:" + std::to_string(index)), address("topic:busy")));
     }
     std::vector<std::thread> threads;
     std::vector<int> counts(subscriptions.size(), 0);
@@ -873,7 +875,7 @@ TEST(PubSub, ConcurrentPublishersAndSubscribersLoseNothing) {
     for (int publisher = 0; publisher < kPublishers; ++publisher) {
         threads.emplace_back([&, publisher] {
             for (int index = 0; index < kEach; ++index) {
-                pubsub.publish(kSteve, text_to({address("topic:busy")}, std::to_string(publisher)));
+                pubsub.publish(kRiley, text_to({address("topic:busy")}, std::to_string(publisher)));
             }
         });
     }

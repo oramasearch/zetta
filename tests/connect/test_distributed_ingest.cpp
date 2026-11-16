@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // #833 section 7 — the **cross-node connector ingest**. Not "the tiling is
 // correct" (tests/connect/test_distributed_fetch.cpp already pins that on the
 // algorithm) but the properties of the thing actually running over a real
@@ -389,8 +391,8 @@ TEST(DistributedIngest, ANonSnowflakeConfigNeverTakesTheSnowflakeProtocol) {
     postgres.type = "postgres";
     postgres.host = "127.0.0.1";
     postgres.port = "5433";
-    postgres.user = "motive";
-    postgres.database = "motive";
+    postgres.user = "analyst";
+    postgres.database = "analytics";
 
     DistributedIngestOptions options = ingest_options();
     options.connection.clear();  // inline config; no saved connection
