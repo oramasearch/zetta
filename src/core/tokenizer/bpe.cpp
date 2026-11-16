@@ -1,5 +1,6 @@
 #include "zetta/tokenizer/bpe.hpp"
 
+#include <algorithm>
 #include <climits>
 #include <cstddef>
 #include <filesystem>
@@ -13,6 +14,15 @@
 #include "zetta/tokenizer/pre_tokenizer.hpp"
 
 namespace zetta::tokenizer {
+
+namespace {
+// The largest token id a vocabulary of `tokens` may use: its size plus generous room for added
+// and reserved tokens, and never more than 2^24 (#1431).
+std::size_t max_token_id(std::size_t tokens) {
+    return std::min<std::size_t>(tokens + (std::size_t{1} << 20), std::size_t{1} << 24);
+}
+}  // namespace
+
 
 std::size_t BpeTokenizer::resident_bytes() const {
     std::size_t bytes = sizeof(BpeTokenizer);
@@ -48,6 +58,17 @@ std::optional<BpeTokenizer> BpeTokenizer::from_vocab_and_merges(
     int max_id = 0;
     for (const auto& [token, id] : tokenizer.vocab_) {
         if (id > max_id) max_id = id;
+    }
+    // The table is sized by the largest id, which the vocabulary file chooses (LSR-258, #1431):
+    // real vocabularies number their tokens densely, so an id far past the vocabulary's size is
+    // refused instead of allocating a table for it.
+    if (static_cast<std::size_t>(max_id) >= max_token_id(tokenizer.vocab_.size())) {
+        if (error != nullptr) {
+            *error = "bpe: token id " + std::to_string(max_id) +
+                     " is far beyond the vocabulary's " + std::to_string(tokenizer.vocab_.size()) +
+                     " tokens";
+        }
+        return std::nullopt;
     }
     tokenizer.id_to_token_.assign(static_cast<std::size_t>(max_id) + 1, std::string{});
     for (const auto& [token, id] : tokenizer.vocab_) {
@@ -171,7 +192,11 @@ std::vector<int> BpeTokenizer::encode(std::string_view text) const {
 void BpeTokenizer::add_special_tokens(
     const std::vector<std::pair<std::string, int>>& specials) {
     for (const auto& [content, id] : specials) {
-        if (content.empty() || id < 0) continue;
+        // An added token's id is bounded the same way (#1431).
+        if (content.empty() || id < 0 ||
+            static_cast<std::size_t>(id) >= max_token_id(vocab_.size() + specials.size())) {
+            continue;
+        }
         special_tokens_[content] = id;
         // Store the byte-level form in the vocab / inverse so decode's uniform
         // byte path reproduces the content and token_to_id/vocab_size include it.

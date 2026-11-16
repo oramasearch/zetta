@@ -532,3 +532,28 @@ TEST(ParquetColumnDecoder, CompactVarintsRejectOverflowAndKeepUint64Range) {
         EXPECT_EQ(decoded, 123u);
     }
 }
+
+// LSR-251 (#1424): skipping an unknown field nests at most kMaxSkipDepth lists, maps and structs, so
+// a footer of a million nested one-element lists is refused instead of exhausting the stack.
+TEST(ParquetColumnDecoder, CompactSkipRefusesDeepNestingAndSkipsShallowNesting) {
+    using zetta::parquet::detail::CompactReader;
+    using zetta::parquet::detail::CompactType;
+    // 0x19: a list of one element whose type is list; the innermost 0x09 is an empty list.
+    const auto nested = [](std::size_t levels) { return std::string(levels, '\x19') + '\x09'; };
+    {
+        const std::string shallow = nested(10);
+        CompactReader reader(shallow);
+        EXPECT_TRUE(reader.skip_value(CompactType::List, false));
+        EXPECT_EQ(reader.position(), shallow.size());
+    }
+    {
+        const std::string deep = nested(1'000'000);
+        CompactReader reader(deep);
+        EXPECT_FALSE(reader.skip_value(CompactType::List, false));
+    }
+    {
+        const std::string limit = nested(CompactReader::kMaxSkipDepth - 1);
+        CompactReader reader(limit);
+        EXPECT_TRUE(reader.skip_value(CompactType::List, false));
+    }
+}

@@ -447,7 +447,21 @@ private:
 
     // --- expressions -------------------------------------------------------
     // expr := atom trailer*   where a trailer is `.name`, `(args)`, or `[index]`.
-    ExprPtr parse_expr() { return parse_postfix(); }
+    // Every nested expression comes back through here, so this bounds the recursion (LSR-254,
+    // #1427): `[[[[...` or `f(f(f(...` deeper than kMaxExpressionDepth is a parse error instead
+    // of a stack overflow.
+    static constexpr int kMaxExpressionDepth = 200;
+    ExprPtr parse_expr() {
+        if (expression_depth_ >= kMaxExpressionDepth) {
+            fail("expression nested more than " + std::to_string(kMaxExpressionDepth) + " deep");
+            return make_expr(ExprKind{});
+        }
+        ++expression_depth_;
+        ExprPtr expr = parse_postfix();
+        --expression_depth_;
+        return expr;
+    }
+    int expression_depth_ = 0;
 
     ExprPtr parse_postfix() {
         ExprPtr expr = parse_atom();

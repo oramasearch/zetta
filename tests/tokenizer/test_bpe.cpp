@@ -243,3 +243,16 @@ TEST(Bpe, AccessorsAndEmptyVocab) {
 }
 
 }  // namespace
+
+// LSR-258 (#1431): a vocabulary whose ids run far past its size is refused instead of sizing the
+// inverse table by the largest id (an id near INT_MAX would allocate gigabytes).
+TEST(Bpe, AVocabularyIdFarPastItsSizeIsRefused) {
+    std::string error;
+    const auto hostile = zetta::tokenizer::BpeTokenizer::from_vocab_and_merges(
+        {{"a", 0}, {"b", 2'000'000'000}}, {}, &error);
+    EXPECT_FALSE(hostile.has_value());
+    EXPECT_NE(error.find("far beyond"), std::string::npos) << error;
+    const auto sparse = zetta::tokenizer::BpeTokenizer::from_vocab_and_merges(
+        {{"a", 0}, {"b", 100'000}}, {}, &error);
+    EXPECT_TRUE(sparse.has_value()) << "ids with ordinary gaps still load: " << error;
+}

@@ -158,6 +158,20 @@ public:
     // bool *element* (a full 0x00/0x01 byte) from a bool *field* (value in the
     // type nibble — nothing to read). Recurses through nested structs/lists/maps.
     bool skip_value(CompactType type, bool in_collection) {
+        // Nesting is bounded (LSR-251, #1424): a hostile footer of nested lists, maps or structs
+        // would otherwise recurse until the stack runs out. Parquet's own metadata nests a few
+        // levels; 64 is far beyond any real file.
+        const bool nests = type == CompactType::List || type == CompactType::Set ||
+                           type == CompactType::Map || type == CompactType::Struct;
+        if (nests && depth_ >= kMaxSkipDepth) return false;
+        struct Nesting {
+            std::size_t& depth;
+            bool counted;
+            ~Nesting() {
+                if (counted) --depth;
+            }
+        } nesting{depth_, nests};
+        if (nests) ++depth_;
         switch (type) {
             case CompactType::BoolTrue:
             case CompactType::BoolFalse: {
@@ -229,9 +243,13 @@ public:
         }
     }
 
+    // How deep skip_value may nest lists, sets, maps and structs (#1424).
+    static constexpr std::size_t kMaxSkipDepth = 64;
+
 private:
     std::string_view data_;
     std::size_t offset_ = 0;
+    std::size_t depth_ = 0;
 };
 
 // A cursor that appends compact-protocol bytes to a caller-owned buffer — the

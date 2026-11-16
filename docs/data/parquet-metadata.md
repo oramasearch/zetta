@@ -103,6 +103,7 @@ a flat OPTIONAL column has `max_definition_level` 1, a REQUIRED column 0.
 - **Reads the footer only** — no page bodies, no decompression, no values.
 - **Unencrypted files** — an encrypted footer (`PARE` magic) is rejected with a
   clear reason, not misparsed.
+- Skipping is bounded: at most 64 nested lists, sets, maps and structs (`CompactReader::kMaxSkipDepth`, LSR-251 #1424), so a hostile footer is refused rather than recursing until the stack runs out.
 - Forward-compatible: unknown fields/types are skipped, and unknown enum codes
   map to `…::Unknown` rather than failing.
 
