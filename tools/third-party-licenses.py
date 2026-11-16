@@ -82,16 +82,9 @@ COMPONENTS: list[dict] = [
      "license": "OFL-1.1", "use": "vendored font files, embedded in the binaries",
      "url": "https://github.com/IBM/plex",
      "text": {"github": "IBM/plex", "ref": None, "path": "LICENSE.txt"}},
-    {"name": "Geist and Geist Mono (assets/fonts, webapp/fonts)", "version": "as vendored",
+    {"name": "Geist and Geist Mono (assets/fonts)", "version": "as vendored",
      "license": "OFL-1.1", "use": "vendored font files", "url": "https://github.com/vercel/geist-font",
      "text": {"file": "assets/fonts/OFL.txt"}},
-    {"name": "Space Grotesk (webapp/fonts)", "version": "as vendored", "license": "OFL-1.1",
-     "use": "vendored font files", "url": "https://github.com/floriankarsten/space-grotesk",
-     "text": {"github": "floriankarsten/space-grotesk", "ref": None, "path": "OFL.txt"}},
-    {"name": "Orama Studio web app (webapp/, built from orama-design)", "version": "fc2cc41",
-     "license": "MIT", "use": "vendored build, served by the node",
-     "url": "vendored from a private OramaSearch, Inc. repository",
-     "text": {"inline": "Copyright (c) 2026 OramaSearch, Inc. Released under the MIT License as part of this repository (see LICENSE); vendored from a private OramaSearch, Inc. repository. The runtime packages of that build are listed below as \"runtime dependency of the webapp/ build\"."}},
 ]
 NPM_USE = {"webapp": "runtime dependency of the webapp/ build"}
 NOTES: list[str] = [
